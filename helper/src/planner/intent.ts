@@ -271,12 +271,13 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
   if (fixed.person === undefined && snap.persons.length === 0 && PRONOUN_DETAILS.test(fieldWords(snap.instruction))) stop("otherPersonUnnamed", snap);
   // An instruction that names a kind Caret never types ("my SSN goes in there too") is refused for that, whatever
   // reason the maker gave: B25's held-out run told the user "Caret stops before payment" for an SSN.
-  if ((intent.route === "refuse" || intent.route === "ask") && mentionedKind(snap.instruction) !== null) stop("neverTyped", snap);
+  // B30: a plan as well, since a goal plan is planned from the instruction's words too.
+  if ((intent.route === "refuse" || intent.route === "ask" || intent.route === "plan") && mentionedKind(snap.instruction) !== null) stop("neverTyped", snap);
   // A source no open window could be is said as such, whether the maker filled, asked or refused vaguely: B26's
   // held-out runs told "grab my job title and company off my linkedin" that Caret found nothing to put in Job title,
   // and asked "Where should Caret copy from?" for "grab my company and title off my LinkedIn".
   const vague = intent.route === "refuse" && (intent.why === "none" || intent.why === "nothingToFill" || intent.why === "notOnScreen");
-  if (snap.missing && (intent.route === "fill" || intent.route === "ask" || vague)) stop("notOnScreen", snap);
+  if (snap.missing && (intent.route === "fill" || intent.route === "ask" || intent.route === "plan" || vague)) stop("notOnScreen", snap);
   if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why, snap);
   if (intent.route === "plan") return { route: "plan" };
 

@@ -5,7 +5,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Helper } from "../src/helper.ts";
+import { Helper, type HelperOptions } from "../src/helper.ts";
+import type { AskJev } from "../src/fill/jev.ts";
 import { Store } from "../src/store.ts";
 import { FakeCalendar } from "../src/executor/means.ts";
 import { PROTOCOL_VERSION, isCalendarVerb, type GoalAccept, type GoalProgress, type HelperMessage, type ActGrant, type ActRevoke, type AppRef, type CalendarGrant, type Node, type ReaderMessage, type ReaderVerb, type TypedValue, type VerbResult } from "../src/protocol.ts";
@@ -292,7 +293,18 @@ export interface GoalScene {
   close(): Promise<void>;
 }
 
-export function goalScene(o: { scripts: CannedStep[][]; windows: DeskWindow[]; pageDocument?: (windowId: string) => string | null; userWindow?: string; /** A real writer in place of the canned one (scripts/goal-scenes-eval.ts --writer live). */ writer?: WriterPort }): GoalScene {
+export function goalScene(o: {
+  scripts: CannedStep[][];
+  windows: DeskWindow[];
+  pageDocument?: (windowId: string) => string | null;
+  userWindow?: string;
+  /** A real writer in place of the canned one (scripts/goal-scenes-eval.ts --writer live). */
+  writer?: WriterPort;
+  /** Jev, for drafts' claim checks and Ask (B30); none by default. */
+  askJev?: AskJev;
+  /** How an Ask makes its intent (HelperOptions.ask); none by default. */
+  ask?: HelperOptions["ask"];
+}): GoalScene {
   const dir = mkdtempSync(join(tmpdir(), "caret-goal-"));
   const store = new Store(join(dir, "data"));
   const desk = new GoalDesk();
@@ -304,7 +316,8 @@ export function goalScene(o: { scripts: CannedStep[][]; windows: DeskWindow[]; p
   const helper = new Helper({
     warn: (l) => void warnings.push(l),
     store,
-    askJev: null,
+    askJev: o.askJev ?? null,
+    ...(o.ask === undefined ? {} : { ask: o.ask }),
     shadow: false,
     allowBackgroundFocus: false,
     readerLink: desk,

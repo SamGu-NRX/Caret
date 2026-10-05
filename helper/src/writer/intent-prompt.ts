@@ -23,7 +23,7 @@ export const INTENT_SYSTEM = `You turn a user's instruction to Caret, a Mac assi
 
 route:
 - fill: fill in or change fields of this form. Most instructions are this.
-- plan: more than filling fields: press a button, submit, send, or several steps.
+- plan: more than filling fields with values that already exist: press a button, submit, send, add an event to the calendar, write a message, reply or description in new words ("draft a reply saying I'm in", "write the description"), or several steps.
 - refuse: something Caret must not or cannot do here: pay or enter a card number; a password, a one-time code, or a Social Security or other government ID number; a field this form does not have; copying from a window, file or app that is not listed.
 - ask: only when the instruction names or describes no field and does not ask to fill the form.
 why: for refuse or ask, the reason; otherwise none.

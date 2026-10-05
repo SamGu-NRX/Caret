@@ -2,7 +2,9 @@
 //   - fill: the fill engine (fill/fill.ts proposeFill) restricted to the intent's fields, sources, person and
 //     spelled-out values; its text writes become the planner's plan of field writes, checked by validatePlan as
 //     every plan is, and its controls (a select's option, a date) are listed for the user to set.
-//   - plan: the planner as before: the deterministic planner, then the code-mode writer for an instruction it
+//   - plan: for a host that runs goal plans (B30, AskOptions.goals), an AskGoal: the caller plans the instruction as a
+//     D2-06 goal, with its preview, segments, acceptances and receipts, and nothing here plans it. For any other
+//     consumer, the planner as before: the deterministic planner, then the code-mode writer for an instruction it
 //     cannot ground. Plans still run only after the host accepts them.
 //   - ask or refuse: a PlannerError whose sentence code wrote. An Ask left unclear about which fields, where to copy
 //     from or whose details asks one question with choices instead, when code can list them (B29, choices.ts):
@@ -39,6 +41,11 @@ export interface AskOptions {
   rand?: (n: number) => number;
   /** Fault-injection seam for the planner evaluation (PlanTaskOptions.beforeCheck). */
   beforeCheck?: () => Promise<void>;
+  /**
+   * The consumer runs goal plans (protocol GOAL_PLANS_CAPABILITY): the plan route returns an AskGoal for the goal path
+   * instead of planning in one window (B30).
+   */
+  goals?: boolean;
   /**
    * Continues an Ask that asked a question (B29): its intent, as the maker gave it, with the user's picks so far in
    * `fixed`. The maker is not asked again; the window must be the one the question was about.
@@ -93,6 +100,15 @@ export type AskDraft = PlanDraft & {
   fill: FillProposal | null;
   writer?: WriterUse;
 };
+
+/** An Ask whose intent is a plan, for a host that runs goal plans (B30): the caller offers it as a goal. */
+export interface AskGoal {
+  route: "goal";
+  intent: AskIntent;
+  maker: MakerUse;
+  /** The window the Ask was about: the goal reads it first. */
+  windowId: string;
+}
 
 /**
  * An Ask that ended without a plan, with the intent and what making it cost when the maker got that far. Its message
@@ -245,8 +261,13 @@ function scopeFields(intent: AskIntent, snap: IntentSnapshot): IntentField[] {
   return empty;
 }
 
-/** Plans an Ask. Throws AskRefused with the failing check's code, the user's sentence and the check's detail. */
-export async function planAsk(instruction: string, model: ScreenModel, memory: PlannerMemory, about: readonly AboutValue[], o: AskOptions): Promise<AskDraft> {
+/**
+ * Plans an Ask. Throws AskRefused with the failing check's code, the user's sentence and the check's detail. With
+ * `goals`, a plan intent comes back as an AskGoal, checked like every intent and planned by nothing here.
+ */
+export async function planAsk(instruction: string, model: ScreenModel, memory: PlannerMemory, about: readonly AboutValue[], o: AskOptions & { goals?: false }): Promise<AskDraft>;
+export async function planAsk(instruction: string, model: ScreenModel, memory: PlannerMemory, about: readonly AboutValue[], o: AskOptions): Promise<AskDraft | AskGoal>;
+export async function planAsk(instruction: string, model: ScreenModel, memory: PlannerMemory, about: readonly AboutValue[], o: AskOptions): Promise<AskDraft | AskGoal> {
   const now = o.now ?? Date.now();
   const jev = { calls: 0, costUsd: 0, latencyMs: 0 };
   const askJev: AskJev = async (req) => {
@@ -392,6 +413,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     }
   }
 
+  if (checked.route === "plan" && o.goals === true) return { route: "goal", intent, maker: use, windowId: w.window.windowId };
   if (checked.route === "plan") {
     try {
       const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }) });

@@ -100,7 +100,7 @@ import type { PlanErrorCode } from "./protocol.ts";
 const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
-import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
+import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskGoal, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
 import type { AskFixed } from "./planner/intent.ts";
 import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
 import { ASK_ROUTES, type RouteCandidate } from "./routing/routes.ts";
@@ -1009,19 +1009,27 @@ export class Helper {
    */
   async handleGoalRequest(m: GoalRequest, session?: string): Promise<GoalProgress> {
     this.opts.store.count("goal.request", 1);
-    let goalId = `goal-${++this.planSeq}-${m.requestId}`.slice(0, 200);
-    while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${m.requestId}`.slice(0, 200);
-    const refuse = (says: string): GoalProgress => this.goals.refused(goalId, m.requestId, says);
+    return this.offerGoal(m.requestId, m.instruction, session, null);
+  }
+
+  /**
+   * Plans `instruction` as a goal and offers its first segment to `session`, as the reply to `requestId`: a goalRequest's,
+   * or an Ask's whose intent route is plan (B30), which names the window the Ask was about so the goal reads it first.
+   */
+  private async offerGoal(requestId: string, instruction: string, session: string | undefined, first: string | null): Promise<GoalProgress> {
+    let goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
+    while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
+    const refuse = (says: string): GoalProgress => this.goals.refused(goalId, requestId, says);
     if (this.writer === null) return refuse("No plan writer is configured, so Caret cannot plan this");
     if (this.mode !== "live") return refuse("Caret is in shadow mode");
     if (this.gate.settings.paused) return refuse("Caret is paused");
     if (!this.readerConnected) return refuse("No screen reader is connected");
     const session0 = this.readerSession;
     try {
-      const plan = await this.goalPlan(goalId, m.instruction);
+      const plan = await this.goalPlan(goalId, instruction, [], first);
       if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
       this.opts.store.count("goal.proposed", 1);
-      return this.goals.propose(plan, session, m.requestId);
+      return this.goals.propose(plan, session, requestId);
     } catch (e) {
       if (!(e instanceof GoalError)) throw e;
       this.opts.store.count(`goal.refused_${e.code}`, 1);
@@ -1051,15 +1059,18 @@ export class Helper {
     return this.opts.calendar !== undefined && this.opts.calendar !== null;
   }
 
-  /** The windows a goal may act in: the user's own first, then the most recently used ones with a field or a button. */
-  private goalWindows(): string[] {
-    const user = this.model.userWindow();
+  /**
+   * The windows a goal may act in: `first` (the window an Ask was about) or else the user's own, then the most recently
+   * used ones with a field or a button.
+   */
+  private goalWindows(first: string | null = null): string[] {
+    const user = (first === null ? undefined : this.model.windows.get(first)) ?? this.model.userWindow();
     const usable = (w: { nodes: Map<string, { editable?: boolean; role: string }> }): boolean => [...w.nodes.values()].some((n) => n.editable === true || n.role === "AXButton");
     const rest = [...this.model.windows.values()].filter((w) => w !== user && usable(w)).sort((a, b) => b.lastFocusedAt - a.lastFocusedAt);
     return [...(user === null || user === undefined ? [] : [user]), ...rest].map((w) => w.window.windowId);
   }
 
-  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = []): ReturnType<typeof planGoal> {
+  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null): ReturnType<typeof planGoal> {
     const writer = this.writer;
     if (writer === null) throw new GoalError("nothingToDo", "no plan writer is configured");
     const calendar = this.executorHasCalendar ? (this.opts.eventCalendar ?? "Caret") : null;
@@ -1068,7 +1079,7 @@ export class Helper {
       instruction,
       writer,
       askJev: this.ask,
-      windows: this.goalWindows(),
+      windows: this.goalWindows(first),
       memory: this.plannerMemory(),
       calendar,
       clock: macClock(new Date(this.now())),
@@ -1098,7 +1109,8 @@ export class Helper {
    */
   async handlePlanRequest(m: PlanRequest): Promise<PlanProposal>;
   async handlePlanRequest(m: PlanRequest, from: string | undefined, canAsk: boolean): Promise<PlanProposal | AskQuestion>;
-  async handlePlanRequest(m: PlanRequest, from?: string, canAsk = false): Promise<PlanProposal | AskQuestion> {
+  async handlePlanRequest(m: PlanRequest, from: string | undefined, canAsk: boolean, canGoal: boolean): Promise<PlanProposal | AskQuestion | GoalProgress>;
+  async handlePlanRequest(m: PlanRequest, from?: string, canAsk = false, canGoal = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     this.opts.store.count("plan.request", 1);
     let windowId: string | null = null;
     try {
@@ -1107,7 +1119,7 @@ export class Helper {
       if (!(e instanceof PlannerError)) throw e;
       return this.planFailed(m.requestId, e.code, e.message);
     }
-    return this.planAndPropose(m.requestId, m.instruction, windowId, undefined, from, canAsk);
+    return this.planAndPropose(m.requestId, m.instruction, windowId, undefined, from, canAsk, canGoal);
   }
 
   /**
@@ -1115,7 +1127,7 @@ export class Helper {
    * yet answered or lapsed, and every pick one of its options (one for a single-choice question). The picks fix that
    * part, and the same Ask goes on from there: its reply is a proposal, a refusal, or the next question.
    */
-  async handleAskAnswer(m: AskAnswer, from?: string): Promise<PlanProposal | AskQuestion> {
+  async handleAskAnswer(m: AskAnswer, from?: string, canGoal = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     this.opts.store.count("plan.askAnswer", 1);
     const q = this.askQuestions.get(m.questionId);
     if (q === undefined || q.session !== from || q.expires <= this.now()) return this.planFailed(m.requestId, "questionGone", `no open question ${m.questionId} for this connection`);
@@ -1133,7 +1145,7 @@ export class Helper {
       if (c.fixes.person !== undefined) fixed.person = c.fixes.person;
     }
     const resume = { ...q.draft.resume, fixed };
-    return this.planAndPropose(m.requestId, resume.instruction, resume.windowId, resume, from, true);
+    return this.planAndPropose(m.requestId, resume.instruction, resume.windowId, resume, from, true, canGoal);
   }
 
   private planFailed(requestId: string, code: Parameters<typeof planError>[1], detail: string): PlanProposal {
@@ -1141,8 +1153,11 @@ export class Helper {
     return planError(requestId, code, detail, this.now());
   }
 
-  /** Plans an Ask or a planner task and offers it; an Ask that asks a question returns it to a consumer that can answer. */
-  private async planAndPropose(requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean): Promise<PlanProposal | AskQuestion> {
+  /**
+   * Plans an Ask or a planner task and offers it; an Ask that asks a question returns it to a consumer that can answer,
+   * and an Ask whose route is plan, asked by a host that runs goal plans (`canGoal`), is offered as a goal (B30).
+   */
+  private async planAndPropose(requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     const store = this.opts.store;
     const fail = (code: Parameters<typeof planError>[1], detail: string): PlanProposal => this.planFailed(requestId, code, detail);
     const ask = this.ask;
@@ -1159,9 +1174,13 @@ export class Helper {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
         const maker = askConfig.maker === "jev" ? jevIntentMaker(ask) : writerIntentMaker(askConfig.writer, () => offerKey);
-        const d: AskDraft = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: ask, maker, writer: this.writer, offerKey, now: this.now(), ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...this.opts.plannerHooks });
+        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...this.opts.plannerHooks });
         store.count(`plan.ask_${d.route}`, 1);
-        this.countAskRoute(d.route);
+        this.countAskRoute(d.route === "goal" ? "plan" : d.route);
+        if (d.route === "goal") {
+          if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
+          return await this.offerGoal(requestId, instruction, from, d.windowId);
+        }
         draft = d;
       } catch (e) {
         if (!(e instanceof PlannerError)) throw e;

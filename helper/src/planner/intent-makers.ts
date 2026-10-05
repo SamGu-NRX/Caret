@@ -85,7 +85,7 @@ export const NOUL_FLOOR = 0.95;
 
 const ROUTE_CRITERIA: Record<string, string> = {
   fill: "Fill in or change fields of this form, with values from the screen, from what the user told Caret, or from the instruction itself.",
-  plan: "More than filling fields: press a button, submit, send, or a task of several steps.",
+  plan: "More than filling fields with values that already exist: press a button, submit, send, add an event to the calendar, write a message, reply or description in new words, or a task of several steps.",
   refuse: "Something Caret must not or cannot do here: pay or give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.",
   ask: "The instruction is too unclear to act on.",
 };

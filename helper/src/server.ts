@@ -249,7 +249,9 @@ export class HelperServer {
               continue;
             }
             const canAsk = this.askChoices.has(s);
-            void (msg.type === "planRequest" ? this.helper().handlePlanRequest(msg, from, canAsk) : this.helper().handleAskAnswer(msg, from))
+            // B30: an Ask from a host that runs goal plans is answered with a goal's preview when its route is plan.
+            const canGoal = this.goalPlans.has(s);
+            void (msg.type === "planRequest" ? this.helper().handlePlanRequest(msg, from, canAsk, canGoal) : this.helper().handleAskAnswer(msg, from, canGoal))
               .catch((e: unknown) => {
                 this.warn(`plan ${requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
                 return planError(requestId, "internal", "the planner failed; the helper logged why", Date.now());
