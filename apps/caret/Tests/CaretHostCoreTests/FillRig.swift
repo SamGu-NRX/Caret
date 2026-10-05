@@ -48,7 +48,13 @@ final class FakeFillWorld: FillWorld {
     }
 
     func allows(pid: Int32, bundleID: String?) -> Bool { allowed?.contains(pid) ?? true }
-    func bundleID(pid: Int32) -> String? { "dev.caret.fixture" }
+    /// The bundle id each running pid has; any other pid runs the fixture.
+    var bundles: [Int32: String] = [:]
+    func bundleID(pid: Int32) -> String? { bundles[pid] ?? "dev.caret.fixture" }
+
+    /// H10: the page field the helper says has focus, by browser pid (`PageFocusSource`).
+    var pages: [Int32: PageField] = [:]
+    func pageFocus(pid: Int32) -> PageField? { pages[pid].flatMap { $0.key == nil ? nil : $0 } }
 
     func focusedField(pid: Int32) -> FillFieldRead? {
         fieldReads.append(pid)
@@ -59,7 +65,10 @@ final class FakeFillWorld: FillWorld {
     /// the anchor uncovered.
     func hold(for target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool) -> SurfaceGate.Hold? {
         guard frontmostPID == target.pid else { return .appNotFront }
-        if requireFocus {
+        if requireFocus, PageWindow.isPage(target.windowID) {
+            let page = pageFocus(pid: target.pid)
+            guard page?.key == target.elementID, page?.windowId == target.windowID else { return .fieldNotFocused }
+        } else if requireFocus {
             let live = focused[target.pid]?.identity
             guard live?.elementID == target.elementID, live?.windowID == target.windowID else { return .fieldNotFocused }
         }
@@ -162,6 +171,9 @@ final class FillRig {
         case .hideOffer(let byTyping): log.append("hide offer\(byTyping ? " typing" : "")")
         case .markWorking: log.append("working")
         case .fillAll(let id): log.append("fillAll \(id)")
+        case .fillField(let id, let key): log.append("fillField \(id) \(key)")
+        case .undoTask(let id): log.append("undoTask \(id)")
+        case .log(let line): log.append("log \(line)")
         case .drawToast(let d): log.append("toast \(d.kind.rawValue) \([d.lead, d.text].compactMap { $0 }.joined(separator: " "))\(d.keycap.map { " \($0.key)" } ?? "")")
         case .hideToast(let byTyping): log.append("hide toast\(byTyping ? " typing" : "")")
         case .hideAll: log.append("hide all")

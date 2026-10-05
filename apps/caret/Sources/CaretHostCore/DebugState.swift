@@ -226,6 +226,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var fileConfirmReplies: UInt64 = 0
         /// H8: the helper's spend totals received.
         public var spend: UInt64 = 0
+        /// H10: the helper's word on which page field the user is in (`PageFocusBook`).
+        public var pageFields: UInt64 = 0
         /// `planRequest` lines written from the ask field, and `planProposal` answers received.
         public var planRequests: UInt64 = 0
         public var planProposals: UInt64 = 0

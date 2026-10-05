@@ -43,6 +43,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .pageEngine(let m): return "pageEngine:\(m.state.rawValue)"
             case .fileConfirmReply: return "fileConfirmReply"
             case .spend: return "spend"
+            case .pageField: return "pageField"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }

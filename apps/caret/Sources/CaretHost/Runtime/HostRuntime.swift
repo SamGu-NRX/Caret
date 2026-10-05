@@ -245,6 +245,12 @@ public final class HostRuntime {
             // A decision is no offer: it says when ambient help may show, which the pause already stops.
             if case .routeDecision(let decision) = message { return routeLink.receive(decision) }
             if case .spend(let spend) = message { return status.update { $0.spend = spend } }
+            // H10: which page field the user is in, which the host cannot read itself. Kept whatever the gate says, so a
+            // fill that opens later finds the field the user is in now.
+            if case .pageField(let field) = message {
+                PageFocusSource.book.receive(field)
+                return fill.pageField(field, at: at)
+            }
             // Pause and the roles the host can tell apart (`HostGate`); the perch still
             // hears about work, which the user asked to see.
             guard HostGate.allows(message, SettingsStore.shared.settings) else {
@@ -431,7 +437,8 @@ public final class HostRuntime {
                     // The request goes from main, never from the tap thread, which only enqueues.
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
-                            if perch.ask.ownsUndo(taskID) { perch.ask.undo() } else { surface.undoStarted(grant) }
+                            // H10: a fill the helper ran for a Tab on a page field, or for ⌘1, is the fill line's.
+                            if perch.ask.ownsUndo(taskID) { perch.ask.undo() } else if fill.ownsTask(taskID) { fill.undoStarted(grant) } else { surface.undoStarted(grant) }
                         }
                     }
                 } else {

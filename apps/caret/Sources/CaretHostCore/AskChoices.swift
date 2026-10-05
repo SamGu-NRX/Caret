@@ -173,18 +173,31 @@ public struct AskAnswer: Codable, Equatable, Sendable {
 
 /// Host to helper (D2-04): ⌘1 on a field's fill asks for the whole form in one transaction. The run
 /// reports as taskProgress under `proposalId`; a refusal is an error and a stopped taskProgress.
+///
+/// H10: with `fieldKey`, Tab on one field of a page proposal. The host cannot write a page field
+/// (Chrome shows Accessibility no web content), so the helper writes that field alone, as the task
+/// `taskID` names.
 public struct FillAllRequest: Codable, Equatable, Sendable {
     public static let type = "fillAll"
 
     public var proposalId: String
     public var at: Int64
+    public var fieldKey: String?
 
-    public init(proposalId: String, at: Int64) {
+    public init(proposalId: String, at: Int64, fieldKey: String? = nil) {
         self.proposalId = proposalId
         self.at = at
+        self.fieldKey = fieldKey
     }
 
-    enum CodingKeys: String, CodingKey { case type, v, proposalId, at }
+    /// The task the helper runs this request as: protocol.ts `fillFieldTask` for one field, else
+    /// the proposal's id.
+    public var taskID: String { fieldKey.map { Self.fieldTask(proposalId: proposalId, fieldKey: $0) } ?? proposalId }
+
+    /// protocol.ts `fillFieldTask`: the proposal's id, a slash, the field's key.
+    public static func fieldTask(proposalId: String, fieldKey: String) -> String { "\(proposalId)/\(fieldKey)" }
+
+    enum CodingKeys: String, CodingKey { case type, v, proposalId, at, fieldKey }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -193,11 +206,14 @@ public struct FillAllRequest: Codable, Equatable, Sendable {
         proposalId = try c.decode(String.self, forKey: .proposalId)
         guard !proposalId.isEmpty else { throw ProtocolError("fillAll names its proposal") }
         at = try c.decode(Int64.self, forKey: .at)
+        fieldKey = try c.decodeIfPresent(String.self, forKey: .fieldKey)
+        if fieldKey?.isEmpty == true { throw ProtocolError("fillAll's fieldKey is absent or at least 1 character") }
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(Self.type, forKey: .type); try c.encode(Proto.version, forKey: .v)
         try c.encode(proposalId, forKey: .proposalId); try c.encode(at, forKey: .at)
+        try c.encodeIfPresent(fieldKey, forKey: .fieldKey)
     }
 }

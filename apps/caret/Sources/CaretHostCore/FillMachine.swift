@@ -54,6 +54,9 @@ public protocol FillWorld: AnyObject {
     /// `windowID` names (`TargetIdentity.windowID`). Keys with no such element are left out.
     /// Time-boxed; a slow app gives fewer keys, never a wrong one.
     func elementIDs(pid: Int32, at frames: [String: Frame], window windowID: String) -> [String: String]
+    /// H10: the page field the user is in, in this browser process (`PageFocusBook`), while the page has the browser's
+    /// focus: nil when no page control has focus, or the browser's own toolbar does (Accessibility then names it).
+    func pageFocus(pid: Int32) -> PageField?
 }
 
 /// The ghost value in the field and its source line.
@@ -100,6 +103,12 @@ public enum FillCommand: Equatable, Sendable {
     case markWorking
     /// ⌘1 on the slip: send `fillAll` for the proposal (D2-04).
     case fillAll(String)
+    /// H10: Tab on a page field's offer: send `fillAll` for that field alone; the helper writes it.
+    case fillField(proposalID: String, fieldKey: String)
+    /// H10: ⌘Z on the toast of a fill the helper ran: send `taskControl` undo for its task.
+    case undoTask(String)
+    /// A line for the host's log: why a proposal was refused, never silently (H10).
+    case log(String)
     case drawToast(FillToastDraw)
     /// The toast ends; a line waiting behind it (`FillLineRule.deferLine`) takes the stage.
     case hideToast(byTyping: Bool)
@@ -196,6 +205,8 @@ public final class FillMachine {
 
     struct Held {
         let proposal: FillProposal
+        /// The form's process (`FillSelection.formProcess`).
+        let pid: Int32
         let receivedAt: Date
         /// Each proposed field's element, found where the proposal put it, by field key. Bound once,
         /// at the first evaluation while its app is in front (`bind`).
@@ -259,6 +270,18 @@ public final class FillMachine {
     var watch: Watch?
     /// The read after a write, per app.
     var rereads: [Int32: SurfaceTimer] = [:]
+    /// H10: fills the helper runs for this machine, by task id: Tab on a page field, and ⌘1 on any form.
+    var helperFills: [String: HelperFill] = [:]
+
+    struct HelperFill {
+        let origin: FillOrigin
+        let target: TargetIdentity
+        let field: CGRect?
+        /// Tab on one field (a page's), not ⌘1 on the form.
+        let oneField: Bool
+        /// The value offered, for the suppression of a failed one (as a failed Tab's, `insertionFinished`).
+        let value: String
+    }
 
     public init(arbiter: OfferArbiter, world: FillWorld, clock: SurfaceClock) {
         self.arbiter = arbiter
@@ -281,12 +304,22 @@ public final class FillMachine {
         status.lastProposalID = proposal.id
         status.lastProposalFields = proposal.fields.count
         status.lastProposalValues = proposal.fields.filter { $0.value != nil }.count
-        guard let pid = FillSelection.pid(fromWindowID: proposal.windowId), world.allows(pid: pid, bundleID: world.bundleID(pid: pid)) else {
+        let pid: Int32
+        switch FillSelection.formProcess(proposal, runningBundleID: { self.world.bundleID(pid: $0) }) {
+        case .refused(let reason):
+            status.lastSkip = "refused.\(reason)"
+            count("fill.proposalRefused.\(reason)")
+            emit(.log("fill: proposal \(proposal.id) for window \(proposal.windowId) (pid \(proposal.pid), \(proposal.bundleId)) refused: \(reason)"))
+            return emit(.publish)
+        case .process(let p):
+            pid = p
+        }
+        guard world.allows(pid: pid, bundleID: world.bundleID(pid: pid)) else {
             status.lastSkip = "notAllowed"
             count("fill.proposalNotAllowed")
             return emit(.publish)
         }
-        held[proposal.windowId] = Held(proposal: proposal, receivedAt: clock.now)
+        held[proposal.windowId] = Held(proposal: proposal, pid: pid, receivedAt: clock.now)
         status.cachedProposals = held.count
         emit(.watchApp(pid))
         evaluate(pid: pid, trigger: .proposal(uptime))
@@ -314,8 +347,14 @@ public final class FillMachine {
     /// shown is rechecked at once rather than at the next half second.
     public func appActivated(pid: Int32) {
         recheckVisibility()
-        guard held.values.contains(where: { FillSelection.pid(fromWindowID: $0.proposal.windowId) == pid }) else { return }
+        guard held.values.contains(where: { $0.pid == pid }) else { return }
         evaluate(pid: pid, trigger: .other)
+    }
+
+    /// H10: the helper said which page field the user is in, in this browser; look again there.
+    public func pageFieldChanged(pid: Int32, at uptime: UInt64) {
+        guard held.values.contains(where: { $0.pid == pid }) else { return }
+        evaluate(pid: pid, trigger: .focus(uptime))
     }
 
     // MARK: - Evaluation
@@ -329,7 +368,7 @@ public final class FillMachine {
         let now = clock.now
         held = held.filter { now.timeIntervalSince($0.value.receivedAt) <= Self.proposalMaxAge }
         let candidates = held.values
-            .filter { FillSelection.pid(fromWindowID: $0.proposal.windowId) == pid }
+            .filter { $0.pid == pid }
             .sorted { $0.receivedAt > $1.receivedAt }
         status.cachedProposals = held.count
         guard !candidates.isEmpty else {
@@ -341,6 +380,9 @@ public final class FillMachine {
             count("fill.skip.inserting")
             return emit(.publish)
         }
+        // H10: a browser's page proposals are matched against the page field the helper says has focus.
+        let pages = candidates.filter { PageWindow.isPage($0.proposal.windowId) }
+        if !pages.isEmpty { return evaluatePage(pid: pid, candidates: pages, trigger: trigger) }
         guard let field = world.focusedField(pid: pid) else { return withdraw("fieldUnreadable", pid: pid) }
         guard world.allows(pid: pid, bundleID: field.identity.bundleID) else { return withdraw("notAllowed", pid: pid) }
         guard field.selection.isEmpty else { return withdraw("selection", pid: pid) }
@@ -361,6 +403,31 @@ public final class FillMachine {
                 return present(proposed, origin: origin, field: field, trigger: trigger)
             case .skip(let reason):
                 // Report the most specific reason: a matched field outranks "nothing here".
+                if skip == .noFieldAtFocus { skip = reason }
+            }
+        }
+        withdraw(skip.rawValue, pid: pid)
+    }
+
+    /// H10: the page field the user is in, matched to a proposed field by its node key, which page proposals and the
+    /// helper's focus record share; the frame is where the record puts the field now, after any scroll.
+    func evaluatePage(pid: Int32, candidates: [Held], trigger: FillTrigger) {
+        guard let focus = world.pageFocus(pid: pid), let identity = focus.identity, let rect = focus.rect else {
+            return withdraw("pageNoFocus", pid: pid)
+        }
+        guard world.allows(pid: pid, bundleID: focus.app.bundleId) else { return withdraw("notAllowed", pid: pid) }
+        let read = FillFieldRead(identity: identity, value: focus.empty ? "" : "\u{FFFC}", selection: .caret(0), secure: false, frame: rect)
+        let focusedFrame = Frame(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height)
+        var skip = FillSelection.Skip.noFieldAtFocus
+        for candidate in candidates where candidate.proposal.windowId == focus.windowId {
+            let changed = Set(memoryChangedAt.filter { $0.value >= candidate.receivedAt }.keys)
+            let byKey = Dictionary(uniqueKeysWithValues: candidate.proposal.fields.map { ($0.key, $0.key) })
+            switch FillSelection.select(candidate.proposal, focusedFrame: focusedFrame, focusedValue: read.value, secure: false,
+                                        suppressed: suppressed, changedMemory: changed, focusedElementID: identity.elementID, bound: byKey) {
+            case .offer(let proposed, var origin):
+                if tabbed.contains(origin.proposalID) { origin.fillAll = false }
+                return present(proposed, origin: origin, field: read, trigger: trigger)
+            case .skip(let reason):
                 if skip == .noFieldAtFocus { skip = reason }
             }
         }
@@ -533,13 +600,22 @@ public final class FillMachine {
         guard case .fill(let origin) = claim.offer.kind, claim.offer.id == shownOfferID else { return emit(.publish) }
         if claim.choice.fillAll {
             // ⌘1: the helper fills the form in one run (D2-04) and reports it as a task under the
-            // proposal's id, which the activity list shows. This field's slip has nothing to wait for.
+            // proposal's id. H10: this machine shows its result, with ⌘Z, as it does a Tab's.
             emit(.fillAll(origin.proposalID))
+            helperFills[origin.proposalID] = HelperFill(origin: origin, target: claim.offer.target, field: lastFieldFrame, oneField: false, value: claim.offer.text)
             emit(.hideOffer(byTyping: false))
             emit(.count("fill.fillAll"))
             shownOfferID = nil
             shownKey = nil
             return emit(.publish)
+        }
+        if PageWindow.isPage(origin.windowID) {
+            // H10: a page field is the helper's to write (Claim.insertsText is false here); its result
+            // comes back as the task's progress (`taskProgress`).
+            emit(.fillField(proposalID: origin.proposalID, fieldKey: origin.fieldKey))
+            helperFills[FillAllRequest.fieldTask(proposalId: origin.proposalID, fieldKey: origin.fieldKey)] = HelperFill(origin: origin, target: claim.offer.target, field: lastFieldFrame, oneField: true, value: claim.offer.text)
+            tabbed.insert(origin.proposalID)
+            emit(.count("fill.pageField"))
         }
         emit(.markWorking)
         shownOfferID = nil
@@ -548,11 +624,111 @@ public final class FillMachine {
     }
 
     /// ⌘Z took the grant; the executor is already reverting. The toast stays up until its time.
+    /// H10: for a fill the helper ran (`ownsTask`), the helper reverts it: the undo is sent here.
     public func undoStarted(_ grant: UndoGrant) {
-        guard grant.taskID == nil else { return }
+        if let taskID = grant.taskID {
+            guard ownsTask(taskID) else { return }
+            emit(.undoTask(taskID))
+            count("fill.helperFill.undo")
+        }
         toast?.grantID = nil
         status.toast?.grantID = nil
         emit(.publish)
+    }
+
+    // MARK: - Fills the helper runs (H10)
+
+    /// Whether this machine asked for the run `taskID` (Tab on a page field, or ⌘1), so it shows the run's result and
+    /// its ⌘Z goes here.
+    public func ownsTask(_ taskID: String) -> Bool { helperFills[taskID] != nil }
+
+    /// The helper's progress on a fill it runs for this machine. The run's end is the toast a Tab's write gets:
+    /// "Filled 1 field from TextEdit" with ⌘Z, or why nothing was filled; its undo's end says what was cleared.
+    public func taskProgress(_ progress: TaskProgress) {
+        guard let fill = helperFills[progress.taskId] else { return }
+        let origin = fill.origin
+        let pid = fill.target.pid
+        func fields(_ n: Int) -> String { n == 1 ? "1 field" : "\(n) fields" }
+        switch progress.phase {
+        case .done:
+            let written = progress.written ?? 0
+            // A Tab's one field is reported as a native Tab's is (the helper records the use and marks the write as
+            // Caret's); ⌘1's run is the helper's own task and was never reported per field (D2-04).
+            if fill.oneField {
+                report(FillResult(
+                    at: nowMs, proposalId: origin.proposalID, windowId: origin.windowID, fieldKey: origin.fieldKey,
+                    outcome: written > 0 ? .inserted : .failed, reason: written > 0 ? nil : "nothingWritten", method: nil,
+                    valueLength: written > 0 ? UTF16Text.length(fill.value) : 0
+                ))
+            }
+            guard written > 0 else { return failHelperFill(fill, progress.taskId, caption: Self.errorCaption(nil)) }
+            let grant = UndoGrant.task(progress.taskId, target: fill.target, createdAt: clock.now)
+            let id = arbiter.showToast(grant)
+            let caption = "\(fields(written)) \(origin.toastSource)"
+            if let frame = fill.field {
+                startWatch(target: fill.target, anchors: [CGPoint(x: frame.maxX - 2, y: frame.minY + 2)], requireFocus: false)
+            }
+            showToast(
+                FillToastDraw(kind: .done, lead: "Filled", text: caption, keycap: Hint(key: "⌘Z", label: "Undo"), field: fill.field, pid: pid, source: origin.sourceCaption),
+                lifetime: grant.lifetimeSeconds, grantID: id, info: DebugState.Toast(kind: "done", caption: "Filled \(caption)", grantID: id)
+            )
+            emit(.toastSlotTaken)
+            count("fill.helperFill.done")
+            // The page moves focus on only when the user does; look again soon in case the record lags the write.
+            rereads[pid]?.cancel()
+            rereads[pid] = clock.schedule(after: Self.rereadAfterWrite, repeats: false) { [weak self] in
+                self?.rereads[pid] = nil
+                self?.evaluate(pid: pid, trigger: .other)
+            }
+        case .stopped, .paused:
+            failHelperFill(fill, progress.taskId, caption: Self.stopCaption(progress.phase == .paused ? .you : progress.stopReason))
+        case .undone:
+            helperFills[progress.taskId] = nil
+            let n = progress.restored ?? 0
+            let ok = n > 0 && (progress.notRestored ?? 0) == 0
+            if ok, fill.oneField {
+                suppressed.insert(FillSelection.suppressionKey(windowID: origin.windowID, fieldKey: origin.fieldKey, value: fill.value))
+                report(FillResult(at: nowMs, proposalId: origin.proposalID, windowId: origin.windowID, fieldKey: origin.fieldKey, outcome: .undone, reason: nil, method: nil, valueLength: 0))
+            }
+            let caption = ok ? "Cleared \(fields(n))" : "The field changed after the fill, so it was left as it is."
+            let kind: FillToastDraw.Kind = ok ? .undone : .error
+            showToast(
+                FillToastDraw(kind: kind, lead: nil, text: caption, keycap: nil, field: fill.field, pid: pid, source: origin.sourceCaption),
+                lifetime: ok ? Self.undoneLifetime : Self.errorLifetime, grantID: nil,
+                info: DebugState.Toast(kind: kind.rawValue, caption: caption, grantID: nil)
+            )
+            count("fill.helperFill.undone")
+        case .started, .skipped, .acting, .verified, .handoff:
+            break
+        }
+        emit(.publish)
+    }
+
+    /// The request for `taskID` could not be sent; no progress will come for it.
+    public func helperFillUnsent(_ taskID: String) {
+        guard let fill = helperFills[taskID] else { return }
+        failHelperFill(fill, taskID, caption: Self.errorCaption(nil))
+        emit(.publish)
+    }
+
+    func failHelperFill(_ fill: HelperFill, _ taskID: String, caption: String) {
+        helperFills[taskID] = nil
+        if fill.oneField { suppressed.insert(FillSelection.suppressionKey(windowID: fill.origin.windowID, fieldKey: fill.origin.fieldKey, value: fill.value)) }
+        showToast(
+            FillToastDraw(kind: .error, lead: nil, text: caption, keycap: nil, field: fill.field, pid: fill.target.pid, source: fill.origin.sourceCaption),
+            lifetime: Self.errorLifetime, grantID: nil, info: DebugState.Toast(kind: "error", caption: caption, grantID: nil)
+        )
+        count("fill.helperFill.failed")
+    }
+
+    /// Why a fill the helper ran stopped, in the toast's words.
+    public static func stopCaption(_ reason: TaskProgress.StopReason?) -> String {
+        switch reason {
+        case .you?: return "Caret stopped when you typed, so the rest is yours."
+        case .changed?, .mismatch?: return errorCaption("fieldContentChanged")
+        case .windowGone?, .readerRestarted?: return "The page changed, so nothing was filled."
+        default: return errorCaption(nil)
+        }
     }
 
     /// Another owner's toast took the arbiter's toast slot: this one's toast, if any, is gone.
@@ -670,7 +846,7 @@ public final class FillMachine {
     /// proposal is dropped, so no later focus change can bring one back. The helper proposes again
     /// once the gate opens. A toast already up stays: it reports a write that happened.
     public func gateClosed() {
-        for pid in Set(held.values.compactMap { FillSelection.pid(fromWindowID: $0.proposal.windowId) }) { emit(.unwatchApp(pid)) }
+        for pid in Set(held.values.map(\.pid)) { emit(.unwatchApp(pid)) }
         held = [:]
         status.cachedProposals = 0
         withdraw("gateClosed")

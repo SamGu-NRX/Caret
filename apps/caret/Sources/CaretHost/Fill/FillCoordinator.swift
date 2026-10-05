@@ -51,8 +51,26 @@ final class FillCoordinator {
     // MARK: - Events in, forwarded to the machine
 
     func receive(_ message: HelperInbound, at uptime: UInt64) {
-        guard case .fillProposal(let proposal) = message else { return }
-        machine.receive(proposal, at: uptime)
+        switch message {
+        case .fillProposal(let proposal): machine.receive(proposal, at: uptime)
+        case .taskProgress(let progress): machine.taskProgress(progress)
+        default: break
+        }
+    }
+
+    /// H10: the helper said which page field the user is in; `PageFocusSource` already holds it.
+    func pageField(_ field: PageField, at uptime: UInt64) {
+        guard let pid = Int32(exactly: field.app.pid) else { return }
+        machine.pageFieldChanged(pid: pid, at: uptime)
+    }
+
+    /// Whether ⌘Z on a toast for `taskID` is this coordinator's: a fill the helper ran for it (H10).
+    func ownsTask(_ taskID: String) -> Bool { machine.ownsTask(taskID) }
+
+    /// A fill request that never left: its run will not report, so it ends as a failed run does.
+    private func unsent(_ taskID: String) {
+        status.increment("fill.fillAllUnsent")
+        machine.helperFillUnsent(taskID)
     }
 
     func displaced(_ offer: Offer) { machine.displaced(offer) }
@@ -100,7 +118,14 @@ final class FillCoordinator {
         case .markWorking: overlay.markWorking()
         case .fillAll(let proposalId):
             let at = Int64((Date().timeIntervalSince1970 * 1000).rounded())
-            if client?.send(FillAllRequest(proposalId: proposalId, at: at)) != true { status.increment("fill.fillAllUnsent") }
+            if client?.send(FillAllRequest(proposalId: proposalId, at: at)) != true { unsent(FillAllRequest(proposalId: proposalId, at: at).taskID) }
+        case .fillField(let proposalID, let fieldKey):
+            let request = FillAllRequest(proposalId: proposalID, at: Int64((Date().timeIntervalSince1970 * 1000).rounded()), fieldKey: fieldKey)
+            if client?.send(request) != true { unsent(request.taskID) }
+        case .undoTask(let taskID):
+            if client?.send(TaskControl(taskId: taskID, action: .undo)) != true { status.increment("fill.undoTaskUnsent") }
+        case .log(let line):
+            FileHandle.standardError.write(Data(("caret: " + line + "\n").utf8))
         case .drawToast(let draw):
             overlay.showToast(
                 FillOverlay.ToastKind(rawValue: draw.kind.rawValue) ?? .error, lead: draw.lead, text: draw.text,
@@ -189,6 +214,10 @@ private final class FillWorldAdapter: FillWorld {
             lastRead = (id, element)
             return FillFieldRead(identity: field.identity, value: field.value, selection: field.selection, secure: field.secure, frame: frame, readID: id)
         }
+    }
+
+    nonisolated func pageFocus(pid: Int32) -> PageField? {
+        MainActor.assumeIsolated { PageFocusSource.current(pid: pid) }
     }
 
     nonisolated func hold(for target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool) -> SurfaceGate.Hold? {

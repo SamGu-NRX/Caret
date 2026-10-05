@@ -19,13 +19,19 @@ enum Visibility {
         // Cheapest test first: no Accessibility read for an app that is not in front.
         guard front == target.pid else { return .appNotFront }
         var focused = true
+        // H10: a page field's focus and frame are the page engine's (`PageFocusSource`); Accessibility sees none.
+        let page = PageWindow.isPage(target.windowID) ? PageFocusSource.current(pid: target.pid) : nil
         if requireFocus {
-            let live = FieldReader.readFocused(pid: target.pid)?.field.identity
-            focused = live?.elementID == target.elementID && live?.windowID == target.windowID
+            if PageWindow.isPage(target.windowID) {
+                focused = page?.key == target.elementID && page?.windowId == target.windowID
+            } else {
+                let live = FieldReader.readFocused(pid: target.pid)?.field.identity
+                focused = live?.elementID == target.elementID && live?.windowID == target.windowID
+            }
         }
         // The app's focused element as it is now, which a writing aid's decoration rings
         // (`SurfaceGate.ringsField`); read for a toast too, whose field may no longer be focused.
-        let fieldFrame = AXRead.focusedElement(pid: target.pid).flatMap(AXRead.frame(of:))
+        let fieldFrame = PageWindow.isPage(target.windowID) ? page?.rect : AXRead.focusedElement(pid: target.pid).flatMap(AXRead.frame(of:))
         let stack = windows()
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let displays = NSScreen.screens.map { Screen.ax($0.frame) }

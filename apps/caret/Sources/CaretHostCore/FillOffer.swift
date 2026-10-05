@@ -21,7 +21,7 @@ public struct FillOrigin: Equatable, Sendable {
         public var appName: String
         public var title: String
         public var bundleID: String
-        /// Parsed from the source's reader window id. Nil when the id is not `<pid>-<n>`.
+        /// The source window's process (protocol.ts FillSource.pid).
         public var pid: Int32?
 
         public init(appName: String, title: String, bundleID: String, pid: Int32?) {
@@ -201,7 +201,8 @@ public enum FillSelection {
         guard field.choice != "none", let value = field.value, !value.isEmpty else { return .skip(.answerNone) }
         let from: FillOrigin.Source
         if let source = field.source {
-            from = .window(.init(appName: source.appName, title: source.windowTitle, bundleID: source.bundleId, pid: pid(fromWindowID: source.windowId)))
+            // The source's own pid (protocol.ts FillSource.pid): a source that is a page window names no pid in its id.
+            from = .window(.init(appName: source.appName, title: source.windowTitle, bundleID: source.bundleId, pid: Int32(exactly: source.pid)))
         } else if let memory = field.memory {
             guard !changedMemory.contains(memory.id) else { return .skip(.memoryChanged) }
             from = .memory(id: memory.id)

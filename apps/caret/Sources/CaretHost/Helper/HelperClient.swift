@@ -376,6 +376,7 @@ final class HelperClient: @unchecked Sendable {
             case .pageEngine: s.pageEngine &+= 1
             case .fileConfirmReply: s.fileConfirmReplies &+= 1
             case .spend: s.spend &+= 1
+            case .pageField: s.pageFields &+= 1
             case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1
             }
         }

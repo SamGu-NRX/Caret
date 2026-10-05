@@ -44,6 +44,8 @@ public enum HelperInbound: Equatable, Sendable {
     case fileConfirmReply(FileConfirmReply)
     /// H8: the helper's model spend since it started (`HelperSpend`), shown on the debug socket.
     case spend(HelperSpend)
+    /// H10: the page field the user is in, which the host cannot read itself (`PageFocusBook`).
+    case pageField(PageField)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -73,6 +75,7 @@ public enum HelperInbound: Equatable, Sendable {
         case .pageEngine: return PageEngineState.type
         case .fileConfirmReply: return FileConfirmReply.type
         case .spend: return HelperSpend.type
+        case .pageField: return PageField.type
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -123,6 +126,8 @@ public enum HelperInbound: Equatable, Sendable {
             return .pageEngine(try JSONDecoder().decode(PageEngineState.self, from: line))
         case HelperSpend.type:
             return .spend(try JSONDecoder().decode(HelperSpend.self, from: line))
+        case PageField.type:
+            return .pageField(try JSONDecoder().decode(PageField.self, from: line))
         case RouteDecision.type:
             return .routeDecision(try JSONDecoder().decode(RouteDecision.self, from: line))
         case RoutingContext.type:

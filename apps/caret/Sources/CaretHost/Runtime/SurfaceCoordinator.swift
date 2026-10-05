@@ -82,6 +82,8 @@ final class SurfaceCoordinator {
     /// (`FieldPanelPlacement.caretLineSpot`). Keyed by the field's frame, as placements are.
     private var lastVisible: (field: CGRect, visible: CGRect)?
     private var nextReadID: UInt64 = 1
+    /// H10: the last page field read (`PageFocusSource`), which has no element: its read id and frame.
+    private var lastPageRead: (id: UInt64, frame: CGRect)?
     private var drawn: Drawn?
     private var activation: NSObjectProtocol?
     var executor: InsertionExecutor?
@@ -198,6 +200,17 @@ final class SurfaceCoordinator {
     }
 
     fileprivate func readField(pid: Int32) -> FocusedField? {
+        // H10: in a browser, the page field the page engine says has focus; Accessibility sees no web content there.
+        if let page = PageFocusSource.current(pid: pid), let identity = page.identity {
+            let id = nextReadID
+            nextReadID &+= 1
+            lastPageRead = page.rect.map { (id, $0) }
+            lastVisible = page.rect.map { ($0, $0) }
+            return FocusedField(
+                identity: identity, value: page.empty ? "" : "\u{FFFC}", selection: .caret(0), frame: page.rect,
+                window: WindowIdentity(number: nil, title: page.title), readID: id
+            )
+        }
         guard let (element, field) = FieldReader.readFocused(pid: pid) else { return nil }
         let frame = AXRead.frame(of: element)
         let id = nextReadID
@@ -213,6 +226,12 @@ final class SurfaceCoordinator {
     }
 
     fileprivate func caret(of field: FocusedField) -> CaretRead {
+        // A page field: where an empty field's caret sits, at its start, in the system font (the page's is unknown).
+        if let page = lastPageRead, page.id == field.readID {
+            let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            let empty = FieldState(identity: field.identity, value: "", selection: .caret(0), role: nil, secure: false)
+            return Self.derivedCaret(field: empty, frame: page.frame, font: font).map { .at($0) } ?? .noCaret
+        }
         guard var read = lastRead, read.id == field.readID else { return .noSnapshot }
         guard let snapshot = reader.snapshot(of: read.element) else { return .noSnapshot }
         let style = FieldStyleProbe.style(of: read.element)
@@ -870,8 +889,13 @@ private final class World: SurfaceWorld {
     var frontmostPID: Int32? { MainActor.assumeIsolated { NSWorkspace.shared.frontmostApplication?.processIdentifier } }
     func focusedField(pid: Int32) -> FocusedField? { MainActor.assumeIsolated { owner?.readField(pid: pid) } }
     func caret(of field: FocusedField) -> CaretRead { MainActor.assumeIsolated { owner?.caret(of: field) ?? .noSnapshot } }
-    func focusedIdentity(pid: Int32) -> TargetIdentity? { FieldReader.readFocused(pid: pid)?.field.identity }
-    func focusedFrame(pid: Int32) -> CGRect? { AXRead.focusedElement(pid: pid).flatMap(AXRead.frame(of:)) }
+    func focusedIdentity(pid: Int32) -> TargetIdentity? {
+        MainActor.assumeIsolated { PageFocusSource.current(pid: pid)?.identity } ?? FieldReader.readFocused(pid: pid)?.field.identity
+    }
+    func focusedFrame(pid: Int32) -> CGRect? {
+        if let page = MainActor.assumeIsolated({ PageFocusSource.current(pid: pid) }) { return page.rect }
+        return AXRead.focusedElement(pid: pid).flatMap(AXRead.frame(of:))
+    }
 
     func windowStack() -> WindowStack {
         MainActor.assumeIsolated {

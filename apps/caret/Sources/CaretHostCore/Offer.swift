@@ -111,10 +111,12 @@ public struct Claim: Equatable, Sendable {
     }
 
     /// Ghost text, fill values and writing fixes are written into the field; action lines and
-    /// pop-ups are handed to the helper.
+    /// pop-ups are handed to the helper. H10: so is a fill value for a page field, which the host
+    /// cannot see to write or check (`PageWindow`); the helper's page engine writes it.
     public var insertsText: Bool {
         switch offer.kind {
-        case .ghost, .fill: return !choice.fillAll
+        case .ghost: return !choice.fillAll
+        case .fill(let origin): return !choice.fillAll && !PageWindow.isPage(origin.windowID)
         case .writing: return rangeEdit != nil
         case .action, .popup: return false
         }
