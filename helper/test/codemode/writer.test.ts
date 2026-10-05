@@ -46,6 +46,10 @@ describe("plan prompt", () => {
     expect(GOAL_API).toContain("A field\n   * has none and is never pressed.");
     expect(GOAL_SYSTEM).toContain("fill() takes only fields; press() takes only buttons.");
     expect(GOAL_SYSTEM).toContain("Never put a value into another target because the right one is missing.");
+    // G2 live (qwen3.8, 69df243): a program picked the sender's email for Order number by a substring of its display,
+    // which names the mail's title; another drafted text into the calendar.
+    expect(GOAL_SYSTEM).toContain("Choose a value by its quoted part only.");
+    expect(GOAL_SYSTEM).toContain('takes only a listed event value (its display starts "the event"), never a draft.');
   });
 
   test("the inventory carries labels and refs, not value origins", () => {
