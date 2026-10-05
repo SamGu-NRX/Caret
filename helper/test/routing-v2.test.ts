@@ -545,6 +545,31 @@ describe("the routing coordinator", () => {
       ]);
     });
 
+    it("hands a carried task to the context that lists it, which does not let it go again (verification R2)", async () => {
+      const ev = checked();
+      const other = candidate("fill", { kind: "fillAll", workflow: undefined });
+      cands = [ev];
+      jev.holding = true;
+      jev.router1 = () => ({ choice: "write", confidence: 0.9 });
+      jev.task = () => ({ choice: "act", confidence: 0.8 });
+      show("Dear Dana. Lunch with Priya tomorrow at noon.");
+      jev.release();
+      await flush();
+      // The host's report of the same sentence end opens a kept context that also lists a route of its own.
+      cands = [ev, other];
+      coord.hostEditing({ windowId: NOTE, key: BODY(0), selection: "caret", composing: false, textRevision: "h1" }, true);
+      coord.observe();
+      jev.release();
+      await flush();
+      expect(ev.ran).toBe(1);
+      jev.holding = false;
+      jev.router1 = () => ({ choice: "abstain", confidence: 0.9 });
+      clock.advance(ROUTER1_COOLDOWN_MS);
+      await coord.idle();
+      expect(jev.routerCalls().map((r) => Object.keys(r.questions))).toEqual([["outcome"], ["task"], ["outcome"]]);
+      expect([ev.ran, ev.dropped, other.dropped]).toEqual([1, 0, 1]);
+    });
+
     it("lets a carried task go when Router 1 does not choose it (review F2)", async () => {
       await writing();
       const ev = checked();
@@ -653,6 +678,20 @@ describe("the routing coordinator", () => {
       clock.advance(1);
       await coord.idle();
       expect(jev.routerCalls()).toHaveLength(3);
+    });
+
+    it("frees a field the user left, even for a context decided with no call, so coming back is entering (verification R1)", async () => {
+      show("One. ", 0);
+      await coord.idle();
+      clock.advance(100);
+      // Focus on something that is no field, with nothing to offer: decided locally.
+      coord.onFocus({ windowId: NOTE, key: null, role: "AXGroup", editable: false });
+      coord.observe();
+      expect(decisions.at(-1)).toMatchObject({ local: "noCapability", key: null });
+      clock.advance(100);
+      show("One. ", 0);
+      await coord.idle();
+      expect(jev.routerCalls()).toHaveLength(2);
     });
   });
 

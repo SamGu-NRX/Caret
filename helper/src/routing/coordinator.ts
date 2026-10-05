@@ -221,7 +221,10 @@ export class RoutingCoordinator {
   /** The context waiting for the request slot or the cooldown; always the newest. */
   private waiting = false;
   private inflight: Promise<void> | null = null;
-  /** The field Router 1 last started in, when, and whether an answer there was used since the user entered it. */
+  /**
+   * The field the user is in, when Router 1 last started there, and whether an answer there was used since the user
+   * entered it. Cleared when a context is about another field or none (verification review R1).
+   */
   private visit: { field: string; at: number; answered: boolean } | null = null;
   private cancelTimer: (() => void) | null = null;
   private focus: FocusSeen | null = null;
@@ -331,6 +334,7 @@ export class RoutingCoordinator {
     this.waiting = false;
     this.cancelTimer?.();
     this.cancelTimer = null;
+    this.visit = null;
     this.endWrite(why);
   }
 
@@ -445,6 +449,8 @@ export class RoutingCoordinator {
 
   private open(ctx: RoutingContext, bp: Breakpoint, candidates: RouteCandidate[], prev: RoutingContext | null): void {
     const now = this.deps.now();
+    // The user left the field the cooldown was about, whether or not this context asks Router 1: coming back is entering.
+    if (this.visit !== null && this.visit.field !== fieldOf(ctx)) this.visit = null;
     if (this.waiting && this.cur !== null && !this.cur.decided) {
       this.stats.replaced++;
       this.deps.count?.("route.replaced");
@@ -645,6 +651,9 @@ export class RoutingCoordinator {
         return;
       }
       this.answered(c);
+      // The current context lists the same offer: it is this answer's now, so that context's decision does not let it
+      // go again (verification review R2).
+      this.cur?.taken.push(carried);
       // Released without touching the current context's other offers; the task itself is let go when not chosen (F2).
       if (!c.decided) this.taskAlone(c, t, carried, false);
       else if (act) this.aside(c, carried, t.confidence);
