@@ -557,6 +557,41 @@ final class MemoryBookTests: XCTestCase {
         XCTAssertEqual(rig.state.typed, [], "nothing comes back as waiting")
     }
 
+    /// H7, item 5: Skip after a Continue whose values the helper already confirmed. Skip keeps none
+    /// of them, so the book forgets exactly the entries those adds stored, and nothing else.
+    func testSkipAfterTheHelperConfirmedAContinueForgetsExactlyWhatItKept() throws {
+        let rig = try Rig()
+        rig.book.remember([TypedAbout(label: "Name", value: "Dana Whitfield")])
+        let add = try XCTUnwrap(rig.last)
+        var kept = try HelperMemoryTests.reply(5)
+        kept.requestId = add.requestId
+        let ids = kept.entries.map(\.id)
+        XCTAssertFalse(ids.isEmpty)
+        rig.book.receive(kept)
+        XCTAssertEqual(rig.state.typed, [], "confirmed: nothing waits")
+        let before = rig.sent.count
+        rig.book.dropTyped(labels: ["Name"])
+        let forgets = rig.sent.dropFirst(before).filter { $0.op == .forget }
+        XCTAssertEqual(forgets.map(\.id), ids, "a forget for each entry the add stored")
+        XCTAssertEqual(rig.sent.count - before, ids.count, "nothing else is sent")
+        rig.book.dropTyped(labels: ["Name"])
+        XCTAssertEqual(rig.sent.count - before, ids.count, "a second Skip forgets nothing twice")
+    }
+
+    /// Skip while the helper is away: the forget is owed, and sent when the link comes back.
+    func testASkipWhileTheHelperIsAwayForgetsWhenItReturns() throws {
+        let rig = try Rig()
+        rig.book.remember([TypedAbout(label: "Name", value: "Dana Whitfield")])
+        var kept = try HelperMemoryTests.reply(5)
+        kept.requestId = try XCTUnwrap(rig.last).requestId
+        rig.book.receive(kept)
+        rig.book.linkChanged(false)
+        rig.book.dropTyped(labels: ["Name"])
+        XCTAssertEqual(rig.sent.filter { $0.op == .forget }.count, 0)
+        rig.book.linkChanged(true)
+        XCTAssertEqual(rig.sent.filter { $0.op == .forget }.map(\.id), kept.entries.map(\.id))
+    }
+
     /// A value not dropped is kept as before: no forget follows its add.
     func testAnAddThatWasNotDroppedIsNotForgotten() throws {
         let rig = try Rig()

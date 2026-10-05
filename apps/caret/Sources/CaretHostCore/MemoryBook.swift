@@ -152,6 +152,11 @@ public final class MemoryBook {
     /// Adds whose typed value the user dropped (Skip) while they were on their way. Whatever the
     /// helper kept from one is forgotten when its reply comes (CodeRabbit on PR #8).
     private var droppedAdds: Set<String> = []
+    /// The entries the helper stored for each typed label it confirmed, so onboarding's Skip after
+    /// an earlier Continue can forget exactly those (`dropTyped(labels:)`).
+    private var keptFromTyped: [String: [String]] = [:]
+    /// Forgets Skip asked for that could not be written yet; sent when the link comes back.
+    private var forgetsOwed: [String] = []
     /// The last requests sent, "op:id", for the debug state.
     public private(set) var sentLog: [String] = []
 
@@ -167,6 +172,7 @@ public final class MemoryBook {
         if up {
             requestList()
             flushTyped()
+            flushForgets()
         } else {
             // The helper's answers to anything in flight are gone with the connection. What it
             // listed stays on screen, read only, until the next list.
@@ -259,6 +265,8 @@ public final class MemoryBook {
             // Dropped while it was sent: the user kept none of it, so what the helper stored goes.
             if dropped {
                 for entry in reply.entries { _ = post(HelperMemory.Request(requestId: nextId(), op: .forget, id: entry.id), op: .forget, entryId: entry.id) }
+            } else if let label = state.typed.first(where: { $0.id == p.typedId })?.label {
+                keptFromTyped[label] = reply.entries.map(\.id)
             }
             state.typed.removeAll { $0.id == p.typedId }
             requestList()
@@ -719,9 +727,20 @@ public final class MemoryBook {
         changed()
     }
 
-    /// Removes the values for these labels that have not been kept yet (Skip in onboarding).
+    /// Onboarding's Skip after an earlier Continue: keeps none of the values typed for these labels.
+    /// One still waiting or on its way is dropped (`dropTyped(_:)`); one the helper already confirmed
+    /// is forgotten, exactly the entries its add stored and nothing else (H7). The forgets' replies
+    /// update the list as any forget does; onboarding shows nothing more.
     public func dropTyped(labels: [String]) {
         for t in state.typed where labels.contains(t.label) { dropTyped(t.id) }
+        for label in labels {
+            forgetsOwed += keptFromTyped.removeValue(forKey: label) ?? []
+        }
+        flushForgets()
+    }
+
+    private func flushForgets() {
+        forgetsOwed = forgetsOwed.filter { id in !post(HelperMemory.Request(requestId: nextId(), op: .forget, id: id), op: .forget, entryId: id) }
     }
 
     private func flushTyped() {
