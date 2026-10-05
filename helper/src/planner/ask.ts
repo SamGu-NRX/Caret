@@ -142,11 +142,13 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // section of that meaning, and otherwise Caret asks which fields (B28 lead decision 1; G1's heldout2-04 filled
   // Graduation Date and LinkedIn for "just do my contact info up top"). Within the section, only the fields the
   // phrase asks for by its meaning stand without Jev (B28b lead decision 2; a "Contact information" heading can hold
-  // a Graduation Date).
+  // a Graduation Date). A maker's own section intent is read the same way: the writer's section for "do my contact
+  // info" was trusted whole because the instruction names it (B28b review).
   let bySection = false;
-  if (checked.route === "fill" && (inferredAll || listsAll || intent.scope === "all")) {
+  if (checked.route === "fill" && (inferredAll || listsAll || intent.scope === "all" || intent.scope === "section")) {
     try {
-      const n = sectionScope(instruction, checked, snap);
+      const chosen = !inferredAll && !listsAll && intent.scope === "section" ? (snap.sections.find((x) => x.ref === intent.section)?.name ?? null) : null;
+      const n = sectionScope(instruction, checked, snap, chosen);
       if (n !== null) {
         bySection = true;
         checked = n.checked;
@@ -285,13 +287,13 @@ function narrowed(checked: FillChecked, keep: (f: IntentField) => boolean, none:
 }
 
 /**
- * A whole-form fill narrowed to the section the instruction names by a section phrase (scope-words.ts), or null
- * when it uses none. `unsure` are the section's fields the phrase does not ask for by its meaning, which stand only
+ * A whole-form or section fill narrowed to the section the instruction names by a section phrase (scope-words.ts),
+ * or null when it uses none. `chosen` is the section a maker's section intent chose, which must be that one. `unsure` are the section's fields the phrase does not ask for by its meaning, which stand only
  * on Jev's yes. Throws SAYS.whichFields when the whole instruction is not a section request (scope-words.ts
  * SECTION), or a phrase means no section of this form, or more than one; SAYS.nothingToDo when that section has no
  * empty field Caret may type.
  */
-function sectionScope(instruction: string, checked: FillChecked, snap: IntentSnapshot): { checked: FillChecked; unsure: IntentField[]; section: string; said: string } | null {
+function sectionScope(instruction: string, checked: FillChecked, snap: IntentSnapshot, chosen: string | null): { checked: FillChecked; unsure: IntentField[]; section: string; said: string } | null {
   const { phrases, section, why, fits } = namedSection(instruction, snap.sections.map((s) => s.name), snap.fields[0]?.section ?? null);
   if (phrases.length === 0) return null;
   const said = phrases.map((p) => `"${p}"`).join(" and ");
@@ -310,6 +312,7 @@ function sectionScope(instruction: string, checked: FillChecked, snap: IntentSna
   if (heads.size !== 1 || heads.has(null)) throw new SaidError("unsure", SAYS.whichFields, `${said} means '${section}', and more than one part of the form is headed that`);
   const outer = sectionNode(w, [...heads.values()][0] as Node);
   if (outer !== null) throw new SaidError("unsure", SAYS.whichFields, `${said} means '${section}', which sits inside '${fieldLabelText(outer.label) ?? ""}' and may be someone else's`);
+  if (chosen !== null && chosen !== section) throw new SaidError("unsure", SAYS.whichFields, `${said} means '${section}', and the maker chose '${chosen}'`);
   const inSection = narrowed(checked, (f) => f.section === section, () => new SaidError("nothingToDo", SAYS.nothingToDo, `${said} means the section '${section}', which has no empty field Caret may type`));
   // A field is read by the label words fill reads for it (fill.ts proposeFill); one whose node is gone fits nothing.
   const meant = (f: IntentField): boolean => {

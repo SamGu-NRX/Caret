@@ -18,7 +18,7 @@
 // corpus. Every sentence they make is tested (test/scope-words.test.ts); adding a word needs a test for it.
 
 import { fieldPart } from "../fill/derive.ts";
-import { fieldKinds } from "../fill/kinds.ts";
+import { fieldKinds, words } from "../fill/kinds.ts";
 import type { ValueKind } from "../protocol.ts";
 
 /** One position in a sentence: the phrases that may stand there. */
@@ -73,14 +73,29 @@ export interface SectionPhrase {
 const CONTACT_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "url", "address"]);
 
 /**
- * Whether a field is contact information by fill's own readings of its label: a part of a name or an address
- * (fill/derive.ts fieldPart), or a kind of value (fill/kinds.ts fieldKinds) that is an email, a phone, a web link or an
- * address, and no kind that is not. "Graduation Date" (a date) is not; "LinkedIn Profile" names no kind fill knows
- * (kinds.ts matches "link" only as a whole word), so it is not either, and goes to Jev. An address part may also
- * read as an ID, since kinds.ts takes "code" and "number" for one: "ZIP code", "Unit number".
+ * The words a plain contact field's name is made of (after kinds.ts words(), which drops "your", "my" and the like):
+ * the words fieldKinds and fieldPart read a contact kind or part from, and words that only say which line or number.
+ * A name with any other word is not plainly the user's contact detail: "Emergency contact phone" is someone else's,
+ * and fieldPart reads "Family size" as a last name (B28b review). Written for those cases and common labels, not
+ * measured; a word missing here costs that field a Jev question.
+ */
+const PLAIN_CONTACT_WORDS: ReadonlySet<string> = new Set([
+  "first", "middle", "last", "given", "family", "surname", "forename", "full", "legal", "preferred", "name",
+  "email", "mail", "address", "phone", "telephone", "tel", "mobile", "cell", "number",
+  "url", "website", "web", "site", "homepage", "link",
+  "street", "line", "city", "town", "state", "province", "zip", "postal", "postcode", "code", "apt", "apartment", "unit", "suite",
+]);
+
+/**
+ * Whether a field is the user's contact information by fill's own readings of its label: a part of a name or an
+ * address (fill/derive.ts fieldPart), or a kind of value (fill/kinds.ts fieldKinds) that is an email, a phone, a web
+ * link or an address, and no kind that is not; and its name holds only PLAIN_CONTACT_WORDS. "Graduation Date" (a
+ * date) is not; "LinkedIn Profile" names no kind fill knows (kinds.ts matches "link" only as a whole word), so it is
+ * not either, and goes to Jev. An address part may also read as an ID, since kinds.ts takes "code" and "number" for
+ * one: "ZIP code", "Unit number".
  */
 export function isContactField(f: FieldWords): boolean {
-  if (!f.typed) return false;
+  if (!f.typed || !words(f.name).every((w) => PLAIN_CONTACT_WORDS.has(w))) return false;
   const kinds = fieldKinds(f.labelWords);
   const part = fieldPart(f.name);
   if ([...kinds].some((k) => !CONTACT_KINDS.has(k) && !(k === "id" && part !== null))) return false;
@@ -202,6 +217,8 @@ export const EXCLUSION_WORDS: readonly string[] = [
   "omit", "omits", "omitted", "omitting", "ignore", "ignores", "ignored", "ignoring", "avoid", "avoids", "avoiding",
   "minus", "apart", "aside", "rather", "never", "nor", "neither", "none", "nothing", "keep", "keeps", "untouched",
   "unchanged", "blank", "empty", "alone", "save for",
+  // B28b review: restrictions that put a field off or make it optional.
+  "bar", "later", "optional", "unless", "less", "sans", "w/o", "wait", "hold",
   "dont", "doesnt", "didnt", "isnt", "arent", "wasnt", "werent", "cant", "cannot", "wont", "shouldnt", "wouldnt", "couldnt", "mustnt", "neednt", "aint", "havent", "hasnt",
 ];
 
@@ -222,9 +239,10 @@ export function exclusionsIn(instruction: string): string[] {
   const found = new Set<string>();
   for (const s of [base.replace(/\p{Cf}/gu, ""), base.replace(/\p{Cf}/gu, " ")]) {
     for (const w of EXCLUSION_WORDS) {
-      // "n't" closes a word ("isn't"); every other entry stands as whole words, with any run of non-letters between them.
+      // "n't" closes a word, typed against it or apart ("isn't", "is n't", "do n 't"); every other entry stands as whole
+      // words, with any run of non-letters between them.
       const body = w.split(" ").map((x) => x.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("[^\\p{L}]+");
-      const re = w === "n't" ? /\p{L}n't(?!\p{L})/u : new RegExp(`(?<!\\p{L})${body}(?!\\p{L})`, "u");
+      const re = w === "n't" ? /n\s*'\s*t(?!\p{L})/u : new RegExp(`(?<!\\p{L})${body}(?!\\p{L})`, "u");
       if (re.test(s)) found.add(w);
     }
     if (EXCLUSION_SIGNS.test(s)) found.add("an exclusion sign");

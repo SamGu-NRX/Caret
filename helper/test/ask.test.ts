@@ -561,8 +561,7 @@ describe("a grounded whole-form scope (B28)", () => {
   const G = "com.google.Chrome/greenhouse";
   const GKEY = (s: string): string => `${G}/textfield:${s}~0`;
   /** The Greenhouse replica's text fields, under `groups` headings when given ({ heading: labels }), else under none. */
-  const greenhouse = (groups: Record<string, string[]> | null = null, title = "Apply: Software Engineer Intern"): ScreenModel => {
-    const labels = ["First Name", "Last Name", "Email", "Phone", "Graduation Date (MM/YYYY)", "LinkedIn Profile"];
+  const greenhouse = (groups: Record<string, string[]> | null = null, title = "Apply: Software Engineer Intern", labels = ["First Name", "Last Name", "Email", "Phone", "Graduation Date (MM/YYYY)", "LinkedIn Profile"]): ScreenModel => {
     // A group's key is its heading; "Outer > Inner" nests Inner's group in Outer's, and "Heading #2" is a second
     // group with the same heading.
     const groupKey = (g: string): string => `${G}/group:${g.toLowerCase()}~0`;
@@ -786,5 +785,39 @@ describe("a grounded whole-form scope (B28)", () => {
     const top = greenhouse({ "About you": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
     expect((await refusal(askG("just fill in up top", top, () => "no").run)).message).toBe(SAYS.whichFields);
     expect(written(await askG("just fill in up top", top, (q) => (q.includes("'Email'") ? "yes" : "no")).run)).toEqual([GKEY("email")]);
+  });
+
+  // B28b review (astra a8c4698935cbcfab0) on 37e2978.
+  it("B28b review: a writer's section intent for a section phrase trusts only the fields of the phrase's meaning", async () => {
+    const { jev, run } = askWith("do my contact info", greenhouse(GRAD_LAYOUT), () => "no", sectionNamed("Contact information"));
+    expect(written(await run)).toEqual([GKEY("email"), GKEY("phone")]);
+    expect(new Set(confirmed(jev))).toEqual(new Set(["Graduation Date (MM/YYYY)", "LinkedIn Profile"]));
+    const details = greenhouse({ "Your details": ["First Name", "Last Name", "Email"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
+    expect((await refusal(askWith("fill in my details", details, () => "no", sectionNamed("Your details")).run)).message).toBe(SAYS.whichFields);
+    // A writer's section the phrase does not mean is asked about.
+    expect((await refusal(askWith("do my contact info", greenhouse(CONTACT_SECTION), () => "yes", sectionNamed("Education")).run)).message).toBe(SAYS.whichFields);
+  });
+
+  it("B28b review: 'n't' apart from its verb still voids name trust", async () => {
+    for (const instruction of ["fill in the email and phone, linkedin is n't needed", "fill in the email and phone, do n’t fill linkedin"]) {
+      expect((await refusal(askWith(instruction, greenhouse(), () => "no", listOf("Email", "Phone", "LinkedIn Profile")).run)).message, instruction).toBe(SAYS.whichFields);
+    }
+  });
+
+  it.each(["Emergency contact phone", "Family size"])("B28b review: 'do my contact info' asks Jev about %j under a Contact information heading", async (label) => {
+    const m = greenhouse({ "Contact information": ["Email", label] }, undefined, ["Email", label]);
+    const { jev, run } = askG("do my contact info", m, () => "no");
+    const d = await run;
+    expect(written(d)).toEqual([GKEY("email")]);
+    expect(d.fill?.fields.map((f) => f.key)).toEqual([GKEY("email")]);
+    expect(confirmed(jev)).toEqual([label, label]);
+  });
+
+  it.each([
+    ["only email, phone later", ["Email", "Phone"]],
+    ["fill everything bar phone", ["Phone"]],
+    ["fill in the email, phone is optional", ["Email", "Phone"]],
+  ] as const)("B28b review: %j voids name trust", async (instruction, names) => {
+    expect((await refusal(askWith(instruction, greenhouse(), () => "no", listOf(...names)).run)).message).toBe(SAYS.whichFields);
   });
 });

@@ -25,6 +25,12 @@ export const REVIEWED: readonly [string, string?][] = [
   ["fill out the email and not phone"],
   ["do the contact section except phone"],
   ...BY_WORD.map(([, s]): [string] => [s]),
+  // B28b review: "n't" apart from its verb, and restrictions the lead decision's twelve words do not hold.
+  ["fill in the email and phone, linkedin is n't needed"],
+  ["fill in the email and phone, do n’t fill linkedin"],
+  ["only email, phone later"],
+  ["fill everything bar phone"],
+  ["fill in the email, phone is optional"],
   // Review 5: quote characters the quote rule missed, a restriction inside the form's title, and a period before "in"
   // that let "in my email" be read as where to copy from.
   ["fill in ＂everything＂"],

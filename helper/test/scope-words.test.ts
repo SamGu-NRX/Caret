@@ -204,6 +204,10 @@ describe("the exclusion words", () => {
     expect(exclusionsIn("fill in my e-mail")).toEqual([]);
   });
 
+  it("finds 'n't' typed apart from its verb", () => {
+    for (const s of ["phone is n't needed", "do n’t fill phone", "do n 't fill phone"]) expect(exclusionsIn(s), s).toContain("n't");
+  });
+
   it("finds none in words that only hold one", () => {
     for (const s of ["fill out the form from my note", "fill in my notes", "do the button and the phone number", "fill in my contact info", "complete this form", "fill in what you can", "known phone", "notice", "butter", "skipper's email"]) {
       expect(exclusionsIn(s), s).toEqual([]);
@@ -221,11 +225,11 @@ describe("what a section phrase asks for by its meaning", () => {
   const f = (label: string, typed = true): FieldWords => ({ labelWords: [label, null, null], name: label, typed });
 
   it("reads name parts, email, phone, links and address parts as contact information", () => {
-    for (const l of ["First Name", "Last Name", "Full name", "Email", "E-mail address", "Phone", "Mobile", "Website", "Portfolio URL", "Street address", "City", "ZIP code", "State", "Apt / Suite", "Email or phone"]) expect(isContactField(f(l)), l).toBe(true);
+    for (const l of ["First Name", "Last Name", "Full name", "Email", "E-mail address", "Phone", "Mobile", "Your phone number", "Website", "Street address", "City", "ZIP code", "State", "Apt / Suite", "Email or phone"]) expect(isContactField(f(l)), l).toBe(true);
   });
 
   it("reads anything else, a field fill knows no kind for, and a non-text control as not", () => {
-    for (const l of ["Graduation Date (MM/YYYY)", "LinkedIn Profile", "Date of birth", "School name", "Company name", "Job title", "Salary", "Notes", "Last day"]) expect(isContactField(f(l)), l).toBe(false);
+    for (const l of ["Graduation Date (MM/YYYY)", "LinkedIn Profile", "Date of birth", "School name", "Company name", "Job title", "Salary", "Notes", "Last day", "Portfolio URL", "Work email", "Emergency contact phone", "Family size", "Reference email"]) expect(isContactField(f(l)), l).toBe(false);
     expect(isContactField(f("Email", false))).toBe(false);
   });
 
