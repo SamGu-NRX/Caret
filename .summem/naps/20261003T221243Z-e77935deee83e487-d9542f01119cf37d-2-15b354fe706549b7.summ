@@ -1,1 +1,0 @@
-B19-B20: undoing a skill run resets its clean count; live Jev's first naming ask fell under NAME_CUTOFF 0.5 in 7 of 9; a per-pid listen-only tap sees posted clicks, global monitors don't; a background-only caret-fixture takes no posted click (--foreground does).

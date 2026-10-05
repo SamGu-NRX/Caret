@@ -1,1 +1,0 @@
-W1: Chrome for Testing 154 with --user-data-dir reads Native Messaging manifests only from <user-data-dir>/NativeMessagingHosts; headless Chrome refuses more than one command-line URL; chrome.runtime.getFrameId is undefined in content scripts.

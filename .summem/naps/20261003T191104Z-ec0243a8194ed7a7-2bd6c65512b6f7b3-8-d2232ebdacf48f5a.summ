@@ -1,1 +1,0 @@
-B17-B19: About values need both asks at MEMORY_CUTOFF 0.3 and WHOSE_CUTOFF 0.5; new PlanErrorCodes need a v2/host sentence; swift test ~0.4 GB (lease 2 GiB); routine evals copy new values; skill evals need offersPerHour, actIfApproved; fixture AX writes land in the cell.
