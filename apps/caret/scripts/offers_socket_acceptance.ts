@@ -36,7 +36,7 @@ import type { AskJev } from "../../../helper/src/fill/jev.ts";
 import type { HelperMessage, OfferAccept, OfferStop, TaskControl } from "../../../helper/src/protocol.ts";
 import { jevPickingText } from "../../../helper/test/builders.ts";
 import { SocketReader, loadRecording, until as untilTrue } from "../../../helper/test/socket-reader.ts";
-import { helperRouting, routedJev, routingOptions } from "./routing_option.ts";
+import { routedJev, routingHarness, routingOptions, type RoutingHarness } from "./routing_option.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
@@ -98,6 +98,8 @@ interface Session {
   sent: Stamped<HelperMessage>[];
   fromHost: Stamped<OfferAccept | OfferStop | TaskControl>[];
   hooks: { applied: (windowId: string, at: number) => boolean; tick: (at: number) => void };
+  /** The router's timers (H6, --routing live). */
+  routing: RoutingHarness;
 }
 
 async function openSession(): Promise<Session> {
@@ -106,10 +108,11 @@ async function openSession(): Promise<Session> {
   const sent: Stamped<HelperMessage>[] = [];
   const fromHost: Session["fromHost"] = [];
   let server: HelperServer | null = null;
+  const routing = routingHarness(a.routing);
   const helper = new Helper({
     store,
     askJev: routed.askJev,
-    ...helperRouting(a.routing),
+    ...routing.options,
     shadow: false,
     allowBackgroundFocus: false,
     publish: (m) => {
@@ -143,10 +146,11 @@ async function openSession(): Promise<Session> {
     applied: (windowId: string, at: number): boolean => helper.model.windows.get(windowId)?.updatedAt === at,
     tick: (at: number): void => helper.tick(at),
   };
-  return { helper, server, reader, store, dir, sent, fromHost, hooks };
+  return { helper, server, reader, store, dir, sent, fromHost, hooks, routing };
 }
 
 async function closeSession(s: Session): Promise<void> {
+  s.routing.cancel();
   s.reader.close();
   s.helper.shutdown();
   await s.server.close();

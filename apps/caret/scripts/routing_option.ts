@@ -11,9 +11,10 @@
 // The Jev key is read at call time from CARET_ENV_FILE (default: the main checkout's .env), never printed.
 import type { AskJev } from "../../../helper/src/fill/jev.ts";
 import { loadJevKey, makeJevClient } from "../../../helper/src/fill/jev.ts";
+import type { Helper } from "../../../helper/src/helper.ts";
 
-/** Live router spend per process, in dollars, after which router questions fail. H6 runs four live processes under a $0.05 limit. */
-export const SPEND_CAP_USD = 0.012;
+/** Live router spend per process, in dollars, after which router questions fail. H6 started six live processes under a $0.05 limit (two crashed before reporting), so each stops at $0.006. */
+export const SPEND_CAP_USD = 0.006;
 
 export const routingOptions = {
   routing: { type: "string", default: "off" },
@@ -55,7 +56,46 @@ export function routedJev(mode: string, fake: AskJev | null): RoutedJev {
   return { askJev, usage };
 }
 
-/** The Helper option that turns the router on. */
-export function helperRouting(mode: string): { routing?: Record<string, never> } {
-  return mode === "live" ? { routing: {} } : {};
+/**
+ * The Helper option that turns the router on, with its timers kept here (Router 1's cooldown runs on real time) so a
+ * session can wait for routing to settle and cancel what is pending before it closes the helper: Helper.shutdown does
+ * not stop the router, and a cooldown timer that fires after the stores close throws in the router's next observe.
+ */
+export interface RoutingHarness {
+  options: { routing?: { setTimer: (fn: () => void, ms: number) => () => void } };
+  /** Resolves once no router call is in flight or waiting and the work its decisions started has ended. */
+  settle: (h: Helper) => Promise<void>;
+  /** Cancels every pending router timer; call before Helper.shutdown. */
+  cancel: () => void;
+}
+
+export function routingHarness(mode: string): RoutingHarness {
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const setTimer = (fn: () => void, ms: number): (() => void) => {
+    const t = setTimeout(() => {
+      timers.delete(t);
+      fn();
+    }, ms);
+    timers.add(t);
+    return () => {
+      clearTimeout(t);
+      timers.delete(t);
+    };
+  };
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  return {
+    options: mode === "live" ? { routing: { setTimer } } : {},
+    settle: async (h) => {
+      for (let i = 0; i < 400; i++) {
+        await h.routing?.idle();
+        await h.routedSettled;
+        if (timers.size === 0) return;
+        await sleep(50);
+      }
+    },
+    cancel: () => {
+      for (const t of timers) clearTimeout(t);
+      timers.clear();
+    },
+  };
 }

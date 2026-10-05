@@ -33,7 +33,7 @@ import { Store } from "../../../helper/src/store.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type MemoryRequest, type PatternOffer } from "../../../helper/src/protocol.ts";
 import { Desk, grid, roster, type GridWindow, type ListWindow } from "../../../helper/test/scene.ts";
 import { FIXTURE_APP, MAIL_APP } from "../../../helper/test/builders.ts";
-import { helperRouting, routedJev, routingOptions } from "./routing_option.ts";
+import { routedJev, routingHarness, routingOptions, type RoutingHarness } from "./routing_option.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
@@ -74,6 +74,8 @@ interface Session {
   sent: HelperMessage[];
   /** memoryRequests as the helper received them. */
   asked: MemoryRequest[];
+  /** The router's timers (H6, --routing live): offers wait for its decision. */
+  routing: RoutingHarness;
 }
 
 async function openSession(): Promise<Session> {
@@ -83,10 +85,11 @@ async function openSession(): Promise<Session> {
   const asked: MemoryRequest[] = [];
   const desk = new Desk();
   let server: HelperServer | null = null;
+  const routing = routingHarness(a.routing);
   const helper = new Helper({
     store,
     askJev: routed.askJev,
-    ...helperRouting(a.routing),
+    ...routing.options,
     shadow: false,
     allowBackgroundFocus: false,
     publish: (m) => {
@@ -101,10 +104,11 @@ async function openSession(): Promise<Session> {
   helper.handleMemory = (m) => (asked.push(m), handle(m));
   server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(`server: ${l}`));
   await server.listen();
-  return { helper, server, desk, store, dir, sent, asked };
+  return { helper, server, desk, store, dir, sent, asked, routing };
 }
 
 async function closeSession(s: Session): Promise<void> {
+  s.routing.cancel();
   s.helper.shutdown();
   await s.server.close();
   s.helper.memory.close();
@@ -197,11 +201,12 @@ const offers = (s: Session, kind?: PatternOffer["kind"]): PatternOffer[] =>
  * roster, and the third row's prediction. A new day, because offers walked past twice in one day
  * are held there (helper/src/patterns/gate.ts IGNORED_LIMIT). Null when no new offer was made.
  */
-function sitting(s: Session, windowId: string): { value: string | undefined; window: GridWindow } | null {
+async function sitting(s: Session, windowId: string): Promise<{ value: string | undefined; window: GridWindow } | null> {
   s.desk.at += DAY;
   const before = offers(s, "loopNext").length;
   const g = grid(["Guest"], 6, windowId);
   startLoop(s, g);
+  await s.routing.settle(s.helper);
   const made = offers(s, "loopNext").slice(before);
   s.desk.close(g.windowId);
   return made.length === 0 ? null : { value: made.at(-1)!.cells[0]?.value, window: g };
@@ -226,7 +231,7 @@ const calendar = (day: number): ListWindow => ({
 const compose = (day: number): GridWindow => ({ windowId: `6160-${100 + day}`, app: MAIL_APP, title: `New message ${day}`, columns: ["Subject", "To", "Link"], rows: 1, values: new Map() });
 
 /** One day: the calendar shows the day's event, a compose window opens, three values are copied, it closes. */
-function occurrence(s: Session, day: number): PatternOffer[] {
+async function occurrence(s: Session, day: number): Promise<PatternOffer[]> {
   s.desk.at += DAY;
   const before = offers(s, "routine").length;
   const cal = calendar(day);
@@ -234,6 +239,7 @@ function occurrence(s: Session, day: number): PatternOffer[] {
   s.desk.advance(1000);
   const c = compose(day);
   s.desk.showGrid(c);
+  await s.routing.settle(s.helper);
   const opened = offers(s, "routine").slice(before);
   for (let i = 0; i < 3; i++) s.desk.fill(c, 0, i, cal.lines[i]!);
   s.desk.close(c.windowId);
@@ -272,13 +278,14 @@ try {
     // 1. About: learn, edit through the host, see the next offer change.
     const first = grid();
     startLoop(s, first);
+    await s.routing.settle(s.helper);
     const predicted = offers(s, "loopNext")[0];
     await s.helper.handleOffer({ type: "offerControl", v: PROTOCOL_VERSION, offerId: predicted!.id, action: "take" });
     s.desk.fill(first, 2, 0, "Marcus Lowe (ops)");
     const about = await hostEntry("the About entry on the host", (e) => e.kind === "about");
     check(`run ${run}: a corrected value shows on the host as an About entry`, about.says === "Guest: Marcus Lowe (ops) (from your edit)", { says: about.says });
     s.desk.close(first.windowId);
-    const before = sitting(s, "6160-3")?.value;
+    const before = (await sitting(s, "6160-3"))?.value;
     check(`run ${run}: the next chart is offered the corrected value`, before === "Marcus Lowe (ops)", { value: before });
 
     const t0 = Date.now();
@@ -289,7 +296,7 @@ try {
     editToReadBackMs.push(Date.now() - t0);
     check(`run ${run}: Edit, typing and Save on the host change the helper's entry`,
       saved.sent === true && edited.says === "Guest: Marcus Lowe, Operations (from your edit)", { sent: saved.sent, says: edited.says });
-    const after = sitting(s, "6160-4")?.value;
+    const after = (await sitting(s, "6160-4"))?.value;
     check(`run ${run}: the next offer carries the edited value`, after === "Marcus Lowe, Operations", { value: after });
     const hostOffers = await until("the offer at the host", async () => ((await state()).helper?.offers ?? 0) > 0 ? (await state()).helper!.offers : null);
     check(`run ${run}: the host received the helper's offers`, hostOffers > 0, { offers: hostOffers });
@@ -297,18 +304,19 @@ try {
     // Pause through the host: the next offer goes back to the source text; resume restores it.
     const paused = await memory(`pause ${about.id}`);
     await until("paused on the host", async () => (await memory()).book.entries.find((e) => e.id === about.id && e.status === "paused") ?? null);
-    const whilePaused = sitting(s, "6160-5")?.value;
+    const whilePaused = (await sitting(s, "6160-5"))?.value;
     const resumed = await memory(`resume ${about.id}`);
     await until("resumed on the host", async () => (await memory()).book.entries.find((e) => e.id === about.id && e.status === "active") ?? null);
-    const afterResume = sitting(s, "6160-6")?.value;
+    const afterResume = (await sitting(s, "6160-6"))?.value;
     check(`run ${run}: Pause on the host takes the value out of the next offer; Resume puts it back`,
       paused.sent === true && resumed.sent === true && whilePaused === "Marcus Lowe" && afterResume === "Marcus Lowe, Operations",
       { whilePaused, afterResume });
 
     // 2. Routine: proven over three days, offered on the fifth, forgotten through the host.
-    const quiet = [1, 2, 3, 4].flatMap((d) => occurrence(s, d));
+    const quiet: PatternOffer[] = [];
+    for (const d of [1, 2, 3, 4]) quiet.push(...(await occurrence(s, d)));
     const routine = await hostEntry("the proven routine on the host", (e) => e.kind === "routine" && e.status === "active");
-    const offered = occurrence(s, 5);
+    const offered = await occurrence(s, 5);
     check(`run ${run}: the routine is learned silently, then offered on day 5`, quiet.length === 0 && offered.length === 1,
       { quiet: quiet.length, offered: offered.map((o) => o.cells.map((c) => c.value)) });
     const asked = await memory(`forget ${routine.id}`);
@@ -316,7 +324,8 @@ try {
       !s.asked.some((m) => m.op === "forget") && (asked as unknown as { book: { confirmingForget?: string } }).book.confirmingForget === routine.id, {});
     const confirmed = await memory("confirm");
     await until("the routine gone from the host", async () => ((await memory()).book.entries.some((e) => e.id === routine.id) ? null : true));
-    const rerun = [6, 7].flatMap((d) => occurrence(s, d));
+    const rerun: PatternOffer[] = [];
+    for (const d of [6, 7]) rerun.push(...(await occurrence(s, d)));
     const helperRoutines = s.helper.handleMemory({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "check", op: "list", kind: "routine" }).entries;
     check(`run ${run}: after Forget on the host, days 6 and 7 offer nothing and nothing is relearned`,
       confirmed.sent === true && rerun.length === 0 && helperRoutines.length === 0, { rerun: rerun.length, helperRoutines: helperRoutines.length });

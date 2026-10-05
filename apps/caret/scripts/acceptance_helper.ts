@@ -23,7 +23,7 @@ import { MemoryStore } from "../../../helper/src/patterns/memory.ts";
 import { FakeCalendar } from "../../../helper/src/executor/means.ts";
 import type { AskJev, JevRequest } from "../../../helper/src/fill/jev.ts";
 import type { HelperMessage, TaskProgress } from "../../../helper/src/protocol.ts";
-import { helperRouting, routedJev } from "./routing_option.ts";
+import { routedJev, routingHarness } from "./routing_option.ts";
 
 const { values: a } = parseArgs({ options: { socket: { type: "string" }, state: { type: "string" }, calendar: { type: "string", default: "fake" }, "auth-fd": { type: "string" }, routing: { type: "string", default: "off" } } });
 // B23: the launch secret caret-screen also gets, read to its end from the descriptor the caller names
@@ -61,6 +61,7 @@ const fakeJev: AskJev = async (req: JevRequest) => {
 };
 
 const routed = routedJev(a.routing, fakeJev);
+const routing = routingHarness(a.routing);
 const tmp = mkdtempSync(join(tmpdir(), "caret-a13-helper-"));
 const store = new Store(join(tmp, "data"));
 const memory = new MemoryStore(join(tmp, "data"));
@@ -74,7 +75,7 @@ const helper = new Helper({
   store,
   memory,
   askJev: routed.askJev,
-  ...helperRouting(a.routing),
+  ...routing.options,
   shadow: false,
   allowBackgroundFocus: false,
   publish: (m: HelperMessage) => {
@@ -109,6 +110,7 @@ const dump = setInterval(write, 200);
 const stop = async (): Promise<void> => {
   clearInterval(tick);
   clearInterval(dump);
+  routing.cancel();
   write();
   helper.shutdown();
   await server?.close();

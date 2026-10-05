@@ -25,7 +25,7 @@ import type { AskJev } from "../../../helper/src/fill/jev.ts";
 import type { HelperMessage } from "../../../helper/src/protocol.ts";
 import { jevPickingText } from "../../../helper/test/builders.ts";
 import { SocketReader, loadRecording } from "../../../helper/test/socket-reader.ts";
-import { helperRouting, routedJev } from "./routing_option.ts";
+import { routedJev, routingHarness } from "./routing_option.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
@@ -122,10 +122,11 @@ async function replay(mode: "off" | "live", file: string, wanted: string, routed
   const store = new Store(join(dir, "data"));
   const sent: HelperMessage[] = [];
   let server: HelperServer | null = null;
+  const routing = routingHarness(mode);
   const helper = new Helper({
     store,
     askJev: routed.askJev,
-    ...helperRouting(mode),
+    ...routing.options,
     shadow: false,
     allowBackgroundFocus: false,
     publish: (m) => {
@@ -143,12 +144,13 @@ async function replay(mode: "off" | "live", file: string, wanted: string, routed
   const lines = loadRecording(file);
   await reader.replay(lines, { applied: (w, at) => helper.model.windows.get(w)?.updatedAt === at, tick: (at) => helper.tick(at) });
   await sleep(SETTLE_MS);
-  await helper.routing?.idle();
+  await routing.settle(helper);
   const after = (await state()).helper?.offers ?? 0;
   const offersSent: Record<string, number> = {};
   for (const m of sent) if (m.type === "popup" || m.type === "alternatives" || m.type === "action") offersSent[m.type] = (offersSent[m.type] ?? 0) + 1;
   const ats = lines.map((l) => (l as { at?: number }).at).filter((x): x is number => typeof x === "number");
   const decisions = (helper.routing?.decisions ?? []).map((d) => ({ outcome: d.outcome, by: d.by, local: d.local, route: d.route, breakpoint: d.breakpoint, confidence: d.confidence, latencyMs: d.latencyMs }));
+  routing.cancel();
   reader.close();
   helper.shutdown();
   await server.close();
