@@ -314,7 +314,7 @@ export class PatternEngine {
     const evidence = { ...h.evidence, paused: h.evidence.paused || (routine !== null && (routine.paused || routine.skillPaused)) };
     const gone = o.routineId !== null && routine === null;
     const stale = this.recheck(o) ?? this.memoryMoved(o);
-    const d = this.speakGate(o.msg.kind, o.cells, evidence, o.msg.windowId, o.msg.bundleId, h.spent);
+    const d = this.speakGate(o.msg.kind, o.cells, evidence, o.msg.windowId, o.msg.bundleId, h.spent, this.writeAction(o.msg.windowId));
     if (gone || stale !== null || !d.speak) {
       this.log(o.msg.kind, o.msg.patternId, o.msg.windowId, { speak: false, reasons: stale !== null || gone ? ["ungrounded", ...d.reasons] : d.reasons, showProbability: o.msg.showProbability });
       return;
@@ -947,7 +947,7 @@ export class PatternEngine {
     const bundleId = w.app.bundleId;
     // The gate's time covers reading its context from memory, deciding, and writing the decision log.
     const decision = this.timings.time("gate", (): Decision => {
-      const decided = this.speakGate(kind, cells, evidence, windowId, bundleId, false);
+      const decided = this.speakGate(kind, cells, evidence, windowId, bundleId, false, model.focusedWindowId === windowId ? "writeHere" : "writeElsewhere");
       const d: Decision = outranked ? { speak: false, reasons: [...decided.reasons, "outranked"], showProbability: decided.showProbability } : decided;
       this.log(kind, patternId, windowId, d);
       return d;
@@ -969,8 +969,12 @@ export class PatternEngine {
     return this.show(o);
   }
 
-  /** The speak-now gate for an offer of `kind` into `windowId`, as the user's settings and memory stand now. */
-  private speakGate(kind: OfferKind, cells: readonly Cell[], evidence: Held["evidence"], windowId: string, bundleId: string, budgetSpent: boolean): Decision {
+  /**
+   * The speak-now gate for an offer of `kind` into `windowId`, as the user's settings and memory stand now, under the
+   * permission for `action` (offer passes the one it always has; release passes writeAction's, which a request walk of
+   * a background app cannot move).
+   */
+  private speakGate(kind: OfferKind, cells: readonly Cell[], evidence: Held["evidence"], windowId: string, bundleId: string, budgetSpent: boolean, action: WriteAction): Decision {
     const model = this.deps.model;
     const memory = this.deps.memory;
     const settings = this.deps.gate.holds(familyOf(kind), this.clock);
@@ -978,7 +982,7 @@ export class PatternEngine {
       { offerKind: kind, ...evidence, grounded: evidence.grounded && cells.length > 0 && cells.every((c) => model.windows.has(c.srcWindowId)) },
       {
         shadow: this.deps.shadow(),
-        permission: memory.permission(model.focusedWindowId === windowId ? "writeHere" : "writeElsewhere"),
+        permission: memory.permission(action),
         dontOfferHere: memory.dontOffer(kind, bundleId),
         ignoredToday: memory.ignoredOn(kind, bundleId, this.clock),
         settings: budgetSpent ? settings.filter((h) => h !== "hourlyBudget") : settings,
