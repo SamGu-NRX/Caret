@@ -380,11 +380,47 @@ export function misfit(value: string, labelWords: readonly (string | null | unde
   // A bare clock time goes only in a field that takes a time: the B24 Ask scoreboard's planner wrote "8:15" into
   // Delivery instructions for "actually make the delivery 8:15 instead", whose time field is a control Caret
   // does not write (asks-dev-1).
+  const number = numberFieldMisfit(v, labelWords);
+  if (number !== null) return number;
   if (fits.size === 0) return timeShaped(v) && /:\d{2}|\d\s*[ap]\.?\s*m\b/iu.test(v) ? `'${v}' is a time, and the field does not take one` : null;
   const k = textKind(value);
   if ([...fits].some((f) => TAKES[f](k, v))) return null;
   const said = k === "text" && fits.has("city") && /\d/.test(v) ? "text with digits" : KIND_SAYS[k];
   return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is ${said}, and the field takes ${[...fits].map((f) => FIT_SAYS[f]).join(" or ")}`;
+}
+
+/**
+ * A label that asks for a number or code by name ("Order number", "Invoice no.", "Ticket #", "Confirmation code").
+ * "Reference" alone is not one: B16 and B17 put links and order numbers in one Reference field.
+ */
+export const NUMBER_FIELD = /\b(?:number|no|num|nr|code)\b|#/u;
+/** A phone number by its punctuation: a leading +, an area code in brackets, an extension, or 3-3-4 digit groups. */
+const PHONE_SHAPE = /^\+|\(\d{2,4}\)|^\d{3}[\s.-]\d{3}[\s.-]\d{4}$/u;
+/** A date with a month and a day or year: three numeric parts ("2026-10-08", "10/08/2026"), or a month name with a number. */
+const NUMERIC_DATE = /^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$/u;
+const MONTH_WORD = /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/iu;
+
+/**
+ * Why a value does not fit a field that names a number or code and no other kind, or null: an email address, a web
+ * link, a phone number or a date is never one (G2 for goals, G3 for every fill). misfit leaves ID fields unchecked
+ * otherwise. Only a clear shape counts, since an order number can be any run of digits: a phone needs phone
+ * punctuation ("5125550142" stays an order number), and a date needs two parts ("MAY" stays a promo code). Written for
+ * M2's scene 1 ("Order number" took priya.raman@northwind.example), not measured on real forms.
+ */
+export function numberFieldMisfit(value: string, labelWords: readonly (string | null | undefined)[]): string | null {
+  const s = labelWords.filter((w): w is string => typeof w === "string").join(" ").toLowerCase();
+  // The ID word must be there too ("Notes #" and "(yes/no)" name no number), and no other kind: "Phone number" is misfit's.
+  const kinds = fieldKinds(labelWords);
+  if (!NUMBER_FIELD.test(s) || kinds.size === 0 || ![...kinds].every((k) => k === "id")) return null;
+  const v = value.trim().replace(/\s+/gu, " ");
+  const k = textKind(v);
+  const said =
+    k === "email" ? "an email address"
+    : k === "url" ? "a web link"
+    : k === "phone" && PHONE_SHAPE.test(v.replace(PHONE_EXT, "")) ? "a phone number"
+    : dateShaped(v) && (NUMERIC_DATE.test(v) || (MONTH_WORD.test(v) && /\d/u.test(v))) ? "a date"
+    : null;
+  return said === null ? null : `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is ${said}, and the field takes a number or code`;
 }
 
 /** A part of an address that names a unit or a building, not a city: "Suite B", "Apt 4", "Floor 2". */

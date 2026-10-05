@@ -2,7 +2,7 @@
 // (planner/codeplan.ts, planner/validate.ts):
 //   - a field or value of a kind Caret never types (memory/sensitive.ts: card and account numbers, passwords, codes,
 //     government IDs, API keys) is never written;
-//   - the value's kind fits the field (fill/kinds.ts misfit, and numberFieldMisfit below);
+//   - the value's kind fits the field (fill/kinds.ts misfit, its number-field rule included);
 //   - Jev confirms the value belongs in the field: Ask's question in both its wordings, both answers agreeing at
 //     PLAN_CUTOFF, which is fill's FILL_CUTOFF, with fill's owner veto for a field that takes a person's details.
 // A write that fails is dropped from the plan, and the preview says why in one sentence (lower.ts). Text Caret
@@ -14,7 +14,7 @@
 // G3 (lead decision 1): a value the helper derived itself, with nothing left to choose, skips Jev's value question and
 // keeps the code checks (see markDerived). G2's live probes had Jev under the 0.75 floor on exactly these values.
 import type { AskJev } from "../fill/jev.ts";
-import { fieldKinds, misfit, textKind } from "../fill/kinds.ts";
+import { fieldKinds, misfit, NUMBER_FIELD } from "../fill/kinds.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { verifyWrites } from "../planner/codeplan.ts";
 import { secretIn } from "../planner/trace.ts";
@@ -51,26 +51,6 @@ export function isDerived(x: ValueBinding | GoalStep): boolean {
 }
 
 /**
- * A label that asks for a number or code by name ("Order number", "Invoice no.", "Ticket #", "Confirmation code").
- * misfit leaves ID words unchecked on purpose (B16 and B17 put links and order numbers in one "Reference" field), so
- * "Reference" alone is not one of these.
- */
-const NUMBER_FIELD = /\b(?:number|no|num|nr|code)\b|#/u;
-
-/**
- * Why a value does not fit a field that names a number or code and no other shape code can check, or null: an email
- * address or a web link is never a number or code. Written for M2's scene 1 ("Order number" took
- * priya.raman@northwind.example), not measured on real forms.
- */
-export function numberFieldMisfit(value: string, label: string): string | null {
-  // A label that also names a shape misfit checks ("Phone number", "Street number") is misfit's.
-  if (!NUMBER_FIELD.test(label.toLowerCase()) || ![...fieldKinds([label])].every((k) => k === "id")) return null;
-  const k = textKind(value);
-  if (k !== "email" && k !== "url") return null;
-  return `'${clip(value)}' is ${k === "email" ? "an email address" : "a web link"}, and the field takes a number or code`;
-}
-
-/**
  * Label words of a single-line field that takes free words. A draft goes in a text area whose own label names no shape
  * (an email, a link, a phone, a date, a time, an amount, an address), or in a text field whose own label has one of
  * these words and names no kind, number or name at all. The field's own label decides, never its section ("Contact
@@ -83,7 +63,7 @@ const PROSE_FIELD = /\b(?:message|body|description|describe|details|note|notes|c
  * Why code drops a write before asking Jev, or null. `written` is what the control will hold: a text field's text, a
  * select's option label, a date, a draft, or an event's title. `as` says what kind of value it is.
  *   - Every write: a field Caret never types, and a value that is one (by its shape, or by its label in the instruction).
- *   - A copied value in a text field: misfit, and numberFieldMisfit.
+ *   - A copied value in a text field: misfit, whose number-field rule (fill/kinds.ts numberFieldMisfit) every fill shares.
  *   - A draft: only a field that takes free words, never one that names a shape, a name or a number.
  */
 export function codeGate(t: TargetBinding, written: string, source: string, as: "copy" | "draft" | "event", instruction: string): string | null {
@@ -99,7 +79,7 @@ export function codeGate(t: TargetBinding, written: string, source: string, as: 
     return t.control === "text" && prose ? null : "Caret writes drafts only in a field for a message or a description";
   }
   if (as === "event" || t.control !== "text") return null;
-  return misfit(written, [t.label]) ?? numberFieldMisfit(written, t.label);
+  return misfit(written, [t.label]);
 }
 
 export interface JevWrite {
