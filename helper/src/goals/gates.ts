@@ -13,6 +13,10 @@
 //
 // G3 (lead decision 1): a value the helper derived itself, with nothing left to choose, skips Jev's value question and
 // keeps the code checks (see markDerived). G2's live probes had Jev under the 0.75 floor on exactly these values.
+//
+// P2 (plans/fast-browser.md, gate "fill"): a page plan's values were chosen by proposeFill itself, both wordings
+// agreeing at FILL_CUTOFF with the owner veto, so lowering skips Jev's question for them and keeps the code checks
+// (see markFilled). Whether verifyWrites would have dropped any such pick is measured in P2's disagreement report.
 import type { AskJev } from "../fill/jev.ts";
 import { fieldKinds, misfit, NUMBER_FIELD } from "../fill/kinds.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
@@ -48,6 +52,24 @@ export function markDerived<T extends ValueBinding | GoalStep>(x: T): T {
 /** Whether the helper itself built this value or step as derived (markDerived); a copy never is. */
 export function isDerived(x: ValueBinding | GoalStep): boolean {
   return derived.has(x);
+}
+
+/**
+ * Steps lowering gated by fill's own agreement (P2, gate "fill"): the page planner hands lowering the very value object
+ * proposeFill agreed on for each target (LowerOptions.gated), and lowering marks the step it built from that pair. By
+ * object identity, as `derived` above, so neither a program's plain data nor a copy can claim fill's gate and skip Jev.
+ */
+const filled = new WeakSet<object>();
+
+/** Marks a step lowering built from a pick fill agreed on for its target, and returns it. Only lower.ts calls this. */
+export function markFilled(x: GoalStep): GoalStep {
+  filled.add(x);
+  return x;
+}
+
+/** Whether lowering marked this step as gated by fill (markFilled); a copy never is. */
+export function isFilled(x: GoalStep): boolean {
+  return filled.has(x);
 }
 
 const WEEKDAY_OR_MONTH = /^(?:mon|tues?|wed|thu(?:rs)?|fri|sat|sun)(?:day|nesday|urday)?$|^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)$/u;

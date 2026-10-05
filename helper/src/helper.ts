@@ -90,8 +90,10 @@ import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planWithCode } from "./planner/codeplan.ts";
 import { GoalRuns } from "./goals/runs.ts";
 import { planGoal } from "./goals/propose.ts";
+import { continuationScope, planPage } from "./goals/page-planner.ts";
 import { GoalError, type DonePress } from "./goals/lower.ts";
-import type { GoalPlan, LeftItem } from "./goals/plan.ts";
+import type { GoalPlan, LeftItem, PageGoal } from "./goals/plan.ts";
+import type { FillScope } from "./fill/fill.ts";
 import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
 import { fillSays, SAYS } from "./planner/says.ts";
@@ -547,7 +549,12 @@ export class Helper {
       bind: (taskId, session) => this.bindNew(taskId, session),
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
-      replan: (r) => this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed),
+      replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed) : this.replanPage(r.goalId, r.instruction, r.page, r.owed)),
+      // P2: a page goal's one read of its page before it ends (engines/page-link.ts no longer walks after each write).
+      walk: async (windowId) => {
+        const w = this.model.windows.get(windowId);
+        if (w !== undefined) await this.readerVerb({ kind: "walk", pid: w.app.pid, windowId });
+      },
     });
     this.journal = opts.journal ?? new RecoveryJournal(opts.store.dir);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
@@ -1098,18 +1105,19 @@ export class Helper {
    * Plans `instruction` as a goal and offers its first segment to `session`, as the reply to `requestId`: a goalRequest's,
    * or an Ask's whose intent route is plan (B30), which names the window the Ask was about so the goal reads it first.
    */
-  private async offerGoal(requestId: string, instruction: string, session: string | undefined, first: string | null): Promise<GoalProgress> {
+  private async offerGoal(requestId: string, instruction: string, session: string | undefined, first: string | null, page: NonNullable<AskGoal["page"]> | null = null): Promise<GoalProgress> {
     let goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     const refuse = (says: string): GoalProgress => this.goals.refused(goalId, requestId, says);
-    // L1: no program writer by default, and no other model stands in for one (writer/startup.ts).
-    if (this.writer === null) return refuse(SAYS.noPlanWriter);
+    // L1: no program writer by default, and no other model stands in for one (writer/startup.ts). A page goal (P2) is
+    // planned by code from fill's own picks and needs none.
+    if (this.writer === null && page === null) return refuse(SAYS.noPlanWriter);
     if (this.mode !== "live") return refuse("Caret is in shadow mode");
     if (this.gate.settings.paused) return refuse("Caret is paused");
     if (!this.readerConnected) return refuse("No screen reader is connected");
     const session0 = this.readerSession;
     try {
-      const plan = await this.goalPlan(goalId, instruction, [], first);
+      const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page) : await this.goalPlan(goalId, instruction, [], first);
       if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
       this.opts.store.count("goal.proposed", 1);
       return this.goals.propose(plan, session, requestId);
@@ -1177,6 +1185,49 @@ export class Helper {
       carried,
       ...(this.opts.drafter === undefined ? {} : { drafter: this.opts.drafter }),
     });
+  }
+
+  /**
+   * A page goal (P2): the page planner over the Ask's scope on that page, fill's picks gated by fill. Throws GoalError
+   * when nothing can be offered; with no Jev, no page engine document, or no page, it refuses.
+   */
+  private pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[] } = {}): Promise<GoalPlan> {
+    const ask = this.ask;
+    const pageDocument = this.opts.pageDocument;
+    if (ask === null) throw new GoalError("unchecked", "Jev is off, so Caret can't choose this page's values");
+    if (pageDocument === undefined) throw new GoalError("nothingToDo", "no page engine is connected, so Caret can't tell which page this is");
+    return planPage(this.model, {
+      goalId,
+      instruction,
+      windowId,
+      scope: page.scope,
+      kind: page.kind,
+      section: page.section,
+      about: this.aboutValues(),
+      askJev: ask,
+      now: this.now(),
+      clock: macClock(new Date(this.now())),
+      readerSession: this.readerSession,
+      pageDocument,
+      ...(more.owed === undefined ? {} : { carried: { owed: more.owed } }),
+      ...(more.revealed === undefined ? {} : { revealed: more.revealed }),
+      ...(this.opts.newId === undefined ? {} : { fill: { newId: this.opts.newId } }),
+    });
+  }
+
+  /**
+   * A fresh plan for a page goal (P2): after a stop, the same scope on the page as it is now; after its writes revealed
+   * controls (runs.ts afterReveal), those controls alone, under the scope's sources and person. Null when none.
+   */
+  private async replanPage(goalId: string, instruction: string, page: PageGoal & { revealed?: readonly string[] }, owed: readonly LeftItem[]): Promise<GoalPlan | null> {
+    if (this.mode !== "live" || this.gate.settings.paused) return null;
+    try {
+      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
+    } catch (e) {
+      if (!(e instanceof GoalError)) throw e;
+      this.opts.warn?.(`goal ${goalId}: no fresh page plan: ${e.message}`);
+      return null;
+    }
   }
 
   /** A fresh plan for a stopped goal's instruction, from the screen as it is now; null when none can be offered. */
@@ -1268,7 +1319,7 @@ export class Helper {
         this.countAskRoute(d.route === "goal" ? "plan" : d.route);
         if (d.route === "goal") {
           if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
-          return await this.offerGoal(requestId, instruction, from, d.windowId);
+          return await this.offerGoal(requestId, instruction, from, d.windowId, d.page ?? null);
         }
         draft = d;
       } catch (e) {

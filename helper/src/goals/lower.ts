@@ -25,7 +25,8 @@ import { matchOption } from "../fill/controls.ts";
 import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
-import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
+import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived, markFilled } from "./gates.ts";
+import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
 import { saysPress } from "../planner/says.ts";
@@ -107,9 +108,10 @@ interface Dropped {
 
 /**
  * A fill as the step its control takes, or why its value does not fit the control (dropped, G2). A field that holds
- * other text, a button and a box are refused or handed off as before.
+ * other text, a button and a box are refused or handed off as before. `gated`: the value is the pick fill agreed on for
+ * this very target (P2), whose own control rules (fill.ts controlValue) already decided a box may be ticked.
  */
-function lowerFill(t: TargetBinding, v: ValueBinding): Pick<GoalStep, "kind" | "says" | "writes" | "handoff"> | Dropped {
+function lowerFill(t: TargetBinding, v: ValueBinding, gated: boolean): Pick<GoalStep, "kind" | "says" | "writes" | "handoff"> | Dropped {
   if (t.control === "calendar") {
     if (v.event === null) return { drop: `${clip(v.text)} is not an event Caret can add to a calendar` };
     return { kind: "calendar", says: `Add '${v.event.title}' to your ${t.label} calendar, ${v.event.says}`, writes: null, handoff: null };
@@ -126,19 +128,30 @@ function lowerFill(t: TargetBinding, v: ValueBinding): Pick<GoalStep, "kind" | "
     case "combobox":
     case "radio": {
       if (!page) return { kind: "handoff", says: `Caret leaves setting ${named(t)} to you`, writes: null, handoff: "unverifiable" };
+      // A web dropdown hides its options (B27): fill's pick is an option's name by its own rule (fill.ts optionName), and
+      // the page engine picks only the one option named exactly that, then verifies it (P2).
+      if (t.control === "combobox" && t.options === null && gated) {
+        if (t.value !== "" && t.value !== v.text) throw new GoalError("notEmpty", `${named(t)} already has a choice, so Caret will not change it`, t.ref);
+        return { kind: "write", says: `${t.label}: ${v.text}`, writes: v.text, handoff: null };
+      }
       const option = t.options === null ? null : matchOption(t.options, v.text);
       if (option === null) return { drop: `the field has no choice that is exactly '${clip(v.text)}'` };
       if (t.value !== "" && t.value !== option) throw new GoalError("notEmpty", `${named(t)} already has a choice, so Caret will not change it`, t.ref);
       return { kind: "write", says: `${t.label}: ${option}`, writes: option, handoff: null };
     }
-    case "date": {
+    case "date":
+    case "time": {
       if (!page) return { kind: "handoff", says: `Caret leaves setting ${named(t)} to you`, writes: null, handoff: "unverifiable" };
-      if (v.origin.kind !== "derived" || !/^\d{4}-\d{2}-\d{2}$/.test(v.text)) return { drop: `the field takes a date the value resolver read, and '${clip(v.text)}' is not one` };
-      if (t.value !== "" && t.value !== v.text) throw new GoalError("notEmpty", `${named(t)} already holds a date, so Caret will not change it`, t.ref);
+      // A date input takes YYYY-MM-DD, a date-and-time one YYYY-MM-DDTHH:MM (P2: fill's readDateTime), a time one HH:MM.
+      const shape = t.control === "time" ? /^\d{2}:\d{2}$/ : /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?$/;
+      if (v.origin.kind !== "derived" || !shape.test(v.text)) return { drop: `the field takes a ${t.control} the value resolver read, and '${clip(v.text)}' is not one` };
+      if (t.value !== "" && t.value !== v.text) throw new GoalError("notEmpty", `${named(t)} already holds a ${t.control}, so Caret will not change it`, t.ref);
       return { kind: "write", says: `${t.label}: ${v.text}`, writes: v.text, handoff: null };
     }
     case "checkbox":
-      // Fill's box rules (consent, statements, who states the fact) are not repeated for goals: the box is the user's.
+      // Fill's box rules (consent, statements, who states the fact; fill.ts controlValue) are not repeated for a writer's
+      // goal: the box is the user's. A page plan's box is ticked only as fill would tick it in a Fill all (P2).
+      if (gated && page && v.text === PAGE_CHECKED && t.value === "") return { kind: "write", says: `Tick ${named(t)}`, writes: PAGE_CHECKED, handoff: null };
       return { kind: "handoff", says: `Caret leaves ticking ${named(t)} to you`, writes: null, handoff: "unverifiable" };
     case "button":
       throw new GoalError("schema", `${named(t)} is a button, not a field`, t.ref);
@@ -172,7 +185,16 @@ export interface LowerOptions {
   ledger: SnippetLedger;
   /** Writes a stopped goal this plan replaces meant and did not make (runs.ts): those this plan leaves out are left. */
   carried?: readonly LeftItem[];
+  /**
+   * P2: by target ref, the very value object proposeFill agreed on for that target (goals/page-planner.ts). A fill of
+   * exactly that pair is gate "fill": Jev's question is not asked again, and every code check still runs. A message's
+   * recipient or subject field is dropped for such a value rather than refusing the plan (fill reads no message).
+   */
+  gated?: ReadonlyMap<string, ValueBinding>;
 }
+
+/** Segment warnings a goalProgress carries at most (protocol GoalProgress.warnings). */
+const MAX_WARNINGS = 24;
 
 /**
  * Lowers a sandbox plan against the inventory its snapshots came from. Throws GoalError with the first check that
@@ -245,8 +267,18 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         continue;
       }
       if (v.draft !== null) draftCheck(v, frozenBasis(instruction, v, inv));
-      const to = t.control === "calendar" ? false : recipientCheck(t, v, inv);
-      const lowered = lowerFill(t, v);
+      // By identity: the value object fill agreed on for this target, never a look-alike (gates.ts markFilled).
+      const byFill = o.gated?.get(t.ref) === v;
+      // Who a message goes to and its subject are the user's (B30) for fill's values too, but a fill is not a plan of
+      // the message: the field is left, not the plan refused, and only its own label makes it one (on a page, an email
+      // field near a Send button is a contact form's, not a To).
+      const pageRule = byFill ? pageRecipientRule(t) : null;
+      if (pageRule !== null) {
+        dropAs(t, pageRule, v);
+        continue;
+      }
+      const to = t.control === "calendar" || byFill ? false : recipientCheck(t, v, inv);
+      const lowered = lowerFill(t, v, byFill);
       if ("drop" in lowered) {
         dropAs(t, lowered.drop, v);
         continue;
@@ -263,9 +295,9 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       // nothing that event's sentence lacks (gates.ts eventAsAsked). Otherwise which event is a choice, and Jev answers
       // whether it is the one asked for. Any other value is the writer's pick.
       const derived = lowered.kind === "calendar" && v.event !== null && isDerived(v) && soleEvent && eventAsAsked(instruction, v.event, labelWords);
-      const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : derived ? "derived" : "jev";
+      const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : derived ? "derived" : byFill ? "fill" : "jev";
       const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered };
-      steps.push(gate === "derived" ? markDerived(step) : step);
+      steps.push(gate === "derived" ? markDerived(step) : gate === "fill" ? markFilled(step) : step);
       lastPress = null;
       continue;
     }
@@ -366,7 +398,15 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     if (!writes && !left.some((l) => l.windowId === c.windowId && l.key === c.key)) left.push(c);
   }
   steps.forEach((x, i) => (x.index = i));
-  warnings.push(...left.map((l) => `${l.says}.`));
+  // A goalProgress carries MAX_WARNINGS sentences (P2: a 40-field form can leave more): the rest are named in one.
+  const said = left.map((l) => `${l.says}.`);
+  const room = MAX_WARNINGS - warnings.length;
+  if (said.length <= room) warnings.push(...said);
+  else {
+    warnings.push(...said.slice(0, Math.max(0, room - 1)));
+    const rest = left.slice(Math.max(0, room - 1));
+    warnings.push(clip(`${rest.length} more are left to you: ${rest.map((l) => `'${l.label}'`).join(", ")}.`, 590));
+  }
   const acting = steps.filter((x) => x.kind !== "handoff");
   if (acting.length === 0) {
     // Every write was dropped: the refusal says why for each, in the preview's words.
@@ -379,6 +419,15 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   const segments = cut(draft.programDigest, steps, warnings);
   if (segments.length > MAX_SEGMENTS) throw new GoalError("tooManySegments", `the plan needs ${segments.length} separate acceptances; Caret offers at most ${MAX_SEGMENTS}`);
   return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv };
+}
+
+/** Why a fill's value may not go in a page field because the field is a message's recipient or subject (B30), or null. */
+function pageRecipientRule(t: TargetBinding): string | null {
+  if (t.control === "calendar") return null;
+  if (subjectField(t.label)) return "Caret doesn't write subject lines";
+  const r = recipientField(t.label);
+  if (r === "copy") return "Caret doesn't add people to a message. Add them yourself";
+  return r === "to" ? "Caret puts in a message's recipient only from a goal that answers it" : null;
 }
 
 /** The values the inventory lists that are the From address of a message the window titled `reply` answers. */
