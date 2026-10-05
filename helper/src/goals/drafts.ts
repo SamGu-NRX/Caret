@@ -685,6 +685,20 @@ export function restates(sentence: string, instruction: string, basis: DraftBasi
   return false;
 }
 
+/**
+ * Whether the instruction asks for a calendar event (G2): a clause that names the calendar and holds no negation or
+ * condition, in a sentence with no condition ("add this meeting to my calendar"; not "do not put it on my calendar",
+ * not "if she confirms, add it to my calendar"). A goal whose plan adds none is not done (lower.ts). Read by the same
+ * clauses and word lists as restates(); an unlisted negation makes a goal partial, never done.
+ */
+export function asksForEvent(instruction: string): boolean {
+  return clausesOf(instruction).some((clauses) => {
+    const words = clauses.map(contentWords);
+    if (words.some((c) => c.some((x) => CONDITIONS.has(x.w)))) return false;
+    return words.some((c) => c.some((x) => x.w === "calendar") && !c.some((x) => TURNS.has(x.w)));
+  });
+}
+
 const CONFIRM_WORDS = [
   (instr: string, s: string): string => `The user asked: "${instr}". Caret drafted this sentence for the user to send: "${s}". Does the sentence say only what the user asked to say, with no promise, commitment, refusal, apology, date or condition the user did not ask for?`,
   (instr: string, s: string): string => `Sentence Caret drafted: "${s}". The user's request: "${instr}". Is every promise, commitment, refusal, date and condition in this sentence one the user asked for?`,

@@ -23,7 +23,7 @@ import type { AskJev } from "../fill/jev.ts";
 import { matchOption } from "../fill/controls.ts";
 import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
-import { checkDraftText, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
+import { asksForEvent, checkDraftText, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { codeGate, jevGate, JevUnavailable } from "./gates.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
@@ -329,6 +329,11 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       if (left.some((l) => l.windowId === windowId && l.key === f.key)) continue;
       left.push({ windowId, key: f.key, label: f.label, why: "required", says: `'${f.label}' is required, and this plan leaves it empty` });
     }
+  }
+  // An event the instruction asks for and no step adds: the goal cannot be done without it.
+  if (asksForEvent(instruction) && !steps.some((x) => x.kind === "calendar") && !left.some((l) => l.windowId === "calendar")) {
+    const cal = [...inv.targets.values()].find((t) => t.control === "calendar");
+    left.push({ windowId: "calendar", key: "calendar", label: cal?.label ?? "calendar", why: "asked", says: cal === undefined ? "You asked for a calendar event, and Caret has no calendar to add it to" : `You asked for a calendar event, and this plan adds none to your '${cal.label}' calendar` });
   }
   // What a stopped goal this one replaces meant to write: the preview names each one this plan does not write.
   for (const c of o.carried ?? []) {

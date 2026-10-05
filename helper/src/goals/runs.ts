@@ -456,6 +456,11 @@ export class GoalRuns {
         if (!wrote(l.windowId, l.key)) add(l);
         continue;
       }
+      // An event the instruction asked for: any event this goal (or one it replaces) added answers it.
+      if (l.why === "asked") {
+        if (!receipts.some((r) => r.target.windowId === null)) add(l);
+        continue;
+      }
       const w = this.deps.model.windows.get(l.windowId);
       const n = w?.nodes.get(l.key);
       if (w === undefined || n === undefined) add({ ...l, says: `'${l.label}' could not be checked: ${w === undefined ? "its window closed" : "it is gone from its window"}` });

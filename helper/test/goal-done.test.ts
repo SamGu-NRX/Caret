@@ -99,6 +99,35 @@ describe("a reply's recipient", () => {
   });
 });
 
+describe("an event the instruction asks for", () => {
+  const message: CannedStep = { draft: { window: "Re: Order", target: "Message", text: "I'm in.", from: [] } };
+
+  it("is left when the plan adds none, so the goal is partial (B30 b30-04 live on gpt-oss-20b said Done)", async () => {
+    const sc = scene({ scripts: [[message]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2" });
+    const g = preview(await sc.request("add this meeting to my calendar and draft a reply to Priya saying I'm in"));
+    expect(g.warnings).toEqual(["You asked for a calendar event, and this plan adds none to your 'Caret' calendar."]);
+    const end = await runAll(sc, g.goalId);
+    expect(end?.event === "finished" && [end.outcome, end.left]).toEqual(["partial", ["You asked for a calendar event, and this plan adds none to your 'Caret' calendar"]]);
+  });
+
+  it("is not asked for when the instruction says not to add one", async () => {
+    const sc = scene({ scripts: [[message]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2" });
+    const g = preview(await sc.request("draft a reply to Priya saying I'm in. Do not put it on my calendar."));
+    expect(g.warnings).toEqual([]);
+    const end = await runAll(sc, g.goalId);
+    expect(end?.event === "finished" && end.outcome).toBe("done");
+  });
+
+  it("is done when the plan adds it", async () => {
+    const steps: CannedStep[] = [{ fill: { window: "Calendar", target: "Caret", value: "Meet Priya" } }, message];
+    const sc = scene({ scripts: [steps], windows: [mailWindow(), replyWindow()], userWindow: "6161-2" });
+    const g = preview(await sc.request("add this meeting to my calendar and draft a reply to Priya saying I'm in"));
+    expect(g.warnings).toEqual([]);
+    const end = await runAll(sc, g.goalId);
+    expect(end?.event === "finished" && [end.outcome, end.left]).toEqual(["done", []]);
+  });
+});
+
 describe("a required field the plan leaves empty", () => {
   const form = (): DeskWindow => ({ windowId: "7171-5", app: SUPPORT, title: "Support — Warranty claim", nodes: [textField(SUPPORT, "Order number"), textField(SUPPORT, "Serial number *"), textArea(SUPPORT, "Notes"), button(SUPPORT, "Save")] });
   const steps: CannedStep[] = [{ fill: { window: "Warranty claim", target: "Order number", value: "ORD-2026-48213" } }];

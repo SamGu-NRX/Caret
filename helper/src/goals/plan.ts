@@ -114,8 +114,11 @@ export interface LeftItem {
   windowId: string;
   key: string;
   label: string;
-  /** "planned": a write a goal this one replaces meant and never made (runs.ts). */
-  why: "dropped" | "planned" | "required" | "recipient";
+  /**
+   * "planned": a write a goal this one replaces meant and never made (runs.ts). "asked": an effect the instruction asks
+   * for that the plan has no step for (a calendar event, drafts.ts asksForEvent).
+   */
+  why: "dropped" | "planned" | "asked" | "required" | "recipient";
   says: string;
 }
 
