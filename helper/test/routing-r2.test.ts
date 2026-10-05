@@ -76,6 +76,14 @@ describe("the consent ledger reads only the helper's own records", () => {
     // A non-host consumer cannot turn it back on.
     l.settings([...DEFAULT_SETTINGS.roles], false);
     expect(l.verify(claim)).toBeNull();
+    // Nor keep it: once a non-host's settings rule the gate (it may lift the host's pause), no watch passes until the
+    // host speaks again (third review).
+    l.settings([...DEFAULT_SETTINGS.roles], true);
+    expect(l.verify(claim)).not.toBeNull();
+    l.settings([...DEFAULT_SETTINGS.roles], false);
+    expect(l.verify(claim)).toBeNull();
+    l.settings([...DEFAULT_SETTINGS.roles], true);
+    expect(l.verify(claim)).not.toBeNull();
   });
 });
 
@@ -234,6 +242,41 @@ describe("A5's recordings with routing on, over the socket", () => {
     host.send({ type: "memoryDocumentRequest", v: PROTOCOL_VERSION, requestId: "h", op: "save", doc, baseRevision: now.info.revision, text: now.text.replace(/Status: paused/i, "Status: active") });
     expect(await host.waitFor((m) => m.type === "memoryDocumentReply" && m.requestId === "h")).toMatchObject({ error: null });
     expect(helper.consent.verify({ kind: "skill", routineId })).not.toBeNull();
+  });
+
+  it("registers no watch when a background app's request walk marks its own window focused (third review)", async () => {
+    const host = await connect({ pid: 1, version: "host-test", host: true, capabilities: [ROUTING_CAPABILITY] });
+    host.send(settings);
+    reader = await SocketReader.connect(join(dir, "screen.sock"));
+    // The user is in the test run window, which shows work under way, and the reader has said its app is in front.
+    const lines = loadRecording("offers-pending.ndjson");
+    const job = lines[0] as Extract<(typeof lines)[number], { type: "snapshot" }>;
+    reader.send({ type: "appSwitch", v: PROTOCOL_VERSION, at: job.at - 10, from: null, to: job.app });
+    await reader.replay(lines.slice(0, 1), hooks);
+    // A request walk of a background app: its own focused window, reported focused, while the user stays put.
+    reader.send({ ...job, seq: 50, at: reader.clock + 100, reason: "request", app: { pid: 7170, bundleId: "dev.caret.directory", name: "Directory Fixture" }, window: { ...job.window, windowId: "7170-9", title: "Directory" }, focused: true, nodes: [{ key: "dev.caret.directory/standard/statictext:x~0", parent: null, role: "AXStaticText", label: "People" }], focusedKey: null });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(helper.model.windows.has("7170-9")).toBe(true);
+    expect(helper.pending.watchOf(job.window.windowId)).toBeNull();
+  });
+
+  it("resumes a paused watch only for the host: another consumer cannot bring back what makes its consent (third review)", async () => {
+    const host = await connect({ pid: 1, version: "host-test", host: true, capabilities: [ROUTING_CAPABILITY] });
+    host.send(settings);
+    reader = await SocketReader.connect(join(dir, "screen.sock"));
+    await reader.replay(loadRecording("offers-pending.ndjson").slice(0, 3), hooks);
+    const watchId = helper.pending.watchOf("5150-3") as string;
+    expect(watchId).toMatch(/^watch-/);
+    host.send({ type: "taskControl", v: PROTOCOL_VERSION, taskId: watchId, action: "pause" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(helper.tasks.get(watchId)?.state).toBe("paused");
+    const other = await connect({ pid: 2, version: "eval-script" });
+    other.send({ type: "taskControl", v: PROTOCOL_VERSION, taskId: watchId, action: "resume" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(helper.tasks.get(watchId)?.state).toBe("paused");
+    host.send({ type: "taskControl", v: PROTOCOL_VERSION, taskId: watchId, action: "resume" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(helper.tasks.get(watchId)?.state).toBe("running");
   });
 
   it("sends a learned loop's next row to Router 1, which may say no, whatever the host consented to", async () => {

@@ -51,9 +51,13 @@ export class ConsentLedger {
     this.records = records;
   }
 
-  /** A settings message arrived. Only one from a host session records the watch role. */
+  /**
+   * A settings message arrived. Only one from a host session records the watch role. One from any other session
+   * still rules the gate (it may lift the host's pause, so watches ask again), so no watch passes on consent until a
+   * host sends settings again.
+   */
   settings(roles: readonly string[], fromHost: boolean): void {
-    if (fromHost) this.hostWatchRole = roles.includes("watch");
+    this.hostWatchRole = fromHost ? roles.includes("watch") : null;
   }
 
   /** The record behind `claim`, or null when there is none. Never throws on a malformed claim: it is not consent. */

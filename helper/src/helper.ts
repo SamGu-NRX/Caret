@@ -382,6 +382,8 @@ export class Helper {
   private readonly taskDeps = new Map<string, { family: Family | null; routineId: string | null }>();
   /** Decides once per moment which producer, if any, makes an offer; null when producers trigger themselves. */
   readonly routing: RoutingCoordinator | null;
+  /** The window the user's own focus is in, from snapshots of the frontmost app (or of any app while that is unknown). */
+  private userFocus: string | null = null;
   /** What the user consented to, from the helper's own records: what passes the routers with no question (R2). */
   readonly consent: ConsentLedger;
   /** Host sessions whose hello declared ROUTING_CAPABILITY: they take route decisions, so write is legal while one is here. */
@@ -761,7 +763,14 @@ export class Helper {
         this.audit?.onSnapshot(m);
         // The user left a window: the reader's leave walk of it, or focus arriving in another window.
         if (m.reason === "leave") this.left(m.window.windowId, m.at);
-        if (prevFocused !== null && moved) this.left(prevFocused, m.at);
+        // The user's own focus moved: a background app's request walk reports its own window focused, so a snapshot
+        // of an app known not to be frontmost moves nothing (a watch it started would be consent: routing/consent.ts).
+        const background = this.model.frontmostPid !== null && this.model.frontmostPid !== m.app.pid;
+        if (m.focused && !background && this.userFocus !== m.window.windowId) {
+          const was = this.userFocus;
+          this.userFocus = m.window.windowId;
+          if (was !== null) this.left(was, m.at);
+        }
         // Where the user is decides a write's permission: a run with no Tab whose next write is no longer where they are is revoked now (B22 review).
         if (moved) this.executor.recheck();
         // Another window changed while the user is in an empty field: a source may have arrived, so fill may be listed now.
@@ -1762,6 +1771,9 @@ export class Helper {
       }
       if (m.reason !== undefined && m.action !== "pause") throw new Error(`reason ${m.reason} goes only with pause, not ${m.action}`);
       if (this.pending.has(m.taskId) || this.tasks.get(m.taskId)?.kind === "watch") {
+        // A resumed watch can resolve into consent the router acts on (routing/consent.ts): only the host's resume is
+        // the user's. In-process callers pass no session.
+        if (m.action === "resume" && session !== undefined && !this.hosts.has(session)) throw new Error(`watch ${m.taskId}: only the host resumes a watch, since what it finds passes the router as your consent`);
         this.pending.control(m.taskId, m.action);
         return null;
       }
