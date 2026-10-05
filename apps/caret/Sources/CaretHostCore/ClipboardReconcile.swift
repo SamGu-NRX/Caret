@@ -50,10 +50,30 @@ public protocol PasteboardBackend: AnyObject {
     /// Writes `items` to a private pasteboard of Caret's own, reads it back, and clears it: what a
     /// restore of exactly these items would report, before anything of the user's is touched.
     func rehearse(_ items: [PasteboardItemData]) -> PasteboardRead
-    /// Clears the pasteboard and writes `items` (none leaves it empty). Returns the change count
-    /// the clear produced, which a write by anyone else between the caller's check and this call
-    /// would have moved past `expected + 1`.
-    func replace(with items: [PasteboardItemData]) -> Int
+    /// Clears the pasteboard and writes `items` (none leaves it empty), and says what happened.
+    func replace(with items: [PasteboardItemData]) -> PasteboardWrite
+}
+
+/// What one `PasteboardBackend.replace` did.
+public struct PasteboardWrite: Equatable, Sendable {
+    /// The change count the clear produced. A write by anyone else between the caller's last check
+    /// and the clear moves it past `checked + 1`.
+    public var cleared: Int
+    /// The pasteboard took every item (`NSPasteboard.writeObjects` said yes, or there were none).
+    public var written: Bool
+    /// The change count once the items were written. Writing does not move the count
+    /// (`GeneralPasteboardTests` pins this), so anything but `cleared` means someone else wrote
+    /// between the clear and the end of the write.
+    public var countAfter: Int
+
+    public init(cleared: Int, written: Bool = true, countAfter: Int? = nil) {
+        self.cleared = cleared
+        self.written = written
+        self.countAfter = countAfter ?? cleared
+    }
+
+    /// The write landed whole and nobody else wrote in between.
+    public var whole: Bool { written && countAfter == cleared }
 }
 
 /// A read of the user's clipboard that passed `ReconcilingClipboard.check`. Only the check makes
@@ -87,10 +107,13 @@ public struct ClipboardSnapshot: Equatable, Sendable {
 /// read of the general pasteboard listed one item where the pasteboard held two, the second a file
 /// URL. Caret pasted, put back the one item it had, and reported `restored`.
 ///
-/// Known limit: NSPasteboard has no compare-and-swap, so a copy made in the instant between a count
+/// Every key the paste posts asks `mayPost` first: once Caret has written, a ⌘V is posted only while
+/// the pasteboard still holds Caret's item, since after the user's copy it would paste theirs.
+///
+/// Known limits: NSPasteboard has no compare-and-swap, so a copy made in the instant between a count
 /// check and the clear after it (two adjacent calls on one thread) is overwritten. The clear's own
 /// count shows that it happened, and the outcome is `notRestored` naming it; nothing can bring that
-/// copy back.
+/// copy back. And the app reads the pasteboard when it handles the ⌘V, after `mayPost` said yes.
 public final class ReconcilingClipboard {
     public enum Outcome: Equatable, Sendable {
         /// The snapshot is back, and a fresh read matched it type for type and byte for byte.
@@ -189,7 +212,11 @@ public final class ReconcilingClipboard {
     /// Where `now` differs from `expected`, entry by entry ("item 2: missing (public.file-url)",
     /// "item 1: com.example.private: 4 bytes came back as 0 different bytes", "pasteboard:
     /// public.rtf: missing"). Empty when every item came back with the same types in the same order
-    /// and the same bytes, and the pasteboard reports the same types and file URLs.
+    /// and the same bytes, and the pasteboard reports the same set of types and file URLs.
+    ///
+    /// Each item's types are compared in order, since an item lists its forms from richest to
+    /// poorest. The pasteboard's own list is compared as a set: apps pick a type by their own order
+    /// of preference (`availableType(from:)`), so its order carries nothing a restore must keep.
     public static func differences(expected: PasteboardRead, now: PasteboardRead) -> [String] {
         var out: [String] = []
         if now.changeCount != now.changeCountAfter {
@@ -235,10 +262,12 @@ public final class ReconcilingClipboard {
     /// What the next restore must report as lost whatever it finds: a copy overwritten by Caret's own
     /// write.
     private var overwritten: [String] = []
-    /// Why the last arming or write refused. While non-empty, `writeOwn` writes nothing, so the
-    /// pasteboard keeps the user's contents untouched, and no paste may be posted.
+    /// Why the last arming or write refused, or why posting stopped. While non-empty, `writeOwn`
+    /// writes nothing and `mayPost` is false. The one write after a refusal is `restore` putting the
+    /// user's snapshot back over Caret's own item.
     public private(set) var refused: [String] = []
-    /// The change count Caret's own write produced.
+    /// The change count of Caret's own clear, once it has written over the armed snapshot. Until the
+    /// restore, the snapshot is pending and nothing may replace it.
     public private(set) var ownCount: Int?
 
     public init(backend: PasteboardBackend) { self.backend = backend }
@@ -251,10 +280,11 @@ public final class ReconcilingClipboard {
     }
 
     /// Takes `snapshot` for the next paste, or refuses with a reason when the pasteboard has changed
-    /// since it was read. Call immediately before the paste.
+    /// since it was read. Call immediately before the paste. While a write waits for its restore,
+    /// it refuses and keeps that write's snapshot.
     public func arm(_ snapshot: ClipboardSnapshot) {
+        guard ownCount == nil else { return latch("a write is still waiting for its restore") }
         overwritten = []
-        ownCount = nil
         guard backend.changeCount == snapshot.read.changeCount else {
             armed = nil
             refused = ["the pasteboard changed after Caret checked it (count \(snapshot.read.changeCount) to \(backend.changeCount))"]
@@ -264,18 +294,44 @@ public final class ReconcilingClipboard {
         refused = []
     }
 
-    /// Ends any armed paste without writing: the next `restore` reports `notWritten`.
+    /// Ends an armed paste that has not written: the next `restore` reports `notWritten`. While a
+    /// write waits for its restore, it only stops posting and keeps that write's snapshot.
     public func disarm(_ reason: String) {
+        guard ownCount == nil else { return latch(reason) }
         armed = nil
         refused = [reason]
     }
 
+    /// Whether a key may be posted to the target now: an armed snapshot, no refusal, and, once Caret
+    /// has written, the pasteboard still at Caret's count. A ⌘V after someone else's copy would paste
+    /// their contents into the field. The first false latches, so nothing later is posted either.
+    /// What remains: the app reads the pasteboard when it handles the ⌘V, after this check.
+    public func mayPost() -> Bool {
+        guard refused.isEmpty, armed != nil else { return false }
+        guard let own = ownCount else { return true }
+        let now = backend.changeCount
+        guard now == own else {
+            latch("the pasteboard changed after Caret wrote its own item (count \(own) to \(now)); nothing more is posted")
+            return false
+        }
+        return true
+    }
+
+    private func latch(_ reason: String) {
+        if refused.isEmpty { refused = [reason] }
+    }
+
     /// Writes `text` as Caret's own item over the armed snapshot. Returns the change count it
-    /// produced, or nil when nothing was written or a copy was overwritten: no paste may be posted.
+    /// produced, or nil when nothing was written, the write did not land whole, or a copy was
+    /// overwritten: no paste may be posted.
     @discardableResult
     public func writeOwn(_ text: String) -> Int? {
+        guard ownCount == nil else {
+            latch("a write is still waiting for its restore")
+            return nil
+        }
         guard refused.isEmpty, let armed else {
-            if refused.isEmpty { refused = ["no checked snapshot was armed"] }
+            latch("no checked snapshot was armed")
             return nil
         }
         // Anyone's write since the check would be overwritten by Caret's.
@@ -287,18 +343,29 @@ public final class ReconcilingClipboard {
         var entries: [(type: String, data: Data)] = [(Self.plainText, Data(text.utf8))]
         for marker in Self.markerTypes { entries.append((marker, Data())) }
         // The clear's own count, never one read afterwards: a copy made between the write and a later
-        // read would otherwise be taken for Caret's and overwritten by the restore (A17 review). Writing
-        // the items does not move the count (GeneralPasteboardTests pins this).
-        let count = backend.replace(with: [PasteboardItemData(entries)])
-        ownCount = count
-        guard count == armed.read.changeCount + 1 else {
+        // read would otherwise be taken for Caret's and overwritten by the restore (A17 review).
+        let write = backend.replace(with: [PasteboardItemData(entries)])
+        // From the clear on, the snapshot must go back, whatever else happened.
+        ownCount = write.cleared
+        if write.cleared != armed.read.changeCount + 1 {
             // Someone wrote in the instant between the count check and the clear, and Caret's clear
             // took it. The snapshot still goes back; the copy is reported lost, and nothing is pasted.
-            overwritten = ["a copy made as Caret wrote its own item was overwritten (count \(armed.read.changeCount) to \(count - 1))"]
+            overwritten.append("a copy made as Caret wrote its own item was overwritten (count \(armed.read.changeCount) to \(write.cleared - 1))")
+        }
+        if write.countAfter != write.cleared {
+            // Someone wrote between Caret's clear and the end of its write: their copy may hold
+            // Caret's item too, so Caret cannot say it is intact.
+            overwritten.append("a copy made while Caret wrote its own item may hold Caret's text (count \(write.cleared) to \(write.countAfter))")
+        }
+        if !overwritten.isEmpty {
             refused = overwritten
             return nil
         }
-        return count
+        guard write.written else {
+            refused = ["the pasteboard did not take Caret's own item"]
+            return nil
+        }
+        return write.cleared
     }
 
     /// Puts the armed snapshot back if the pasteboard still holds Caret's write, then reads it afresh
@@ -312,12 +379,19 @@ public final class ReconcilingClipboard {
         }
         guard let own = ownCount, let armed else { return .notWritten }
         guard backend.changeCount == own else { return overwritten.isEmpty ? .skippedUserCopied : .notRestored(lost: overwritten) }
-        let cleared = backend.replace(with: armed.read.items)
+        let write = backend.replace(with: armed.read.items)
         var lost = overwritten
-        if cleared != own + 1 { lost.append("a copy made as Caret restored the clipboard was overwritten (count \(own) to \(cleared - 1))") }
-        // An independent fresh read, never the restore's own bookkeeping: a count says nothing about
-        // what an owner's pasteboard type gives back.
-        lost += Self.differences(expected: armed.read, now: backend.read())
+        if write.cleared != own + 1 { lost.append("a copy made as Caret restored the clipboard was overwritten (count \(own) to \(write.cleared - 1))") }
+        if !write.written { lost.append("the pasteboard did not take the saved clipboard back") }
+        // A fresh read, never the restore's own bookkeeping: a count says nothing about what an
+        // owner's pasteboard type gives back. It must be of the restore's own write; after anyone
+        // else's, it says nothing about the restore.
+        let now = backend.read()
+        if now.changeCount != write.cleared {
+            lost.append("the pasteboard changed before the restore could be checked (count \(write.cleared) to \(now.changeCount))")
+        } else {
+            lost += Self.differences(expected: armed.read, now: now)
+        }
         return lost.isEmpty ? .restored : .notRestored(lost: lost)
     }
 }

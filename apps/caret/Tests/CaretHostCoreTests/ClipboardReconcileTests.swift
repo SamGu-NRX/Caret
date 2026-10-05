@@ -15,6 +15,12 @@ final class ClipboardReconcileTests: XCTestCase {
         var fileURLs = 0
         /// Runs inside `replace`, before the clear: someone else's write in that instant.
         var beforeClear: (() -> Void)?
+        /// Runs inside `replace`, between the clear and the write.
+        var duringWrite: (() -> Void)?
+        /// Runs once `replace` has returned its result: someone else's write right after it.
+        var afterReplace: (() -> Void)?
+        /// The next `replace` clears but the items are not taken.
+        var failWrite = false
         /// Runs in the middle of a read: someone else's write while Caret reads.
         var duringRead: (() -> Void)?
         /// Types a write to this pasteboard keeps differently: dropped, or given other bytes, as an
@@ -56,14 +62,24 @@ final class ClipboardReconcileTests: XCTestCase {
             return PasteboardRead(changeCount: 0, types: Self.reported(back), items: back)
         }
 
-        func replace(with items: [PasteboardItemData]) -> Int {
+        func replace(with items: [PasteboardItemData]) -> PasteboardWrite {
             beforeClear?()
             beforeClear = nil
             changeCount += 1
-            self.items = kept(items)
+            let cleared = changeCount
+            self.items = []
             hidden = []
             fileURLs = 0
-            return changeCount
+            duringWrite?()
+            duringWrite = nil
+            let written = !failWrite
+            failWrite = false
+            if written { self.items += kept(items) }
+            defer {
+                afterReplace?()
+                afterReplace = nil
+            }
+            return PasteboardWrite(cleared: cleared, written: written, countAfter: changeCount)
         }
 
         /// The user copies.
@@ -384,6 +400,103 @@ final class ClipboardReconcileTests: XCTestCase {
         XCTAssertEqual(clipboard.refused, ["no checked snapshot was armed"])
         XCTAssertEqual(pb.items, [rich])
         XCTAssertEqual(clipboard.restore(), .notWritten)
+    }
+
+    // MARK: - H7b review: ownership after the write, and pending writes
+
+    /// The user copies after Caret's write and before KeyType posts ⌘V: the ⌘V would paste their
+    /// copy into the field. `mayPost` says no from then on, and their copy stays.
+    func testNoKeyIsPostedOnceSomeoneElseWroteAfterCaret() {
+        let pb = FakePasteboard()
+        pb.items = [rich]
+        let clipboard = ReconcilingClipboard(backend: pb)
+        XCTAssertNotNil(paste(clipboard))
+        XCTAssertTrue(clipboard.mayPost())
+        let theirs = item([("public.utf8-plain-text", "copied before the paste")])
+        pb.copy(theirs)
+        XCTAssertFalse(clipboard.mayPost())
+        XCTAssertEqual(clipboard.refused, ["the pasteboard changed after Caret wrote its own item (count 101 to 102); nothing more is posted"])
+        XCTAssertEqual(clipboard.restore(), .skippedUserCopied)
+        XCTAssertEqual(pb.items, [theirs])
+    }
+
+    /// Before Caret writes, keys (a backspace KeyType sends first) may be posted only with an armed
+    /// snapshot.
+    func testKeysBeforeTheWriteNeedAnArmedSnapshot() {
+        let pb = FakePasteboard()
+        pb.items = [rich]
+        let clipboard = ReconcilingClipboard(backend: pb)
+        XCTAssertFalse(clipboard.mayPost(), "nothing armed")
+        guard case .pasteable(let snapshot) = clipboard.check() else { return XCTFail("refused") }
+        clipboard.arm(snapshot)
+        XCTAssertTrue(clipboard.mayPost())
+    }
+
+    /// The pasteboard clears but does not take Caret's item: nothing is pasted, and the snapshot goes
+    /// back over the emptied pasteboard.
+    func testAWriteThePasteboardDoesNotTakePostsNothingAndPutsTheSnapshotBack() {
+        let pb = FakePasteboard()
+        pb.items = [rich]
+        let clipboard = ReconcilingClipboard(backend: pb)
+        guard case .pasteable(let snapshot) = clipboard.check() else { return XCTFail("refused") }
+        clipboard.arm(snapshot)
+        pb.failWrite = true
+        XCTAssertNil(clipboard.writeOwn("Lumen Labs"))
+        XCTAssertEqual(clipboard.refused, ["the pasteboard did not take Caret's own item"])
+        XCTAssertFalse(clipboard.mayPost())
+        XCTAssertEqual(clipboard.restore(), .restored)
+        XCTAssertEqual(pb.items, [rich])
+    }
+
+    /// Someone copies between Caret's clear and the end of its write: their copy may hold Caret's
+    /// item as well, so nothing is pasted and Caret does not call their copy intact.
+    func testACopyBetweenCaretsClearAndWriteIsNotCalledIntact() {
+        let pb = FakePasteboard()
+        pb.items = [rich]
+        let clipboard = ReconcilingClipboard(backend: pb)
+        guard case .pasteable(let snapshot) = clipboard.check() else { return XCTFail("refused") }
+        clipboard.arm(snapshot)
+        pb.duringWrite = { pb.copy(self.item([("public.utf8-plain-text", "copied mid-write")])) }
+        XCTAssertNil(clipboard.writeOwn("Lumen Labs"))
+        XCTAssertFalse(clipboard.mayPost())
+        XCTAssertEqual(clipboard.restore(), .notRestored(lost: ["a copy made while Caret wrote its own item may hold Caret's text (count 101 to 102)"]))
+    }
+
+    /// A second write, or an arming or disarming, while a write waits for its restore keeps that
+    /// write's snapshot: the restore still puts it back.
+    func testAPendingWritesSnapshotCannotBeDropped() {
+        let pb = FakePasteboard()
+        pb.items = [rich]
+        let clipboard = ReconcilingClipboard(backend: pb)
+        XCTAssertNotNil(paste(clipboard))
+        XCTAssertNil(clipboard.writeOwn("again"))
+        guard case .pasteable(let other) = clipboard.check() else { return XCTFail("refused") }
+        clipboard.arm(other)
+        clipboard.disarm("stopped")
+        XCTAssertEqual(clipboard.refused, ["a write is still waiting for its restore"])
+        XCTAssertFalse(clipboard.mayPost())
+        XCTAssertEqual(clipboard.restore(), .restored)
+        XCTAssertEqual(pb.items, [rich], "the first snapshot is back")
+    }
+
+    /// Someone copies right after the restore and before its check: the check cannot vouch for the
+    /// restore, so it is not called `restored`.
+    func testACopyBeforeTheRestoreIsCheckedIsNotCalledRestored() {
+        let pb = FakePasteboard()
+        pb.items = [rich]
+        let clipboard = ReconcilingClipboard(backend: pb)
+        paste(clipboard)
+        pb.afterReplace = { pb.copy(self.item([("public.utf8-plain-text", "copied after the restore")])) }
+        XCTAssertEqual(clipboard.restore(), .notRestored(lost: ["the pasteboard changed before the restore could be checked (count 102 to 103)"]))
+    }
+
+    /// The pasteboard's own list of types is compared as a set; an item's types in order.
+    func testTypeOrderMattersWithinAnItemOnly() {
+        let a = PasteboardItemData([("public.rtf", Data([1])), ("public.utf8-plain-text", Data([2]))])
+        let b = PasteboardItemData([("public.utf8-plain-text", Data([2])), ("public.rtf", Data([1]))])
+        let read = { (items: [PasteboardItemData], types: [String]) in PasteboardRead(changeCount: 1, types: types, items: items) }
+        XCTAssertEqual(ReconcilingClipboard.differences(expected: read([a], ["public.rtf", "x"]), now: read([a], ["x", "public.rtf"])), [])
+        XCTAssertEqual(ReconcilingClipboard.differences(expected: read([a], []), now: read([b], [])), ["item 1: types came back in another order"])
     }
 
     func testNothingIsRestoredWhenCaretNeverWrote() {

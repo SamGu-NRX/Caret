@@ -27,7 +27,7 @@ final class GeneralPasteboard: PasteboardBackend {
         return back
     }
 
-    func replace(with items: [PasteboardItemData]) -> Int { Self.write(items, to: pasteboard) }
+    func replace(with items: [PasteboardItemData]) -> PasteboardWrite { Self.write(items, to: pasteboard) }
 
     /// Everything `pasteboard` reports. A type's data is read as data and nothing else: a type whose
     /// data reads as nil is unreadable, never filled in from its string form, which a restore would
@@ -52,16 +52,17 @@ final class GeneralPasteboard: PasteboardBackend {
     }
 
     /// Clears `pasteboard` and writes fresh copies of `items`, so a restore survives the paste having
-    /// read the originals. Returns the clear's change count. An item with nothing readable is never
-    /// written here: `ReconcilingClipboard.check` refuses such contents before any write.
-    private static func write(_ items: [PasteboardItemData], to pasteboard: NSPasteboard) -> Int {
-        let cleared = pasteboard.clearContents()
+    /// read the originals. The copies are made before the clear, so the clear and the write are two
+    /// adjacent calls. An item with nothing readable is never written here:
+    /// `ReconcilingClipboard.check` refuses such contents before any write.
+    private static func write(_ items: [PasteboardItemData], to pasteboard: NSPasteboard) -> PasteboardWrite {
         let fresh = items.map { item -> NSPasteboardItem in
             let copy = NSPasteboardItem()
             for entry in item.entries { copy.setData(entry.data, forType: NSPasteboard.PasteboardType(entry.type)) }
             return copy
         }
-        if !fresh.isEmpty { pasteboard.writeObjects(fresh) }
-        return cleared
+        let cleared = pasteboard.clearContents()
+        let written = fresh.isEmpty || pasteboard.writeObjects(fresh)
+        return PasteboardWrite(cleared: cleared, written: written, countAfter: pasteboard.changeCount)
     }
 }

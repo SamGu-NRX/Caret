@@ -47,7 +47,7 @@ final class GeneralPasteboardTests: XCTestCase {
 
         func rehearse(_ items: [PasteboardItemData]) -> PasteboardRead { inner.rehearse(items) }
 
-        func replace(with items: [PasteboardItemData]) -> Int {
+        func replace(with items: [PasteboardItemData]) -> PasteboardWrite {
             inner.replace(with: items.map { PasteboardItemData($0.entries.filter { !drops.contains($0.type) }) })
         }
     }
@@ -99,9 +99,11 @@ final class GeneralPasteboardTests: XCTestCase {
     func testAClearMovesTheCountByOneAndWritingDoesNot() {
         let backend = GeneralPasteboard(named)
         let before = backend.changeCount
-        let cleared = backend.replace(with: [PasteboardItemData([(type: "public.utf8-plain-text", data: Data("x".utf8))])])
-        XCTAssertEqual(cleared, before + 1)
-        XCTAssertEqual(backend.changeCount, cleared)
+        let write = backend.replace(with: [PasteboardItemData([(type: "public.utf8-plain-text", data: Data("x".utf8))])])
+        XCTAssertEqual(write.cleared, before + 1)
+        XCTAssertTrue(write.written)
+        XCTAssertEqual(write.countAfter, write.cleared)
+        XCTAssertEqual(backend.changeCount, write.cleared)
     }
 
     /// Rich text, HTML, plain text, a private type and an image item: the rehearsal on Caret's own

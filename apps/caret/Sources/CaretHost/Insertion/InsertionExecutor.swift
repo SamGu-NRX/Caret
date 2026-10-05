@@ -323,11 +323,11 @@ final class InsertionExecutor: @unchecked Sendable {
     ) -> (step: WriteFallback.Step, stray: String?, clipboard: ReconcilingClipboard.Outcome?) {
         let pid = claim.offer.target.pid
         // Only a checked snapshot may be pasted over, and only while the pasteboard is still at its
-        // count. Once the clipboard refuses, nothing more is posted: no ⌘V (which would paste the
-        // user's own contents) and no delete before or after it.
+        // count, or at Caret's own once it has written. Once the clipboard refuses, nothing more is
+        // posted: no ⌘V (which would paste the user's own contents) and no delete before or after it.
         let clipboardState = pasteboard.clipboard
         if let snapshot { clipboardState.arm(snapshot) } else { clipboardState.disarm("the paste route was taken without a checked clipboard") }
-        let synthesizer = PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: { stillTarget() && clipboardState.refused.isEmpty })
+        let synthesizer = PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: { stillTarget() && clipboardState.mayPost() })
         let inserter = PasteboardCompletionInserter(planner: planner, synthesizer: synthesizer, pasteboard: pasteboard, restoreDelayNanoseconds: 0)
         let context = contexts.withLock { list in list.last { $0.0 == claim.offer.id }?.1 }
             ?? TextFieldContext(beforeCursor: "", target: AppTarget(bundleIdentifier: claim.offer.target.bundleID, appName: ""))
