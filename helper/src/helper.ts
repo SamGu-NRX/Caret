@@ -18,6 +18,9 @@ import {
   type ActivityReply,
   type ActivityRequest,
   type FillAll,
+  type GoalAccept,
+  type GoalProgress,
+  type GoalRequest,
   type FillProposal,
   type FillResult,
   type FillRequest,
@@ -80,6 +83,11 @@ import { offerField } from "./offers/field.ts";
 import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
 import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planWithCode } from "./planner/codeplan.ts";
+import { GoalRuns } from "./goals/runs.ts";
+import { planGoal } from "./goals/propose.ts";
+import { GoalError } from "./goals/lower.ts";
+import type { GoalPlan } from "./goals/plan.ts";
+import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
 import { fillSays } from "./planner/says.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
@@ -174,6 +182,11 @@ export interface HelperOptions {
   settings?: UserSettings;
   /** The calendar event cards add to; "Caret" when absent. The calendar port writes only to a calendar it created (B16). */
   eventCalendar?: string;
+  /**
+   * D2-06: a page window's document generation (its frames' documents and navigations), so a goal plan that a reload
+   * overtook stops as a reload. main.ts reads it from the page engines; absent, a reload stops a goal as a changed field.
+   */
+  pageDocument?: (windowId: string) => string | null;
   /** Fault-injection seam for the planner evaluation; see PlanTaskOptions.beforeCheck. Never set in normal use. */
   plannerHooks?: Pick<PlanTaskOptions, "beforeCheck">;
   /**
@@ -297,6 +310,8 @@ export class Helper {
   readonly pending: PendingWatcher;
   private readonly socketLink: SocketReaderLink | null;
   private readonly changeListeners = new Set<(changes: readonly Change[]) => void>();
+  /** Accepted goal plans, one segment at a time (D2-06, goals/runs.ts). */
+  readonly goals: GoalRuns;
   /** The read-only audit, when the helper runs one. */
   readonly audit: Audit | null;
   /** Field values of a window just before a focus walk replaced them, for the shadow logger. */
@@ -429,20 +444,16 @@ export class Helper {
       calendar: opts.calendar === "reader" ? new ReaderCalendar(opts.readerLink ?? (this.socketLink as SocketReaderLink)) : (opts.calendar ?? null),
       urls: opts.urls ?? null,
       askJev: this.ask,
-      publish: (m) => this.publish(m),
+      publish: (m) => {
+        this.publish(m);
+        this.goals.onProgress(m);
+      },
       onTask: (e) => this.onTaskEvent(e),
       onUse: (u) => this.memory.recordUse(u.action, { at: this.now(), says: u.says, app: u.app, outcome: u.outcome }),
       // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
       // A plan may write a first, middle or last name code split from a remembered name (B24): the entry must
       // still give exactly that part, by the same split, not any substring.
-      memoryHolds: (ref, value) => {
-        const { id, part } = parseMemoryRef(ref);
-        const text = this.memory.text(id);
-        if (text === null || text === undefined) return false;
-        // A whole value stays exact; a part is the same part by the same split (fix-check review: a name that
-        // changed from "Riley Ade Okafor" to "Morgan Riley" must not still give "Riley" as a first name).
-        return memoryValue(text, part) === value;
-      },
+      memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       authorize: (a) => this.authorize(a),
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
       // The in-progress skill marker rides on each saved run: the skill it counts for, if any.
@@ -472,6 +483,19 @@ export class Helper {
     if (this.memory.migration.outcome === "migrated" || this.memory.migration.outcome === "resumed") opts.store.count("memory.migrated", this.memory.migration.moved);
     // An edit in an editor or the memory window withdraws the offers that used it and revokes tasks that copy it.
     this.memory.onOutsideChange = (changes) => this.memoryChangedOutside(changes);
+    this.goals = new GoalRuns({
+      executor: this.executor,
+      model: this.model,
+      publish: (m) => {
+        if (this.mode === "live") this.opts.publish(m);
+      },
+      now: () => this.now(),
+      readerSession: () => this.readerSession,
+      bind: (taskId, session) => this.bindNew(taskId, session),
+      memoryHolds: (ref, value) => this.memoryHolds(ref, value),
+      ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
+      replan: (r) => this.replanGoal(r.goalId, r.instruction),
+    });
     this.journal = opts.journal ?? new RecoveryJournal(opts.store.dir);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
     this.patterns = new PatternEngine({
@@ -688,6 +712,7 @@ export class Helper {
         this.firstLooks.clear();
         this.planOffers.clear();
         this.askQuestions.clear();
+        this.goals.readerRestarted();
         this.routing?.readerRestarted();
         this.readerConnected = true;
         if (m.mode === "shadow") this.mode = "shadow";
@@ -701,6 +726,8 @@ export class Helper {
         }
         const changes = this.model.apply(m);
         if (changes.length > 0) for (const l of this.changeListeners) l(changes);
+        // A dialog in a running goal segment's app, or a source of its values that changed, stops it (D2-06).
+        this.goals.onChanges(changes);
         const w = this.model.windows.get(m.window.windowId);
         if (w !== undefined) {
           this.text.observe(w, m.at);
@@ -911,6 +938,7 @@ export class Helper {
       this.routing?.observe();
     }
     if (!this.sessions.delete(session)) return;
+    this.goals.hostGone(session);
     // The binding stays, naming a session that is gone, so authorize also refuses a task whose run has not begun.
     for (const [taskId, bound] of [...this.taskHosts]) {
       if (bound.has(session)) this.executor.revoke(taskId, { why: "the host that started it disconnected", by: "host" });
@@ -947,6 +975,16 @@ export class Helper {
     return r;
   }
 
+  /** Whether memory entry `ref` (an id, or "id#first" for a name's part) still gives exactly `value`. */
+  private memoryHolds(ref: string, value: string): boolean {
+    const { id, part } = parseMemoryRef(ref);
+    const text = this.memory.text(id);
+    if (text === null || text === undefined) return false;
+    // A whole value stays exact; a part is the same part by the same split (fix-check review: a name that
+    // changed from "Riley Ade Okafor" to "Morgan Riley" must not still give "Riley" as a first name).
+    return memoryValue(text, part) === value;
+  }
+
   /** Memory the planner may copy from: About values and people's names, not paused. */
   private plannerMemory(): MemoryValue[] {
     const out: MemoryValue[] = [];
@@ -956,6 +994,89 @@ export class Helper {
       else if (e.kind === "people") out.push({ id: e.id, label: e.fields.alias, text: e.fields.name, whose: "other" });
     }
     return out;
+  }
+
+  /**
+   * A goal plan (D2-06): the writer's program over the windows the goal may act in and the calendar, lowered to
+   * segments. The reply, to the asker only, previews the first segment, which runs only after goalAccept; or says
+   * why no plan is offered.
+   */
+  async handleGoalRequest(m: GoalRequest, session?: string): Promise<GoalProgress> {
+    this.opts.store.count("goal.request", 1);
+    let goalId = `goal-${++this.planSeq}-${m.requestId}`.slice(0, 200);
+    while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${m.requestId}`.slice(0, 200);
+    const refuse = (says: string): GoalProgress => this.goals.refused(goalId, m.requestId, says);
+    if (this.writer === null) return refuse("No plan writer is configured, so Caret cannot plan this");
+    if (this.mode !== "live") return refuse("Caret is in shadow mode");
+    if (this.gate.settings.paused) return refuse("Caret is paused");
+    if (!this.readerConnected) return refuse("No screen reader is connected");
+    const session0 = this.readerSession;
+    try {
+      const plan = await this.goalPlan(goalId, m.instruction);
+      if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
+      this.opts.store.count("goal.proposed", 1);
+      return this.goals.propose(plan, session, m.requestId);
+    } catch (e) {
+      if (!(e instanceof GoalError)) throw e;
+      this.opts.store.count(`goal.refused_${e.code}`, 1);
+      this.opts.warn?.(`goal ${goalId}: ${e.message}`);
+      return refuse(e.says.charAt(0).toUpperCase() + e.says.slice(1));
+    }
+  }
+
+  /** The host's acceptance of one goal segment. A refusal goes back as an error naming why; nothing runs. */
+  async handleGoalAccept(m: GoalAccept, session?: string): Promise<TaskResult | null> {
+    const r = await this.goals.accept(m, session);
+    if ("refused" in r) {
+      this.opts.store.count("goal.acceptRefused", 1);
+      this.opts.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: `goalAccept refused: ${r.refused}` });
+      return null;
+    }
+    return r.result;
+  }
+
+  /** Whether calendar end states have somewhere to go (HelperOptions.calendar). */
+  private get executorHasCalendar(): boolean {
+    return this.opts.calendar !== undefined && this.opts.calendar !== null;
+  }
+
+  /** The windows a goal may act in: the user's own first, then the most recently used ones with a field or a button. */
+  private goalWindows(): string[] {
+    const user = this.model.userWindow();
+    const usable = (w: { nodes: Map<string, { editable?: boolean; role: string }> }): boolean => [...w.nodes.values()].some((n) => n.editable === true || n.role === "AXButton");
+    const rest = [...this.model.windows.values()].filter((w) => w !== user && usable(w)).sort((a, b) => b.lastFocusedAt - a.lastFocusedAt);
+    return [...(user === null || user === undefined ? [] : [user]), ...rest].map((w) => w.window.windowId);
+  }
+
+  private goalPlan(goalId: string, instruction: string): ReturnType<typeof planGoal> {
+    const writer = this.writer;
+    if (writer === null) throw new GoalError("nothingToDo", "no plan writer is configured");
+    const calendar = this.executorHasCalendar ? (this.opts.eventCalendar ?? "Caret") : null;
+    return planGoal(this.model, {
+      goalId,
+      instruction,
+      writer,
+      askJev: this.ask,
+      windows: this.goalWindows(),
+      memory: this.plannerMemory(),
+      calendar,
+      clock: macClock(new Date(this.now())),
+      now: this.now(),
+      readerSession: this.readerSession,
+      ...(this.opts.pageDocument === undefined ? {} : { pageDocument: this.opts.pageDocument }),
+    });
+  }
+
+  /** A fresh plan for a stopped goal's instruction, from the screen as it is now; null when none can be offered. */
+  private async replanGoal(goalId: string, instruction: string): Promise<GoalPlan | null> {
+    if (this.writer === null || this.mode !== "live" || this.gate.settings.paused) return null;
+    try {
+      return await this.goalPlan(goalId, instruction);
+    } catch (e) {
+      if (!(e instanceof GoalError)) throw e;
+      this.opts.warn?.(`goal ${goalId}: no fresh plan: ${e.message}`);
+      return null;
+    }
   }
 
   /**
@@ -1616,6 +1737,7 @@ export class Helper {
     for (const [k, f] of [...this.firstLooks]) if (expired("firstLook", f.at, now)) this.withdrawFirstLook(k, "expired");
     for (const [k, p] of [...this.planOffers]) if (expired("plan", p.at, now)) this.withdrawPlan(k, "expired");
     for (const [k, q] of [...this.askQuestions]) if (q.expires <= now) this.askQuestions.delete(k);
+    this.goals.tick(now);
     this.events.tick(now);
     if (this.mode === "shadow") this.shadowLogger.tick(now);
     this.audit?.tick(now);

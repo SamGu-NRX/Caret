@@ -1685,6 +1685,85 @@
             "picks"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "goalRequest"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "instruction": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "instruction",
+            "at"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "goalAccept"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "goalId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "segment": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "goalId",
+            "segment",
+            "digest",
+            "at"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -7662,6 +7741,471 @@
             "expires"
           ],
           "additionalProperties": false
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "goalProgress"
+                },
+                "v": {
+                  "type": "number",
+                  "const": 1
+                },
+                "at": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Milliseconds since the Unix epoch"
+                },
+                "goalId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "requestId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "event": {
+                  "type": "string",
+                  "const": "segment"
+                },
+                "segment": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "segments": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "start",
+                    "crossWindow",
+                    "afterReveal",
+                    "freshPlan"
+                  ]
+                },
+                "replaces": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "expires": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Milliseconds since the Unix epoch"
+                },
+                "where": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "window"
+                        },
+                        "app": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "app",
+                        "title"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "calendar"
+                        },
+                        "calendar": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "calendar"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "steps": {
+                  "minItems": 1,
+                  "maxItems": 24,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "write",
+                          "calendar",
+                          "press",
+                          "handoff"
+                        ]
+                      },
+                      "says": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 600
+                      }
+                    },
+                    "required": [
+                      "index",
+                      "kind",
+                      "says"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "warnings": {
+                  "maxItems": 24,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 600
+                  }
+                }
+              },
+              "required": [
+                "type",
+                "v",
+                "at",
+                "goalId",
+                "requestId",
+                "event",
+                "segment",
+                "segments",
+                "reason",
+                "replaces",
+                "digest",
+                "expires",
+                "where",
+                "steps",
+                "warnings"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "goalProgress"
+                },
+                "v": {
+                  "type": "number",
+                  "const": 1
+                },
+                "at": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Milliseconds since the Unix epoch"
+                },
+                "goalId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "requestId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "event": {
+                  "type": "string",
+                  "const": "step"
+                },
+                "segment": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "taskId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "step": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "steps": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "phase": {
+                  "type": "string",
+                  "enum": [
+                    "verified",
+                    "skipped",
+                    "handoff"
+                  ]
+                },
+                "says": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 600
+                }
+              },
+              "required": [
+                "type",
+                "v",
+                "at",
+                "goalId",
+                "requestId",
+                "event",
+                "segment",
+                "taskId",
+                "step",
+                "steps",
+                "phase",
+                "says"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "goalProgress"
+                },
+                "v": {
+                  "type": "number",
+                  "const": 1
+                },
+                "at": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Milliseconds since the Unix epoch"
+                },
+                "goalId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "requestId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "event": {
+                  "type": "string",
+                  "const": "stopped"
+                },
+                "segment": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "step": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "refused",
+                    "dialog",
+                    "reload",
+                    "sourceChanged",
+                    "targetChanged",
+                    "timeout",
+                    "unexpectedEffect",
+                    "windowGone",
+                    "you",
+                    "readerRestarted",
+                    "hostGone",
+                    "expired",
+                    "error"
+                  ]
+                },
+                "says": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 600
+                },
+                "freshPlan": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "v",
+                "at",
+                "goalId",
+                "requestId",
+                "event",
+                "segment",
+                "step",
+                "reason",
+                "says",
+                "freshPlan"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "goalProgress"
+                },
+                "v": {
+                  "type": "number",
+                  "const": 1
+                },
+                "at": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Milliseconds since the Unix epoch"
+                },
+                "goalId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "requestId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "event": {
+                  "type": "string",
+                  "const": "finished"
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "done",
+                    "handoff"
+                  ]
+                },
+                "verified": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "skipped": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "says": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 600
+                }
+              },
+              "required": [
+                "type",
+                "v",
+                "at",
+                "goalId",
+                "requestId",
+                "event",
+                "outcome",
+                "verified",
+                "skipped",
+                "says"
+              ],
+              "additionalProperties": false
+            }
+          ]
         }
       ],
       "$defs": {

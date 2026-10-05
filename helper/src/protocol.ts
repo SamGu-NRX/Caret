@@ -890,6 +890,42 @@ export const AskAnswer = z.object({
 });
 export type AskAnswer = z.infer<typeof AskAnswer>;
 
+// MARK: - goal plans (D2-06)
+
+/**
+ * The hello capability for goal plans: a code plan that may span windows and the calendar, run one segment at a time.
+ * Only a host that declares it may send goalRequest or goalAccept, and only such hosts get goalProgress.
+ */
+export const GOAL_PLANS_CAPABILITY = "goalPlans";
+
+/** Host to helper: plan this goal. The reply is a goalProgress under `requestId`: the first segment's preview, or a stop saying why not. */
+export const GoalRequest = z.object({
+  type: z.literal("goalRequest"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1).max(200),
+  instruction: z.string().min(1).max(500),
+  at: ms,
+});
+export type GoalRequest = z.infer<typeof GoalRequest>;
+
+const Digest = z.string().regex(/^[0-9a-f]{64}$/, "a digest is 64 lowercase hex digits");
+
+/**
+ * Host to helper: the user accepted segment `segment` of goal `goalId` as previewed. `digest` is the preview's: an
+ * acceptance of any other plan, a segment already accepted, one from another connection, or one after the preview
+ * expired is refused by name and nothing runs. One acceptance runs one segment, under one grant for its one window
+ * (or the calendar). Nothing else accepts a goal's steps.
+ */
+export const GoalAccept = z.object({
+  type: z.literal("goalAccept"),
+  v: z.literal(PROTOCOL_VERSION),
+  goalId: z.string().min(1).max(240),
+  segment: z.number().int().nonnegative(),
+  digest: Digest,
+  at: ms,
+});
+export type GoalAccept = z.infer<typeof GoalAccept>;
+
 /**
  * The user's answer to a skillOffer (B19), by the offer's `id`. The helper ends the offer with
  * offerWithdrawn: `taken` after accept, `dismissed` after decline. An answer to an offer that is gone
@@ -904,7 +940,7 @@ export const SkillAnswer = z.object({
 });
 export type SkillAnswer = z.infer<typeof SkillAnswer>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, AskAnswer]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, AskAnswer, GoalRequest, GoalAccept]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -1733,9 +1769,90 @@ export const PageEngineState = z.object({
 });
 export type PageEngineState = z.infer<typeof PageEngineState>;
 
+/** One step of a goal as the user reads it: what it does, and whether Caret does it or hands it over. */
+export const GoalStepView = z.object({
+  index: z.number().int().nonnegative(),
+  kind: z.enum(["write", "calendar", "press", "handoff"]),
+  says: z.string().min(1).max(600),
+});
+export type GoalStepView = z.infer<typeof GoalStepView>;
+
+/**
+ * Why a goal stopped. `refused`: code will not offer the plan (the sentence says which check). `dialog`: a dialog or
+ * sheet opened in the window. `reload`: the page reloaded or navigated. `sourceChanged`: a window or memory entry a value
+ * came from no longer shows it. `targetChanged`: a field changed, went or was replaced before Caret reached it.
+ * `timeout`: what a press should do did not happen in time. `unexpectedEffect`: something other than what the step
+ * predicted changed. `windowGone`, `you` (the user stopped it), `readerRestarted`, `hostGone`, `expired` (no acceptance
+ * in time), `error` (anything else; the sentence says what).
+ */
+export const GoalStopReason = z.enum(["refused", "dialog", "reload", "sourceChanged", "targetChanged", "timeout", "unexpectedEffect", "windowGone", "you", "readerRestarted", "hostGone", "expired", "error"]);
+export type GoalStopReason = z.infer<typeof GoalStopReason>;
+
+const GoalHead = {
+  type: z.literal("goalProgress"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  goalId: z.string().min(1).max(240),
+  /** The goalRequest this answers; null on every later message. */
+  requestId: z.string().min(1).max(200).nullable(),
+};
+
+/**
+ * Helper to a host that declared GOAL_PLANS_CAPABILITY (D2-06). `segment`: a segment waits for the user's acceptance
+ * (goalAccept with this `digest`) until `expires`; `reason` says why it is separate (`start`, `crossWindow`: another
+ * window or the calendar, `afterReveal`: a press showed new fields, `freshPlan`: replanned after a stop) and `replaces`
+ * names the goal it was replanned from. `step`: one step verified, already true, or handed to the user, with the
+ * executor task it ran in. `stopped`: the goal stopped; `freshPlan` names the replanned goal offered in its place, or
+ * null. `finished`: every segment ran; `outcome` is `done` only when every step Caret makes was verified and none is
+ * left to the user, `handoff` when the last step is the user's (a draft is ready; the user sends it).
+ */
+export const GoalProgress = z.discriminatedUnion("event", [
+  z.object({
+    ...GoalHead,
+    event: z.literal("segment"),
+    segment: z.number().int().nonnegative(),
+    segments: z.number().int().positive(),
+    reason: z.enum(["start", "crossWindow", "afterReveal", "freshPlan"]),
+    replaces: z.string().min(1).max(240).nullable(),
+    digest: Digest,
+    expires: ms,
+    where: z.discriminatedUnion("kind", [z.object({ kind: z.literal("window"), app: z.string(), title: z.string() }), z.object({ kind: z.literal("calendar"), calendar: z.string().min(1) })]),
+    steps: z.array(GoalStepView).min(1).max(24),
+    warnings: z.array(z.string().min(1).max(600)).max(24),
+  }),
+  z.object({
+    ...GoalHead,
+    event: z.literal("step"),
+    segment: z.number().int().nonnegative(),
+    taskId: z.string().min(1),
+    step: z.number().int().nonnegative(),
+    steps: z.number().int().positive(),
+    phase: z.enum(["verified", "skipped", "handoff"]),
+    says: z.string().min(1).max(600),
+  }),
+  z.object({
+    ...GoalHead,
+    event: z.literal("stopped"),
+    segment: z.number().int().nonnegative().nullable(),
+    step: z.number().int().nonnegative().nullable(),
+    reason: GoalStopReason,
+    says: z.string().min(1).max(600),
+    freshPlan: z.string().min(1).max(240).nullable(),
+  }),
+  z.object({
+    ...GoalHead,
+    event: z.literal("finished"),
+    outcome: z.enum(["done", "handoff"]),
+    verified: z.number().int().nonnegative(),
+    skipped: z.number().int().nonnegative(),
+    says: z.string().min(1).max(600),
+  }),
+]);
+export type GoalProgress = z.infer<typeof GoalProgress>;
+
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, AskQuestion,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, AskQuestion, GoalProgress,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);

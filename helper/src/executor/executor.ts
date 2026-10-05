@@ -78,11 +78,13 @@ export interface Authorization {
 /**
  * Why a task may no longer act. `you`: the user changed something it depended on (a permission, Caret's
  * pause, the skill, a memory entry, the settings); the run stops as stopped by you. `host`: the host
- * session that started it is gone; the run stops as an error Caret reports.
+ * session that started it is gone; the run stops as an error Caret reports. `screen` (D2-06): the screen
+ * changed under an accepted goal plan (a dialog opened, a source it copies from changed); the run stops as
+ * changed, caused by the screen.
  */
 export interface Revocation {
   why: string;
-  by: "you" | "host";
+  by: "you" | "host" | "screen";
 }
 
 /** One use of a permission by a run: its action type, what it did as a sentence, the app, and how it ended. */
@@ -600,7 +602,7 @@ export class Executor {
   /** The stopped phase of a revoked task: who caused it, and why in the detail. */
   private stoppedBy(task: Task, r: Revocation): string {
     const detail = `stopped ${this.boundary(task)}: ${r.why}`;
-    this.stopped(task, this.stepAt(task), detail, r.by === "you" ? "you" : "caret", r.by === "you" ? "you" : "error");
+    this.stopped(task, this.stepAt(task), detail, r.by === "you" ? "you" : r.by === "screen" ? "screen" : "caret", r.by === "you" ? "you" : r.by === "screen" ? "changed" : "error");
     return detail;
   }
 
@@ -857,6 +859,7 @@ export class Executor {
       if (end.kind === "focused" && step.via === undefined) return this.writeStep(task, i, w, node, "focused", "", step);
     }
     if (step.via === undefined) throw StepStop.stop("unreachable", `no means to reach '${step.says}': the target is not a field and the step names no press or URL`);
+    if (end.kind === "fieldsRevealed" && step.via.kind !== "press") throw StepStop.stop("unreachable", `'${step.says}' reveals fields only through a press`);
     if (step.via.kind === "press") return this.pressStep(task, i, w, step.via.target, step);
     return this.urlStep(task, i, w, step.via.url, step);
   }
@@ -991,10 +994,12 @@ export class Executor {
     }
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `press '${label}'; expect: ${step.says}`);
+    // A reveal is judged against the fields the window shows right before the press (D2-06).
+    const shown = step.end.kind === "fieldsRevealed" ? { title: w.window.title, keys: new Set(editableValues(w).keys()) } : null;
     await this.deps.beforeAct?.(task.id, i);
     const seen = await this.act(task, { kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label, taskId: task.id }, w.window.windowId);
     this.addLedger(task, { kind: "press", step: i, label, windowId: w.window.windowId });
-    await this.awaitEffect(task, i, step, w.window.windowId, seen);
+    await this.awaitEffect(task, i, step, w.window.windowId, seen, shown === null ? undefined : (now) => now.window.title === shown.title && [...editableValues(now).keys()].some((k) => !shown.keys.has(k)));
     this.checkUnexpected(seen, null);
     await this.verified(task, i, step);
   }
@@ -1211,11 +1216,11 @@ export class Executor {
     this.deps.reader.grant?.({ type: "actRevoke", v: PROTOCOL_VERSION, taskId: task.id, at: Date.now() });
   }
 
-  /** Re-reads the window a few times until the end state holds, collecting changes into `seen`. */
-  private async awaitEffect(task: Task, i: number, step: Step, windowId: string, seen: Change[]): Promise<void> {
+  /** Re-reads the window a few times until the end state holds (or `effect`, when given, does), collecting changes into `seen`. */
+  private async awaitEffect(task: Task, i: number, step: Step, windowId: string, seen: Change[], effect?: (w: WindowState) => boolean): Promise<void> {
     for (let n = 0; ; n++) {
       const w = this.window(windowId);
-      if (step.end.kind !== "calendarEvent" && (await this.holds(task, i, w, step.end))) return;
+      if (effect !== undefined ? effect(w) : step.end.kind !== "calendarEvent" && (await this.holds(task, i, w, step.end))) return;
       if (n >= EFFECT_POLLS) throw StepStop.stop("mismatch", `mismatch: after acting, '${step.says}' does not hold`);
       await this.sleep(EFFECT_POLL_MS);
       seen.push(...(await this.walk(w)));
@@ -1355,7 +1360,8 @@ export class Executor {
       case "windowTitle":
         return w.window.title === end.title;
       case "handoff":
-        // The user's own press is never something Caret finds already done.
+      case "fieldsRevealed":
+        // The user's own press is never something Caret finds already done; nor is a reveal, which is an event.
         return false;
       case "windowFocused":
         // The window must be the app's focused one and the app the one the user is in: a request walk

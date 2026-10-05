@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 import { planError } from "./planner/proposal.ts";
 
@@ -27,6 +27,8 @@ export class HelperServer {
   private readonly fillAll = new Set<Socket>();
   /** Consumer connections whose hello listed ASK_CHOICES_CAPABILITY: they get Ask questions and may answer them (B29). */
   private readonly askChoices = new Set<Socket>();
+  /** Host connections whose hello listed GOAL_PLANS_CAPABILITY: only they may plan and accept goals, and only they get goalProgress (D2-06). */
+  private readonly goalPlans = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -73,7 +75,8 @@ export class HelperServer {
   publish(m: HelperMessage): void {
     const line = JSON.stringify(m) + "\n";
     // Provenance is new in M1: a consumer that did not ask for it is not sent it.
-    for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : this.consumers) c.write(line);
+    // A goal's previews and progress quote values and name windows: only hosts that plan goals get them.
+    for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : this.consumers) c.write(line);
   }
 
   async listen(): Promise<void> {
@@ -148,6 +151,7 @@ export class HelperServer {
             if (routing) this.routing.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
             if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
+            if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
             if (hello.data.host === true) this.helper().hostConnected(session, routing);
             else this.helper().consumerConnected(session);
           } else {
@@ -197,6 +201,26 @@ export class HelperServer {
           else if (m.data.type === "fillAll") {
             if (!this.fillAll.has(s)) this.reject(s, `fillAll needs a host hello with "${FILL_ALL_CAPABILITY}" in its capabilities`);
             else void this.helper().handleFillAll(m.data, from);
+          }
+          // D2-06: a goal plan's request (answered to the asker only) and each segment's acceptance, from a goal-planning host only.
+          else if (m.data.type === "goalRequest" || m.data.type === "goalAccept") {
+            if (!this.goalPlans.has(s)) {
+              this.reject(s, `${m.data.type} needs a host hello with "${GOAL_PLANS_CAPABILITY}" in its capabilities`);
+              continue;
+            }
+            if (m.data.type === "goalAccept") void this.helper().handleGoalAccept(m.data, from);
+            else {
+              const requestId = m.data.requestId;
+              void this.helper()
+                .handleGoalRequest(m.data, from)
+                .catch((e: unknown) => {
+                  this.warn(`goal ${requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
+                  return this.helper().goals.refused(`goal-failed-${requestId}`.slice(0, 200), requestId, "The planner failed; the helper logged why");
+                })
+                .then((r) => {
+                  if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
+                });
+            }
           }
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
           else if (m.data.type === "settings") this.helper().handleSettings(m.data);
@@ -273,6 +297,7 @@ export class HelperServer {
       this.routing.delete(s);
       this.fillAll.delete(s);
       this.askChoices.delete(s);
+      this.goalPlans.delete(s);
       if (session !== null) this.helper().hostDisconnected(session);
       if (this.reader === s) {
         this.reader = null;

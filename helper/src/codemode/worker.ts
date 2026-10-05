@@ -343,12 +343,15 @@ const fns: [string, QuickJSHandle][] = [
         ordered.push(step);
       }
       if (ordered.length !== steps.size) throw new Violation(`the plan leaves out ${steps.size - ordered.length} registered step(s)`);
-      // One accepted segment is one window: targets and effects must come from the basedOn snapshot.
-      const own = new Set(snap.targets.map((t) => t.ref));
-      const effects = new Set(snap.targets.flatMap((t) => t.allowedPressEffects));
+      // One accepted segment is one window: targets and effects must come from the basedOn snapshot. A goal plan
+      // (multiWindow) may target any snapshot this program read; the host cuts its steps into segments.
+      const readable = input.multiWindow ? [...issuedSnapshots.values()] : [snap];
+      const own = new Set(readable.flatMap((x) => x.targets.map((t) => t.ref)));
+      const effects = new Set(readable.flatMap((x) => x.targets.flatMap((t) => t.allowedPressEffects)));
+      const where = input.multiWindow ? "the snapshots this program read" : `snapshot ${basedOn}`;
       for (const step of ordered) {
-        if ((step.kind === "fill" || step.kind === "press") && !own.has(step.target)) throw new Violation(`${step.ref} targets ${step.target}, outside snapshot ${basedOn}`);
-        if (step.kind === "waitFor" && !effects.has(step.effect)) throw new Violation(`${step.ref} waits for ${step.effect}, outside snapshot ${basedOn}`);
+        if ((step.kind === "fill" || step.kind === "press") && !own.has(step.target)) throw new Violation(`${step.ref} targets ${step.target}, outside ${where}`);
+        if (step.kind === "waitFor" && !effects.has(step.effect)) throw new Violation(`${step.ref} waits for ${step.effect}, outside ${where}`);
       }
       plan = { ref: "plan:1", basedOn, steps: ordered };
       return vm.newString(plan.ref);

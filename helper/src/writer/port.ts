@@ -5,11 +5,15 @@ import { chat, type ChatRoute } from "./chat.ts";
 import type { Snippet } from "../privacy.ts";
 import { readKey } from "./env.ts";
 import { extractProgram, PLAN_SYSTEM, PlanInputSchema, planUserMessage } from "./plan-prompt.ts";
+import { GOAL_SYSTEM } from "./goal-prompt.ts";
 import { INTENT_SYSTEM, IntentInputSchema, intentResponseFormat, intentUserMessage } from "./intent-prompt.ts";
 
 export interface WriterRequest {
-  /** "intent" (B25): an Ask's intent as strict JSON over the snapshot's refs (intent-prompt.ts). */
-  kind: "plan" | "intent" | "polish" | "memoryProposal";
+  /**
+   * "intent" (B25): an Ask's intent as strict JSON over the snapshot's refs (intent-prompt.ts). "goal" (D2-06): a plan
+   * program whose steps may span the listed windows and the calendar (goal-prompt.ts); same input as "plan".
+   */
+  kind: "plan" | "goal" | "intent" | "polish" | "memoryProposal";
   /** Names the disclosure the caller accounted for this request; required so no write goes out unaccounted. */
   disclosureId: string;
   /**
@@ -48,7 +52,7 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
   return {
     route,
     async write(req) {
-      if (req.kind !== "plan" && req.kind !== "intent") throw new Error(`writer kind ${req.kind} is not implemented yet`);
+      if (req.kind !== "plan" && req.kind !== "goal" && req.kind !== "intent") throw new Error(`writer kind ${req.kind} is not implemented yet`);
       if (req.disclosureId.length === 0) throw new Error("writer request has no disclosureId");
       if (req.kind === "intent") {
         const input = IntentInputSchema.parse(req.input);
@@ -68,7 +72,7 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
       }
       const input = PlanInputSchema.parse(req.input);
       const messages = [
-        { role: "system" as const, content: PLAN_SYSTEM },
+        { role: "system" as const, content: req.kind === "goal" ? GOAL_SYSTEM : PLAN_SYSTEM },
         { role: "user" as const, content: planUserMessage(input) },
       ];
       const signal = AbortSignal.any([req.signal, AbortSignal.timeout(WRITER_TIMEOUT_MS)]);

@@ -60,6 +60,13 @@ export const EndState = z.discriminatedUnion("kind", [
    * and so could not verify it (`unverifiable`).
    */
   z.object({ kind: z.literal("handoff"), ...InWindow, why: z.enum(["outbound", "destructive", "money", "system", "unverifiable"]) }),
+  /**
+   * D2-06: pressing `via` (a press, required) showed at least one editable field the window did not show right before
+   * the press, and changed or removed none it did show; the window keeps its id and title. An event, not a state: it
+   * never holds before the press, so a run never skips it. Only a goal plan writes it, for a press a registered
+   * capability describes (goals/capabilities.ts). `target` is the control pressed.
+   */
+  z.object({ kind: z.literal("fieldsRevealed"), ...InWindow }),
   /** An event with this title, start and end exists in the named calendar. Checked through the calendar interface, not the screen. */
   z.object({
     kind: z.literal("calendarEvent"),
