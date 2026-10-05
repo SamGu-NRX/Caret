@@ -667,7 +667,7 @@ describe("a grounded whole-form scope (B28)", () => {
     ["this application", "finish this application"],
     ["fill out the <form name>", "fill out the software engineer intern application"],
   ])("lets the whole form stand on '%s' without asking Jev (%s)", async (phrase, instruction) => {
-    expect(wholeFormPhrase(instruction, "Apply: Software Engineer Intern", () => false)).toBe(phrase);
+    expect(wholeFormPhrase(instruction, "Apply: Software Engineer Intern")).toBe(phrase);
     const { jev, run } = askG(instruction, greenhouse(), () => "no");
     expect(written(await run).length).toBe(6);
     expect(jev.seen.some((r) => "all" in r.questions)).toBe(false);

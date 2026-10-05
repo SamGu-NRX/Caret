@@ -7,8 +7,14 @@
 // A phrase that names a part of the form (SECTION_WORDS) is never the whole form: it maps to the form's section of
 // that meaning, or Caret asks which fields.
 //
-// Both lists are short on purpose and each entry has its own test (test/scope-words.test.ts). Neither was measured
-// on a corpus; adding a phrase needs a test that shows the instruction it is for.
+// Beside either kind of phrase, only words on a short list of filler may stand (FILLER, SECTION_FILLER). Any other
+// word, or any quoted text, may narrow the request, so the words alone do not settle it. The first version instead
+// looked for the form's field labels in the rest of the instruction, and that failed open: "just fill my email on
+// this form" named no label on a form whose field reads "E-mail address", and "only the second box in contact info"
+// or "avoid my contact info" named none at all (B28 reviews).
+//
+// The lists are short on purpose and each entry has a test (test/scope-words.test.ts). None was measured on a corpus;
+// adding a phrase or a filler word needs a test that shows the instruction it is for.
 import { fieldWords } from "./sources.ts";
 
 export interface ScopePhrase {
@@ -30,8 +36,7 @@ export const WHOLE_FORM_WORDS: readonly ScopePhrase[] = [
   { says: "everything", re: /\beverything\b/ },
   { says: "the whole form", re: /\bthe\s+whole\s+form\b/ },
   { says: "all of it", re: /\ball\s+of\s+it\b/ },
-  // "the rest of the address" is part of a field; "the rest of it" and "the rest of this form" are the form.
-  { says: "the rest", re: /\bthe\s+rest\b(?!\s+of\s+(?!(?:it|this|(?:the|this)\s+(?:form|application))\b))/ },
+  { says: "the rest", re: /\bthe\s+rest\b/ },
   { says: "what you can", re: /\bwhat(?:ever)?\s+you\s+can\b/ },
   { says: "this form", re: /\bthis\s+form\b/ },
   { says: "this application", re: /\bthis\s+application\b/ },
@@ -42,16 +47,17 @@ const FILL_OUT_THE = new RegExp(String.raw`\bfill\s+out\s+(?:the|this|my|our)\s+
 /** Nouns a user adds to a form's name that its title often leaves out ("the Northgate application"). */
 const FORM_NOUNS = new Set(["form", "application"]);
 
-/** Words that rule a part out: "leave the rest", "everything but the phone", "skip my contact info". */
-const NEGATES = /\b(?:except|not|never|leave|skip|without|but|dont)\b|n't\b/;
 /**
- * Words that narrow or negate what a whole-form phrase would ask: the negations, and "only". With one of them, the
- * whole form is not taken from the words, and Jev's two asks decide.
+ * Words that may stand beside a whole-form phrase without narrowing it: courtesy, the verbs of filling, pronouns,
+ * articles and prepositions, and the phrases' own words. "the rest of the address" still narrows: "address" is not here.
  */
-const NARROWS = new RegExp(`${NEGATES.source}|\\bonly\\b`);
-
-/** Whether some text names a field of the form, as ask.ts reads field words (relevance, namesShortLabel). */
-export type NamesField = (text: string) => boolean;
+export const FILLER: ReadonlySet<string> = new Set([
+  "please", "pls", "plz", "thanks", "thank", "ok", "okay", "hey", "can", "could", "would", "you", "just", "go", "ahead", "and", "then", "now",
+  "fill", "out", "in", "up", "on", "complete", "finish", "do", "handle", "help", "with", "put",
+  "for", "of", "me", "my", "the", "this", "that", "it", "a", "all", "everything", "rest", "what", "whatever", "form", "application",
+]);
+/** Beside a section phrase, also "only" and the words people use for a part ("the bit up top"). */
+export const SECTION_FILLER: ReadonlySet<string> = new Set([...FILLER, "only", "bit", "part", "section", "stuff"]);
 
 /** A section phrase, and which of the form's sections has its meaning. */
 export interface SectionPhrase extends ScopePhrase {
@@ -67,21 +73,25 @@ export const SECTION_WORDS: readonly SectionPhrase[] = [
   { says: "my details", re: /\bmy\s+details\b/, pick: (s) => s.filter((n) => /\b(?:details|personal|about\s+you)\b/i.test(n)) },
 ];
 
+/** Quoted text: a value to write or a field's exact name, either of which narrows the request. */
+const QUOTED = /"[^"]*"|“[^”]*”|(?<![\p{L}])'[^']*'(?![\p{L}])/u;
+
 /**
- * The instruction's words that may set the scope: its source phrases blanked, its quoted values dropped, lower case.
- * Curly single quotes are made straight first, so "Write ‘everything’ in Notes" loses its value like 'everything'.
+ * The instruction's words that may set the scope, lower case, with its source phrases blanked ("from my note" never
+ * names a field), or null when it quotes anything. Curly single quotes are made straight first.
  */
-function scopeText(instruction: string): string {
-  return fieldWords(instruction)
-    .replace(/[’‘]/g, "'")
-    .replace(/"[^"]*"|“[^”]*”|(?<![\p{L}])'[^']*'(?![\p{L}])/gu, " ")
-    .toLowerCase();
+function scopeText(instruction: string): string | null {
+  const s = fieldWords(instruction).replace(/[’‘]/g, "'");
+  return QUOTED.test(s) ? null : s.toLowerCase();
 }
 
 /** `s` with the first match of `re` blanked. */
 const without = (s: string, re: RegExp): string => s.replace(re, (m) => " ".repeat(m.length));
 
 const wordsOf = (s: string): string[] => s.toLowerCase().replace(/['’]s\b/g, "").match(/[\p{L}\p{N}]+/gu) ?? [];
+
+/** Whether every word of `s` is on `allowed`. */
+const onlyFiller = (s: string, allowed: ReadonlySet<string>): boolean => wordsOf(s).every((w) => allowed.has(w));
 
 /** Whether "fill out the X" names the form: every word of X but "form" and "application" is a word of its title. */
 export function namesTheForm(object: string, title: string): boolean {
@@ -91,33 +101,34 @@ export function namesTheForm(object: string, title: string): boolean {
 }
 
 /**
- * The whole-form phrase the instruction uses, or null when it uses none, uses a word that narrows it (NARROWS),
- * names a part of the form (SECTION_WORDS), or names a field outside the phrase: "just fill my email on this form"
- * and "put everything from my note in Notes" ask for one field (B28 review). `title` is the form window's title.
+ * The whole-form phrase the instruction uses, or null when it uses none, quotes anything, names a part of the form
+ * (SECTION_WORDS), or has a word beside the phrase that is not FILLER. `title` is the form window's title.
  */
-export function wholeFormPhrase(instruction: string, title: string, namesField: NamesField): string | null {
+export function wholeFormPhrase(instruction: string, title: string): string | null {
   const s = scopeText(instruction);
-  if (NARROWS.test(s) || SECTION_WORDS.some((p) => p.re.test(s))) return null;
-  for (const p of WHOLE_FORM_WORDS) if (p.re.test(s)) return namesField(without(s, p.re)) ? null : p.says;
+  if (s === null || SECTION_WORDS.some((p) => p.re.test(s))) return null;
+  for (const p of WHOLE_FORM_WORDS) if (p.re.test(s)) return onlyFiller(without(s, p.re), FILLER) ? p.says : null;
   const m = FILL_OUT_THE.exec(s);
   if (m?.[1] === undefined || !namesTheForm(m[1], title)) return null;
-  // The form's own name may share a word with a field ("the pizza order", "Pizza Size"); it does not name that field.
-  return namesField(without(s, FILL_OUT_THE)) ? null : "fill out the <form name>";
+  // The form's own name may share a word with a field ("the pizza order", "Pizza Size"); it is taken out with the phrase.
+  return onlyFiller(without(s, FILL_OUT_THE), FILLER) ? "fill out the <form name>" : null;
 }
 
 /**
  * The part of the form the instruction names by a section phrase. `phrases` is empty when it uses none. `section`
- * is the one section every phrase it uses means; it is null, with `why`, when the instruction rules the part out
- * ("skip my contact info"), names a field besides it ("only my email in contact info"), or a phrase means no
- * section of this form, or more than one, or two phrases disagree: then Caret asks which fields.
+ * is the one section every phrase it uses means; it is null, with `why`, when the instruction quotes anything or
+ * has a word beside the phrases that is not SECTION_FILLER ("skip my contact info", "only my email in contact info"),
+ * or a phrase means no section of this form, or more than one, or two phrases disagree: then Caret asks which fields.
  */
-export function namedSection(instruction: string, sections: readonly string[], firstFieldSection: string | null, namesField: NamesField): { phrases: string[]; section: string | null; why: string | null } {
-  const s = scopeText(instruction);
-  const used = SECTION_WORDS.filter((p) => p.re.test(s));
+export function namedSection(instruction: string, sections: readonly string[], firstFieldSection: string | null): { phrases: string[]; section: string | null; why: string | null } {
+  const raw = fieldWords(instruction).replace(/[’‘]/g, "'").toLowerCase();
+  const used = SECTION_WORDS.filter((p) => p.re.test(raw));
   const phrases = used.map((p) => p.says);
   if (used.length === 0) return { phrases, section: null, why: null };
-  if (NEGATES.test(s)) return { phrases, section: null, why: "it also rules something out" };
-  if (namesField(used.reduce((t, p) => without(t, p.re), s))) return { phrases, section: null, why: "it names a field besides" };
+  const s = scopeText(instruction);
+  if (s === null) return { phrases, section: null, why: "it quotes something too" };
+  const rest = used.reduce((t, p) => without(t, p.re), s);
+  if (!onlyFiller(rest, SECTION_FILLER)) return { phrases, section: null, why: `it also says '${wordsOf(rest).filter((w) => !SECTION_FILLER.has(w)).join(" ")}'` };
   const picks = used.map((p) => p.pick(sections, firstFieldSection));
   const one = picks.every((x) => x.length === 1) && new Set(picks.map((x) => x[0])).size === 1 ? (picks[0]?.[0] ?? null) : null;
   return { phrases, section: one, why: one === null ? "no one section of this form means that" : null };

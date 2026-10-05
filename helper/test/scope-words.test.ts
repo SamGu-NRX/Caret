@@ -1,23 +1,19 @@
 // B28: the words code reads as asking for the whole form or for a section. Each list entry has one right answer
 // per instruction, so each is tested alone here; test/ask.test.ts runs them through planAsk.
 import { describe, expect, it } from "vitest";
-import { namesShortLabel, relevance } from "../src/planner/planner.ts";
-import { namedSection, namesTheForm, SECTION_WORDS, WHOLE_FORM_WORDS, wholeFormPhrase, type NamesField } from "../src/planner/scope-words.ts";
+import { FILLER, namedSection, namesTheForm, SECTION_FILLER, SECTION_WORDS, WHOLE_FORM_WORDS, wholeFormPhrase } from "../src/planner/scope-words.ts";
 
 const TITLE = "Rental Application | Cedar Court Apartments";
-/** A form's fields as ask.ts reads them by the instruction's words (relevance, namesShortLabel). */
-const namesOf = (fields: readonly string[]): NamesField => (t) => fields.some((f) => relevance(t, f) > 0 || namesShortLabel(t, f));
-const NAMES = namesOf(["First name", "Email", "Phone", "Street address", "Notes", "LinkedIn Profile"]);
 
 describe("wholeFormPhrase", () => {
   it.each([
     ["fill out", "fill out"],
     ["fill out", "fill it out from my note"],
     ["fill out", "Fill this out, thanks"],
-    ["fill out", "fill out the form using what I jotted down"],
+    ["fill out", "fill out the form from what I jotted down"],
     ["fill out", "fill out this application"],
     ["fill in everything", "fill in everything"],
-    ["everything", "everything's in my notes.txt"],
+    ["everything", "just do everything for me"],
     ["the whole form", "do the whole form"],
     ["all of it", "all of it please"],
     ["the rest", "do the rest from my note"],
@@ -29,7 +25,14 @@ describe("wholeFormPhrase", () => {
     ["fill out the <form name>", "fill out the rental application from my note"],
     ["fill out the <form name>", "fill out the Cedar Court application, please"],
   ])("reads '%s' in %j", (phrase, instruction) => {
-    expect(wholeFormPhrase(instruction, TITLE, NAMES)).toBe(phrase);
+    expect(wholeFormPhrase(instruction, TITLE)).toBe(phrase);
+  });
+
+  it("lets only its filler words stand beside a phrase, and pins both filler lists", () => {
+    expect([...FILLER].sort()).toEqual(["a", "ahead", "all", "and", "application", "can", "complete", "could", "do", "everything", "fill", "finish", "for", "form", "go", "handle", "help", "hey", "in", "it", "just", "me", "my", "now", "of", "ok", "okay", "on", "out", "please", "pls", "plz", "put", "rest", "thank", "thanks", "that", "the", "then", "this", "up", "what", "whatever", "with", "would", "you"]);
+    expect([...SECTION_FILLER].filter((w) => !FILLER.has(w)).sort()).toEqual(["bit", "only", "part", "section", "stuff"]);
+    expect(wholeFormPhrase("hey can you just do this form for me now, thanks", TITLE)).toBe("this form");
+    expect(wholeFormPhrase("hey can you just do this form for my landlord", TITLE)).toBeNull();
   });
 
   it("has a case above for every phrase on the list", () => {
@@ -58,20 +61,23 @@ describe("wholeFormPhrase", () => {
     // Naming no field is not asking for the form.
     "sort this out for me please",
     "name + email only pls",
-    // A whole-form phrase beside a field the instruction names asks for that field (B28 review).
+    // A whole-form phrase beside any word that is not filler may ask for less: here, a field (B28 reviews; the form's
+    // label may read "E-mail address", so the word need not match a label).
     "fill the rest of the address",
     "just fill my email on this form",
     "put everything from my note in Notes",
     "fill in everything, the phone is (512) 555-0147",
     "Write ‘everything’ in Notes",
+    // A quoted field, and part of a field.
+    'fill "Email" on this form',
+    "do the rest of the address",
   ])("reads no whole-form phrase in %j", (instruction) => {
-    expect(wholeFormPhrase(instruction, TITLE, NAMES)).toBeNull();
+    expect(wholeFormPhrase(instruction, TITLE)).toBeNull();
   });
 
   it("lets the form's own name share a word with a field ('the pizza order', 'Pizza Size')", () => {
-    const pizza = namesOf(["Customer name", "Pizza Size", "Delivery instructions"]);
-    expect(wholeFormPhrase("fill out the pizza order from my note", "Pizza order", pizza)).toBe("fill out the <form name>");
-    expect(wholeFormPhrase("fill out the pizza order, large size", "Pizza order", pizza)).toBeNull();
+    expect(wholeFormPhrase("fill out the pizza order from my note", "Pizza order")).toBe("fill out the <form name>");
+    expect(wholeFormPhrase("fill out the pizza order, large size", "Pizza order")).toBeNull();
   });
 });
 
@@ -93,38 +99,41 @@ describe("namedSection", () => {
   });
 
   it("maps 'contact info' to the one section named for contact, and asks when there is none or two", () => {
-    expect(namedSection("just do my contact info", SECTIONS, "Contact information", NAMES)).toEqual({ phrases: ["contact info"], section: "Contact information", why: null });
-    expect(namedSection("my contact details please", SECTIONS, null, NAMES).section).toBe("Contact information");
-    expect(namedSection("my contact information", ["Contact", "Emergency contact"], "Contact", NAMES).section).toBeNull();
-    expect(namedSection("just do my contact info up top", [], null, NAMES)).toEqual({ phrases: ["contact info", "up top"], section: null, why: "no one section of this form means that" });
+    expect(namedSection("just do my contact info", SECTIONS, "Contact information")).toEqual({ phrases: ["contact info"], section: "Contact information", why: null });
+    expect(namedSection("my contact details please", SECTIONS, null).section).toBe("Contact information");
+    expect(namedSection("my contact information", ["Contact", "Emergency contact"], "Contact").section).toBeNull();
+    expect(namedSection("just do my contact info up top", [], null)).toEqual({ phrases: ["contact info", "up top"], section: null, why: "no one section of this form means that" });
   });
 
   it("maps 'up top' to the first field's section, and asks when the first field has none", () => {
-    expect(namedSection("do the bit up top", SECTIONS, "Contact information", NAMES).section).toBe("Contact information");
-    expect(namedSection("do the bit up top", SECTIONS, null, NAMES)).toEqual({ phrases: ["up top"], section: null, why: "no one section of this form means that" });
+    expect(namedSection("do the bit up top", SECTIONS, "Contact information").section).toBe("Contact information");
+    expect(namedSection("do the bit up top", SECTIONS, null)).toEqual({ phrases: ["up top"], section: null, why: "no one section of this form means that" });
   });
 
   it("maps 'my details' to the one details section", () => {
-    expect(namedSection("put my details in", ["Your details", "Education"], "Your details", NAMES).section).toBe("Your details");
-    expect(namedSection("put my details in", ["Your details", "Personal links"], "Your details", NAMES).section).toBeNull();
-    expect(namedSection("put my details in", SECTIONS, "Contact information", NAMES).section).toBeNull();
+    expect(namedSection("put my details in", ["Your details", "Education"], "Your details").section).toBe("Your details");
+    expect(namedSection("put my details in", ["Your details", "Personal links"], "Your details").section).toBeNull();
+    expect(namedSection("put my details in", SECTIONS, "Contact information").section).toBeNull();
   });
 
   it("asks when two phrases mean different sections, and takes them when they agree", () => {
-    expect(namedSection("my contact info up top", ["About you", "Contact information"], "About you", NAMES).section).toBeNull();
-    expect(namedSection("my contact info up top", SECTIONS, "Contact information", NAMES).section).toBe("Contact information");
+    expect(namedSection("my contact info up top", ["About you", "Contact information"], "About you").section).toBeNull();
+    expect(namedSection("my contact info up top", SECTIONS, "Contact information").section).toBe("Contact information");
   });
 
-  it("asks, rather than map, when the instruction rules the part out or names a field besides it (B28 review)", () => {
-    expect(namedSection("skip my contact info, do the rest", SECTIONS, "Contact information", NAMES)).toMatchObject({ section: null, why: "it also rules something out" });
-    expect(namedSection("my contact info, but not the phone", SECTIONS, "Contact information", NAMES).section).toBeNull();
-    expect(namedSection("only my email in contact info", SECTIONS, "Contact information", NAMES)).toMatchObject({ section: null, why: "it names a field besides" });
+  it("asks, rather than map, when the instruction says more than the section (B28 reviews)", () => {
+    expect(namedSection("skip my contact info, do the rest", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'skip'" });
+    expect(namedSection("avoid my contact info, do the rest", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'avoid'" });
+    expect(namedSection("my contact info, but not the phone", SECTIONS, "Contact information").section).toBeNull();
+    expect(namedSection("only my email in contact info", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'email'" });
+    expect(namedSection("only the second box in contact info", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'second box'" });
+    expect(namedSection('only my "Email" in contact info', SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it quotes something too" });
     // "only" alone does not rule the section out.
-    expect(namedSection("my contact info only", SECTIONS, "Contact information", NAMES).section).toBe("Contact information");
+    expect(namedSection("my contact info only", SECTIONS, "Contact information").section).toBe("Contact information");
   });
 
   it("reads no section phrase where there is none", () => {
-    expect(namedSection("emergency contact is ines", SECTIONS, null, NAMES)).toEqual({ phrases: [], section: null, why: null });
-    expect(namedSection("fill out the form", SECTIONS, null, NAMES).phrases).toEqual([]);
+    expect(namedSection("emergency contact is ines", SECTIONS, null)).toEqual({ phrases: [], section: null, why: null });
+    expect(namedSection("fill out the form", SECTIONS, null).phrases).toEqual([]);
   });
 });
