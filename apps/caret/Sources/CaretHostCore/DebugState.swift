@@ -173,6 +173,9 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// What the restore read back differently from what it saved, entry by entry, types and
         /// sizes only (`ReconcilingClipboard.mismatches`). Nil when it came back exactly.
         public var clipboardMismatch: [String]?
+        /// The types of each clipboard item the paste's save read, names only. Nil when the write
+        /// did not save the clipboard.
+        public var clipboardTypes: [[String]]?
 
         public init(claimID: UInt64, ok: Bool, error: String?, text: String, durationMs: Double, verified: Bool?) {
             self.claimID = claimID
@@ -374,6 +377,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var working: Double?
         /// The offer key (and helper task id) of the accepted work.
         public var workingOn: String?
+        /// The caret the working line is drawn at, global top-left points [x, y, width, height].
+        public var workCaret: [Double]?
         /// M1: where the shown offer's first noticed fact came from ("from what Caret noticed in Mail, Tue"),
         /// and how many facts the helper named.
         public var provenance: String?

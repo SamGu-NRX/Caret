@@ -91,11 +91,20 @@ public final class ReconcilingClipboard {
     /// after A17, H5): its private type came back byte for byte. `restore` reads the pasteboard
     /// back and reports any entry that differs (`mismatched`). Until H5 every type outside a list of
     /// text, rich text, HTML and image types refused the paste.
+    ///
+    /// An item with no type Caret could read refuses too: `replace` writes back only what it read,
+    /// so such an item would be dropped while the restore reported `restored`. V1b's VM run pasted
+    /// over a clipboard whose second item held only `public.file-url` and lost that item; the saved
+    /// evidence does not show what Caret's own read of it was (`DebugState.Insertion.clipboardTypes`
+    /// now records it).
     public static func unrestorable(_ items: [PasteboardItemData]) -> [String] {
         items.enumerated().flatMap { i, item in
-            (item.unreadable + item.entries.filter { refersToFile(type: $0.type, data: $0.data) }.map(\.type)).map { "item \(i + 1): \($0)" }
+            let unreadable = item.entries.isEmpty && item.unreadable.isEmpty ? ["no readable type"] : item.unreadable
+            return (unreadable + item.entries.filter { refersToFile(type: $0.type, data: $0.data) }.map(\.type)).map { "item \(i + 1): \($0)" }
         }
     }
+
+
 
     /// Where `now` differs from `saved`, entry by entry ("item 1: com.example.private: 4 bytes came
     /// back as 0", "item 2: missing"). Empty when every type of every item came back with its bytes.
@@ -120,6 +129,9 @@ public final class ReconcilingClipboard {
     /// What the last save found it could not restore. While non-empty, `writeOwn` writes nothing,
     /// so the pasteboard keeps the user's contents untouched.
     public private(set) var refused: [String] = []
+    /// The types of each item the last save read, for the debug state: type names only, never data.
+    /// Kept after the restore.
+    public private(set) var savedTypes: [[String]]?
     /// The types the last save could not read, item by item ("item 2: public.file-url"): a restore
     /// cannot bring them back. Empty when every type was read.
     public private(set) var lost: [String] = []
@@ -134,6 +146,7 @@ public final class ReconcilingClipboard {
     public func save() {
         let items = backend.read()
         saved = items
+        savedTypes = items.map { $0.types + $0.unreadable.map { "\($0) (unreadable)" } }
         lost = items.enumerated().flatMap { i, item in item.unreadable.map { "item \(i + 1): \($0)" } }
         refused = Self.unrestorable(items)
         ownCount = nil

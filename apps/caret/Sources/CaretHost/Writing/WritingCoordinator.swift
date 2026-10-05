@@ -493,6 +493,8 @@ final class WritingCoordinator {
         if let id = toastGrantID { arbiter.dismissToast(grantID: id) }
         toastGrantID = nil
         if overlay.role == .toast || overlay.role == .error { overlay.hidePanel(exit: exit) }
+        // The debug state said "toast" until the next event (V1b, check 6's native case).
+        publishStatus()
     }
 
     // MARK: - Gate and teardown

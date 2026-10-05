@@ -1034,6 +1034,7 @@ public final class SurfaceMachine {
         if headless, let shown, case .popup(let popup) = shown.offer.kind { info.popupSpoken = SlipSpeech.popup(popup.spec, highlight: nil) }
         info.working = work.map { clock.now.timeIntervalSince($0.startedAt) }
         info.workingOn = work?.offerKey
+        info.workCaret = work?.anchor.map { [$0.caret.minX, $0.caret.minY, $0.caret.width, $0.caret.height].map(Double.init) }
         info.toast = toastInfo
         info.held = pending?.hold.rawValue
         info.lastUnshown = lastUnshown

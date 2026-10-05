@@ -215,6 +215,14 @@ final class ClipboardReconcileTests: XCTestCase {
         XCTAssertEqual(pb.changeCount, count)
         XCTAssertEqual(pb.items, [rich])
     }
+
+    /// V1b: an item with no readable type would be dropped by the restore, which writes back only
+    /// what it read; it refuses the paste route like a file.
+    func testAnItemWithNoReadableTypeRefusesThePaste() {
+        let text = PasteboardItemData([(type: "public.utf8-plain-text", data: Data("Prior".utf8))])
+        XCTAssertEqual(ReconcilingClipboard.unrestorable([text, PasteboardItemData([])]), ["item 2: no readable type"])
+        XCTAssertEqual(ReconcilingClipboard.unrestorable([text]), [])
+    }
 }
 
 /// The host's live write authorization (S1 audit #2).

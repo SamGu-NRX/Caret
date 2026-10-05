@@ -148,7 +148,7 @@ final class InsertionExecutor: @unchecked Sendable {
         func finish(
             ok: Bool, error: String?, verified: Bool?, method: FillResult.Method? = nil, fellBack: Bool = false,
             undo: UndoGrant? = nil, rejected: Bool = false, stray: String? = nil,
-            clipboard: ReconcilingClipboard.Outcome? = nil, lost: [String] = [], mismatch: [String] = []
+            clipboard: ReconcilingClipboard.Outcome? = nil, lost: [String] = [], mismatch: [String] = [], types: [[String]]? = nil
         ) {
             var insertion = DebugState.Insertion(
                 claimID: claim.claimID, ok: ok, error: error, text: text,
@@ -162,6 +162,7 @@ final class InsertionExecutor: @unchecked Sendable {
             insertion.clipboard = clipboard?.rawValue
             insertion.clipboardLost = lost.isEmpty ? nil : lost
             insertion.clipboardMismatch = mismatch.isEmpty ? nil : mismatch
+            insertion.clipboardTypes = types
             status.update { $0.lastInsertion = insertion }
             if let clipboard { status.increment("clipboard.\(clipboard.rawValue)") }
             if !mismatch.isEmpty {
@@ -275,7 +276,7 @@ final class InsertionExecutor: @unchecked Sendable {
         finish(
             ok: error == nil, error: error, verified: verified, method: method, fellBack: fellBack, undo: grant,
             stray: stray, clipboard: clipboard, lost: clipboard == nil ? [] : pasteboard.lastLost,
-            mismatch: clipboard == nil ? [] : pasteboard.lastMismatched
+            mismatch: clipboard == nil ? [] : pasteboard.lastMismatched, types: method == .pastePid ? pasteboard.clipboard.savedTypes : nil
         )
     }
 
