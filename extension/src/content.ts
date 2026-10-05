@@ -41,6 +41,7 @@ function contentBox(f: HTMLIFrameElement): [number, number] {
 }
 
 function walk(reg: Registry): FrameReport {
+  const t0 = performance.now();
   const href = location.href;
   const nav = navigationEntry();
   const out = walkControls((el) => reg.idOf(el), (el, c) => reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form }));
@@ -80,6 +81,7 @@ function walk(reg: Registry): FrameReport {
     truncated: out.truncated,
     focused,
     hasFocus: document.hasFocus(),
+    walkMs: Math.round((performance.now() - t0) * 10) / 10,
   };
 }
 

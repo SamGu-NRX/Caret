@@ -2028,6 +2028,8 @@ export const PageFrame = z.object({
   iframes: z.array(z.object({ src: z.string(), rect: PageRect })),
   excluded: z.partialRecord(PageExclusion, z.number().int().positive()),
   truncated: z.boolean(),
+  /** P1: how long the frame's content script took to walk it, in ms; absent from an extension built before P1. */
+  walkMs: z.number().nonnegative().optional(),
 });
 export type PageFrame = z.infer<typeof PageFrame>;
 
@@ -2056,6 +2058,11 @@ export const PageSnapshot = z.object({
   missing: z.array(z.object({ frameId: z.number().int().nonnegative(), reason: z.string() })),
   /** The focused control and its text and selection, when one has focus. */
   focused: z.object({ frameId: z.number().int().nonnegative(), id: z.string().min(1), selection: z.tuple([z.number().int(), z.number().int()]).nullable() }).nullable(),
+  /**
+   * P1: the walk's time in the extension, from the worker's receipt of the command to the snapshot it sends (its frames
+   * walked in parallel), in ms; absent from an extension built before P1.
+   */
+  walkMs: z.number().nonnegative().optional(),
 });
 export type PageSnapshot = z.infer<typeof PageSnapshot>;
 

@@ -122,6 +122,8 @@ export interface FrameReport {
   truncated: boolean;
   focused: { id: string; selection: [number, number] | null } | null;
   hasFocus: boolean;
+  /** P1: how long this frame's own walk took in the page, in ms (performance.now, rounded to 0.1). */
+  walkMs: number;
 }
 
 /**

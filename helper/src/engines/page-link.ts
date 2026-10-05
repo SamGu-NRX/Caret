@@ -208,7 +208,8 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
     nodes,
     values: [],
     focusedKey,
-    stats: { walkMs: 0, visited: nodes.length, truncated: s.frames.some((f) => f.truncated) || s.missing.length > 0 },
+    // The extension's own walk time (P1); 0 from an extension built before it reported one.
+    stats: { walkMs: s.walkMs ?? 0, visited: nodes.length, truncated: s.frames.some((f) => f.truncated) || s.missing.length > 0 },
   };
 }
 
@@ -280,6 +281,26 @@ export function projectedRole(s: PageSnapshot | undefined, key: string): string 
   return t === null ? null : ROLE[t.control.kind];
 }
 
+/**
+ * One page command as the link timed it (P1), for the latency budget (plans/fast-browser.md). `commandMs` is the round
+ * trip from the helper through the bridge to the content script and back; for a walk, `extensionMs` is the share the
+ * extension reports for itself (PageSnapshot.walkMs), so the difference is the hop chain. An act's `rewalkMs` is the walk
+ * act() makes after it, which the executor waits for before it reads the answer.
+ */
+export interface VerbTiming {
+  verb: PageVerb["kind"];
+  /** The control the verb acted on; null for a walk. */
+  control: PageControlKind | null;
+  outcome: PageResult["outcome"];
+  commandMs: number;
+  /** A walk's own time in the extension; null for an act, or a walk an extension built before P1 answered. */
+  extensionMs: number | null;
+  rewalk: { commandMs: number; extensionMs: number | null } | null;
+  at: number;
+}
+
+const since = (t0: number): number => Math.round((performance.now() - t0) * 10) / 10;
+
 export class PageEngineLink implements ReaderLink {
   private readonly session: EngineSession;
   private seq = 0;
@@ -291,11 +312,25 @@ export class PageEngineLink implements ReaderLink {
   private readonly marks = new Map<string, MarkedElement>();
   /** Applies a window snapshot to the screen model. */
   private readonly apply: (s: Snapshot) => void;
+  /** Told each command's timing (P1); nothing is kept here. */
+  private readonly onTiming: ((t: VerbTiming) => void) | null;
 
-  constructor(session: EngineSession, apply: (s: Snapshot) => void) {
+  constructor(session: EngineSession, apply: (s: Snapshot) => void, onTiming: ((t: VerbTiming) => void) | null = null) {
     this.session = session;
     this.apply = apply;
+    this.onTiming = onTiming;
     session.onSnapshot = (s) => this.apply(toWindowSnapshot(s, session, ++this.seq));
+  }
+
+  /** A page command, timed; a walk's answer carries the extension's own time in its snapshot. */
+  private async timed(verb: PageVerb, timeoutMs?: number): Promise<{ answer: Awaited<ReturnType<EngineSession["command"]>>; commandMs: number; extensionMs: number | null }> {
+    const t0 = performance.now();
+    const answer = await this.session.command(verb, timeoutMs);
+    return { answer, commandMs: since(t0), extensionMs: answer.snapshot?.walkMs ?? null };
+  }
+
+  private report(verb: PageVerb, outcome: PageResult["outcome"], commandMs: number, extensionMs: number | null, rewalk: VerbTiming["rewalk"]): void {
+    this.onTiming?.({ verb: verb.kind, control: verb.kind === "pageWalk" ? null : verb.control, outcome, commandMs, extensionMs, rewalk, at: Date.now() });
   }
 
   async run(verb: ReaderVerb): Promise<VerbResult> {
@@ -428,7 +463,9 @@ export class PageEngineLink implements ReaderLink {
   }
 
   private async walk(tabId: number): Promise<VerbResult> {
-    const a = await this.session.command({ kind: "pageWalk", tabId });
+    const verb: PageVerb = { kind: "pageWalk", tabId };
+    const { answer: a, commandMs, extensionMs } = await this.timed(verb);
+    this.report(verb, a.result.outcome, commandMs, extensionMs, null);
     if (a.result.outcome !== "ok") return toVerbOutcome(a.result);
     return a.snapshot === null ? verbResult("axError", "the engine answered the walk without a snapshot") : verbResult("ok", null);
   }
@@ -448,8 +485,9 @@ export class PageEngineLink implements ReaderLink {
     const file = files.read(taskId);
     if ("refused" in file) return { verb: verbResult("notAllowed", file.refused), page: null };
     const verb: PageVerb = { kind: "pageAttachFile", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId, file };
-    const a = await this.session.command(verb, SLOW_VERB_TIMEOUT_MS);
-    if (a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff") await this.session.command({ kind: "pageWalk", tabId: w.tabId });
+    const { answer: a, commandMs } = await this.timed(verb, SLOW_VERB_TIMEOUT_MS);
+    const rewalk = a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff" ? await this.timed({ kind: "pageWalk", tabId: w.tabId }) : null;
+    this.report(verb, a.result.outcome, commandMs, null, rewalk === null ? null : { commandMs: rewalk.commandMs, extensionMs: rewalk.extensionMs });
     return { verb: toVerbOutcome(a.result), page: a.result };
   }
 
@@ -465,10 +503,14 @@ export class PageEngineLink implements ReaderLink {
    * walk before the command times out (B28 review).
    */
   private async act(verb: PageVerb, tabId: number): Promise<VerbResult> {
-    const a = await this.session.command(verb, verb.kind === "pageChooseOption" || verb.kind === "pageAttachFile" ? SLOW_VERB_TIMEOUT_MS : undefined);
+    const { answer: a, commandMs } = await this.timed(verb, verb.kind === "pageChooseOption" || verb.kind === "pageAttachFile" ? SLOW_VERB_TIMEOUT_MS : undefined);
     const out = toVerbOutcome(a.result);
-    if (a.result.pageChanged !== undefined) return out;
-    if (a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff") await this.session.command({ kind: "pageWalk", tabId });
+    if (a.result.pageChanged !== undefined) {
+      this.report(verb, a.result.outcome, commandMs, null, null);
+      return out;
+    }
+    const rewalk = a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff" ? await this.timed({ kind: "pageWalk", tabId }) : null;
+    this.report(verb, a.result.outcome, commandMs, null, rewalk === null ? null : { commandMs: rewalk.commandMs, extensionMs: rewalk.extensionMs });
     return out;
   }
 

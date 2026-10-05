@@ -62,6 +62,8 @@ describe("mail to support form: two windows, two acceptances", () => {
     expect(sc.goals.filter((g) => g.event === "step").map((g) => g.event === "step" && [g.segment, g.step, g.phase])).toEqual([[0, 0, "verified"], [1, 1, "verified"]]);
     const cursor = sc.helper.goals.get(first.goalId)?.cursor;
     expect(cursor && [cursor.segment, cursor.nextStep, cursor.receipts.map((r) => [r.step, r.status, r.before !== r.after])]).toEqual([1, 2, [[0, "verified", true], [1, "verified", true]]]);
+    // P1: each verified step's receipt says how long it took from acting to verified.
+    expect(cursor?.receipts.map((r) => typeof r.ms === "number" && r.ms >= 0)).toEqual([true, true]);
     expect(sc.desk.pressed).toEqual([]);
   });
 
@@ -110,7 +112,7 @@ describe("equal values skip", () => {
     sc.desk.set("7171-1", fieldKey(SUPPORT, "Order number"), ORDER);
     await sc.accept(first.goalId);
     expect(sc.desk.writes).toEqual([]);
-    expect(sc.helper.goals.get(first.goalId)?.cursor.receipts.map((r) => [r.step, r.status])).toEqual([[0, "alreadyTrue"]]);
+    expect(sc.helper.goals.get(first.goalId)?.cursor.receipts.map((r) => [r.step, r.status, r.ms])).toEqual([[0, "alreadyTrue", null]]);
     expect(sc.goals.find((g) => g.event === "step")).toMatchObject({ phase: "skipped" });
   });
 

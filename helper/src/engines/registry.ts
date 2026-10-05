@@ -6,13 +6,15 @@
 import type { Snapshot, WindowClosed } from "../protocol.ts";
 import { PROTOCOL_VERSION } from "../protocol.ts";
 import type { EngineDirectory, ReaderLink } from "../executor/means.ts";
-import { PageEngineLink } from "./page-link.ts";
+import { PageEngineLink, type VerbTiming } from "./page-link.ts";
 import type { EngineSession } from "./session.ts";
 import { pageWindowId, parsePageWindow } from "./windows.ts";
 
 export interface RegistryHooks {
   /** Applies a page window's snapshot to the screen model (Helper.handleReader). */
   apply(m: Snapshot | WindowClosed): void;
+  /** Told each page command's timing (P1: page-link.ts VerbTiming). */
+  onTiming?(t: VerbTiming): void;
 }
 
 /** Told when a session says hello and when it ends (engines/wire.ts: page focus and the presence signal). */
@@ -35,7 +37,7 @@ export class EngineRegistry implements EngineDirectory {
 
   /** Takes a session once its handshake passed. Its hello may come later. */
   add(session: EngineSession): void {
-    const link = new PageEngineLink(session, (s) => this.hooks.apply(s));
+    const link = new PageEngineLink(session, (s) => this.hooks.apply(s), this.hooks.onTiming === undefined ? null : (t) => this.hooks.onTiming?.(t));
     this.sessions.set(session.info.engine, { session, link });
     void session.waitForHello(30_000).then((h) => {
       if (h === null) return;

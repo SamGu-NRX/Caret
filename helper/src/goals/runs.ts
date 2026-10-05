@@ -47,6 +47,11 @@ export interface StepReceipt {
   before: string;
   after: string;
   at: number;
+  /**
+   * P1: from the executor's "acting" on the step to its receipt, in ms by the runs' clock: the write and its read-back
+   * through the app or the page engine. Null for a step that never acted (already so, or a hand-off).
+   */
+  ms: number | null;
 }
 
 export interface GoalCursor {
@@ -91,6 +96,8 @@ interface Run {
   task: { id: string; segment: number; pid: number | null; bundleId: string | null; windows: Set<string> } | null;
   /** Why code revoked the running task, when it did: the stop is reported as this, not as the executor's wording. */
   cause: { reason: GoalStopReason; says: string } | null;
+  /** When the executor first said it was acting on each step, by the step's index in the goal (P1: StepReceipt.ms). */
+  acting: Map<number, number>;
 }
 
 export interface Replan {
@@ -203,6 +210,7 @@ export class GoalRuns {
       accepted: new Set(),
       task: null,
       cause: null,
+      acting: new Map(),
     };
     this.runs.set(plan.goalId, run);
     return this.segmentMessage(run, replaces === null ? undefined : "freshPlan");
@@ -351,6 +359,8 @@ export class GoalRuns {
     // only makes a fresh plan stricter, and one whose answer was lost (it may have landed) is never missed.
     if (m.phase === "acting" && m.step !== null) {
       const s = seg.steps[m.step];
+      // The first "acting" of a step: a fallback means acts again and its time counts from the first try.
+      if (s !== undefined && !run.acting.has(s.index)) run.acting.set(s.index, this.deps.now());
       if (s?.kind === "press" && seg.domain.kind === "window" && !run.pressed.some((p) => p.key === s.target.key && p.effect === s.effect)) run.pressed.push({ windowId: seg.domain.windowId, key: s.target.key, effect: s.effect });
     }
     if ((m.phase === "verified" || m.phase === "skipped") && m.step !== null) {
@@ -390,7 +400,9 @@ export class GoalRuns {
     const w = windowId === null ? undefined : this.deps.model.windows.get(windowId);
     const before = windowId === null ? "calendar" : (run.plan.inventory.revisions.get(windowId) ?? "");
     const after = windowId === null ? "calendar" : w === undefined ? "gone" : windowRevision(w);
-    run.cursor.receipts.push({ goalId: run.plan.goalId, segment: seg.index, step: s.index, stepRef: s.ref, status, target: { windowId, key: effectKey(s.target, s.value) }, effect: s.effect, before, after, at: this.deps.now() });
+    const at = this.deps.now();
+    const acted = status === "verified" ? run.acting.get(s.index) : undefined;
+    run.cursor.receipts.push({ goalId: run.plan.goalId, segment: seg.index, step: s.index, stepRef: s.ref, status, target: { windowId, key: effectKey(s.target, s.value) }, effect: s.effect, before, after, at, ms: acted === undefined ? null : at - acted });
     if (status !== "handoff") run.cursor.nextStep = s.index + 1;
     const total = run.plan.segments.reduce((n, x) => n + x.steps.length, 0);
     this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "step", segment: seg.index, taskId: run.task?.id ?? "", step: s.index, steps: total, phase: status === "verified" ? "verified" : status === "alreadyTrue" ? "skipped" : "handoff", says: s.says });

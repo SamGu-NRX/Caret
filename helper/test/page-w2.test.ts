@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MAX_ATTACH_BYTES, PROTOCOL_VERSION, type HelperMessage, type HelperToEngine, type PageEngineState, type PageSnapshot, type ReaderMessage, type Snapshot } from "../src/protocol.ts";
 import { ConfirmedFiles } from "../src/engines/attach.ts";
 import { EngineSession } from "../src/engines/session.ts";
-import { PageEngineLink, toVerbOutcome } from "../src/engines/page-link.ts";
+import { PageEngineLink, toVerbOutcome, type VerbTiming } from "../src/engines/page-link.ts";
 import { pageHost } from "../src/engines/host.ts";
 import { BrowserPresence, isChromiumBrowser } from "../src/engines/presence.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
@@ -136,6 +136,38 @@ describe("confirmed files", () => {
     const files = new ConfirmedFiles();
     files.confirm("t", alias);
     expect(files.read("t")).toMatchObject({ name: "Resume.pdf", size: 2 });
+  });
+});
+
+describe("page link timings (P1)", () => {
+  it("passes the extension's walk time to the model, and times each command, an act with the walk after it", async () => {
+    const { session } = rig(undefined, (id) => ({ ...snapshot(id), walkMs: 12.5 }));
+    const applied: Snapshot[] = [];
+    const timings: VerbTiming[] = [];
+    const link = new PageEngineLink(session, (s) => applied.push(s), (t) => timings.push(t));
+    await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
+    expect(applied[0]?.stats.walkMs).toBe(12.5);
+    const r = await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f0/form[react-form]/combobox:country of residence~0", role: "AXComboBox", attribute: "value", expect: "", value: "United States", taskId: "t1" });
+    expect(r.outcome).toBe("ok");
+    expect(timings.map((t) => [t.verb, t.control, t.outcome, t.extensionMs, t.rewalk?.extensionMs ?? null])).toEqual([
+      ["pageWalk", null, "ok", 12.5, null],
+      ["pageChooseOption", "combobox", "ok", null, 12.5],
+    ]);
+    expect(timings.every((t) => t.commandMs >= 0 && (t.rewalk === null || t.rewalk.commandMs >= 0))).toBe(true);
+  });
+
+  it("says 0 for a walk from an extension that reports no time, and times a refused act with no walk after it", async () => {
+    const { session } = rig(() => ({ outcome: "notAllowed", detail: "no grant" }));
+    const applied: Snapshot[] = [];
+    const timings: VerbTiming[] = [];
+    const link = new PageEngineLink(session, (s) => applied.push(s), (t) => timings.push(t));
+    await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
+    expect(applied[0]?.stats.walkMs).toBe(0);
+    await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f0/form[react-form]/combobox:country of residence~0", role: "AXComboBox", attribute: "value", expect: "", value: "United States", taskId: "t1" });
+    expect(timings.map((t) => [t.verb, t.outcome, t.extensionMs, t.rewalk])).toEqual([
+      ["pageWalk", "ok", null, null],
+      ["pageChooseOption", "notAllowed", null, null],
+    ]);
   });
 });
 
