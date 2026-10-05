@@ -912,8 +912,9 @@ export type FillWithheld = z.infer<typeof FillWithheld>;
  * What a control is (B24): a text field Caret writes, or a control the user sets from Caret's proposal. Chrome
  * shows native selects, radio groups, checkboxes and date and time inputs through Accessibility; the executor
  * writes none of them yet, so their values come as `handoff`. "combobox" is a web page's custom dropdown
- * (react-select and the like): typing into it does not pick an option, so it is named and left to the user,
- * with no value, until the browser layer can pick one.
+ * (react-select and the like): typing into it does not pick an option. Since B27 its value is `value`, a write, only
+ * in a window the page engine owns, whose write is the engine's verified pick (pageChooseOption); anywhere else it is
+ * a `handoff` the user sets.
  */
 export const FillControl = z.enum(["text", "date", "time", "select", "radio", "checkbox", "combobox"]);
 export type FillControl = z.infer<typeof FillControl>;

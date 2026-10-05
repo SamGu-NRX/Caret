@@ -1,0 +1,1 @@
+B26: every Ask refusal or question sentence lives in planner/says.ts; a SaidError's message is what the user reads and its detail holds the check's text (ids, provider errors). Scoreboards print both.

@@ -1,0 +1,1 @@
+B27: a failed fill reaches the user only through Helper.fillFailed (planner/says.ts fillSays); its window and field ids go to warn. Early exits that called this.error published ids until afadd34.

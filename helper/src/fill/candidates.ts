@@ -119,6 +119,11 @@ export interface GenerateOptions {
    * comparison. The helper never sets it.
    */
   nameGroup?: boolean;
+  /**
+   * Windows an Ask names (B26 lead decision 1) and the people it names: in those windows, the spans whose line or
+   * section names one of the people go before the rest, in the order the fields would take them otherwise.
+   */
+  first?: { windows: ReadonlySet<string>; names: readonly string[] };
 }
 
 /** Wall milliseconds per part of one generator call: splitting node text into lines, and the three facts worked out per kept span. */
@@ -432,6 +437,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       }
     }
     for (let i = 0; i < spans.length; i++) if (!used.has(i)) order.push(i);
+    // In a window the Ask named, lines about the people it named go first (CollectOptions.first).
+    if (o.first !== undefined && o.first.windows.has(w.window.windowId)) {
+      const names = new Set(o.first.names.flatMap((n) => words(n)));
+      const about = (i: number): boolean => [...(spans[i]?.terms ?? [])].some((t) => names.has(t));
+      const theirs = order.filter(about);
+      if (theirs.length > 0) order.splice(0, order.length, ...theirs, ...order.filter((i) => !about(i)));
+    }
     // A kind some field takes goes in whole or not at all: every typed value of it in the window, each
     // with all its facts, in one take. A kind that
     // does not fit is left out whole, so cutKinds reports it and fill withholds its fields, and the budget

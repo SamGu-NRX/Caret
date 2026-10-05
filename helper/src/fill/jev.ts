@@ -46,6 +46,11 @@ export interface JevRequest {
    * false (action engine v2, section 3: no transparent retry); absent means the one retry every other caller has had.
    */
   retry429?: boolean;
+  /**
+   * Windows the user's Ask named, which may give this request up to WINDOW_CHARS whatever their kind (privacy.ts
+   * CONSENTED). Never sent; privacy.test.ts holds every other window to its usual rules.
+   */
+  consented?: readonly string[];
 }
 
 const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number() }).loose();

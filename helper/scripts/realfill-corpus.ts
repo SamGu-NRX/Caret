@@ -49,7 +49,11 @@ export interface Corpus {
   forms: CorpusForm[];
 }
 
-const Ask = z.object({ id: z.string(), form: z.string(), instruction: z.string().min(1), expected: z.union([z.literal("refuse"), z.record(z.string(), z.string())]) }).strict();
+/** Why a must-refuse ask is refused, so the scoreboard can check the sentence the user reads (planner/says.ts, B26). */
+export const REFUSE_REASONS = ["neverTyped", "payment", "submit", "send", "whichPerson", "noSuchField", "notOnScreen"] as const;
+const Ask = z
+  .object({ id: z.string(), form: z.string(), instruction: z.string().min(1), expected: z.union([z.literal("refuse"), z.record(z.string(), z.string())]), reason: z.enum(REFUSE_REASONS).optional() })
+  .strict();
 export type CorpusAsk = z.infer<typeof Ask>;
 
 export const Mail = z.object({ from: z.string(), to: z.string(), date: z.string(), subject: z.string(), body: z.string() }).strict();

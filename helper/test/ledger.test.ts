@@ -135,15 +135,69 @@ describe("a mixed note's budget (B25 lead decision 3)", () => {
     expect(fresh.take(w, "candidate", [LONG])).toBe(false);
   });
 
-  it("counts a value inside the sentence as prose, and a value on its own line as not", () => {
+  it("counts a value inside the sentence as prose, once, and a value on its own line as not", () => {
     const { m, w } = note([...SHORT, LONG]);
+    const id = w.window.windowId;
     const ledger = new SnippetLedger(m.windows.values());
-    // "Jordan Reyes" sits in a short line; "7:30 pm" only in the sentence.
+    // "Jordan Reyes" sits in a short line, so it spends none of the prose share.
     expect(ledger.take(w, "candidate", ["Jordan Reyes"])).toBe(true);
     const half = Math.floor((LONG.length - 1) / 2);
-    expect(ledger.take(w, "candidate", [LONG.slice(10, 10 + half - 7)])).toBe(true);
+    expect(ledger.take(w, "candidate", [LONG.slice(0, half)])).toBe(true);
+    // "7:30 pm" is inside the part of the sentence already taken: it reveals nothing more (B26 lead decision 2).
+    const before = ledger.chars(id);
     expect(ledger.take(w, "candidate", ["7:30 pm"])).toBe(true);
-    expect(ledger.take(w, "candidate", ["side door"])).toBe(false);
+    expect(ledger.chars(id)).toBe(before);
+    // The sentence's last word was not revealed, and the prose share is spent.
+    expect(ledger.take(w, "candidate", ["broken"])).toBe(false);
+  });
+});
+
+describe("the distinct characters a request reveals (B26 lead decision 2)", () => {
+  const LINES = ["Rental notes", "Phone: (512) 555-0147", "Call (512) 555-0147 after six", "Landlord: Gary Pruitt"];
+  const card = (): { m: ScreenModel; w: WindowState; id: string } => {
+    const m = new ScreenModel();
+    m.apply(snap(LINES.map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-2", title: "Rental notes.txt", app: NOTES }));
+    return { m, w: m.windows.get("note-2") as WindowState, id: "note-2" };
+  };
+  const PHONE = "(512) 555-0147";
+
+  it("charges a value, then the line holding it only its other characters", () => {
+    const { m, w, id } = card();
+    const ledger = new SnippetLedger(m.windows.values());
+    expect(ledger.take(w, "candidate", [PHONE])).toBe(true);
+    expect(ledger.chars(id)).toBe(PHONE.length);
+    expect(ledger.take(w, "candidate", ["Phone: (512) 555-0147"])).toBe(true);
+    expect(ledger.chars(id)).toBe("Phone: (512) 555-0147".length);
+  });
+
+  it("charges a value inside a line already taken nothing", () => {
+    const { m, w, id } = card();
+    const ledger = new SnippetLedger(m.windows.values());
+    expect(ledger.take(w, "candidate", ["Phone: (512) 555-0147"])).toBe(true);
+    expect(ledger.take(w, "candidate", [PHONE])).toBe(true);
+    expect(ledger.chars(id)).toBe("Phone: (512) 555-0147".length);
+  });
+
+  it("charges two distinct lines that hold one value in full, the value once", () => {
+    const { m, w, id } = card();
+    const ledger = new SnippetLedger(m.windows.values());
+    expect(ledger.take(w, "candidate", [PHONE, "Phone: (512) 555-0147", "Call (512) 555-0147 after six"])).toBe(true);
+    expect(ledger.chars(id)).toBe("Phone: (512) 555-0147".length + "Call (512) 555-0147 after six".length);
+  });
+
+  it("charges a text no line shows its characters that the lines it holds do not cover", () => {
+    const { m, w, id } = card();
+    const ledger = new SnippetLedger(m.windows.values());
+    // Two lines joined by a space: both lines in full, and the one space between them.
+    expect(ledger.take(w, "candidate", ["Rental notes Landlord: Gary Pruitt"])).toBe(true);
+    expect(ledger.chars(id)).toBe("Rental notes".length + "Landlord: Gary Pruitt".length + 1);
+  });
+
+  it("charges a cut text the part a line shows", () => {
+    const { m, w, id } = card();
+    const ledger = new SnippetLedger(m.windows.values());
+    expect(ledger.take(w, "candidate", ["Call (512) 555-0147 aft…"])).toBe(true);
+    expect(ledger.chars(id)).toBe("Call (512) 555-0147 aft".length);
   });
 });
 
@@ -172,5 +226,30 @@ describe("plan text that quotes part of a line (B25 review)", () => {
     const l = new SnippetLedger(m.windows.values());
     expect(l.plan(["ring at the side door please"])).toBe(true);
     expect(l.chars("note-1")).toBe(0);
+  });
+});
+
+describe("the B26 review's undercharges", () => {
+  it("charges a plan text joining two sentences' ends to each sentence's prose share", () => {
+    const m = new ScreenModel();
+    const a = `left-only-start ${"x".repeat(65)}ABCDEFGHIJKLMNOP`;
+    const b = `ABCDEFGHIJKLMNOP${"y".repeat(65)} right-only-end`;
+    const shorts = Array.from({ length: 8 }, (_, i) => `Short value ${i}: sample information here`);
+    m.apply(snap([a, b, ...shorts].map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-3", title: "Notes.txt", app: NOTES }));
+    const joined = `${"x".repeat(65)}ABCDEFGHIJKLMNOP${"y".repeat(65)}`;
+    expect(new SnippetLedger(m.windows.values()).plan([joined])).toBe(false);
+    expect(new SnippetLedger(m.windows.values()).memory([joined])).toBe(false);
+  });
+
+  it("charges a cut line to every window that shows the line, not only the one it was taken from", () => {
+    const LINE = "Deliver around 7:30 pm, and please use the side door and ring twice because the front bell is broken since May";
+    const m = new ScreenModel();
+    m.apply(snap([text("n0", "Order"), text("n1", LINE)], { at: 1, windowId: "note-4", title: "Order note.txt", app: NOTES }));
+    m.apply(snap([text("c0", "Kofi: running late"), text("c1", LINE)], { at: 2, windowId: "chat-4", title: "Chat", app: { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" } }));
+    const note = m.windows.get("note-4") as WindowState;
+    const ledger = new SnippetLedger(m.windows.values(), { consented: new Set(["note-4"]) });
+    // The chat is a conversation held under half of its text, so 99 characters of its line do not fit.
+    expect(ledger.take(note, "candidate", [`${LINE.slice(0, 99)}…`])).toBe(false);
+    expect(ledger.chars("chat-4")).toBe(0);
   });
 });

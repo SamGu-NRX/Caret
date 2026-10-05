@@ -13,17 +13,18 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { formControls, inWebArea, type Control } from "../fill/controls.ts";
-import { labelledLines } from "../fill/candidates.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
-import { SENSITIVE_SAYS, type SensitiveKind } from "../memory/sensitive.ts";
+import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
 import { SnippetLedger } from "../privacy.ts";
 import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
+import { fieldWords, namedSources, onlyInSources, restrictsSources, senderNames, senderOf, type NamedSource } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
+import { SAYS, SaidError, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSsn } from "./says.ts";
 
 export const ROUTES = ["fill", "plan", "ask", "refuse"] as const;
 export type AskRoute = (typeof ROUTES)[number];
-/** Why an intent refuses, or what it asks; each has a sentence code writes (WHY_SAYS). */
+/** Why an intent refuses, or what it asks; each has a sentence in says.ts (sayWhy). */
 export const REASONS = ["none", "neverTyped", "noSuchField", "notOnScreen", "pressOrSend", "payment", "otherPersonUnnamed", "nothingToFill", "whichFields", "whichSource", "whichPerson"] as const;
 export type Reason = (typeof REASONS)[number];
 
@@ -69,6 +70,12 @@ export interface IntentSnapshot {
   persons: { ref: string; span: string }[];
   /** Values the instruction spells out, as exact spans of it (spans.ts), for a maker that can only choose. */
   literals: string[];
+  /** Windows the instruction names as its source, resolved by code (sources.ts): read with consent (privacy.ts). */
+  named: NamedSource[];
+  /** Windows the instruction rules out ("without using Dana's email"): never read for this Ask. */
+  excluded: string[];
+  /** The instruction names a source no open window could be ("off my LinkedIn" with no LinkedIn open). */
+  missing: boolean;
   ledger: SnippetLedger;
 }
 
@@ -130,7 +137,7 @@ function formInventory(w: WindowState): { node: Node; control: Control }[] {
  */
 export function intentSnapshot(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[]): IntentSnapshot {
   const ledger = new SnippetLedger(model.windows.values());
-  if (!ledger.plan([instruction])) throw new PlannerError("privacy", "your instruction quotes more of an open window than one request may carry");
+  if (!ledger.plan([instruction])) throw new SaidError("privacy", SAYS.privacy, "the instruction quotes more of an open window than one request may carry");
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const fields: IntentField[] = [];
   const sections: { ref: string; name: string }[] = [];
@@ -151,13 +158,15 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     if (windows.length >= MAX_INTENT_WINDOWS) break;
     if (!ledger.take(o, "candidate", [o.window.title])) continue;
     // A mail's sender names it as people do ("Ines's email", "the slot Chris offered"); its subject often does not.
-    const fromLine = labelledLines(o).find((l) => /^from$/i.test(l.label));
-    const sender = fromLine === undefined ? null : (/^\s*"?([^"<>]+?)"?\s*(?:<[^>]*>)?\s*$/u.exec(fromLine.value)?.[1]?.trim() ?? null);
+    const sender = senderOf(o);
     const from = sender !== null && sender.length <= 60 && ledger.take(o, "candidate", [sender]) ? sender : null;
     windows.push({ ref: `w${windows.length + 1}`, windowId: o.window.windowId, app: o.app.name, title: o.window.title, from });
   }
   const labels = [...new Set(memory.map((m) => m.label))];
   const memoryLabels = labels.length > 0 && ledger.memory(labels) ? labels : [];
+  // People the instruction names: capitalized names and relations, and words that are a mail sender's name however typed.
+  const persons = [...new Set([...personSpans(instruction), ...senderNames(instruction, model, w)])];
+  const sources = namedSources(instruction, model, w, persons);
   return {
     instruction,
     window: w,
@@ -166,25 +175,14 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     sections,
     windows,
     memory: memoryLabels,
-    persons: personSpans(instruction).map((span, i) => ({ ref: `p${i + 1}`, span })),
+    persons: persons.map((span, i) => ({ ref: `p${i + 1}`, span })),
     literals: instructionValues(instruction),
+    named: sources.named,
+    excluded: sources.excluded,
+    missing: sources.missing,
     ledger,
   };
 }
-
-/** The sentence each reason says, to the user, when an Ask refuses or asks. */
-export const WHY_SAYS: Record<Exclude<Reason, "none">, string> = {
-  neverTyped: "Caret never types passwords, card or account numbers, government ID numbers, one-time codes or API keys; that is yours to type",
-  noSuchField: "this form has no field for what you asked",
-  notOnScreen: "what you asked to copy from is not open on screen",
-  pressOrSend: "Caret never submits, sends or presses a button for you; that is yours to do",
-  payment: "Caret stops before payment; paying is yours to do",
-  otherPersonUnnamed: "whose details you mean is not clear; say their name",
-  nothingToFill: "Caret found nothing in your instruction to fill here",
-  whichFields: "which fields do you mean?",
-  whichSource: "where should Caret copy from?",
-  whichPerson: "whose details do you mean?",
-};
 
 /** An intent checked against its snapshot: the fill engine's scope, and what the route needs. */
 export type CheckedIntent =
@@ -194,9 +192,39 @@ export type CheckedIntent =
 /** The plan error code a refusal or an ask is reported under (protocol PlanErrorCode, unchanged). */
 const REFUSE_CODE = { neverTyped: "notEditable", noSuchField: "unknownTarget", notOnScreen: "noWindow", pressOrSend: "unsupportedStep", payment: "unsupportedStep", otherPersonUnnamed: "unsure", nothingToFill: "nothingToDo" } as const;
 
-function stop(why: Exclude<Reason, "none">): never {
+/** What an Ask says for each reason (says.ts). A never-typed refusal names the kind the instruction or a field names. */
+function sayWhy(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: readonly IntentField[] = [], kind: SensitiveKind | null = null): string {
+  switch (why) {
+    case "neverTyped": {
+      if (kind !== null) return saysNeverTyped(kind, kind === "governmentId" && saysSsn(snap.instruction));
+      const said = mentionedKind(snap.instruction);
+      if (said !== null) return saysNeverTyped(said.kind, said.ssn);
+      const f = fields.find((x) => x.neverTyped !== null);
+      return f === undefined ? saysNeverTyped("governmentId", false) : saysNeverTyped(f.neverTyped as SensitiveKind, saysSsn(f.name));
+    }
+    case "pressOrSend":
+      return saysPressAsked(snap.instruction);
+    case "payment":
+      return SAYS.payment;
+    case "noSuchField":
+      return SAYS.noSuchField;
+    case "notOnScreen":
+      return SAYS.notOnScreen;
+    case "otherPersonUnnamed":
+    case "whichPerson":
+      return SAYS.whichPerson;
+    case "nothingToFill":
+      return SAYS.cannot;
+    case "whichFields":
+      return SAYS.whichFields;
+    case "whichSource":
+      return SAYS.whichSource;
+  }
+}
+
+function stop(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: readonly IntentField[] = [], kind: SensitiveKind | null = null): never {
   const code = why in REFUSE_CODE ? REFUSE_CODE[why as keyof typeof REFUSE_CODE] : "unsure";
-  throw new PlannerError(code, WHY_SAYS[why]);
+  throw new SaidError(code, sayWhy(why, snap, fields, kind), `the intent's reason: ${why}`);
 }
 
 /**
@@ -214,8 +242,17 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
   if (!REASONS.includes(intent.why)) bad(`gives reason '${intent.why}'`);
   // Someone's details by a pronoun, with no one named, is refused whatever the maker said: fill would take the
   // user's own (B25 held-out rule 4).
-  if (snap.persons.length === 0 && PRONOUN_DETAILS.test(snap.instruction)) stop("otherPersonUnnamed");
-  if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why);
+  // Read on the field words: "everything's in her email" names where to copy from, not someone's email (B26 held-out-2).
+  if (snap.persons.length === 0 && PRONOUN_DETAILS.test(fieldWords(snap.instruction))) stop("otherPersonUnnamed", snap);
+  // An instruction that names a kind Caret never types ("my SSN goes in there too") is refused for that, whatever
+  // reason the maker gave: B25's held-out run told the user "Caret stops before payment" for an SSN.
+  if ((intent.route === "refuse" || intent.route === "ask") && mentionedKind(snap.instruction) !== null) stop("neverTyped", snap);
+  // A source no open window could be is said as such, whether the maker filled, asked or refused vaguely: B26's
+  // held-out runs told "grab my job title and company off my linkedin" that Caret found nothing to put in Job title,
+  // and asked "Where should Caret copy from?" for "grab my company and title off my LinkedIn".
+  const vague = intent.route === "refuse" && (intent.why === "none" || intent.why === "nothingToFill" || intent.why === "notOnScreen");
+  if (snap.missing && (intent.route === "fill" || intent.route === "ask" || vague)) stop("notOnScreen", snap);
+  if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why, snap);
   if (intent.route === "plan") return { route: "plan" };
 
   const byRef = new Map(snap.fields.map((f) => [f.ref, f]));
@@ -235,9 +272,21 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
   scoped.sort((a, b) => snap.fields.indexOf(a) - snap.fields.indexOf(b));
   const leftToYou = scoped.filter((f) => f.neverTyped !== null);
   const fields = scoped.filter((f) => f.neverTyped === null);
-  if (fields.length === 0) stop(leftToYou.length > 0 ? "neverTyped" : "noSuchField");
+  if (fields.length === 0) stop(leftToYou.length > 0 ? "neverTyped" : "noSuchField", snap, leftToYou);
 
-  const any = intent.sources.length === 0 || intent.sources.includes("any");
+  const literals = new Map<string, string>();
+  for (const l of intent.literals) {
+    const f = byRef.get(l.field) ?? bad(`ties a value to field '${l.field}', which the snapshot does not list`);
+    if (!fields.includes(f)) bad(`ties '${l.text}' to ${f.name}, which is not among its fields`);
+    const text = l.text.trim();
+    if (text === "" || text.length > 200 || !occursBounded(snap.instruction, text)) bad(`ties '${text.slice(0, 60)}' to ${f.name}, and that is not a span of the instruction`);
+    const secret = secretIn(text, snap.instruction);
+    if (secret !== null) stop("neverTyped", snap, [], secret);
+    if (literals.has(f.key) && literals.get(f.key) !== text) bad(`ties two values to ${f.name}`);
+    literals.set(f.key, text);
+  }
+
+  let any = intent.sources.length === 0 || intent.sources.includes("any");
   const windows = new Set<string>();
   let memory = any;
   for (const s of intent.sources) {
@@ -246,21 +295,31 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
     if (s === "memory") memory = true;
     else windows.add((snap.windows.find((x) => x.ref === s) ?? bad(`names source '${s}', which the snapshot does not list`)).windowId);
   }
+  // The windows the instruction names, as code resolved them (sources.ts), are read whatever windows the maker chose.
+  // The instruction alone gives only its own literals: a field in scope with none reads the named windows, or every
+  // source when it names none. B25's maker answered "instruction" for "put Bea down as my guest with her meal" and
+  // "make my wife the emergency contact", and fill then read no window at all (held-11, held-12, held-14).
+  // An instruction that keeps Caret to its own words ("only use what I typed", "don't read other windows") is never
+  // widened, and a window it rules out ("without using Dana's email") is never read (B26 review).
+  const named = snap.named.map((n) => n.windowId);
+  if (!any && windows.size === 0 && !memory && fields.some((f) => !literals.has(f.key)) && !restrictsSources(snap.instruction)) {
+    if (named.length === 0) (any = true), (memory = true);
+  }
+  if (!any) for (const id of named) windows.add(id);
+  if (snap.excluded.length > 0) {
+    // Every source but those: the listed windows, less the excluded. A window past the snapshot's list is not read.
+    if (any) for (const x of snap.windows) windows.add(x.windowId);
+    any = false;
+    for (const id of snap.excluded) windows.delete(id);
+  }
 
   let person: string | null = null;
-  if (intent.whose === "unnamed") stop("otherPersonUnnamed");
+  if (intent.whose === "unnamed") stop("otherPersonUnnamed", snap);
   else if (intent.whose !== "user") person = (snap.persons.find((p) => p.ref === intent.whose) ?? bad(`names person '${intent.whose}', whom the instruction does not name`)).span;
-
-  const literals = new Map<string, string>();
-  for (const l of intent.literals) {
-    const f = byRef.get(l.field) ?? bad(`ties a value to field '${l.field}', which the snapshot does not list`);
-    if (!fields.includes(f)) bad(`ties '${l.text}' to ${f.name}, which is not among its fields`);
-    const text = l.text.trim();
-    if (text === "" || text.length > 200 || !occursBounded(snap.instruction, text)) bad(`ties '${text.slice(0, 60)}' to ${f.name}, and that is not a span of the instruction`);
-    if (secretIn(text, snap.instruction) !== null) stop("neverTyped");
-    if (literals.has(f.key) && literals.get(f.key) !== text) bad(`ties two values to ${f.name}`);
-    literals.set(f.key, text);
-  }
+  // A person the instruction names only as where to copy from ("from Morgan's email", "the Saturday Chris mentioned")
+  // is not whose details go in: the source's words never set the scope. Unless the instruction asks for someone's
+  // details by a pronoun ("from Dana's message, with her contact details"): then the source is whose they are.
+  if (person !== null && onlyInSources(snap.instruction, person) && !PRONOUN_DETAILS.test(fieldWords(snap.instruction))) person = null;
 
   const scope: FillScope = {
     fields: fields.map((f) => f.key),
@@ -269,6 +328,8 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
     instruction: snap.instruction,
     person,
     literals,
+    consented: new Set(named),
+    first: [...new Set(snap.named.flatMap((n) => n.names))],
   };
   // The fill engine's trigger: the focused field when it is in scope, else the first field in scope.
   const focused = snap.window.focusedKey;
@@ -278,6 +339,5 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
 
 /** How the user is told what an Ask left to them. */
 export function leftToYouSays(fields: readonly IntentField[]): string | null {
-  if (fields.length === 0) return null;
-  return fields.map((f) => `${f.name} (Caret never types ${SENSITIVE_SAYS[f.neverTyped as SensitiveKind]})`).join(", ");
+  return saysLeftToYou(fields.flatMap((f) => (f.neverTyped === null ? [] : [{ name: f.name, kind: f.neverTyped }])));
 }

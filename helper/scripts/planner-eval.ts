@@ -338,8 +338,11 @@ for (const c of CASES) {
   if (fields?.type === "fields") for (const r of fields.rows) writes[r.destination.text] = r.value?.text ?? "";
   const expectWrites = Object.fromEntries(Object.entries(c.writes).map(([k, v]) => [FIELD_NAME[k as DumpField], v]));
   let proposalProblem: string | null = null;
-  if (c.error !== undefined) {
-    if (proposal.outcome !== "error" || proposal.error?.code !== c.error) proposalProblem = `expected error ${c.error}, got ${proposal.outcome} ${proposal.error?.code ?? ""}`;
+  // Under Ask (B26 lead decision 3), a plan whose one step is a press left to the user is said, not offered
+  // ("Deleting is yours to do."), so a case with no writes and a press expects that refusal.
+  const expectedError = c.error ?? (a.ask !== undefined && Object.keys(c.writes).length === 0 && c.press !== undefined ? "unsupportedStep" : undefined);
+  if (expectedError !== undefined) {
+    if (proposal.outcome !== "error" || proposal.error?.code !== expectedError) proposalProblem = `expected error ${expectedError}, got ${proposal.outcome} ${proposal.error?.code ?? ""}`;
   } else if (proposal.outcome !== "proposed") proposalProblem = `expected a proposal, got ${proposal.error?.code}: ${proposal.error?.detail}`;
   else if (JSON.stringify(Object.entries(writes).sort()) !== JSON.stringify(Object.entries(expectWrites).sort())) proposalProblem = `writes ${JSON.stringify(writes)}, expected ${JSON.stringify(expectWrites)}`;
   else if (JSON.stringify(proposal.handoff) !== JSON.stringify(c.press ?? null)) proposalProblem = `hand-off ${JSON.stringify(proposal.handoff)}, expected ${JSON.stringify(c.press ?? null)}`;
@@ -363,7 +366,7 @@ for (const c of CASES) {
   rows.push({
     id: c.id,
     instruction: c.instruction,
-    expected: c.error !== undefined ? `error ${c.error}` : c.press !== undefined ? `hand-off ${c.press.why}` : "proposal",
+    expected: expectedError !== undefined ? `error ${expectedError}` : c.press !== undefined ? `hand-off ${c.press.why}` : "proposal",
     outcome: proposal.outcome,
     code: proposal.error?.code ?? null,
     writes,

@@ -11,6 +11,7 @@ import type { IntentMaker } from "../src/planner/intent-makers.ts";
 import { intentInput, jevIntentMaker, writerIntentMaker } from "../src/planner/intent-makers.ts";
 import { intentResponseFormat, IntentInputSchema } from "../src/writer/intent-prompt.ts";
 import { PlannerError } from "../src/planner/validate.ts";
+import { SAYS, SaidError } from "../src/planner/says.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, node, snap, text, value } from "./builders.ts";
 
@@ -137,7 +138,7 @@ describe("checkIntent", () => {
     expect(codeOf(() => checkIntent(intent({ route: "refuse", why: "pressOrSend" }), snapOf("hit submit")))).toBe("unsupportedStep");
     expect(codeOf(() => checkIntent(intent({ whose: "unnamed", fields: [refOf(his, "Email")] }), his))).toBe("unsure");
     // "her" with someone named is that person: no refusal.
-    const named = snapOf("RSVP for me and Bea, everything's in her email");
+    const named = snapOf("RSVP for me and Bea, use her email address");
     expect(checkIntent(intent({ scope: "all" }), named).route).toBe("fill");
   });
 });
@@ -350,5 +351,203 @@ describe("planAsk", () => {
     const e = await planAsk("pay for it", desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker({ route: "refuse", why: "payment" }), writer: null, offerKey: "ask-4", windowId: "form", now: 2000 }).catch((x: unknown) => x);
     expect((e as AskRefused).code).toBe("unsupportedStep");
     expect((e as AskRefused).intent?.why).toBe("payment");
+  });
+});
+
+describe("what an Ask says when it refuses or asks (B26 lead decision 3)", () => {
+  const said = (f: () => unknown): string | null => {
+    try {
+      f();
+      return null;
+    } catch (e) {
+      return e instanceof SaidError ? e.message : `not a sentence: ${String(e)}`;
+    }
+  };
+
+  it("refuses an SSN as an SSN, whatever reason the maker gave", () => {
+    const s = snapOf("my SSN goes in there too");
+    expect(said(() => checkIntent(intent({ route: "refuse", why: "payment", scope: "none" }), s))).toBe("Caret doesn't type Social Security numbers. Type it yourself.");
+    // A list of only the SSN field says the same, from the field's label.
+    const t = snapOf("put that number in");
+    expect(said(() => checkIntent(intent({ fields: [refOf(t, "Social Security number")] }), t))).toBe("Caret doesn't type Social Security numbers. Type it yourself.");
+  });
+
+  it("asks whose details with a plain question, and says what pressing means by the instruction's verb", () => {
+    expect(said(() => checkIntent(intent({ whose: "unnamed" }), snapOf("put his number in too")))).toBe(SAYS.whichPerson);
+    expect(said(() => checkIntent(intent({ route: "refuse", why: "pressOrSend", scope: "none" }), snapOf("ok that all looks right, hit submit")))).toBe(SAYS.submit);
+    expect(said(() => checkIntent(intent({ route: "refuse", why: "pressOrSend", scope: "none" }), snapOf("send it now")))).toBe(SAYS.send);
+  });
+
+  it("says a plan that only hands the user a press, rather than offering it", async () => {
+    const m = desk();
+    const form = m.windows.get("form") as never as { nodes: Map<string, Node> };
+    const page2 = [...form.nodes.values(), node(`${P}/button:submit~0`, "AXButton", { parent: `${P}/webarea:~0`, label: "Submit application", frame: [100, 400, 100, 20] })];
+    m.apply(snap(page2, { at: 1100, windowId: "form", title: "Apply", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: KEY("full name") }));
+    const press: AskJev = async (req) => ({ model: "t", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: Object.entries(q.criteria).find(([, d]) => d?.includes("Submit"))?.[0] ?? "none", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 });
+    const e = await planAsk("ok that all looks right, hit submit", m, memory, about, { askJev: press, maker: maker({ route: "plan", scope: "none" }), writer: null, offerKey: "s1", windowId: "form", now: 2000 }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(AskRefused);
+    expect((e as AskRefused).code).toBe("unsupportedStep");
+    expect((e as AskRefused).message).toBe(SAYS.submit);
+    expect((e as AskRefused).detail).toContain("Submit application");
+  });
+
+  it("never shows a window id when nothing on screen fits, and keeps it in the detail", async () => {
+    const m = new ScreenModel();
+    m.apply(snap(page(), { at: 1000, windowId: "form-92930-1791134677668311-2-15", title: "Apply", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: KEY("full name") }));
+    const e = await planAsk("add the landlord's phone", m, memory, [], { askJev: jevBy(() => null).ask, maker: maker((s) => ({ fields: [refOf(s, "Landlord phone")] })), writer: null, offerKey: "s2", windowId: "form-92930-1791134677668311-2-15", now: 2000 }).catch((x: unknown) => x);
+    expect((e as AskRefused).message).toBe(SAYS.nothingOnScreen);
+    expect((e as AskRefused).message).not.toContain("92930");
+    expect((e as AskRefused).detail).toContain("92930");
+  });
+
+  it("names the fields it found nothing for, as their labels read", async () => {
+    const e = await planAsk("add the landlord's phone", desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ fields: [refOf(s, "Landlord phone")] })), writer: null, offerKey: "s3", windowId: "form", now: 2000 }).catch((x: unknown) => x);
+    expect((e as AskRefused).message).toBe("Caret found nothing to put in Landlord phone.");
+  });
+
+  it("turns a model's failure into a plain sentence and keeps the provider's text in the detail", async () => {
+    const failing: IntentMaker = { name: "writer", make: async () => { throw new PlannerError("unavailable", "the intent writer failed: groq HTTP 429 tokens per day"); } };
+    const e = await planAsk("fill this out", desk(), memory, about, { askJev: jevBy(() => null).ask, maker: failing, writer: null, offerKey: "s4", windowId: "form", now: 2000 }).catch((x: unknown) => x);
+    expect((e as AskRefused).message).toBe(SAYS.unreachable);
+    expect((e as AskRefused).detail).toContain("429");
+  });
+});
+
+describe("where an Ask copies from (B26: source words never scope, a named window is read with consent)", () => {
+  it("reads the window the instruction names when the maker said only 'instruction', with consent", () => {
+    // "Rental notes.txt" is the note; "from my note" names it whatever source the maker chose.
+    const s = snapOf("fill in the landlord phone from my note");
+    expect(s.named.map((n) => n.windowId)).toEqual(["note"]);
+    const c = checkIntent(intent({ fields: [refOf(s, "Landlord phone")], sources: ["instruction"] }), s);
+    expect(c.route === "fill" && [...(c.scope.windows ?? [])]).toEqual(["note"]);
+    expect(c.route === "fill" && [...(c.scope.consented ?? [])]).toEqual(["note"]);
+  });
+
+  it("reads every source when the maker said only 'instruction' and nothing is named, unless every field has a spelled-out value", () => {
+    const s = snapOf("make my wife the landlord contact");
+    const c = checkIntent(intent({ fields: [refOf(s, "Landlord phone")], sources: ["instruction"] }), s);
+    expect(c.route === "fill" && c.scope.windows).toBeNull();
+    expect(c.route === "fill" && c.scope.memory).toBe(true);
+    expect(c.route === "fill" && c.scope.consented?.size).toBe(0);
+    const t = snapOf("delivery at 8:15 pm");
+    const d = checkIntent(intent({ fields: [refOf(t, "Delivery time")], sources: ["instruction"], literals: [{ field: refOf(t, "Delivery time"), text: "8:15 pm" }] }), t);
+    expect(d.route === "fill" && d.scope.windows?.size).toBe(0);
+  });
+
+  it("never widens an instruction that keeps Caret to its own words, and never reads a window it rules out (B26 review)", () => {
+    const s = snapOf("fill the landlord phone using only this instruction; do not read other windows");
+    const c = checkIntent(intent({ fields: [refOf(s, "Landlord phone")], sources: ["instruction"] }), s);
+    expect(c.route === "fill" && c.scope.windows?.size).toBe(0);
+    expect(c.route === "fill" && c.scope.memory).toBe(false);
+    const t = snapOf("fill the landlord phone without using my note");
+    expect(t.excluded).toEqual(["note"]);
+    const d = checkIntent(intent({ fields: [refOf(t, "Landlord phone")], sources: ["any"] }), t);
+    expect(d.route === "fill" && d.scope.windows !== null && [...d.scope.windows]).toEqual(["draft"]);
+    expect(d.route === "fill" && d.scope.consented?.size).toBe(0);
+  });
+
+  it("keeps the source as whose details when the instruction asks for them by a pronoun (B26 review)", () => {
+    const s = snapOf("fill in the landlord phone from Gary's note with his number");
+    const p = s.persons.find((x) => x.span === "Gary")?.ref ?? "missing";
+    const c = checkIntent(intent({ fields: [refOf(s, "Landlord phone")], whose: p }), s);
+    expect(c.route === "fill" && c.scope.person).toBe("Gary");
+  });
+
+  it("does not take a person named only as the source as whose details go in", () => {
+    const s = snapOf("fill in the landlord phone from Gary's note");
+    const p = s.persons.find((x) => x.span === "Gary")?.ref ?? "missing";
+    const c = checkIntent(intent({ fields: [refOf(s, "Landlord phone")], whose: p }), s);
+    expect(c.route === "fill" && c.scope.person).toBeNull();
+    const t = snapOf("use Gary for the landlord part");
+    const q = t.persons.find((x) => x.span === "Gary")?.ref ?? "missing";
+    const d = checkIntent(intent({ fields: [refOf(t, "Landlord phone")], whose: q }), t);
+    expect(d.route === "fill" && d.scope.person).toBe("Gary");
+  });
+
+  it("asks Jev about a field whose name only shares a word with the source ('note' in Notes), as about any unnamed field", async () => {
+    const pick = (q: string): string | null => (q.includes("'Email'") ? "elena.vance@example.com" : null);
+    const jev = jevBy(pick, () => "user", (q) => (q.includes("'Notes'") ? "no" : "yes"));
+    const d = await planAsk("fill in my email from my note", desk(), memory, about, { askJev: jev.ask, maker: maker((s) => ({ fields: [refOf(s, "Email"), refOf(s, "Notes")] })), writer: null, offerKey: "src-1", windowId: "form", now: 2000 });
+    const confirms = jev.seen.flatMap((r) => Object.values(r.questions).map((q) => String(q.instructions))).filter((t) => t.includes("Does that ask to fill in or change the field"));
+    expect(confirms.some((t) => t.includes("'Notes'"))).toBe(true);
+    expect(confirms.some((t) => t.includes("'Email'"))).toBe(false);
+    expect(d.checked.writes.map((w) => w.node.key)).toEqual([KEY("email")]);
+  });
+
+  it("reads an empty list for an instruction that names no field as the whole form, once Jev confirms it", async () => {
+    const pick = (q: string): string | null => (q.includes("'Email'") ? "elena.vance@example.com" : q.includes("'Landlord name'") ? "Gary Pruitt" : null);
+    const yes = jevBy(pick, () => "user", () => "yes");
+    const d = await planAsk("can you get this done from what I jotted down", desk(), memory, about, { askJev: yes.ask, maker: maker({ scope: "list", fields: [] }), writer: null, offerKey: "src-2", windowId: "form", now: 2000 });
+    expect(yes.seen.some((r) => "all" in r.questions)).toBe(true);
+    expect(d.checked.writes.length).toBeGreaterThan(0);
+    const no = await planAsk("can you get this done from what I jotted down", desk(), memory, about, { askJev: jevBy(pick, () => "user", () => "no").ask, maker: maker({ scope: "list", fields: [] }), writer: null, offerKey: "src-3", windowId: "form", now: 2000 }).catch((x: unknown) => x);
+    expect((no as AskRefused).message).toBe(SAYS.whichFields);
+  });
+});
+
+describe("what B26's blind held-out-2 run found", () => {
+  it("does not read a source's pronoun as someone's details, and names a sender typed in lower case", () => {
+    const m = desk();
+    m.apply(snap([text("h1", "From: Ines Lindqvist <ines@example.org>"), text("h2", "To: Theo"), text("b", "my cell is (617) 555-0129")], { at: 950, windowId: "mail-ines", title: "Clinic form", app: { pid: 7009, bundleId: "com.apple.mail", name: "Mail" } }));
+    const s = snapOf("fill the landlord phone, everything's in her email", m);
+    expect(codeOf(() => checkIntent(intent({ fields: [refOf(s, "Landlord phone")] }), s))).toBeNull();
+    const t = snapOf("emergency contact is ines, use what she sent", m);
+    expect(t.persons.map((p) => p.span)).toContain("ines");
+    expect(t.named.map((n) => n.windowId)).toEqual(["mail-ines"]);
+  });
+
+  it("confirms a writer's list of every empty field as the whole form, with one question", async () => {
+    const pick = (q: string): string | null => (q.includes("'Landlord name'") ? "Gary Pruitt" : q.includes("'Landlord phone'") ? "(512) 555-0193" : null);
+    const jev = jevBy(pick, () => "user", () => "yes");
+    const every = (s: IntentSnapshot): string[] => s.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
+    const d = await planAsk("fill out the landlord application from my note", desk(), memory, about, { askJev: jev.ask, maker: maker((s) => ({ fields: every(s) })), writer: null, offerKey: "h2-1", windowId: "form", now: 2000 });
+    const confirms = jev.seen.filter((r) => Object.values(r.questions).some((q) => "yes" in q.criteria));
+    expect(confirms.every((r) => Object.keys(r.questions).join() === "all")).toBe(true);
+    expect(confirms.length).toBe(2);
+    expect(d.checked.writes.length).toBeGreaterThan(0);
+  });
+
+  it("says a missing source is not on screen when the maker asked where to copy from", () => {
+    const s = snapOf("grab my company and title off my LinkedIn");
+    expect(() => checkIntent(intent({ route: "ask", why: "whichSource", scope: "none" }), s)).toThrow(SAYS.notOnScreen);
+    // A specific refusal keeps its own sentence.
+    expect(() => checkIntent(intent({ route: "refuse", why: "payment", scope: "none" }), snapOf("pay with the card off my LinkedIn"))).toThrow(SAYS.payment);
+  });
+
+  it("refuses a fill from a source that is not open with the plain sentence", () => {
+    const s = snapOf("grab the landlord phone off my LinkedIn");
+    try {
+      checkIntent(intent({ fields: [refOf(s, "Landlord phone")] }), s);
+      throw new Error("no refusal");
+    } catch (e) {
+      expect((e as Error).message).toBe(SAYS.notOnScreen);
+    }
+  });
+});
+
+describe("what B26's second review found", () => {
+  it("never takes an ordinary lower-case word for a sender's name", () => {
+    const m = desk();
+    m.apply(snap([text("h1", "From: Candace Wells <candace@example.com>"), text("h2", "To: Theo"), text("b", "hi")], { at: 950, windowId: "mail-candace", title: "Hi", app: { pid: 7010, bundleId: "com.apple.mail", name: "Mail" } }));
+    const s = snapOf("can you fill my phone", m);
+    expect(s.persons).toEqual([]);
+    expect(s.named).toEqual([]);
+    expect(codeOf(() => checkIntent(intent({ fields: [refOf(s, "Landlord phone")] }), snapOf("can you put his number in", m)))).toBe("unsure");
+  });
+
+  it("asks Jev before a writer's list of every empty field becomes the whole form, even when no field is named", async () => {
+    const every = (s: IntentSnapshot): string[] => s.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
+    const no = jevBy(() => "elena.vance@example.com", () => "user", () => "no");
+    const e = await planAsk("fill only the first box", desk(), memory, about, { askJev: no.ask, maker: maker((s) => ({ fields: every(s) })), writer: null, offerKey: "r2-1", windowId: "form", now: 2000 }).catch((x: unknown) => x);
+    expect((e as AskRefused).message).toBe(SAYS.whichFields);
+    expect(no.seen.some((r) => "all" in r.questions)).toBe(true);
+  });
+
+  it("does not call a source missing when a note's title names its person", () => {
+    const m = desk();
+    m.apply(snap([field("dn", "Dana: (415) 555-0162", { role: "AXTextArea" })], { at: 960, windowId: "dana-note", title: "Dana notes.txt", app: { pid: 7011, bundleId: "com.apple.TextEdit", name: "TextEdit" } }));
+    const s = snapOf("use what Dana wrote for the landlord phone", m);
+    expect(s.missing).toBe(false);
+    expect(s.named.map((n) => n.windowId)).toEqual(["dana-note"]);
   });
 });

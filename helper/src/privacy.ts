@@ -53,7 +53,19 @@ export interface Snippet {
 export interface Declared {
   snippets: readonly Snippet[];
   charged: Readonly<Record<string, number>>;
+  /** Windows the user's instruction named, which gave this request up to WINDOW_CHARS (SnippetLedger consented). */
+  consented?: readonly string[];
 }
+
+/**
+ * What a window the user's Ask names may give that one request (B26 lead decision 1): up to WINDOW_CHARS, whether it
+ * is a conversation, a mixed note or a card, with no prose share. Naming a window is consent to read it for the request
+ * that names it ("from my note", "Bea's email", "the Saturday Chris mentioned"), as asking is consent in the design's
+ * lead decision 6. Before it, a mail an Ask named was held under half and to 600 characters as a conversation, and B25's
+ * held-out asks that named one found nothing in it (held-12, held-14). Every other window, and every fill on focus,
+ * keeps windowBudget; a window with more text than WINDOW_CHARS still never goes out whole.
+ */
+const CONSENTED: WindowShare = { budget: WINDOW_CHARS, prose: null };
 
 /** Collapses whitespace as every request builder does before it quotes a line. */
 /** Whitespace flat() would change: a run, a tab or line break, or space at either end. Testing first spares the copy for most lines. */
@@ -95,9 +107,6 @@ class LineTable {
   private readonly inside = new Map<string, boolean>();
   /** The lines of CONTAINED_MIN or more characters joined by NUL, which no screen text holds; null until a search needs it again. */
   private joined: string | null = null;
-  /** The same, of the lines that are not prose and of the prose lines, for proseIn; null until a search needs them again. */
-  private joinedShort: string | null = null;
-  private joinedLong: string | null = null;
 
   constructor(w: WindowState) {
     this.owner = w;
@@ -143,49 +152,58 @@ class LineTable {
     return r;
   }
 
-  /**
-   * How many characters of the window's prose `t` reveals: each line of `t` (whitespace collapsed, a cut's
-   * ellipsis dropped) that a prose line holds and no shorter line does. A value a note labels on its own line
-   * ("Phone: (512) 555-0147") reveals none, a phone inside a sentence its own length, and a text no line holds
-   * (a fact cut to length, a value spanning two short lines) none. Asked only of windows whose budget holds
-   * prose apart (windowBudget), which are under 2 * WINDOW_CHARS, so the searches are short.
-   */
-  proseIn(t: string): number {
-    this.joinedShort ??= `\u0000${[...this.counts.keys()].filter((l) => l.length <= CARD_LINE_CHARS).join("\u0000")}\u0000`;
-    this.joinedLong ??= `\u0000${[...this.counts.keys()].filter((l) => l.length > CARD_LINE_CHARS).join("\u0000")}\u0000`;
-    if (this.long === 0) return 0;
-    let n = 0;
-    for (const raw of t.split("\n")) {
-      const piece = flat(raw).replace(/^…|…$/gu, "");
-      if (piece.length < CONTAINED_MIN) continue;
-      if (piece.length <= CARD_LINE_CHARS && this.joinedShort.includes(piece)) continue;
-      if (this.joinedLong.includes(piece)) n += piece.length;
-    }
-    return n;
+  /** Whether `t` is a whole distinct line of the window. */
+  isLine(t: string): boolean {
+    return this.counts.has(t);
   }
 
   /**
-   * The runs of `t`, each PARTIAL_MIN or more characters long, that some line of the window also shows, as maximal
-   * stretches of `t`: what a text quoting part of a line reveals of it ("Copy this: " and a sentence's first hundred
-   * characters). Lines never join, so a run cannot cross from one line into the next.
+   * Where `t` stands inside the window's lines of CONTAINED_MIN or more characters: each occurrence's line and
+   * offset, at most MAX_OCCURRENCES of them, in line order. The ledger marks one of them as revealed (SnippetLedger).
+   */
+  occurrences(t: string): { line: string; at: number }[] {
+    if (t.length < CONTAINED_MIN || !this.holds(t)) return [];
+    this.joined ??= `\u0000${[...this.counts.keys()].filter((l) => l.length >= CONTAINED_MIN).join("\u0000")}\u0000`;
+    const j = this.joined;
+    const out: { line: string; at: number }[] = [];
+    for (let p = j.indexOf(t); p >= 0 && out.length < MAX_OCCURRENCES; p = j.indexOf(t, p + 1)) {
+      const start = j.lastIndexOf("\u0000", p) + 1;
+      out.push({ line: j.slice(start, j.indexOf("\u0000", p)), at: p - start });
+    }
+    return out;
+  }
+
+  /**
+   * The runs of `t`, each PARTIAL_MIN or more characters long, that a line of the window also shows: what a text
+   * quoting part of a line reveals of it ("Copy this: " and a sentence's first hundred characters). Each run is the
+   * longest stretch of `t` from its start that one line shows, so every run stands inside a line and is charged
+   * there, prose share included. Runs from two lines may overlap in `t`. Before B26's review the matches of
+   * different lines were merged into one run that no line held, which was charged no prose: a text joining the end of
+   * one sentence to the start of another revealed 146 characters of a note's prose against a share of 96.
    */
   sharedRuns(t: string): string[] {
     if (t.length < PARTIAL_MIN) return [];
     this.joined ??= `\u0000${[...this.counts.keys()].filter((l) => l.length >= CONTAINED_MIN).join("\u0000")}\u0000`;
-    const cover = new Uint8Array(t.length);
-    for (let p = 0; p + PARTIAL_MIN <= t.length; p++) if (this.joined.includes(t.slice(p, p + PARTIAL_MIN))) cover.fill(1, p, p + PARTIAL_MIN);
+    const j = this.joined;
     const runs: string[] = [];
-    for (let i = 0; i < t.length; ) {
-      if (cover[i] === 0) {
-        i++;
-        continue;
+    let reach = 0;
+    for (let p = 0; p + PARTIAL_MIN <= t.length; p++) {
+      const gram = t.slice(p, p + PARTIAL_MIN);
+      let best = 0;
+      let n = 0;
+      // `t` holds no NUL, so a match ends where its line does.
+      for (let q = j.indexOf(gram); q >= 0 && n < MAX_OCCURRENCES; q = j.indexOf(gram, q + 1), n++) {
+        let k = PARTIAL_MIN;
+        while (p + k < t.length && j.charCodeAt(q + k) === t.charCodeAt(p + k)) k++;
+        if (k > best) best = k;
       }
-      let j = i;
-      while (j < t.length && cover[j] === 1) j++;
-      runs.push(t.slice(i, j));
-      i = j;
+      // A run inside one already found reveals nothing more of this window.
+      if (best > 0 && p + best > reach) {
+        runs.push(t.slice(p, p + best));
+        reach = p + best;
+      }
     }
-    return runs;
+    return [...new Set(runs)];
   }
 
   /** Every distinct line of the window that `t` holds, by where it starts in `t`; each line once. */
@@ -232,8 +250,6 @@ class LineTable {
     if (c !== undefined) return;
     this.chars += t.length;
     if (t.length > CARD_LINE_CHARS) (this.long++, (this.longChars += t.length));
-    this.joinedShort = null;
-    this.joinedLong = null;
     if (t.length < CONTAINED_MIN) return;
     const p = t.slice(0, CONTAINED_MIN);
     let lens = this.starts.get(p);
@@ -251,8 +267,6 @@ class LineTable {
     this.counts.delete(t);
     this.chars -= t.length;
     if (t.length > CARD_LINE_CHARS) (this.long--, (this.longChars -= t.length));
-    this.joinedShort = null;
-    this.joinedLong = null;
     if (t.length < CONTAINED_MIN) return;
     const lens = this.starts.get(t.slice(0, CONTAINED_MIN)) as Map<number, number>;
     const k = lens.get(t.length) as number;
@@ -272,6 +286,12 @@ class LineTable {
 const PARTIAL_MIN = 16;
 /** Texts each window's table remembers asking about. Assumed. */
 const INSIDE_CACHE = 4096;
+/**
+ * Occurrences of a text inside a window's lines that the ledger weighs when it marks one revealed (LineTable
+ * occurrences). Assumed: a value repeated more often than this is marked in one of the first ones, which can only
+ * charge more than the best choice would, never less.
+ */
+const MAX_OCCURRENCES = 64;
 /** Windows whose tables are kept after their state was last asked about; the oldest goes first. Assumed: more windows than a screen usually has open. */
 const TABLES_KEPT = 64;
 
@@ -335,7 +355,7 @@ export function setConversationCap(on: boolean): void {
  * than twice that much text. Any other window, a mixed note or a short page, gives the characters of its
  * lines of at most CARD_LINE_CHARS, plus just under half the characters of its longer lines (its prose), at
  * most WINDOW_CHARS; and of its prose a request covers just under half at most (WindowShare.prose), however
- * the rest of the budget is spent. Overlapping texts each count in full. A window's text is its title and every
+ * the rest of the budget is spent. A request is charged the distinct characters it reveals (SnippetLedger). A window's text is its title and every
  * line of its nodes' labels, values and placeholders, each counted once (LineTable); the budget is cached per
  * window state, which the model replaces on every snapshot.
  *
@@ -348,11 +368,12 @@ export function setConversationCap(on: boolean): void {
  *   conversations, so their budgets did not change.
  * - Text sourceCut misses fell from 22 to 17 (rental application 12 to 7); fill went from 38 to 40 right of 131,
  *   with 0 wrong, a change within the run-to-run variation of about two fields.
- * - All three notes are still cut at their last line. A value and the line that holds it are each charged in
- *   full, so a note's short lines cost more than their characters (as a card's do), and a cut source loses
- *   fill's anchor (fill.ts). With 1.25 times the short lines' characters, the rental and enrollment notes are no
- *   longer cut; the checkout note stays cut at any multiple, because its other person's address and phone sit
- *   in its one sentence and the prose share keeps them back. That multiple is a finding, not this rule.
+ * - All three notes were still cut at their last line: a value and the line that holds it were each charged in
+ *   full. B26 charges the distinct characters revealed instead (SnippetLedger), with this budget unchanged.
+ *   Offline on the same corpus (scripts/realfill-budgets.ts, evidence/screen/b26/budgets-before.md and
+ *   budgets-after.md), sources cut fell from 7 of 10 to 4: the rental and enrollment notes and the car-service
+ *   mail now fit, and the RSVP mail gives 17 candidates, not 11. The checkout note is still cut, since its other
+ *   person's address and phone sit in its one sentence and the prose share keeps them back.
  */
 export function windowBudget(w: WindowState): number {
   return windowShare(w).budget;
@@ -366,9 +387,7 @@ function windowShare(w: WindowState): WindowShare {
   // joins its children's went out uncharged for them (B13 review: 907 characters of a Messages window
   // covered on a 595 charge).
   const text = windowText(w);
-  // A card's budget is not its size: a request quotes a value both as a span and inside its labelled line
-  // ("Priya Raman <priya@…>" and "priya@…"), so the texts taken can add up to more than the card holds
-  // while covering no more of it.
+  // A card's budget is WINDOW_CHARS rather than its size, so a card of values may go out whole.
   const half = Math.max(0, Math.floor((text.chars - 1) / 2));
   const large = text.chars >= 2 * WINDOW_CHARS;
   const prose = Math.max(0, Math.floor((text.longChars - 1) / 2));
@@ -398,14 +417,27 @@ export function heldAsConversation(w: WindowState): boolean {
   return conversationCap && isConversation(w);
 }
 
+/** What one window would add for a group of texts: characters newly revealed, of them prose, and the lines' new marks. */
+interface Add {
+  cost: number;
+  prose: number;
+  /** Texts revealed in this window for the first time, which plan text declares under it (commit). */
+  covered: Set<string>;
+  /** Copies of the line marks this pricing changed, by line; the entry's own marks change only on commit. */
+  marks: Map<string, Uint8Array>;
+}
+
 interface Priced {
   fresh: string[];
-  adds: Map<string, { cost: number; prose: number; covered: Set<string> }>;
+  adds: Map<string, Add>;
 }
 
 interface Entry {
   texts: Set<string>;
+  /** Every text revealed in this window so far: lines, texts inside lines, and texts no line shows. */
   covered: Set<string>;
+  /** For each distinct line a request revealed some of, which of its characters it revealed. */
+  marks: Map<string, Uint8Array>;
   chars: number;
   /** Of `chars`, the characters of prose (WindowShare.prose). */
   prose: number;
@@ -415,38 +447,62 @@ interface Entry {
 /**
  * The screen text one request takes, window by window. `take` adds a group of texts (one candidate with
  * its facts, one field's descriptor) only when every new text in it fits, so a group goes out whole or
- * not at all; texts already taken from that window cost nothing again. A text also pays for every line
+ * not at all; texts already taken from that window cost nothing again. A text also reveals every line
  * it contains, in whichever window shows that line: accessibility trees repeat text, a group's label
  * holding its children's, so taking "Alice, meet Bob at 3:41 PM" reveals the lines "Bob" and "3:41 PM"
  * as well; and a value copied into a card, "Dana Whitfield", reveals the chat line that reads the same.
  * Every window so charged must stay within its own budget, or nothing is taken. The ledger is built over
  * every window a request could reveal (the screen model's), since a line of a window the request never
  * takes from is still revealed when a taken text contains it; privacy.test.ts measures the same.
+ *
+ * A window is charged the distinct characters of its lines a request reveals (B26 lead decision 2). Each
+ * distinct line keeps a mark per character: a whole line marks all of it, a text inside a line marks where it
+ * stands, and a charge is the characters newly marked. So a value inside a line already taken costs nothing
+ * more, and a line holding a value already taken costs only its other characters. Before B26 the value and the
+ * line holding it were each charged in full, and a note's budget was spent twice on the same characters (B25
+ * found every corpus note cut at its last line for it, evidence/screen/b25/budgets.md). A text inside lines is
+ * marked in one of them: one where it is already revealed (no charge), else a line of at most CARD_LINE_CHARS
+ * before a prose line, since a value a note labels on its own line reveals none of a sentence that repeats it,
+ * then the line with the most of it already marked. A text a window's lines do not show (a fact cut to length
+ * with an ellipsis, a value spanning two lines) is charged its characters that the lines it holds do not cover.
  */
 export class SnippetLedger {
   private readonly entries = new Map<string, Entry>();
   private readonly known = new Map<string, WindowState>();
   /**
    * What each text reveals, worked out once per ledger: the lines it holds, with their windows, and the
-   * windows that show it inside a line. The generator prices each kind of a conversation again after
-   * every take, and takes the one it priced, so the same texts are looked up many times (B13 review:
-   * 25 to 29 ms per pricing of 40 texts over eight windows of 5,000 lines).
+   * windows that show it inside a line. The generator prices each kind of a conversation again after every
+   * take, and takes the one it priced, so the same texts are looked up many times (B13 review: 25 to 29 ms
+   * per pricing of 40 texts over eight windows of 5,000 lines).
    */
   private readonly reveals = new Map<string, { lines: [string, string[]][]; shownBy: string[] }>();
+  /** Where a text stands inside a window's lines (LineTable.occurrences), by window id and text; looked up only when a charge needs it. */
+  private readonly places = new Map<string, { line: string; at: number }[]>();
   /** For plan and memory text: the runs of it each window's lines show (LineTable.sharedRuns), worked out once per ledger. */
   private readonly partials = new Map<string, [string, string[]][]>();
   readonly snippets: Snippet[] = [];
 
-  /** `windows`: every window whose lines a request's text could reveal, normally all of the screen model's. */
-  constructor(windows: Iterable<WindowState>) {
+  private readonly consented: ReadonlySet<string>;
+
+  /**
+   * `windows`: every window whose lines a request's text could reveal, normally all of the screen model's.
+   * `consented`: windows the user's Ask names, which this request may read up to WINDOW_CHARS (CONSENTED).
+   */
+  constructor(windows: Iterable<WindowState>, o: { consented?: ReadonlySet<string> } = {}) {
     for (const w of windows) this.known.set(w.window.windowId, w);
+    this.consented = o.consented ?? new Set();
   }
 
   private entry(w: WindowState): Entry {
     const id = w.window.windowId;
     let e = this.entries.get(id);
-    if (e === undefined) this.entries.set(id, (e = { texts: new Set(), covered: new Set(), chars: 0, prose: 0, share: windowShare(w) }));
+    if (e === undefined) this.entries.set(id, (e = { texts: new Set(), covered: new Set(), marks: new Map(), chars: 0, prose: 0, share: this.consented.has(id) ? CONSENTED : windowShare(w) }));
     return e;
+  }
+
+  /** The characters this request may take from a window: its budget, or WINDOW_CHARS when the Ask named it. */
+  budget(w: WindowState): number {
+    return this.consented.has(w.window.windowId) ? CONSENTED.budget : windowBudget(w);
   }
 
   /** A window a take names that the ledger was not built over (a closed source a task kept) is known from then on. */
@@ -455,6 +511,13 @@ export class SnippetLedger {
     this.known.set(w.window.windowId, w);
     this.reveals.clear();
     this.partials.clear();
+  }
+
+  private placesOf(wid: string, t: string): { line: string; at: number }[] {
+    const k = `${wid}\u0000${t}`;
+    let r = this.places.get(k);
+    if (r === undefined) this.places.set(k, (r = windowText(this.known.get(wid) as WindowState).occurrences(t)));
+    return r;
   }
 
   /**
@@ -504,36 +567,97 @@ export class SnippetLedger {
   }
 
   /**
-   * What taking these texts would add, window by window: the characters, and the lines they cover. A text
-   * taken from a window (`from`) is charged to it in full, a line of it or not; plan text (`from` null)
-   * only pays for the lines it holds. Null when a window would go over its budget.
+   * What taking these texts would add, window by window: the characters newly revealed, and the texts. A text
+   * taken from a window (`from`) is charged to it, whether or not a line of it shows the text; plan text (`from`
+   * null) only pays for what windows' lines show of it. Null when a window would go over its budget.
    */
   private price(from: WindowState | null, texts: readonly (string | null | undefined)[]): Priced | null {
     const own = from === null ? null : (this.know(from), this.entry(from));
     const fresh = [...new Set(texts.filter((t): t is string => t !== null && t !== undefined && t !== "" && own?.texts.has(t) !== true))];
-    const adds = new Map<string, { cost: number; prose: number; covered: Set<string> }>();
-    const charge = (wid: string, line: string): void => {
+    const adds = new Map<string, Add>();
+    /** The window's add, unless it has revealed `t` already (in this pricing or before); null then. */
+    const fresh1 = (wid: string, t: string): { e: Entry; a: Add } | null => {
       const w = this.known.get(wid);
-      if (w === undefined) return;
+      if (w === undefined) return null;
       const e = this.entry(w);
       let a = adds.get(wid);
-      if (a === undefined) adds.set(wid, (a = { cost: 0, prose: 0, covered: new Set() }));
-      if (e.covered.has(line) || a.covered.has(line)) return;
-      a.covered.add(line);
-      a.cost += line.length;
+      if (a === undefined) adds.set(wid, (a = { cost: 0, prose: 0, covered: new Set(), marks: new Map() }));
+      if (e.covered.has(t) || a.covered.has(t)) return null;
+      a.covered.add(t);
+      return { e, a };
+    };
+    const view = (e: Entry, a: Add, line: string): Uint8Array | undefined => a.marks.get(line) ?? e.marks.get(line);
+    /** Marks [at, at + len) of a line revealed and charges the characters newly marked. */
+    const mark = (e: Entry, a: Add, line: string, at: number, len: number): void => {
+      let m = a.marks.get(line);
+      if (m === undefined) {
+        const before = e.marks.get(line);
+        a.marks.set(line, (m = before === undefined ? new Uint8Array(line.length) : before.slice()));
+      }
+      let n = 0;
+      for (let i = at; i < at + len; i++) if (m[i] === 0) (m[i] = 1, n++);
+      a.cost += n;
       // What of the window's prose the text reveals counts against its prose share as well.
-      if (e.share.prose !== null) a.prose += windowText(w).proseIn(line);
+      if (e.share.prose !== null && line.length > CARD_LINE_CHARS) a.prose += n;
+    };
+    /** A whole line of window `wid`. */
+    const chargeLine = (wid: string, line: string): void => {
+      const x = fresh1(wid, line);
+      if (x !== null) mark(x.e, x.a, line, 0, line.length);
+    };
+    /** A text that lines of window `wid` hold: one of its occurrences is marked (the class's comment says which). */
+    const chargeInside = (wid: string, t: string): void => {
+      const x = fresh1(wid, t);
+      if (x === null) return;
+      const { e, a } = x;
+      const occ = this.placesOf(wid, t);
+      // Every caller found the text inside a line first; were none found after all, it is charged in full.
+      if (occ.length === 0) return void (a.cost += t.length);
+      let best: { line: string; at: number; marked: number } | null = null;
+      for (const o of occ) {
+        const m = view(e, a, o.line);
+        let marked = 0;
+        if (m !== undefined) for (let i = o.at; i < o.at + t.length; i++) marked += m[i] as number;
+        if (marked === t.length) return;
+        const short = o.line.length <= CARD_LINE_CHARS;
+        const bestShort = best !== null && best.line.length <= CARD_LINE_CHARS;
+        if (best === null || (short && !bestShort) || (short === bestShort && marked > best.marked)) best = { ...o, marked };
+      }
+      if (best !== null) mark(e, a, best.line, best.at, t.length);
     };
     for (const t of fresh) {
-      if (from !== null) charge(from.window.windowId, t);
-      const r = this.revealed(t);
-      // Every line the text holds, in whichever window shows it.
-      for (const [l, ids] of r.lines) for (const wid of ids) charge(wid, l);
-      // And every other window that shows the text inside a line: a value taken from a card that a chat
-      // message also quotes reveals that much of the chat.
-      for (const wid of r.shownBy) if (wid !== from?.window.windowId) charge(wid, t);
-      // Plan and memory text that quotes part of a line reveals that part.
-      if (from === null) for (const [run, ids] of this.partialRuns(t)) for (const wid of ids) charge(wid, run);
+      // A text is matched piece by piece in every window: a line break or a cut's ellipsis ends a piece, so a value
+      // cut to length still reveals the line it was cut from, in whichever window shows it (B26 review: a cut line
+      // charged its own window and not a chat that showed the same line).
+      const pieces = t.split("\n").map((raw) => flat(raw).replace(/^…|…$/gu, "")).filter((x) => x !== "");
+      for (const piece of pieces) {
+        const r = this.revealed(piece);
+        if (from !== null) {
+          const wid = from.window.windowId;
+          const table = windowText(from);
+          // Taken from this window: a whole line, a text inside lines, or neither, which is charged what of it the
+          // lines it holds do not cover.
+          if (table.isLine(piece)) chargeLine(wid, piece);
+          else if (piece.length >= CONTAINED_MIN && table.holds(piece)) chargeInside(wid, piece);
+          else {
+            const x = fresh1(wid, piece);
+            if (x !== null) {
+              const held = new Set<string>();
+              table.linesIn(piece, held);
+              const cover = new Uint8Array(piece.length);
+              for (const l of held) for (let p = piece.indexOf(l); p >= 0; p = piece.indexOf(l, p + 1)) cover.fill(1, p, p + l.length);
+              x.a.cost += piece.length - cover.reduce((n, b) => n + b, 0);
+            }
+          }
+        }
+        // Every line the piece holds, in whichever window shows it.
+        for (const [l, ids] of r.lines) for (const wid of ids) chargeLine(wid, l);
+        // And every other window that shows the piece inside a line: a value taken from a card that a chat
+        // message also quotes reveals that much of the chat.
+        for (const wid of r.shownBy) if (wid !== from?.window.windowId) chargeInside(wid, piece);
+        // Plan and memory text that quotes part of a line reveals that part.
+        if (from === null) for (const [run, ids] of this.partialRuns(piece)) for (const wid of ids) chargeInside(wid, run);
+      }
     }
     for (const [wid, a] of adds) {
       const e = this.entries.get(wid) as Entry;
@@ -551,6 +675,7 @@ export class SnippetLedger {
     for (const [wid, a] of p.adds) {
       const e = this.entries.get(wid) as Entry;
       for (const l of a.covered) e.covered.add(l);
+      for (const [l, m] of a.marks) e.marks.set(l, m);
       e.chars += a.cost;
       e.prose += a.prose;
       // Text no window gave (a plan's or an instruction's, or what the user told Caret) declares each line it
@@ -604,9 +729,9 @@ export class SnippetLedger {
     return Object.fromEntries([...this.entries].filter(([, e]) => e.chars > 0).map(([id, e]) => [id, e.chars]));
   }
 
-  /** What a request built from this ledger declares: its screen text, and what each window was charged. */
+  /** What a request built from this ledger declares: its screen text, what each window was charged, and the windows the Ask named. */
   declared(): Declared {
-    return { snippets: this.snippets, charged: this.charges() };
+    return { snippets: this.snippets, charged: this.charges(), ...(this.consented.size === 0 ? {} : { consented: [...this.consented] }) };
   }
 
   /** Characters taken from a window so far. */

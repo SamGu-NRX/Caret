@@ -23,11 +23,13 @@ export type GroundedProposal = Omit<FillProposal, "fields"> & { fields: Grounded
 export type AboutNow = (id: string) => AboutValue | null;
 
 /**
- * The part of a proposal Caret writes: its text fields. Selects, radio groups, boxes, dates and times are
- * hand-offs (FillField.handoff) the pop-up does not run, so a form's pop-up is judged on its text fields (B24).
+ * The part of a proposal Caret writes: its text fields, and (B27) a web dropdown that carries a value, which fill gives
+ * one only where the page engine's verified pick writes it (fill.ts PAGE_WINDOW_KIND). Selects, radio groups, boxes,
+ * dates and times, and a dropdown with no value, are hand-offs (FillField.handoff) the pop-up does not run, so a form's
+ * pop-up is judged on its text fields and those dropdowns (B24).
  */
 export function writtenFields(p: FillProposal): FillProposal {
-  return { ...p, fields: p.fields.filter((f) => f.control === "text") };
+  return { ...p, fields: p.fields.filter((f) => f.control === "text" || (f.control === "combobox" && f.value !== null)) };
 }
 
 /** A pop-up is offered only for two or more fields, each with a value and the window or memory entry it came from. */
