@@ -1,0 +1,407 @@
+// S1: saved answers. The user's own words for prose questions, kept in answers.md only with their consent, offered
+// again only when Jev matches the question, code finds no other organization in them and the field fits them, and
+// never written without being shown whole. All people, organizations and text here are invented.
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { MemoryDocumentStore } from "../src/memory/documents.ts";
+import { AnswerError, answerNow, capture, putAnswer, savedAnswers, type SavedAnswer } from "../src/memory/answers.ts";
+import { ScreenModel } from "../src/model.ts";
+import { proposeFill } from "../src/fill/fill.ts";
+import { guardAnswer, namesIn, pageText } from "../src/fill/answers.ts";
+import type { AskJev, JevRequest } from "../src/fill/jev.ts";
+import { buildFillPopup, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
+import { carriesAnswer, SAVED_ANSWER_RULE, withoutAnswers } from "../src/offers/answer-gate.ts";
+import { Helper } from "../src/helper.ts";
+import { Store } from "../src/store.ts";
+import { FillProposal, PROTOCOL_VERSION, type AnswerFields, type HelperMessage, type Node } from "../src/protocol.ts";
+import { field, node, snap } from "./builders.ts";
+
+const CHROME = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+const RAMP = "https://jobs.ashbyhq.com/ramp/34413f8d/application";
+
+const WHY_NORTHWIND =
+  "I've wanted to work on software that moves physical things for a long time, and Northwind Robotics is the team I'd learn the most from. The dispatch planner is the product I'd most like to make faster.";
+const PROJECT =
+  "The project I'm proudest of is a billing migration I led two years ago. Our invoices were built by a nightly job that had grown to four hours, and a failed run meant late bills for thousands of customers. I split it into small idempotent steps, ran the old and new paths side by side for a month, and moved customers over in batches. The job now takes eleven minutes, and nobody has been billed twice since.";
+
+const saved = (id: string, question: string, answer: string, site: string | null = "https://job-boards.greenhouse.io/northwind/jobs/101"): SavedAnswer => ({
+  id,
+  status: "active",
+  fields: { question, answer, site, form: "Job Application for Software Engineer at Northwind Robotics", savedOn: "2026-10-01T12:00:00.000Z" },
+});
+
+/** A page window: a form whose textareas are `prose`, each a node with that label (and maxLength, entry, value as given). */
+function pageModel(title: string, prose: { key: string; label: string; extra?: Partial<Node> }[], kind = "page"): ScreenModel {
+  const model = new ScreenModel();
+  const nodes: Node[] = [node("frame-0", "AXWebArea", { label: title }), field("f-name", "", { label: "Full name", frame: [10, 10, 200, 20] })];
+  prose.forEach((p, i) => nodes.push(node(p.key, "AXTextArea", { label: p.label, editable: true, frame: [10, 60 + i * 120, 400, 100], ...p.extra })));
+  model.apply(snap(nodes, { at: 1000, windowId: "page-eng1-7", title, kind, app: CHROME, focused: true, focusedKey: prose[0]?.key ?? "f-name" }));
+  return model;
+}
+
+/**
+ * A fake Jev that answers each saved-answer question by the question an answer was saved for (`pick` returns it, or
+ * null for none), whatever the ask's ids, and every other question "none".
+ */
+function jevPickingQuestion(pick: (instructions: string) => string | null, confidence = 0.92, sent: JevRequest[] = []): AskJev {
+  return async (req) => {
+    sent.push(req);
+    return {
+      model: "jev-test",
+      answers: Object.fromEntries(
+        Object.entries(req.questions).map(([id, q]) => {
+          if (!id.endsWith("_answer")) return [id, { choice: "none", confidence }];
+          const want = pick(String(q.instructions));
+          const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.includes(`question "${want}"`));
+          return [id, { choice: hit?.[0] ?? "none", confidence }];
+        }),
+      ),
+      inputTokens: 500,
+      latencyMs: 10,
+      costUsd: 0.00002,
+    };
+  };
+}
+
+describe("answers.md", () => {
+  let dir: string;
+  let store: MemoryDocumentStore;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "caret-answers-"));
+    store = new MemoryDocumentStore(join(dir, "Memory"));
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const fields = (question: string, answer: string, site: string | null = RAMP): AnswerFields => ({ question, answer, site, form: "Security Engineer, Cloud @ Ramp", savedOn: "2026-10-05T10:00:00.000Z" });
+
+  it("keeps an answer verbatim, line breaks and quotes included, in its own readable file", () => {
+    const words = 'First paragraph, with "quotes".\n\nSecond paragraph.  Two spaces stay.';
+    const id = putAnswer(store, fields("What has been your proudest accomplishment?", words));
+    const text = readFileSync(join(dir, "Memory", "answers.md"), "utf8");
+    expect(text.startsWith("# Saved answers\n")).toBe(true);
+    expect(text).toContain(`## What has been your proudest accomplishment? <!-- caret:id=${id} kind=answer -->`);
+    // A fresh store reads back exactly what was saved.
+    const again = new MemoryDocumentStore(join(dir, "Memory"));
+    expect(answerNow(again, id)?.fields.answer).toBe(words);
+    again.close();
+  });
+
+  it("updates the answer to the same question on the same site, and keeps another site's apart", () => {
+    const a = putAnswer(store, fields("Why do you want to work here?", "Because of the mission, first version."));
+    const b = putAnswer(store, fields("Why do you want to work here?", "Because of the mission, second version."));
+    const c = putAnswer(store, fields("Why do you want to work here?", "A different company's answer.", "https://jobs.lever.co/brightfern/1/apply"));
+    expect(b).toBe(a);
+    expect(c).not.toBe(a);
+    expect(savedAnswers(store).map((x) => x.fields.answer).sort()).toEqual(["A different company's answer.", "Because of the mission, second version."]);
+  });
+
+  it("refuses an answer holding what Caret never keeps, saying so, and writes nothing", () => {
+    let caught: unknown = null;
+    try {
+      putAnswer(store, fields("Anything else?", "My card is 4111 1111 1111 1111 if you need it."));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AnswerError);
+    expect((caught as AnswerError).why).toBe("secret");
+    expect((caught as AnswerError).message).toContain("Caret doesn't keep card numbers in memory");
+    expect(savedAnswers(store)).toEqual([]);
+  });
+
+  it("follows the user's edit: a paused answer is not offered, and an edited one is read as edited", () => {
+    const id = putAnswer(store, fields("Why do you want to work here?", "Original words."));
+    const path = join(dir, "Memory", "answers.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace("- Answer: Original words.", "- Answer: My edited words.").replace("- Status: active", "- Status: paused"));
+    const now = answerNow(store, id);
+    expect(now?.fields.answer).toBe("My edited words.");
+    expect(now?.status).toBe("paused");
+  });
+});
+
+describe("capture: only the user's own typing, on a page form's prose field", () => {
+  const typed = { entry: "typed" as const, value: PROJECT };
+  const one = (extra: Partial<Node> = typed, kind = "page") =>
+    capture(pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "What has been your proudest accomplishment?", extra }], kind).windows.get("page-eng1-7")!, "q1", { site: RAMP, caretWrote: [] });
+
+  it("captures what the user typed, with the question, site and form", () => {
+    expect(one()).toEqual({ ok: true, fields: { question: "What has been your proudest accomplishment?", answer: PROJECT, site: RAMP, form: "Security Engineer, Cloud @ Ramp" } });
+  });
+
+  it("refuses text Caret wrote, though the page saw only typing in the field", () => {
+    const w = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "What has been your proudest accomplishment?", extra: typed }]).windows.get("page-eng1-7")!;
+    // Caret's executor wrote part of this text earlier; the user typed the rest around it.
+    const r = capture(w, "q1", { site: RAMP, caretWrote: [PROJECT.slice(40, 120)] });
+    expect(r).toEqual({ ok: false, why: "caretWrote", says: "Caret wrote some of this text, so it isn't yours to save." });
+  });
+
+  it("refuses a script's change (the page's, or Caret's own page write), a paste, and text it never saw typed", () => {
+    expect(one({ value: PROJECT, entry: "other" })).toMatchObject({ ok: false, why: "notTyped" });
+    expect(one({ value: PROJECT, entry: "pasted" })).toEqual({ ok: false, why: "pasted", says: "You pasted some of this text, so Caret can't tell the words are yours." });
+    expect(one({ value: PROJECT })).toEqual({ ok: false, why: "unseen", says: "Caret didn't see you type this, so it won't save it as yours." });
+  });
+
+  it("refuses what the never-typed classifier flags, and a secret in the text", () => {
+    const ssn = pageModel("Form", [{ key: "q1", label: "Social Security number", extra: { value: "123-45-6789", entry: "typed" } }]).windows.get("page-eng1-7")!;
+    expect(capture(ssn, "q1", { site: null, caretWrote: [] })).toMatchObject({ ok: false, why: "neverTyped", says: "Caret doesn't keep government ID numbers in memory." });
+    expect(one({ value: `${PROJECT} Card 4111 1111 1111 1111.`, entry: "typed" })).toMatchObject({ ok: false, why: "secret" });
+  });
+
+  it("refuses a native window, a short one-line field, and a field with no label", () => {
+    expect(one(typed, "standard")).toMatchObject({ ok: false, why: "notPage" });
+    const model = new ScreenModel();
+    model.apply(snap([field("short", "Alex", { label: "Preferred name", entry: "typed" }), node("bare", "AXTextArea", { editable: true, value: PROJECT, entry: "typed" })], { at: 1, windowId: "w", kind: "page", app: CHROME }));
+    const w = model.windows.get("w")!;
+    expect(capture(w, "short", { site: null, caretWrote: [] })).toMatchObject({ ok: false, why: "notProse" });
+    expect(capture(w, "bare", { site: null, caretWrote: [] })).toMatchObject({ ok: false, why: "noQuestion" });
+  });
+});
+
+describe("the organization guard", () => {
+  const page = (title: string, site: string | null = null, labels: string[] = []) =>
+    pageText(pageModel(title, labels.map((label, i) => ({ key: `q${i}`, label }))).windows.get("page-eng1-7")!, { site, headings: [] });
+
+  it("names what a text names, not its sentence openers", () => {
+    expect(namesIn(WHY_NORTHWIND)).toEqual(["Northwind Robotics"]);
+    expect(namesIn("The team at Harbor & Pine shipped it. When I joined, AWS and Terraform ran everything.")).toEqual(["Harbor & Pine", "AWS", "Terraform"]);
+    expect(namesIn(PROJECT)).toEqual([]);
+  });
+
+  it("withholds an answer written for another organization, naming both", () => {
+    const why = saved("a1", "Why do you want to work at Northwind Robotics?", WHY_NORTHWIND);
+    expect(guardAnswer(why, page("Security Engineer, Cloud @ Ramp", RAMP), undefined)).toEqual({ why: "otherOrganization", says: "This answer was written for Northwind Robotics; this page is for Ramp." });
+    // Named only in its text: it mentions the organization.
+    const text = saved("a2", "Why this company?", WHY_NORTHWIND);
+    expect(guardAnswer(text, page("Job Application for Commercial Policy Lead at Discord"), undefined)).toEqual({ why: "otherOrganization", says: "This answer mentions Northwind Robotics; this page is for Discord." });
+    // A page code cannot name: the sentence says only what the answer mentions.
+    expect(guardAnswer(text, page("Careers"), undefined)?.says).toBe("This answer mentions Northwind Robotics, which this page doesn't.");
+  });
+
+  it("offers an answer naming the page's own organization, or no organization at all", () => {
+    const why = saved("a1", "Why do you want to work at Northwind Robotics?", WHY_NORTHWIND);
+    expect(guardAnswer(why, page("Job Application for Senior Engineer, Dispatch at Northwind Robotics"), undefined)).toBeNull();
+    expect(guardAnswer(saved("a3", "What has been your proudest accomplishment?", PROJECT), page("Security Engineer, Cloud @ Ramp"), undefined)).toBeNull();
+  });
+
+  it("withholds an answer longer than the field's maxlength, never cutting it", () => {
+    const a = saved("a3", "What has been your proudest accomplishment?", PROJECT);
+    expect(guardAnswer(a, page("Brightfern - Software Engineer"), 300)).toEqual({ why: "tooLong", says: `This answer is ${PROJECT.length} characters, and this field takes at most 300.` });
+    expect(guardAnswer(a, page("Brightfern - Software Engineer"), PROJECT.length)).toBeNull();
+  });
+});
+
+describe("matching a saved answer in fill", () => {
+  const answers = [saved("a1", "Why do you want to work at Northwind Robotics?", WHY_NORTHWIND), saved("a3", "What has been your proudest accomplishment?", PROJECT, null)];
+
+  it("asks one Choice per prose field between the saved answers and none, carrying only each answer's first 300 characters, as memory", async () => {
+    const sent: JevRequest[] = [];
+    const model = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "What has been your favorite project or proudest accomplishment? Why?" }]);
+    const p = await proposeFill(model, jevPickingQuestion(() => "What has been your proudest accomplishment?", 0.9, sent), "page-eng1-7", "q1", 2000, { answers, page: { site: RAMP, headings: [] }, rand: () => 0 });
+    const f = p.fields.find((x) => x.key === "q1")!;
+    expect(FillProposal.parse(p)).toBeTruthy();
+    expect(f).toMatchObject({ value: PROJECT, source: null, memory: { id: "a3", label: "What has been your proudest accomplishment?", says: "your saved answer" }, withheld: null });
+    expect(f.answer).toEqual({ id: "a3", question: "What has been your proudest accomplishment?", site: null, form: answers[1]!.fields.form, savedOn: "2026-10-01T12:00:00.000Z", withheld: null });
+    expect(sent).toHaveLength(2);
+    for (const r of sent) {
+      const q = Object.entries(r.questions).find(([id]) => id.endsWith("_answer"))?.[1];
+      expect(Object.keys(q?.criteria ?? {}).sort()).toHaveLength(3);
+      const body = JSON.stringify(r.questions);
+      expect(body).toContain(PROJECT.slice(0, 300));
+      expect(body).not.toContain(PROJECT.slice(300));
+      // Declared as memory, as the ledger charged it; no window is charged for the user's own words.
+      expect(r.snippets.filter((s) => s.windowId === "memory").map((s) => s.text)).toEqual(expect.arrayContaining(["What has been your proudest accomplishment?", `${PROJECT.slice(0, 300)}…`]));
+    }
+  });
+
+  it("withholds the right answer for the wrong company, with the sentence", async () => {
+    const model = pageModel("Job Application for Commercial Policy Lead at Discord", [{ key: "q1", label: "Why do you want to work at Discord?" }]);
+    const p = await proposeFill(model, jevPickingQuestion(() => "Why do you want to work at Northwind Robotics?"), "page-eng1-7", "q1", 2000, { answers, page: { site: "https://job-boards.greenhouse.io/discord/jobs/8806482002", headings: [] } });
+    const f = p.fields.find((x) => x.key === "q1")!;
+    expect(f.value).toBeNull();
+    expect(f.withheld).toBe("otherPerson");
+    expect(f.answer?.withheld).toEqual({ why: "otherOrganization", says: "This answer was written for Northwind Robotics; this page is for Discord." });
+  });
+
+  it("withholds an answer longer than the field's maxlength", async () => {
+    const model = pageModel("Brightfern - Software Engineer", [{ key: "q1", label: "What's the accomplishment you're proudest of?", extra: { maxLength: 300 } }]);
+    const p = await proposeFill(model, jevPickingQuestion(() => "What has been your proudest accomplishment?"), "page-eng1-7", "q1", 2000, { answers, page: { site: null, headings: [] } });
+    const f = p.fields.find((x) => x.key === "q1")!;
+    expect([f.value, f.withheld, f.answer?.withheld?.why]).toEqual([null, "wrongKind", "tooLong"]);
+  });
+
+  it("offers nothing when the asks disagree or are unsure, and asks nothing about answers without them", async () => {
+    const model = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "Tell us about a project you're proud of." }]);
+    let n = 0;
+    const split: AskJev = jevPickingQuestion(() => (n++ === 0 ? "What has been your proudest accomplishment?" : null));
+    const p = await proposeFill(model, split, "page-eng1-7", "q1", 2000, { answers, page: { site: RAMP, headings: [] } });
+    expect(p.fields.find((x) => x.key === "q1")).toMatchObject({ value: null, withheld: "disagree" });
+    const low = await proposeFill(model, jevPickingQuestion(() => "What has been your proudest accomplishment?", 0.6), "page-eng1-7", "q1", 2000, { answers, page: { site: RAMP, headings: [] } });
+    expect(low.fields.find((x) => x.key === "q1")).toMatchObject({ value: null, withheld: "lowConfidence" });
+    const sent: JevRequest[] = [];
+    await proposeFill(model, jevPickingQuestion(() => null, 0.9, sent), "page-eng1-7", "q1", 2000, {}).catch(() => undefined);
+    expect(sent.some((r) => Object.keys(r.questions).some((q) => q.endsWith("_answer")))).toBe(false);
+  });
+});
+
+describe("a saved answer is never written without the user seeing it whole", () => {
+  const answerField = (key: string, answer: string) => ({
+    key,
+    control: "text" as const,
+    handoff: null,
+    frame: null,
+    descriptor: "Text area.",
+    choice: "s1",
+    confidence: 0.9,
+    value: answer,
+    source: null,
+    memory: { id: `ans-${key}`, label: "What has been your proudest accomplishment?", says: "your saved answer" },
+    withheld: null,
+    asks: [] as [],
+    answer: { id: `ans-${key}`, question: "What has been your proudest accomplishment?", site: null, form: null, savedOn: "2026-10-01T12:00:00.000Z", withheld: null },
+  });
+  const valueField = (key: string, value: string) => ({
+    key,
+    control: "text" as const,
+    handoff: null,
+    frame: null,
+    descriptor: "Text field.",
+    choice: "c1",
+    confidence: 0.9,
+    value,
+    source: { pid: 1, windowId: "notes", bundleId: "n", appName: "Notes", windowTitle: "Me", nodeKey: "n1", kind: null },
+    memory: null,
+    withheld: null,
+    asks: [] as [],
+  });
+  const proposal = (fields: unknown[]): FillProposal =>
+    FillProposal.parse({ type: "fillProposal", v: PROTOCOL_VERSION, id: "p1", at: 1, pid: CHROME.pid, windowId: "page-eng1-7", bundleId: CHROME.bundleId, triggerKey: "q1", fields, candidates: 1, jev: { model: "jev-test", latencyMs: 1, inputTokens: 1, costUsd: 0 }, cutoff: 0.75 });
+
+  it("shows every answer in a pop-up row, whole, ahead of fields that fold into 'and N more'", () => {
+    const model = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "Proudest accomplishment?" }]);
+    const fields = [...["a", "b", "c", "d", "e", "f"].map((k) => valueField(`v-${k}`, `value ${k}`)), answerField("q1", PROJECT)];
+    const spec = buildFillPopup(model, writtenFields(proposal(fields))).spec;
+    const block = spec.blocks.find((b) => b.type === "fields") as { rows: { value?: { text: string; ref: unknown } }[]; more?: number };
+    const row = block.rows.find((r) => r.value?.text === PROJECT);
+    expect(row?.value?.ref).toEqual({ rule: SAVED_ANSWER_RULE, derived: [{ memory: "ans-q1" }] });
+    expect(block.rows).toHaveLength(5);
+    expect(block.more).toBe(2);
+  });
+
+  it("writes no more answers than one pop-up shows, and none from Command-1, which shows nothing first", () => {
+    const six = ["a", "b", "c", "d", "e", "f"].map((k) => answerField(`q-${k}`, `${PROJECT} (${k})`));
+    expect(writtenFields(proposal(six)).fields).toHaveLength(5);
+    expect(writtenFields(proposal([...six.slice(0, 1), valueField("v", "x")]), undefined, { answers: false }).fields.map((f) => f.key)).toEqual(["v"]);
+  });
+
+  it("sends a host without the capability no answer, and stops a pop-up whose answer changed in answers.md", () => {
+    const p = proposal([answerField("q1", PROJECT), valueField("v", "x")]);
+    expect(carriesAnswer(p)).toBe(true);
+    const stripped = withoutAnswers(p);
+    expect(JSON.stringify(stripped)).not.toContain(PROJECT.slice(0, 40));
+    expect(FillProposal.parse(stripped).fields[0]).toMatchObject({ value: null, memory: null, choice: "none" });
+    const model = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "Proudest accomplishment?" }]);
+    const g = writtenFields(proposal([answerField("q1", PROJECT)]));
+    g.fields[0] = { ...g.fields[0]!, descriptor: "Text area. Label: 'Proudest accomplishment?'." };
+    const same = (): { question: string; answer: string } => ({ question: "What has been your proudest accomplishment?", answer: PROJECT });
+    expect(recheckFill(model, g, () => null, same)).toBeNull();
+    expect(recheckFill(model, g, () => null, () => ({ question: "What has been your proudest accomplishment?", answer: `${PROJECT} Edited.` }))).toBe('your saved answer to "What has been your proudest accomplishment?" changed');
+    expect(recheckFill(model, g, () => null)).not.toBeNull();
+  });
+});
+
+describe("saving through the helper: an offer when the user leaves the field, and only their yes saves", () => {
+  let dir: string;
+  let store: Store;
+  let helper: Helper;
+  let out: HelperMessage[];
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "caret-answers-helper-"));
+    store = new Store(join(dir, "data"));
+    out = [];
+    helper = new Helper({ store, askJev: () => Promise.reject(new Error("no Jev here")), shadow: false, allowBackgroundFocus: true, publish: (m) => void out.push(m), pageContext: () => ({ site: RAMP, headings: [] }) });
+  });
+  afterEach(() => {
+    helper.shutdown();
+    helper.memory.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const walk = (value: string, entry: Node["entry"], focusedKey: string, at: number) =>
+    helper.handleReader(
+      snap([node("frame-0", "AXWebArea", { label: "Ramp" }), node("q1", "AXTextArea", { label: "What has been your proudest accomplishment?", editable: true, value, ...(entry === undefined ? {} : { entry }) }), field("f-name", "", { label: "Full name" })], {
+        at,
+        windowId: "page-eng1-7",
+        kind: "page",
+        title: "Security Engineer, Cloud @ Ramp",
+        app: CHROME,
+        focused: true,
+        focusedKey,
+      }),
+    );
+
+  it("offers to save typed text when focus leaves the field, and saves it on the user's yes", async () => {
+    helper.setAnswerHosts(1);
+    await walk(PROJECT, "typed", "q1", 1000);
+    await walk(PROJECT, "typed", "f-name", 2000);
+    const offer = out.find((m) => m.type === "answerSaveOffer");
+    expect(offer).toMatchObject({ question: "What has been your proudest accomplishment?", answer: PROJECT, site: RAMP, says: "Save this answer for next time?", replaces: null });
+    expect(savedAnswers(helper.memory.files!)).toEqual([]);
+    const reply = helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r1", from: { kind: "offer", offerId: (offer as { id: string }).id } });
+    expect(reply).toMatchObject({ outcome: "saved", why: null, says: 'Saved your answer to "What has been your proudest accomplishment?".' });
+    expect(savedAnswers(helper.memory.files!).map((a) => a.fields.answer)).toEqual([PROJECT]);
+  });
+
+  it("makes no offer without a host that shows answers, or for text the user did not type", async () => {
+    await walk(PROJECT, "typed", "q1", 1000);
+    await walk(PROJECT, "typed", "f-name", 2000);
+    helper.setAnswerHosts(1);
+    await walk(PROJECT, "other", "q1", 3000);
+    await walk(PROJECT, "other", "f-name", 4000);
+    expect(out.filter((m) => m.type === "answerSaveOffer")).toEqual([]);
+  });
+
+  it("refuses a yes when the text changed since the offer, and a direct save of pasted text", async () => {
+    helper.setAnswerHosts(1);
+    await walk(PROJECT, "typed", "q1", 1000);
+    await walk(PROJECT, "typed", "f-name", 2000);
+    const offer = out.find((m) => m.type === "answerSaveOffer") as { id: string };
+    await walk(`${PROJECT} And one more line.`, "typed", "f-name", 3000);
+    expect(helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r1", from: { kind: "offer", offerId: offer.id } })).toMatchObject({ outcome: "refused", why: "changed", answerId: null });
+    await walk(PROJECT, "pasted", "f-name", 4000);
+    expect(helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r2", from: { kind: "field", windowId: "page-eng1-7", fieldKey: "q1" } })).toEqual({
+      type: "answerSaveReply",
+      v: PROTOCOL_VERSION,
+      requestId: "r2",
+      outcome: "refused",
+      answerId: null,
+      why: "pasted",
+      says: "You pasted some of this text, so Caret can't tell the words are yours.",
+    });
+    expect(savedAnswers(helper.memory.files!)).toEqual([]);
+  });
+});
+
+describe("the page engine carries what saved answers need", () => {
+  it("passes a field's maxlength and how its text was entered from the walk into the screen model", async () => {
+    const { toWindowSnapshot } = await import("../src/engines/page-link.ts");
+    const { EngineSession } = await import("../src/engines/session.ts");
+    const session = new EngineSession({ engine: "eng1", browser: CHROME, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+    const s = toWindowSnapshot(
+      {
+        type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
+        frames: [{
+          frameId: 0, parentFrameId: -1, documentId: "D0", origin: "https://jobs.ashbyhq.com", path: "/ramp/1/application", navGen: 1, title: "Apply", headings: [], iframes: [], excluded: {}, truncated: false,
+          controls: [{ id: "e1", key: "form/textbox:why~0", strongKey: null, kind: "textarea", role: "textbox", name: "Why Ramp?", value: "Because", form: null, rect: [0, 0, 100, 40], maxLength: 500, entry: "typed" }],
+        }],
+        focused: null, missing: [],
+      } as never,
+      session,
+      1,
+    );
+    expect(s.nodes.find((n) => n.role === "AXTextArea")).toMatchObject({ maxLength: 500, entry: "typed" });
+  });
+});

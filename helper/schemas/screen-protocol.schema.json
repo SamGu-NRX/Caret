@@ -255,6 +255,19 @@
                         "secure"
                       ]
                     }
+                  },
+                  "maxLength": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "entry": {
+                    "type": "string",
+                    "enum": [
+                      "typed",
+                      "pasted",
+                      "other"
+                    ]
                   }
                 },
                 "required": [
@@ -1545,7 +1558,7 @@
             },
             "doc": {
               "type": "string",
-              "pattern": "^(?:about-me|people|preferences|skills\\/[A-Za-z0-9][A-Za-z0-9_-]{2,79})$"
+              "pattern": "^(?:about-me|people|preferences|answers|skills\\/[A-Za-z0-9][A-Za-z0-9_-]{2,79})$"
             },
             "baseRevision": {
               "anyOf": [
@@ -1762,6 +1775,75 @@
             "segment",
             "digest",
             "at"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "answerSave"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "from": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "offer"
+                    },
+                    "offerId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "offerId"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "field"
+                    },
+                    "windowId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "fieldKey": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "windowId",
+                    "fieldKey"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "from"
           ],
           "additionalProperties": false
         }
@@ -2179,6 +2261,72 @@
                         "maxItems": 0
                       }
                     ]
+                  },
+                  "answer": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "question": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "site": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "form": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "savedOn": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "withheld": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "why": {
+                                "type": "string",
+                                "enum": [
+                                  "otherOrganization",
+                                  "tooLong"
+                                ]
+                              },
+                              "says": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "why",
+                              "says"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "question",
+                      "site",
+                      "form",
+                      "savedOn",
+                      "withheld"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
@@ -7347,7 +7495,7 @@
                 "properties": {
                   "doc": {
                     "type": "string",
-                    "pattern": "^(?:about-me|people|preferences|skills\\/[A-Za-z0-9][A-Za-z0-9_-]{2,79})$"
+                    "pattern": "^(?:about-me|people|preferences|answers|skills\\/[A-Za-z0-9][A-Za-z0-9_-]{2,79})$"
                   },
                   "file": {
                     "type": "string",
@@ -8236,6 +8384,175 @@
               "additionalProperties": false
             }
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "answerSaveOffer"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "windowId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "fieldKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "question": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            },
+            "answer": {
+              "type": "string",
+              "maxLength": 4000
+            },
+            "site": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "form": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "replaces": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "says": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "id",
+            "at",
+            "windowId",
+            "fieldKey",
+            "question",
+            "answer",
+            "site",
+            "form",
+            "replaces",
+            "says"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "answerSaveReply"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "saved",
+                "refused"
+              ]
+            },
+            "answerId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "why": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "notPage",
+                    "notProse",
+                    "noQuestion",
+                    "neverTyped",
+                    "secret",
+                    "pasted",
+                    "caretWrote",
+                    "notTyped",
+                    "unseen",
+                    "empty",
+                    "tooLong",
+                    "changed",
+                    "noOffer",
+                    "unavailable"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "says": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "outcome",
+            "answerId",
+            "why",
+            "says"
+          ],
+          "additionalProperties": false
         }
       ],
       "$defs": {

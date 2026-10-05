@@ -15,6 +15,8 @@ import { describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fil
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import { offerField } from "./field.ts";
+import { ANSWER_SAYS } from "../fill/answers.ts";
+import { SAVED_ANSWER_RULE } from "./answer-gate.ts";
 
 /** Rows the fields block, and the block of fields the user sets, list before "and N more". Assumed, not measured. */
 export const MAX_FILL_ROWS = 5;
@@ -39,12 +41,17 @@ export type GroundedProposal = Omit<FillProposal, "fields"> & { fields: Grounded
 
 /** An About entry as a fill may use it now, or null when it is gone, paused, not typed or fits no field (the helper reads memory). */
 export type AboutNow = (id: string) => AboutValue | null;
+/** A saved answer as answers.md holds it now, read by content, or null when it is gone, paused or broken (S1). */
+export type AnswerNow = (id: string) => { question: string; answer: string } | null;
 
 /** Where a value came from, as a pop-up ref: the source node and the span quoted there, or the memory entry. */
 function sourceRef(source: FillSource | null, memory: FillMemory | null, span: string): PopupRef | null {
   if (source !== null) return { node: `${source.windowId}/${source.nodeKey}`, quote: span };
   return memory === null ? null : { memory: memory.id };
 }
+
+/** Whether a field's value is a saved answer (S1). */
+const isAnswer = (f: FillField): boolean => f.answer !== undefined && f.answer.withheld === null && f.value !== null;
 
 /**
  * The part of a proposal Caret writes, and what it leaves to the user. Written: every text field with a value, and
@@ -53,11 +60,20 @@ function sourceRef(source: FillSource | null, memory: FillMemory | null, span: s
  * proposal, with the value Caret would use when it has one, and, when `w` (the form's window) is given, the form's
  * empty controls fill never asks about: a file input, a consent or sign-up box, a control past the question's cap.
  */
-export function writtenFields(p: FillProposal, w?: WindowState): GroundedProposal {
+export function writtenFields(p: FillProposal, w?: WindowState, opts: { answers?: boolean } = {}): GroundedProposal {
   const fields: GroundedField[] = [];
   const yours: YourField[] = [];
+  let answers = 0;
   for (const f of p.fields) {
     const span = f.asks[0]?.value ?? null;
+    // S1: a saved answer is written only from a pop-up row that shows it whole, and buildFillPopup lists every answer
+    // first, so at most MAX_FILL_ROWS of them are written; one more, or any on a path with no preview of its own
+    // (`answers: false`, the host's Command-1), is the user's to fill.
+    if (isAnswer(f) && (opts.answers === false || answers >= MAX_FILL_ROWS)) {
+      yours.push({ key: f.key, value: null });
+      continue;
+    }
+    if (isAnswer(f)) answers++;
     if (f.control === "text" && f.value !== null && (f.source !== null || f.memory !== null)) {
       fields.push({ ...f, value: f.value, span: f.value, display: f.value, context: null } as GroundedField);
       continue;
@@ -143,16 +159,23 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
   const fields = p.fields;
   const windows = fields.flatMap((f) => (f.source === null ? [] : [f.source]));
   const memories = [...new Set(fields.flatMap((f) => (f.memory === null ? [] : [f.memory.id])))];
+  const told = fields.some((f) => f.memory !== null && !isAnswer(f));
+  const saved = fields.filter(isAnswer).length;
   // The source line names each window once, then what the user told Caret: "from Mail, Invoice 2041 and what you told Caret".
   const refs: PopupRef[] = [...[...new Set(windows.map((s) => `${s.windowId}/${s.nodeKey}`))].map((node) => ({ node })), ...memories.map((memory) => ({ memory }))];
   // One window and nothing from memory: the first field's source node stands for the window, as before B17.
   const first = windows[0];
   const oneWindow = memories.length === 0 && first !== undefined && windows.every((s) => s.windowId === first.windowId);
   const source: PopupRef = oneWindow ? nodeRef(first.windowId, first.nodeKey) : refs.length === 1 ? (refs[0] as PopupRef) : { rule: "sources", derived: refs };
-  const text = [...new Set(windows.map(sourceText)), ...(memories.length > 0 ? [ABOUT_SAYS] : [])].join(" and ");
-  const rows = fields.slice(0, MAX_FILL_ROWS).map((f) => ({
+  const text = [...new Set(windows.map(sourceText)), ...(told ? [ABOUT_SAYS] : []), ...(saved === 0 ? [] : [saved === 1 ? ANSWER_SAYS : `${ANSWER_SAYS}s`])].join(" and ");
+  // S1: every saved answer is in a row the pop-up shows, never in "and N more", and its value is the whole answer: it
+  // is written only as the user saw it (writtenFields keeps at most MAX_FILL_ROWS of them).
+  const room = Math.max(0, MAX_FILL_ROWS - saved);
+  const others = fields.filter((f) => !isAnswer(f)).slice(0, room);
+  const shown = fields.filter((f) => isAnswer(f) || others.includes(f));
+  const rows = shown.map((f) => ({
     destination: { text: fieldLabel(model, p.windowId, f.key), ref: { rule: "fieldLabel", derived: [nodeRef(p.windowId, f.key)] } },
-    value: { text: f.display, ref: valueRef(f) },
+    value: { text: f.display, ref: isAnswer(f) ? { rule: SAVED_ANSWER_RULE, derived: [valueRef(f)] } : valueRef(f) },
     state: "ready" as const,
   }));
   const more = fields.length - rows.length;
@@ -186,7 +209,7 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
  * values must be it. A value from memory must still be what that entry holds: forgetting, pausing or editing it ends
  * the offer.
  */
-export function recheckFill(model: ScreenModel, p: GroundedProposal, about: AboutNow): string | null {
+export function recheckFill(model: ScreenModel, p: GroundedProposal, about: AboutNow, answer: AnswerNow = () => null): string | null {
   const w = model.windows.get(p.windowId);
   if (w === undefined) return "the form's window closed";
   for (const f of p.fields) {
@@ -195,6 +218,12 @@ export function recheckFill(model: ScreenModel, p: GroundedProposal, about: Abou
     const input = emptyInput(w, f.key);
     if (input === null) return `the field ${f.key} is no longer empty`;
     if (describeInput(w, input) !== f.descriptor) return `the field ${f.key} now reads differently`;
+    if (f.source === null && f.answer !== undefined) {
+      // S1: the answer as answers.md holds it now must still be the text shown, word for word, for the same question.
+      const now = answer(f.memory.id);
+      if (now === null || now.answer !== f.value || now.question !== f.memory.label) return `your saved answer to "${f.memory.label}" changed`;
+      continue;
+    }
     if (f.source === null) {
       // The label decided which fields the entry was offered to (about.ts), so a renamed entry ends the offer too.
       const now = about(f.memory.id);

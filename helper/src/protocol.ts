@@ -37,6 +37,16 @@ export type WindowRef = z.infer<typeof WindowRef>;
 export const NodeState = z.enum(["focused", "selected", "disabled", "expanded", "checked", "secure"]);
 export type NodeState = z.infer<typeof NodeState>;
 
+/**
+ * S1: how the text now in a page text field got there, as the extension's content script saw it since the field was
+ * last empty. "typed": only the user's own typing (trusted input events of a typing kind) changed it, and the value is
+ * what that typing left. "pasted": the user pasted or dropped text into it, or the browser replaced text (autofill,
+ * a spelling fix). "other": a script changed it (the page's, or Caret's own writes, which are untrusted events), or
+ * the value changed with no input event. Absent: the content script saw no edit, so nothing is known.
+ */
+export const PageEntry = z.enum(["typed", "pasted", "other"]);
+export type PageEntry = z.infer<typeof PageEntry>;
+
 export const Node = z.object({
   /** Caret's element key: app, window kind, named ancestors, role, normalized label, ordinal. */
   key: z.string(),
@@ -52,6 +62,10 @@ export const Node = z.object({
   frame: Frame.optional(),
   editable: z.literal(true).optional(),
   states: z.array(NodeState).optional(),
+  /** S1, page text fields only: the field's maxlength attribute, when the page sets one. */
+  maxLength: z.number().int().nonnegative().optional(),
+  /** S1, page text fields only: how the field's text was entered (PageEntry). */
+  entry: PageEntry.optional(),
 });
 export type Node = z.infer<typeof Node>;
 
@@ -633,7 +647,7 @@ export type RouteDecision = z.infer<typeof RouteDecision>;
 export const MEMORY_DOCUMENTS_CAPABILITY = "memoryDocuments";
 
 /** A memory document, named by the helper: one of three fixed files or a skill's. Never a path. */
-export const MemoryDocId = z.string().regex(/^(?:about-me|people|preferences|skills\/[A-Za-z0-9][A-Za-z0-9_-]{2,79})$/, "a memory document is about-me, people, preferences or skills/<id>");
+export const MemoryDocId = z.string().regex(/^(?:about-me|people|preferences|answers|skills\/[A-Za-z0-9][A-Za-z0-9_-]{2,79})$/, "a memory document is about-me, people, preferences, answers or skills/<id>");
 
 /**
  * "Not right" on an offer (lead decision 3), about one fact the offer used, which its memoryProvenance named.
@@ -955,7 +969,55 @@ export const SkillAnswer = z.object({
 });
 export type SkillAnswer = z.infer<typeof SkillAnswer>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, AskAnswer, GoalRequest, GoalAccept]);
+// MARK: - saved answers (S1)
+
+/**
+ * The hello capability for saved answers (S1). A consumer that lists it promises to show a saved answer's whole text
+ * before it inserts it, and to insert one only on the user's own acceptance after that. Only such a consumer is sent an
+ * answer: a fill value with `answer`, a pop-up that writes one, an answerSaveOffer; and only it may send answerSave.
+ */
+export const SAVED_ANSWERS_CAPABILITY = "savedAnswers";
+
+/** The longest answer Caret keeps. Its record line must stay under memory/parse.ts MAX_LINE_CHARS once JSON-quoted. */
+export const MAX_ANSWER_CHARS = 4000;
+
+/**
+ * A saved answer's fields in answers.md: the question as the form asked it, the user's answer verbatim, where it was
+ * saved (the page's address and title) and when (ISO 8601). Only the user's own words, saved only with their consent.
+ */
+export const AnswerFields = z.object({
+  question: z
+    .string()
+    .min(1)
+    .max(300)
+    .refine((s) => s.trim() === s && !/[\r\n]/u.test(s), "must be one line of text without spaces around it"),
+  answer: z
+    .string()
+    .max(MAX_ANSWER_CHARS)
+    .refine((s) => s.trim() !== "", "must not be blank"),
+  site: z.string().min(1).max(500).nullable(),
+  form: z.string().min(1).max(200).nullable(),
+  savedOn: z.iso.datetime(),
+});
+export type AnswerFields = z.infer<typeof AnswerFields>;
+
+/**
+ * The user's consent to save an answer (S1), answered with answerSaveReply under `requestId`. `offer`: yes to an
+ * answerSaveOffer. `field`: "remember this answer" for a field on a page form. Either way the helper checks the field
+ * again: it saves only text the user typed there, as the field holds it now.
+ */
+export const AnswerSave = z.object({
+  type: z.literal("answerSave"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1),
+  from: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("offer"), offerId: z.string().min(1) }),
+    z.object({ kind: z.literal("field"), windowId: z.string().min(1), fieldKey: z.string().min(1) }),
+  ]),
+});
+export type AnswerSave = z.infer<typeof AnswerSave>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, AskAnswer, GoalRequest, GoalAccept, AnswerSave]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -1040,6 +1102,35 @@ export const FillHandoff = z.object({
 });
 export type FillHandoff = z.infer<typeof FillHandoff>;
 
+/**
+ * S1: why a saved answer that matched a field is not offered. "otherOrganization": the answer, or the question it was
+ * saved for, names an organization, product or role that this page does not show. "tooLong": the field's maxlength is
+ * shorter than the answer, and Caret never cuts the user's words to fit.
+ */
+export const AnswerWithheld = z.enum(["otherOrganization", "tooLong"]);
+export type AnswerWithheld = z.infer<typeof AnswerWithheld>;
+
+/**
+ * S1: a field's value is one of the user's saved answers (answers.md), their own words from an earlier form, copied
+ * whole. The value carries `memory` too ({id, label: the question, says}), so a host that checks only "exactly one of
+ * source and memory" stays correct. `withheld` non-null: the answer matched but code withheld it; the field then has
+ * no value, `FillField.withheld` holds the nearest older reason (otherPerson for otherOrganization, wrongKind for
+ * tooLong, since a host before S1 decodes only those six) and `says` is the sentence for the user.
+ */
+export const FillAnswer = z.object({
+  id: z.string().min(1),
+  /** The question the answer was saved for, as that form asked it. */
+  question: z.string().min(1),
+  /** Where it was saved: the page's address without query or fragment; null when unknown. */
+  site: z.string().nullable(),
+  /** The title of the page it was saved from; null when unknown. */
+  form: z.string().nullable(),
+  /** When it was saved, ISO 8601. */
+  savedOn: z.string().min(1),
+  withheld: z.object({ why: AnswerWithheld, says: z.string().min(1) }).nullable(),
+});
+export type FillAnswer = z.infer<typeof FillAnswer>;
+
 export const FillField = z.object({
   key: z.string(),
   /** What the control is; absent from a helper before B24, which read text fields only. */
@@ -1077,7 +1168,16 @@ export const FillField = z.object({
    * offered for it (no window gave a candidate, and nothing the user told Caret fits it).
    */
   asks: z.union([z.tuple([FillAsk, FillAsk]), z.tuple([])]),
+  /**
+   * S1: the saved answer the field matched (FillAnswer). Only a consumer with SAVED_ANSWERS_CAPABILITY is sent a field
+   * that has one; absent everywhere else.
+   */
+  answer: FillAnswer.optional(),
 })
+  .refine((f) => f.answer === undefined || (f.answer.withheld === null ? f.control === "text" && f.value !== null && f.memory?.id === f.answer.id : f.value === null), {
+    message: "an offered answer is a text field's value from that answer's memory entry, and a withheld one gives no value",
+    path: ["answer"],
+  })
   .refine((f) => (f.value === null ? f.source === null && f.memory === null : (f.source === null) !== (f.memory === null)), {
     message: "a value comes with exactly one of source and memory, and no value with neither",
     path: ["memory"],
@@ -1877,9 +1977,66 @@ export const GoalProgress = z.discriminatedUnion("event", [
 ]);
 export type GoalProgress = z.infer<typeof GoalProgress>;
 
+/**
+ * S1: the user left a prose field on a page form that they typed into, and Caret may offer to keep what they wrote. The
+ * host shows `says` with the whole answer when it chooses; the user's yes is answerSave {kind: "offer"}. Nothing is
+ * saved without it. `replaces`: the saved answer to the same question on the same site that a yes would update.
+ */
+export const AnswerSaveOffer = z.object({
+  type: z.literal("answerSaveOffer"),
+  v: z.literal(PROTOCOL_VERSION),
+  id: z.string().min(1),
+  at: ms,
+  windowId: z.string().min(1),
+  fieldKey: z.string().min(1),
+  question: AnswerFields.shape.question,
+  answer: AnswerFields.shape.answer,
+  site: AnswerFields.shape.site,
+  form: AnswerFields.shape.form,
+  replaces: z.string().min(1).nullable(),
+  says: z.string().min(1),
+});
+export type AnswerSaveOffer = z.infer<typeof AnswerSaveOffer>;
+
+/** Why an answer was not saved (S1); `says` on the reply is the sentence for the user. */
+export const AnswerRefusal = z.enum([
+  "notPage",
+  "notProse",
+  "noQuestion",
+  "neverTyped",
+  "secret",
+  "pasted",
+  "caretWrote",
+  "notTyped",
+  "unseen",
+  "empty",
+  "tooLong",
+  "changed",
+  "noOffer",
+  "unavailable",
+]);
+export type AnswerRefusal = z.infer<typeof AnswerRefusal>;
+
+/** The answer to answerSave, to the asker only: the saved answer's id, or why nothing was saved. */
+export const AnswerSaveReply = z
+  .object({
+    type: z.literal("answerSaveReply"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string().min(1),
+    outcome: z.enum(["saved", "refused"]),
+    answerId: z.string().min(1).nullable(),
+    why: AnswerRefusal.nullable(),
+    says: z.string().min(1),
+  })
+  .refine((m) => (m.outcome === "saved") === (m.answerId !== null) && (m.outcome === "saved") === (m.why === null), {
+    message: "a saved reply names the answer and no refusal; a refused one names the refusal and no answer",
+    path: ["why"],
+  });
+export type AnswerSaveReply = z.infer<typeof AnswerSaveReply>;
+
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, AskQuestion, GoalProgress,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, AskQuestion, GoalProgress, AnswerSaveOffer, AnswerSaveReply,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
@@ -2004,6 +2161,10 @@ export const PageControl = z.object({
   pressed: z.boolean().optional(),
   /** B29: a text input whose inputmode is numeric or decimal. */
   numeric: z.literal(true).optional(),
+  /** S1: a text input's or textarea's maxlength, when the page sets one. */
+  maxLength: z.number().int().nonnegative().optional(),
+  /** S1: how a text input's or textarea's text was entered since it was last empty (PageEntry); absent when no edit was seen. */
+  entry: PageEntry.optional(),
 });
 export type PageControl = z.infer<typeof PageControl>;
 

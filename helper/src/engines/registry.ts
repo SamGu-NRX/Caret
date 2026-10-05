@@ -98,6 +98,19 @@ export class EngineRegistry implements EngineDirectory {
     return tab === undefined ? null : tab.frames.map((f) => `${f.frameId}:${f.documentId}:${f.navGen}`).join("|");
   }
 
+  /**
+   * S1: where a page window is, as its last walk saw it: the top frame's origin and path (no query or fragment; the
+   * walker drops them), and the h1 and h2 headings of every frame. Null for a native window or a tab no engine walked.
+   */
+  contextOf(windowId: string): { site: string | null; headings: string[] } | null {
+    const w = parsePageWindow(windowId);
+    const tab = w === null ? undefined : this.sessions.get(w.engine)?.session.tabs.get(w.tabId);
+    if (tab === undefined) return null;
+    const top = tab.frames.find((f) => f.parentFrameId < 0);
+    const site = top === undefined || top.origin === "null" ? null : `${top.origin}${top.path}`;
+    return { site, headings: tab.frames.flatMap((f) => f.headings) };
+  }
+
   engineFor(windowId: string): ReaderLink | null {
     const w = parsePageWindow(windowId);
     return w === null ? null : (this.sessions.get(w.engine)?.link ?? null);

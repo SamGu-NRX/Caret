@@ -22,6 +22,8 @@ import { asksCountry, fieldPart, joinName, namePart, partFits, splitAddress, spl
 import { clockTime, readClock, readDate, readDateTime } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
+import type { SavedAnswer } from "../memory/answers.ts";
+import { ANSWER_NONE, ANSWER_SAYS, ANSWER_WORDINGS, answerQuestionId, describeSaved, answerExcerpt, fillAnswer, guardAnswer, isAnswerField, MAX_ANSWERS_ASKED, pageText, type PageContext } from "./answers.ts";
 
 export const NONE = "none";
 /** The proposal's model name when a cut withheld every field and Jev was not asked. */
@@ -334,6 +336,8 @@ export interface RequestMore {
   instruction?: string;
   /** A person the instruction names (FillScope.person): the owner questions ask whether a value is theirs. */
   person?: string | null;
+  /** S1: fields asked which saved answer answers them, each with its own answers under this ask's ids (fill/answers.ts). */
+  answers?: readonly { id: string; descriptor: string; criteria: Readonly<Record<string, string>> }[];
 }
 
 /** The owner question's answers when an Ask names a person: theirs, the user's, someone else's, or unclear. */
@@ -419,6 +423,9 @@ export function buildFillRequest(
       questions[whoseId(f.id)] = { type: "choice", instructions: WHOSE_WORDINGS[wording](where, f.descriptor), criteria: { ...WHOSE_CRITERIA } };
     }
   }
+  if (more.stage !== "whose") {
+    for (const a of more.answers ?? []) questions[answerQuestionId(a.id)] = { type: "choice", instructions: ANSWER_WORDINGS[wording](where, a.descriptor), criteria: { ...a.criteria, [NONE]: ANSWER_NONE } };
+  }
   const ownerCriteria = more.person === null || more.person === undefined ? { ...OWNER_CRITERIA } : personOwnerCriteria(more.person);
   if (more.stage !== "values") for (const o of more.owners ?? []) questions[ownerId(o.id)] = { type: "choice", instructions: OWNER_WORDINGS[wording](o.describe), criteria: { ...ownerCriteria } };
   const anyAbout = fields.some((f) => (about.get(f.id)?.length ?? 0) > 0);
@@ -427,14 +434,15 @@ export function buildFillRequest(
     state: {
       ...(more.instruction === undefined ? {} : { instruction: more.instruction }),
       destination_window: where,
-      form_fields: fields.map((f) => f.name).join("; "),
+      form_fields: [...fields.map((f) => f.name), ...(more.answers ?? []).map((a) => a.descriptor)].join("; "),
       task:
         "The user is filling in this form. The candidates are values visible in the user's other open windows. " +
         "Users most often copy from the window they were in just before the form." +
         (anyAbout ? " A few candidates are the user's own details, which the user told Caret; one fits a field only when the form asks for the user's own details there." : "") +
         (anyDerived ? " Some candidates are a part of another, which Caret split out: a first or last name, or a street, city, state, ZIP code or country of an address or place." : "") +
         (more.instruction === undefined ? "" : " The user asked Caret for this in the instruction above: a field gets a value only when the instruction asks for it, from where the instruction says.") +
-        (more.person === null || more.person === undefined ? "" : ` The instruction asks for ${more.person}'s details.`),
+        (more.person === null || more.person === undefined ? "" : ` The instruction asks for ${more.person}'s details.`) +
+        ((more.answers?.length ?? 0) > 0 ? " Some fields ask for a written answer; for those, the candidates are answers the user saved on earlier forms." : ""),
     },
     questions,
     snippets: declared.snippets,
@@ -530,6 +538,13 @@ export interface FillOptions {
   resolve?: ResolveContext;
   /** What an Ask narrows the fill to (B25); absent for a fill on focus. */
   scope?: FillScope;
+  /**
+   * S1: the user's active saved answers, offered to a page form's empty fields that take a written answer (fill/answers.ts
+   * isAnswerField). Absent or empty: no field is asked about them. Only the helper's host-capability check sets it.
+   */
+  answers?: readonly SavedAnswer[];
+  /** S1: the page's address and headings, which the organization guard reads beside the window's own text. */
+  page?: PageContext;
 }
 
 /**
@@ -714,6 +729,19 @@ export async function proposeFill(
     const descriptor = describeInput(w, x);
     fields.push({ id: `f${fields.length + 1}`, node: n, descriptor, name: name ?? "unnamed field", kinds, terms, texts, about, control: x.control, form: c, part, labelWords, personal });
   }
+  // S1: a page form's empty field that takes a written answer is asked which saved answer answers it, and nothing else:
+  // no window span is the user's prose (prose fields hand off in v1, plans/fast-browser.md). Each field offers the
+  // answers whose questions share the most words with its label, at most MAX_ANSWERS_ASKED.
+  const answerOk = pageOwned && (opts.answers?.length ?? 0) > 0 && (scope === undefined || scope.memory);
+  const answersFor = new Map<string, SavedAnswer[]>();
+  if (answerOk) {
+    for (const f of fields) {
+      if (f.control !== "text" || !isAnswerField(f.node)) continue;
+      const label = new Set(words(f.name));
+      const shared = (a: SavedAnswer): number => words(a.fields.question).filter((t) => label.has(t)).length;
+      answersFor.set(f.id, [...(opts.answers ?? [])].sort((a, b) => shared(b) - shared(a)).slice(0, MAX_ANSWERS_ASKED));
+    }
+  }
   // An Ask that names its sources reads only those windows.
   const sourcesOnly = scope?.windows ?? null;
   const unread = sourcesOnly === null ? opts.exclude : new Set([...(opts.exclude ?? []), ...[...model.windows.keys()].filter((id) => id !== windowId && !sourcesOnly.has(id))]);
@@ -854,7 +882,7 @@ export async function proposeFill(
     if (lit === undefined || candidates.some((c) => c.text === lit)) continue;
     derived.set(f.id, [{ key: `${f.id}:said`, text: lit, describe: `"${lit}" (written in the user's instruction for this field)`, base: { from: "instruction", text: lit }, also: null }, ...(derived.get(f.id) ?? [])]);
   }
-  if (candidates.length === 0 && cut.length === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
+  if (candidates.length === 0 && cut.length === 0 && answersFor.size === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
 
   // A field whose label names no kind (kinds.ts) could want a value of any kind or plain text. It is not
   // asked when a cut took a value of any kind: a "When" field was asked after a cut took the dates, and
@@ -882,18 +910,30 @@ export async function proposeFill(
   // memory go through the ledger too (privacy.ts memory), and when one cannot, none is offered.
   // A field the instruction gives a value for is asked whatever was cut: the cut rules guard window values, and its
   // window picks still meet them (pickCut).
-  const uncut = fields.filter((f) => askable(f) && (literalOf(f) !== undefined || !fieldCut(f) || anchored(f)));
+  const uncut = fields.filter((f) => !answersFor.has(f.id) && askable(f) && (literalOf(f) !== undefined || !fieldCut(f) || anchored(f)));
   const aboutSent = [...new Map(uncut.flatMap((f) => [...f.about, ...(derived.get(f.id) ?? []).flatMap((d) => (d.base.from === "memory" ? [d.base.a] : []))]).map((a) => [a.id, a])).values()];
   // Both the value and its label go into the question (describeAbout), so both are declared and priced.
   if (aboutSent.length > 0 && !ledger.memory(aboutSent.flatMap((a) => [a.value, a.label]))) {
     for (const f of fields) f.about = [];
     for (const [id, list] of derived) derived.set(id, list.filter((d) => d.base.from !== "memory"));
   }
+  // S1: a saved answer is the user's memory, not screen text, and is declared and charged as memory, as an About value
+  // is (lead decision 4). The question it was saved for and its first ANSWER_CRITERION_CHARS characters are what a match
+  // question carries; an answer a window on screen also shows is charged to that window, and one that would put a window
+  // over its budget is not offered.
+  const sendable = new Map<string, boolean>();
+  for (const list of answersFor.values()) for (const a of list) if (!sendable.has(a.id)) sendable.set(a.id, ledger.memory([a.fields.question, answerExcerpt(a.fields.answer)]));
+  for (const [id, list] of answersFor) {
+    const kept = list.filter((a) => sendable.get(a.id) === true);
+    if (kept.length === 0) answersFor.delete(id);
+    else answersFor.set(id, kept);
+  }
+  const answerAsked = fields.filter((f) => answersFor.has(f.id));
   const asked = uncut.filter((f) => candidates.length > 0 || f.about.length > 0 || (derived.get(f.id)?.length ?? 0) > 0);
   // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its
   // window was still charged for them, which errs on the side of saying less.
-  const sent = new Set(asked.flatMap((f) => f.texts));
-  const unsent = new Set(fields.filter((f) => !asked.includes(f)).flatMap((f) => f.texts).filter((t) => t !== null && !sent.has(t) && t !== title));
+  const sent = new Set([...asked, ...answerAsked].flatMap((f) => f.texts));
+  const unsent = new Set(fields.filter((f) => !asked.includes(f) && !answerAsked.includes(f)).flatMap((f) => f.texts).filter((t) => t !== null && !sent.has(t) && t !== title));
   const declared: Declared = { ...ledger.declared(), snippets: ledger.snippets.filter((x) => !(x.kind === "descriptor" && x.windowId === windowId && unsent.has(x.text))), charged: ledger.charges() };
 
   // The second ask sees the same candidates in another order under other ids, so neither position
@@ -909,6 +949,18 @@ export async function proposeFill(
   const aboutOrder = shuffled(aboutSent, opts.rand);
   const aboutSecond = new Map(aboutOrder.map((a, i) => [a.id, `n${i + 1}`]));
   for (const [aid, nid] of aboutSecond) back.set(nid, aboutIds.get(aid) ?? "");
+  // Saved answers are s1... in the first ask and t1..., shuffled, in the second (S1).
+  const savedAll = [...new Map([...answersFor.values()].flat().map((a) => [a.id, a])).values()];
+  const savedIds = new Map(savedAll.map((a, i) => [a.id, `s${i + 1}`]));
+  const savedSecond = new Map(shuffled(savedAll, opts.rand).map((a, i) => [a.id, `t${i + 1}`]));
+  const savedBy = new Map(savedAll.map((a) => [savedIds.get(a.id) as string, a]));
+  const savedBack = new Map([...savedSecond].map(([aid, tid]) => [tid, savedIds.get(aid) as string]));
+  const askAnswers = (ids: ReadonlyMap<string, string>): RequestMore["answers"] =>
+    answerAsked.map((f) => ({
+      id: f.id,
+      descriptor: f.descriptor,
+      criteria: Object.fromEntries((answersFor.get(f.id) ?? []).map((a) => [ids.get(a.id) as string, describeSaved(a)] as const).sort(([x], [y]) => x.localeCompare(y, "en", { numeric: true }))),
+    }));
   // Derived values are d1... in the first ask and e1..., shuffled, in the second.
   const allDerived = asked.flatMap((f) => derived.get(f.id) ?? []);
   const derivedIds = new Map(allDerived.map((d, i) => [d.key, `d${i + 1}`]));
@@ -977,9 +1029,9 @@ export async function proposeFill(
     new Map(asked.map((f) => [f.id, new Set(candidates.filter((c) => opposed(f, c)).map((c) => (first ? c.id : (secondId.get(c.id) ?? ""))))]));
   // Derived values of an excluded candidate go with it.
   if (staged) for (const f of asked) derived.set(f.id, (derived.get(f.id) ?? []).filter((d) => (d.base.from !== "window" || !opposed(f, d.base.c)) && (d.also === null || !opposed(f, d.also))));
-  const valuesMore = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({ ...more(dIds, first), stage: staged ? "values" : undefined, exclude: staged ? exclude(first) : new Map() });
+  const valuesMore = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({ ...more(dIds, first), stage: staged ? "values" : undefined, exclude: staged ? exclude(first) : new Map(), answers: askAnswers(first ? savedIds : savedSecond) });
   const [r1, r2] =
-    asked.length === 0
+    asked.length === 0 && answerAsked.length === 0
       ? [null, null]
       : await Promise.all([
           askJev(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, valuesMore(derivedIds, true))),
@@ -1233,8 +1285,36 @@ export async function proposeFill(
     const part = p.from === "derived" && (f.part === "first" || f.part === "middle" || f.part === "last") ? f.part : null;
     return { id: a.id, label: a.label, says: ABOUT_SAYS, ...(part === null ? {} : { part }) };
   };
+  // A saved answer's pick (S1): both asks the same answer at the cutoff, then the code guards (fill/answers.ts).
+  const page = answerAsked.length === 0 ? null : pageText(w, opts.page ?? { site: null, headings: [] });
+  const readAnswer = (r: JevResult, f: Field, mapId: (id: string) => string | undefined): FillAsk => {
+    const a = r.answers[answerQuestionId(f.id)];
+    if (a === undefined) throw new FillError("badAnswer", `Jev returned no answer for ${answerQuestionId(f.id)}`);
+    if (a.choice === NONE) return { choice: NONE, confidence: a.confidence, value: null };
+    const id = mapId(a.choice);
+    const saved = id === undefined ? undefined : savedBy.get(id);
+    if (saved === undefined || !(answersFor.get(f.id) ?? []).includes(saved)) throw new FillError("badAnswer", `Jev chose ${a.choice}, which is not a saved answer offered for ${f.id}`);
+    return { choice: id as string, confidence: a.confidence, value: saved.fields.answer };
+  };
+  const answerField = (f: Field, empty: Omit<FillField, "withheld" | "asks">): FillField => {
+    if (r1 === null || r2 === null) return { ...empty, withheld: null, asks: [] };
+    const a1 = readAnswer(r1, f, (id) => id);
+    const a2 = readAnswer(r2, f, (id) => savedBack.get(id));
+    const agree = a1.choice === a2.choice;
+    const confidence = agree ? Math.min(a1.confidence, a2.confidence) : 0;
+    const asks: [FillAsk, FillAsk] = [a1, a2];
+    if (a1.choice === NONE && a2.choice === NONE) return { ...empty, withheld: null, asks };
+    if (!agree) return { ...empty, withheld: "disagree", asks };
+    if (confidence < cutoff) return { ...empty, confidence, withheld: "lowConfidence", asks };
+    const saved = savedBy.get(a1.choice) as SavedAnswer;
+    const held = guardAnswer(saved, page as NonNullable<typeof page>, f.node.maxLength);
+    // A host before S1 reads only FillWithheld's six reasons; the nearest stands in, and `answer.withheld` says the real one.
+    if (held !== null) return { ...empty, confidence, withheld: held.why === "tooLong" ? "wrongKind" : "otherPerson", asks, answer: fillAnswer(saved, held) };
+    return { ...empty, choice: a1.choice, confidence, value: saved.fields.answer, memory: { id: saved.id, label: saved.fields.question, says: ANSWER_SAYS }, withheld: null, asks, answer: fillAnswer(saved, null) };
+  };
   const out: FillField[] = fields.map((f) => {
     const empty = { key: f.node.key, control: f.control, handoff: null, frame: f.node.frame ?? null, descriptor: f.descriptor, choice: NONE, confidence: 0, value: null, source: null, memory: null };
+    if (answersFor.has(f.id)) return answerField(f, empty);
     if (r1 === null || r2 === null || !asked.includes(f)) {
       // Not asked: a cut took its kind (or every candidate); a select shows no options; or, with no cut,
       // nothing could be offered for it.
