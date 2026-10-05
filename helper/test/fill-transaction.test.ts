@@ -16,10 +16,10 @@ import { wirePageEngines } from "../src/engines/wire.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { ScreenModel } from "../src/model.ts";
-import { negates, statesFact } from "../src/fill/controls.ts";
+import { boxNeverTicked, namedInList, negates, statementLabel, statesFact } from "../src/fill/controls.ts";
 import { readClock, readDate, readDateTime } from "../src/fill/when.ts";
 import { PAGE_WINDOW_KIND, proposeFill } from "../src/fill/fill.ts";
-import { fillPopupEligible, writtenFields } from "../src/offers/fill-popup.ts";
+import { fillPopupEligible, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { parsePopupSpec } from "../src/popup.ts";
 import { field, focus, jevPickingText, node, snap, text } from "./builders.ts";
 
@@ -163,11 +163,16 @@ class FakePage {
       case "pageWrite":
       case "pageChooseOption": {
         const before = x.value ?? "";
+        // As the content script: a field already holding the value is left; one holding other text than expected is stale.
+        if (before === verb.value) return this.reply(id, { outcome: "alreadyTrue", detail: null });
+        if (before !== verb.expect) return this.reply(id, { outcome: "stale", detail: "the field holds other text than when it was walked" });
         x.value = verb.value;
         return this.reply(id, { outcome: "ok", detail: null, readings: { before, afterInput: verb.value, afterBlur: verb.value, invalid: false, error: null } });
       }
       case "pageSelect": {
         const before = x.options?.find((o) => o.selected)?.value ?? "";
+        if (before === verb.value) return this.reply(id, { outcome: "alreadyTrue", detail: null });
+        if (before !== verb.expect) return this.reply(id, { outcome: "stale", detail: "the select shows another option than when it was walked" });
         x.options = x.options?.map((o) => ({ ...o, selected: o.value === verb.value }));
         return this.reply(id, { outcome: "ok", detail: null, readings: { before, afterInput: verb.value, afterBlur: verb.value, invalid: false, error: null } });
       }
@@ -353,6 +358,31 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     expect(page.shown("e9")).toBe("2026-12-01");
   });
 
+  it("never takes the user's edit made right after a write for its own: undo leaves it (review R3)", async () => {
+    const { popup } = await offer();
+    page.onAct = (v, p) => {
+      if (v.id !== "e9" || v.kind !== "pageWrite" || v.sameAs !== undefined) return null;
+      // Caret's write lands and reads back; the user then types another date before the engine's walk.
+      p.find("e9").value = "2026-12-01";
+      return { outcome: "ok", detail: null, readings: { before: "", afterInput: v.value, afterBlur: v.value, invalid: false, error: null } };
+    };
+    const r = await accept(popup.offerKey);
+    expect(r?.outcome).toBe("stopped");
+    expect(helper.executor.ledger(popup.offerKey).find((e) => e.kind === "write" && e.key === KEY("e9"))).toMatchObject({ before: "", after: "2026-10-20", unconfirmed: true });
+    const u = await helper.executor.undo(popup.offerKey);
+    expect(page.shown("e9")).toBe("2026-12-01");
+    expect(u.notRestored.map((x) => x.step)).toHaveLength(1);
+  });
+
+  it("stops, recording nothing, when a box or a choice it is about to set was set by someone else since the walk (review R6)", async () => {
+    const { popup } = await offer();
+    page.onAct = (v) => (v.kind === "pageSetChecked" && v.id === "e5" ? { outcome: "alreadyTrue", detail: null } : null);
+    const r = await accept(popup.offerKey);
+    expect(r?.outcome).toBe("stopped");
+    expect(r?.detail).toContain("set by someone else");
+    expect(helper.executor.ledger(popup.offerKey).some((e) => e.kind === "write" && e.key === RADIO)).toBe(false);
+  });
+
   it("runs the same transaction for the host's Command-1 on a per-field proposal, once", async () => {
     const asked = await helper.handleConsumer({ type: "fillRequest", v: PROTOCOL_VERSION, windowId: WIN, fieldKey: KEY("e1") });
     const p = asked as FillProposal;
@@ -400,6 +430,25 @@ describe("what a Fill all writes, control by control (D2-04)", () => {
     expect(get(p, boxes[4]!.key)).toBeUndefined();
   });
 
+  it("never offers the review's marketing and certification boxes, nor ticks a conditional statement even as a hand-off (R1, R5)", async () => {
+    const note = ["Receive product announcements: yes", "All information is accurate: yes", "Willing to relocate: for the right role"].join("\n");
+    const boxes = [box("Receive product announcements"), box("All information is accurate"), box("Are you willing to relocate?")];
+    const p = await proposeFill(desk(note, boxes), ask({ "Receive product announcements": "yes", "All information is accurate": "yes", "Are you willing to relocate?": "for the right role" }), "form", `${W}/textfield:name~0`, 2000);
+    expect(get(p, boxes[0]!.key)).toBeUndefined();
+    expect(get(p, boxes[1]!.key)).toBeUndefined();
+    expect(get(p, boxes[2]!.key)).toMatchObject({ handoff: null, withheld: "ambiguous" });
+  });
+
+  it("rechecks the very line a box's yes came from: a source that now says no is stale though 'yes' is still on screen (R4)", async () => {
+    const m = desk("Valid driving license: yes", [box("Do you have a valid driving license?")]);
+    const p = await proposeFill(m, ask({ "Do you have a valid driving license?": "yes" }), "form", `${W}/textfield:name~0`, 2000);
+    const g = writtenFields(p, m.windows.get("form"));
+    expect(g.fields.map((f) => [f.value, f.context])).toEqual([[PAGE_CHECKED, "Valid driving license"]]);
+    expect(recheckFill(m, g, () => null)).toBeNull();
+    m.apply(snap([field("te/note", "Valid driving license: no\nNeeds renewal: yes", { role: "AXTextArea" })], { at: 1100, windowId: "note", title: "Details.txt", app: NOTE_APP }));
+    expect(recheckFill(m, g, () => null)).toBe("the source te/note changed");
+  });
+
   it("never asks about a box whose nearest text is a sign-up, and leaves a switch's tick to the user", async () => {
     const offers = text(`${W}/text:offers~0`, "Email me offers", [100, 300, 160, 20], `${W}/webarea:~0`);
     const unlabelled = box("", { label: undefined, frame: [280, 300, 20, 20] });
@@ -411,14 +460,14 @@ describe("what a Fill all writes, control by control (D2-04)", () => {
       2000,
     );
     expect(get(p, unlabelled.key)).toBeUndefined();
-    expect(get(p, `${W}/checkbox:Remote work~0`)?.handoff).toEqual({ value: PAGE_CHECKED, display: "Ticked", source: expect.anything(), memory: null });
+    expect(get(p, `${W}/checkbox:Remote work~0`)?.handoff).toEqual({ value: PAGE_CHECKED, display: "Ticked", source: expect.anything(), memory: null, context: "Remote work" });
     expect(get(p, `${W}/checkbox:I can start right away~0`)?.handoff).toMatchObject({ writes: true });
   });
 
   it("writes an option only on an exact match, and hands off one the span names among other words", async () => {
     const p = await proposeFill(desk("Size: Large\nOrder: Large, mushroom and onion", [...select("Size", ["Small", "Large"]), ...select("Crust", ["Thin", "Large"])]), ask({ Size: "Large", Crust: "Large, mushroom and onion" }), "form", `${W}/textfield:name~0`, 2000);
     expect(get(p, `${W}/select:Size~0`)?.handoff).toMatchObject({ value: "Large", writes: true });
-    expect(get(p, `${W}/select:Crust~0`)?.handoff).toEqual({ value: "Large", display: "Large", source: expect.anything(), memory: null });
+    expect(get(p, `${W}/select:Crust~0`)?.handoff).toEqual({ value: "Large", display: "Large", source: expect.anything(), memory: null, context: "Order" });
   });
 
   it("never writes a control through Accessibility", async () => {
@@ -437,11 +486,11 @@ describe("what a Fill all writes, control by control (D2-04)", () => {
     expect(h("Start")?.handoff).toMatchObject({ value: "2026-10-20", writes: true });
     expect(h("From")?.handoff).toMatchObject({ value: "2026-10-19T09:00", writes: true });
     expect(h("Abroad")).toMatchObject({ handoff: null, withheld: "ambiguous" });
-    expect(h("Month")?.handoff).toEqual({ value: "2026-10-03", display: expect.any(String), source: expect.anything(), memory: null });
+    expect(h("Month")?.handoff).toEqual({ value: "2026-10-03", display: expect.any(String), source: expect.anything(), memory: null, context: "Month" });
     expect(h("At")?.handoff).toMatchObject({ value: "09:30", writes: true });
     // A zone, or words around the time: the user's, with B24's reading shown to them.
-    expect(h("Zoned")?.handoff).toEqual({ value: "15:00", display: "3:00 PM", source: expect.anything(), memory: null });
-    expect(h("Around")?.handoff).toEqual({ value: "19:45", display: "7:45 PM", source: expect.anything(), memory: null });
+    expect(h("Zoned")?.handoff).toEqual({ value: "15:00", display: "3:00 PM", source: expect.anything(), memory: null, context: "Zoned" });
+    expect(h("Around")?.handoff).toEqual({ value: "19:45", display: "7:45 PM", source: expect.anything(), memory: null, context: "Around" });
   });
 });
 
@@ -450,8 +499,10 @@ describe("the checkbox rule (D2-04): stated facts only", () => {
     ["I have a valid driving license", "I have a valid driving license", null],
     ["Do you have a valid driving license?", "yes", "Valid driving license"],
     ["Are you over 18?", "Yes", "Over 18"],
-    ["Willing to relocate", "willing to relocate.", null],
+    ["Are you willing to relocate?", "I am willing to relocate.", null],
     ["I do not need visa sponsorship", "I do not need visa sponsorship", null],
+    ["Are you a US citizen?", "I'm a US citizen", "Citizenship"],
+    ["Are you a US citizen?", "yes", "Are you a US citizen?"],
   ])("ticks %s from %s (labelled %s)", (label, span, context) => {
     expect(statesFact(label, span, context)).toBe(true);
   });
@@ -467,6 +518,13 @@ describe("the checkbox rule (D2-04): stated facts only", () => {
     ["Do you have a valid driving license?", "yes", "Driving license number"],
     ["Mushroom", "no mushroom", null],
     ["Remote", "yes", "Not remote"],
+    // The review's: a tense or modal, a question without its mark, a negated context, a bare phrase under someone's heading.
+    ["I have a valid driving license", "I will have a valid driving license", "Status"],
+    ["US citizen", "Are you a US citizen", "Question"],
+    ["US citizen", "US citizen", "Not"],
+    ["Do you have a valid driving license?", "Valid driving license", "Requirements"],
+    ["Willing to relocate", "Willing to relocate for the right role", "Preference"],
+    ["US citizen", "US citizen? Please respond.", "Citizenship"],
   ])("does not tick %s from %s (labelled %s)", (label, span, context) => {
     expect(statesFact(label, span, context)).toBe(false);
   });
@@ -476,6 +534,22 @@ describe("the checkbox rule (D2-04): stated facts only", () => {
     expect(negates("I don't need sponsorship", "I don't need sponsorship")).toBe(false);
     expect(negates("Mushroom", "mushroom")).toBe(false);
   });
+
+  it("takes a box's label as a choice only as one exact item of a list", () => {
+    expect(namedInList("Bacon", "bacon, extra cheese")).toBe(true);
+    expect(namedInList("Extra cheese", "bacon and extra cheese")).toBe(true);
+    for (const [label, span] of [["Cheese", "bacon, extra cheese"], ["Bacon", "bacon"], ["Bacon", "bacon or ham"], ["Mushroom", "no mushroom, onion"], ["Bacon", "bacon, ham?"]]) expect(namedInList(label as string, span as string), `${label} in ${span}`).toBe(false);
+  });
+
+  it("never ticks a consent, certification or sign-up box, the review's two among them", () => {
+    for (const l of ["Receive product announcements", "All information is accurate", "I agree to the terms of service", "Email me offers", "Share my profile with partners", "I certify the above is true and correct", "Contact me about events"]) expect(boxNeverTicked(l), l).toBe(true);
+    for (const l of ["I have a valid driving license", "Are you over 18?", "Willing to relocate", "Bacon"]) expect(boxNeverTicked(l), l).toBe(false);
+  });
+
+  it("writes a stated fact only into a box whose label asks or speaks for the user", () => {
+    for (const l of ["I have a valid driving license", "Are you over 18?", "Do you have a car?", "I'm available on weekends"]) expect(statementLabel(l), l).toBe(true);
+    for (const l of ["Valid driving license", "Remote work", "Mushroom", "Receive product announcements"]) expect(statementLabel(l), l).toBe(false);
+  });
 });
 
 describe("dates and times in a field's own format (D2-04)", () => {
@@ -484,14 +558,27 @@ describe("dates and times in a field's own format (D2-04)", () => {
     ["3:30 PM", "15:30"],
     ["09:30", "09:30"],
     ["noon", "12:00"],
-    ["Saturday, October 17 at 8:45am", "08:45"],
     ["18:05:30", "18:05:30"],
   ])("reads the time %s as %s", (t, v) => {
-    expect(readClock(t)?.value).toBe(v);
+    expect(readClock(t, ctx)?.value).toBe(v);
   });
 
   it.each(["3:30", "at 3", "3pm PT", "15:00 UTC+2", "9am-5pm", "midnight", "around 7:45 pm", ""])("reads no time from %s", (t) => {
-    expect(readClock(t)).toBeNull();
+    expect(readClock(t, ctx)).toBeNull();
+  });
+
+  it("reads the time of a span that names its day only when that day is known", () => {
+    expect(readClock("Saturday, October 17 at 8:45am", ctx)).toBeNull();
+    expect(readClock("Saturday, October 17 at 8:45am", { ...ctx, referenceInstant: "2026-10-05T12:00:00-07:00" })?.value).toBe("08:45");
+  });
+
+  it("reads no time Daylight Saving skips or repeats on the day the span names, nor one in another zone than the user's", () => {
+    expect(readClock("March 8, 2026 at 2:30 AM", ctx)).toBeNull();
+    expect(readClock("November 1, 2026 at 1:30 AM", ctx)).toBeNull();
+    expect(readClock("October 19, 2026 at 9:00 AM", ctx)?.value).toBe("09:00");
+    expect(readClock("October 19, 2026 at 9:00 AM", { ...ctx, sourceTimeZone: "America/New_York" })).toBeNull();
+    expect(readClock("October 19, 2026 at 9:00 AM", { ...ctx, sourceTimeZone: null })).toBeNull();
+    expect(readClock("9:00 AM", { ...ctx, sourceTimeZone: "America/New_York" })).toBeNull();
   });
 
   it("reads a date and time as a datetime-local holds it, only in the user's own zone", () => {

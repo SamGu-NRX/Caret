@@ -341,7 +341,7 @@ export class PageEngineLink implements ReaderLink {
           page = { kind: "pageSetChecked", ...base, checked: verb.value === PAGE_CHECKED };
         } else return verbResult("axError", `'${t.control.name}' is a ${t.control.kind}, which takes no value write`);
         if (verb.mark !== undefined) this.remember(verb.mark, { tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id });
-        return this.act(page, w.tabId);
+        return page.kind === "pageSetChecked" && verb.sameAs === undefined ? this.notUnderIt(await this.act(page, w.tabId), t.control.name) : this.act(page, w.tabId);
       }
       case "press": {
         const t = targetFor(this.session.tabs.get(w.tabId), verb.key);
@@ -397,7 +397,16 @@ export class PageEngineLink implements ReaderLink {
     if (want.length !== 1 || want[0] === undefined) return verbResult("noElement", `the choice ${key} has ${want.length} buttons named '${verb.value}'`);
     const b = want[0];
     if (verb.mark !== undefined) this.remember(verb.mark, { tabId, frameId: g.frameId, documentId: g.documentId, id: b.id });
-    return this.act({ kind: "pageSetChecked", tabId, frameId: g.frameId, documentId: g.documentId, id: b.id, control: "radio", name: b.name, taskId, checked: true, ...(verb.mark === undefined ? {} : { mark: verb.mark }) }, tabId);
+    return this.notUnderIt(await this.act({ kind: "pageSetChecked", tabId, frameId: g.frameId, documentId: g.documentId, id: b.id, control: "radio", name: b.name, taskId, checked: true, ...(verb.mark === undefined ? {} : { mark: verb.mark }) }, tabId), b.name);
+  }
+
+  /**
+   * A forward tick or radio check the page answered "already so" was made by someone else after the walk that planned
+   * it (D2-04 review): Caret did nothing, and the field changed under the task, which stops it. Recorded as a write,
+   * its undo would clear the user's own tick.
+   */
+  private notUnderIt(r: VerbResult, name: string): VerbResult {
+    return r.outcome === "ok" && r.detail === "alreadyTrue" ? verbResult("changed", `'${name}' was set by someone else since the walk`) : r;
   }
 
   private async walk(tabId: number): Promise<VerbResult> {

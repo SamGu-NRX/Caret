@@ -954,8 +954,14 @@ export class Executor {
     if (attribute === "value") {
       // The reader wrote, so the write goes in the ledger before it is judged: an app that reformats
       // the value fails the comparison but must still be undoable. `after` is what the field holds now.
+      // D2-04 review: that is so only when nothing else can have changed the field since. A page write the engine
+      // answered ok held `value` when the engine read it back, so a different value now is someone's later edit, not
+      // the page's reformatting; nor is a value read after the user's input reached the task. Then the entry keeps
+      // what Caret wrote, unconfirmed, and undo restores only a field that still holds it, never the user's edit.
       if (now !== undefined && (now.value ?? "") !== before) {
-        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: now.value ?? "", mark: mark ?? null });
+        const held = now.value ?? "";
+        const ours = held === value || (w.window.kind !== "page" && task.interrupt === null);
+        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: ours ? held : value, mark: mark ?? null, ...(ours ? {} : { unconfirmed: true }) });
       }
       // A field the walk lost and then found again (B15's WebKit window) comes back as an added node holding the value.
       const recorded = seen.some((c) => (c.kind === "value" || (c.kind === "added" && seen.some((r) => r.kind === "removed" && r.key === node.key))) && c.key === node.key && c.after === value);

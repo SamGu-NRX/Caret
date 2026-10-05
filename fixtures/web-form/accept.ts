@@ -1023,6 +1023,22 @@ async function batch5(e: Engine, site: FixtureSite, published: HelperMessage[]):
     return `${r.out?.outcome}: ${r.out?.detail}; ${ledger} writes kept and undone`;
   });
 
+  await check("D2-04 review: a choice the user answered since the walk is never overwritten: checking Night while Day is checked is stale, and Day stays", async () => {
+    await open();
+    expect((await e.host.link.run({ kind: "walk", pid: e.session.info.browser.pid, windowId })).outcome === "ok", "walk");
+    const group = [...(e.helper.model.windows.get(windowId)?.nodes.values() ?? [])].find((n) => n.role === "AXGroup" && n.label === "Shift");
+    expect(group !== undefined && group.value === "", `the Shift group is ${JSON.stringify(group)}`);
+    await site.command({ cmd: "check", selector: 'input[name="shift"][value="day"]' });
+    const now = Date.now();
+    e.host.link.grant({ type: "actGrant", v: 1, taskId: "t-d204-r6", pid: e.session.info.browser.pid, windowId, at: now, expires: now + 60_000 });
+    const r = await e.host.link.run({ kind: "write", pid: e.session.info.browser.pid, windowId, key: group!.key, role: "AXGroup", attribute: "value", expect: "", value: "Night", taskId: "t-d204-r6", mark: "m-d204-r6" });
+    e.host.link.grant({ type: "actRevoke", v: 1, taskId: "t-d204-r6", at: Date.now() });
+    const day = await read(site, 'input[name="shift"][value="day"]');
+    const night = await read(site, 'input[name="shift"][value="night"]');
+    expect(r.outcome === "changed" && day === "true" && night === "false", `write ${r.outcome} ${r.detail ?? ""}; day ${day}, night ${night}`);
+    return `write ${r.outcome} (${r.detail}); day ${day}, night ${night}`;
+  });
+
   await check("D2-04: /submitted reads 0 after every Fill all, undo and stop", async () => {
     const count = ((await (await fetch(`${site.mainOrigin}/submitted`)).json()) as { count: number }).count;
     expect(count === 0, `/submitted reads ${count}`);

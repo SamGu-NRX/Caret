@@ -70,9 +70,9 @@ export class ValueResolver {
     return parseDate(ref(span), ctx);
   }
 
-  /** A time of day with no date or zone, for a time field: "15:30". A span that names a zone is unsupported. */
-  clock(span: string | ValueRef): Resolution<string> {
-    return parseClock(ref(span));
+  /** A time of day for a time field: "15:30". A span that names a zone, or a source in another zone, is unsupported. */
+  clock(span: string | ValueRef, ctx: ResolveContext): Resolution<string> {
+    return parseClock(ref(span), ctx);
   }
 
   /** One date and time of day, read in the zone the text names or the source's zone. */

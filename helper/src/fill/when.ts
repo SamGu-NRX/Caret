@@ -43,9 +43,9 @@ export function clockTime(text: string): { value: string; display: string } | nu
   return { value, display: `${h % 12 === 0 ? 12 : h % 12}:${String(mm).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}` };
 }
 
-/** The one time of day a span names, as HH:MM (HH:MM:SS with seconds), read by the resolver; null when it asks or cannot read it, or the span names a zone. */
-export function readClock(text: string): { value: string; display: string } | null {
-  const t = resolver.clock(text);
+/** The one time of day a span names, as HH:MM (HH:MM:SS with seconds), read by the resolver; null when it asks or cannot read it, or the span or its source is in another zone. */
+export function readClock(text: string, ctx: ResolveContext): { value: string; display: string } | null {
+  const t = resolver.clock(text, ctx);
   return t.kind === "resolved" ? { value: t.value, display: t.display } : null;
 }
 

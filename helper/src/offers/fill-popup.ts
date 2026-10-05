@@ -9,7 +9,8 @@ import { ABOUT_SAYS, type AboutValue } from "../fill/about.ts";
 import { PAGE_SUBROLE, PROTOCOL_VERSION, type FillField, type FillMemory, type FillProposal, type FillSource, type OfferPopup } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { consentLike, formControls, inWebArea } from "../fill/controls.ts";
+import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
+import { labelledLines } from "../fill/candidates.ts";
 import { describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
@@ -21,9 +22,10 @@ export const MAX_FILL_ROWS = 5;
 /**
  * A field Caret writes, with its value in the form the field takes it: a text field's text, or (D2-04) a control's
  * option name, PAGE_CHECKED, or date or time in the input's own format. `span` is the source text the value was read
- * from, which a recheck looks for in the source again; `display` is how the pop-up says the value.
+ * from, which a recheck looks for in the source again, on the line labelled `context` when the value came from a
+ * "Label: value" line (FillHandoff.context); `display` is how the pop-up says the value.
  */
-type GroundedField = FillField & { value: string; span: string; display: string } & ({ source: FillSource; memory: null } | { source: null; memory: FillMemory });
+type GroundedField = FillField & { value: string; span: string; display: string; context: string | null } & ({ source: FillSource; memory: null } | { source: null; memory: FillMemory });
 
 /** A field of the form that Caret leaves to the user: its name, and the value Caret would use when it has one. */
 export interface YourField {
@@ -57,12 +59,12 @@ export function writtenFields(p: FillProposal, w?: WindowState): GroundedProposa
   for (const f of p.fields) {
     const span = f.asks[0]?.value ?? null;
     if (f.control === "text" && f.value !== null && (f.source !== null || f.memory !== null)) {
-      fields.push({ ...f, value: f.value, span: f.value, display: f.value } as GroundedField);
+      fields.push({ ...f, value: f.value, span: f.value, display: f.value, context: null } as GroundedField);
       continue;
     }
     const h = f.handoff;
     if (h !== null && h.writes === true && (h.source !== null || h.memory !== null)) {
-      fields.push({ ...f, handoff: null, value: h.value, source: h.source, memory: h.memory, span: span ?? h.value, display: h.display } as GroundedField);
+      fields.push({ ...f, handoff: null, value: h.value, source: h.source, memory: h.memory, span: span ?? h.value, display: h.display, context: h.context ?? null } as GroundedField);
       continue;
     }
     const ref = h === null ? null : sourceRef(h.source, h.memory, span ?? h.value);
@@ -77,7 +79,7 @@ export function writtenFields(p: FillProposal, w?: WindowState): GroundedProposa
     for (const n of w.nodes.values()) {
       if (n.states?.includes("disabled") === true || !inWebArea(w, n)) continue;
       const file = n.subrole === PAGE_SUBROLE.file && (n.value ?? "") === "";
-      const consent = n.role === "AXCheckBox" && n.states?.includes("checked") !== true && consentLike(n.label ?? "");
+      const consent = n.role === "AXCheckBox" && n.states?.includes("checked") !== true && boxNeverTicked(n.label ?? "");
       if (file || consent) empty(n.key);
     }
   }
@@ -202,6 +204,13 @@ export function recheckFill(model: ScreenModel, p: GroundedProposal, about: Abou
     const sw = model.windows.get(f.source.windowId);
     const src = sw?.nodes.get(f.source.nodeKey);
     if (sw === undefined || src === undefined) return `the source ${f.source.nodeKey} is gone`;
+    // A value read from a "Label: value" line needs that very line: "Valid driving license: no" beside "Needs renewal:
+    // yes" still shows "yes", but no longer says it (D2-04 review).
+    if (f.context !== null) {
+      const key = f.source.nodeKey;
+      if (!labelledLines(sw).some((l) => l.node.key === key && l.label === f.context && l.value === f.span)) return `the source ${key} changed`;
+      continue;
+    }
     if (!nodeText(src).includes(f.span) && !sw.values.some((v) => v.nodeKey === f.source.nodeKey && v.text === f.span)) return `the source ${f.source.nodeKey} changed`;
   }
   return null;

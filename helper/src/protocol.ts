@@ -956,7 +956,19 @@ export type FillControl = z.infer<typeof FillControl>;
  * by its value, a custom dropdown by its option's name), and undoes it with the rest. Absent: the user sets it. Before
  * D2-04 a page dropdown's pick came as `value`, which the host's decoder refuses on any control but text.
  */
-export const FillHandoff = z.object({ value: z.string(), display: z.string(), source: FillSource.nullable(), memory: FillMemory.nullable(), writes: z.literal(true).optional() });
+export const FillHandoff = z.object({
+  value: z.string(),
+  display: z.string(),
+  source: FillSource.nullable(),
+  memory: FillMemory.nullable(),
+  /**
+   * D2-04: when the value was read from a "Label: value" line of the source, that label ("Valid driving license" in
+   * "Valid driving license: yes"). A recheck before the Fill all asks the source for that very line, since a short
+   * value such as "yes" can stay on screen in another line after the one it came from says "no".
+   */
+  context: z.string().min(1).optional(),
+  writes: z.literal(true).optional(),
+});
 export type FillHandoff = z.infer<typeof FillHandoff>;
 
 export const FillField = z.object({

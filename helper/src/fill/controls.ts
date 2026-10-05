@@ -40,13 +40,27 @@ export function dateFormat(n: Node): DateFormat {
 }
 
 /**
- * Labels of boxes Caret never ticks: consent, certification, agreement to terms, and marketing or
- * notification sign-ups. Plan section 4: "never infer consent from a checkbox label". Written for common
- * form wording, not measured; a box that matches is left alone even when a source seems to say yes.
+ * Labels of controls Caret never sets: consent, certification, agreement to terms, and marketing or notification
+ * sign-ups. Plan section 4: "never infer consent from a checkbox label". Written for common form wording, not
+ * measured; a control that matches gets no value, written or handed off, even when a source seems to say yes. D2-04's
+ * review found certification wording the first list missed ("All information is accurate"), so it names legal and
+ * certification phrasing too. A word list stays incomplete; a box is also written only on a label addressed to the
+ * user (statementLabel) and a fact the source states (statesFact).
  */
-const CONSENT = /\b(?:agree|consent|certif(?:y|ies)|acknowledge|confirm|accept|terms|privacy|policy|polic(?:ies)|authori[sz]e|newsletter|marketing|news|offers?|promotions?|specials|coupons|subscribe|sign me up|send me|email me|text me|notify|updates|remember me|save (?:this|my)|keep me|allow|opt)\b/i;
+const CONSENT = /\b(?:agree|consent|certif(?:y|ies)|acknowledge|confirm|accept|terms|privacy|policy|polic(?:ies)|authori[sz]e|authori[sz]ation|newsletter|marketing|news|offers?|promotions?|specials|coupons|subscribe|sign me up|send me|email me|text me|notify|updates|remember me|save (?:this|my)|keep me|allow|opt|accurate|true and correct|attest|declare|swear|pledge|signature|e-?sign\w*|electronic(?:ally)?|waive[rs]?|waiver|liabilit(?:y|ies)|release|disclos\w*|permission|code of conduct|have read|understand)\b/i;
 export function consentLike(label: string): boolean {
   return CONSENT.test(label);
+}
+
+/**
+ * Labels of boxes that sign the user up to hear from someone or share their data, beyond CONSENT's words: never
+ * ticked or offered (D2-04 review: "Receive product announcements" was written). Boxes only: a menu labelled
+ * "Preferred contact method" is a plain choice.
+ */
+const SIGN_UP = /\b(?:receive|announcements?|communications?|contact(?:ed)?|call me|calls|sms|texts?|messages|alerts|reminders|digest|mailing|partners?|third[- ]part(?:y|ies)|shar(?:e|ing)|sell|ads|advertis\w*|personali[sz]\w*|tracking|cookies?|surveys?|research|feedback|deals|discounts)\b/i;
+/** Whether a box is one Caret never ticks or offers: a consent or a sign-up. */
+export function boxNeverTicked(label: string): boolean {
+  return CONSENT.test(label) || SIGN_UP.test(label);
 }
 
 /** A select's value that is a prompt, not a choice: nothing is picked yet. */
@@ -95,7 +109,7 @@ export function formControls(w: WindowState): FormControl[] {
     }
     if (n.role === "AXCheckBox") {
       // Consent, certification and sign-up boxes are never ticked, so they are not asked about (plan section 4).
-      if (n.states?.includes("checked") === true || consentLike(fieldLabelText(n.label) ?? "")) continue;
+      if (n.states?.includes("checked") === true || boxNeverTicked(fieldLabelText(n.label) ?? "")) continue;
       out.push({ node: n, control: "checkbox", label: label(n), options: null, members: [] });
       continue;
     }
@@ -142,20 +156,29 @@ export function optionInText(options: readonly string[], text: string): string |
 
 /** Words that turn a statement into its opposite; a box is never ticked from text that holds one its label lacks. Any word ending in n't is one too. */
 const NEGATION = new Set(["no", "not", "never", "none", "without", "nor", "neither", "cannot", "dont", "doesnt", "isnt", "arent", "wont", "cant"]);
-/** Words that open a box's label as a question or a statement about the user: "Are you", "I have", "Do you have a". */
-const STEM = new Set(["are", "you", "do", "does", "have", "has", "i", "am", "is", "was", "were", "will", "would", "can", "a", "an", "the", "your", "my", "currently"]);
+/**
+ * The words a box's label or a source may open with that only say who is asked or who speaks: "Are you", "Do you have",
+ * "I have", "I'm". Only these opening words are set aside, and only once; a modal or a tense further in stays, so "I
+ * will have a valid driving license" is not "I have a valid driving license" (D2-04 review).
+ */
+const OPENING = /^(?:are you|do you have|do you|have you|can you|is your|are your|i am|i'm|i have|i've|i hold|i|my)\s+/u;
+/** A span that opens like a question asks; it states nothing, with a question mark or without one ("Are you a US citizen"). */
+const ASKS = /^(?:(?:are|do|does|did|have|has|can|could|will|would|is|was|were|should|shall|may|might)\s+(?:you|your|they|we|he|she|it|this|there|i)\b|(?:what|which|when|where|who|whom|whose|why|how)\b)/u;
 /** Answers that say yes to a "Label: answer" line. */
 const AFFIRMATIVE = /^(?:yes|y|true|✓|✔)$/i;
 
-/** The words of a box's label or a source line that state its fact: lower case, without question or subject words. */
-function factWords(s: string): string {
-  return wordsOf(s.replace(/[’‘]/g, "'"))
-    .filter((w) => !STEM.has(w))
-    .join(" ");
-}
-
 /** Lower-case words with their apostrophes kept, so "don't" stays one word. */
 const tokens = (s: string): string[] => norm(s.replace(/[’‘]/g, "'")).split(/[^\p{L}\p{N}']+/u).filter((w) => w !== "");
+
+/** The words of a box's label or a source line that state its fact: lower case, the opening words (OPENING) and articles set aside. */
+function factWords(s: string): string {
+  const t = tokens(s).join(" ").replace(/[?.!]+$/u, "");
+  return t
+    .replace(OPENING, "")
+    .split(" ")
+    .filter((w) => w !== "" && w !== "a" && w !== "an" && w !== "the")
+    .join(" ");
+}
 
 /** Whether the text holds a negating word the label does not. */
 export function negates(label: string, text: string): boolean {
@@ -163,20 +186,47 @@ export function negates(label: string, text: string): boolean {
   return tokens(text).some((w) => (NEGATION.has(w) || w.endsWith("n't")) && !own.has(w));
 }
 
+/** Whether a span asks rather than states: it ends with a question mark or opens like a question. */
+function asks(span: string): boolean {
+  return /\?\s*$/u.test(span) || ASKS.test(tokens(span).join(" "));
+}
+
 /**
- * Whether a source states the fact a box asks (D2-04), so a Fill all may tick it: the picked span says the box's own
- * statement ("I have a valid driver's license" for "Do you have a valid driver's license?"), or it is the yes of a
- * "Label: answer" line whose label is that statement ("Valid driver's license: yes"). Question and subject words and
- * articles are set aside on both sides (factWords); every other word must match, in order. Nothing is inferred from a
- * related fact: "Age: 34" does not tick "Are you over 18?". A consent, certification or sign-up box never reaches this
- * (fill.ts drops it), and a span with a negating word the label lacks never ticks one.
+ * Whether a source states the fact a box asks (D2-04), so a Fill all may tick it: the picked span is the user's own
+ * statement of the box's fact ("I have a valid driving license" for "Do you have a valid driving license?"), or it is the
+ * yes of a "Label: answer" line whose label is that fact ("Valid driving license: yes"). Only the opening words that say
+ * who asks or speaks, and articles, are set aside (factWords); every other word must match, in order, so a modal, a
+ * tense or a condition makes it no match. A bare phrase ("Valid driving license") states nothing by itself: under
+ * "Requirements:" it is the job's, not the user's, so the direct match needs a first-person span. Nothing is inferred
+ * from a related fact ("Age: 34" for "Are you over 18?"), a question, or text or a context with a negating word the
+ * label lacks. A consent or sign-up box never reaches this (boxNeverTicked).
  */
 export function statesFact(label: string, span: string, context: string | null): boolean {
   const want = factWords(label);
-  // A question is no statement: a mail asking "Are you a US citizen?" says nothing about the answer.
-  if (want === "" || negates(label, span) || /\?\s*$/u.test(span)) return false;
-  if (factWords(span.replace(/[.!]+$/u, "")) === want) return true;
-  return context !== null && !negates(label, context) && factWords(context) === want && AFFIRMATIVE.test(span.trim().replace(/[.!]+$/u, ""));
+  if (want === "" || negates(label, span) || asks(span) || (context !== null && negates(label, context))) return false;
+  if (/^(?:i|i'm|i've)\b/u.test(tokens(span).join(" ")) && factWords(span) === want) return true;
+  return context !== null && factWords(context) === want && AFFIRMATIVE.test(span.trim().replace(/[.!]+$/u, ""));
+}
+
+/**
+ * Whether a span lists the box's label as one of two or more items ("Toppings: bacon, extra cheese" for "Bacon"): a
+ * choice the source states, as an option of a list. The item must be the label exactly (its words, in order); a span
+ * with "or", a question or a negating word states no choice.
+ */
+export function namedInList(label: string, span: string): boolean {
+  if (asks(span) || negates(label, span) || /\bor\b/iu.test(span)) return false;
+  const items = span.split(/\s*(?:,|;|\/|&|\band\b|\bplus\b)\s*/iu).map((x) => x.trim()).filter((x) => x !== "");
+  const want = wordsOf(label).join(" ");
+  return items.length >= 2 && want !== "" && items.some((x) => wordsOf(x).join(" ") === want);
+}
+
+/**
+ * Whether a box's label is a question to the user or a statement by them ("Are you over 18?", "I have a valid driving
+ * license"): a Fill all writes a stated fact only into such a box (D2-04 review). A bare phrase ("Valid driving
+ * license") is handed to the user to tick, since a consent can read as one too.
+ */
+export function statementLabel(label: string): boolean {
+  return OPENING.test(`${tokens(label).join(" ")} `);
 }
 
 const ROLE_NAMES: Record<FormControl["control"], string> = {

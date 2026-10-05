@@ -17,7 +17,7 @@ import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_SAYS, fieldAsksFor, fieldAsksForNamePart, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
-import { consentLike, describeControl, formControls, inWebArea, matchOption, negates, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
+import { boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statementLabel, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, fieldPart, joinName, namePart, partFits, splitAddress, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { clockTime, readClock, readDate, readDateTime } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
@@ -683,7 +683,7 @@ export async function proposeFill(
     const d = describeField(w, n);
     // A box whose own label is a consent or sign-up is never asked about (formControls); nor is one whose section or
     // nearest text is ("Yes" under "Marketing emails"), D2-04: a Fill all may tick a box, so its context counts too.
-    if (x.control === "checkbox" && (consentLike(d.section ?? "") || consentLike(d.nearest ?? ""))) continue;
+    if (x.control === "checkbox" && (boxNeverTicked(d.section ?? "") || boxNeverTicked(d.nearest ?? ""))) continue;
     const c = x.form;
     const label = c === null ? d.label : c.label;
     const texts = c === null ? [d.label, d.nearest, d.placeholder, d.section] : [c.label, label === null ? d.nearest : null, d.section, ...(c.options ?? [])];
@@ -1159,16 +1159,20 @@ export async function proposeFill(
    * whether a Fill all may write it there (D2-04), or why it cannot be read. Only a page window's controls are ever
    * written, each on a stricter rule than a hand-off, which the user sees and sets themselves:
    * - a select or radio group: an option whose name equals the span exactly (matchOption), not one the span merely
-   *   names among other words (optionInText, the hand-off's rule); and no consent-like question;
-   * - a box: the span states the fact the box asks (controls.ts statesFact), never a related one; not an ARIA switch;
+   *   names among other words (optionInText, the hand-off's rule);
+   * - a box: the span states the fact the box asks (controls.ts statesFact) or lists the box's label among others
+   *   (namedInList); written only from the window the user just left, on a label that asks or speaks for the user (or a
+   *   list item), and never an ARIA switch;
    * - a date, time or date and time: read by the value resolver in that format (when.ts); a month or week is the user's.
+   * A control whose label, nearest label or section reads as consent, certification or a sign-up gets no value at all.
    * A Yes/No question built from toggle buttons (W4) is never written: its press cannot be undone with the rest.
    */
   const controlValue = (f: Field, p: Pick): { value: string; display: string; writes: boolean } | { why: FillWithheld } => {
     const text = pickText(p);
     const page = pageOwned;
     // The control's label, else its nearest label, and its section (Field.texts for a control).
-    const consent = [f.form?.label ?? null, f.texts[1] ?? null, f.texts[2] ?? null].some((t) => t !== null && consentLike(t));
+    const around = [f.form?.label ?? null, f.texts[1] ?? null, f.texts[2] ?? null].filter((t): t is string => t !== null);
+    if (f.control !== "text" && around.some((t) => (f.control === "checkbox" ? boxNeverTicked(t) : consentLike(t)))) return { why: "ambiguous" };
     switch (f.control) {
       case "radio":
       case "select": {
@@ -1176,21 +1180,21 @@ export async function proposeFill(
         if (options === null) return { why: "ambiguous" };
         const exact = matchOption(options, text);
         const press = f.node.subrole === PAGE_SUBROLE.pressGroup;
-        if (exact !== null) return { value: exact, display: exact, writes: page && !press && !consent };
+        if (exact !== null) return { value: exact, display: exact, writes: page && !press };
         const o = optionInText(options, text);
         return o === null ? { why: "ambiguous" } : { value: o, display: o, writes: false };
       }
       case "checkbox": {
-        // A consent, certification or sign-up box is never ticked (controls.ts consentLike); formControls already leaves it out.
         const label = f.form?.label ?? null;
-        if (label === null || consentLike(label)) return { why: "ambiguous" };
+        if (label === null) return { why: "ambiguous" };
         const c = windowOf(p);
-        const said = p.from === "window" || p.from === "instruction" ? statesFact(label, text, p.from === "window" && c?.labelled === true ? c.context : null) : false;
-        if (said) return { value: PAGE_CHECKED, display: "Ticked", writes: page && f.node.subrole !== PAGE_SUBROLE.switch };
-        // B24's hand-off rule: the span names the box among other words. D2-04: a negating word the label lacks ("no
-        // mushroom") voids it, and so does a question, which states nothing ("Are you a US citizen?" in a mail).
-        const named = optionInText([label], text) !== null && !negates(label, text) && !/\?\s*$/u.test(text);
-        return named ? { value: PAGE_CHECKED, display: "Ticked", writes: false } : { why: "ambiguous" };
+        // A value from memory is never offered to a box; an instruction's literal speaks for the user.
+        const stated = (p.from === "window" || p.from === "instruction") && statesFact(label, text, p.from === "window" && c?.labelled === true ? c.context : null);
+        const listed = (p.from === "window" || p.from === "instruction") && namedInList(label, text);
+        if (!stated && !listed) return { why: "ambiguous" };
+        // Whose fact it is: the user's own note, the window they just left, or what they told Caret to put there.
+        const own = p.from === "instruction" || (c !== null && anchorWindow !== null && c.source.windowId === anchorWindow.window.windowId);
+        return { value: PAGE_CHECKED, display: "Ticked", writes: page && own && f.node.subrole !== PAGE_SUBROLE.switch && (listed || statementLabel(label)) };
       }
       case "date": {
         const format = f.form?.format ?? "date";
@@ -1202,7 +1206,7 @@ export async function proposeFill(
         return d === null ? { why: "ambiguous" } : { ...d, writes: page && format === "date" };
       }
       case "time": {
-        const t = page ? readClock(text) : null;
+        const t = page ? readClock(text, resolveCtx) : null;
         if (t !== null) return { ...t, writes: true };
         const loose = clockTime(text);
         return loose === null ? { why: "ambiguous" } : { ...loose, writes: false };
@@ -1211,7 +1215,7 @@ export async function proposeFill(
         // Read as a text field is, then as one option's name: the page engine types it as the list's filter and picks
         // only an option named exactly that (B27).
         if (misfit(text, f.labelWords) !== null || (f.part !== null && !partFits(f.part, text))) return { why: "wrongKind" };
-        return optionName(text) ? { value: text, display: text, writes: page && !consent } : { why: "ambiguous" };
+        return optionName(text) ? { value: text, display: text, writes: page } : { why: "ambiguous" };
       case "text":
         return misfit(text, f.labelWords) === null && (f.part === null || partFits(f.part, text)) ? { value: text, display: text, writes: true } : { why: "wrongKind" };
     }
@@ -1272,8 +1276,14 @@ export async function proposeFill(
     const got = p === undefined || read === null || "why" in read ? null : read;
     // A text field's value is `value`, which Caret writes. Any other control's is a hand-off, which a Fill all writes
     // when the page engine owns the window and controlValue allows it (D2-04: FillHandoff.writes); the user sets the rest.
+    // A control's value read from a "Label: value" line names that label (FillHandoff.context), so a recheck can ask the
+    // source for the same line, not just the same word: "yes" is in many lines (D2-04 review).
+    const line = p === undefined ? null : windowOf(p);
+    const context = line !== null && line.labelled === true && line.context !== null && p?.from === "window" ? line.context : null;
     const handoff: FillHandoff | null =
-      f.control === "text" || p === undefined || got === null ? null : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f), ...(got.writes ? { writes: true as const } : {}) };
+      f.control === "text" || p === undefined || got === null
+        ? null
+        : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f), ...(context === null ? {} : { context }), ...(got.writes ? { writes: true as const } : {}) };
     const text = f.control === "text" && p !== undefined && got !== null;
     return {
       ...empty,

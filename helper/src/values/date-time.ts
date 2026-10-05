@@ -556,11 +556,13 @@ export function parseMoment(span: ValueRef, ctx: ResolveContext): Resolution<Mom
 }
 
 /**
- * A time of day alone, for a time field (D2-04): "HH:MM", or "HH:MM:SS" when the text gives seconds. The span may name
- * the day too ("Saturday, October 17 at 8:45am"); only its time is read. A span that names a zone is unsupported: a
- * time field holds a wall time with no zone, and nothing says which zone the form means, so Caret does not convert.
+ * A time of day alone, for a time field (D2-04): "HH:MM", or "HH:MM:SS" when the text gives seconds. A span that names
+ * the day too ("Saturday, October 17 at 8:45am") is read as the moment it names (parseMoment), so a wall time Daylight
+ * Saving skips or repeats there asks, as it does for a date and time; only its time of day is kept. A time field holds a
+ * wall time with no zone, and nothing says which zone the form means, so Caret converts none: a span that names a zone,
+ * or a source whose zone is not the user's (ResolveContext.sourceTimeZone), is unsupported.
  */
-export function parseClock(span: ValueRef): Resolution<string> {
+export function parseClock(span: ValueRef, ctx: ResolveContext): Resolution<string> {
   const toks = readTokens(span);
   if (typeof toks === "string") return unsupported(toks);
   const ss = sides(toks);
@@ -570,10 +572,19 @@ export function parseClock(span: ValueRef): Resolution<string> {
   const t = s.times[0];
   if (t === undefined) return unsupported(`"${span.quote}" names no time of day`);
   if (s.zones.length > 0) return unsupported(`"${span.quote}" names a time zone, and a time field holds a time with none`);
+  const source = ctx.sourceTimeZone === undefined ? ctx.timeZone : ctx.sourceTimeZone;
+  if (source !== ctx.timeZone) return unsupported(`"${span.quote}" is a time in the source's zone, which is not the user's`);
+  const clock = (time: Temporal.PlainTime): string => time.toString({ smallestUnit: time.second === 0 ? "minute" : "second" });
+  if (s.dates.length > 0) {
+    const m = parseMoment(span, ctx);
+    if (m.kind === "unsupported") return m;
+    if (m.kind === "ask") return ask(m.question, []);
+    const time = Temporal.PlainDateTime.from(m.value.local).toPlainTime();
+    return resolved(clock(time), sayClock(time), [span], m.assumptions);
+  }
   const c = timeChoices(t.time, t.text, s.part);
   if (c.kind === "one" && c.value.dayShift !== 0) return ask(`"${t.text}": the start of that day or its end?`, []);
-  const clock = (w: WallTime): string => w.time.toString({ smallestUnit: w.time.second === 0 ? "minute" : "second" });
-  const shown: Choice<string> = c.kind === "one" ? one(clock(c.value), c.assumptions) : c.kind === "many" ? many(c.question, c.values.map(clock)) : c;
+  const shown: Choice<string> = c.kind === "one" ? one(clock(c.value.time), c.assumptions) : c.kind === "many" ? many(c.question, c.values.map((w) => clock(w.time))) : c;
   return finish(shown, span, (v) => sayClock(Temporal.PlainTime.from(v)));
 }
 
