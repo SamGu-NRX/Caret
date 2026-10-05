@@ -136,6 +136,9 @@ export class FixtureSite {
       // B29: number fields whose page shows "1" as "1.00", beside a text field that does the same.
       case "GET /number":
         return html(res, read("number.html"));
+      // D2-06: a support form a goal plan fills from an email, with a Continue only the user presses.
+      case "GET /support":
+        return html(res, read("support.html"));
       case "GET /holds.js":
         return send(res, "text/javascript", read("holds.js"));
       case "GET /hold": {
