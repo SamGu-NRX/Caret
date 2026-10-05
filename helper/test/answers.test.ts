@@ -168,6 +168,12 @@ describe("the organization guard", () => {
     expect(namesIn(WHY_NORTHWIND)).toEqual(["Northwind Robotics"]);
     expect(namesIn("The team at Harbor & Pine shipped it. When I joined, AWS and Terraform ran everything.")).toEqual(["Harbor & Pine", "AWS", "Terraform"]);
     expect(namesIn(PROJECT)).toEqual([]);
+    // A sentence capitalizes its first word: alone, that is no name (the corpus's "Month-end", "Tools", "Describe").
+    expect(namesIn("Month-end close was mine. Tools like that help. Describe it and you see why.")).toEqual([]);
+    // It is one when the texts use it as one: where the answer was saved, or mid-sentence.
+    expect(namesIn("Quillmate changed how I write.", ["Why are you interested in Quillmate?"])).toEqual(["Quillmate"]);
+    expect(namesIn("Contoso hired me in 2019. I left Contoso in 2023.")).toEqual(["Contoso"]);
+    expect(namesIn("Harbor & Pine shipped it.")).toEqual(["Harbor & Pine"]);
   });
 
   it("withholds an answer written for another organization, naming both", () => {
@@ -214,6 +220,23 @@ describe("matching a saved answer in fill", () => {
       // Declared as memory, as the ledger charged it; no window is charged for the user's own words.
       expect(r.snippets.filter((s) => s.windowId === "memory").map((s) => s.text)).toEqual(expect.arrayContaining(["What has been your proudest accomplishment?", `${PROJECT.slice(0, 300)}…`]));
     }
+  });
+
+  it("offers an answer saved for the very question the page asks, though its long label is the page's own prose", async () => {
+    const long = "We believe exceptional performance in one area is a good indication of performance in other areas. Do you have any examples of exceptional performance you want to highlight?";
+    const model = pageModel("Security Engineer, Cloud @ Ramp", [
+      { key: "q0", label: "Please elaborate on your experience building software in AWS (with Terraform)" },
+      { key: "q1", label: long },
+    ]);
+    const mine = [saved("a10", long, PROJECT, null)];
+    const p = await proposeFill(model, jevPickingQuestion(() => `${long.slice(0, 59)}…`), "page-eng1-7", "q0", 2000, { answers: mine, page: { site: RAMP, headings: [] } });
+    expect(p.fields.find((x) => x.key === "q1")).toMatchObject({ value: PROJECT, withheld: null });
+  });
+
+  it("asks a text area whose question names a kind ('Describe a time…')", async () => {
+    const model = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "Describe a time you received difficult feedback. How did you respond?" }]);
+    const p = await proposeFill(model, jevPickingQuestion(() => "What has been your proudest accomplishment?"), "page-eng1-7", "q1", 2000, { answers, page: { site: RAMP, headings: [] } });
+    expect(p.fields.find((x) => x.key === "q1")?.answer?.id).toBe("a3");
   });
 
   it("withholds the right answer for the wrong company, with the sentence", async () => {

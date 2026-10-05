@@ -23,7 +23,7 @@ import { clockTime, readClock, readDate, readDateTime } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 import type { SavedAnswer } from "../memory/answers.ts";
-import { ANSWER_NONE, ANSWER_SAYS, ANSWER_WORDINGS, answerQuestionId, describeSaved, answerExcerpt, fillAnswer, guardAnswer, isAnswerField, MAX_ANSWERS_ASKED, pageText, type PageContext } from "./answers.ts";
+import { ANSWER_NONE, ANSWER_SAYS, ANSWER_WORDINGS, answerQuestionId, describeSaved, answerExcerpt, questionExcerpt, fillAnswer, guardAnswer, isAnswerField, MAX_ANSWERS_ASKED, pageText, type PageContext } from "./answers.ts";
 
 export const NONE = "none";
 /** The proposal's model name when a cut withheld every field and Jev was not asked. */
@@ -922,7 +922,7 @@ export async function proposeFill(
   // question carries; an answer a window on screen also shows is charged to that window, and one that would put a window
   // over its budget is not offered.
   const sendable = new Map<string, boolean>();
-  for (const list of answersFor.values()) for (const a of list) if (!sendable.has(a.id)) sendable.set(a.id, ledger.memory([a.fields.question, answerExcerpt(a.fields.answer)]));
+  for (const list of answersFor.values()) for (const a of list) if (!sendable.has(a.id)) sendable.set(a.id, ledger.memory([questionExcerpt(a.fields.question), answerExcerpt(a.fields.answer)]));
   for (const [id, list] of answersFor) {
     const kept = list.filter((a) => sendable.get(a.id) === true);
     if (kept.length === 0) answersFor.delete(id);

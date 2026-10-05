@@ -43,7 +43,8 @@ export function isAnswerField(n: Node): boolean {
   const label = fieldLabelText(n.label) ?? fieldLabelText(n.placeholder);
   if (label === null) return false;
   const kinds = fieldKinds([label]);
-  if (n.role === "AXTextArea") return kinds.size === 0;
+  // A question's words can name a kind ("Describe a time you…" names a time); a text area that asks one is still prose.
+  if (n.role === "AXTextArea") return kinds.size === 0 || QUESTION.test(label);
   return n.role === "AXTextField" && kinds.size === 0 && QUESTION.test(label) && !/\bname\b/iu.test(label);
 }
 
@@ -53,9 +54,21 @@ export function answerExcerpt(answer: string): string {
   return t.length <= ANSWER_CRITERION_CHARS ? t : `${t.slice(0, ANSWER_CRITERION_CHARS)}…`;
 }
 
+/**
+ * A saved question as a match question carries it: cut to QUESTION_CHARS like a field's label (descriptor.ts). A saved
+ * question is often the very label of the field on screen, and the ledger charges the page for every character of its
+ * line a request reveals: whole, a 173-character question went over the page's share and the answer was not offered
+ * (the corpus's Ashby "exceptional performance" field). Cut to what the field's descriptor already sends, it costs nothing.
+ */
+export function questionExcerpt(q: string): string {
+  return q.length <= QUESTION_CHARS ? q : `${q.slice(0, QUESTION_CHARS - 1)}…`;
+}
+/** descriptor.ts MAX_LABEL_CHARS: how much of a label a fill question carries. */
+const QUESTION_CHARS = 60;
+
 /** The criterion for one saved answer: the question it was saved for, and how it starts. */
 export function describeSaved(a: SavedAnswer): string {
-  return `The user's saved answer to the question "${a.fields.question}", which begins: "${answerExcerpt(a.fields.answer)}"`;
+  return `The user's saved answer to the question "${questionExcerpt(a.fields.question)}", which begins: "${answerExcerpt(a.fields.answer)}"`;
 }
 
 export const ANSWER_NONE = "No saved answer answers the question this field asks.";
@@ -138,26 +151,34 @@ const JOINERS = new Set(["&", "of", "the", "de"]);
 /** A word written as a name: an initial capital, a capital inside ("GitHub", "iOS"), or two or more capitals ("AWS"). */
 const capitalized = (t: string): boolean => /^\p{Lu}/u.test(t) || /^\p{Ll}+\p{Lu}/u.test(t);
 
+const sentencesOf = (text: string): string[] => text.split(/(?<=[.!?:;])\s+|\n+|[()"“”]/u);
+const tokensOf = (sentence: string): string[] => (sentence.match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*[\p{L}\p{N}]|[\p{L}\p{N}]|&/gu) ?? []).map((t) => t.replace(/['’]s$/u, ""));
+
 /**
- * The names a text uses: runs of capitalized words (with "&" or "of" between them), possessives dropped. A sentence's
- * first word counts only when the text never writes it in lower case and it is not a common opener, so "The", "When"
- * and "My" are not names but "Quillmate" at the start of a sentence is.
+ * The names a text uses: runs of capitalized words (with "&" or "of" between them), possessives dropped. A sentence
+ * capitalizes its first word whatever it is ("Month-end", "Tools", "Describe"), so that word counts only when it is no
+ * common opener, is never written in lower case, and something says it is a name: the next word is capitalized too, it
+ * has a capital inside ("GitHub"), or `context` or the text capitalizes it mid-sentence. `context` is where the answer
+ * was saved (its question and the page's title), which names the organization it was written for.
  */
-export function namesIn(text: string): string[] {
-  const lower = new Set(text.split(/[^\p{L}\p{N}'’]+/u).filter((t) => /^\p{Ll}/u.test(t)).map((t) => t.toLowerCase()));
+export function namesIn(text: string, context: readonly string[] = []): string[] {
+  const all = [text, ...context].join("\n");
+  const lower = new Set(all.split(/[^\p{L}\p{N}'’]+/u).filter((t) => /^\p{Ll}/u.test(t)).map((t) => t.toLowerCase()));
+  const midCaps = new Set(sentencesOf(all).flatMap((s) => tokensOf(s).slice(1).filter(capitalized)));
+  const isName = (t: string | undefined): boolean => t !== undefined && capitalized(t) && !NOT_NAMES.has(t);
   const out: string[] = [];
-  for (const sentence of text.split(/(?<=[.!?:;])\s+|\n+|[()"“”]/u)) {
-    const toks = sentence.match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*[\p{L}\p{N}]|[\p{L}\p{N}]|&/gu) ?? [];
+  for (const sentence of sentencesOf(text)) {
+    const toks = tokensOf(sentence);
     let run: string[] = [];
     const close = (): void => {
       while (run.length > 0 && JOINERS.has(run[run.length - 1] as string)) run.pop();
       if (run.length > 0) out.push(run.join(" "));
       run = [];
     };
-    toks.forEach((raw, i) => {
-      const t = raw.replace(/['’]s$/u, "");
-      const first = i === 0;
-      const name = capitalized(t) && !NOT_NAMES.has(t) && !(first && (lower.has(t.toLowerCase()) || OPENERS.has(t.toLowerCase())));
+    toks.forEach((t, i) => {
+      const l = t.toLowerCase();
+      const opener = i === 0 && (OPENERS.has(l) || lower.has(l) || !(midCaps.has(t) || /\p{Lu}/u.test(t.slice(1)) || isName(toks[1]) || toks[1] === "&"));
+      const name = isName(t) && !opener;
       if (name) run.push(t);
       else if (run.length > 0 && JOINERS.has(t.toLowerCase())) run.push(t.toLowerCase() === "&" ? "&" : t);
       else close();
@@ -188,9 +209,10 @@ export function onPage(name: string, page: PageText): boolean {
  */
 export function guardAnswer(a: SavedAnswer, page: PageText, maxLength: number | undefined): { why: AnswerWithheld; says: string } | null {
   const forPage = page.org === null ? null : `this page is for ${page.org}`;
-  const fromQuestion = namesIn(a.fields.question).find((n) => !onPage(n, page));
+  const context = [a.fields.question, a.fields.form ?? ""];
+  const fromQuestion = namesIn(a.fields.question, context).find((n) => !onPage(n, page));
   if (fromQuestion !== undefined) return { why: "otherOrganization", says: forPage === null ? `This answer was written for ${fromQuestion}, which this page doesn't mention.` : `This answer was written for ${fromQuestion}; ${forPage}.` };
-  const fromText = namesIn(a.fields.answer).find((n) => !onPage(n, page));
+  const fromText = namesIn(a.fields.answer, context).find((n) => !onPage(n, page));
   if (fromText !== undefined) return { why: "otherOrganization", says: forPage === null ? `This answer mentions ${fromText}, which this page doesn't.` : `This answer mentions ${fromText}; ${forPage}.` };
   if (maxLength !== undefined && a.fields.answer.length > maxLength) {
     return { why: "tooLong", says: `This answer is ${a.fields.answer.length.toLocaleString("en-US")} characters, and this field takes at most ${maxLength.toLocaleString("en-US")}.` };
