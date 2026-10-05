@@ -955,7 +955,59 @@ export const SkillAnswer = z.object({
 });
 export type SkillAnswer = z.infer<typeof SkillAnswer>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, AskAnswer, GoalRequest, GoalAccept]);
+// MARK: - the host's local model (L1; ~/.caret-run/plans/fast-browser.md, "local text")
+
+/**
+ * The hello capability for local text. A host that sends it answers localTextRequest from the on-device model it already
+ * loaded for ghost text, so the model is in memory once. The helper sends localTextRequest only to the most recent host
+ * that declared it, and takes localTextReply only from that host. Lead decision (2026-10-05): no default path sends one
+ * yet; L1 measures drafts through the same request on G1's tool (writer/local-port.ts).
+ */
+export const LOCAL_MODEL_CAPABILITY = "localModel";
+
+/**
+ * Helper to host: words for one field, from the host's local model. `draft` composes new text, `rewrite` changes text the
+ * prompt's basis holds. `grammar` is GBNF whose root rule is the only language the text may be in; null for none. The
+ * host builds its model's prompt from `prompt` (writer/local-draft.ts renders the one L1 measured) and answers once,
+ * before `deadlineMs` (milliseconds since the Unix epoch), with localTextReply naming `id`.
+ */
+export const LocalTextRequest = z.object({
+  type: z.literal("localTextRequest"),
+  v: z.literal(PROTOCOL_VERSION),
+  id: z.string().min(1).max(64),
+  kind: z.enum(["draft", "rewrite"]),
+  grammar: z.string().min(1).max(16_000).nullable(),
+  prompt: z.object({
+    instruction: z.string().min(1).max(500),
+    field: z.object({ name: z.string().max(200), placeholder: z.string().max(200).nullable() }),
+    /** The texts the words may draw on: each window's title and message as the helper read them. */
+    basis: z.array(z.string().max(4000)).max(8),
+  }),
+  maxTokens: z.number().int().min(1).max(512),
+  deadlineMs: ms,
+});
+export type LocalTextRequest = z.infer<typeof LocalTextRequest>;
+
+/**
+ * Host to helper: the answer to localTextRequest `id`. `ok` carries the text. Otherwise `text` is null and `outcome` says
+ * why: `busy` (the engine is serving the user's typing and the host did not queue the request), `unavailable` (no model
+ * is loaded), `timeout` (the deadline passed), `refused` (the host will not run this request, such as a grammar its
+ * engine cannot apply). `model` is the model file's name, empty when none is loaded; `latencyMs` the host's time.
+ */
+export const LocalTextReply = z
+  .object({
+    type: z.literal("localTextReply"),
+    v: z.literal(PROTOCOL_VERSION),
+    id: z.string().min(1).max(64),
+    outcome: z.enum(["ok", "busy", "unavailable", "timeout", "refused"]),
+    text: z.string().max(4000).nullable(),
+    model: z.string().max(200),
+    latencyMs: z.number().nonnegative(),
+  })
+  .refine((m) => (m.outcome === "ok") === (m.text !== null), { message: "text comes with outcome ok, and ok needs it", path: ["text"] });
+export type LocalTextReply = z.infer<typeof LocalTextReply>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, AskAnswer, GoalRequest, GoalAccept, LocalTextReply]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -1879,7 +1931,7 @@ export type GoalProgress = z.infer<typeof GoalProgress>;
 
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, AskQuestion, GoalProgress,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, AskQuestion, GoalProgress, LocalTextRequest,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);

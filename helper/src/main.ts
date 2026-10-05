@@ -21,6 +21,7 @@ import { SocketReaderLink } from "./executor/means.ts";
 import { defaultPageSocket, pageHost, type PageHost } from "./engines/host.ts";
 import { wirePageEngines } from "./engines/wire.ts";
 import { writersOnStart } from "./writer/startup.ts";
+import { HostLocalModel } from "./writer/local-port.ts";
 
 const DEFAULT_DATA_DIR = join(homedir(), "Library", "Application Support", "CaretV2");
 
@@ -127,7 +128,10 @@ helper = new Helper({
   routing: args["no-jev"] || args.shadow ? null : {},
   warn,
 });
-server = new HelperServer(args.socket, () => helper, warn, secret);
+// L1: the host's local model, reached by localTextRequest. Lead decision 2026-10-05: no default path uses it yet (drafts
+// on it are measured, not offered), so nothing here hands it to the helper.
+const localModel = new HostLocalModel((m) => server?.sendLocalText(m) ?? false);
+server = new HelperServer(args.socket, () => helper, warn, secret, localModel);
 await server.listen();
 if (pages !== null) {
   wirePageEngines({ host: pages, helper, publish: (m) => server?.publish(m), warn });
