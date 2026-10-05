@@ -1,1 +1,0 @@
-B29: an executor write's ledger 'after' is the value Caret meant to write; a read-back that differs sets mayIncludeInput and undo refuses it. Journal rows without afterIntended (saved before B29) recover their confirmed writes as mayIncludeInput.

@@ -6,7 +6,7 @@ import { ScreenModel } from "../src/model.ts";
 import { planWithCode } from "../src/planner/codeplan.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import type { WriterPort, WriterRequest } from "../src/writer/port.ts";
-import { WRITER_ROUTE } from "../src/writer/config.ts";
+import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { field, node, snap, text } from "./builders.ts";
 
@@ -26,7 +26,7 @@ function desk(): ScreenModel {
 /** A writer that returns `program` and records what it was sent. */
 function writer(program: string, seen: WriterRequest[] = []): WriterPort {
   return {
-    route: WRITER_ROUTE,
+    route: FAKE_WRITER_ROUTE,
     async write(req) {
       seen.push(req);
       return { model: "fake", provider: "groq", output: { program, reply: program }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };

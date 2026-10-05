@@ -4,7 +4,7 @@ import { describe, expect, test } from "vitest";
 import { runCodePlan } from "../../src/codemode/sandbox.ts";
 import { PlanningSnapshotSchema } from "../../src/codemode/types.ts";
 import { listModels } from "../../src/writer/chat.ts";
-import { CANDIDATES, GATEWAY_GPT_OSS_120B, GROQ_GPT_OSS_120B, GROQ_QWEN_3_8_27B, WRITER_ROUTE } from "../../src/writer/config.ts";
+import { GATEWAY_GPT_OSS_120B, GROQ_GPT_OSS_120B, GROQ_QWEN_3_8_27B } from "../../src/writer/config.ts";
 import { extractProgram, PLAN_API, planUserMessage } from "../../src/writer/plan-prompt.ts";
 import { GOAL_API, GOAL_SYSTEM } from "../../src/writer/goal-prompt.ts";
 import { makeWriterPort } from "../../src/writer/port.ts";
@@ -109,7 +109,8 @@ describe("WriterPort", () => {
     const body = { error: { message: `AI Gateway requires a valid credit card on file. key=${KEY}`, type: "customer_verification_required" } };
     const port = makeWriterPort(GATEWAY_GPT_OSS_120B, { key: () => KEY, fetchFn: fakeFetch(403, body) });
     const err = await port.write(request()).catch((e: Error) => e);
-    expect(String(err)).toContain("gateway HTTP 403 customer_verification_required");
+    // L1: this refusal has its own error (chat.ts GatewayNeedsCard; test/models-l1.test.ts).
+    expect(String(err)).toContain("Vercel AI Gateway needs a card on file, even for free models");
     expect(String(err)).not.toContain(KEY);
   });
 
@@ -125,9 +126,5 @@ describe("WriterPort", () => {
   test("listModels reads the provider's model ids", async () => {
     const ids = await listModels(GROQ_QWEN_3_8_27B, KEY, fakeFetch(200, { data: [{ id: "openai/gpt-oss-120b" }, { id: "qwen/qwen3.8-27b" }] }));
     expect(ids).toEqual(["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]);
-  });
-
-  test("the configured writer is one of the measured candidates", () => {
-    expect(CANDIDATES).toContain(WRITER_ROUTE);
   });
 });

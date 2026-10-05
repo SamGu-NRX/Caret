@@ -1764,6 +1764,63 @@
             "at"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "localTextReply"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "busy",
+                "unavailable",
+                "timeout",
+                "refused"
+              ]
+            },
+            "text": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "model": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "latencyMs": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "id",
+            "outcome",
+            "text",
+            "model",
+            "latencyMs"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -8236,6 +8293,114 @@
               "additionalProperties": false
             }
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "localTextRequest"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "draft",
+                "rewrite"
+              ]
+            },
+            "grammar": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "prompt": {
+              "type": "object",
+              "properties": {
+                "instruction": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                "field": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "placeholder": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "maxLength": 200
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "placeholder"
+                  ],
+                  "additionalProperties": false
+                },
+                "basis": {
+                  "maxItems": 8,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 4000
+                  }
+                }
+              },
+              "required": [
+                "instruction",
+                "field",
+                "basis"
+              ],
+              "additionalProperties": false
+            },
+            "maxTokens": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 512
+            },
+            "deadlineMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "id",
+            "kind",
+            "grammar",
+            "prompt",
+            "maxTokens",
+            "deadlineMs"
+          ],
+          "additionalProperties": false
         }
       ],
       "$defs": {

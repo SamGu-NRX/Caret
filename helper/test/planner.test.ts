@@ -17,7 +17,7 @@ import { addressParts, misfit, textKind, type TextKind } from "../src/fill/kinds
 import { handoffWhy, PlannerError, validatePlan } from "../src/planner/validate.ts";
 import { asksToFillForm, byRelevance, namesShortLabel, planTask, requestedWindow, type PlanTaskOptions } from "../src/planner/planner.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
-import { WRITER_ROUTE } from "../src/writer/config.ts";
+import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import type { WriterRequest } from "../src/writer/port.ts";
 import { MAIL_APP, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN, WIN_NUMBER, wireButtons } from "./fake-app.ts";
@@ -586,7 +586,7 @@ describe("planRequest through the helper", () => {
   return caret.plan({ basedOn: form.snapshot, steps });
 }`;
     const writes: string[] = [];
-    const writer = { route: WRITER_ROUTE, write: async (req: WriterRequest) => (writes.push(req.disclosureId), { model: "fake", provider: "groq", output: { program, reply: program }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 }) };
+    const writer = { route: FAKE_WRITER_ROUTE, write: async (req: WriterRequest) => (writes.push(req.disclosureId), { model: "fake", provider: "groq", output: { program, reply: program }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 }) };
     const withWriter = new Helper({ store, memory, askJev: checks, shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, now: () => clock, writer });
     app.helper = withWriter;
     app.show();
@@ -607,7 +607,7 @@ describe("planRequest through the helper", () => {
     // The writer names the Name field by its ref; Jev picks Dana's name for it and calls her the user.
     const intents: string[] = [];
     const intentWriter = {
-      route: WRITER_ROUTE,
+      route: FAKE_WRITER_ROUTE,
       write: async (req: WriterRequest) => {
         intents.push(req.kind);
         const input = req.input as { fields: { ref: string; name: string }[] };

@@ -90,11 +90,12 @@ import { GoalError, type DonePress } from "./goals/lower.ts";
 import type { GoalPlan, LeftItem } from "./goals/plan.ts";
 import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
-import { fillSays } from "./planner/says.ts";
+import { fillSays, SAYS } from "./planner/says.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
 import { headsIntentMaker } from "./planner/intent-heads.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
+import type { LocalModelPort } from "./writer/local-port.ts";
 import type { PlanErrorCode } from "./protocol.ts";
 
 /** The planner's failures that mean it could not ground the instruction, after which the code-mode writer is tried. */
@@ -197,6 +198,11 @@ export interface HelperOptions {
    * (unsure or nothing to do) goes to it (planner/codeplan.ts). Absent: those instructions fail as before.
    */
   writer?: WriterPort | null;
+  /**
+   * L1: the local model that writes goal drafts' words (goals/propose.ts PlanGoalOptions.drafter). main.ts never sets it
+   * (lead decision 2026-10-05: measured, on no default path); the evaluations do.
+   */
+  drafter?: LocalModelPort;
   /**
    * How an Ask's instruction becomes an intent (B25, planner/ask.ts): Jev's staged questions, or the writer's
    * strict JSON through this port. Absent or null: Ask runs the planner, then the code-mode writer, as before B25.
@@ -1038,7 +1044,8 @@ export class Helper {
     let goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     const refuse = (says: string): GoalProgress => this.goals.refused(goalId, requestId, says);
-    if (this.writer === null) return refuse("No plan writer is configured, so Caret cannot plan this");
+    // L1: no program writer by default, and no other model stands in for one (writer/startup.ts).
+    if (this.writer === null) return refuse(SAYS.noPlanWriter);
     if (this.mode !== "live") return refuse("Caret is in shadow mode");
     if (this.gate.settings.paused) return refuse("Caret is paused");
     if (!this.readerConnected) return refuse("No screen reader is connected");
@@ -1110,6 +1117,7 @@ export class Helper {
       ...(this.opts.pageDocument === undefined ? {} : { pageDocument: this.opts.pageDocument }),
       done,
       carried,
+      ...(this.opts.drafter === undefined ? {} : { drafter: this.opts.drafter }),
     });
   }
 

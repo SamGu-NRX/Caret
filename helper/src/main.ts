@@ -1,6 +1,6 @@
 // caret-helper: listens on the screen socket for caret-screen and for consumers, and on page.sock beside it for the
 // page engines (Caret for Chrome, through caret-bridge; browser layer W2).
-//   node src/main.ts --auth-fd N [--socket PATH] [--page-socket PATH | --no-page] [--data-dir DIR] [--memory-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
+//   node src/main.ts --auth-fd N [--socket PATH] [--page-socket PATH | --no-page] [--data-dir DIR] [--memory-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C] [--dev-writer provider:model]
 // --auth-fd names an inherited descriptor holding the 32-byte launch secret, which caret-screen also got from the
 // launcher (src/launch.ts); the helper answers the reader's challenge with it, and page.sock's handshake uses a key
 // derived from it (engines/auth.ts). It never comes on argv or in the environment. Without it page.sock is not started.
@@ -20,37 +20,10 @@ import { loadJevKey, makeJevClient } from "./fill/jev.ts";
 import { SocketReaderLink } from "./executor/means.ts";
 import { defaultPageSocket, pageHost, type PageHost } from "./engines/host.ts";
 import { wirePageEngines } from "./engines/wire.ts";
-import { makeWriterPort, type WriterPort } from "./writer/port.ts";
-import { ASK_MAKER, INTENT_ROUTE, WRITER_ROUTE } from "./writer/config.ts";
-import { readKey } from "./writer/env.ts";
-
-/** The configured plan writer, or null with a warning when its key is missing (the key is read again at each call, never printed). */
-function writerFromEnv(say: (line: string) => void): WriterPort | null {
-  try {
-    readKey(WRITER_ROUTE.keyName);
-  } catch (e) {
-    say(`plan writer off: ${e instanceof Error ? e.message : String(e)}`);
-    return null;
-  }
-  return makeWriterPort(WRITER_ROUTE);
-}
+import { writersOnStart } from "./writer/startup.ts";
+import { HostLocalModel } from "./writer/local-port.ts";
 
 const DEFAULT_DATA_DIR = join(homedir(), "Library", "Application Support", "CaretV2");
-
-/**
- * How Ask makes its intent (writer/config.ts ASK_MAKER). With the writer and no key for its route, Ask runs the
- * planner as before B25 and says so; it never moves to another model or to Jev.
- */
-function askFromEnv(say: (line: string) => void): { maker: "jev" | "heads" } | { maker: "writer"; writer: WriterPort } | null {
-  if (ASK_MAKER !== "writer") return { maker: ASK_MAKER };
-  try {
-    readKey(INTENT_ROUTE.keyName);
-  } catch (e) {
-    say(`Ask intent writer off, so Ask runs the planner as before B25: ${e instanceof Error ? e.message : String(e)}`);
-    return null;
-  }
-  return { maker: "writer", writer: makeWriterPort(INTENT_ROUTE) };
-}
 
 const { values: args } = parseArgs({
   options: {
@@ -69,6 +42,9 @@ const { values: args } = parseArgs({
     "no-page": { type: "boolean", default: false },
     // The markdown memory folder (M1). Lead decision 1: Application Support, not Documents, which may sync to iCloud.
     "memory-dir": { type: "string" },
+    // L1: a chat route for plan and goal programs, "groq:<model>" or "gateway:<model>" (writer/startup.ts).
+    // Developers only: without it no default path calls a chat provider.
+    "dev-writer": { type: "string" },
   },
 });
 // The user's memory folder goes with the user's data directory: the default one, whether named or not (Caret.app
@@ -101,6 +77,8 @@ if (auditOut !== undefined) {
 }
 
 if (!args["no-jev"] && !args.shadow) loadJevKey(); // fail at start, not at the first focus, when no key is configured
+// The program writer and Ask's maker (L1): none and Jev unless a developer names a route.
+const writers = args["no-jev"] || args.shadow ? null : writersOnStart(args["dev-writer"], warn);
 
 /** The launch secret from an inherited descriptor, read to its end and closed; null without --auth-fd. */
 function launchSecret(fdArg: string | undefined): Buffer | null {
@@ -141,16 +119,19 @@ helper = new Helper({
   ...(pages === null ? {} : { readerLink: pages.link, readerAnswers: readerSocket, pageCovers: (pid: number) => pages.registry.forBrowser(pid) !== undefined, pageDocument: (id: string) => pages.registry.documentOf(id) }),
   // Event cards add to the reader's EventKit adapter, which answers only when started with --calendar-test.
   calendar: "reader",
-  // The code-mode plan writer (B24), when a Groq key is configured; without one, Ask works as before.
-  writer: args["no-jev"] || args.shadow ? null : writerFromEnv(warn),
+  // The code-mode plan and goal writer (B24, D2-06): only a developer's --dev-writer route (L1).
+  writer: writers?.plan ?? null,
   // Ask as a scoped fill (B25), its intent from the configured maker.
-  ask: args["no-jev"] || args.shadow ? null : askFromEnv(warn),
+  ask: writers?.ask ?? null,
   // D2-02: one router above the producers whenever Jev is on. No host consumes a write decision yet (no routeDecision
   // message on the wire), so write is not a legal outcome: a document with nothing else due costs no model call.
   routing: args["no-jev"] || args.shadow ? null : {},
   warn,
 });
-server = new HelperServer(args.socket, () => helper, warn, secret);
+// L1: the host's local model, reached by localTextRequest. Lead decision 2026-10-05: no default path uses it yet (drafts
+// on it are measured, not offered), so nothing here hands it to the helper.
+const localModel = new HostLocalModel((m) => server?.sendLocalText(m) ?? false);
+server = new HelperServer(args.socket, () => helper, warn, secret, localModel);
 await server.listen();
 if (pages !== null) {
   wirePageEngines({ host: pages, helper, publish: (m) => server?.publish(m), warn });

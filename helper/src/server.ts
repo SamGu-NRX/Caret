@@ -10,8 +10,9 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
+import type { HostLocalModel } from "./writer/local-port.ts";
 import { planError } from "./planner/proposal.ts";
 
 /** One line may carry a whole window; a longer line is a reader bug, not a bigger window. */
@@ -31,6 +32,10 @@ export class HelperServer {
   private readonly askChoices = new Set<Socket>();
   /** Host connections whose hello listed GOAL_PLANS_CAPABILITY: only they may plan and accept goals, and only they get goalProgress (D2-06). */
   private readonly goalPlans = new Set<Socket>();
+  /** The most recent host whose hello listed LOCAL_MODEL_CAPABILITY: localTextRequest goes there, and only its replies count (L1). */
+  private localModelHost: Socket | null = null;
+  /** The local model's requests waiting on that host; null when the helper was started without one. */
+  private readonly localModel: HostLocalModel | null;
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -49,11 +54,20 @@ export class HelperServer {
   /** The launch secret the reader's challenge is answered with; null answers none, so an authenticating reader refuses this helper. */
   private readonly secret: Buffer | null;
 
-  constructor(path: string, helper: () => Helper, warn: (line: string) => void, secret: Buffer | null = null) {
+  constructor(path: string, helper: () => Helper, warn: (line: string) => void, secret: Buffer | null = null, localModel: HostLocalModel | null = null) {
     this.path = path;
     this.helper = helper;
     this.warn = warn;
     this.secret = secret;
+    this.localModel = localModel;
+  }
+
+  /** A local text request, to the host that runs the local model only; false when none is connected. */
+  sendLocalText(m: LocalTextRequest): boolean {
+    const host = this.localModelHost;
+    if (host === null || host.destroyed) return false;
+    host.write(JSON.stringify(m) + "\n");
+    return true;
   }
 
   /** Commands, act grants and revokes go to the reader only; no consumer ever receives one. */
@@ -155,6 +169,7 @@ export class HelperServer {
             if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
             if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
+            if (hello.data.host === true && hello.data.capabilities?.includes(LOCAL_MODEL_CAPABILITY) === true) this.localModelHost = s;
             if (hello.data.host === true) this.helper().hostConnected(session, routing);
             else this.helper().consumerConnected(session);
           } else {
@@ -224,6 +239,11 @@ export class HelperServer {
                   if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
                 });
             }
+          }
+          // L1: the local model's answers come only from the host it was asked of.
+          else if (m.data.type === "localTextReply") {
+            if (s !== this.localModelHost) this.reject(s, `localTextReply needs a host hello with "${LOCAL_MODEL_CAPABILITY}" in its capabilities`);
+            else if (this.localModel?.reply(m.data) !== true) this.warn(`localTextReply ${m.data.id}: no request waits for it`);
           }
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
           else if (m.data.type === "settings") this.helper().handleSettings(m.data, from);
@@ -314,6 +334,10 @@ export class HelperServer {
       this.fillAll.delete(s);
       this.askChoices.delete(s);
       this.goalPlans.delete(s);
+      if (this.localModelHost === s) {
+        this.localModelHost = null;
+        this.localModel?.hostGone();
+      }
       if (session !== null) this.helper().hostDisconnected(session);
       if (this.reader === s) {
         this.reader = null;

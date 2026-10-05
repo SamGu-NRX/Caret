@@ -32,10 +32,11 @@ import { newLaunchSecret, sendSecret } from "../src/launch.ts";
 const launchSecret = newLaunchSecret();
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
-import { CANDIDATES, WRITER_ROUTE } from "../src/writer/config.ts";
+import { devWriterRoute } from "../src/writer/routes.ts";
+import type { ChatRoute } from "../src/writer/chat.ts";
 
 /** The configured writer, one call at least 15 s after the last (Groq allows qwen3.8 1,000 output tokens a minute). */
-function spacedWriter(route = WRITER_ROUTE): WriterPort {
+function spacedWriter(route: ChatRoute): WriterPort {
   const port = makeWriterPort(route);
   let last = 0;
   return {
@@ -74,12 +75,13 @@ const { values: a } = parseArgs({
     "max-usd": { type: "string", default: "0.10" },
     cases: { type: "string" },
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "planner-eval.sock") },
-    // B24: the code-mode writer (writer/config.ts) for instructions the planner cannot ground, as the helper
-    // runs it when a Groq key is configured; calls are spaced 15 s apart for Groq's per-minute output limit.
-    writer: { type: "boolean", default: false },
+    // B24: the code-mode writer for instructions the planner cannot ground, as the helper runs it with --dev-writer:
+    // "groq:<model>" or "gateway:<model>" (writer/routes.ts devWriterRoute; L1: none by default). Calls are spaced
+    // 15 s apart for Groq's per-minute output limit.
+    writer: { type: "string" },
     /**
-     * B25: Ask as a scoped fill (planner/ask.ts), its intent made by "jev" or by the writer with this model id
-     * (writer/config.ts CANDIDATES), as the helper runs it with HelperOptions.ask. Needs --jev live.
+     * B25: Ask as a scoped fill (planner/ask.ts), its intent made by "jev" or by the writer on this route
+     * ("provider:model", writer/routes.ts devWriterRoute), as the helper runs it with HelperOptions.ask. Needs --jev live.
      */
     ask: { type: "string" },
   },
@@ -89,9 +91,7 @@ if (a.jev !== "fake" && a.jev !== "live") throw new Error("--jev is fake or live
 if (a.ask !== undefined && a.jev !== "live") throw new Error("--ask needs --jev live: the fake Jev answers plan questions only");
 function askConfig(maker: string): { maker: "jev" } | { maker: "writer"; writer: WriterPort } {
   if (maker === "jev") return { maker: "jev" };
-  const route = CANDIDATES.find((r) => r.model === maker);
-  if (route === undefined) throw new Error(`--ask ${maker} is neither jev nor one of ${CANDIDATES.map((r) => r.model).join(", ")}`);
-  return { maker: "writer", writer: spacedWriter(route) };
+  return { maker: "writer", writer: spacedWriter(devWriterRoute(maker)) };
 }
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
@@ -216,7 +216,7 @@ const helper = new Helper({
   },
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
   plannerHooks: { beforeCheck: () => hooks.beforeCheck?.() ?? Promise.resolve() },
-  ...(a.writer === true ? { writer: spacedWriter() } : {}),
+  ...(a.writer === undefined ? {} : { writer: spacedWriter(devWriterRoute(a.writer)) }),
   ...(a.ask === undefined ? {} : { ask: askConfig(a.ask) }),
 });
 server = new HelperServer(a.socket, () => helper, (l) => errors.push(l), launchSecret);
@@ -406,7 +406,7 @@ md.push(`- Achievable plans verified through the executor: ${achievable.filter((
 md.push(`- Hand-off plans that ended in a hand-off with their writes verified: ${rows.filter((r) => r.id.startsWith("h") && r.verified === true).length} of ${rows.filter((r) => r.id.startsWith("h")).length}`);
 md.push(`- Send, Delete or Pay presses the fixture saw: ${presses}`);
 md.push(`- Jev: ${jevCalls} calls, $${jevCost.toFixed(5)}${a.jev === "live" ? ` (budget $${MAX_USD})` : " (fake)"}; helper errors: ${errors.length}; taskProgress messages: ${grants.length}`, "");
-if (a.writer === true || a.ask !== undefined) md.push(`- Writer calls (code mode ${a.writer === true ? WRITER_ROUTE.model : "off"}; Ask intents ${a.ask ?? "off"}): ${writerCalls} calls, ${writerRetries} 429 retries, $${writerUsd.toFixed(5)}`, "");
+if (a.writer !== undefined || a.ask !== undefined) md.push(`- Writer calls (code mode ${a.writer ?? "off"}; Ask intents ${a.ask ?? "off"}): ${writerCalls} calls, ${writerRetries} 429 retries, $${writerUsd.toFixed(5)}`, "");
 md.push("| Case | Instruction | Expected | Proposal | As expected | Run | Verified by the fixture | Jev calls |", "| --- | --- | --- | --- | --- | --- | --- | --- |");
 for (const r of rows) {
   md.push(`| ${r.id} | ${r.instruction} | ${r.expected} | ${r.outcome}${r.code === null ? "" : ` ${r.code}`}${r.handoff === null ? "" : ` (${r.handoff.why}: ${r.handoff.label})`} | ${r.proposalOk ? "yes" : `no: ${r.proposalProblem}`} | ${r.run ?? "-"} | ${r.verified === null ? "-" : r.verified ? "yes" : `no: ${r.verifyProblem}`} | ${r.jevCalls} |`);
