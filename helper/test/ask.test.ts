@@ -7,7 +7,8 @@ import { proposeFill, type FillScope } from "../src/fill/fill.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { checkIntent, intentSnapshot, personSpans, type AskIntent, type IntentSnapshot } from "../src/planner/intent.ts";
 import { AskRefused, planAsk } from "../src/planner/ask.ts";
-import { wholeFormPhrase } from "../src/planner/scope-words.ts";
+import { asksForWholeForm } from "../src/planner/scope-words.ts";
+import { REVIEWED } from "./b28-reviewed.ts";
 import type { IntentMaker } from "../src/planner/intent-makers.ts";
 import { intentInput, jevIntentMaker, writerIntentMaker } from "../src/planner/intent-makers.ts";
 import { intentResponseFormat, IntentInputSchema } from "../src/writer/intent-prompt.ts";
@@ -322,8 +323,8 @@ describe("planAsk", () => {
     // The reviewer's case: the instruction rules Full name out; a writer's scope of every field is not taken on its word.
     const all = await planAsk("Fill only Email; do not change Full name", desk(), memory, about, { askJev: jevBy(pick, () => "user", () => "no").ask, maker: maker({ scope: "all" }), writer: null, offerKey: "c1", windowId: "form", now: 2000 }).catch((x: unknown) => x);
     expect((all as AskRefused).code).toBe("unsure");
-    // An instruction that names no field asks for nothing narrower than the form: "all" stands without Jev's yes.
-    const form = await planAsk("fill this out from my note", desk(), memory, about, { askJev: jevBy(pick, () => "user", () => "no").ask, maker: maker({ scope: "all" }), writer: null, offerKey: "c0", windowId: "form", now: 2000 });
+    // A whole-form request sentence (scope-words.ts WHOLE_FORM): "all" stands without Jev's yes.
+    const form = await planAsk("fill out the form from my note", desk(), memory, about, { askJev: jevBy(pick, () => "user", () => "no").ask, maker: maker({ scope: "all" }), writer: null, offerKey: "c0", windowId: "form", now: 2000 });
     expect(form.checked.writes.length).toBeGreaterThan(0);
     // A listed field the instruction does not name, which Jev does not confirm, is dropped; the named one stays.
     const list = await planAsk("my email please", desk(), memory, about, {
@@ -553,14 +554,14 @@ describe("what B26's second review found", () => {
   });
 });
 
-// B28 lead decision 1: a writer's whole form stands only on whole-form words (scope-words.ts) or Jev's two yeses.
+// B28 lead decision 1: a writer's whole form stands only on a whole-form request sentence (scope-words.ts) or Jev's two yeses.
 // G1's blind run: "just do my contact info up top" on the Greenhouse page, the local maker said "whole form", and
 // Graduation Date and LinkedIn were filled.
 describe("a grounded whole-form scope (B28)", () => {
   const G = "com.google.Chrome/greenhouse";
   const GKEY = (s: string): string => `${G}/textfield:${s}~0`;
   /** The Greenhouse replica's text fields, under `groups` headings when given ({ heading: labels }), else under none. */
-  const greenhouse = (groups: Record<string, string[]> | null = null): ScreenModel => {
+  const greenhouse = (groups: Record<string, string[]> | null = null, title = "Apply: Software Engineer Intern"): ScreenModel => {
     const labels = ["First Name", "Last Name", "Email", "Phone", "Graduation Date (MM/YYYY)", "LinkedIn Profile"];
     const parentOf = (label: string): string => {
       const g = groups === null ? undefined : Object.entries(groups).find(([, ls]) => ls.includes(label))?.[0];
@@ -575,7 +576,7 @@ describe("a grounded whole-form scope (B28)", () => {
     const note = ["First name: Jordan", "Last name: Reyes", "Email: jordan.reyes@example.org", "Phone: (512) 555-0147", "Graduation: 05/2027", "LinkedIn: https://www.linkedin.com/in/jordan-reyes-dev"].join("\n");
     const vals = [value("email", "jordan.reyes@example.org", "te/jr"), value("phone", "(512) 555-0147", "te/jr"), value("date", "05/2027", "te/jr"), value("url", "https://www.linkedin.com/in/jordan-reyes-dev", "te/jr")];
     m.apply(snap([field("te/jr", note, { role: "AXTextArea" })], { at: 900, windowId: "jr-note", title: "Jordan notes.txt", app: { pid: 7020, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true, values: vals }));
-    m.apply(snap(nodes, { at: 1000, windowId: "gh", title: "Apply: Software Engineer Intern", app: { pid: 7021, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: GKEY("first name") }));
+    m.apply(snap(nodes, { at: 1000, windowId: "gh", title, app: { pid: 7021, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: GKEY("first name") }));
     return m;
   };
   const VALUES: Record<string, string> = { "'First Name'": "Jordan", "'Last Name'": "Reyes", "'Email'": "jordan.reyes@example.org", "'Phone'": "(512) 555-0147", "'Graduation Date (MM/YYYY)'": "05/2027", "'LinkedIn Profile'": "https://www.linkedin.com/in/jordan-reyes-dev" };
@@ -631,9 +632,11 @@ describe("a grounded whole-form scope (B28)", () => {
     expect(jev.seen.filter((r) => "all" in r.questions).length).toBe(2);
   });
 
-  it("takes a section phrase over a whole-form word, and over Jev's yes to the whole form", async () => {
+  it("asks which fields for a section phrase in any sentence but a section request, even when Jev would say yes", async () => {
     const m = greenhouse({ "Contact information": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
-    expect(written(await askG("fill in everything in my contact info", m).run)).toEqual(CONTACT);
+    const { jev, run } = askG("fill in everything in my contact info", m);
+    expect(((await run.catch((x: unknown) => x)) as AskRefused).message).toBe(SAYS.whichFields);
+    expect(jev.seen.some((r) => "all" in r.questions)).toBe(false);
   });
 
   it("asks Jev about a whole form the instruction does not ask for in words, even when no field is named", async () => {
@@ -653,23 +656,38 @@ describe("a grounded whole-form scope (B28)", () => {
     expect(written(await out.run)).toEqual([GKEY("email")]);
   });
 
-  it.each([
-    ["fill out", "fill out from my note"],
-    ["fill out", "fill it out"],
-    ["fill out", "fill out the form please"],
-    ["fill in everything", "fill in everything"],
-    ["everything", "everything's in my note"],
-    ["the whole form", "do the whole form from my note"],
-    ["all of it", "all of it from my note"],
-    ["the rest", "do the rest"],
-    ["what you can", "fill what you can"],
-    ["this form", "complete this form"],
-    ["this application", "finish this application"],
-    ["fill out the <form name>", "fill out the software engineer intern application"],
-  ])("lets the whole form stand on '%s' without asking Jev (%s)", async (phrase, instruction) => {
-    expect(wholeFormPhrase(instruction, "Apply: Software Engineer Intern")).toBe(phrase);
-    const { jev, run } = askG(instruction, greenhouse(), () => "no");
-    expect(written(await run).length).toBe(6);
-    expect(jev.seen.some((r) => "all" in r.questions)).toBe(false);
+  const LAYOUTS: [string, Record<string, string[]> | null][] = [
+    ["no sections", null],
+    ["a contact section", { "Contact information": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)"], Links: ["LinkedIn Profile"] }],
+    ["a details section", { "Your details": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] }],
+  ];
+  it.each(REVIEWED)("never lets %j stand as a whole form or section when Jev confirms nothing (B28 reviews)", async (instruction, title) => {
+    for (const [, groups] of LAYOUTS) {
+      const e = await askG(instruction, greenhouse(groups, title), () => "no").run.catch((x: unknown) => x);
+      expect(e, `${instruction} wrote ${e instanceof AskRefused ? "" : written(e as Awaited<ReturnType<typeof planAsk>>).join(", ")}`).toBeInstanceOf(AskRefused);
+    }
   });
+
+  it.each(["please fill the entire form", "fill out the form from my note", "fill in everything you can", "do the whole form from my note", "complete this form", "Can you fill out this application for me?", "fill the rest using my notes"])(
+    "lets the whole form stand on the whole-form request %j without asking Jev",
+    async (instruction) => {
+      expect(asksForWholeForm(instruction)).toBe(true);
+      const { jev, run } = askG(instruction, greenhouse(), () => "no");
+      expect(written(await run).length).toBe(6);
+      expect(jev.seen.some((r) => "all" in r.questions)).toBe(false);
+    },
+  );
+
+  // What failing closed costs: requests the earlier recognizer trusted now take Jev's two asks first.
+  it.each(["fill out the form please", "fill it out", "fill out from my note", "finish this application", "fill out the software engineer intern application", "all of it from my note", "everything's in my note", "just do everything for me"])(
+    "asks Jev about %j, which is not a whole-form request sentence",
+    async (instruction) => {
+      expect(asksForWholeForm(instruction)).toBe(false);
+      const yes = askG(instruction, greenhouse(), () => "yes");
+      expect(written(await yes.run).length).toBe(6);
+      expect(yes.jev.seen.filter((r) => "all" in r.questions).length).toBe(2);
+      const no = askG(instruction, greenhouse(), () => "no");
+      expect(((await no.run.catch((x: unknown) => x)) as AskRefused).message).toBe(SAYS.whichFields);
+    },
+  );
 });

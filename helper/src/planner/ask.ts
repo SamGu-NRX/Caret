@@ -18,7 +18,7 @@ import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
 import { SAYS, SaidError, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure } from "./says.ts";
 import { fieldWords } from "./sources.ts";
-import { namedSection, wholeFormPhrase } from "./scope-words.ts";
+import { asksForWholeForm, namedSection } from "./scope-words.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { handoffWhy, PlannerError, validatePlan, type PlanContext } from "./validate.ts";
 
@@ -137,8 +137,9 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     return refused(new SaidError("unsupportedStep", saysPress(h.why, h.label), `the plan only hands the user the press '${h.label}' (${h.why})`));
   };
   // A phrase that names a part of the form ("contact info", "up top") is never the whole form, whichever maker said
-  // so: the fill narrows to the form's section of that meaning, or Caret asks which fields (B28 lead decision 1;
-  // G1's heldout2-04 filled Graduation Date and LinkedIn for "just do my contact info up top").
+  // so: when the whole instruction is a section request (scope-words.ts SECTION) the fill narrows to the form's
+  // section of that meaning, and otherwise Caret asks which fields (B28 lead decision 1; G1's heldout2-04 filled
+  // Graduation Date and LinkedIn for "just do my contact info up top").
   let bySection = false;
   if (checked.route === "fill" && (inferredAll || listsAll || intent.scope === "all")) {
     try {
@@ -149,8 +150,8 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     }
   }
   // A writer's intent names fields by ref, which code checks against the snapshot, not against what the instruction
-  // asks: a field the instruction does not name by its words, and "every field" when the instruction does not ask
-  // for the whole form in words code reads (scope-words.ts), stand only when Jev, asked twice, agrees the
+  // asks: a field the instruction does not name by its words, and "every field" when the whole instruction is not a
+  // whole-form request (scope-words.ts WHOLE_FORM), stand only when Jev, asked twice, agrees the
   // instruction asks for them (B25 review; B28 lead decision 1; the rule the code-mode writer has had since B24,
   // codeplan.ts confirmFields). Jev's own intents confirmed their fields already.
   if (checked.route === "fill" && o.maker.name === "writer" && !bySection) {
@@ -274,9 +275,9 @@ function narrowed(checked: FillChecked, keep: (f: IntentField) => boolean, none:
 
 /**
  * A whole-form fill narrowed to the section the instruction names by a section phrase (scope-words.ts), or null
- * when it uses none. Throws SAYS.whichFields when the instruction says more than the section (a word that is not
- * filler, or quoted text), or a phrase means no section of this form, or more than one; SAYS.nothingToDo when that
- * section has no empty field Caret may type.
+ * when it uses none. Throws SAYS.whichFields when the whole instruction is not a section request (scope-words.ts
+ * SECTION), or a phrase means no section of this form, or more than one; SAYS.nothingToDo when that section has no
+ * empty field Caret may type.
  */
 function sectionScope(instruction: string, checked: FillChecked, snap: IntentSnapshot): FillChecked | null {
   const { phrases, section, why } = namedSection(instruction, snap.sections.map((s) => s.name), snap.fields[0]?.section ?? null);
@@ -292,7 +293,7 @@ function sectionScope(instruction: string, checked: FillChecked, snap: IntentSna
 /**
  * The writer's fill scope with every field the instruction does not name by its words confirmed by Jev, both asks
  * answering yes at PLAN_CUTOFF; an "all" or section scope the instruction does not state is confirmed the same way.
- * An "all" the instruction asks for by a phrase on scope-words.ts WHOLE_FORM_WORDS stands without asking. A whole
+ * An "all" stands without asking only when the whole instruction is a scope-words.ts WHOLE_FORM sentence. A whole
  * form Jev does not confirm narrows to the fields the instruction names that Jev then confirms.
  * Throws PlannerError when nothing in scope is left.
  */
@@ -306,12 +307,11 @@ async function confirmScope(
   named: (f: IntentField) => boolean,
 ): Promise<FillChecked> {
   const words = fieldWords(instruction);
-  // "Every field" stands on the writer's word only when the instruction asks for the whole form in words code reads
-  // (B28 lead decision 1). Naming no field is not asking for the form: G1's local maker said "whole form" for "just
-  // do my contact info up top", and Graduation Date and LinkedIn were filled. A whole form code inferred from an
-  // empty list, or from a list of every field, always needs Jev's yes.
-  const whole =
-    scope === "inferred" ? true : scope === "all" ? wholeFormPhrase(instruction, snap.window.window.title) === null : scope === "section" ? relevance(words, snap.sections.find((x) => x.ref === section)?.name ?? "") === 0 : false;
+  // "Every field" stands on the writer's word only when the whole instruction is a whole-form request (B28 lead
+  // decision 1). Naming no field is not asking for the form: G1's local maker said "whole form" for "just do my
+  // contact info up top", and Graduation Date and LinkedIn were filled. A whole form code inferred from an empty
+  // list, or from a list of every field, always needs Jev's yes.
+  const whole = scope === "inferred" ? true : scope === "all" ? !asksForWholeForm(instruction) : scope === "section" ? relevance(words, snap.sections.find((x) => x.ref === section)?.name ?? "") === 0 : false;
   const unnamed = scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
   // When Jev does not confirm the whole form, the fields the instruction names are what is left, each confirmed by
   // Jev: "Fill only Email; do not change Phone" names Phone too.

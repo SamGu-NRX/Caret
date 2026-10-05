@@ -1,4 +1,6 @@
-// Where an instruction says to copy from, read by code (B26). Two rules use it:
+// Where an instruction says to copy from, read by code (B26). Two rules use it. Blanking a phrase only leaves fewer
+// words to name a field, so it can send more of a scope to Jev, never less; B28's whole-form and section scopes
+// match the whole instruction (scope-words.ts) and never read the blanked text.
 //   - A word that names the source never names a field. "do the checkout details from my note" asks for the
 //     checkout fields, not the form's "Add a gift note"; B25 scoped that Ask to the gift note alone (held-08).
 //     So the words that name fields are the instruction with its source phrases blanked (fieldWords).
@@ -20,8 +22,6 @@ const APP_NOUNS = ["linkedin", "terminal", "slack", "notion", "excel", "github",
 /** Nouns that name a source by what it is called on screen: an app or a site in a window's title, or a document. */
 const NAMED_NOUNS = [...APP_NOUNS, "profile", "calendar", "doc", "document", "file", "draft", "spreadsheet", "sheet", "resume", "cv", "letter", "invoice", "receipt", "confirmation"];
 const NOUN = [...NOTE_NOUNS, ...MAIL_NOUNS, ...NAMED_NOUNS].join("|");
-/** Every noun a source phrase can end in, for scope-words.ts, which checks a source phrase holds nothing else. */
-export const SOURCE_NOUNS: ReadonlySet<string> = new Set([...NOTE_NOUNS, ...MAIL_NOUNS, ...NAMED_NOUNS]);
 const NAME = "\\p{Lu}[\\p{L}'’-]*";
 const OWNER = `(?:my|the|this|that|his|her|their|our|your|${NAME}['’]s)`;
 /**
