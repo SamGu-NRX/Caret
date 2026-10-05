@@ -27,6 +27,8 @@ export interface Ack {
 
 export class FixtureSite {
   submitted = 0;
+  /** B28: landings on /replica/landed, by how the page left (via=submit or via=location). */
+  readonly landed = new Map<string, number>();
   /** Tabs of the memory run that finished loading (tab.html posts /tabhello). */
   tabsLoaded = 0;
   state: Record<string, unknown> | null = null;
@@ -157,7 +159,16 @@ export class FixtureSite {
       case "GET /replica/greenhouse":
       case "GET /replica/ashby":
       case "GET /replica/lever":
+      case "GET /replica/navpress":
         return html(res, read(`replica/${url.pathname.slice("/replica/".length)}.html`));
+      // B28: where navpress.html's Yes handlers go. Counted by how they came, and fixture.js keeps taking commands here.
+      case "GET /replica/landed": {
+        const via = url.searchParams.get("via") ?? "";
+        this.landed.set(via, (this.landed.get(via) ?? 0) + 1);
+        return html(res, `<!doctype html><title>Landed</title><p>Landed by ${via === "submit" ? "a form" : "location"}.</p><script src="/fixture.js"></script>`);
+      }
+      case "GET /replica/landings":
+        return send(res, "application/json", JSON.stringify(Object.fromEntries(this.landed)));
       case "GET /replica/replica.js":
         return send(res, "text/javascript", read("replica/replica.js"));
       case "GET /busy":

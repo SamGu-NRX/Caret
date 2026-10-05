@@ -191,6 +191,7 @@ function verbResult(outcome: VerbOutcome, detail: string | null): VerbResult {
  * A page outcome as the executor reads a reader outcome. `failed` with the old value back is `changed` (nothing
  * landed, the run stops). A failed write that left another value, or that stopped midway with no readings (the
  * field changed under it), is `axError`, which the executor treats as "may have landed" and judges by re-reading.
+ * A failed press with `pageChanged` keeps it, so the executor stops without judging (B28).
  */
 export function toVerbOutcome(r: PageResult): VerbResult {
   const detail = r.detail === null ? r.outcome : `${r.outcome}: ${r.detail}`;
@@ -211,6 +212,8 @@ export function toVerbOutcome(r: PageResult): VerbResult {
     case "handoff":
       return verbResult("notAllowed", detail);
     case "failed":
+      // A Yes/No press after which the page navigated or submitted (B28): may have landed, and the executor stops at once.
+      if (r.pageChanged !== undefined) return { ...verbResult("axError", detail), pageChanged: r.pageChanged };
       return verbResult(r.readings === undefined || r.readings.afterBlur !== r.readings.before ? "axError" : "changed", detail);
     case "unsupported":
     case "error":
@@ -351,10 +354,15 @@ export class PageEngineLink implements ReaderLink {
     while (this.marks.size > MAX_MARKS) this.marks.delete(this.marks.keys().next().value as string);
   }
 
-  /** Acts, then re-walks the tab so the model holds the result before the executor reads the answer. */
+  /**
+   * Acts, then re-walks the tab so the model holds the result before the executor reads the answer. A press after which
+   * the page left is answered at once, with no walk: the run stops on it, and a page on its way out may not answer a
+   * walk before the command times out (B28 review).
+   */
   private async act(verb: PageVerb, tabId: number): Promise<VerbResult> {
     const a = await this.session.command(verb, verb.kind === "pageChooseOption" || verb.kind === "pageAttachFile" ? SLOW_VERB_TIMEOUT_MS : undefined);
     const out = toVerbOutcome(a.result);
+    if (a.result.pageChanged !== undefined) return out;
     if (a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff") await this.session.command({ kind: "pageWalk", tabId });
     return out;
   }

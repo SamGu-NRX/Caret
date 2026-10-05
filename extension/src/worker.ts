@@ -18,6 +18,7 @@ import { GrantTable } from "./shared/grants.ts";
 import { classifyPress } from "./shared/risk.ts";
 import { NavGens, frameOrigin } from "./worker/frames.ts";
 import { composeFrames, isCaptchaUrl, type CaptchaFrame } from "./worker/compose.ts";
+import { judgePress, type FrameMarks } from "./worker/press-guard.ts";
 import { Chunks, parseFromHelper, type FromHelper } from "./worker/wire.ts";
 
 const HOST = "ai.caret.bridge";
@@ -29,6 +30,13 @@ const startedAt = Date.now();
 
 const grants = new GrantTable({ wall: () => Date.now(), mono: () => performance.now() });
 const navGens = new NavGens();
+/** Navigations begun in each frame (webNavigation.onBeforeNavigate), counted as navGens are: a Yes/No press checks it (B28). */
+const navStarts = new NavGens();
+/**
+ * How long after a Yes/No press's answer the worker still watches its frame for a navigation the click began. Assumed,
+ * not measured: browser-side navigation events reach the worker within a few tens of milliseconds.
+ */
+const POST_PRESS_MS = 250;
 let port: chrome.runtime.Port | null = null;
 let engine: string | null = null;
 let retryMs = 2000;
@@ -96,6 +104,7 @@ function result(id: string, a: ActAnswer): void {
     ...(a.risk === undefined ? {} : { risk: a.risk }),
     ...(a.choice === undefined ? {} : { choice: a.choice }),
     ...(a.attached === undefined ? {} : { attached: a.attached }),
+    ...(a.pageChanged === undefined ? {} : { pageChanged: a.pageChanged }),
   });
 }
 
@@ -309,25 +318,44 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   const genNow = navGens.get(verb.tabId, verb.frameId);
   if (live.scope.navGen !== genNow || live.scope.origin !== origin) return { outcome: "stale", detail: `the frame moved during the check (navGen ${live.scope.navGen}, now ${genNow})` };
   const deadline = Math.min(expires, live.expires);
+  // A Yes/No press (W4) must not navigate or submit (B28): the frame is read before it and after its answer.
+  const press = verb.kind === "pageChooseOption" && verb.question !== undefined;
+  const marks = (): FrameMarks => ({ navGen: navGens.get(verb.tabId, verb.frameId), starts: navStarts.get(verb.tabId, verb.frameId) });
+  const before = marks();
+  let a: ActAnswer | null;
   try {
     const msg: ToContent = { caret: 1, op: "act", verb, deadline, guardUntil: live.expires };
-    const a = (await withTimeout(chrome.tabs.sendMessage(verb.tabId, msg, { frameId: verb.frameId, documentId: verb.documentId }), Math.max(100, deadline - Date.now() + 1000), "the frame")) as ActAnswer | undefined;
-    if (a === undefined || typeof a !== "object" || typeof a.outcome !== "string") return { outcome: "error", detail: "the frame gave no answer" };
-    return a;
+    const got = (await withTimeout(chrome.tabs.sendMessage(verb.tabId, msg, { frameId: verb.frameId, documentId: verb.documentId }), Math.max(100, deadline - Date.now() + 1000), "the frame")) as ActAnswer | undefined;
+    if (got === undefined || typeof got !== "object" || typeof got.outcome !== "string") {
+      if (!press) return { outcome: "error", detail: "the frame gave no answer" };
+      a = { outcome: "error", detail: "the frame gave no answer" };
+    } else a = got;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    // A press was delivered and its document went before it answered (the channel closed under it, or the page went
+    // into the back-forward cache): it may have landed, so it is judged below as a change, never as stale.
+    if (press && /message (?:channel|port) closed|back\/forward cache/i.test(msg)) a = null;
     // The pinned document is gone between the check and the delivery: a navigation won the race.
-    if (/Could not establish connection|Receiving end does not exist|No frame|document/i.test(msg)) return { outcome: "stale", detail: `the document is gone: ${msg}` };
-    return { outcome: "error", detail: msg };
+    else if (/Could not establish connection|Receiving end does not exist|No frame|document/i.test(msg)) return { outcome: "stale", detail: `the document is gone: ${msg}` };
+    else if (!press) return { outcome: "error", detail: msg };
+    else a = { outcome: "error", detail: msg };
   }
+  if (!press) return a as ActAnswer;
+  if (a?.outcome === "ok") await new Promise((r) => setTimeout(r, POST_PRESS_MS));
+  const judged = judgePress(a, before, marks());
+  // The run stops at once: the task's grants end here, before the helper hears of it, so nothing else of it acts.
+  if (judged.pageChanged !== undefined) revokeTask(verb.taskId);
+  return judged;
 }
 
 // Navigation generations: every way a frame's document or history entry changes.
 chrome.webNavigation.onCommitted.addListener((d) => void navGens.bump(d.tabId, d.frameId));
 chrome.webNavigation.onHistoryStateUpdated.addListener((d) => void navGens.bump(d.tabId, d.frameId));
 chrome.webNavigation.onReferenceFragmentUpdated.addListener((d) => void navGens.bump(d.tabId, d.frameId));
+chrome.webNavigation.onBeforeNavigate.addListener((d) => void navStarts.bump(d.tabId, d.frameId));
 chrome.tabs.onRemoved.addListener((tabId) => {
   navGens.forgetTab(tabId);
+  navStarts.forgetTab(tabId);
   lastFocus.delete(tabId);
 });
 

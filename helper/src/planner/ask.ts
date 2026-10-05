@@ -7,15 +7,19 @@
 //   - ask or refuse: a PlannerError whose sentence code wrote.
 // Nothing here acts.
 import type { ScreenModel, WindowState } from "../model.ts";
-import type { FillField, FillProposal } from "../protocol.ts";
+import type { FillField, FillProposal, Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
 import { FillError, memoryRefOf, proposeFill } from "../fill/fill.ts";
+import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
-import { asksToFillForm, namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, type PlanDraft, type PlannerMemory } from "./planner.ts";
+import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import { planWithCode, type WriterUse } from "./codeplan.ts";
-import { checkIntent, intentSnapshot, leftToYouSays, WHY_SAYS, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
+import { checkIntent, intentSnapshot, leftToYouSays, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
+import { SAYS, SaidError, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure } from "./says.ts";
+import { fieldWords } from "./sources.ts";
+import { asksForWholeForm, exclusionsIn, namedSection } from "./scope-words.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { handoffWhy, PlannerError, validatePlan, type PlanContext } from "./validate.ts";
 
@@ -42,19 +46,22 @@ export type AskDraft = PlanDraft & {
   writer?: WriterUse;
 };
 
-/** An Ask that ended without a plan, with the intent and what making it cost when the maker got that far. */
-export class AskRefused extends PlannerError {
+/**
+ * An Ask that ended without a plan, with the intent and what making it cost when the maker got that far. Its message
+ * is the sentence the user reads (says.ts); `detail` is what the failing check found, for logs and the scoreboard.
+ */
+export class AskRefused extends SaidError {
   readonly intent: AskIntent | null;
   readonly maker: MakerUse | null;
   constructor(e: PlannerError, intent: AskIntent | null, maker: MakerUse | null) {
-    super(e.code, e.message);
+    super(e.code, e instanceof SaidError ? e.message : saysFor(e.code), e instanceof SaidError ? e.detail : e.message);
     this.windowId = e.windowId;
     this.intent = intent;
     this.maker = maker;
   }
 }
 
-/** Plans an Ask. Throws PlannerError (AskRefused once an intent exists) with the failing check's code and sentence. */
+/** Plans an Ask. Throws AskRefused with the failing check's code, the user's sentence and the check's detail. */
 export async function planAsk(instruction: string, model: ScreenModel, memory: PlannerMemory, about: readonly AboutValue[], o: AskOptions): Promise<AskDraft> {
   const now = o.now ?? Date.now();
   const jev = { calls: 0, costUsd: 0, latencyMs: 0 };
@@ -64,7 +71,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       r = await o.askJev(req);
     } catch (e) {
       // A Jev failure anywhere in an Ask (a timeout, an HTTP error) is reported as the planner reports one.
-      throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+      throw new SaidError("jevFailed", SAYS.unreachable, `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
     }
     jev.calls++;
     jev.costUsd += r.costUsd;
@@ -73,12 +80,27 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   let w: WindowState;
   if (o.windowId !== undefined) {
     const named = model.windows.get(o.windowId);
-    if (named === undefined) throw new PlannerError("unseenWindow", `window ${o.windowId} is not open`);
+    if (named === undefined) throw new AskRefused(new SaidError("unseenWindow", SAYS.windowClosed, `window ${o.windowId} is not open`), null, null);
     w = named;
-  } else w = (await taskWindow(instruction, model, { askJev, ...(o.rand === undefined ? {} : { rand: o.rand }) })).window;
+  } else {
+    try {
+      w = (await taskWindow(instruction, model, { askJev, ...(o.rand === undefined ? {} : { rand: o.rand }) })).window;
+    } catch (e) {
+      if (e instanceof PlannerError) throw new AskRefused(e, null, null);
+      throw e;
+    }
+  }
 
-  const snap = intentSnapshot(instruction, model, w, memory.values());
-  const { intent, use } = await o.maker.make(snap);
+  let snap: IntentSnapshot;
+  let made: Awaited<ReturnType<IntentMaker["make"]>>;
+  try {
+    snap = intentSnapshot(instruction, model, w, memory.values());
+    made = await o.maker.make(snap);
+  } catch (e) {
+    if (e instanceof PlannerError) throw new AskRefused(e, null, null);
+    throw e;
+  }
+  const { intent, use } = made;
   const refused = (e: unknown): never => {
     if (e instanceof PlannerError) {
       e.windowId ??= w.window.windowId;
@@ -86,20 +108,68 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     }
     throw e;
   };
+  // The words that may name fields are the instruction without its source phrases (sources.ts): "from my note"
+  // never names the form's "Add a gift note" (B25 held-08).
+  const words = fieldWords(instruction);
+  const namesField = (f: IntentField): boolean => relevance(words, f.name) > 0 || namesShortLabel(words, f.name);
+  // A writer's fill with an empty list, for an instruction whose field words name no field, is read as the whole form,
+  // which Jev must then confirm (confirmScope): B25's writer gave "can you get this enrollment form done from what I
+  // jotted down" an empty list, and the Ask refused it as a field the form does not have (held-07).
+  const inferredAll = o.maker.name === "writer" && intent.route === "fill" && intent.scope === "list" && intent.fields.length === 0 && !snap.fields.some(namesField);
+  // A writer's list of every empty field Caret may type is the whole form, and Jev must confirm it as one question, as
+  // for an inferred whole form: B26's held-out-2 run listed all nine fields for "fill out the pizza order from my
+  // note", "pizza" named only Pizza Size, and Jev, asked about each other field alone, said no to eight. Taken as a
+  // plain "all", it stood without any confirmation when no field word named a field ("fill only the first box"; B26's
+  // second review).
+  const empties = snap.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
+  const listsAll = o.maker.name === "writer" && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
   let checked: ReturnType<typeof checkIntent>;
   try {
-    checked = checkIntent(intent, snap);
+    checked = checkIntent(inferredAll || listsAll ? { ...intent, scope: "all" } : intent, snap);
   } catch (e) {
     return refused(e);
   }
   const extra = { intent, maker: use, fill: null };
-  // A writer's intent names fields by ref, which code checks against the snapshot, not against what the instruction
-  // asks: a field the instruction does not name by its words, and "every field" when it does not ask for the form,
-  // stand only when Jev, asked twice, agrees the instruction asks for them (B25 review; the rule the code-mode writer
-  // has had since B24, codeplan.ts confirmFields). Jev's own intents confirmed their fields already.
-  if (checked.route === "fill" && o.maker.name === "writer") {
+  // A plan whose one step hands the user a press does nothing for them ("hit submit"), so it is said, not offered:
+  // "Submitting is yours to do." (B26 lead decision 3; B25's held-out run showed the user nothing for it).
+  const onlyPress = (d: PlanDraft): never | null => {
+    const h = d.checked.handoff;
+    if (d.checked.writes.length > 0 || h === null || d.plan.steps.length !== 1) return null;
+    return refused(new SaidError("unsupportedStep", saysPress(h.why, h.label), `the plan only hands the user the press '${h.label}' (${h.why})`));
+  };
+  // A phrase that names a part of the form ("contact info", "up top") is never the whole form, whichever maker said
+  // so: when the whole instruction is a section request (scope-words.ts SECTION) the fill narrows to the form's
+  // section of that meaning, and otherwise Caret asks which fields (B28 lead decision 1; G1's heldout2-04 filled
+  // Graduation Date and LinkedIn for "just do my contact info up top"). Within the section, only the fields the
+  // phrase asks for by its meaning stand without Jev (B28b lead decision 2; a "Contact information" heading can hold
+  // a Graduation Date). A maker's own section intent is read the same way: the writer's section for "do my contact
+  // info" was trusted whole because the instruction names it (B28b review).
+  let bySection = false;
+  if (checked.route === "fill" && (inferredAll || listsAll || intent.scope === "all" || intent.scope === "section")) {
     try {
-      checked = await confirmScope(instruction, checked, intent, snap, askJev);
+      const chosen = !inferredAll && !listsAll && intent.scope === "section" ? (snap.sections.find((x) => x.ref === intent.section)?.name ?? null) : null;
+      const n = sectionScope(instruction, checked, snap, chosen);
+      if (n !== null) {
+        bySection = true;
+        checked = n.checked;
+        if (n.unsure.length > 0) {
+          const yes = await jevConfirms(instruction, snap, askJev)(false, n.unsure);
+          checked = narrowed(checked, (f) => !n.unsure.includes(f) || yes(`f${n.unsure.indexOf(f) + 1}`), () => new SaidError("unsure", SAYS.whichFields, `Jev confirmed none of the fields under '${n.section}' that ${n.said} does not ask for by its meaning`));
+        }
+      }
+    } catch (e) {
+      return refused(e);
+    }
+  }
+  // A writer's intent names fields by ref, which code checks against the snapshot, not against what the instruction
+  // asks: a field the instruction does not name by its words, and "every field" when the whole instruction is not a
+  // whole-form request (scope-words.ts WHOLE_FORM), and every field when the instruction holds an exclusion word
+  // (B28b), stand only when Jev, asked twice, agrees the
+  // instruction asks for them (B25 review; B28 lead decision 1; the rule the code-mode writer has had since B24,
+  // codeplan.ts confirmFields). Jev's own intents confirmed their fields already.
+  if (checked.route === "fill" && o.maker.name === "writer" && !bySection) {
+    try {
+      checked = await confirmScope(instruction, checked, inferredAll || listsAll ? "inferred" : intent.scope, intent.section, snap, askJev, namesField);
     } catch (e) {
       return refused(e);
     }
@@ -108,14 +178,14 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   if (checked.route === "plan") {
     try {
       const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }) });
-      return { ...d, ...extra, route: "plan" };
+      return onlyPress(d) ?? { ...d, ...extra, route: "plan" };
     } catch (e) {
       if (!(e instanceof PlannerError) || (e.code !== "unsure" && e.code !== "nothingToDo") || o.writer === null) return refused(e);
       try {
         const d = await planWithCode(instruction, model, memory, { writer: o.writer, askJev, offerKey: o.offerKey, windowId: w.window.windowId, now });
-        return { ...d, ...extra, route: "plan" };
+        return onlyPress(d) ?? { ...d, ...extra, route: "plan" };
       } catch (e2) {
-        if (e2 instanceof PlannerError) return refused(new PlannerError(e.code, `${e.message}; the plan writer did not help either: ${e2.message}`));
+        if (e2 instanceof PlannerError) return refused(new SaidError(e.code, e instanceof SaidError ? e.message : saysFor(e.code), `${e.message}; the plan writer did not help either: ${e2.message}`));
         throw e2;
       }
     }
@@ -125,7 +195,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   try {
     p = await proposeFill(model, askJev, w.window.windowId, checked.trigger, now, { about, scope: checked.scope, newId: () => o.offerKey, ...(o.rand === undefined ? {} : { rand: o.rand }) });
   } catch (e) {
-    if (e instanceof FillError) return refused(new PlannerError("nothingToDo", `Caret found nothing to fill there: ${e.message}`));
+    if (e instanceof FillError) return refused(new SaidError("nothingToDo", SAYS.nothingOnScreen, `the fill found nothing: ${e.message}`));
     return refused(e);
   }
   const nameOf = new Map(checked.fields.map((f) => [f.key, f]));
@@ -134,15 +204,15 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // about rather than guessed, and nothing else is proposed until it is answered.
   for (const f of p.fields) {
     const said = checked.scope.literals.get(f.key);
-    if (said !== undefined && f.withheld === "ambiguous" && f.asks.some((a) => a.value === said)) return refused(new PlannerError("unsure", askAbout(said, nameOf.get(f.key))));
+    if (said !== undefined && f.withheld === "ambiguous" && f.asks.some((a) => a.value === said)) return refused(new SaidError("unsure", saysAmbiguous(said, nameOf.get(f.key)?.control, nameOf.get(f.key)?.name), `"${said}" for ${name(f)} reads more than one way`));
   }
   const writes = p.fields.filter((f) => f.control === "text" && f.value !== null);
   const controls = p.fields.filter((f) => f.handoff !== null);
   if (writes.length === 0 && controls.length === 0) {
     const unsure = p.fields.filter((f) => f.withheld === "disagree" || f.withheld === "lowConfidence");
-    if (unsure.length > 0) return refused(new PlannerError("unsure", `Jev was not sure enough about ${unsure.map((f) => `${name(f)} (${f.withheld === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`));
+    if (unsure.length > 0) return refused(new SaidError("unsure", saysUnsure(unsure.map(name)), `Jev was not sure enough about ${unsure.map((f) => `${name(f)} (${f.withheld === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`));
     const left = leftToYouSays(checked.leftToYou);
-    return refused(new PlannerError("nothingToDo", `Caret found no value for ${checked.fields.map((f) => f.name).join(", ")} on screen, in memory or in your instruction${left === null ? "" : `; ${left} is yours to type`}`));
+    return refused(new SaidError("nothingToDo", `${saysNoValue(checked.fields.map((f) => f.name))}${left === null ? "" : ` ${left}`}`, `no value for ${checked.fields.map((f) => f.name).join(", ")} on screen, in memory or in the instruction`));
   }
 
   const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }) };
@@ -174,7 +244,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   } catch (e) {
     return refused(e);
   }
-  if (checkedPlan.window.window.windowId !== w.window.windowId) return refused(new PlannerError("unknownWindow", `'${w.window.title}' closed while Caret planned, and another window took its title`));
+  if (checkedPlan.window.window.windowId !== w.window.windowId) return refused(new SaidError("unknownWindow", SAYS.windowChanged, `'${w.window.title}' closed while Caret planned, and another window took its title`));
   // A value copied from a window charges that window when a target question quotes it (Plan.sources).
   const sources: Record<string, string> = {};
   for (const wr of checkedPlan.writes) if (wr.trace.from === "window") sources[`v${wr.step + 1}`] = wr.trace.windowId;
@@ -204,57 +274,131 @@ const CONFIRM_ALL = [
   (instr: string): string => `Instruction: "${instr}". Is it a request to fill in the whole form?`,
 ] as const;
 
-/**
- * The writer's fill scope with every field the instruction does not name by its words confirmed by Jev, both asks
- * answering yes at PLAN_CUTOFF; an "all" or section scope the instruction does not state is confirmed the same way.
- * Throws PlannerError when nothing in scope is left, or the whole form is not confirmed.
- */
-async function confirmScope(instruction: string, checked: Extract<ReturnType<typeof checkIntent>, { route: "fill" }>, intent: AskIntent, snap: IntentSnapshot, askJev: AskJev): Promise<Extract<ReturnType<typeof checkIntent>, { route: "fill" }>> {
-  const named = (f: IntentField): boolean => relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.name);
-  // "Every field" stands on the writer's word unless the instruction names some field of the form ("Fill only Email;
-  // do not change Full name", the review's case): then it may be asking for less, and Jev must confirm it. An
-  // instruction that names no field asks for nothing narrower than the form ("fill out the Northgate application").
-  const whole =
-    intent.scope === "all" ? !asksToFillForm(instruction) && snap.fields.some(named) : intent.scope === "section" ? relevance(instruction, snap.sections.find((x) => x.ref === intent.section)?.name ?? "") === 0 : false;
-  const unnamed = intent.scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
-  if (!whole && unnamed.length === 0) return checked;
-  const declared = snap.ledger.declared();
-  const req = (wording: 0 | 1): JevRequest => {
-    const questions: JevRequest["questions"] = {};
-    if (whole) questions.all = { type: "choice", instructions: CONFIRM_ALL[wording](instruction), criteria: { ...CONFIRM } };
-    unnamed.forEach((f, i) => {
-      questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](instruction, f.name), criteria: { ...CONFIRM } };
-    });
-    const sent = JSON.stringify([instruction, questions]);
-    return { state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
-  };
-  const [a, b] = await Promise.all([askJev(req(0)), askJev(req(1))]);
-  const yes = (id: string): boolean => {
-    const x = a.answers[id];
-    const y = b.answers[id];
-    return x?.choice === "yes" && y?.choice === "yes" && Math.min(x.confidence, y.confidence) >= PLAN_CUTOFF;
-  };
-  if (whole && !yes("all")) throw new PlannerError("unsure", WHY_SAYS.whichFields);
-  const kept = checked.fields.filter((f) => !unnamed.includes(f) || yes(`f${unnamed.indexOf(f) + 1}`));
-  if (kept.length === 0) throw new PlannerError("unsure", WHY_SAYS.whichFields);
+type FillChecked = Extract<ReturnType<typeof checkIntent>, { route: "fill" }>;
+
+/** The checked fill with only the fields `keep` holds for; throws `none` when no field is left. */
+function narrowed(checked: FillChecked, keep: (f: IntentField) => boolean, none: () => SaidError): FillChecked {
+  const kept = checked.fields.filter(keep);
+  if (kept.length === 0) throw none();
   const keys = new Set(kept.map((f) => f.key));
   const literals = new Map([...checked.scope.literals].filter(([k]) => keys.has(k)));
   const trigger = keys.has(checked.trigger) ? checked.trigger : (kept[0] as IntentField).key;
-  return { ...checked, fields: kept, trigger, scope: { ...checked.scope, fields: kept.map((f) => f.key), literals } };
+  return { ...checked, fields: kept, trigger, leftToYou: checked.leftToYou.filter(keep), scope: { ...checked.scope, fields: kept.map((f) => f.key), literals } };
 }
 
-/** The question for a value the user spelled out that reads more than one way. */
-function askAbout(said: string, f: IntentField | undefined): string {
-  const name = f?.name ?? "that field";
-  switch (f?.control) {
-    case "time":
-      return `"${said}" for ${name}: in the morning or the evening? Say it with am or pm`;
-    case "date":
-      return `"${said}" for ${name}: which date do you mean? Say the day, the month and the year`;
-    case "select":
-    case "radio":
-      return `"${said}" for ${name} matches none of its options, or more than one; say which option`;
-    default:
-      return `"${said}" for ${name} reads more than one way; say it in full`;
+/**
+ * A whole-form or section fill narrowed to the section the instruction names by a section phrase (scope-words.ts),
+ * or null when it uses none. `chosen` is the section a maker's section intent chose, which must be that one. `unsure` are the section's fields the phrase does not ask for by its meaning, which stand only
+ * on Jev's yes. Throws SAYS.whichFields when the whole instruction is not a section request (scope-words.ts
+ * SECTION), or a phrase means no section of this form, or more than one; SAYS.nothingToDo when that section has no
+ * empty field Caret may type.
+ */
+function sectionScope(instruction: string, checked: FillChecked, snap: IntentSnapshot, chosen: string | null): { checked: FillChecked; unsure: IntentField[]; section: string; said: string } | null {
+  const { phrases, section, why, fits } = namedSection(instruction, snap.sections.map((s) => s.name), snap.fields[0]?.section ?? null);
+  if (phrases.length === 0) return null;
+  const said = phrases.map((p) => `"${p}"`).join(" and ");
+  if (section === null) {
+    const has = snap.sections.length === 0 ? "the form has no sections" : `the form's sections are ${snap.sections.map((s) => `'${s.name}'`).join(", ")}`;
+    throw new SaidError("unsure", SAYS.whichFields, `the instruction names a part of the form by ${said}, and ${why ?? "no one section means that"} (${has})`);
   }
+  // The heading is matched by its text, and the text says nothing of whose it is when it sits inside another heading
+  // ("Contact information" inside "Emergency contact"), or which part is meant when two parts share it. Both ask.
+  const w = snap.window;
+  const heads = new Map(snap.fields.filter((f) => f.section === section).map((f) => {
+    const n = w.nodes.get(f.key);
+    const h = n === undefined ? null : sectionNode(w, n);
+    return [h?.key ?? null, h] as const;
+  }));
+  if (heads.size !== 1 || heads.has(null)) throw new SaidError("unsure", SAYS.whichFields, `${said} means '${section}', and more than one part of the form is headed that`);
+  const outer = sectionNode(w, [...heads.values()][0] as Node);
+  if (outer !== null) throw new SaidError("unsure", SAYS.whichFields, `${said} means '${section}', which sits inside '${fieldLabelText(outer.label) ?? ""}' and may be someone else's`);
+  if (chosen !== null && chosen !== section) throw new SaidError("unsure", SAYS.whichFields, `${said} means '${section}', and the maker chose '${chosen}'`);
+  const inSection = narrowed(checked, (f) => f.section === section, () => new SaidError("nothingToDo", SAYS.nothingToDo, `${said} means the section '${section}', which has no empty field Caret may type`));
+  // A field is read by the label words fill reads for it (fill.ts proposeFill); one whose node is gone fits nothing.
+  const meant = (f: IntentField): boolean => {
+    const n = w.nodes.get(f.key);
+    if (n === undefined) return false;
+    const d = describeField(w, n);
+    return fits({ labelWords: [d.label, d.nearest, d.placeholder], name: f.name, typed: f.control === "text" || f.control === "combobox" });
+  };
+  return { checked: inSection, unsure: inSection.fields.filter((f) => !meant(f)), section, said };
+}
+
+/**
+ * Asks Jev, in both wordings in parallel, whether the instruction asks for the whole form (`all`) and for each of
+ * `fields` (ids f1, f2, ... in order). The answer holds for an id both wordings answer yes at PLAN_CUTOFF.
+ */
+function jevConfirms(instruction: string, snap: IntentSnapshot, askJev: AskJev): (all: boolean, fields: readonly IntentField[]) => Promise<(id: string) => boolean> {
+  const declared = snap.ledger.declared();
+  return async (all, fields) => {
+    const req = (wording: 0 | 1): JevRequest => {
+      const questions: JevRequest["questions"] = {};
+      if (all) questions.all = { type: "choice", instructions: CONFIRM_ALL[wording](instruction), criteria: { ...CONFIRM } };
+      fields.forEach((f, i) => {
+        questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](instruction, f.name), criteria: { ...CONFIRM } };
+      });
+      const sent = JSON.stringify([instruction, questions]);
+      return { state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
+    };
+    const [a, b] = await Promise.all([askJev(req(0)), askJev(req(1))]);
+    return (id) => {
+      const x = a.answers[id];
+      const y = b.answers[id];
+      return x?.choice === "yes" && y?.choice === "yes" && Math.min(x.confidence, y.confidence) >= PLAN_CUTOFF;
+    };
+  };
+}
+
+/**
+ * The writer's fill scope with every field the instruction does not name by its words confirmed by Jev, both asks
+ * answering yes at PLAN_CUTOFF; an "all" or section scope the instruction does not state is confirmed the same way.
+ * An "all" stands without asking only when the whole instruction is a scope-words.ts WHOLE_FORM sentence. A whole
+ * form Jev does not confirm narrows to the fields the instruction names that Jev then confirms. An instruction that
+ * holds an exclusion word (scope-words.ts EXCLUSION_WORDS) grants no trust by naming: every field in scope is
+ * confirmed, after the whole form when that is asked too.
+ * Throws PlannerError when nothing in scope is left.
+ */
+async function confirmScope(
+  instruction: string,
+  checked: FillChecked,
+  scope: AskIntent["scope"] | "inferred",
+  section: string,
+  snap: IntentSnapshot,
+  askJev: AskJev,
+  named: (f: IntentField) => boolean,
+): Promise<FillChecked> {
+  const words = fieldWords(instruction);
+  // "Every field" stands on the writer's word only when the whole instruction is a whole-form request (B28 lead
+  // decision 1). Naming no field is not asking for the form: G1's local maker said "whole form" for "just do my
+  // contact info up top", and Graduation Date and LinkedIn were filled. A whole form code inferred from an empty
+  // list, or from a list of every field, always needs Jev's yes.
+  const whole = scope === "inferred" ? true : scope === "all" ? !asksForWholeForm(instruction) : scope === "section" ? relevance(words, snap.sections.find((x) => x.ref === section)?.name ?? "") === 0 : false;
+  // A field or section the instruction names stands on its words, unless the instruction rules something out: the
+  // writer listed Email and Phone for "fill out the email and not phone", and gave the whole section for "do the
+  // contact section except phone", and both were written without a question (B28b lead decision 1).
+  const excluding = exclusionsIn(instruction).length > 0;
+  // A section named by its words is not asked for whole when the instruction also names a field in it: "fill only
+  // Email in the contact section" (B28b re-check).
+  const namesInSection = scope === "section" && checked.fields.some(named);
+  const unsure = excluding || namesInSection ? checked.fields : scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
+  // When Jev does not confirm the whole form, the fields the instruction names are what is left, each confirmed by
+  // Jev: "Fill only Email; do not change Phone" names Phone too.
+  const fallback = whole && scope !== "section" ? checked.fields.filter(named) : [];
+  if (!whole && unsure.length === 0) return checked;
+  const confirm = jevConfirms(instruction, snap, askJev);
+  if (whole) {
+    // The whole form is one question, asked alone (B26: asked field by field, Jev said no to eight of nine). Only
+    // when it is not confirmed are the fields the instruction names asked about, in a second pair.
+    const yes = await confirm(true, []);
+    if (!yes("all")) {
+      const notWhole = "Jev did not confirm the instruction asks for the whole form";
+      if (fallback.length === 0) throw new SaidError("unsure", SAYS.whichFields, `${notWhole}, and it names no field`);
+      const named2 = await confirm(false, fallback);
+      return narrowed(checked, (f) => fallback.includes(f) && named2(`f${fallback.indexOf(f) + 1}`), () => new SaidError("unsure", SAYS.whichFields, `${notWhole}, nor any field it names`));
+    }
+    if (unsure.length === 0) return checked;
+  }
+  const yes = await confirm(false, unsure);
+  const none = excluding ? "Jev confirmed none of the fields in scope, and the instruction rules something out" : "Jev confirmed none of the fields the instruction does not name";
+  return narrowed(checked, (f) => !unsure.includes(f) || yes(`f${unsure.indexOf(f) + 1}`), () => new SaidError("unsure", SAYS.whichFields, none));
 }

@@ -39,6 +39,11 @@ export class FakeApp implements ReaderLink {
   focusMovesOn = new Set<string>();
   /** Sets the value but answers axError, as a reader that timed out while settling does. */
   timeoutAfterWrite = false;
+  /**
+   * Sets the value, then answers axError with these page changes, as a page engine does when a Yes/No press's page
+   * then navigates or submits (B28).
+   */
+  pageChangeAfterWrite: VerbResult["pageChanged"] = undefined;
   /** Answers this many walks with axError first, as a walk cut short by a busy app is. */
   failWalks = 0;
   /** Rewrites each written value, as an app that formats input does. */
@@ -91,6 +96,8 @@ export class FakeApp implements ReaderLink {
     const refused = this.enforceGrants ? this.grants.refusal(verb) : null;
     const r = refused !== null ? { outcome: "notAllowed" as const, detail: refused } : this.perform(verb);
     this.afterVerb?.(this, verb);
+    const changed = this.pageChangeAfterWrite !== undefined && verb.kind === "write" && r.outcome === "ok";
+    if (changed) return { type: "verbResult", v: PROTOCOL_VERSION, id: "x", at: this.at, outcome: "axError", detail: "failed: the page changed after the press", pageChanged: this.pageChangeAfterWrite };
     return { type: "verbResult", v: PROTOCOL_VERSION, id: "x", at: this.at, outcome: r.outcome, detail: r.detail };
   }
 

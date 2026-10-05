@@ -203,14 +203,21 @@ const CONNECTOR = /^\s*(?:-|–|to|until|till)\s*$/i;
  * The node's date and time spans in the sentence, as one text in sentence order. Text between two spans
  * is kept only when it is a range's connector ("3:00 to 4:00 PM"); anything else between them (a room
  * number) is left out, so it is never read as a time. Empty when there are none.
+ *
+ * The reader's values are found in the whole node, so a span from elsewhere in it can match inside this sentence too:
+ * "Thursday" from a heading above lands where "Thursday 3pm PT" starts (D2-02 corpus m06). The longest span at a place
+ * wins and any span overlapping one kept is dropped, so a shorter echo never hides the time.
  */
 export function spansIn(w: WindowState, key: string, sentence: string): string[] {
-  const found: { at: number; text: string }[] = [];
+  const all: { at: number; text: string }[] = [];
   for (const v of w.values) {
     if (v.nodeKey !== key || (v.kind !== "date" && v.kind !== "time")) continue;
     const at = sentence.indexOf(v.text);
-    if (at >= 0 && !found.some((f) => f.at === at)) found.push({ at, text: v.text });
+    if (at >= 0) all.push({ at, text: v.text });
   }
+  all.sort((a, b) => b.text.length - a.text.length || a.at - b.at);
+  const found: { at: number; text: string }[] = [];
+  for (const f of all) if (!found.some((k) => f.at < k.at + k.text.length && k.at < f.at + f.text.length)) found.push(f);
   if (found.length === 0) return [];
   found.sort((a, b) => a.at - b.at);
   let out = (found[0] as { text: string }).text;
@@ -306,6 +313,22 @@ export interface EventCardDeps {
   taken?: (id: string) => boolean;
   /** Whether a window is a conversation (conversation.ts); a test passes a counting one. */
   isConversation?: (w: WindowState) => boolean;
+  /**
+   * Routing is on (routing/coordinator.ts): no sentence is judged on its own. A sentence the user finishes is listed by
+   * the router from the field, and a conversation's new lines are kept as heard lines, with `heard` called, until a
+   * decision takes or drops them. A chosen sentence is judged through `judge`, as before.
+   */
+  routed?: { heard: () => void };
+  /** Sees each routed judgment's work, so the helper's eventsSettled covers it for tests and evaluations. */
+  onJudged?: (work: Promise<void>) => void;
+}
+
+/** A conversation line kept for the router: a sentence, its node, and the field an offer would go in. */
+export interface HeardLine {
+  w: WindowState;
+  key: string;
+  sentence: string;
+  field: OfferField;
 }
 
 export class EventCards {
@@ -319,6 +342,8 @@ export class EventCards {
   private pending = 0;
   /** A first look's scan is under way. */
   private looking = false;
+  /** Conversation lines heard while routing is on, newest last, until the router takes or drops them. */
+  private readonly heardLines: HeardLine[] = [];
   private readonly deps: EventCardDeps;
 
   constructor(deps: EventCardDeps) {
@@ -359,7 +384,8 @@ export class EventCards {
       if (w === undefined || c.key === null || c.after === null || (c.kind !== "value" && c.kind !== "added")) continue;
       const typing = c.editable && c.kind === "value" && model.focusedWindowId === w.window.windowId && w.focusedKey === c.key && model.frontmostPid === w.app.pid;
       if (typing) {
-        const last = sentences(c.after, false).at(-1);
+        // Routed, the router lists the field's last finished sentence itself (routing/context.ts breakpoint "sentence").
+        const last = this.deps.routed === undefined ? sentences(c.after, false).at(-1) : undefined;
         if (last !== undefined) work.push(this.consider(w, c.key, last, offerField(w, c.key), "typed"));
       } else if (!c.editable && isChat(w)) {
         const field = this.typingField();
@@ -368,7 +394,13 @@ export class EventCards {
     }
     // A conversation that loads its history arrives as many new lines at once; only the latest few are
     // judged, newest first, so the newest line is not the one left waiting for a free ask.
-    for (const l of lines.slice(-MAX_NEW_LINES).reverse()) for (const s of sentences(l.text, true)) work.push(this.consider(l.w, l.key, s, l.field, "conversation"));
+    const routed = this.deps.routed;
+    if (routed !== undefined) {
+      const before = this.heardLines.length;
+      for (const l of lines.slice(-MAX_NEW_LINES)) for (const s of sentences(l.text, true)) if (!this.judged.has(`${l.w.window.windowId}\u0000${s}`)) this.heardLines.push({ w: l.w, key: l.key, sentence: s, field: l.field });
+      this.heardLines.splice(0, Math.max(0, this.heardLines.length - MAX_NEW_LINES));
+      if (this.heardLines.length !== before || lines.length > 0) routed.heard();
+    } else for (const l of lines.slice(-MAX_NEW_LINES).reverse()) for (const s of sentences(l.text, true)) work.push(this.consider(l.w, l.key, s, l.field, "conversation"));
     for (const e of [...this.entries.values()]) {
       const node = model.windows.get(e.windowId)?.nodes.get(e.key);
       if (node === undefined || !nodeText(node).includes(e.candidate.sentence) || this.started(e.candidate)) this.withdraw(e.offerKey, "stale");
@@ -389,6 +421,34 @@ export class EventCards {
   /** The event's start has come (for a card that asks, every possible start): too late to offer or add it. */
   private started(c: EventCandidate): boolean {
     return lastStart(c) <= this.deps.now();
+  }
+
+  /** Conversation lines heard while routing is on, newest last. */
+  heard(): readonly HeardLine[] {
+    return this.heardLines;
+  }
+
+  /** The router decided about a heard line: it no longer waits. */
+  forgetHeard(line: HeardLine): void {
+    const i = this.heardLines.indexOf(line);
+    if (i >= 0) this.heardLines.splice(i, 1);
+  }
+
+  /** The event a sentence in this node describes, read as `consider` reads it; null when it names no person or time ahead. */
+  candidate(w: WindowState, key: string, sentence: string, source: SentenceSource): EventCandidate | null {
+    return eventCandidate(sentence, spansIn(w, key, sentence), this.deps.people(), this.clockAt(this.deps.now()), source);
+  }
+
+  /** Whether this sentence in this window was judged already (asked about, or found to be no event). */
+  isJudged(windowId: string, sentence: string): boolean {
+    return this.judged.has(`${windowId}\u0000${sentence}`);
+  }
+
+  /** The router chose this sentence: judge it as an unrouted card would be (two asks, then the card or nothing). */
+  judge(w: WindowState, key: string, sentence: string, field: OfferField, source: SentenceSource): Promise<void> {
+    const p = this.consider(w, key, sentence, field, source);
+    this.deps.onJudged?.(p);
+    return p;
   }
 
   private async consider(w: WindowState, key: string, sentence: string, field: OfferField, source: SentenceSource): Promise<void> {
@@ -569,6 +629,7 @@ export class EventCards {
     this.gen++;
     this.entries.clear();
     this.judged.clear();
+    this.heardLines.length = 0;
   }
 
   private withdraw(offerKey: string, reason: Exclude<OfferWithdrawn["reason"], "reoffered">): void {

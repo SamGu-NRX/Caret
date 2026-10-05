@@ -24,6 +24,8 @@
 //    a mail thread, agent threads), apart from conversation.ts. However short, each keeps more than half
 //    its text out of every request and gives at most CONVERSATION_CHARS, 600; the card exemption never
 //    applies to one. The short-chat sessions run once more with the rule off to show they went out whole.
+// 3b. A window the user's Ask names (B26 lead decision 1) may give that request up to WINDOW_CHARS, conversation
+//    or not; rules 3 and 3a do not hold it, and rule 2 does. The request names such windows (JevRequest.consented).
 // 4. Nothing from a window that is not a source. Text unique to a window the request does not name in
 //    its snippets never appears, descriptors come from the one window the question is about, and the
 //    sessions' bystander windows (paragraphs no fill can use) give nothing to any request.
@@ -41,6 +43,11 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type Node, type ReaderMessage, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
 import { resolveTarget } from "../src/executor/target.ts";
 import { CONVERSATION_CHARS, WINDOW_CHARS, setConversationCap } from "../src/privacy.ts";
+import { ScreenModel } from "../src/model.ts";
+import { proposeFill } from "../src/fill/fill.ts";
+import { collectCandidates } from "../src/fill/candidates.ts";
+import { fieldTerms } from "../src/fill/kinds.ts";
+import { SnippetLedger } from "../src/privacy.ts";
 import { FIXTURE_APP, focus, node, snap, text } from "./builders.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { largeScene } from "./large-scene.ts";
@@ -128,7 +135,8 @@ interface WindowMeasure {
  */
 function measure(r: Recorded): WindowMeasure[] {
   const body = bodyOf(r.req);
-  const texts = [...new Set(r.req.snippets.map((s) => s.text).filter((t) => t.length >= 3))];
+  // A snippet cut to length with an ellipsis, or holding a line break, shows each of its pieces (B26 review).
+  const texts = [...new Set(r.req.snippets.flatMap((s) => s.text.split("\n").map((t) => t.replace(/\s+/g, " ").trim().replace(/^…|…$/gu, ""))).filter((t) => t.length >= 3))];
   return r.windows.map((w) => {
     let covered = 0;
     let coveredProse = 0;
@@ -188,10 +196,12 @@ function violations(r: Recorded, bystanders: ReadonlySet<string>, conversations:
   }
   const subjects = new Set(r.req.snippets.filter((s) => s.kind === "descriptor").map((s) => s.windowId));
   if (subjects.size > 1) out.push(`${where}: descriptors from ${subjects.size} windows`);
+  const consented = new Set(r.req.consented ?? []);
   for (const m of measure(r)) {
     const charged = r.req.charged[m.windowId] ?? 0;
     if (m.covered > charged) out.push(`${where}: covers ${m.covered} characters of ${m.windowId}, and its ledger charged ${charged}`);
     if (m.covered > WINDOW_CHARS) out.push(`${where}: ${m.covered} characters from ${m.windowId}, over ${WINDOW_CHARS}`);
+    if (consented.has(m.windowId)) continue;
     if (!m.card && m.chars >= 2 * WINDOW_CHARS && m.covered * 2 >= m.chars && m.covered > 0) out.push(`${where}: ${m.covered} of ${m.chars} characters of ${m.windowId}, half or more of a window that is not a card`);
     if (!m.card && m.coveredProse > 0 && m.coveredProse * 2 >= m.proseChars) out.push(`${where}: ${m.coveredProse} of ${m.proseChars} characters of prose of ${m.windowId}, half or more`);
     if (bystanders.has(m.windowId) && m.covered > 0) out.push(`${where}: ${m.covered} characters from bystander ${m.windowId}`);
@@ -629,5 +639,77 @@ describe("the privacy line on every Jev request", () => {
       ledgerVsTest: ledgerVsTest(all),
     };
     if (process.env.PRIVACY_REPORT !== undefined) writeFileSync(process.env.PRIVACY_REPORT, `${JSON.stringify(report, null, 2)}\n`);
+  });
+});
+
+describe("a window the Ask names (B26 lead decision 1)", () => {
+  const MAIL = "9003-1";
+  const FORM = "9004-1";
+  const F = "com.google.Chrome/standard";
+  // The filler's short lines share the fields' words (guest, meal, arrival, phone), so without the named person first
+  // they win the budget over Bea's lines, which come last.
+  const body = (n: number): string[] => [
+    "From: Beatrice Sutherland <bea.sutherland@example.com>",
+    "To: Avery Kim <avery.kim@example.com>",
+    "Date: Wed, Oct 14, 2026, 12:06 PM",
+    ...Array.from({ length: n }, (_, i) => `Guest ${i} arrival, meal notes and phone for table ${i}`),
+    "Yes, I'd love to be your plus-one on the 24th, thank you for asking. Put me down as Beatrice Sutherland.",
+    "Food: I'll have the vegetarian one. You said you wanted the short rib, so get that for yourself.",
+    "My shift ends at 7, so we'd get there around 7:45 pm. See you soon, Bea",
+    "(503) 555-0157",
+  ];
+  const desk = (n: number): ScreenModel => {
+    const m = new ScreenModel();
+    m.apply(snap(body(n).map((l, i) => text(`mail/l${i}`, l)), { at: 100, windowId: MAIL, title: "Re: plus-one", app: { pid: 9003, bundleId: "com.apple.mail", name: "Mail" }, focused: true }));
+    const fields = ["Guest's full name", "Guest phone", "Guest email", "Arrival time", "Meal notes"].map((label, i) => node(`${F}/textfield:f${i}~0`, "AXTextField", { label, editable: true, value: "", parent: `${F}/webarea:~0`, frame: [100, 100 + 30 * i, 200, 20] }));
+    m.apply(snap([node(`${F}/webarea:~0`, "AXWebArea", { label: "RSVP" }), ...fields], { at: 200, windowId: FORM, title: "RSVP", app: { pid: 9004, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: `${F}/textfield:f0~0` }));
+    return m;
+  };
+  const fill = async (m: ScreenModel, consented: boolean): Promise<Recorded[]> => {
+    const rec: Recorded[] = [];
+    const ask: AskJev = async (req) => {
+      rec.push({ session: "named mail", producer: consented ? "ask naming the mail" : "ask naming nothing", req, windows: [...m.windows.values()].map(textOf) });
+      return fakeJev(req);
+    };
+    const keys = [0, 1, 2, 3, 4].map((i) => `${F}/textfield:f${i}~0`);
+    await proposeFill(m, ask, FORM, keys[0] as string, 1000, { scope: { fields: keys, windows: null, memory: false, instruction: "put Bea down as my guest", person: "Bea", literals: new Map(), ...(consented ? { consented: new Set([MAIL]), first: ["Bea", "Beatrice Sutherland"] } : {}) } });
+    return rec;
+  };
+  const mailMeasure = (rec: Recorded[]) => rec.flatMap(measure).filter((x) => x.windowId === MAIL);
+
+  it("gives more than half of a short named mail, and the same Ask naming nothing gives under half", async () => {
+    const named = await fill(desk(0), true);
+    expect(named.length).toBeGreaterThan(0);
+    expect(named.every((r) => (r.req.consented ?? []).includes(MAIL))).toBe(true);
+    expect(named.flatMap((r) => violations(r, new Set(), new Set([MAIL])))).toEqual([]);
+    const most = Math.max(...mailMeasure(named).map((x) => x.covered));
+    const chars = mailMeasure(named)[0]?.chars ?? 0;
+    expect(most * 2).toBeGreaterThan(chars);
+    const plain = await fill(desk(0), false);
+    expect(plain.every((r) => r.req.consented === undefined)).toBe(true);
+    expect(plain.flatMap((r) => violations(r, new Set(), new Set([MAIL])))).toEqual([]);
+    for (const x of mailMeasure(plain)) expect(x.covered * 2).toBeLessThan(x.chars);
+  });
+
+  it("never gives more than WINDOW_CHARS of a long named mail, and gives the named person's lines first", async () => {
+    const named = await fill(desk(50), true);
+    expect(named.flatMap((r) => violations(r, new Set(), new Set([MAIL])))).toEqual([]);
+    for (const x of mailMeasure(named)) expect(x.covered).toBeLessThanOrEqual(WINDOW_CHARS);
+    expect(mailMeasure(named)[0]?.chars ?? 0).toBeGreaterThan(2 * WINDOW_CHARS);
+    // In the generator, with the window's budget at WINDOW_CHARS, Bea's lines go in only when they go first.
+    const offered = (first: boolean): string[] => {
+      const m = desk(50);
+      const terms = ["Guest's full name", "Guest phone", "Guest email", "Arrival time", "Meal notes"].map((l) => fieldTerms([l]));
+      const ledger = new SnippetLedger(m.windows.values(), { consented: new Set([MAIL]) });
+      return collectCandidates(m, FORM, { now: 1000, ledger, fields: terms, ...(first ? { first: { windows: new Set([MAIL]), names: ["Bea", "Beatrice Sutherland"] } } : {}) }).candidates.map((c) => c.text);
+    };
+    expect(offered(true)).toContain("My shift ends at 7, so we'd get there around 7:45 pm. See you soon, Bea");
+    expect(offered(false)).not.toContain("My shift ends at 7, so we'd get there around 7:45 pm. See you soon, Bea");
+  });
+
+  it("still checks a named window against rule 2, the WINDOW_CHARS bound", () => {
+    const w = { windowId: MAIL, title: "x", lines: ["a".repeat(1300)], chars: 1300, card: false };
+    const r: Recorded = { session: "s", producer: "p", windows: [w], req: { state: { now: "a".repeat(1300) }, questions: {}, snippets: [{ windowId: MAIL, kind: "candidate", text: "a".repeat(1300) }], charged: { [MAIL]: 1300 }, consented: [MAIL] } };
+    expect(violations(r, new Set(), new Set([MAIL]))).toEqual([expect.stringContaining(`over ${WINDOW_CHARS}`)]);
   });
 });

@@ -6,9 +6,9 @@
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { formControls } from "../src/fill/controls.ts";
-import { PageEngineLink, toWindowSnapshot } from "../src/engines/page-link.ts";
+import { PageEngineLink, toVerbOutcome, toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
-import { PROTOCOL_VERSION, type HelperToEngine, type PageControl, type PageSnapshot, type PageVerb } from "../src/protocol.ts";
+import { PageResult, PROTOCOL_VERSION, type HelperToEngine, type PageControl, type PageSnapshot, type PageVerb } from "../src/protocol.ts";
 
 const ORIGIN = "https://jobs.example.test";
 const X = "kcmlnoabcdefghijklmnopabcdefghij";
@@ -141,5 +141,43 @@ describe("a Yes/No question built from toggle buttons (Ashby)", () => {
     expect((await write("Yes", "")).outcome).toBe("changed");
     expect((await write("", "No", "m1")).outcome).toBe("notSameElement");
     expect(verbs().filter((v) => v.kind !== "pageWalk")).toEqual([]);
+  });
+});
+
+describe("a Yes/No press after which the page left (B28)", () => {
+  const changed = { type: "pageResult" as const, v: 1 as const, id: "x", at: 1, outcome: "failed" as const, detail: "the page changed after the press (navigated), so Caret stopped", pageChanged: ["navigated" as const] };
+
+  it("reaches the executor as axError carrying what changed, so the run stops with the press possibly landed", () => {
+    expect(toVerbOutcome(changed)).toMatchObject({ outcome: "axError", pageChanged: ["navigated"] });
+    // Without pageChanged a failed press keeps W4's reading, and carries none.
+    expect(toVerbOutcome({ ...changed, pageChanged: undefined }).pageChanged).toBeUndefined();
+  });
+
+  it("answers the executor at once, with no walk of a page that is leaving (B28 review)", async () => {
+    const sent: HelperToEngine[] = [];
+    const session = new EngineSession({ engine: "eng1", browser, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m) => {
+      sent.push(m);
+      queueMicrotask(() => {
+        if (m.type !== "pageCommand") return;
+        // The first walk answers; the press answers that the page left; no later walk would be answered.
+        if (m.verb.kind === "pageWalk" && sent.filter((x) => x.type === "pageCommand").length === 1) {
+          session.receive(snapshot(m.id));
+          session.receive({ type: "pageResult", v: 1, id: m.id, at: 1, outcome: "ok", detail: null });
+        } else if (m.verb.kind === "pageChooseOption") session.receive({ ...changed, id: m.id });
+      });
+      return true;
+    }, 200);
+    const link = new PageEngineLink(session, () => undefined);
+    await link.run({ kind: "walk", pid: browser.pid, windowId: WIN });
+    const r = await link.run({ kind: "write", pid: browser.pid, windowId: WIN, key: "f0/pressgroup:e9", role: "AXGroup", attribute: "value", expect: "", value: "Yes", taskId: "t1" });
+    expect(r).toMatchObject({ outcome: "axError", pageChanged: ["navigated"] });
+    expect(sent.flatMap((m) => (m.type === "pageCommand" ? [m.verb.kind] : []))).toEqual(["pageWalk", "pageChooseOption"]);
+  });
+
+  it("takes pageChanged only on a failed result with no readings", () => {
+    expect(PageResult.safeParse(changed).success).toBe(true);
+    expect(PageResult.safeParse({ ...changed, outcome: "ok" }).success).toBe(false);
+    expect(PageResult.safeParse({ ...changed, readings: { before: "", afterInput: "Yes", afterBlur: "Yes", invalid: false, error: null } }).success).toBe(false);
+    expect(PageResult.safeParse({ ...changed, pageChanged: [] }).success).toBe(false);
   });
 });

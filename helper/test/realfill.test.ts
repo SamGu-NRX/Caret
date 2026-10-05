@@ -3,8 +3,9 @@
 // stand-in Jev for the anchor, the derived values, the controls and the owner veto. All text is synthetic.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { describeInput, emptyInput, memoryRefOf, memoryValue, parseMemoryRef, proposeFill } from "../src/fill/fill.ts";
-import { fieldPart, joinName, partFits, splitAddress, splitName } from "../src/fill/derive.ts";
+import { CHECKBOX_RUN, describeInput, emptyInput, formInputs, MAX_FIELDS, memoryRefOf, memoryValue, optionName, PAGE_WINDOW_KIND, parseMemoryRef, proposeFill, type FillScope, type Whose } from "../src/fill/fill.ts";
+import { asksCountry, fieldPart, joinName, partFits, splitAddress, splitName, splitPlace } from "../src/fill/derive.ts";
+import { writtenFields } from "../src/offers/fill-popup.ts";
 import { clockTime, readDate } from "../src/fill/when.ts";
 import { consentLike, formControls, matchOption, optionInText } from "../src/fill/controls.ts";
 import { describeField, fieldLabelText } from "../src/fill/descriptor.ts";
@@ -255,9 +256,9 @@ describe("proposeFill on a real-shaped form (B24)", () => {
     expect(fieldOf(p, "timefield")).toMatchObject({ control: "time", handoff: { value: "19:30", display: "7:30 PM" } });
     // A sign-up box is never ticked, so it is not even asked about.
     expect(fieldOf(p, "send me deals")).toBeUndefined();
-    // No options shown: the select is named and left; the combobox too, with no value and no question.
+    // No options shown: the select is named and left. The dropdown is asked (B27); no line names a school, so it gets none.
     expect(fieldOf(p, "popupbutton:degree")).toMatchObject({ control: "select", handoff: null, value: null, asks: [] });
-    expect(fieldOf(p, "combobox:school")).toMatchObject({ control: "combobox", handoff: null, value: null, asks: [] });
+    expect(fieldOf(p, "combobox:school")).toMatchObject({ control: "combobox", handoff: null, value: null, asks: [{ choice: "none" }, { choice: "none" }] });
   });
 
   it("splits a full name for First and Last, and asks rather than splitting a single name", async () => {
@@ -454,5 +455,326 @@ describe("B24: a message header's sender", () => {
     const pick = (_: string, ins: string): string | null => (ins.includes("'Email'") ? "bea.sutherland@example.com" : null);
     const p = await proposeFill(m, jevPickingText(pick, 0.9, () => "user", () => "unclear"), "form", `${P}/textfield:customer name~0`, 2000);
     expect(fieldOf(p, "textfield:email")).toMatchObject({ value: null, withheld: "otherPerson" });
+  });
+});
+
+// B27: a web page's dropdown takes a value from a source like a text field. Where the page engine owns the window, the
+// value is a step its verified pick carries out; anywhere else it is a hand-off that names the value.
+describe("a web dropdown (B27)", () => {
+  const W = "dev.caret.page/page";
+  /** A note the user just left, then a form of a text field (the trigger) and dropdowns, in a page or an Accessibility window. */
+  function dropdowns(noteText: string, labels: readonly string[], kind: string): ScreenModel {
+    const m = new ScreenModel();
+    m.apply(snap([field("te/note", noteText, { role: "AXTextArea" })], { at: 900, windowId: "note", title: "Details.txt", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true }));
+    const nodes = [
+      node(`${W}/webarea:~0`, "AXWebArea", { label: "Apply" }),
+      field(`${W}/textfield:email~0`, "", { parent: `${W}/webarea:~0`, label: "Email", frame: [100, 100, 200, 20] }),
+      ...labels.map((l, i) => field(`${W}/combobox:${i}~0`, "", { parent: `${W}/webarea:~0`, role: "AXComboBox", label: l, frame: [100, 140 + 40 * i, 200, 20] })),
+    ];
+    m.apply(snap(nodes, { at: 1000, windowId: "form", kind, title: "Apply", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: `${W}/textfield:email~0` }));
+    return m;
+  }
+  const byLabel = (table: Record<string, string>) => (_: string, ins: string): string | null => table[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null;
+  const dropdown = (p: FillProposal, i: number) => p.fields.find((f) => f.key === `${W}/combobox:${i}~0`);
+
+  it("proposes the value as a step in a page window and as a hand-off naming it elsewhere", async () => {
+    const note = "School: University of Texas at Austin";
+    const ask = jevPickingText(byLabel({ School: "University of Texas at Austin" }));
+    const page = await proposeFill(dropdowns(note, ["School"], PAGE_WINDOW_KIND), ask, "form", `${W}/textfield:email~0`, 2000);
+    expect(dropdown(page, 0)).toMatchObject({ control: "combobox", value: "University of Texas at Austin", handoff: null, source: { windowId: "note" }, withheld: null });
+    const ax = await proposeFill(dropdowns(note, ["School"], "AXStandardWindow"), ask, "form", `${W}/textfield:email~0`, 2000);
+    expect(dropdown(ax, 0)).toMatchObject({ control: "combobox", value: null, source: null, handoff: { value: "University of Texas at Austin", source: { windowId: "note" } }, withheld: null });
+    // The pop-up writes a page dropdown that carries a value, and never one that does not.
+    expect(writtenFields(page).fields.map((f) => f.control)).toEqual(["text", "combobox"]);
+    expect(writtenFields(ax).fields.map((f) => f.control)).toEqual(["text"]);
+  });
+
+  it("asks it as a dropdown whose options are hidden", async () => {
+    const requests: JevRequest[] = [];
+    const inner = jevPickingText(() => null);
+    await proposeFill(dropdowns("School: University of Texas at Austin", ["School"], PAGE_WINDOW_KIND), (r) => (requests.push(r), inner(r)), "form", `${W}/textfield:email~0`, 2000);
+    // The value requests, after the whose questions about Email.
+    const q = requests.filter((r) => r.questions.f2 !== undefined).map((r) => String(r.questions.f2?.instructions));
+    expect(q[0]).toContain("has this dropdown: Dropdown. Label: 'School'.");
+    expect(q[0]).toContain("Its options are not shown.");
+    expect(q[1]).toContain("its list is closed");
+  });
+
+  it("offers Country and City dropdowns the parts of a 'City, State, Country' place, and refuses the whole line with its remark", async () => {
+    const note = "Location: Oakland, California, United States (in the Bay Area)";
+    const labels = ["Country*", "Location (City)*", "Where will you work from?"];
+    const requests: JevRequest[] = [];
+    // Questions quote a label without its required marker.
+    const inner = jevPickingText(byLabel({ Country: "United States", "Location (City)": "Oakland", "Where will you work from?": "Oakland, California, United States (in the Bay Area)" }));
+    const p = await proposeFill(dropdowns(note, labels, PAGE_WINDOW_KIND), (r) => (requests.push(r), inner(r)), "form", `${W}/textfield:email~0`, 2000);
+    expect(dropdown(p, 0)).toMatchObject({ value: "United States", source: { windowId: "note" }, withheld: null });
+    expect(dropdown(p, 1)).toMatchObject({ value: "Oakland", source: { windowId: "note" }, withheld: null });
+    expect(dropdown(p, 2)).toMatchObject({ value: null, handoff: null, withheld: "ambiguous" });
+    const offered = Object.values(requests.find((r) => r.questions.f2 !== undefined)?.questions.f2?.criteria ?? {}).join(" ");
+    expect(offered).toContain('"United States" (the country of');
+  });
+
+  it("refuses a value of the wrong kind for the dropdown's label", async () => {
+    const ask = jevPickingText(byLabel({ "Phone country": "priya@example.test" }));
+    const p = await proposeFill(dropdowns("Email: priya@example.test", ["Phone country"], PAGE_WINDOW_KIND), ask, "form", `${W}/textfield:email~0`, 2000);
+    expect(dropdown(p, 0)).toMatchObject({ value: null, withheld: "wrongKind" });
+  });
+
+  it.each([
+    ["United States", true],
+    ["Oakland", true],
+    ["Oakland, CA, USA", true],
+    ["Yes", true],
+    ["St. Louis", true],
+    ["Oakland, California, United States (in the Bay Area)", false],
+    ["authorized to work in the United States.", false],
+    ["https://example.test/a", false],
+    ["one two three four five six seven", false],
+    ["Line one\nLine two", false],
+    ["", false],
+    // B27 corpus run: a Yes/No dropdown was handed this; a comma is a place's or a remark's.
+    ["yes, US citizen", false],
+  ])("optionName(%j) is %s", (v, ok) => {
+    expect(optionName(v)).toBe(ok);
+  });
+
+  it.each<[string, ReturnType<typeof splitPlace>]>([
+    ["Oakland, California, United States (in the Bay Area)", { city: "Oakland", state: "California", country: "United States" }],
+    ["Austin, TX", { city: "Austin", state: "TX", country: null }],
+    ["Reyes, Jordan", null],
+    ["Paris, France", null],
+    // Two capitals are a state only when they are a USPS code (B27 review).
+    ["London, UK", null],
+    ["Paris, FR", null],
+    ["Fernhill Robotics, https://fernhill.example.test, 4 employees", null],
+    ["4410 Speedway, Austin, Texas 78751", null],
+  ])("splitPlace(%j)", (t, want) => {
+    expect(splitPlace(t)).toEqual(want);
+  });
+
+  it.each([
+    ["Country*", true],
+    ["Country of residence", true],
+    ["Country code", false],
+    ["Country calling code", false],
+    ["County", false],
+  ])("asksCountry(%j) is %s", (l, ok) => {
+    expect(asksCountry(l)).toBe(ok);
+    // The planner's parts are unchanged: a country is fill's alone.
+    expect(fieldPart(l)).toBeNull();
+  });
+});
+
+describe("the field cap on a long form (B27)", () => {
+  const W = "dev.caret.page/lever";
+  /** A trigger, `texts` text fields, a run of `boxes` sibling checkboxes, then the radio questions, in page order. */
+  function longForm(texts: number, boxes: number, radios: readonly string[]): { w: ReturnType<ScreenModel["windows"]["get"]>; trigger: string } {
+    const m = new ScreenModel();
+    const nodes: Node[] = [node(`${W}/webarea:~0`, "AXWebArea", { label: "Apply" }), field(`${W}/textfield:full name~0`, "", { parent: `${W}/webarea:~0`, label: "Full name" })];
+    for (let i = 0; i < texts; i++) nodes.push(field(`${W}/textfield:t${i}~0`, "", { parent: `${W}/webarea:~0`, label: `Question ${i}` }));
+    for (let i = 0; i < boxes; i++) nodes.push(node(`${W}/checkbox:lang ${i}~0`, "AXCheckBox", { parent: `${W}/webarea:~0`, label: `Language ${i}` }));
+    radios.forEach((q, i) => {
+      nodes.push(node(`${W}/group:r${i}~0`, "AXGroup", { parent: `${W}/webarea:~0`, subrole: "AXFieldset", label: q }));
+      for (const o of ["Yes", "No"]) nodes.push(node(`${W}/group:r${i}/radiobutton:${o}~0`, "AXRadioButton", { parent: `${W}/group:r${i}~0`, label: o }));
+    });
+    m.apply(snap(nodes, { at: 1000, windowId: "form", kind: PAGE_WINDOW_KIND, focused: true, focusedKey: `${W}/textfield:full name~0` }));
+    return { w: m.windows.get("form"), trigger: `${W}/textfield:full name~0` };
+  }
+  const RADIOS = ["Will you need visa sponsorship?", "Are you a Singapore citizen?"];
+  const SOURCE = new Set(["visa", "sponsorship", "singapore", "citizen"]);
+  const radioKeys = (xs: { node: Node; control: string }[]) => xs.filter((x) => x.control === "radio").map((x) => x.node.label);
+
+  it("keeps the radio questions the source speaks to when a run of boxes and plain fields would crowd them out", () => {
+    const { w, trigger } = longForm(18, 33, RADIOS);
+    const kept = formInputs(w as never, trigger, MAX_FIELDS, true, () => SOURCE);
+    expect(kept[0]?.node.key).toBe(trigger);
+    expect(radioKeys(kept)).toEqual(RADIOS);
+    // The boxes go whole or not at all: here not, since the 20 slots hold the trigger, two radios and 17 nearer fields.
+    expect(kept.filter((x) => x.control === "checkbox")).toHaveLength(0);
+    expect(kept).toHaveLength(MAX_FIELDS);
+  });
+
+  it("counts a run of boxes as one input, so a form within the cap keeps every input in page order and reads no source", () => {
+    const { w, trigger } = longForm(10, 33, RADIOS);
+    const kept = formInputs(w as never, trigger, MAX_FIELDS, true, () => {
+      throw new Error("read the source of a form within the cap");
+    });
+    expect(kept).toHaveLength(1 + 10 + 33 + RADIOS.length);
+    expect(radioKeys(kept)).toEqual(RADIOS);
+  });
+
+  it(`counts fewer than ${CHECKBOX_RUN} boxes one by one`, () => {
+    const { w, trigger } = longForm(10, CHECKBOX_RUN - 1, RADIOS);
+    // 1 + 10 + 4 + 2 = 17 inputs fit; with a cap of 16 the least relevant, farthest one goes.
+    const kept = formInputs(w as never, trigger, 16, true, () => SOURCE);
+    expect(kept).toHaveLength(16);
+    expect(radioKeys(kept)).toEqual(RADIOS);
+  });
+});
+
+describe("one of several labelled links, emails or phones (B27)", () => {
+  const W = "dev.caret.page/contact";
+  async function fill(noteLines: readonly string[], pick: Record<string, string>): Promise<FillProposal> {
+    const m = new ScreenModel();
+    m.apply(snap([field("te/note", noteLines.join("\n"), { role: "AXTextArea" })], { at: 900, windowId: "note", title: "Details.txt", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true }));
+    const labels = ["Company", "Website URL", "Portfolio URL"];
+    const nodes = [node(`${W}/webarea:~0`, "AXWebArea", { label: "Contact sales" }), ...labels.map((l, i) => field(`${W}/textfield:${i}~0`, "", { parent: `${W}/webarea:~0`, label: l, frame: [100, 100 + 40 * i, 200, 20] }))];
+    m.apply(snap(nodes, { at: 1000, windowId: "form", title: "Contact sales", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: `${W}/textfield:0~0` }));
+    return proposeFill(m, jevPickingText((_, ins) => pick[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null, 0.95), "form", `${W}/textfield:0~0`, 2000);
+  }
+  const at = (p: FillProposal, i: number) => p.fields.find((f) => f.key === `${W}/textfield:${i}~0`);
+  const LINKS = ["LinkedIn: https://www.linkedin.com/in/pat-example", "GitHub: https://github.com/pat-example", "Portfolio: https://pat.example.test"];
+
+  it("withholds a link labelled for a purpose the field does not name when other links are on screen, however sure the picks", async () => {
+    const p = await fill(LINKS, { "Website URL": "https://pat.example.test", "Portfolio URL": "https://pat.example.test" });
+    expect(at(p, 1)).toMatchObject({ value: null, withheld: "ambiguous" });
+    // The field that names the purpose takes it.
+    expect(at(p, 2)).toMatchObject({ value: "https://pat.example.test", withheld: null });
+  });
+
+  it("fills it when it is the only link on screen", async () => {
+    const p = await fill(["Portfolio: https://pat.example.test"], { "Website URL": "https://pat.example.test" });
+    expect(at(p, 1)).toMatchObject({ value: "https://pat.example.test", withheld: null });
+  });
+
+  it("fills a link labelled only as a link, beside others", async () => {
+    const p = await fill(["Website: https://pat.example.test", "GitHub: https://github.com/pat-example"], { "Website URL": "https://pat.example.test" });
+    expect(at(p, 1)).toMatchObject({ value: "https://pat.example.test", withheld: null });
+  });
+});
+
+// What the B27 review and the B27 corpus run found, each with its input.
+describe("B27 review", () => {
+  const W = "dev.caret.page/review";
+  const TE = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
+  const CHROME = { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" };
+  /** A source window, then a page form whose first input is a text field (the trigger) and the rest as given. */
+  function desk(source: Node[], inputs: Node[], kind = PAGE_WINDOW_KIND, app = TE): ScreenModel {
+    const m = new ScreenModel();
+    m.apply(snap(source, { at: 900, windowId: "src", title: "Source", app, focused: true }));
+    const nodes = [node(`${W}/webarea:~0`, "AXWebArea", { label: "Form" }), field(`${W}/textfield:company~0`, "", { parent: `${W}/webarea:~0`, label: "Company", frame: [100, 60, 200, 20] }), ...inputs];
+    m.apply(snap(nodes, { at: 1000, windowId: "form", kind, title: "Form", app: CHROME, focused: true, focusedKey: `${W}/textfield:company~0` }));
+    return m;
+  }
+  const combo = (label: string, y: number): Node => field(`${W}/combobox:${label}~0`, "", { parent: `${W}/webarea:~0`, role: "AXComboBox", label, frame: [100, y, 200, 20] });
+  const byLabel = (table: Record<string, string>) => (_: string, ins: string): string | null => table[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null;
+  const NAME = { id: "about-name", label: "Name", value: "Sam Rivera", kind: "name" as const };
+  const EMAIL = { id: "about-email", label: "Email", value: "sam.rivera@example.com", kind: "email" as const };
+
+  it("holds a dropdown that takes a person's name to the owner veto", async () => {
+    const m = desk([field("src/mail", "Name: Dana Whitfield\nTeam: Operations", { role: "AXTextArea" })], [combo("Your full name", 100)], PAGE_WINDOW_KIND, MAIL_APP);
+    const p = await proposeFill(m, jevPickingText(byLabel({ "Your full name": "Dana Whitfield" }), 0.95, () => "user", () => "other"), "form", `${W}/textfield:company~0`, 2000);
+    expect(p.fields.find((f) => f.key === `${W}/combobox:Your full name~0`)).toMatchObject({ value: null, handoff: null });
+  });
+
+  it("asks whose a First name dropdown wants before it takes the user's first name from memory", async () => {
+    const m = desk([field("src/note", "Order 1182", { role: "AXTextArea" })], [combo("First name", 100)]);
+    const fill = (who: Whose) => proposeFill(m, jevPickingText(byLabel({ "First name": "Sam" }), 0.95, () => who), "form", `${W}/textfield:company~0`, 2000, { about: [NAME, EMAIL] });
+    expect((await fill("user")).fields.find((f) => f.key === `${W}/combobox:First name~0`)).toMatchObject({ value: "Sam", memory: { id: NAME.id, part: "first" } });
+    expect((await fill("other")).fields.find((f) => f.key === `${W}/combobox:First name~0`)).toMatchObject({ value: null, withheld: "lowConfidence" });
+  });
+
+  it("vetoes a value both owner asks call someone else's, even with one under the whose cutoff", async () => {
+    const sig = "Thanks,\nDana Whitfield\nOperations Lead, Lumen Labs\n(415) 555-0162";
+    const m = desk([text("src/sig", sig)], [field(`${W}/textfield:phone~0`, "", { parent: `${W}/webarea:~0`, label: "Phone number", frame: [100, 100, 200, 20] })], "AXStandardWindow", MAIL_APP);
+    m.apply(snap([text("src/sig", sig)], { at: 900, windowId: "src", title: "Re: deposit", app: MAIL_APP, values: [value("phone", "(415) 555-0162", "src/sig")] }));
+    let n = 0;
+    const inner = jevPickingText(byLabel({ "Phone number": "(415) 555-0162" }), 0.92, () => "user", () => "other");
+    // The two asks of each stage: the first gives its owner answers 0.47, the second 0.67 (b2b-probe, seed 24).
+    const ask: AskJev = async (r) => {
+      const out = await inner(r);
+      const k = n++;
+      for (const [id, a] of Object.entries(out.answers)) if (id.endsWith("_owner")) a.confidence = k % 2 === 0 ? 0.47 : 0.67;
+      return out;
+    };
+    const p = await proposeFill(m, ask, "form", `${W}/textfield:company~0`, 2000, { about: [NAME, EMAIL] });
+    expect(p.fields.find((f) => f.key === `${W}/textfield:phone~0`)).toMatchObject({ value: null });
+  });
+
+  it("fills a link the user's instruction names for the field, though other links are on screen", async () => {
+    const note = ["LinkedIn: https://www.linkedin.com/in/pat-example", "GitHub: https://github.com/pat-example", "Portfolio: https://pat.example.test"].join("\n");
+    const url = field(`${W}/textfield:website~0`, "", { parent: `${W}/webarea:~0`, label: "Website URL", frame: [100, 100, 200, 20] });
+    const m = desk([field("src/note", note, { role: "AXTextArea" })], [url], "AXStandardWindow");
+    const scope: FillScope = { fields: [url.key], windows: null, memory: false, instruction: "put https://pat.example.test in Website URL", person: null, literals: new Map([[url.key, "https://pat.example.test"]]) };
+    const p = await proposeFill(m, jevPickingText(byLabel({ "Website URL": "https://pat.example.test" }), 0.95), "form", url.key, 2000, { scope });
+    expect(p.fields.find((f) => f.key === url.key)).toMatchObject({ value: "https://pat.example.test", withheld: null });
+  });
+
+  it("keeps nearest-first order within the cap, whatever order a run of boxes has on the page", () => {
+    const m = new ScreenModel();
+    // The boxes come in page order farthest first.
+    const boxes = Array.from({ length: CHECKBOX_RUN }, (_, i) => node(`${W}/checkbox:b${i}~0`, "AXCheckBox", { parent: `${W}/webarea:~0`, label: `Box ${i}`, frame: [100, 400 - 40 * i, 20, 20] }));
+    m.apply(snap([node(`${W}/webarea:~0`, "AXWebArea"), field(`${W}/textfield:t~0`, "", { parent: `${W}/webarea:~0`, label: "Name", frame: [100, 100, 200, 20] }), ...boxes], { at: 1000, windowId: "form", focused: true, focusedKey: `${W}/textfield:t~0` }));
+    const keys = formInputs(m.windows.get("form") as never, `${W}/textfield:t~0`).map((x) => x.node.key);
+    expect(keys).toEqual([`${W}/textfield:t~0`, ...boxes.map((b) => b.key).reverse()]);
+  });
+
+  it("ends a run of boxes at any other input, even one that holds a value", () => {
+    const m = new ScreenModel();
+    const box = (i: number): Node => node(`${W}/checkbox:b${i}~0`, "AXCheckBox", { parent: `${W}/webarea:~0`, label: `Box ${i}` });
+    const radios = ["Will you need visa sponsorship?", "Are you a Singapore citizen?"].flatMap((q, i) => [
+      node(`${W}/group:r${i}~0`, "AXGroup", { parent: `${W}/webarea:~0`, subrole: "AXFieldset", label: q }),
+      ...["Yes", "No"].map((o) => node(`${W}/group:r${i}/radiobutton:${o}~0`, "AXRadioButton", { parent: `${W}/group:r${i}~0`, label: o })),
+    ]);
+    const filled = field(`${W}/textfield:filled~0`, "already typed", { parent: `${W}/webarea:~0`, label: "Nickname" });
+    m.apply(snap([node(`${W}/webarea:~0`, "AXWebArea"), field(`${W}/textfield:t~0`, "", { parent: `${W}/webarea:~0`, label: "Full name" }), box(0), box(1), filled, box(2), box(3), box(4), ...radios], { at: 1000, windowId: "form", focused: true, focusedKey: `${W}/textfield:t~0` }));
+    // Eight inputs, none grouped: a cap of four keeps the trigger, both radios the source speaks to, and one box.
+    const kept = formInputs(m.windows.get("form") as never, `${W}/textfield:t~0`, 4, true, () => new Set(["visa", "sponsorship", "singapore", "citizen"]));
+    expect(kept.map((x) => x.control)).toEqual(["text", "radio", "radio", "checkbox"]);
+  });
+});
+
+// What the B27 second review found, each with its input.
+describe("B27 second review", () => {
+  const W = "dev.caret.page/review2";
+  const CHROME = { pid: 7102, bundleId: "com.google.Chrome", name: "Google Chrome" };
+  function desk(source: Node[], inputs: Node[], app = MAIL_APP): ScreenModel {
+    const m = new ScreenModel();
+    m.apply(snap(source, { at: 900, windowId: "src", title: "Source", app, focused: true }));
+    const nodes = [node(`${W}/webarea:~0`, "AXWebArea", { label: "Form" }), field(`${W}/textfield:company~0`, "", { parent: `${W}/webarea:~0`, label: "Company", frame: [100, 60, 200, 20] }), ...inputs];
+    m.apply(snap(nodes, { at: 1000, windowId: "form", kind: PAGE_WINDOW_KIND, title: "Form", app: CHROME, focused: true, focusedKey: `${W}/textfield:company~0` }));
+    return m;
+  }
+  const byLabel = (table: Record<string, string>) => (_: string, ins: string): string | null => table[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null;
+  /** Sets every whose answer's and every owner answer's confidence, leaving the choices as given. */
+  const at = (inner: AskJev, whose: number, owner: number): AskJev => async (r) => {
+    const out = await inner(r);
+    for (const [id, a] of Object.entries(out.answers)) {
+      if (id.endsWith("_whose")) a.confidence = whose;
+      if (id.endsWith("_owner")) a.confidence = owner;
+    }
+    return out;
+  };
+
+  it("vetoes a value both owner asks call someone else's when both whose asks say the user's under the whose cutoff", async () => {
+    const sig = "Thanks,\nDana Whitfield\nOperations Lead, Lumen Labs\n(415) 555-0162";
+    const m = desk([text("src/sig", sig)], [field(`${W}/textfield:phone~0`, "", { parent: `${W}/webarea:~0`, label: "Phone number", frame: [100, 100, 200, 20] })]);
+    m.apply(snap([text("src/sig", sig)], { at: 900, windowId: "src", title: "Re: deposit", app: MAIL_APP, values: [value("phone", "(415) 555-0162", "src/sig")] }));
+    const ask = at(jevPickingText(byLabel({ "Phone number": "(415) 555-0162" }), 0.92, () => "user", () => "other"), 0.49, 0.47);
+    const p = await proposeFill(m, ask, "form", `${W}/textfield:company~0`, 2000);
+    expect(p.fields.find((f) => f.key === `${W}/textfield:phone~0`)).toMatchObject({ value: null });
+  });
+
+  it.each([
+    ["Tbilisi, Georgia", null],
+    ["Atlanta, Georgia, USA", { city: "Atlanta", state: "Georgia", country: "USA" }],
+    ["Atlanta, Georgia, United States", { city: "Atlanta", state: "Georgia", country: "United States" }],
+    ["Atlanta, GA", { city: "Atlanta", state: "GA", country: null }],
+  ])("splitPlace(%j): Georgia is the state only beside the United States", (t, want) => {
+    expect(splitPlace(t)).toEqual(want);
+  });
+
+  it("derives no State from a city in the country Georgia", async () => {
+    const m = desk([field("src/note", "Location: Tbilisi, Georgia", { role: "AXTextArea" })], [field(`${W}/textfield:state~0`, "", { parent: `${W}/webarea:~0`, label: "State", frame: [100, 100, 200, 20] })], { pid: 7101, bundleId: "com.apple.TextEdit", name: "TextEdit" });
+    const p = await proposeFill(m, jevPickingText(byLabel({ State: "Georgia" }), 0.95), "form", `${W}/textfield:company~0`, 2000);
+    expect(p.fields.find((f) => f.key === `${W}/textfield:state~0`)).toMatchObject({ value: null });
+  });
+
+  it("holds a pop-up menu that takes a person's name to the owner veto, with no hand-off", async () => {
+    const menu = node(`${W}/popupbutton:your full name~0`, "AXPopUpButton", { parent: `${W}/webarea:~0`, label: "Your full name", value: "Select...", frame: [100, 100, 200, 20] });
+    const items = ["Dana Whitfield", "Sam Rivera"].map((o) => node(`${W}/popupbutton:your full name/menuitem:${o}~0`, "AXMenuItem", { parent: menu.key, label: o }));
+    const m = desk([field("src/mail", "Name: Dana Whitfield\nTeam: Operations", { role: "AXTextArea" })], [menu, ...items]);
+    const p = await proposeFill(m, jevPickingText(byLabel({ "Your full name": "Dana Whitfield" }), 0.95, () => "user", () => "other"), "form", `${W}/textfield:company~0`, 2000);
+    expect(p.fields.find((f) => f.key === menu.key)).toMatchObject({ value: null, handoff: null });
   });
 });

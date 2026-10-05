@@ -61,6 +61,13 @@ export interface Attached {
   shown: boolean;
 }
 
+/**
+ * What showed that the page changed after a Yes/No press (B28): the frame's navigation generation moved (`navigated`),
+ * a navigation began in it (`navigationStarted`), or its document lost its answer channel (`documentGone`), as the
+ * worker saw; or the frame fired beforeunload, pagehide or submit, as the content script saw.
+ */
+export type PageChange = "navigated" | "navigationStarted" | "documentGone" | "beforeunload" | "pagehide" | "submit";
+
 export interface ActAnswer {
   outcome: PageOutcome;
   detail: string | null;
@@ -68,6 +75,8 @@ export interface ActAnswer {
   risk?: HandoffRisk;
   choice?: Choice;
   attached?: Attached;
+  /** With outcome failed only: the press may have landed and the page then changed, so the run stops (B28). */
+  pageChanged?: PageChange[];
 }
 
 interface TargetFields {

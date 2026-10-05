@@ -98,6 +98,27 @@ describe("executor", () => {
     expect(app.node(K("textfield:name~0"))?.value ?? "").toBe("");
   });
 
+  it("stops at once when the page changed after a press, records the write as possibly landed, and says so plainly (B28)", async () => {
+    app.pageChangeAfterWrite = ["navigationStarted", "beforeunload"];
+    app.enforceGrants = true;
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Yes"), write(K("textfield:email~0"), "d@example.com")]), {}, undefined, { grant: true });
+    expect(r).toMatchObject({ outcome: "stopped", step: 0, detail: "The page changed after Caret pressed 'Yes', so Caret stopped." });
+    expect(stopReason("t1")).toBe("changed");
+    // One write went out: no fallback, no second step.
+    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value"]);
+    expect(helper.executor.ledger("t1")).toMatchObject([{ kind: "write", before: "", after: "Yes", unconfirmed: true }]);
+    // The grant ended with the run.
+    expect(app.grants.log.at(-1)).toMatchObject({ type: "actRevoke", taskId: "t1" });
+
+    // The page left, so the field is gone: undo cannot tell whether the press landed, and does not count it as never landed.
+    app.pageChangeAfterWrite = undefined;
+    app.nodes = app.nodes.filter((n) => n.key !== K("textfield:name~0"));
+    app.show();
+    await helper.executor.undo("t1");
+    const undone = progress("t1").at(-1);
+    expect(undone).toMatchObject({ phase: "undone", restored: 0, notRestored: 1 });
+  });
+
   it("reads the window once more when the field is missing right after the insert, then hands it off if it is back unchanged", async () => {
     app.dropWrites = true;
     app.dropFocusValues = true;

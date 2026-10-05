@@ -41,6 +41,16 @@ export interface JevRequest {
    * what it held to the window's budget. Never sent; privacy.test.ts checks its own measure against it.
    */
   charged: Readonly<Record<string, number>>;
+  /**
+   * Whether the client may wait out one 429 and send again. The routers promise one choice per context and set it
+   * false (action engine v2, section 3: no transparent retry); absent means the one retry every other caller has had.
+   */
+  retry429?: boolean;
+  /**
+   * Windows the user's Ask named, which may give this request up to WINDOW_CHARS whatever their kind (privacy.ts
+   * CONSENTED). Never sent; privacy.test.ts holds every other window to its usual rules.
+   */
+  consented?: readonly string[];
 }
 
 const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number() }).loose();
@@ -94,7 +104,7 @@ export function makeJevClient(key: () => string, timeoutMs = 10_000): AskJev {
         signal: AbortSignal.timeout(timeoutMs),
       });
       const latencyMs = performance.now() - t0;
-      if (res.status === 429 && attempt === 0) {
+      if (res.status === 429 && attempt === 0 && req.retry429 !== false) {
         const wait = Number(res.headers.get("retry-after") ?? "1");
         await new Promise((r) => setTimeout(r, Math.min(5, Number.isFinite(wait) ? wait : 1) * 1000));
         continue;

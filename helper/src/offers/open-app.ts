@@ -32,6 +32,11 @@ export interface OpenAppDeps {
   /** The user's settings: an offer the watch role, pause or the hourly budget holds is never shown. */
   gate: OfferGate;
   now?: () => number;
+  /**
+   * Routing is on (routing/coordinator.ts): an offer is held until the router chooses it for the field the user is in
+   * (showHeld), and `held` is called when one starts waiting. A focus never shows one on its own.
+   */
+  routed?: { held: () => void };
 }
 
 /** The first node, in document order, whose visible text contains the status line; editable and secure fields are not the window's status. */
@@ -77,8 +82,21 @@ export class OpenAppOffers {
     if (!this.deps.gate.enabled("pending")) return;
     const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, state: e.state, boundTo: null, counted: false };
     this.entries.set(offerKey, entry);
+    if (this.deps.routed !== undefined) return this.deps.routed.held();
     const field = this.fieldNow(e.windowId);
     if (field !== null) this.show(entry, field);
+  }
+
+  /** Offers waiting for a field, for the router: each one's key, its watched window and the status line it quotes. */
+  heldOffers(): { offerKey: string; windowId: string; status: string; app: string }[] {
+    return [...this.entries.values()].flatMap((e) => (e.boundTo !== null ? [] : [{ offerKey: e.offerKey, windowId: e.windowId, status: e.status, app: this.deps.model.windows.get(e.windowId)?.app.name ?? "" }]));
+  }
+
+  /** The router chose this held offer for the field the user is in. */
+  showHeld(offerKey: string, field: OfferField): void {
+    const e = this.entries.get(offerKey);
+    if (e === undefined || e.boundTo !== null || field.windowId === e.windowId) return;
+    this.show(e, field);
   }
 
   /**
@@ -93,7 +111,7 @@ export class OpenAppOffers {
       if (m.windowId === e.windowId) {
         if (m.frontmost) this.drop(e.offerKey, "taken");
       }
-      else if (e.boundTo === null && m.frontmost && m.editable && m.key !== null && focused !== undefined) this.show(e, offerField(focused, m.key));
+      else if (this.deps.routed === undefined && e.boundTo === null && m.frontmost && m.editable && m.key !== null && focused !== undefined) this.show(e, offerField(focused, m.key));
     }
   }
 
@@ -114,8 +132,9 @@ export class OpenAppOffers {
         const held: Entry = { ...e, offerKey: `open-${e.watchId}.${++this.seq}`, boundTo: null };
         this.entries.set(held.offerKey, held);
         // The user may already be in another field: its focus came while the offer was still bound here.
-        const f = this.currentLastField(windowId, e.windowId);
+        const f = this.deps.routed === undefined ? this.currentLastField(windowId, e.windowId) : null;
         if (f !== null) this.show(held, f);
+        else this.deps.routed?.held();
       }
     }
     if (this.lastField?.windowId === windowId) this.lastField = null;

@@ -1,0 +1,1 @@
+D2-02: Jev Choice 'confidence' is the margin between the top two option probabilities (raw answers also carry 'probabilities'); a 0.75 floor needs about 0.875 on the winner.

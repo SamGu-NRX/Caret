@@ -954,6 +954,59 @@ async function batch4(e: Engine, site: FixtureSite, tmp: string): Promise<void> 
     return `unmarked toggle ${r.outcome} (${r.detail ?? ""}); trapped toggle ${trapped.outcome}; wrong question ${wrong.outcome}; pagePress ${press.outcome}; excluded ${JSON.stringify(s.frames[0]!.excluded)}; /submitted ${count}`;
   });
 
+  // B28 lead decision 2: a Yes/No press must not navigate or submit. Each Yes here marks the press, then leaves the
+  // page (navpress.html). The engine must answer failed with what it saw (pageChanged), which the helper reads as
+  // "may have landed" and the executor stops on (helper/test/executor.test.ts), and the worker must have ended the
+  // task's grant at once. The executor itself is not run here: it needs the native reader's input watch.
+  await check("B28 2: a Yes press whose page handler then calls form.submit(), or sets location, is failed with pageChanged, read as may-have-landed, and ends the task's grant; one that submits a single-page app's form, at once or 100 ms later, is failed too", async () => {
+    const out: string[] = [];
+    /** navpress.html again, for the case `what`, saying which case a page that never loads was for. */
+    const open = (what: string) => openPage(e, site, "/replica/navpress", "Yes").catch((x: unknown) => {
+      throw new Error(`opening navpress for ${what} (after: ${out.join("; ") || "nothing"}): ${x instanceof Error ? x.message : String(x)}`);
+    });
+    for (const [q, via] of [["Would you like job updates by email?", "submit"], ["May we contact your references?", "location"]] as const) {
+      await open(via);
+      await link.run({ kind: "walk", pid, windowId });
+      const w = e.helper.model.windows.get(windowId);
+      const group = [...(w?.nodes.values() ?? [])].find((n) => n.role === "AXGroup" && n.label === q);
+      expect(group?.editable === true && group.value === "", `the question's node: ${JSON.stringify(group)}`);
+      const before = site.landed.get(via) ?? 0;
+      const since = Date.now();
+      const taskId = `t-b28-${via}`;
+      grant(e, taskId);
+      const r = await e.host.link.run({ kind: "write", pid, windowId, key: group!.key, role: group!.role, attribute: "value", expect: "", value: "Yes", taskId });
+      for (let i = 0; i < 50 && (site.landed.get(via) ?? 0) === before; i++) await sleep(100);
+      expect((site.landed.get(via) ?? 0) === before + 1, `the page did not leave by ${via}: landings ${JSON.stringify(Object.fromEntries(site.landed))}; the write ${r.outcome}: ${r.detail ?? ""}`);
+      // The landed page takes the next command only once its own fixture.js is polling; the page that left may still hold a poll.
+      await site.waitForLoad((h) => h.includes(`/replica/landed?via=${via}`), since);
+      expect(r.outcome === "axError" && (r.pageChanged?.length ?? 0) > 0, `${via}: the write ${r.outcome} (${r.detail ?? ""}), pageChanged ${JSON.stringify(r.pageChanged)}`);
+      // The worker dropped the grant when it saw the change: the same task acts on nothing more, though the helper never revoked it.
+      const s = await open(`${via}, the next act`);
+      const opt = allControls(s).find((c) => c.kind === "button" && c.name === "No" && c.group?.name === q);
+      const after = await run(e, { kind: "pageChooseOption", tabId: s.tabId, frameId: s.frames[0]!.frameId, documentId: s.frames[0]!.documentId, id: opt!.id, control: "button", name: "No", taskId, expect: "", value: "No", question: q });
+      revoke(e, taskId);
+      expect(after.outcome === "notAllowed", `${via}: the task's next act ${outcome(after)}`);
+      out.push(`${via}: ${r.outcome} pageChanged ${JSON.stringify(r.pageChanged)} (${r.detail ?? ""}); next act ${after.outcome}`);
+    }
+    // A single-page app's submit that cancels its navigation, at once and 100 ms after the press shows (B28 review):
+    // only the content script's submit listener sees it.
+    for (const [q, how] of [["Shall we keep your application on file?", "requestSubmit"], ["Can we text you about interviews?", "requestSubmit 100 ms later"]] as const) {
+      await open(how);
+      await link.run({ kind: "walk", pid, windowId });
+      const spa = [...(e.helper.model.windows.get(windowId)?.nodes.values() ?? [])].find((n) => n.role === "AXGroup" && n.label === q);
+      const taskId = `t-b28-${how.length}`;
+      grant(e, taskId);
+      const r = await e.host.link.run({ kind: "write", pid, windowId, key: spa!.key, role: spa!.role, attribute: "value", expect: "", value: "Yes", taskId });
+      revoke(e, taskId);
+      const sent = await dataset(site, "#spa-form", "sent");
+      expect(sent === "1" && r.outcome === "axError" && JSON.stringify(r.pageChanged) === JSON.stringify(["submit"]), `${how}: the form was sent ${sent ?? "0"} times; the write ${r.outcome} (${r.detail ?? ""}), pageChanged ${JSON.stringify(r.pageChanged)}`);
+      out.push(`${how} (page stays): ${r.outcome} pageChanged ${JSON.stringify(r.pageChanged)}`);
+    }
+    const count = ((await (await fetch(`${site.mainOrigin}/submitted`)).json()) as { count: number }).count;
+    expect(count === 0, `/submitted reads ${count}`);
+    return out.join("; ");
+  });
+
   await check("W4 4: Lever replica: a radio group takes its question from the text beside it, an unlabelled select its question and shows its placeholder as no value, a placeholder-only field its question, and the transparent resume input takes the file", async () => {
     const s = await openPage(e, site, "/replica/lever", "How did you hear about this job?");
     const radios = allControls(s).filter((c) => c.kind === "radio");

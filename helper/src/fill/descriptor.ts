@@ -124,17 +124,23 @@ function overlapsHorizontally(a: Frame, b: Frame): boolean {
 }
 
 function sectionOf(w: WindowState, field: Node): string | null {
-  let key = field.parent;
+  const n = sectionNode(w, field);
+  return n === null ? null : fieldLabelText(n.label);
+}
+
+/** The node whose label is `n`'s section: its nearest ancestor below the web area with a short label, or null. */
+export function sectionNode(w: WindowState, n: Node): Node | null {
+  let key = n.parent;
   while (key !== null) {
-    const n = w.nodes.get(key);
-    if (n === undefined) return null;
+    const p = w.nodes.get(key);
+    if (p === undefined) return null;
     // A page's own section ends at its web area: above it is the browser's group named for the window
     // ("httpbin.org/forms/post - Google Chrome"), which put the window title in every web field's name and
     // spent the form window's budget on it (B24 capture).
-    if (n.role === "AXWebArea") return null;
-    const t = fieldLabelText(n.label);
-    if (t !== null && t.length <= MAX_LABEL_CHARS) return t;
-    key = n.parent;
+    if (p.role === "AXWebArea") return null;
+    const t = fieldLabelText(p.label);
+    if (t !== null && t.length <= MAX_LABEL_CHARS) return p;
+    key = p.parent;
   }
   return null;
 }

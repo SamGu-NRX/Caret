@@ -385,8 +385,14 @@ export const VerbResult = z
     detail: z.string().nullable(),
     event: CalendarEventShape.optional(),
     blocked: CalendarBlock.optional(),
+    /**
+     * Page engines only (B28): the write was a Yes/No press, and the page then navigated or submitted (PageResult
+     * pageChanged). Comes with outcome axError: the press may have landed, and the run stops at once.
+     */
+    pageChanged: z.lazy(() => PageChanges).optional(),
   })
-  .refine((r) => (r.outcome === "blocked") === (r.blocked !== undefined), { message: "blocked comes with outcome blocked, and blocked needs it", path: ["blocked"] });
+  .refine((r) => (r.outcome === "blocked") === (r.blocked !== undefined), { message: "blocked comes with outcome blocked, and blocked needs it", path: ["blocked"] })
+  .refine((r) => r.pageChanged === undefined || r.outcome === "axError", { message: "pageChanged comes with outcome axError", path: ["pageChanged"] });
 export type VerbResult = z.infer<typeof VerbResult>;
 
 /**
@@ -525,6 +531,64 @@ export const MemoryRequest = z.object({
   fields: z.record(z.string(), z.unknown()).optional(),
 });
 export type MemoryRequest = z.infer<typeof MemoryRequest>;
+
+// MARK: - routing (D2-02, action engine v2 section 3)
+
+/**
+ * The hello capability for the two routing messages. A host that sends it takes route decisions: only while such a
+ * host is connected is `write` a legal outcome, since the helper writes nothing itself. Without it both messages are
+ * refused by name, and no routeDecision is sent.
+ */
+export const ROUTING_CAPABILITY = "routing";
+
+/**
+ * Host to helper: what only the host knows about the field the user is in, sent when it changes. The reader says
+ * which field has focus and what it holds; the host adds the selection, whether an input method is composing, its own
+ * text revision for the field, and a breakpoint it saw in the text the reader may not have walked yet. It describes
+ * only the field it names: the helper ignores it for any other.
+ */
+export const RoutingContext = z.object({
+  type: z.literal("routingContext"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  windowId: z.string().min(1),
+  key: z.string().min(1),
+  selection: z.enum(["caret", "range", "none"]),
+  composing: z.boolean(),
+  /** The host's revision of the field's text and selection, opaque to the helper, echoed in each routeDecision. */
+  textRevision: z.string().min(1).max(64),
+  /** A sentence or paragraph the user just finished, which opens a new decision; null when this message reports none. */
+  breakpoint: z.enum(["sentence", "paragraph"]).nullable(),
+});
+export type RoutingContext = z.infer<typeof RoutingContext>;
+
+/**
+ * Helper to host: the router's decision for one context, or that a decision is being made again. It grants nothing:
+ * `act` and `ask` arrive as the producer's own offer, which the user accepts with Tab as before. `write` lets the
+ * host's writing help run in this field until the next routeDecision or `expires`, whichever comes first. A null
+ * outcome means a breakpoint ended the last decision and a new one is under way: the host stops its writing help in
+ * this field until the next routeDecision.
+ */
+export const RouteDecision = z
+  .object({
+    type: z.literal("routeDecision"),
+    v: z.literal(PROTOCOL_VERSION),
+    at: ms,
+    /** The context's number, increasing in one helper process: a decision with a lower number is older. */
+    context: z.number().int().positive(),
+    windowId: z.string().min(1),
+    /** The field the decision is about; null when focus is on no field. */
+    key: z.string().min(1).nullable(),
+    /** The host's textRevision when it sent one for this field, else the helper's own digest of the field. */
+    textRevision: z.string().min(1).max(64),
+    outcome: z.enum(["abstain", "write", "ask", "act"]).nullable(),
+    /** For act, what was chosen: "fillAll", "workflow:event", "workflow:openApp", "workflow:loop", "handoff" and so on. */
+    route: z.string().min(1).max(80).nullable(),
+    expires: ms,
+  })
+  .refine((m) => m.route === null || m.outcome === "act", { message: "only an act decision names a route", path: ["route"] })
+  .refine((m) => m.outcome !== "write" || m.key !== null, { message: "a write decision names its field", path: ["key"] });
+export type RouteDecision = z.infer<typeof RouteDecision>;
 
 // MARK: - markdown memory (M1, plan section 6 and lead decisions 1-3 of 2026-10-04)
 
@@ -800,7 +864,7 @@ export const SkillAnswer = z.object({
 });
 export type SkillAnswer = z.infer<typeof SkillAnswer>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -854,8 +918,9 @@ export type FillWithheld = z.infer<typeof FillWithheld>;
  * What a control is (B24): a text field Caret writes, or a control the user sets from Caret's proposal. Chrome
  * shows native selects, radio groups, checkboxes and date and time inputs through Accessibility; the executor
  * writes none of them yet, so their values come as `handoff`. "combobox" is a web page's custom dropdown
- * (react-select and the like): typing into it does not pick an option, so it is named and left to the user,
- * with no value, until the browser layer can pick one.
+ * (react-select and the like): typing into it does not pick an option. Since B27 its value is `value`, a write, only
+ * in a window the page engine owns, whose write is the engine's verified pick (pageChooseOption); anywhere else it is
+ * a `handoff` the user sets.
  */
 export const FillControl = z.enum(["text", "date", "time", "select", "radio", "checkbox", "combobox"]);
 export type FillControl = z.infer<typeof FillControl>;
@@ -1558,7 +1623,7 @@ export type PageEngineState = z.infer<typeof PageEngineState>;
 
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
@@ -1865,6 +1930,14 @@ export const PageAttached = z.object({
 });
 export type PageAttached = z.infer<typeof PageAttached>;
 
+/**
+ * What showed that the page changed after a Yes/No press (B28): the worker saw the frame's navigation generation move
+ * (`navigated`), a navigation begin in it (`navigationStarted`), or its document go before answering
+ * (`documentGone`); the content script saw beforeunload, pagehide or submit in the frame.
+ */
+export const PageChanges = z.array(z.enum(["navigated", "navigationStarted", "documentGone", "beforeunload", "pagehide", "submit"])).min(1).max(6);
+export type PageChanges = z.infer<typeof PageChanges>;
+
 export const PageResult = z
   .object({
     type: z.literal("pageResult"),
@@ -1884,8 +1957,11 @@ export const PageResult = z
     choice: PageChoice.optional(),
     /** pageAttachFile only. */
     attached: PageAttached.optional(),
+    /** A Yes/No press after which the page navigated or submitted (B28): with outcome failed and no readings. */
+    pageChanged: PageChanges.optional(),
   })
-  .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] });
+  .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] })
+  .refine((r) => r.pageChanged === undefined || (r.outcome === "failed" && r.readings === undefined), { message: "pageChanged comes with outcome failed and no readings", path: ["pageChanged"] });
 export type PageResult = z.infer<typeof PageResult>;
 
 /** The worker's first message once the bridge says the engine is ready. One per worker instance and connection. */

@@ -173,6 +173,18 @@ describe("person, title and sentences", () => {
     expect(choices(spansIn(room, "k", r))?.[0]).toBe("2026-10-09T15:00:00-05:00/2026-10-09T15:30:00-05:00");
   });
 
+  it("prefers the longest span at a place: an earlier day word in the field never hides the time (D2-02 m06)", () => {
+    const note = "Notes for Thursday\nAlso, let's set up a call with Priya Thursday 3pm PT to go over the budget.";
+    const w = { values: [{ kind: "date", text: "Thursday", nodeKey: "k" }, { kind: "date", text: "Thursday 3pm PT", nodeKey: "k" }, { kind: "time", text: "3pm", nodeKey: "k" }] } as unknown as WindowState;
+    const s = sentences(note, false).at(-1) as string;
+    expect(spansIn(w, "k", s)).toEqual(["Thursday 3pm PT"]);
+    // Order of the reader's values does not matter, and separate spans still join as before.
+    const rev = { values: [...(w.values as TypedValue[])].reverse() } as unknown as WindowState;
+    expect(spansIn(rev, "k", s)).toEqual(["Thursday 3pm PT"]);
+    const range = { values: [{ kind: "time", text: "3:00", nodeKey: "k" }, { kind: "time", text: "4:00 PM", nodeKey: "k" }, { kind: "date", text: "Thu", nodeKey: "k" }] } as unknown as WindowState;
+    expect(spansIn(range, "k", "Review with Dana Thu 3:00 to 4:00 PM.")).toEqual(["Thu 3:00 to 4:00 PM"]);
+  });
+
   it("leaves out a last sentence still being typed", () => {
     expect(sentences("Hi Dana. Coffee with Dana Thu 3:00? Also", false)).toEqual(["Hi Dana.", "Coffee with Dana Thu 3:00?"]);
     expect(sentences("Coffee with Dana Thu 3:00?", false)).toEqual(["Coffee with Dana Thu 3:00?"]);
