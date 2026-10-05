@@ -4,10 +4,16 @@
 //
 //   a17-tool dump                          the pasteboard: changeCount, and per item each type with a
 //                                          SHA-256 of its bytes (contents are never printed whole)
-//   a17-tool seed rich|text|empty          the prior contents a run starts from. rich: rich text, HTML,
-//                                          plain text and a private type, plus a file URL item, which
-//                                          Caret refuses to paste over (I3). text: rich text, HTML and
-//                                          plain text, plus a PNG item, all restorable. empty: nothing
+//   a17-tool seed rich|rich-missing|text|empty
+//                                          the prior contents a run starts from. rich: rich text, HTML,
+//                                          plain text and a private type, plus a file URL item written
+//                                          as Finder writes one (an NSURL of a file that exists), which
+//                                          Caret refuses to paste over (I3). rich-missing: the same with
+//                                          the URL set as a string naming a file that does not exist,
+//                                          which other processes do not see on the guest's general
+//                                          pasteboard (H7b, from A17's and V1b's runs). text: rich text,
+//                                          HTML and plain text, plus a PNG item, all restorable.
+//                                          empty: nothing
 //   a17-tool copy <text>                   a plain-text copy, as the user's
 //   a17-tool copy-when <pid> <text> <s>    waits until Caret's marked item is on the pasteboard and the
 //                                          app's focused field holds its text, then copies <text>: the
@@ -77,7 +83,8 @@ func describe() -> [String: Any] {
         }
     }
     // The guest's pasteboard holds only this run's synthetic text, so its plain text is shown too.
-    return ["changeCount": pb.changeCount, "items": items, "plain": pb.string(forType: .string) ?? NSNull()]
+    return ["changeCount": pb.changeCount, "items": items, "types": pb.types?.map(\.rawValue) ?? [],
+            "plain": pb.string(forType: .string) ?? NSNull()]
 }
 
 func attr(_ e: AXUIElement, _ a: String) -> AnyObject? {
@@ -106,15 +113,21 @@ case "dump":
     emit(describe())
 case "seed":
     pb.clearContents()
-    if args.count > 1, args[1] == "rich" {
+    if args.count > 1, args[1] == "rich" || args[1] == "rich-missing" {
         let first = NSPasteboardItem()
         first.setData(Data("{\\rtf1\\ansi {\\b Prior} contents}".utf8), forType: .rtf)
         first.setString("<b>Prior</b> contents", forType: .html)
         first.setString("Prior contents", forType: .string)
         first.setData(Data((0..<64).map { UInt8($0) }), forType: NSPasteboard.PasteboardType("dev.caret.a17.private"))
-        let second = NSPasteboardItem()
-        second.setString("file:///private/tmp/a17-prior.txt", forType: .fileURL)
-        pb.writeObjects([first, second])
+        if args[1] == "rich" {
+            let file = URL(fileURLWithPath: "/private/tmp/a17-prior.txt")
+            try? Data("Prior contents\n".utf8).write(to: file)
+            pb.writeObjects([first, file as NSURL])
+        } else {
+            let second = NSPasteboardItem()
+            second.setString("file:///private/tmp/a17-prior-missing.txt", forType: .fileURL)
+            pb.writeObjects([first, second])
+        }
     } else if args.count > 1, args[1] == "text" {
         let first = NSPasteboardItem()
         first.setData(Data("{\\rtf1\\ansi {\\b Prior} contents}".utf8), forType: .rtf)

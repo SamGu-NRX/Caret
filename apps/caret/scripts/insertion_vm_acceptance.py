@@ -10,10 +10,13 @@ general pasteboard; see a17-tool.swift). TextEdit and Caret are started here, by
                before the restore, survives; the host reports skippedUserCopied;
         plain  the prior contents come back, every item and type with the same bytes, restored;
         empty  an empty pasteboard is empty again;
-        refused  prior contents with a file URL and a private type: Caret does not paste (I3's
-               refusal rule) but writes by AX instead, says why (clipboardRefused), and the
-               pasteboard is untouched: its change count does not move, and a fresh read by
-               another process after the seed (`fresh`) matches one after the run.
+        refused  prior contents with a file URL (of a file that exists, written as Finder writes
+               one) and a private type: Caret does not paste (I3's refusal rule) but writes by AX
+               instead, says why (clipboardRefused), and the pasteboard is untouched: its change
+               count does not move, and a fresh read by another process after the seed (`fresh`)
+               matches one after the run. The fresh read must list the file URL item, or the run
+               fails at stage "seed": in A17's and V1b's runs, a file URL naming a missing file was
+               seen by its writer only, so Caret had nothing to refuse.
       race and plain start from restorable contents (`seed text`), refused from `seed rich`.
       changeCount and contents (types and SHA-256 per type) are logged before and after every run.
       Every run starts in a new document (⌘N), so one run's text never decides where the next
@@ -206,7 +209,9 @@ def clipboard(out_dir, runs):
         ok = ok and set_up and shown
         # The first stage that went wrong, so a run that never showed its offer is not read as a
         # clipboard failure.
-        stage = ("setup" if not set_up else "shown" if not shown else "claim" if not ins
+        seeded = kind != "refused" or any(t["type"] == "public.file-url" for item in fresh.get("items", []) for t in item)
+        ok = ok and seeded
+        stage = ("setup" if not set_up else "seed" if not seeded else "shown" if not shown else "claim" if not ins
                  else "insert" if ins.get("ok") is not True or field != text + held else "clipboard" if not ok else None)
         results[kind] += 1 if ok else 0
         check(f"{kind} {i:02d}", ok, stage=stage, presentation=presentation, reply=reply, claimID=ins.get("claimID"),
