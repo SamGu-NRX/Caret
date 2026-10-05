@@ -12,8 +12,8 @@
 import type { AskJev } from "../../../helper/src/fill/jev.ts";
 import { loadJevKey, makeJevClient } from "../../../helper/src/fill/jev.ts";
 
-/** Live router spend, in dollars, after which router questions fail. The brief's limit is $0.05 for H6's live runs together. */
-export const SPEND_CAP_USD = 0.02;
+/** Live router spend per process, in dollars, after which router questions fail. H6 runs four live processes under a $0.05 limit. */
+export const SPEND_CAP_USD = 0.012;
 
 export const routingOptions = {
   routing: { type: "string", default: "off" },
