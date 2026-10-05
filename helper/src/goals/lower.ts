@@ -91,7 +91,7 @@ function recipientCheck(t: TargetBinding, v: ValueBinding, inv: GoalInventory): 
 
 /** A drafted value's own checks (goals/drafts.ts), against the field it goes in and its frozen basis. */
 function draftCheck(t: TargetBinding, v: ValueBinding, basis: DraftBasis): void {
-  if (t.control !== "text") throw new GoalError("wrongKind", `Caret writes drafts only in a text field, and ${named(t)} is not one`, `${t.ref} <- ${v.ref}`);
+  if (t.control !== "text") throw new GoalError("draft", `Caret writes drafts only in a text field, and ${named(t)} is not one`, `${t.ref} <- ${v.ref}`);
   try {
     checkDraftText(v.text, basis);
   } catch (e) {

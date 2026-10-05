@@ -8,7 +8,7 @@ import type { PlanningSnapshot } from "../src/codemode/types.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { YOURS_EFFECT } from "../src/goals/capabilities.ts";
 import { GoalProgress, PROTOCOL_VERSION } from "../src/protocol.ts";
-import { areaKey, button, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, textArea, textField, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { areaKey, button, draftRefusals, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, textArea, textField, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
 
 const EMAIL = "priya.raman@northwind.example";
 const MESSAGE = areaKey(MAIL, "Message");
@@ -289,5 +289,20 @@ describe("G2: a draft that only restates the instruction", () => {
     expect(refusedSays(time)).toBe(`The draft says "at 4", which isn't in your instruction or the windows Caret read`);
     const money = await scene(reply("The $500 quote works."), { askJev: doubting() }).request('draft a reply saying "the $500 quote works"');
     expect(refusedSays(money)).toBe(`The draft says "$500", and no window Caret read shows that amount`);
+  });
+});
+
+describe("G2: the B30 runner's draft-refusal count", () => {
+  it("counts a draft Jev's claim check refused, and no other refusal", async () => {
+    const claim = scene([REPLY], { askJev: jevYes(0.5) });
+    expect(refusedSays(await claim.request("draft a reply to Priya saying I'm in"))).toMatch(/^Caret couldn't confirm you asked to say/);
+    expect(draftRefusals(claim)).toBe(1);
+    const fact = scene([[{ draft: { window: "Re: Order", target: "Message", text: "I'm in at 4.", from: [] } }]]);
+    await fact.request("draft a reply saying I'm in");
+    expect(draftRefusals(fact)).toBe(1);
+    // A recipient refusal is not a draft's.
+    const cc = scene([REPLY]);
+    await cc.request("draft a reply to Priya saying I'm in and cc Dana");
+    expect(draftRefusals(cc)).toBe(0);
   });
 });

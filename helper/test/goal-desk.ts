@@ -283,6 +283,19 @@ export function cannedGoalWriter(scripts: CannedStep[][]): WriterPort & { reques
   };
 }
 
+// MARK: - what the measurement runners count
+
+/**
+ * Goal plans the scene refused for `code` (lower.ts GoalRefusal; "draft" is any of drafts.ts's checks, Jev's claim
+ * check included), read from the helper's counts. B30's runner matched warnings against /draft|recipient|add people/,
+ * which missed "Caret couldn't confirm you asked to say ..." and counted recipient refusals as drafts'.
+ */
+export function goalRefusals(sc: Pick<GoalScene, "store">, code: string): number {
+  sc.store.flush();
+  return sc.store.counts()[`goal.refused_${code}`] ?? 0;
+}
+export const draftRefusals = (sc: Pick<GoalScene, "store">): number => goalRefusals(sc, "draft");
+
 // MARK: - a stand-in for Jev
 
 /**
@@ -324,6 +337,8 @@ export interface GoalScene {
   /** What the helper warned about (a refused goal's detail goes here). */
   warnings: string[];
   session: string;
+  /** The helper's store: its counts say why goals were refused (goal.refused_<code>). */
+  store: Store;
   /** Plans a goal and returns its reply, recorded in `goals`. */
   request(instruction: string, requestId?: string): Promise<GoalProgress>;
   /** Accepts the latest preview of `goalId` (its segment and digest) from `from` (the scene's host by default), with `over` replacing any field. */
@@ -389,6 +404,7 @@ export function goalScene(o: {
     goals,
     warnings,
     session,
+    store,
     async request(instruction, requestId = `r${goals.length + 1}`) {
       const r = await helper.handleGoalRequest({ type: "goalRequest", v: PROTOCOL_VERSION, requestId, instruction, at: desk.at }, session);
       goals.push(r);
