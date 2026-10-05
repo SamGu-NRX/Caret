@@ -282,7 +282,7 @@ export interface GoalScene {
   warnings: string[];
   session: string;
   /** Plans a goal and returns its reply, recorded in `goals`. */
-  request(instruction: string): Promise<GoalProgress>;
+  request(instruction: string, requestId?: string): Promise<GoalProgress>;
   /** Accepts the latest preview of `goalId` (its segment and digest) from `from` (the scene's host by default), with `over` replacing any field. */
   accept(goalId: string, over?: Partial<GoalAccept>, from?: string): Promise<Awaited<ReturnType<Helper["handleGoalAccept"]>>>;
   /** Waits for the helper's goal work, then closes it. */
@@ -332,8 +332,8 @@ export function goalScene(o: { scripts: CannedStep[][]; windows: DeskWindow[]; p
     goals,
     warnings,
     session,
-    async request(instruction) {
-      const r = await helper.handleGoalRequest({ type: "goalRequest", v: PROTOCOL_VERSION, requestId: `r${goals.length + 1}`, instruction, at: desk.at }, session);
+    async request(instruction, requestId = `r${goals.length + 1}`) {
+      const r = await helper.handleGoalRequest({ type: "goalRequest", v: PROTOCOL_VERSION, requestId, instruction, at: desk.at }, session);
       goals.push(r);
       return r;
     },
