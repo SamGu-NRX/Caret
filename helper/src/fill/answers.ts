@@ -94,11 +94,28 @@ export interface PageText {
   tokens: string[];
   /** The organization the page is for, as a sentence names it, or null when code cannot tell. */
   org: string | null;
-  /** The page's site as siteKey gives it, or null when unknown. */
-  site: string | null;
+  /** The company the page's ATS address names (tenantOf), or null for any other address or none. */
+  tenant: string | null;
 }
 
-/** A page's site for "the same organization": host and first path segment, the company on an ATS address. */
+/**
+ * The company an ATS address names: its host and first path segment, the tenant's slug ("job-boards.greenhouse.io/
+ * stripe"). Null for any other host, and for an ATS route with no slug or the embed route, where the path names no one:
+ * two organizations' pages could share it (fix-check finding 3).
+ */
+export function tenantOf(site: string | null): string | null {
+  if (site === null) return null;
+  let u: URL;
+  try {
+    u = new URL(site);
+  } catch {
+    return null;
+  }
+  const slug = u.pathname.split("/").filter((s) => s !== "")[0];
+  return ATS_HOSTS.test(u.host) && slug !== undefined && slug !== "embed" ? `${u.host}/${slug.toLowerCase()}` : null;
+}
+
+/** A page's address as "the same site" for updating a saved answer: host and first path segment. */
 export function siteKey(site: string | null): string | null {
   if (site === null) return null;
   try {
@@ -117,7 +134,8 @@ const ATS_HOSTS = /(?:^|\.)(?:greenhouse\.io|lever\.co|ashbyhq\.com)$/u;
 
 /** The organization a page is for, from its title as Greenhouse, Ashby and Lever write it, else its ATS address. */
 export function pageOrg(title: string, site: string | null): string | null {
-  const t = title.trim();
+  // A site's own suffix ("… at Stripe | Greenhouse") is not part of the organization's name.
+  const t = title.trim().replace(/\s+\|\s+[^|]*$/u, "");
   const gh = /^Job Application for .+? at (.+)$/u.exec(t)?.[1];
   if (gh !== undefined) return gh.trim();
   const ashby = /^.+ @ (.+)$/u.exec(t)?.[1];
@@ -147,7 +165,7 @@ export function pageOrg(title: string, site: string | null): string | null {
 export function pageText(w: WindowState, ctx: PageContext): PageText {
   const parts = [w.window.title, ctx.site ?? "", ...ctx.headings];
   for (const n of w.nodes.values()) parts.push(n.label ?? "", n.placeholder ?? "", n.editable === true ? "" : (n.value ?? ""));
-  return { tokens: tokens(parts.join(" \n ")), org: pageOrg(w.window.title, ctx.site), site: siteKey(ctx.site) };
+  return { tokens: tokens(parts.join(" \n ")), org: pageOrg(w.window.title, ctx.site), tenant: tenantOf(ctx.site) };
 }
 
 /**
@@ -249,11 +267,14 @@ function mentions(text: string, org: string): boolean {
 export function guardAnswer(a: SavedAnswer, page: PageText, maxLength: number | undefined): { why: AnswerWithheld; says: string } | null {
   const forPage = page.org === null ? null : `this page is for ${page.org}`;
   const savedOrg = pageOrg(a.fields.form ?? "", a.fields.site);
-  const savedSite = siteKey(a.fields.site);
+  const savedTenant = tenantOf(a.fields.site);
+  // The same organization only on affirmative evidence: both titles name it alike, or, where a title names none, both
+  // addresses are one ATS tenant's. Two names that differ are two organizations whatever the addresses say. A page
+  // that merely mentions the organization ("Have you used Stripe?") is not theirs (fix-check finding 3).
   const same =
-    (savedSite !== null && savedSite === page.site) ||
-    (savedOrg !== null && page.org !== null && tokens(savedOrg).join(" ") === tokens(page.org).join(" ")) ||
-    (savedOrg !== null && page.org === null && onPage(savedOrg, page));
+    savedOrg !== null && page.org !== null
+      ? tokens(savedOrg).join(" ") === tokens(page.org).join(" ")
+      : savedTenant !== null && savedTenant === page.tenant;
   if (!same) {
     const ownName = savedOrg !== null && (mentions(a.fields.answer, savedOrg) || mentions(a.fields.question, savedOrg));
     if (ownName || FOR_THEM.test(a.fields.question)) {

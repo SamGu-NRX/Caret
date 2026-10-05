@@ -21,8 +21,8 @@ describe("entry", () => {
     const t = new EntryTracker();
     const el = {};
     expect(t.entryOf(el, "")).toBeUndefined();
-    t.onInput(el, true, "insertText", "I");
-    t.onInput(el, true, "insertText", "I l");
+    t.onInput(el, true, "insertText", "I", "I");
+    t.onInput(el, true, "insertText", "I l", " l");
     expect(t.entryOf(el, "I l")).toBe("typed");
     t.onInput(el, false, "insertReplacementText", "I led the migration.");
     t.onInput(el, true, "insertText", "I led the migration. It");
@@ -30,7 +30,7 @@ describe("entry", () => {
     // Emptied by the user: what comes next is judged afresh.
     t.onInput(el, true, "deleteContentBackward", "");
     t.onInput(el, true, "insertFromPaste", "Pasted words");
-    t.onInput(el, true, "insertText", "Pasted words and mine");
+    t.onInput(el, true, "insertText", "Pasted words and mine", " and mine");
     expect(t.entryOf(el, "Pasted words and mine")).toBe("pasted");
     // A page script set the value without an input event.
     expect(t.entryOf(el, "Pasted words and something else")).toBe("other");
@@ -40,6 +40,22 @@ describe("entry", () => {
     expect(t.entryOf(el, "Pasted words and something else!")).toBe("other");
     // A field nobody edited while this script watched reports nothing.
     expect(t.entryOf({}, "Prefilled by the page")).toBeUndefined();
+  });
+
+  it("reads an edit that grew by more than it typed as other (fix-check finding 6)", () => {
+    const t = new EntryTracker();
+    const el = {};
+    t.onBefore(el, "");
+    t.onInput(el, true, "insertText", "I", "I");
+    // A page script slipped text in between beforeinput and input; the trusted keystroke typed one character.
+    t.onBefore(el, "I");
+    t.onInput(el, true, "insertText", "I led the migration nobody else would touch. ", " ");
+    expect(t.entryOf(el, "I led the migration nobody else would touch. ")).toBe("other");
+    // Composition: the data is the composed text, and the field grows by at most that.
+    const c = {};
+    t.onBefore(c, "");
+    t.onInput(c, true, "insertCompositionText", "日本", "日本");
+    expect(t.entryOf(c, "日本")).toBe("typed");
   });
 
   it("does not let one keystroke after a page's prefill make the whole text typed", () => {

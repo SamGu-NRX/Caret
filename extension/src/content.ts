@@ -129,7 +129,7 @@ if (globalThis.__caretContent === undefined) {
       (e) => {
         const el = e.composedPath()[0];
         if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) return;
-        entries.onInput(el, e.isTrusted, e instanceof InputEvent ? e.inputType : "", el.value);
+        entries.onInput(el, e.isTrusted, e instanceof InputEvent ? e.inputType : "", el.value, e instanceof InputEvent ? e.data : null);
       },
       { capture: true, passive: true },
     );

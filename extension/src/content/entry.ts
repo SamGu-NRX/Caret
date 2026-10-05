@@ -52,13 +52,19 @@ export class EntryTracker {
     if (value !== (s?.value ?? "")) this.seen.set(el, { entry: "other", value });
   }
 
-  /** One input event on `el`, with the value it left. An emptied field starts over. */
-  onInput(el: object, isTrusted: boolean, inputType: string, value: string): void {
+  /**
+   * One input event on `el`, with the value it left and the event's data (InputEvent.data). An emptied field starts over.
+   * A typing edit may add at most what it typed: a field that grew by more took text from elsewhere between beforeinput
+   * and input (a page script), and reads as other (fix-check finding 6).
+   */
+  onInput(el: object, isTrusted: boolean, inputType: string, value: string, data: string | null = null): void {
     if (value === "") {
       this.seen.delete(el);
       return;
     }
-    const kind = entryKind(isTrusted, inputType);
+    let kind = entryKind(isTrusted, inputType);
+    const grew = value.length - (this.seen.get(el)?.value.length ?? 0);
+    if (kind === "typed" && grew > (inputType.startsWith("insert") ? (data?.length ?? 1) : 0)) kind = "other";
     const was = this.seen.get(el)?.entry;
     this.seen.set(el, { entry: was !== undefined && RANK[was] > RANK[kind] ? was : kind, value });
   }

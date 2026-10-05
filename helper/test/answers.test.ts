@@ -11,7 +11,7 @@ import { ScreenModel } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { guardAnswer, namesIn, pageText } from "../src/fill/answers.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { buildFillPopup, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
+import { buildFillPopup, fillPlan, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { carriesAnswer, SAVED_ANSWER_RULE, withoutAnswers } from "../src/offers/answer-gate.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
@@ -112,6 +112,14 @@ describe("answers.md", () => {
     expect(savedAnswers(store)).toEqual([]);
   });
 
+  it("disables an answer the user edits to state a secret, naming the line (fix-check finding 4)", () => {
+    const id = putAnswer(store, fields("Anything else?", "Original words."));
+    const path = join(dir, "Memory", "answers.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace("- Answer: Original words.", "- Answer: My password is violet-orchard-seven."));
+    expect(answerNow(store, id)).toBeNull();
+    expect(store.disabledWhy(id, "answer")).toContain("Caret doesn't keep passwords in memory");
+  });
+
   it("follows the user's edit: a paused answer is not offered, and an edited one is read as edited", () => {
     const id = putAnswer(store, fields("Why do you want to work here?", "Original words."));
     const path = join(dir, "Memory", "answers.md");
@@ -151,6 +159,10 @@ describe("capture: only the user's own typing, on a page form's prose field", ()
     // Review finding 6: a secret the text states, though no shape gives it away.
     expect(one({ value: `${PROJECT} My password is violet-orchard-seven.`, entry: "typed" })).toEqual({ ok: false, why: "secret", says: "Caret doesn't keep passwords in memory, and this answer has one." });
     expect(one({ value: `${PROJECT} I built the password reset flow.`, entry: "typed" })).toMatchObject({ ok: true });
+    // Fix-check finding 4: the same secret said other ways.
+    for (const s of ["Password: violet-orchard-seven.", "My password for the demo is violet-orchard-seven.", "My PIN is 7319."]) {
+      expect(one({ value: `${PROJECT} ${s}`, entry: "typed" }), s).toMatchObject({ ok: false, why: "secret" });
+    }
   });
 
   it("refuses a native window, a short one-line field, and a field with no label", () => {
@@ -203,6 +215,22 @@ describe("the organization guard", () => {
     expect(guardAnswer(unknown, ramp, undefined)?.says).toBe("This answer was written for another organization's form; this page is for Ramp.");
     // On the organization's own page it is offered.
     expect(guardAnswer(stripe("Stripe builds the tools I want to work on."), page("Job Application for Backend Engineer at Stripe", "https://job-boards.greenhouse.io/stripe/jobs/2"), undefined)).toBeNull();
+  });
+
+  it("judges two pages one organization only on affirmative evidence (fix-check finding 3)", () => {
+    const why = (site: string | null, form: string) => ({ id: "w", status: "active" as const, fields: { question: "Why us?", answer: "The mission matters to me.", site, form, savedOn: "2026-10-01T12:00:00.000Z" } });
+    const stripe = why("https://job-boards.greenhouse.io/stripe/jobs/1", "Job Application for Engineer at Stripe");
+    // A page that only mentions the organization in a label is not theirs.
+    expect(guardAnswer(stripe, page("Careers", "https://acme.example/jobs/1", ["Have you used Stripe?"]), undefined)?.why).toBe("otherOrganization");
+    // The embed route and a non-ATS host's path name no one.
+    const embed = why("https://job-boards.greenhouse.io/embed/job_app?for=stripe", "Careers");
+    expect(guardAnswer(embed, page("Careers", "https://job-boards.greenhouse.io/embed/job_app?for=acme"), undefined)?.why).toBe("otherOrganization");
+    expect(guardAnswer(why("https://acme.example/jobs/1", "Careers"), page("Careers", "https://acme.example/jobs/2"), undefined)?.why).toBe("otherOrganization");
+    // Two names that differ are two organizations, whatever the addresses say.
+    expect(guardAnswer(stripe, page("Job Application for Engineer at Acme", "https://job-boards.greenhouse.io/stripe/jobs/9"), undefined)?.why).toBe("otherOrganization");
+    // A site's own title suffix is not part of the name; the same tenant with no name in the title is the same.
+    expect(guardAnswer(stripe, page("Job Application for Backend Engineer at Stripe | Greenhouse"), undefined)).toBeNull();
+    expect(guardAnswer(stripe, page("Apply", "https://job-boards.greenhouse.io/stripe/jobs/7"), undefined)).toBeNull();
   });
 
   it("never lets what the applicant typed on the page vouch for an answer (review finding 3)", () => {
@@ -349,6 +377,16 @@ describe("a saved answer is never written without the user seeing it whole", () 
     expect(writtenFields(proposal([...six.slice(0, 1), valueField("v", "x")]), undefined, { answers: false }).fields.map((f) => f.key)).toEqual(["v"]);
   });
 
+  it("keeps an answer out of step sentences, and gates a task that writes one (fix-check finding 1)", () => {
+    const model = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "Proudest accomplishment?" }]);
+    const g = writtenFields(proposal([answerField("q1", PROJECT), valueField("v", "x")]));
+    const { plan } = fillPlan(model, g);
+    expect((plan as { steps: { says: string }[] }).steps.map((s) => s.says)).toEqual(["{{l0}} holds your saved answer", "{{l1}} holds {{v1}}"]);
+    const progress = { type: "taskProgress", v: PROTOCOL_VERSION, at: 1, taskId: "p1", planId: "p1", phase: "acting", step: 0, steps: 2, says: null, detail: `write value; expect q1: '' becomes '${PROJECT.slice(0, 30)}'`, stopReason: null } as unknown as HelperMessage;
+    expect(carriesAnswer(progress, (id) => id === "p1")).toBe(true);
+    expect(carriesAnswer(progress, () => false)).toBe(false);
+  });
+
   it("sends a host without the capability no answer, and stops a pop-up whose answer changed in answers.md", () => {
     const p = proposal([answerField("q1", PROJECT), valueField("v", "x")]);
     expect(carriesAnswer(p)).toBe(true);
@@ -467,6 +505,29 @@ describe("saving through the helper: an offer when the user leaves the field, an
     expect(walks).toBe(1);
     expect(reply).toMatchObject({ outcome: "refused", why: "notTyped" });
     expect(savedAnswers(helper.memory.files!)).toEqual([]);
+  });
+
+  it("refuses a yes when the walk refreshed nothing for that page (fix-check finding 2)", async () => {
+    helper.setAnswerHosts(1);
+    await walk(PROJECT, "typed", "q1", 1000);
+    await walk(PROJECT, "typed", "f-name", 2000);
+    const offer = out.find((m) => m.type === "answerSaveOffer") as { id: string };
+    // The walk answers ok but applies nothing to this window (it walked another tab, say).
+    (helper as unknown as { opts: { readerLink: unknown } }).opts.readerLink = { run: async () => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "page", at: 1, outcome: "ok", detail: null }) };
+    expect(await helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r1", from: { kind: "offer", offerId: offer.id } })).toMatchObject({ outcome: "refused", why: "unavailable" });
+    expect(savedAnswers(helper.memory.files!)).toEqual([]);
+  });
+
+  it("guards an answer again right before the executor writes it (fix-check finding 5)", async () => {
+    const files = helper.memory.files!;
+    const id = putAnswer(files, { question: "What has been your proudest accomplishment?", answer: PROJECT, site: null, form: null, savedOn: "2026-10-01T12:00:00.000Z" });
+    await walk("", undefined, "q1", 1000);
+    const h = helper as unknown as { answerWrites: Map<string, unknown[]>; memoryHolds(ref: string, value: string): boolean };
+    h.answerWrites.set("task-1", [{ answerId: id, windowId: "page-eng1-7", key: "q1" }]);
+    expect(h.memoryHolds(id, PROJECT)).toBe(true);
+    // The page lowered the field's maxlength after the user's Tab; the executor's fresh read shows it.
+    await helper.handleReader(snap([node("q1", "AXTextArea", { label: "What has been your proudest accomplishment?", editable: true, maxLength: 10 }), field("f-name", "", { label: "Full name" })], { at: 2000, windowId: "page-eng1-7", kind: "page", title: "Security Engineer, Cloud @ Ramp", app: CHROME, focused: true, focusedKey: "q1" }));
+    expect(h.memoryHolds(id, PROJECT)).toBe(false);
   });
 
   it("never saves what Caret's own executor wrote into the field", async () => {

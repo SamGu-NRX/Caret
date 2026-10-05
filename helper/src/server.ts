@@ -86,7 +86,7 @@ export class HelperServer {
     // Provenance is new in M1: a consumer that did not ask for it is not sent it.
     // A goal's previews and progress quote values and name windows: only hosts that plan goals get them.
     // A saved answer goes only to a host that shows it whole (S1); any other consumer gets a fill proposal without it.
-    if (carriesAnswer(m)) {
+    if (carriesAnswer(m, (id) => this.helper().writesAnswer(id))) {
       for (const c of this.savedAnswers) c.write(line);
       if (m.type !== "fillProposal") return;
       const stripped = JSON.stringify(withoutAnswers(m)) + "\n";
@@ -308,7 +308,12 @@ export class HelperServer {
               });
           }
           // Records hold window titles and status lines, so a list goes to the asker only, as memory does.
-          else if (m.data.type === "activityRequest") s.write(JSON.stringify(this.helper().handleActivity(m.data)) + "\n");
+          else if (m.data.type === "activityRequest") {
+            // A task that writes a saved answer is listed only to a host that shows answers (S1): its records quote it.
+            const r = this.helper().handleActivity(m.data);
+            const hide = (id: string): boolean => !this.savedAnswers.has(s) && this.helper().writesAnswer(id);
+            s.write(JSON.stringify({ ...r, tasks: r.tasks.filter((t) => !hide(t.id)), events: r.events.filter((e) => !hide(e.task.id)) }) + "\n");
+          }
           else if (m.data.type === "memoryRequest") {
             // Resuming a paused skill brings back the consent it rests on; only the host's resume is the user's.
             if (m.data.op === "resume" && !this.hosts.has(s) && this.helper().resumeRestoresConsent(m.data.id)) {

@@ -281,6 +281,9 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
     declared[`v${i}`] = `value ${i + 1}`;
     declared[`l${i}`] = `the name of field ${i + 1}`;
     const control = f.control !== "text";
+    // S1: a saved answer's step never quotes it: step sentences reach every consumer in progress and activity messages,
+    // and only a host that shows answers whole may see one.
+    const saved = f.answer !== undefined;
     // A control's step says its value as the pop-up does ("Shift set to Night"), not as the field holds it.
     if (control) {
       slots[`d${i}`] = f.display;
@@ -288,7 +291,7 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       if (f.source !== null) sources[`d${i}`] = f.source.windowId;
     }
     return {
-      says: control ? `{{l${i}}} set to {{d${i}}}` : `{{l${i}}} holds {{v${i}}}`,
+      says: control ? `{{l${i}}} set to {{d${i}}}` : saved ? `{{l${i}}} holds your saved answer` : `{{l${i}}} holds {{v${i}}}`,
       // A value from memory is checked against the entry again right before it is written (executor.ts).
       // A part of a remembered name names its part ("about-1#first"), so the check splits the entry the same way.
       ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory) }),

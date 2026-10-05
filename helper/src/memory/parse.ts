@@ -20,7 +20,7 @@
 import { createHash } from "node:crypto";
 import * as z from "zod";
 import { AboutFields, AnswerFields, OfferKind, PeopleFields, PreferenceFields } from "../protocol.ts";
-import { refusal, sensitiveKind, valueKind, type SensitiveKind } from "./sensitive.ts";
+import { refusal, sensitiveKind, statedSecret, valueKind, type SensitiveKind } from "./sensitive.ts";
 
 export const RECORD_KINDS = ["about", "people", "preference", "skill", "answer"] as const;
 export type RecordKind = (typeof RECORD_KINDS)[number];
@@ -407,7 +407,8 @@ function readRecord(lines: string[], hidden: Set<number>, start: number, end: nu
   // A saved answer's question is its label (S1).
   const labels = seen.filter((x) => x.key === "label" || x.key === "question").map((x) => x.value);
   for (const x of seen) {
-    const s = x.key === "value" || x.key === "answer" ? (labels.map((label) => sensitiveKind(label, x.value)).find((k) => k !== null) ?? valueKind(x.value)) : x.key === null ? sensitiveKind(x.name, x.value) : valueKind(x.value);
+    // A saved answer is also refused for a secret its prose states ("my password is …", sensitive.ts statedSecret).
+    const s = x.key === "value" || x.key === "answer" ? (labels.map((label) => sensitiveKind(label, x.value)).find((k) => k !== null) ?? valueKind(x.value) ?? (x.key === "answer" ? statedSecret(x.value) : null)) : x.key === null ? sensitiveKind(x.name, x.value) : valueKind(x.value);
     if (s !== null) err(x.line, x.key === null ? x.name : KEY_NAMES[x.key], `${refusal(s)}, so this record is not used`);
   }
   if (!ok) return null;
@@ -515,7 +516,7 @@ function readRecord(lines: string[], hidden: Set<number>, start: number, end: nu
  */
 export function recordSecret(r: MemoryRecord): { field: string; kind: SensitiveKind } | null {
   for (const [k, v] of fieldPairs(r)) {
-    const s = k === "value" && r.kind === "about" ? sensitiveKind(r.fields.label, v) : k === "answer" && r.kind === "answer" ? sensitiveKind(r.fields.question, v) : valueKind(v);
+    const s = k === "value" && r.kind === "about" ? sensitiveKind(r.fields.label, v) : k === "answer" && r.kind === "answer" ? (sensitiveKind(r.fields.question, v) ?? statedSecret(v)) : valueKind(v);
     if (s !== null) return { field: KEY_NAMES[k], kind: s };
   }
   return null;

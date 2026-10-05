@@ -115,7 +115,7 @@ import { fieldKinds, valueKinds, words } from "./fill/kinds.ts";
 import { labelledLines } from "./fill/candidates.ts";
 import { fieldAsksFor } from "./fill/about.ts";
 import { AnswerError, answerFor, answerNow, capture, OFFER_MIN_CHARS, OFFER_SAYS, putAnswer, savedAnswers, savedSays, type SavedAnswer } from "./memory/answers.ts";
-import type { PageContext } from "./fill/answers.ts";
+import { guardAnswer, pageText, type PageContext } from "./fill/answers.ts";
 import type { ValueKind } from "./protocol.ts";
 import { OFFER_WHEN, sentences, type EventCandidate, type SentenceSource } from "./offers/event-card.ts";
 import { nodeText } from "./model.ts";
@@ -267,6 +267,8 @@ const ANSWER_OFFER_KEEP_MS = PROPOSAL_KEEP_MS;
 const MAX_WRITES_KEPT = 8;
 /** Fields whose writes capture remembers, the most recently written kept. Assumed: far more than one sitting's forms. */
 const MAX_FIELDS_WRITTEN = 2000;
+/** Answer-writing tasks remembered for gating their activity records. Assumed: more than the activity list keeps. */
+const MAX_ANSWER_TASKS = 1000;
 
 /** Whether a transfer comes from this fill: the same field (checked by the caller), close in time, overlapping values, and an edit made before any undo. */
 function fillMatches(f: CaretFill, t: Transfer): boolean {
@@ -322,6 +324,13 @@ export class Helper {
   private readonly caretWrites = new Map<string, string[]>();
   /** S1: host connections that declared SAVED_ANSWERS_CAPABILITY. With none, saved answers are neither matched nor offered. */
   private answerHosts = 0;
+  /**
+   * S1: tasks that write a saved answer. Their progress and activity go only to hosts that show answers, since the
+   * executor's details quote what it writes; kept after a task ends, for the activity list, up to MAX_ANSWER_TASKS.
+   */
+  private readonly answerTasks = new Set<string>();
+  /** S1: the fields each running answer task writes an answer into, guarded again right before each write (memoryHolds). */
+  private readonly answerWrites = new Map<string, { answerId: string; windowId: string; key: string }[]>();
   /** S1: offers to save an answer, by offer id, until the user's yes or ANSWER_OFFER_KEEP_MS. */
   private readonly answerOffers = new Map<string, { at: number; windowId: string; key: string; fields: Omit<AnswerFields, "savedOn"> }>();
   private lastPrune = 0;
@@ -1034,9 +1043,21 @@ export class Helper {
 
   /** Whether memory entry `ref` (an id, or "id#first" for a name's part) still gives exactly `value`. */
   private memoryHolds(ref: string, value: string): boolean {
-    // S1: a saved answer, checked by content right before it is written: still active, still exactly these words.
+    // S1: a saved answer, checked right before it is written, after the executor's fresh read: still active, still exactly
+    // these words, and still passing the guards in every field a task writes it into (a page can lower a maxlength or
+    // change its title between the user's Tab and the write).
     const files = this.memory.files;
-    if (files !== null && files.record(ref)?.kind === "answer") return this.answerText(ref)?.fields.answer === value;
+    if (files !== null && files.record(ref)?.kind === "answer") {
+      const now = this.answerText(ref);
+      if (now === null || now.fields.answer !== value) return false;
+      for (const t of [...this.answerWrites.values()].flat().filter((x) => x.answerId === ref)) {
+        const w = this.model.windows.get(t.windowId);
+        const node = w?.nodes.get(t.key);
+        if (w === undefined || node === undefined) return false;
+        if (guardAnswer(now, pageText(w, this.opts.pageContext?.(t.windowId) ?? { site: null, headings: [] }), node.maxLength) !== null) return false;
+      }
+      return true;
+    }
     const { id, part } = parseMemoryRef(ref);
     const text = this.memory.text(id);
     if (text === null || text === undefined) return false;
@@ -1681,6 +1702,11 @@ export class Helper {
     return a === null || a.status !== "active" ? null : a;
   };
 
+  /** S1: whether a task writes a saved answer, so the server sends its progress and activity only to hosts that show answers. */
+  writesAnswer(taskId: string): boolean {
+    return this.answerTasks.has(taskId);
+  }
+
   /** S1: the server reports how many connected hosts declared SAVED_ANSWERS_CAPABILITY. */
   setAnswerHosts(n: number): void {
     this.answerHosts = n;
@@ -1759,6 +1785,9 @@ export class Helper {
     if (walked === null || walked.outcome !== "ok") return refused("unavailable", "Caret couldn't read the page again, so nothing was saved.");
     const w = this.model.windows.get(windowId);
     if (w === undefined) return refused("changed", "That page is no longer open, so nothing was saved.");
+    // The model replaces a window's state on every snapshot it applies: the same state means the walk refreshed nothing
+    // here (a walk answered for another tab, say), and a cached field is not the user's yes (fix-check finding 2).
+    if (w === before) return refused("unavailable", "Caret couldn't read the page again, so nothing was saved.");
     const c = capture(w, key, { site: this.opts.pageContext?.(windowId)?.site ?? null, caretWrote: this.caretWrote(windowId, key) });
     if (!c.ok) return refused(c.why, c.says);
     if (offered !== null && (offered.answer !== c.fields.answer || offered.question !== c.fields.question)) {
@@ -1849,6 +1878,7 @@ export class Helper {
     // A task that can no longer act needs no host binding; an undo binds it again to the session asking.
     if (state !== "running" && state !== "paused") {
       this.taskHosts.delete(e.taskId);
+      this.answerWrites.delete(e.taskId);
       this.taskDeps.delete(e.taskId);
     }
     const cause: TaskCause | null = e.cause ?? (state === "running" ? null : state === "undone" ? "you" : "caret");
@@ -2385,6 +2415,12 @@ export class Helper {
     }
     const { plan, slots } = fillPlan(this.model, p);
     this.withdrawFill(p.id, "taken");
+    const answers = p.fields.flatMap((f) => (f.answer === undefined ? [] : [{ answerId: f.answer.id, windowId: p.windowId, key: f.key }]));
+    if (answers.length > 0) {
+      this.answerTasks.add(p.id);
+      if (this.answerTasks.size > MAX_ANSWER_TASKS) this.answerTasks.delete(this.answerTasks.values().next().value as string);
+      this.answerWrites.set(p.id, answers);
+    }
     // The destinations were empty just now; one the user fills before the run's first read stops it.
     return this.runFrom("fill", p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
   }

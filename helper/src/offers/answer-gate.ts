@@ -14,9 +14,14 @@ function hasRule(v: unknown): boolean {
   return Object.values(o).some(hasRule);
 }
 
-/** Whether a message holds a saved answer's text: an offer to save one, a fill field from one, or a pop-up row that writes one. */
-export function carriesAnswer(m: HelperMessage): boolean {
+/**
+ * Whether a message holds a saved answer's text: an offer to save one, a fill field from one, a pop-up row that writes
+ * one, or the progress or activity of a task that writes one (`writesAnswer`), whose details quote what it writes.
+ */
+export function carriesAnswer(m: HelperMessage, writesAnswer: (taskId: string) => boolean = () => false): boolean {
   if (m.type === "answerSaveOffer") return true;
+  if (m.type === "taskProgress") return writesAnswer(m.taskId);
+  if (m.type === "activity") return writesAnswer(m.task.id);
   if (m.type === "fillProposal") return m.fields.some((f) => f.answer !== undefined);
   if (m.type === "popup") return hasRule(m.spec);
   return false;
