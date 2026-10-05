@@ -50,6 +50,7 @@ final class InsertionExecutor: @unchecked Sendable {
     private typealias Settle = WriteFallback.Settle
 
     private let queue = DispatchQueue(label: "dev.caret.host.insertion", qos: .userInteractive)
+    private static let log = Logger(subsystem: "dev.caret.host", category: "clipboard")
     private let arbiter: OfferArbiter
     private let status: HostStatus
     private let planner: InsertionPlanner
@@ -148,7 +149,7 @@ final class InsertionExecutor: @unchecked Sendable {
         func finish(
             ok: Bool, error: String?, verified: Bool?, method: FillResult.Method? = nil, fellBack: Bool = false,
             undo: UndoGrant? = nil, rejected: Bool = false, stray: String? = nil,
-            clipboard: ReconcilingClipboard.Outcome? = nil, lost: [String] = [], mismatch: [String] = [], types: [[String]]? = nil
+            clipboard: ReconcilingClipboard.Outcome? = nil, refused: [String] = [], types: [[String]]? = nil
         ) {
             var insertion = DebugState.Insertion(
                 claimID: claim.claimID, ok: ok, error: error, text: text,
@@ -159,16 +160,19 @@ final class InsertionExecutor: @unchecked Sendable {
             insertion.method = method?.rawValue
             insertion.fellBack = fellBack
             insertion.strayField = stray
-            insertion.clipboard = clipboard?.rawValue
-            insertion.clipboardLost = lost.isEmpty ? nil : lost
-            insertion.clipboardMismatch = mismatch.isEmpty ? nil : mismatch
+            insertion.clipboard = clipboard?.name
+            insertion.clipboardLost = clipboard?.lost.isEmpty == false ? clipboard?.lost : nil
+            insertion.clipboardRefused = refused.isEmpty ? nil : refused
             insertion.clipboardTypes = types
             status.update { $0.lastInsertion = insertion }
-            if let clipboard { status.increment("clipboard.\(clipboard.rawValue)") }
-            if !mismatch.isEmpty {
-                // Types and sizes only, never the bytes: the clipboard is the user's.
-                status.increment("clipboard.mismatch")
-                FileHandle.standardError.write(Data("caret: clipboard restore differs from what was saved: \(mismatch.joined(separator: "; "))\n".utf8))
+            if let clipboard { status.increment("clipboard.\(clipboard.name)") }
+            if !refused.isEmpty { status.increment("clipboard.refused") }
+            if case .notRestored(let lost)? = clipboard {
+                // Loud, because the user's clipboard is not what it was. Types and sizes only, never the
+                // bytes: the clipboard is the user's.
+                let line = "caret: CLIPBOARD NOT RESTORED after a paste into \(claim.offer.target.bundleID): \(lost.joined(separator: "; "))"
+                Self.log.fault("\(line, privacy: .public)")
+                FileHandle.standardError.write(Data((line + "\n").utf8))
             }
             onFinished(Result(claim: claim, insertion: insertion, undo: undo, reason: error, rejected: rejected, method: method, strayField: stray))
         }
@@ -207,8 +211,21 @@ final class InsertionExecutor: @unchecked Sendable {
         }
         let refusal = { live() ? "targetNotAllowed" : "revoked" }
         // A clipboard Caret cannot restore exactly refuses the paste route for this insert
-        // (`WriteFallback.firstRoute`, `afterAXRefused`); `pasteInsert` checks again at the save.
-        let clipboardRestorable = { [pasteboard] in pasteboard.clipboard.unrestorableNow().isEmpty }
+        // (`WriteFallback.firstRoute`, `afterAXRefused`). The check's snapshot is the only one a paste
+        // may write over and restore (`ReconcilingClipboard.arm`).
+        var snapshot: ClipboardSnapshot?
+        var clipboardRefused: [String] = []
+        var clipboardTypes: [[String]]?
+        let clipboardRestorable = { [pasteboard] () -> Bool in
+            switch pasteboard.clipboard.check() {
+            case .pasteable(let checked):
+                (snapshot, clipboardRefused, clipboardTypes) = (checked, [], checked.types)
+                return true
+            case .refused(let reasons, let types):
+                (snapshot, clipboardRefused, clipboardTypes) = (nil, reasons, types)
+                return false
+            }
+        }
         // The clipboard is read only when a paste would come first; the AX route never touches it.
         let route: WriteFallback.Route = writeMethods.method(for: appKey) == .axSelectedText
             ? .axWrite : WriteFallback.firstRoute(appPastes: true, clipboardRestorable: clipboardRestorable())
@@ -228,7 +245,7 @@ final class InsertionExecutor: @unchecked Sendable {
                 writeMethods.record(.pastePid, for: appKey)
                 method = .pastePid
                 fellBack = true
-                let paste = pasteInsert(claim, approved: approved, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
+                let paste = pasteInsert(claim, snapshot: snapshot, approved: approved, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
                 (step, stray, clipboard) = (paste.step, paste.stray, paste.clipboard)
             case .failed(WriteFallback.clipboardUnrestorable):
                 // Refused with an error and the clipboard could not survive a paste: nothing was
@@ -242,7 +259,7 @@ final class InsertionExecutor: @unchecked Sendable {
                 break
             }
         } else {
-            let paste = pasteInsert(claim, approved: approved, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
+            let paste = pasteInsert(claim, snapshot: snapshot, approved: approved, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
             (step, stray, clipboard) = (paste.step, paste.stray, paste.clipboard)
         }
 
@@ -275,8 +292,7 @@ final class InsertionExecutor: @unchecked Sendable {
         }
         finish(
             ok: error == nil, error: error, verified: verified, method: method, fellBack: fellBack, undo: grant,
-            stray: stray, clipboard: clipboard, lost: clipboard == nil ? [] : pasteboard.lastLost,
-            mismatch: clipboard == nil ? [] : pasteboard.lastMismatched, types: method == .pastePid ? pasteboard.clipboard.savedTypes : nil
+            stray: stray, clipboard: clipboard, refused: clipboardRefused, types: clipboardTypes
         )
     }
 
@@ -302,13 +318,15 @@ final class InsertionExecutor: @unchecked Sendable {
     /// an injection strategy types the text instead and never touches the pasteboard. If a posted
     /// paste did not reach the field, the after-read looks for it in the element that has focus now.
     private func pasteInsert(
-        _ claim: Claim, approved: InsertionGuard.ApprovedEdit, element: AXUIElement, before: FieldState,
+        _ claim: Claim, snapshot: ClipboardSnapshot?, approved: InsertionGuard.ApprovedEdit, element: AXUIElement, before: FieldState,
         stillTarget: @escaping () -> Bool, refusal: () -> String
     ) -> (step: WriteFallback.Step, stray: String?, clipboard: ReconcilingClipboard.Outcome?) {
         let pid = claim.offer.target.pid
-        // Once the save finds something it cannot restore, nothing more is posted: no ⌘V (which
-        // would paste the user's own contents) and no delete after it.
+        // Only a checked snapshot may be pasted over, and only while the pasteboard is still at its
+        // count. Once the clipboard refuses, nothing more is posted: no ⌘V (which would paste the
+        // user's own contents) and no delete before or after it.
         let clipboardState = pasteboard.clipboard
+        if let snapshot { clipboardState.arm(snapshot) } else { clipboardState.disarm("the paste route was taken without a checked clipboard") }
         let synthesizer = PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: { stillTarget() && clipboardState.refused.isEmpty })
         let inserter = PasteboardCompletionInserter(planner: planner, synthesizer: synthesizer, pasteboard: pasteboard, restoreDelayNanoseconds: 0)
         let context = contexts.withLock { list in list.last { $0.0 == claim.offer.id }?.1 }
@@ -326,6 +344,7 @@ final class InsertionExecutor: @unchecked Sendable {
         var postError = Self.blocking { try await inserter.insert(plan: finalPlan) }
         // Read before `restore`, which clears it.
         let refusedAtSave = !clipboardState.refused.isEmpty
+        if refusedAtSave { FileHandle.standardError.write(Data("caret: paste not posted: \(clipboardState.refused.joined(separator: "; "))\n".utf8)) }
         if synthesizer.refusedPosts > 0 { postError = refusedAtSave ? WriteFallback.clipboardUnrestorable : refusal() }
         let settle: Settle = postError == nil ? waitForSettle(element: element, expected: approved, unchanged: before.value) : .different
         var clipboard: ReconcilingClipboard.Outcome?

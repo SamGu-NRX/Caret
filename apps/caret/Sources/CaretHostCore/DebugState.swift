@@ -163,18 +163,19 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var fellBack: Bool?
         /// The field a pid paste landed in instead of the approved one, by its label (S1 audit #13).
         public var strayField: String?
-        /// What the pasteboard reconcile did after a paste: `restored`, `skippedUserCopied` (someone
-        /// copied after Caret wrote, and their copy stays), `raced` or `notWritten`. Nil when the
-        /// write did not use the pasteboard.
+        /// What the pasteboard reconcile did after a paste (`ReconcilingClipboard.Outcome.name`):
+        /// `restored` (a fresh read matched the saved clipboard type for type and byte for byte),
+        /// `skippedUserCopied` (someone copied after Caret wrote, and their copy stays), `notRestored`
+        /// (see `clipboardLost`) or `notWritten`. Nil when the write did not use the pasteboard.
         public var clipboard: String?
-        /// Types of the user's clipboard Caret could not read before pasting, so its restore could not
-        /// bring them back ("item 2: public.file-url"). Nil or empty when every type was read.
+        /// With `notRestored`: what of the user's clipboard did not come back, entry by entry, types
+        /// and sizes only ("item 2: missing (public.file-url)"). Nil otherwise.
         public var clipboardLost: [String]?
-        /// What the restore read back differently from what it saved, entry by entry, types and
-        /// sizes only (`ReconcilingClipboard.mismatches`). Nil when it came back exactly.
-        public var clipboardMismatch: [String]?
-        /// The types of each clipboard item the paste's save read, names only. Nil when the write
-        /// did not save the clipboard.
+        /// Why the clipboard refused the paste route for this write (`ReconcilingClipboard.refusals`),
+        /// so the write took the AX route or handed off instead. Nil when it did not refuse.
+        public var clipboardRefused: [String]?
+        /// The types of each clipboard item the check read, names only. Nil when the clipboard was
+        /// not read.
         public var clipboardTypes: [[String]]?
 
         public init(claimID: UInt64, ok: Bool, error: String?, text: String, durationMs: Double, verified: Bool?) {

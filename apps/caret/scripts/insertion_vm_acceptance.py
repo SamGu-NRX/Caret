@@ -11,7 +11,9 @@ general pasteboard; see a17-tool.swift). TextEdit and Caret are started here, by
         plain  the prior contents come back, every item and type with the same bytes, restored;
         empty  an empty pasteboard is empty again;
         refused  prior contents with a file URL and a private type: Caret does not paste (I3's
-               refusal rule) but writes by AX instead, and the pasteboard is untouched.
+               refusal rule) but writes by AX instead, says why (clipboardRefused), and the
+               pasteboard is untouched: its change count does not move, and a fresh read by
+               another process after the seed (`fresh`) matches one after the run.
       race and plain start from restorable contents (`seed text`), refused from `seed rich`.
       changeCount and contents (types and SHA-256 per type) are logged before and after every run.
       Every run starts in a new document (⌘N), so one run's text never decides where the next
@@ -167,6 +169,9 @@ def clipboard(out_dir, runs):
         held = start.get("value") or ""
         set_up = start.get("selection") == [0, 0] and (bool(held.strip()) if tail else held == "")
         before = tool("seed", {"empty": "empty", "refused": "rich"}.get(kind, "text"))
+        # The seed's own read is its writer's view; this one is another process's (H7b: in V1b, Caret's
+        # read of the seeded general pasteboard listed one item where the seed listed two).
+        fresh = tool("dump")
         watcher = None
         if kind == "race":
             watcher = subprocess.Popen([TOOL, "copy-when", str(pid), f"user copy {i:02d}", "6"], stdout=subprocess.PIPE, text=True)
@@ -179,7 +184,7 @@ def clipboard(out_dir, runs):
         if presentation in presentations:
             presentations[presentation] += 1
         row = {"run": f"{kind}{i:02d}", "start": start, "reply": reply, "presentation": presentation, "capsule": surface.get("capsule"),
-               "capsuleSide": surface.get("capsuleSide"), "tab": k, "claimID": ins.get("claimID"), "before": before, "after": after,
+               "capsuleSide": surface.get("capsuleSide"), "tab": k, "claimID": ins.get("claimID"), "before": before, "fresh": fresh, "after": after,
                "insertion": ins, "copy": copied, "field": field == text + held}
         ledger.write(json.dumps(row) + "\n")
         ledger.flush()
@@ -196,8 +201,8 @@ def clipboard(out_dir, runs):
                 and after.get("changeCount") == before.get("changeCount") + 2
         else:
             ok = ins.get("ok") is True and ins.get("method") == "axSelectedText" and field == text + held \
-                and ins.get("clipboard") is None and items(after) == items(before) \
-                and after.get("changeCount") == before.get("changeCount")
+                and ins.get("clipboard") is None and bool(ins.get("clipboardRefused")) and items(after) == items(fresh) \
+                and after.get("changeCount") == before.get("changeCount") == fresh.get("changeCount")
         ok = ok and set_up and shown
         # The first stage that went wrong, so a run that never showed its offer is not read as a
         # clipboard failure.
@@ -205,7 +210,8 @@ def clipboard(out_dir, runs):
                  else "insert" if ins.get("ok") is not True or field != text + held else "clipboard" if not ok else None)
         results[kind] += 1 if ok else 0
         check(f"{kind} {i:02d}", ok, stage=stage, presentation=presentation, reply=reply, claimID=ins.get("claimID"),
-              clipboard=ins.get("clipboard"), method=ins.get("method"), error=ins.get("error"),
+              clipboard=ins.get("clipboard"), lost=ins.get("clipboardLost"), refused=ins.get("clipboardRefused"),
+              method=ins.get("method"), error=ins.get("error"),
               before=before.get("changeCount"), after=after.get("changeCount"), copied=(copied or {}).get("afterMarkerMs"))
     log("summary", json.dumps(results))
     log("presentations", json.dumps(presentations))
