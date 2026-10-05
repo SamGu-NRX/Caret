@@ -1,1 +1,0 @@
-D2-06: GoalRuns.blocked runs inside Helper.authorize before every act; it must return null once a segment ends, or a goal task's undo (undoBlocked -> authorize) is refused.

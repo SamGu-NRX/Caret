@@ -1,1 +1,0 @@
-H6: the helper publishes a failed or low-confidence router call as a plain abstain (no reason on the wire), so the host cannot fall back on a router error; only a decision that never arrives triggers RouteFollower's budget fallback.

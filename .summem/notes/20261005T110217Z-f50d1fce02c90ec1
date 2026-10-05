@@ -1,1 +1,0 @@
-V1b: Caret pasted over a clipboard whose 2nd item held only public.file-url and the restore dropped it, reporting restored. Items with no readable type now refuse the paste; lastInsertion.clipboardTypes shows what Caret's save read.

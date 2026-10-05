@@ -1,1 +1,0 @@
-B30: a goal-planning host's Ask with route plan is offered as a D2-06 goal (planAsk goals:true returns AskGoal; helper.offerGoal); other consumers keep planTask/planWithCode. planAsk overloads: goals absent/false types as AskDraft.

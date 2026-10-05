@@ -1,0 +1,1 @@
+H7b: in the VM a public.file-url naming a missing file is seen only by its writer; seed file URLs as Finder does. H6: Helper.shutdown leaves the router live: in-process scripts stop it first (routing_option.ts stop), or a late observe hits closed stores.

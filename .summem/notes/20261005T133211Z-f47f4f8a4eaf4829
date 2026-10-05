@@ -1,1 +1,0 @@
-H7b: on the VM guest's general pasteboard a public.file-url naming a missing file is seen only by its writer; other processes (Caret, a17-tool dump) never list it, count unchanged (A17 race00, plain05-09). Seed file URLs as Finder does: NSURL of a real file.

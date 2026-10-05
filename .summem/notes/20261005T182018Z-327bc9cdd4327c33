@@ -1,0 +1,1 @@
+H8: an XML comment in an .entitlements file must not contain '--' (AMFIUnserializeXML refuses it and codesign fails). The event card's done line takes ⌘Z only after a verified step; the helper reports written:0 for calendar adds.

@@ -1,0 +1,1 @@
+H8 VM: the rig guest is 960x600 pt; a centred caret-fixture executor window leaves every event-card spot covering a field (noClearSpot): move it to x=0 (fixture-ax move). seed-user-tcc.sh restarts tccd: running it while a TCC prompt is up shows the prompt twice.
