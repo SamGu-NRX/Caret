@@ -226,9 +226,13 @@ describe("a form behind a Next step", () => {
     expect(first.event === "segment" && first.steps.map((s) => [s.kind, s.says])).toEqual([["write", `Order number: ${ORDER}`], ["press", "Press 'Next' to show the next fields"]]);
     expect((await sc.accept(first.goalId))?.outcome).toBe("done");
     expect(sc.desk.pressed).toEqual([{ windowId: "7171-3", label: "Next" }]);
-    expect(last(sc, "finished")).toMatchObject({ outcome: "done", verified: 2 });
-    await new Promise((r) => setTimeout(r, 0));
+    // Not done: the press showed fields this plan does not cover. The goal stops and names the fresh plan for them.
+    expect(sc.goals.some((g) => g.goalId === first.goalId && g.event === "finished")).toBe(false);
+    const stop = last(sc, "stopped");
+    expect(stop && [stop.goalId, stop.reason, stop.freshPlan !== null, stop.says.startsWith("The last press showed more fields than this plan covers, so Caret stopped after 2 of 2 steps.")]).toEqual([first.goalId, "revealed", true, true]);
+    expect(sc.goals.filter((g) => g.event === "step" && g.phase === "verified").length).toBe(2);
     const fresh = [...sc.goals].reverse().find((g): g is Segment => g.event === "segment" && g.replaces === first.goalId);
+    expect(fresh?.goalId).toBe(stop?.freshPlan);
     expect(fresh && [fresh.reason, fresh.steps.map((s) => s.says)]).toEqual(["afterReveal", [`Description: ${PROBLEM}`]]);
     // The writer saw the revealed field only in the second request.
     expect(sc.writer.requests.map((snaps) => snaps[0]?.targets.map((t) => t.label))).toEqual([["Order number", "Next", "Continue"], ["Description", "Contact email", "Next", "Continue"]]);
@@ -377,6 +381,17 @@ describe("review: what may press, and when a segment may act", () => {
     expect((await sc.accept(first.goalId))?.outcome).toBe("stopped");
     expect(last(sc, "stopped")?.reason).toBe("sourceChanged");
     expect(sc.desk.writes.length).toBe(1);
+  });
+
+  it("a reveal whose fresh plan cannot be made never reads as done", async () => {
+    const pressOnly: CannedStep[] = [{ press: { window: "Report a problem", target: "Next", effect: "e:reveal" } }];
+    // The live gpt-oss-120b run: the plan only pressed Next, and its fresh plan asked to press Next again.
+    const sc = scene({ scripts: [pressOnly, pressOnly], windows: [mailWindow(), wizardWindow()], userWindow: "7171-3" });
+    const first = await sc.request("report the damaged lamp");
+    await sc.accept(first.goalId);
+    expect(sc.goals.some((g) => g.event === "finished")).toBe(false);
+    const stop = last(sc, "stopped");
+    expect(stop && [stop.reason, stop.freshPlan]).toEqual(["revealed", null]);
   });
 
   it("a fresh plan may not press what the goal already pressed: Next is not pressed twice", async () => {

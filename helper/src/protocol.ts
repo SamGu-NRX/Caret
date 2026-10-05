@@ -1783,10 +1783,11 @@ export type GoalStepView = z.infer<typeof GoalStepView>;
  * came from no longer shows it. `targetChanged`: a field changed, went or was replaced before Caret reached it.
  * `timeout`: what a press should do did not happen in time. `unexpectedEffect`: something other than what the step
  * predicted changed. `handedOff`: Caret could not do a step it planned (an app that did not take a write, focus that
- * moved) and left it to the user, before the plan's own end. `windowGone`, `you` (the user stopped it or took the window
+ * moved) and left it to the user, before the plan's own end. `revealed`: the plan's last press showed fields it could
+ * not name, so the goal is not done; `freshPlan` names a plan for them when Caret could make one. `windowGone`, `you` (the user stopped it or took the window
  * back), `readerRestarted`, `hostGone`, `expired` (no acceptance in time), `error` (anything else; the sentence says what).
  */
-export const GoalStopReason = z.enum(["refused", "dialog", "reload", "sourceChanged", "targetChanged", "timeout", "unexpectedEffect", "handedOff", "windowGone", "you", "readerRestarted", "hostGone", "expired", "error"]);
+export const GoalStopReason = z.enum(["refused", "dialog", "reload", "sourceChanged", "targetChanged", "timeout", "unexpectedEffect", "handedOff", "revealed", "windowGone", "you", "readerRestarted", "hostGone", "expired", "error"]);
 export type GoalStopReason = z.infer<typeof GoalStopReason>;
 
 const GoalHead = {

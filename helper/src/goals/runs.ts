@@ -116,6 +116,7 @@ const SAYS: Record<GoalStopReason, string> = {
   timeout: "a step's effect did not show in time",
   unexpectedEffect: "something other than what Caret expected changed",
   handedOff: "Caret could not do a step and left it to you",
+  revealed: "the last press showed more fields than this plan covers",
   windowGone: "the window closed",
   you: "you stopped it",
   readerRestarted: "the screen reader restarted",
@@ -125,7 +126,7 @@ const SAYS: Record<GoalStopReason, string> = {
 };
 
 /** Stops after which a fresh plan from the screen as it is now may be offered. */
-const REPLANNABLE: ReadonlySet<GoalStopReason> = new Set(["dialog", "reload", "sourceChanged", "targetChanged", "timeout", "unexpectedEffect", "windowGone"]);
+const REPLANNABLE: ReadonlySet<GoalStopReason> = new Set(["revealed", "dialog", "reload", "sourceChanged", "targetChanged", "timeout", "unexpectedEffect", "windowGone"]);
 
 export class GoalRuns {
   private readonly runs = new Map<string, Run>();
@@ -351,10 +352,13 @@ export class GoalRuns {
       this.deps.publish(this.segmentMessage(run));
       return;
     }
-    // The last step showed new fields: the plan could not name them, so what remains needs a fresh plan.
-    const last = seg.steps.at(-1);
+    // The last step showed new fields the plan could not name: the goal is not done. It stops, offering a fresh plan
+    // for them when one can be made (D2-06 live run: "Done" after a reveal whose fresh plan was refused).
+    if (seg.steps.at(-1)?.kind === "press") {
+      this.track(this.stopAndReplan(run, "revealed", null, SAYS.revealed, "afterReveal"));
+      return;
+    }
     this.finish(run, "done");
-    if (last?.kind === "press") this.track(this.fresh(run, "unexpectedEffect", "afterReveal").then((m) => m !== null && this.deps.publish(m)));
   }
 
   private finish(run: Run, outcome: "done" | "handoff"): void {
@@ -399,15 +403,15 @@ export class GoalRuns {
     }
   }
 
-  private async stopAndReplan(run: Run, reason: GoalStopReason, step: number | null, says: string): Promise<void> {
+  private async stopAndReplan(run: Run, reason: GoalStopReason, step: number | null, says: string, fresh: "afterReveal" | "freshPlan" = "freshPlan"): Promise<void> {
     if (run.state === "stopped") return;
     run.state = "stopped";
     const done = run.cursor.receipts.filter((r) => r.status !== "handoff").length;
     const total = run.plan.segments.reduce((n, x) => n + x.steps.length, 0);
     const sentence = `${says.charAt(0).toUpperCase()}${says.slice(1)}, so Caret stopped after ${done} of ${total} steps.`;
-    const fresh = REPLANNABLE.has(reason) ? await this.fresh(run, reason, "freshPlan") : null;
-    this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "stopped", segment: run.cursor.segment, step, reason, says: fresh === null ? sentence : `${sentence} A fresh plan from the screen as it is now is ready for you to check.`, freshPlan: fresh?.event === "segment" ? fresh.goalId : null });
-    if (fresh !== null) this.deps.publish(fresh);
+    const next = REPLANNABLE.has(reason) ? await this.fresh(run, reason, fresh) : null;
+    this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "stopped", segment: run.cursor.segment, step, reason, says: next === null ? sentence : `${sentence} A fresh plan from the screen as it is now is ready for you to check.`, freshPlan: next?.event === "segment" ? next.goalId : null });
+    if (next !== null) this.deps.publish(next);
   }
 
   private stop(run: Run, reason: GoalStopReason, step: number | null, says: string): void {

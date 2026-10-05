@@ -8090,6 +8090,7 @@
                     "timeout",
                     "unexpectedEffect",
                     "handedOff",
+                    "revealed",
                     "windowGone",
                     "you",
                     "readerRestarted",
