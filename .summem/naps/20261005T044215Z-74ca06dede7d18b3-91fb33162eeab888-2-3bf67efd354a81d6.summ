@@ -1,0 +1,1 @@
+B28: after a fixture page navigates, wait for site.waitForLoad before the next site.command; accept.ts cannot run executor.run (watchInput gets noWindow), so test page-link VerbResults there and the executor with test/fake-app.ts.

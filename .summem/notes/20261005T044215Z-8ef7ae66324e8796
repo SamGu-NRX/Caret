@@ -1,1 +1,0 @@
-B28: accept.ts cannot run executor.run: it first asks the native reader for watchInput and gets noWindow; check page-link VerbResults in accept and the executor with test/fake-app.ts knobs.

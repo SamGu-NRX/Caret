@@ -1,1 +1,0 @@
-U2: the host's debug JSON leaves out nil keys (synthesized Codable), so a script must read them with .get(); memory_documents_walk.py misread a closed editor as still open.

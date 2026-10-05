@@ -1,1 +1,0 @@
-U2: the perch is now a rim, perch and caption on the task's own window, drawn only while Rim.seen says nothing covers it; the corner perch, PerchPlacement and perch-avoid are gone (perch-avoid now answers with an error).
