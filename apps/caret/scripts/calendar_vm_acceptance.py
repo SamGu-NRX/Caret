@@ -161,6 +161,13 @@ def run(app, out_dir):
     hpid = start_host(app, settings, fx.pid, out_dir)
     time.sleep(1.5)
     pid = fx.pid
+    # The reader's own grant lands now, after it started (its responsible process is this job, not Caret), as
+    # Caret's grant reaches the shipped reader that started at launch. Before the prompt: seeding restarts tccd,
+    # and a restart while the prompt is up showed it twice (VM run 8).
+    seeded = subprocess.run([SEED, "grant", "kTCCServiceCalendar", reader, "/bin/bash", sys.executable, TOOL], capture_output=True, text=True)
+    results["seeded"] = {"rc": seeded.returncode, "rows": seeded.stdout.strip().splitlines()[-4:], "err": seeded.stderr.strip()[-300:]}
+    sa.check("the reader's responsible process is granted Calendar after the reader started", seeded.returncode == 0, seeded=results["seeded"])
+    time.sleep(1)
 
     # 1. Launch asks nothing.
     s = sa.host()
@@ -201,16 +208,13 @@ def run(app, out_dir):
     for i, n in enumerate((prompt or {}).get("windows", [])):
         results["steps"].append({"step": "prompt", "shot": window_shot(out_dir, f"2-prompt-{i}", n)})
     results["prompt"] = prompt
-    # The reader's own grant lands now, after it started (its responsible process is this job, not Caret).
-    seeded = subprocess.run([SEED, "grant", "kTCCServiceCalendar", reader, "/bin/bash", sys.executable, TOOL], capture_output=True, text=True)
-    results["seeded"] = {"rc": seeded.returncode, "rows": seeded.stdout.strip().splitlines()[-4:], "err": seeded.stderr.strip()[-300:]}
-    sa.check("the reader's responsible process is granted Calendar after the reader started", seeded.returncode == 0, seeded=results["seeded"])
 
     # 4. Allow; the event goes to the default calendar.
     pressed = tool("allow", "Caret")
     sa.check("the prompt's Allow is pressed", pressed.get("pressed") is True, pressed=pressed)
     end = sa.wait_for(lambda: progress(key_, ("done", "handoff", "stopped")), 30, 0.2)
     time.sleep(0.3)
+    sa.check("no prompt is left on screen", tool("prompt", "Caret") is None)
     front = sa.front_pid()
     results["frontAfterAllow"] = front
     sa.check("the app the card was accepted in has the front again", pid in (front.get("pid"), front.get("lsappinfo")), front=front, fixture=pid)
