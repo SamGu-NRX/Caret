@@ -56,6 +56,24 @@ const OUTCOME_SAYS: Record<Outcome, string> = {
   ask: "Caret can help once the user answers one question:",
   act: "The user would want this done for them now:",
 };
+/**
+ * Router 1's task question, about the one candidate whose producer checked evidence in code (routes.ts `evidence`). It is
+ * asked on its own, beside the outcome question, because the task is offered next to whatever else the moment gets.
+ * Before R3 the event card was one more option of the outcome question: with writing legal Router 1 chose write for all
+ * of the D2-02 corpus's event moments (m26 0.61, m36 0.74, m37 0.87, m43 0.68) or abstained under the floor (m06, m25);
+ * beside a kept write session, where write is no option and abstain says the user is reading, Jev split almost evenly
+ * (margins 0.02, 0.10, 0.00 and 0.16 over four calls in R2's latency session: evidence/screen/r3/latency,
+ * router-requests-before.ndjson). The answer still only makes an offer the user takes with Tab, after the producer's own
+ * checks (the event card's two attend asks).
+ */
+export const TASK_QUESTION = {
+  instructions: "Apart from anything else Caret does here (it may also be helping the user write), should Caret offer this one task now? It would only appear as an offer; nothing happens unless the user accepts it.",
+  abstain: "No: the user would not want it offered now. It does not fit what they are doing, or what it rests on is over, cancelled, declined, only wondered about, or about other people without the user.",
+  act: "Yes, offer it now:",
+} as const;
+export const TASK_OPTIONS = ["abstain", "act"] as const;
+export type TaskChoice = (typeof TASK_OPTIONS)[number];
+
 /** Other windows Router 1 names, most recently used first. Enough to say where values could come from; not measured. */
 const OTHER_WINDOWS = 5;
 
@@ -92,7 +110,11 @@ function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly 
     if (labels !== null) state.form = labels;
   }
   const says = new Map<string, string>();
-  for (const c of candidates) says.set(c.id, c.quotes.every((q) => ledger.take(q.window, q.kind, q.texts)) ? c.says : c.plain);
+  for (const c of candidates) {
+    const quoted = c.quotes.every((q) => ledger.take(q.window, q.kind, q.texts));
+    const evidence = c.evidence === undefined ? "" : ` ${quoted ? c.evidence.says : c.evidence.plain}`;
+    says.set(c.id, `${quoted ? c.says : c.plain}${evidence}`);
+  }
   return { ledger, state, says };
 }
 
@@ -121,30 +143,38 @@ export interface Built<T extends string> {
   options: readonly T[];
 }
 
-/** Router 1: one Choice over the outcomes legal now. */
-export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: readonly Outcome[], reg: Registry): Built<Outcome> {
+/**
+ * Router 1's request: the outcome question over the outcomes legal now, and the task question when the registry has a
+ * task. Act is an option of the outcome question only for the other routes; when nothing but abstain is left there, only
+ * the task question is asked. `options` is empty when the outcome question is not asked.
+ */
+export interface Built1 extends Built<Outcome> {
+  task: RouteCandidate | null;
+}
+
+export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: readonly Outcome[], reg: Registry): Built1 {
   const acts = reg.routes.flatMap((r) => (r.candidate === null ? [] : [r.candidate]));
   const asking = legal.includes("ask") && reg.question !== null ? [reg.question] : [];
-  const t = describe(model, ctx, [...acts, ...asking]);
-  const criteria: Record<string, string> = {};
-  for (const o of legal) {
-    if (o === "act") criteria.act = `${OUTCOME_SAYS.act} ${acts.map((c) => t.says.get(c.id)).join("; or ")}.`;
-    else if (o === "ask") criteria.ask = `${OUTCOME_SAYS.ask} ${reg.question?.question?.says ?? ""}; then: ${t.says.get(reg.question?.id ?? "") ?? ""}.`;
-    else criteria[o] = OUTCOME_SAYS[o];
+  const task = legal.includes("act") ? reg.task : null;
+  const t = describe(model, ctx, [...acts, ...asking, ...(task === null ? [] : [task])]);
+  const options = legal.filter((o) => o !== "act" || acts.length > 0);
+  const questions: JevRequest["questions"] = {};
+  if (options.length > 1) {
+    const criteria: Record<string, string> = {};
+    for (const o of options) {
+      if (o === "act") criteria.act = `${OUTCOME_SAYS.act} ${acts.map((c) => t.says.get(c.id)).join("; or ")}.`;
+      else if (o === "ask") criteria.ask = `${OUTCOME_SAYS.ask} ${reg.question?.question?.says ?? ""}; then: ${t.says.get(reg.question?.id ?? "") ?? ""}.`;
+      else criteria[o] = OUTCOME_SAYS[o];
+    }
+    questions.outcome = {
+      type: "choice",
+      instructions: "Which one describes the user's moment? When a task fits what they are doing, it comes before writing help.",
+      criteria,
+    };
   }
-  const request: JevRequest = {
-    state: t.state,
-    questions: {
-      outcome: {
-        type: "choice",
-        instructions: "Which one describes the user's moment? When a task fits what they are doing, it comes before writing help.",
-        criteria,
-      },
-    },
-    ...t.ledger.declared(),
-    retry429: false,
-  };
-  return { request, options: legal };
+  if (task !== null) questions.task = { type: "choice", instructions: TASK_QUESTION.instructions, criteria: { abstain: TASK_QUESTION.abstain, act: `${TASK_QUESTION.act} ${t.says.get(task.id) ?? task.plain}` } };
+  const request: JevRequest = { state: t.state, questions, ...t.ledger.declared(), retry429: false };
+  return { request, options: options.length > 1 ? options : [], task };
 }
 
 /** Router 2: one Choice over the registry's routes, after Router 1 chose act. */
@@ -160,6 +190,26 @@ export function router2Request(model: ScreenModel, ctx: RoutingContext, reg: Reg
     retry429: false,
   };
   return { request, options: reg.routes.map((r) => r.option) };
+}
+
+/** Router 1's answers: each question's read, null for a question not asked. A failed call fails every question asked. */
+export interface Read1 {
+  outcome: Read<Outcome> | null;
+  task: Read<TaskChoice> | null;
+}
+
+export async function sendRouter1(askJev: AskJev, b: Built1, floor: number): Promise<Read1> {
+  let result: JevResult;
+  try {
+    result = await askJev(b.request);
+  } catch (e) {
+    const failed: Read<never> = { ok: false, why: e instanceof Error && e.name === "TimeoutError" ? "timeout" : "failed", choice: null, confidence: null };
+    return { outcome: b.options.length > 0 ? failed : null, task: b.task === null ? null : failed };
+  }
+  return {
+    outcome: b.options.length > 0 ? readChoice(result, "outcome", b.options, floor) : null,
+    task: b.task === null ? null : readChoice(result, "task", TASK_OPTIONS, floor),
+  };
 }
 
 /**

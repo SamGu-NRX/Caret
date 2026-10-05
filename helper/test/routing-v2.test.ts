@@ -23,13 +23,15 @@ import { field, focus, jevPickingText, MAIL_APP, snap, text, value } from "./bui
 
 type Answer = { choice: string; confidence: number };
 const result = (answers: Record<string, Answer>): JevResult => ({ model: "jev-test", answers, inputTokens: 120, latencyMs: 5, costUsd: 120 * 0.042e-6 });
-const isRouter = (r: JevRequest): boolean => "outcome" in r.questions || "route" in r.questions;
+const isRouter = (r: JevRequest): boolean => "outcome" in r.questions || "task" in r.questions || "route" in r.questions;
 
 /** Answers the routers by script and passes every other question to `other`; can hold router replies to test what arrives late. */
 class RouterJev {
   readonly requests: JevRequest[] = [];
   /** null answers nothing for the question. */
   router1: (req: JevRequest) => Answer | Error | null = () => ({ choice: "abstain", confidence: 0.9 });
+  /** Router 1's task question, asked beside or instead of its outcome question. */
+  task: (req: JevRequest) => Answer | Error | null = () => ({ choice: "abstain", confidence: 0.9 });
   router2: (req: JevRequest) => Answer | Error = () => ({ choice: "r1", confidence: 0.9 });
   other: AskJev | null = null;
   holding = false;
@@ -38,16 +40,21 @@ class RouterJev {
   readonly ask: AskJev = (req) => {
     this.requests.push(req);
     const make = (): Promise<JevResult> => {
-      const which = "outcome" in req.questions ? "outcome" : "route" in req.questions ? "route" : null;
-      if (which === null) return this.other === null ? Promise.reject(new Error("an unexpected question")) : this.other(req);
-      const a = which === "outcome" ? this.router1(req) : this.router2(req);
-      return a instanceof Error ? Promise.reject(a) : Promise.resolve(result(a === null ? {} : { [which]: a }));
+      if (!isRouter(req)) return this.other === null ? Promise.reject(new Error("an unexpected question")) : this.other(req);
+      const answers: Record<string, Answer> = {};
+      for (const q of ["outcome", "task", "route"] as const) {
+        if (!(q in req.questions)) continue;
+        const a = q === "outcome" ? this.router1(req) : q === "task" ? this.task(req) : this.router2(req);
+        if (a instanceof Error) return Promise.reject(a);
+        if (a !== null) answers[q] = a;
+      }
+      return Promise.resolve(result(answers));
     };
     if (!this.holding || !isRouter(req)) return make();
     return new Promise((res, rej) => this.held.push({ req, go: () => void make().then(res, rej) }));
   };
 
-  routerCalls(q?: "outcome" | "route"): JevRequest[] {
+  routerCalls(q?: "outcome" | "task" | "route"): JevRequest[] {
     return this.requests.filter((r) => (q === undefined ? isRouter(r) : q in r.questions));
   }
 
@@ -323,6 +330,171 @@ describe("the routing coordinator", () => {
     });
   });
 
+  describe("a task code checked, asked on its own (R3)", () => {
+    /** An event card's candidate as the helper lists it: the facts its code found go to Router 1 as its own question. */
+    const checked = (id = "event:1"): TestCandidate =>
+      candidate(id, { says: 'Add to Calendar "Lunch with Priya tomorrow at noon."', evidence: { says: "Code found the person Priya and the time Tue Oct 6, 12:00 to 1:00 PM in a sentence the user typed here.", plain: "Code found a person and a time ahead in a sentence the user typed here." } });
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    };
+    const writing = async (): Promise<void> => {
+      jev.router1 = () => ({ choice: "write", confidence: 0.9 });
+      show("Dear Dana, the deck");
+      await coord.idle();
+      expect(coord.writing).toEqual({ windowId: NOTE, key: BODY(0) });
+      decisions.length = 0;
+      jev.requests.length = 0;
+    };
+
+    it("asks it beside the outcome in the same call, so writing help and the task can both be chosen", async () => {
+      const ev = checked();
+      cands = [ev];
+      jev.router1 = () => ({ choice: "write", confidence: 0.9 });
+      jev.task = () => ({ choice: "act", confidence: 0.8 });
+      show("Dear Dana. Lunch with Priya tomorrow at noon. ");
+      await coord.idle();
+      expect(jev.routerCalls()).toHaveLength(1);
+      const q = jev.routerCalls()[0]?.questions as Record<string, { criteria: Record<string, string> }>;
+      // The outcome question no longer offers the checked task; the task question offers only it, with code's facts.
+      expect(Object.keys(q.outcome?.criteria ?? {})).toEqual(["abstain", "write"]);
+      expect(Object.keys(q.task?.criteria ?? {})).toEqual(["abstain", "act"]);
+      expect(q.task?.criteria.act).toContain("Lunch with Priya");
+      expect(q.task?.criteria.act).toContain("Tue Oct 6, 12:00 to 1:00 PM");
+      expect(decisions.map((d) => [d.outcome, d.by, d.published, d.route])).toEqual([
+        ["write", "router1", true, null],
+        ["act", "router1", false, "workflow:event"],
+      ]);
+      expect(ev.ran).toBe(1);
+      expect(ev.dropped).toBe(0);
+      expect(coord.writing).toEqual({ windowId: NOTE, key: BODY(0) });
+    });
+
+    it("decides act on the task alone when nothing else is legal, and a weak task answer offers nothing", async () => {
+      hostWrites = false;
+      const ev = checked();
+      cands = [ev];
+      jev.task = () => ({ choice: "act", confidence: 0.8 });
+      show("Lunch with Priya tomorrow at noon. ");
+      await coord.idle();
+      expect(Object.keys(jev.routerCalls()[0]?.questions ?? {})).toEqual(["task"]);
+      expect(decisions.map((d) => [d.outcome, d.by, d.published, d.route])).toEqual([["act", "router1", true, "workflow:event"]]);
+      expect(ev.ran).toBe(1);
+      const weak = checked("event:2");
+      cands = [weak];
+      jev.task = () => ({ choice: "act", confidence: 0.3 });
+      clock.advance(ROUTER1_COOLDOWN_MS);
+      show("", 1);
+      await coord.idle();
+      expect(decisions.at(-1)).toMatchObject({ outcome: "abstain", by: "router1", published: true, refused: { router: 1, why: "lowConfidence" } });
+      expect([weak.ran, weak.dropped]).toEqual([0, 1]);
+    });
+
+    it("asks only the task question beside a kept write session", async () => {
+      await writing();
+      const ev = checked();
+      cands = [ev];
+      jev.task = () => ({ choice: "act", confidence: 0.8 });
+      clock.advance(ROUTER1_COOLDOWN_MS);
+      show("Dear Dana, the deck is ready. Lunch with Priya tomorrow at noon. ");
+      await coord.idle();
+      expect(Object.keys(jev.routerCalls()[0]?.questions ?? {})).toEqual(["task"]);
+      expect(decisions.map((d) => [d.outcome, d.by, d.published])).toEqual([
+        ["write", "session", true],
+        ["act", "router1", false],
+      ]);
+      expect(ev.ran).toBe(1);
+      expect(coord.stats.besideOutcome).toEqual({ act: 1 });
+    });
+
+    it("keeps a task answer through the host's report of the same sentence end, and drops it once the sentence is not the last", async () => {
+      await writing();
+      const ev = checked();
+      cands = [ev];
+      jev.holding = true;
+      jev.task = () => ({ choice: "act", confidence: 0.8 });
+      clock.advance(ROUTER1_COOLDOWN_MS);
+      // The reader walks the period first; the host's breakpoint for the same sentence end follows.
+      show("Dear Dana, the deck is ready. Lunch with Priya tomorrow at noon.");
+      coord.hostEditing({ windowId: NOTE, key: BODY(0), selection: "caret", composing: false, textRevision: "h2" }, true);
+      coord.observe();
+      expect(jev.routerCalls()).toHaveLength(1);
+      jev.release();
+      await coord.idle();
+      expect(ev.ran).toBe(1);
+      expect(coord.stats.staleDrops).toBe(0);
+      expect(decisions.map((d) => [d.breakpoint, d.outcome, d.by, d.published])).toEqual([
+        ["sentence", "write", "session", true],
+        ["sentence", "write", "session", true],
+        ["sentence", "act", "router1", false],
+      ]);
+      // A sentence the user finished after it: the task is no longer listed, so its late answer is dropped.
+      const later = checked("event:3");
+      cands = [later];
+      clock.advance(ROUTER1_COOLDOWN_MS);
+      show("Dear Dana, the deck is ready. Lunch with Priya tomorrow at noon. Coffee with Ana on Friday at 9am.");
+      cands = [];
+      show("Dear Dana, the deck is ready. Lunch with Priya tomorrow at noon. Coffee with Ana on Friday at 9am. Bye.");
+      jev.release();
+      await coord.idle();
+      expect(later.ran).toBe(0);
+      expect(coord.stats.staleDrops).toBe(1);
+    });
+
+    it("lets a forged task answer fail the decision when the task was the only question", async () => {
+      hostWrites = false;
+      cands = [checked()];
+      jev.task = () => ({ choice: "write", confidence: 0.9 });
+      show("Lunch with Priya tomorrow at noon. ");
+      await coord.idle();
+      expect(decisions.at(-1)).toMatchObject({ outcome: "error", failure: "forged", published: true });
+      expect(cands[0]?.ran).toBe(0);
+    });
+  });
+
+  describe("entering a field (R3)", () => {
+    it("treats the host's first report of a plain caret as no breakpoint, so its first sentence end keeps the write session", async () => {
+      jev.router1 = () => ({ choice: "write", confidence: 0.9 });
+      show("Dear Dana, the deck");
+      await coord.idle();
+      expect(coord.writing).toEqual({ windowId: NOTE, key: BODY(0) });
+      clock.advance(ROUTER1_COOLDOWN_MS);
+      // RouteFollower sends nothing after binding while the selection is a plain caret: its first context is this one.
+      coord.hostEditing({ windowId: NOTE, key: BODY(0), selection: "caret", composing: false, textRevision: "h1" }, true);
+      show("Dear Dana, the deck is ready. ");
+      await coord.idle();
+      expect(jev.routerCalls()).toHaveLength(1);
+      expect(decisions.slice(1).map((d) => [d.breakpoint, d.outcome, d.by])).toEqual([["sentence", "write", "session"]]);
+      expect(decisions.at(-1)?.textRevision).toBe("h1");
+      expect(ended).toEqual([]);
+      // A range is still a new decision.
+      coord.hostEditing({ windowId: NOTE, key: BODY(0), selection: "range", composing: false, textRevision: "h2" });
+      coord.observe();
+      await coord.idle();
+      expect(decisions.at(-1)?.breakpoint).toBe("selection");
+    });
+
+    it("starts a newly focused field's decision at once; repeats in one field still wait out the cooldown", async () => {
+      jev.router1 = () => ({ choice: "write", confidence: 0.9 });
+      show("One. ", 0);
+      await coord.idle();
+      clock.advance(500);
+      show("Two. ", 1);
+      await coord.idle();
+      expect(jev.routerCalls()).toHaveLength(2);
+      expect(decisions.at(-1)).toMatchObject({ key: BODY(1), outcome: "write", latencyMs: 0 });
+      // Inside the field, a memory change is a repeat: it waits two seconds from that field's call.
+      clock.advance(300);
+      coord.memoryChanged();
+      coord.observe();
+      expect(jev.routerCalls()).toHaveLength(2);
+      clock.advance(ROUTER1_COOLDOWN_MS - 301);
+      expect(jev.routerCalls()).toHaveLength(2);
+      clock.advance(1);
+      await coord.idle();
+      expect(jev.routerCalls()).toHaveLength(3);
+    });
+  });
+
   describe("offers the user consented to (R2 decision 2)", () => {
     /** The helper's records, faked: one kept skill, one paused, one resolved watch, one still running. */
     const skills = new Map([["kept-1", { paused: false, keep: "kept" }], ["paused-1", { paused: true, keep: "kept" }], ["offered-1", { paused: false, keep: "offered" }]]);
@@ -441,14 +613,11 @@ describe("the routing coordinator", () => {
     show("", 2);
     expect(jev.routerCalls()).toHaveLength(1);
     jev.release();
-    await coord.idle();
+    // The newest context is a field no answer has decided yet: it gets its call as soon as the slot is free (R3).
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
     expect(coord.stats.staleDrops).toBe(1);
     expect(coord.stats.replaced).toBe(1);
     expect(coord.writing).toBeNull();
-    // The newest context waits out the cooldown from the first call's start, then gets its own call.
-    clock.advance(ROUTER1_COOLDOWN_MS - 201);
-    expect(jev.routerCalls()).toHaveLength(1);
-    clock.advance(1);
     expect(jev.routerCalls()).toHaveLength(2);
     jev.release();
     await coord.idle();
@@ -460,11 +629,11 @@ describe("the routing coordinator", () => {
     expect(coord.writing).toEqual({ windowId: NOTE, key: BODY(2) });
   });
 
-  it("starts Router 1 at most once per two seconds, however the context changes", async () => {
+  it("starts Router 1 at most once per two seconds in one field, however its context changes", async () => {
     show("One. ", 0);
     await coord.idle();
     clock.advance(500);
-    show("Two. ", 1);
+    show("One. Two. ", 0);
     await coord.idle();
     expect(jev.routerCalls()).toHaveLength(1);
     clock.advance(ROUTER1_COOLDOWN_MS - 501);
@@ -665,6 +834,9 @@ describe("the routing coordinator", () => {
     expect(a?.sentences).toBe(1);
     expect(breakpoint(a, contextNow(base) as NonNullable<typeof a>)).toBeNull();
     expect(breakpoint(a, contextNow({ ...base, host: { windowId: NOTE, key: BODY(0), selection: "range", composing: false } }) as NonNullable<typeof a>)).toBe("selection");
+    // The host reports nothing while the selection is a plain caret (RouteFollower), so "unknown" already means one.
+    expect(breakpoint(a, contextNow({ ...base, host: { windowId: NOTE, key: BODY(0), selection: "caret", composing: false } }) as NonNullable<typeof a>)).toBeNull();
+    expect(breakpoint(a, contextNow({ ...base, host: { windowId: NOTE, key: BODY(0), selection: "none", composing: false } }) as NonNullable<typeof a>)).toBe("selection");
     expect(breakpoint(a, contextNow({ ...base, settingsRevision: 1 }) as NonNullable<typeof a>)).toBe("settings");
     expect(breakpoint(a, contextNow({ ...base, memoryRevision: 1 }) as NonNullable<typeof a>)).toBe("memory");
     expect(breakpoint(a, contextNow({ ...base, candidates: ["fillAll"] }) as NonNullable<typeof a>)).toBe("candidates");
@@ -952,7 +1124,7 @@ describe("the helper with routing on", () => {
 
   it("routes a finished sentence with a person and a time to the event card, which quotes the exact sentence", async () => {
     const sentence = "Lunch with Priya tomorrow at noon.";
-    jev.router1 = () => ({ choice: "act", confidence: 0.9 });
+    jev.task = () => ({ choice: "act", confidence: 0.9 });
     const attend: string[] = [];
     jev.other = async (req) => {
       attend.push((req.state as { sentence: string }).sentence);
@@ -969,9 +1141,19 @@ describe("the helper with routing on", () => {
     const quote = JSON.stringify(cards[0]?.endState.ref);
     expect(quote).toContain(JSON.stringify(sentence));
     expect(`${prefix}${sentence} Then`.slice(prefix.length, prefix.length + sentence.length)).toBe(sentence);
-    // Router 1 saw the sentence as a quoted, declared snippet.
-    const r1 = jev.routerCalls("outcome").at(-1) as JevRequest;
+    // Router 1 saw the sentence and the person code found in it as quoted, declared snippets, in its own task question
+    // with the time code resolved and where the sentence came from (R3).
+    const r1 = jev.routerCalls("task").at(-1) as JevRequest;
+    expect(Object.keys(r1.questions)).toEqual(["task"]);
     expect(r1.snippets.some((x) => x.windowId === NOTES_DOC && x.text === sentence)).toBe(true);
+    expect(r1.snippets.some((x) => x.windowId === NOTES_DOC && x.text === "Priya")).toBe(true);
+    const act = (r1.questions.task as { criteria: Record<string, string> }).criteria.act ?? "";
+    // Noon with no end: the card asks how long, and Router 1 is told both times it could add.
+    const times = (cards[0]?.variants as OfferPopup["spec"]).blocks.flatMap((b) => (b.type === "choices" ? b.rows.map((r) => r.label.text) : []));
+    expect(times).toHaveLength(2);
+    expect(act).toContain(`the person "Priya"`);
+    expect(act).toContain(`the time ${times.join(" or ")}, the sentence giving no end`);
+    expect(act).toContain("the user typed it in this field");
     expect(h.routing?.decisions.at(-1)).toMatchObject({ outcome: "act", route: "workflow:event" });
   });
 
@@ -1104,6 +1286,9 @@ describe("the helper with routing on", () => {
     const r = h.handleMemory({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "p", op: "add", kind: "people", fields: { alias: next, name: `${next} Junior` } });
     expect(r.error).toBeNull();
     jev.release();
+    // The memory change's context has had no answer used in its field, so its call starts as soon as the slot is free.
+    await new Promise((res) => setImmediate(res));
+    if (jev.held.length > 0) jev.release();
     await h.routing?.idle();
     desk.advance(ROUTER1_COOLDOWN_MS);
     fire();

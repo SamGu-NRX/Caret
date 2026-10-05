@@ -50,6 +50,15 @@ export interface RouteCandidate {
   relevance: number;
   /** The one fact this candidate needs from the user before it can be offered; set only when code can name it. */
   question?: { fact: string; says: string };
+  /**
+   * What the producer's own code checked before listing it, in code's words: for the event card, the person and the time
+   * it found in the sentence and where the sentence came from. A ready candidate with evidence is Router 1's task question
+   * (judge.ts), asked beside the outcome question rather than as one of its options, because such a task is offered next
+   * to whatever else the moment gets (writing help included) and asking it inside the outcome question lost it every
+   * time (brief R3: R2's latency session, and the D2-02 corpus's event moments). `says` quotes screen text only through
+   * `quotes`; `plain` is used when they do not fit.
+   */
+  evidence?: { says: string; plain: string };
   /** Makes the offer (or asks the question) through the producer. */
   run: () => void;
   /** The context's decision did not choose it. Producers that held an offer for this moment let it go. */
@@ -72,6 +81,8 @@ export interface Registry {
   routes: readonly Route[];
   /** The candidate whose one missing fact Caret may ask, or null. */
   question: RouteCandidate | null;
+  /** The ready candidate with code-checked evidence that Router 1's task question is about, or null. */
+  task: RouteCandidate | null;
   /** Workflows code could not list (more than MAX_WORKFLOWS); when any, the act routes become one handoff. */
   overflow: number;
 }
@@ -81,22 +92,26 @@ export const HANDOFF_OVERFLOW = "more known tasks fit here than Caret can list a
 
 /**
  * Freezes the candidates of one context into Router 2's registry. A candidate that needs a fact is not an act route;
- * the first one not yet asked is the context's question. Workflows beyond MAX_WORKFLOWS are not silently dropped:
- * the act routes become one handoff that says so.
+ * the first one not yet asked is the context's question. The ready candidate with evidence that ranks first is the task
+ * question's, and is no route; `tasksAsked` (the task ids a write session already put to Router 1) leaves those out
+ * altogether. Any further candidate with evidence stays a route, as before R3. Workflows beyond MAX_WORKFLOWS are not
+ * silently dropped: the act routes become one handoff that says so.
  */
-export function freeze(gen: number, candidates: readonly RouteCandidate[], asked: ReadonlySet<string>): Registry {
-  const ready = candidates.filter((c) => c.question === undefined);
-  const question = candidates.find((c) => c.question !== undefined && !asked.has(c.id)) ?? null;
+export function freeze(gen: number, candidates: readonly RouteCandidate[], asked: ReadonlySet<string>, tasksAsked: ReadonlySet<string> = new Set()): Registry {
+  const fresh = candidates.filter((c) => c.evidence === undefined || !tasksAsked.has(c.id));
+  const task = fresh.filter((c) => c.question === undefined && c.evidence !== undefined).sort((a, b) => b.relevance - a.relevance)[0] ?? null;
+  const ready = fresh.filter((c) => c.question === undefined && c !== task);
+  const question = fresh.find((c) => c.question !== undefined && !asked.has(c.id)) ?? null;
   const workflows = ready.filter((c) => c.kind === "workflow").sort((a, b) => b.relevance - a.relevance);
   const overflow = Math.max(0, workflows.length - MAX_WORKFLOWS);
-  if (overflow > 0) return { gen, routes: [{ option: "handoff", kind: "handoff", candidate: null, reason: HANDOFF_OVERFLOW }], question, overflow };
+  if (overflow > 0) return { gen, routes: [{ option: "handoff", kind: "handoff", candidate: null, reason: HANDOFF_OVERFLOW }], question, task, overflow };
   const others = ready.filter((c) => c.kind !== "workflow");
   const real = [...workflows, ...others];
   if (real.length > MAX_ROUTES - 1) throw new Error(`routing: ${real.length} real routes for one context; the registry lists at most ${MAX_ROUTES - 1} beside handoff`);
-  if (real.length === 0) return { gen, routes: [], question, overflow: 0 };
+  if (real.length === 0) return { gen, routes: [], question, task, overflow: 0 };
   const routes: Route[] = real.map((c, i) => ({ option: `r${i + 1}`, kind: c.kind, candidate: c, reason: null }));
   routes.push({ option: "handoff", kind: "handoff", candidate: null, reason: HANDOFF_NONE });
-  return { gen, routes, question, overflow: 0 };
+  return { gen, routes, question, task, overflow: 0 };
 }
 
 /** The real routes of a registry, handoff left out. */

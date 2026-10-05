@@ -2031,7 +2031,8 @@ export class Helper {
               workflow: "event",
               says: `Add to Calendar the event this sentence the user just finished arranges: "${last}"`,
               plain: "Add to Calendar the event in the sentence the user just finished",
-              quotes: [{ window: w, kind: "candidate", texts: [last] }],
+              quotes: [{ window: w, kind: "candidate", texts: [last, c.person] }],
+              evidence: eventEvidence(c, "the user typed it in this field"),
               relevance: 2,
               ...(startOpen(c) ? { question: { fact: "eventStart", says: "which time the sentence means, since it leaves the start open" } } : {}),
               run: () => this.startRouted(this.events.judge(w, key, last, offerField(w, key), "typed")),
@@ -2055,7 +2056,8 @@ export class Helper {
           workflow: "event",
           says: `Add to Calendar the event this line just heard in ${l.w.app.name} arranges: "${l.sentence}"`,
           plain: `Add to Calendar the event in a line just heard in ${l.w.app.name}`,
-          quotes: [{ window: l.w, kind: "candidate", texts: [l.sentence] }],
+          quotes: [{ window: l.w, kind: "candidate", texts: [l.sentence, c.person] }],
+          evidence: eventEvidence(c, `it is a new line in a ${l.w.app.name} conversation the user is in, perhaps written by someone else`),
           relevance: 1,
           ...(startOpen(c) ? { question: { fact: "eventStart", says: "which time the line means, since it leaves the start open" } } : {}),
           run: () => {
@@ -2458,6 +2460,17 @@ function fillEvidence(model: ScreenModel, w: WindowState, fields: readonly Node[
  * different moments (AM or PM, which day, a repeated hour). A start that is known with only the length open is the
  * event route itself: the card offers the lengths in its own picker and adds nothing until one is chosen (D2-03).
  */
+/**
+ * What the event card's code checked before listing a sentence, for Router 1's task question (routes.ts `evidence`): the
+ * person it found, the time it resolved from the reader's typed values, and where the sentence came from (`source`: typed
+ * in the field, or a line of a window conversation.ts recognised). The person is quoted through the candidate's `quotes`.
+ */
+function eventEvidence(c: EventCandidate, source: string): { says: string; plain: string } {
+  // A card that asks is listed as a task only when its choices share one start (startOpen): the sentence gave no end.
+  const when = c.time.kind === "resolved" ? c.time.time.says : `${c.time.choices.map((t) => t.says).join(" or ")}, the sentence giving no end`;
+  return { says: `Code found in it the person "${c.person}" and the time ${when}; ${source}.`, plain: `Code found in it a person and the time ${when}; ${source}.` };
+}
+
 function startOpen(c: EventCandidate): boolean {
   return c.time.kind === "ask" && new Set(c.time.choices.map((t) => t.start)).size > 1;
 }

@@ -162,6 +162,15 @@ export function sentenceOnly(prev: RoutingContext, next: RoutingContext): boolea
 }
 
 /**
+ * The selection as a breakpoint compares it. The host sends no routingContext while the selection is a plain caret
+ * (RouteFollower.take on v2/routing: after binding a field it sends one only for a range or a composition), so until it
+ * reports, "unknown" means a caret. Comparing them as different made the host's first context in a field, which comes
+ * at its first sentence end, a selection change: it ended the write session and asked Router 1 again (brief R3, latency
+ * session following the host, latency-on-before-realhost.json sentence 1).
+ */
+const selectionMode = (s: SelectionMode): Exclude<SelectionMode, "unknown"> => (s === "unknown" ? "caret" : s);
+
+/**
  * The first way `next` differs from `prev` that opens a new decision, or null when it is the same context (ordinary
  * typing, or nothing changed). Order matters only for which reason is logged.
  */
@@ -169,7 +178,7 @@ export function breakpoint(prev: RoutingContext | null, next: RoutingContext): B
   if (prev === null || prev.readerSession !== next.readerSession) return "reader";
   if (prev.pid !== next.pid || prev.windowId !== next.windowId || prev.title !== next.title) return "document";
   if ((prev.field?.key ?? null) !== (next.field?.key ?? null) || prev.field?.role !== next.field?.role || prev.field?.secure !== next.field?.secure || prev.incomplete !== next.incomplete) return "focus";
-  if (prev.selection !== next.selection) return "selection";
+  if (selectionMode(prev.selection) !== selectionMode(next.selection)) return "selection";
   if (prev.composing !== next.composing) return "composing";
   if (prev.sentences !== next.sentences || prev.paragraphs !== next.paragraphs || prev.hostBreaks !== next.hostBreaks) return "sentence";
   if (prev.candidates !== next.candidates) return "candidates";

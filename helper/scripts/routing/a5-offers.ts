@@ -68,7 +68,7 @@ const fake: AskJev = async (req) => {
   return jevPickingText((_, instructions) => FILL_VALUES[/Label: '([^']+)'/.exec(instructions)?.[1] ?? ""] ?? null)(req);
 };
 
-const isRouter = (r: JevRequest): boolean => "outcome" in r.questions || "route" in r.questions;
+const isRouter = (r: JevRequest): boolean => "outcome" in r.questions || "task" in r.questions || "route" in r.questions;
 let routerCalls = 0;
 let spendUsd = 0;
 let overCap = 0;
@@ -81,8 +81,8 @@ const askJev: AskJev = async (req) => {
   routerCalls++;
   if (MODE === "capture") {
     captured.push({ ...current, request: req });
-    const q = "outcome" in req.questions ? "outcome" : "route";
-    return { model: "capture", answers: { [q]: { choice: q === "outcome" ? "abstain" : "handoff", confidence: 0.9 } }, inputTokens: 0, latencyMs: 0, costUsd: 0 };
+    const answers = Object.fromEntries(Object.keys(req.questions).map((q) => [q, { choice: q === "route" ? "handoff" : "abstain", confidence: 0.9 }]));
+    return { model: "capture", answers, inputTokens: 0, latencyMs: 0, costUsd: 0 };
   }
   if (spendUsd >= SPEND_CAP) {
     overCap++;
