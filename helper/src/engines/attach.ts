@@ -23,6 +23,8 @@ const TYPES: Record<string, string> = {
 };
 
 interface Confirmation {
+  /** The one field the file was confirmed for (`ConfirmedFiles.target`): a read for any other is refused (H5 review #1). */
+  target: string;
   /** The resolved path read() opens. */
   path: string;
   /** The name as the user saw it, which the page gets. */
@@ -91,7 +93,12 @@ export class ConfirmedFiles {
    * file must be a regular file under MAX_ATTACH_BYTES now; it is read once here, so the confirmation holds its
    * digest. A second confirmation for the task replaces the first.
    */
-  confirm(taskId: string, path: string): { ok: true } | { refused: string } {
+  /** The field a confirmation is for: a page window and the file input's key in it. */
+  static target(windowId: string, key: string): string {
+    return `${windowId}\u0001${key}`;
+  }
+
+  confirm(taskId: string, path: string, target: string): { ok: true } | { refused: string } {
     if (!isAbsolute(path)) return { refused: "the confirmed file has no absolute path" };
     let real: string;
     try {
@@ -102,7 +109,7 @@ export class ConfirmedFiles {
     }
     const got = readWhole(real);
     if ("refused" in got) return got;
-    this.byTask.set(taskId, { path: real, name: basename(path), dev: got.st.dev, ino: got.st.ino, size: got.st.size, mtimeMs: got.st.mtimeMs, sha256: digest(got.bytes), at: this.now() });
+    this.byTask.set(taskId, { target, path: real, name: basename(path), dev: got.st.dev, ino: got.st.ino, size: got.st.size, mtimeMs: got.st.mtimeMs, sha256: digest(got.bytes), at: this.now() });
     return { ok: true };
   }
 
@@ -121,10 +128,12 @@ export class ConfirmedFiles {
    * Reads the file confirmed for `taskId`, once. Refused without a confirmation, after GRANT_MAX_MS, or when the file
    * is not the one confirmed: another file at the path, or the same file with other bytes.
    */
-  read(taskId: string): ReadFile | { refused: string } {
+  read(taskId: string, target: string): ReadFile | { refused: string } {
     const c = this.byTask.get(taskId);
     this.byTask.delete(taskId);
     if (c === undefined) return { refused: `no file was confirmed for task ${taskId}` };
+    // A run under the same task id that aims at another field (a runPlan reusing an offer's key) gets nothing.
+    if (c.target !== target) return { refused: "the file was confirmed for another field" };
     if (this.now() - c.at > GRANT_MAX_MS) return { refused: "the confirmation of the file expired" };
     const got = readWhole(c.path);
     if ("refused" in got) return got;

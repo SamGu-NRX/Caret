@@ -1082,7 +1082,9 @@ export class Helper {
     };
     const offer = this.planOffers.get(m.taskId);
     if (offer === undefined || offer.draft.checked.attach === null) return refuse(SAYS.fileNoPlan, "no plan offer under that key attaches a file");
-    const r = this.files.confirm(m.taskId, m.path);
+    // Bound to the offer's own file input: only that field may get the file, whatever else runs under this id.
+    const attach = offer.draft.checked.attach;
+    const r = this.files.confirm(m.taskId, m.path, ConfirmedFiles.target(offer.draft.checked.window.window.windowId, attach.node.key));
     // ConfirmedFiles words its refusals for logs; the one the user can act on by choosing another file is the size.
     if ("refused" in r) return refuse(r.refused.startsWith("the file is ") ? SAYS.fileTooBig : SAYS.fileUnreadable, r.refused);
     const file = this.files.confirmed(m.taskId);
@@ -1545,6 +1547,8 @@ export class Helper {
       if (m.type === "runPlan") {
         // A task id names one piece of work in the activity feed; a run may not take over another's record.
         if (this.tasks.get(m.taskId) !== undefined) throw new Error(`task id ${m.taskId} is already in use`);
+        // Nor take a pending plan offer's key, or one a file was confirmed under (H5 review #1).
+        if (this.planOffers.has(m.taskId) || this.files.confirmed(m.taskId) !== null) throw new Error(`task id ${m.taskId} belongs to a plan offer`);
         this.bindNew(m.taskId, session);
         // No act grant: a consumer's plan is not an offer the user accepted, so the reader acts for it
         // only in --act-pids processes, which only tests start.

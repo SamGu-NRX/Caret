@@ -6,7 +6,7 @@
 import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarGrant, type Node, type NodeState, type PageControl, type PageControlKind, type PageResult, type PageSnapshot, type PageVerb, type ReaderVerb, type Snapshot, type VerbOutcome, type VerbResult } from "../protocol.ts";
 import type { ReaderLink } from "../executor/means.ts";
 import type { EngineSession } from "./session.ts";
-import type { ConfirmedFiles } from "./attach.ts";
+import { ConfirmedFiles } from "./attach.ts";
 import { pageWindowId, parsePageWindow } from "./windows.ts";
 
 /**
@@ -347,7 +347,7 @@ export class PageEngineLink implements ReaderLink {
     // A file input, or a dropzone (which walks as a button); the content script then requires the dropzone to hold its
     // own file input. No text field or link is ever sent a file's bytes.
     if (t.control.kind !== "file" && t.control.kind !== "button") return { verb: verbResult("axError", `'${t.control.name}' is a ${t.control.kind}, which takes no file`), page: null };
-    const file = files.read(taskId);
+    const file = files.read(taskId, ConfirmedFiles.target(windowId, key));
     if ("refused" in file) return { verb: verbResult("notAllowed", file.refused), page: null };
     const verb: PageVerb = { kind: "pageAttachFile", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId, file };
     const a = await this.session.command(verb, SLOW_VERB_TIMEOUT_MS);

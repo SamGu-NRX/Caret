@@ -62,9 +62,10 @@ public struct FileConfirmReply: Decodable, Equatable, Sendable {
         guard c.contains(.file), c.contains(.says) else { throw ProtocolError("fileConfirmReply needs file and says; send null instead") }
         file = try c.decodeIfPresent(File.self, forKey: .file)
         says = try c.decodeIfPresent(String.self, forKey: .says)
-        guard (outcome == .confirmed) == (file != nil && says == nil) else {
-            throw ProtocolError("confirmed carries the file and no sentence; refused carries a sentence and no file")
-        }
+        let fits = outcome == .confirmed ? file != nil && says == nil : file == nil && says != nil
+        guard fits else { throw ProtocolError("confirmed carries the file and no sentence; refused carries a sentence and no file") }
+        if let f = file, f.name.isEmpty || f.size < 0 { throw ProtocolError("a confirmed file has a name and a size of 0 or more") }
+        if let s = says, !(1...400).contains(s.count) { throw ProtocolError("says is 1 to 400 characters") }
     }
 }
 

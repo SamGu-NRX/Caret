@@ -904,7 +904,10 @@ export const FileConfirmReply = z
     file: z.object({ name: z.string().min(1), size: z.number().int().nonnegative() }).nullable(),
     says: z.string().min(1).max(400).nullable(),
   })
-  .refine((m) => (m.outcome === "confirmed") === (m.file !== null && m.says === null), { message: "confirmed carries the file and no sentence; refused carries a sentence and no file", path: ["outcome"] });
+  .refine((m) => (m.outcome === "confirmed" ? m.file !== null && m.says === null : m.file === null && m.says !== null), {
+    message: "confirmed carries the file and no sentence; refused carries a sentence and no file",
+    path: ["outcome"],
+  });
 export type FileConfirmReply = z.infer<typeof FileConfirmReply>;
 
 export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm]);

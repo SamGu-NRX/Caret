@@ -38,6 +38,18 @@ describe("host.ndjson", () => {
     const before = { ...refusal, error: { code: refusal.error.code, detail: refusal.error.detail } };
     expect(HelperMessage.safeParse(before).success).toBe(true);
     expect(HelperMessage.safeParse({ ...refusal, error: { ...refusal.error, says: "" } }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...refusal, error: { ...refusal.error, says: null } }).success).toBe(false);
+  });
+
+  it("refuses a file reply that does not say what it says, and an attach out of shape (review #4)", () => {
+    const yes = lines[7] as Record<string, unknown>;
+    const no = lines[8] as Record<string, unknown>;
+    expect(HelperMessage.safeParse({ ...no, says: null }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...yes, file: null }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...yes, says: "x" }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...yes, file: { name: "a.pdf", size: -1 } }).success).toBe(false);
+    const attach = lines[5] as { attach: Record<string, unknown> };
+    for (const bad of [{ step: -1 }, { field: "" }, { wants: "" }]) expect(HelperMessage.safeParse({ ...attach, attach: { ...attach.attach, ...bad } }).success, JSON.stringify(bad)).toBe(false);
   });
 
   it("names no press for an Ask that only hands over controls, and marks each control yours", () => {

@@ -165,6 +165,17 @@ describe("the confirmed file's run (helper, executor, page engine)", () => {
     expect(progress(unseen.published, unseen.offerKey).find((m) => m.phase === "stopped")?.detail).toContain("does not show the attached file");
   });
 
+  it("never lets another run under the offer's key take the confirmed file (review #1)", async () => {
+    const { helper, sent, offerKey } = await setUp();
+    const path = join(dir, "Resume.pdf");
+    writeFileSync(path, "pdf");
+    helper.handleFileConfirm({ type: "fileConfirm", v: PROTOCOL_VERSION, requestId: "f1", at: 2, taskId: offerKey, path });
+    const other = { id: "x", title: "x", slots: {}, steps: [{ says: "x", end: { kind: "fileAttached" as const, window: { bundleId: chrome.bundleId, title: "Apply: Synthetic Role" }, target: { key: "f0/form[apply]/textbox:email~0", describe: "email" }, wants: "your resume" } }] };
+    expect(await helper.handleTask({ type: "runPlan", v: PROTOCOL_VERSION, taskId: offerKey, plan: other, slots: {} })).toBeNull();
+    expect(verbs(sent).filter((v) => v.kind === "pageAttachFile")).toEqual([]);
+    expect(helper.files.confirmed(offerKey)).toEqual({ name: "Resume.pdf", size: 3 });
+  });
+
   it("refuses a confirmation for no plan that attaches, and a file it cannot read, in the user's words", async () => {
     const { helper, offerKey } = await setUp();
     const none = helper.handleFileConfirm({ type: "fileConfirm", v: PROTOCOL_VERSION, requestId: "f1", at: 2, taskId: "plan-x", path: join(dir, "a.pdf") });

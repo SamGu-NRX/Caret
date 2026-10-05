@@ -90,6 +90,13 @@ public struct PlanProposal: Codable, Equatable, Sendable {
         public var field: String
         public var wants: String
         public init(step: Int, field: String, wants: String) { self.step = step; self.field = field; self.wants = wants }
+        enum CodingKeys: String, CodingKey { case step, field, wants }
+        /// protocol.ts: step a non-negative integer, field non-empty, wants 1 to 80 characters.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            step = try c.decode(Int.self, forKey: .step); field = try c.decode(String.self, forKey: .field); wants = try c.decode(String.self, forKey: .wants)
+            guard step >= 0, !field.isEmpty, (1...80).contains(wants.count) else { throw ProtocolError("attach needs step >= 0, a field and 1 to 80 characters of wants") }
+        }
     }
     public struct Failure: Codable, Equatable, Sendable {
         public var code: ErrorCode
@@ -98,6 +105,14 @@ public struct PlanProposal: Codable, Equatable, Sendable {
         /// before H5; omitted from the encoding when nil, as protocol.ts's optional is.
         public var says: String?
         public init(code: ErrorCode, detail: String, says: String? = nil) { self.code = code; self.detail = detail; self.says = says }
+        enum CodingKeys: String, CodingKey { case code, detail, says }
+        /// protocol.ts: `says` is optional (absent, never null) and 1 to 400 characters.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            code = try c.decode(ErrorCode.self, forKey: .code); detail = try c.decode(String.self, forKey: .detail)
+            says = try c.decodeOptional(String.self, forKey: .says)
+            if let s = says, !(1...400).contains(s.count) { throw ProtocolError("says is 1 to 400 characters") }
+        }
     }
 
     public var requestId: String

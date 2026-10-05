@@ -245,8 +245,22 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(yes.outcome, .confirmed)
         XCTAssertEqual(yes.file, FileConfirmReply.File(name: "Resume.pdf", size: 48213))
         XCTAssertEqual(no.says, "Caret couldn't read that file, so it attached nothing. Choose another one.")
-        let mixed = #"{"type":"fileConfirmReply","v":1,"requestId":"f","taskId":"t","outcome":"confirmed","file":null,"says":null}"#
-        XCTAssertThrowsError(try HelperInbound.decode(Data(mixed.utf8)))
+        // What protocol.ts refuses is refused here too (review #4).
+        for bad in [
+            #"{"type":"fileConfirmReply","v":1,"requestId":"f","taskId":"t","outcome":"confirmed","file":null,"says":null}"#,
+            #"{"type":"fileConfirmReply","v":1,"requestId":"f","taskId":"t","outcome":"refused","file":null,"says":null}"#,
+            #"{"type":"fileConfirmReply","v":1,"requestId":"f","taskId":"t","outcome":"confirmed","file":{"name":"a.pdf","size":-1},"says":null}"#,
+            #"{"type":"fileConfirmReply","v":1,"requestId":"f","taskId":"t","outcome":"refused","file":null,"says":""}"#,
+        ] { XCTAssertThrowsError(try HelperInbound.decode(Data(bad.utf8)), bad) }
+        var proposal = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.line(5)) as? [String: Any])
+        for bad: [String: Any] in [["step": -1, "field": "F", "wants": "w"], ["step": 0, "field": "", "wants": "w"], ["step": 0, "field": "F", "wants": ""]] {
+            proposal["attach"] = bad
+            XCTAssertThrowsError(try HelperInbound.decode(JSONSerialization.data(withJSONObject: proposal)), "\(bad)")
+        }
+        let refusal = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try String(contentsOf: Self.url, encoding: .utf8).split(separator: "\n")[0].utf8)) as? [String: Any])
+        var nullSays = refusal
+        nullSays["error"] = ["code": "unsupportedStep", "detail": "d", "says": NSNull()]
+        XCTAssertThrowsError(try HelperInbound.decode(JSONSerialization.data(withJSONObject: nullSays)), "says is optional, never null")
     }
 
     /// The card proposes the file it found, with when it was edited; with none, attaching is the user's.
@@ -309,6 +323,45 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(late.phase, .failed(AskCopy.fileUnanswered))
         XCTAssertFalse(lateTake().contains { if case .accept = $0 { return true } else { return false } })
         _ = clock
+    }
+
+    private func progress(_ phase: String, step: Int, detail: String) throws -> TaskProgress {
+        let json = #"{"type":"taskProgress","v":1,"at":1,"taskId":"plan-8-ask-8","planId":"plan-8-ask-8","step":\#(step),"steps":1,"says":"Resume/CV holds your resume","detail":"\#(detail)","phase":"\#(phase)"}"#
+        guard case .taskProgress(let p) = try HelperInbound.decode(Data(json.utf8)) else { throw Unexpected("not progress") }
+        return p
+    }
+
+    /// Review #2: the run hands the attach back (the file changed after Tab). The card leaves the
+    /// attach to do, says so, and counts no field filled.
+    func testAnAttachHandedBackStaysToDoAndSaysSo() throws {
+        let (ask, _, _) = try asked(file: resume)
+        ask.tab()
+        var yes = try FileConfirmReply.decode(Self.line(7))
+        yes.requestId = "file-2"
+        ask.receive(yes)
+        ask.receive(try progress("handoff", step: 0, detail: "Caret did not attach your resume: the file changed after you confirmed it; attaching it is yours"))
+        guard case .ended(let card, let line) = ask.phase else { return XCTFail("\(ask.phase)") }
+        XCTAssertEqual(card.steps.map(\.state), [.pending])
+        XCTAssertEqual(line.text, "Your turn: attach Resume.pdf to Resume/CV in Google Chrome. Caret didn't attach it.")
+        XCTAssertEqual(AskCaret.filled(card), 0)
+    }
+
+    /// Review #3: six writes, the card lists five and "1 more", then the attach. The hidden sixth write
+    /// maps to no row, and the attach step to its own.
+    func testAHiddenWriteMapsToNoRowAndTheAttachToItsOwn() {
+        let writes = (0..<5).map { AskCaret.Step(text: "w\($0)", field: "F\($0)") }
+        let card = AskCaret.Card(
+            title: "t", app: "Google Chrome", steps: writes + [AskCaret.Step(text: "Resume/CV: Resume.pdf", field: "Resume/CV")], more: 1, action: "Fill 6 fields and attach",
+            offerKey: "k", actionId: "run", writes: 6, press: nil, attach: .init(field: "Resume/CV", wants: "your resume", file: resume, step: 6)
+        )
+        XCTAssertEqual(AskCaret.cardIndex(ofPlanStep: 4, in: card), 4)
+        XCTAssertNil(AskCaret.cardIndex(ofPlanStep: 5, in: card), "the write the card does not list")
+        XCTAssertEqual(AskCaret.cardIndex(ofPlanStep: 6, in: card), 5, "the attach")
+        // An attach the plan puts first: the writes after it count from 0.
+        var first = card
+        first.attach?.step = 0
+        XCTAssertEqual(AskCaret.cardIndex(ofPlanStep: 0, in: first), 5)
+        XCTAssertEqual(AskCaret.cardIndex(ofPlanStep: 1, in: first), 0)
     }
 
     /// With no likely file, Tab runs the plan as it is, and the run hands the attach to the user.

@@ -54,7 +54,24 @@ public final class AskCaret {
     /// The fields the card shows written: its done write steps, each field once (A17 review: two
     /// writes to one field are one field filled).
     static func filled(_ card: Card) -> Int {
-        Set(card.steps.filter { !$0.yours && $0.state == .done }.map { $0.field ?? $0.text }).count
+        // An attached file is not a field filled (H5 review #2).
+        Set(card.steps.filter { !$0.yours && $0.state == .done && !isAttach($0, card) }.map { $0.field ?? $0.text }).count
+    }
+
+    static func isAttach(_ step: Step, _ card: Card) -> Bool {
+        card.attach.map { $0.field == step.field } ?? false
+    }
+
+    /// Where a hand-off ends the card: the row it stopped at (a field handed over, or the attach step
+    /// handed back, H5 review #2), and the line. Rows before that are done; that row stays to do.
+    static func handoff(_ progress: TaskProgress, card: Card) -> (at: Int?, line: WorkLine) {
+        if let a = card.attach, progress.step == a.step, let row = card.steps.firstIndex(where: { isAttach($0, card) }) {
+            let line = progress.blocked.map(WorkLines.blocked) ?? AskCopy.attachHandedBack(a, app: card.app, filled: filled(card))
+            return (row, line)
+        }
+        let field = HandedField.parse(progress.detail)
+        let at = field == nil ? nil : progress.step.flatMap { cardIndex(ofPlanStep: $0, in: card) }
+        return (at, progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: filled(card), field: field))
     }
 
     /// The helper's proposal, reduced to what the card shows and what Tab sends.
@@ -83,7 +100,9 @@ public final class AskCaret {
             public var field: String
             public var wants: String
             public var file: ProposedFile?
-            public init(field: String, wants: String, file: ProposedFile?) { self.field = field; self.wants = wants; self.file = file }
+            /// The plan step that attaches it (`PlanProposal.Attach.step`).
+            public var step: Int
+            public init(field: String, wants: String, file: ProposedFile?, step: Int = 0) { self.field = field; self.wants = wants; self.file = file; self.step = step }
         }
 
         public init(title: String, app: String, steps: [Step], more: Int, action: String, offerKey: String, actionId: String, writes: Int, press: String?, pid: Int32? = nil, attach: Attach? = nil) {
@@ -405,7 +424,7 @@ public final class AskCaret {
             case .paused:
                 corrected = WorkLines.stoppedByYou(next: progress.step ?? nextStep, of: progress.steps > 0 ? progress.steps : steps)
             case .handoff:
-                corrected = progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: Self.filled(card), field: HandedField.parse(progress.detail))
+                corrected = Self.handoff(progress, card: card).line
             default:
                 return
             }
@@ -444,14 +463,12 @@ public final class AskCaret {
             let reason = progress.stopReason ?? .error
             settle(.ended(card, WorkLines.stopped(app: card.app, reason: reason, next: progress.step ?? nextStep, steps: steps, fillFilled: nil)))
         case .handoff:
-            let field = HandedField.parse(progress.detail)
-            // A press is handed over after every write; a field handed over (B20, B23) is the step
-            // the run stopped at, so only the writes before it are done.
-            let handedAt = field == nil ? nil : progress.step.flatMap { Self.cardIndex(ofPlanStep: $0, in: card) }
+            // A press is handed over after every write; a field handed over (B20, B23), or an attach
+            // handed back, is the step the run stopped at, so only the rows before it are done.
+            let handedAt = Self.handoff(progress, card: card).at
             for i in card.steps.indices where !card.steps[i].yours && handedAt.map({ i < $0 }) ?? true { card.steps[i].state = .done }
             if let handedAt { card.steps[handedAt].state = .pending }
-            let line = progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: Self.filled(card), field: field)
-            settle(.ended(card, line))
+            settle(.ended(card, Self.handoff(progress, card: card).line))
         case .paused:
             for i in card.steps.indices where card.steps[i].state == .running { card.steps[i].state = .pending }
             settle(.ended(card, AskCopy.paused(app: card.app)))
@@ -526,7 +543,7 @@ public final class AskCaret {
         var attach: Card.Attach?
         var attachRow = 0
         if let a = proposal.attach {
-            attach = Card.Attach(field: a.field, wants: a.wants, file: file)
+            attach = Card.Attach(field: a.field, wants: a.wants, file: file, step: a.step)
             if let i = steps.firstIndex(where: { $0.field == a.field }) {
                 steps.remove(at: i)
                 fields.removeAll { $0 == a.field }
@@ -554,9 +571,12 @@ public final class AskCaret {
     /// every write in the plan (helper/src/planner/validate.ts, stepAfterHandoff). Nil for a write
     /// the card did not list.
     static func cardIndex(ofPlanStep step: Int, in card: Card) -> Int? {
-        let listed = card.steps.filter { !$0.yours }.count
-        if step < listed { return step }
-        if step == card.writes, let last = card.steps.indices.last, card.steps[last].yours { return last }
+        // H5: the attach step has a row of its own wherever the plan puts it; the writes around it count
+        // as if it were not there, and a write the card does not list maps to no row (review #3).
+        if let a = card.attach, step == a.step { return card.steps.firstIndex { isAttach($0, card) } }
+        let write = card.attach.map { step > $0.step ? step - 1 : step } ?? step
+        if write < card.writes - card.more { return write }
+        if write == card.writes, let last = card.steps.indices.last, card.steps[last].yours { return last }
         return nil
     }
 
@@ -709,6 +729,13 @@ public enum AskCopy {
         let names = fields.map(fieldName)
         let filled = writes == 1 && names.count == 1 && !names[0].isEmpty ? names[0] : Captions.fields(writes)
         return "Fill \(filled) and attach \(what) in \(app)"
+    }
+
+    /// The run handed the attach back (no file confirmed, or the file changed after Tab).
+    public static func attachHandedBack(_ a: AskCaret.Card.Attach, app: String, filled: Int) -> WorkLine {
+        let turn = "Your turn: attach \(a.file?.name ?? a.wants) to \(fieldName(a.field)) in \(app). Caret didn't attach it."
+        let caption = filled > 0 ? "Filled \(Captions.fields(filled)). \(turn)" : turn
+        return WorkLine(LineContent(figure: .needsYou, text: caption, emphasis: .plain), text: caption)
     }
 
     /// No answer came to the file Tab confirmed.
