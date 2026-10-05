@@ -25,6 +25,7 @@ import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
 import { isDerived, isFilled } from "./gates.ts";
 import { sourceHolds } from "../offers/fill-popup.ts";
+import { memoryValue, parseMemoryRef } from "../fill/fill.ts";
 import { pageInputKeys } from "./page-planner.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { formControls } from "../fill/controls.ts";
@@ -140,6 +141,11 @@ export interface GoalRunDeps {
    * (engines/page-link.ts act), so the goal reads the page once before it ends, to see what its writes revealed.
    */
   walk?: (windowId: string) => Promise<void>;
+  /**
+   * P2: an About entry as a fill may use it now (helper.ts aboutNow), or null when it is gone, paused or not typed. A
+   * page goal's value from memory must still be that entry's under the same label before it runs, as a Fill all's is.
+   */
+  aboutNow?: (id: string) => { value: string; label: string } | null;
 }
 
 const SAYS: Record<GoalStopReason, string> = {
@@ -335,6 +341,13 @@ export class GoalRuns {
         if (reply === undefined || src === undefined || !senderOf(reply.window.title, basisText(src), v.text)) return { reason: "sourceChanged", says: `'${v.text}' is no longer the sender of the message you're answering` };
       }
       if (v.memory !== null && !this.deps.memoryHolds(v.memory, v.text)) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
+      // A page goal's value from memory (P2): the entry must still give it under the label fill offered it by
+      // (offers/fill-popup.ts recheckFill holds a Fill all to the same); no way to read the entry is no entry.
+      if (v.memory !== null && v.fill?.memoryLabel !== undefined) {
+        const ref = parseMemoryRef(v.memory);
+        const now = this.deps.aboutNow?.(ref.id) ?? null;
+        if (now === null || memoryValue(now.value, ref.part) !== v.text || now.label !== v.fill.memoryLabel) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
+      }
       if (v.source === null) continue;
       if (!this.sourceShows(v)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
     }
@@ -468,13 +481,30 @@ export class GoalRuns {
       this.track(
         (async () => {
           await walk(page.windowId).catch(() => undefined);
-          this.finish(run, "done");
+          this.finish(run, "done", this.notHeld(run));
           await this.afterReveal(run, page);
         })(),
       );
       return;
     }
     this.finish(run, "done");
+  }
+
+  /**
+   * A page goal's verified writes its page no longer shows as written, read from the walk at its end (P2 review): the
+   * page link takes a write's own read-back instead of walking after it (engines/page-link.ts), so a page that changed
+   * the value later (its own script, another injector) is seen here, and the goal is not done.
+   */
+  private notHeld(run: Run): LeftItem[] {
+    const out: LeftItem[] = [];
+    for (const s of run.plan.segments.flatMap((x) => x.steps)) {
+      if (s.kind !== "write" || s.writes === null || s.target.domain.kind !== "window") continue;
+      if (!run.cursor.receipts.some((r) => r.step === s.index && r.status === "verified")) continue;
+      const n = this.deps.model.windows.get(s.target.domain.windowId)?.nodes.get(s.target.key);
+      if (n === undefined || (n.value ?? "") === s.writes) continue;
+      out.push({ windowId: s.target.domain.windowId, key: s.target.key, label: s.target.label, why: "planned", says: `'${s.target.label}' no longer holds what Caret wrote` });
+    }
+    return out;
   }
 
   /**
@@ -506,12 +536,12 @@ export class GoalRuns {
    * planned ("handoff"). What is still left then decides the outcome (G2): anything besides the recipient makes it
    * partial, a recipient alone makes it a hand-off, and only nothing left is done.
    */
-  private finish(run: Run, reached: "done" | "handoff"): void {
+  private finish(run: Run, reached: "done" | "handoff", notHeld: readonly LeftItem[] = []): void {
     this.endTask(run);
     run.state = "finished";
     const verified = run.cursor.receipts.filter((r) => r.status === "verified").length;
     const skipped = run.cursor.receipts.filter((r) => r.status === "alreadyTrue").length;
-    const left = this.leftNow(run);
+    const left = [...notHeld, ...this.leftNow(run).filter((l) => !notHeld.some((x) => x.windowId === l.windowId && x.key === l.key))];
     const outcome = left.some((l) => l.why !== "recipient") ? "partial" : left.length > 0 ? "handoff" : reached;
     const handoff = reached === "handoff" ? run.plan.segments.flatMap((x) => x.steps).find((x) => x.kind === "handoff") : undefined;
     const tally = `${verified}${skipped > 0 ? `, ${skipped} already so` : ""}`;

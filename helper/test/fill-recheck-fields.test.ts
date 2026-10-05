@@ -33,10 +33,12 @@ describe("sourceHolds: a span inside a longer source line (P2 decision)", () => 
     expect(sourceHolds(source("Moving from: Oakland, California, United States"), "te/n", "United States", "Location", "combobox")).toBe(false);
   });
 
-  it("passes an unlabelled control's value only when code derives exactly that part from the line again", () => {
+  it("passes an unlabelled control's value only when code derives exactly that part from the whole line again", () => {
     expect(sourceHolds(source("Oakland, California, United States"), "te/n", "United States", null, "combobox")).toBe(true);
-    expect(sourceHolds(source(LOCATION), "te/n", "California", null, "select")).toBe(true);
     expect(sourceHolds(source("12 Harbor Way, Oakland, CA 94607"), "te/n", "94607", null, "select")).toBe(true);
+    // A line that gained a label is not the line the value was read from (P2 review), whatever the label says.
+    expect(sourceHolds(source("Do not use: Oakland, California, United States"), "te/n", "United States", null, "combobox")).toBe(false);
+    expect(sourceHolds(source(LOCATION), "te/n", "California", null, "select")).toBe(false);
   });
 
   it("refuses a short answer inside a sentence that now says otherwise, and a span that is no derived part", () => {

@@ -87,12 +87,10 @@ describe("a select whose chosen option has an empty value (I2's queue)", () => {
     const key = "f0/select:how did you hear about us?~e2";
     const r = await link.run({ kind: "write", pid: browser.pid, windowId: WIN, key, role: "AXPopUpButton", attribute: "value", expect: "", value: "Referral", taskId: "t1" });
     expect(r.outcome).toBe("ok");
-    // The undo of a first pick restores "" (the executor's before), which names the placeholder option. The pick
-    // patched the model, so the undo expects the select to show Referral.
-    const u = await link.run({ kind: "write", pid: browser.pid, windowId: WIN, key, role: "AXPopUpButton", attribute: "value", expect: "Referral", value: "", taskId: "t1" });
+    // The undo of a first pick restores "" (the executor's before), which names the placeholder option.
+    const u = await link.run({ kind: "write", pid: browser.pid, windowId: WIN, key, role: "AXPopUpButton", attribute: "value", expect: "", value: "", taskId: "t1" });
     expect(u.outcome).toBe("ok");
-    link.cancelTrailingWalks();
-    expect(verbs().filter((v) => v.kind === "pageSelect")).toEqual([expect.objectContaining({ expect: "", value: "Referral" }), expect.objectContaining({ expect: "Referral", value: "" })]);
+    expect(verbs().filter((v) => v.kind === "pageSelect")).toEqual([expect.objectContaining({ expect: "", value: "Referral" }), expect.objectContaining({ expect: "", value: "" })]);
   });
 });
 

@@ -514,7 +514,7 @@ export class PageEngineLink implements ReaderLink {
   /**
    * Acts, then brings the model up to date before the executor reads the answer.
    *
-   * A text write, native select or tick/radio check the page verified (ok or alreadyTrue) is not followed by a walk:
+   * A text write or tick/radio check the page verified (ok or alreadyTrue) is not followed by a walk:
    * the model is patched for that one control from what the verb set and the page read back (patched()). P1 measured
    * about 110 ms per re-walk on Lever against about 1 ms for the hop (~/.caret-run/evidence/screen/p1/loop-canned/
    * page-loop.md), and the executor walks the window again at the start of its next step anyway, so each write paid
@@ -523,7 +523,9 @@ export class PageEngineLink implements ReaderLink {
    * step's refresh walk, and after the last such act by one trailing walk (TRAILING_WALK_MS).
    *
    * Every other act re-walks the tab, as before: a combobox or Yes/No pick and an attach change more than one value,
-   * and a failed or refused act may have left anything. A press after which the page left is answered at once, with no
+   * and a failed or refused act may have left anything. So does a native select (P2 review): the page reads back the
+   * option's value, not the label the model shows, and a page that relabels the chosen option would have Caret verify
+   * a label the walk before the act showed. A press after which the page left is answered at once, with no
    * walk: the run stops on it, and a page on its way out may not answer a walk before the command times out (B28 review).
    */
   private async act(verb: PageVerb, tabId: number): Promise<VerbResult> {
@@ -552,12 +554,12 @@ export class PageEngineLink implements ReaderLink {
   }
 
   /**
-   * The tab's last walk with the one control a verified write, select or check set, or null when the act does not
+   * The tab's last walk with the one control a verified write or check set, or null when the act does not
    * qualify (see act()) or the control is not in that walk. A new snapshot: the stored one is never changed in place.
    */
   private patched(verb: PageVerb, r: PageResult): PageSnapshot | null {
     if (r.outcome !== "ok" && r.outcome !== "alreadyTrue") return null;
-    if (verb.kind !== "pageWrite" && verb.kind !== "pageSelect" && verb.kind !== "pageSetChecked") return null;
+    if (verb.kind !== "pageWrite" && verb.kind !== "pageSetChecked") return null;
     const last = this.session.tabs.get(verb.tabId);
     if (last === undefined) return null;
     const s = structuredClone(last);
@@ -571,11 +573,6 @@ export class PageEngineLink implements ReaderLink {
       case "pageWrite":
         // ok means both readings hold the value; alreadyTrue, that the field held it already.
         c.value = r.readings?.afterBlur ?? verb.value;
-        return s;
-      case "pageSelect":
-        // The verb names the option by value (the model shows its label, toWindowSnapshot).
-        if (c.options?.some((o) => o.value === verb.value) !== true) return null;
-        c.options = c.options.map((o) => ({ ...o, selected: o.value === verb.value }));
         return s;
       case "pageSetChecked":
         if (c.kind === "checkbox") {

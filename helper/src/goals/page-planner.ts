@@ -255,7 +255,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       event: null,
       draft: null,
       owner: f.memory !== null ? "user" : null,
-      fill: { span: f.span, context: f.context, control: f.control },
+      fill: { span: f.span, context: f.context, control: f.control, ...(f.memory === null ? {} : { memoryLabel: f.memory.label }) },
     };
     targets.set(t.ref, t);
     values.set(v.ref, v);

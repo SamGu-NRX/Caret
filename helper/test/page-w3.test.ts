@@ -220,14 +220,11 @@ describe("W3 page findings, helper side", () => {
       const from = page.verbs.length;
       const r = await helper.executor.run("t1", plan([step(KEY.first, "Ada"), step(KEY.country, "Canada")]), {}, undefined, { grant: true });
       expect(r.outcome).toBe("done");
-      // Before the deferred walk each write was followed by a walk of its own: seven commands, not five.
-      expect(page.verbs.slice(from).map((v) => v.kind)).toEqual(["pageWalk", "pageWalk", "pageWrite", "pageWalk", "pageSelect"]);
+      // Before the deferred walk each write was followed by a walk of its own: seven commands, not six. The text write is
+      // patched; the select is still walked after (P2 review: the page reads back its value, not its label).
+      expect(page.verbs.slice(from).map((v) => v.kind)).toEqual(["pageWalk", "pageWalk", "pageWrite", "pageWalk", "pageSelect", "pageWalk"]);
       expect(helper.executor.ledger("t1")).toEqual([expect.objectContaining({ key: KEY.first, after: "Ada" }), expect.objectContaining({ key: KEY.country, after: "Canada" })]);
-      expect(helper.model.windows.get(WIN)?.nodes.get(KEY.country)?.value).toBe("Canada");
-      // One trailing walk follows the last write, and the page it reads agrees with the patched model.
-      await vi.waitFor(() => expect(page.verbs.slice(from).map((v) => v.kind)).toEqual(["pageWalk", "pageWalk", "pageWrite", "pageWalk", "pageSelect", "pageWalk"]));
-      await vi.waitFor(() => expect(helper.model.windows.get(WIN)?.nodes.get(KEY.first)?.value).toBe("Ada"));
-      expect(helper.model.windows.get(WIN)?.nodes.get(KEY.country)?.value).toBe("Canada");
+      expect([helper.model.windows.get(WIN)?.nodes.get(KEY.first)?.value, helper.model.windows.get(WIN)?.nodes.get(KEY.country)?.value]).toEqual(["Ada", "Canada"]);
     });
   });
 

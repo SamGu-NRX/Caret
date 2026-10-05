@@ -550,6 +550,7 @@ export class Helper {
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
       replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed) : this.replanPage(r.goalId, r.instruction, r.page, r.owed)),
+      aboutNow: (id) => this.aboutNow(id),
       // P2: a page goal's one read of its page before it ends (engines/page-link.ts no longer walks after each write).
       walk: async (windowId) => {
         const w = this.model.windows.get(windowId);

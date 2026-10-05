@@ -103,14 +103,13 @@ describe("a verified write patches the model instead of walking the tab", () => 
     r.link.cancelTrailingWalks();
   });
 
-  it("select: the option with the verb's value is the only one selected, and the model shows its label", async () => {
+  // P2 review: the page reads back a select's option value, not the label the model shows; a page that relabels the
+  // chosen option would have Caret verify the label of the walk before the act. So a select is walked after, as before.
+  it("select: walked after the pick, not patched, so the model shows the label the page shows now", async () => {
     const r = rig();
     const n = await walked(r);
     expect((await r.write(KEY.country, "AXPopUpButton", "", "Canada")).outcome).toBe("ok");
-    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageSelect"]);
-    expect(r.tab("e2")?.options).toEqual([{ value: "", label: "Choose one", selected: false }, { value: "ca", label: "Canada", selected: true }, { value: "us", label: "United States", selected: false }]);
-    expect(r.node(KEY.country)?.value).toBe("Canada");
-    expect(r.changes).toEqual([expect.objectContaining({ kind: "value", key: KEY.country, before: "", after: "Canada" })]);
+    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageSelect", "pageWalk"]);
     r.link.cancelTrailingWalks();
   });
 
@@ -188,11 +187,11 @@ describe("the trailing walk", () => {
     vi.advanceTimersByTime(TRAILING_WALK_MS - 10);
     await r.write(KEY.agree, "AXCheckBox", "", PAGE_CHECKED);
     vi.advanceTimersByTime(TRAILING_WALK_MS - 10);
-    await r.write(KEY.country, "AXPopUpButton", "", "Canada");
+    await r.write(KEY.group, "AXGroup", "No", "Yes");
     vi.advanceTimersByTime(TRAILING_WALK_MS - 1);
-    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite", "pageSetChecked", "pageSelect"]);
+    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite", "pageSetChecked", "pageSetChecked"]);
     vi.advanceTimersByTime(1);
-    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite", "pageSetChecked", "pageSelect", "pageWalk"]);
+    expect(r.verbs().slice(n).map((v) => v.kind)).toEqual(["pageWrite", "pageSetChecked", "pageSetChecked", "pageWalk"]);
     await vi.waitFor(() => expect(r.timings.at(-1)).toMatchObject({ verb: "pageWalk", control: null, outcome: "ok", extensionMs: 9, rewalk: null }));
     vi.advanceTimersByTime(10 * TRAILING_WALK_MS);
     expect(r.verbs().slice(n).filter((v) => v.kind === "pageWalk")).toHaveLength(1);

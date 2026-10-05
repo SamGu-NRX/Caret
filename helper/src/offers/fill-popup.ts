@@ -205,21 +205,18 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
 }
 
 /**
- * Whether a part code derives from a line is exactly `span` (P2): a place's city, state or country (derive.ts
- * splitPlace), or an address's street, unit, city, state or ZIP (splitAddress), read from the whole line or from what
- * follows its "Label:". The derivation fill made is made again, so a line that no longer says the place is not enough
- * however much of it is left ("United States" in "Location: Oakland, California, United States (in the Bay Area)").
+ * Whether a part code derives from a whole unlabelled line is exactly `span` (P2): a place's city, state or country
+ * (derive.ts splitPlace), or an address's street, unit, city, state or ZIP (splitAddress). The derivation fill made is
+ * made again on the line as it reads now, so a line that is no longer the place is not enough however much of it is
+ * left. A line that gained a label is not this line: "Do not use: Oakland, California, United States" passes nothing
+ * (P2 review). A value from a labelled line is checked by its label instead (sourceHolds).
  */
 function derivesSpan(line: string, span: string): boolean {
   const t = line.trim();
-  const after = /^[^:\n]{1,40}:\s*(.+)$/u.exec(t)?.[1];
-  for (const x of after === undefined ? [t] : [t, after]) {
-    const place = splitPlace(x);
-    if (place !== null && (place.city === span || place.state === span || place.country === span)) return true;
-    const address = splitAddress(x);
-    if (address !== null && Object.values(address).includes(span)) return true;
-  }
-  return false;
+  const place = splitPlace(t);
+  if (place !== null && (place.city === span || place.state === span || place.country === span)) return true;
+  const address = splitAddress(t);
+  return address !== null && Object.values(address).includes(span);
 }
 
 /**

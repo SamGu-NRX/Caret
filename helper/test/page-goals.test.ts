@@ -232,6 +232,36 @@ describe("a page goal's checks before and while it writes (P2)", () => {
     expect(r.page.verbs.filter((v) => v.kind !== "pageWalk")).toEqual([]);
   });
 
+  it("refuses a value from what the user told Caret once its entry is relabelled before Tab (P2 review)", async () => {
+    const r = await rig({ note: NOTE.replace("Email: robin@example.test\n", ""), picks: { ...PICKS, Email: "robin@mem.test" } });
+    const added = r.helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "m1", op: "add", kind: "about", fields: { label: "Email", value: "robin@mem.test", source: "typed" } });
+    const id = added.entries?.[0]?.id as string;
+    const preview = (await r.ask("fill out this form from my note")) as Segment;
+    expect(preview.steps.map((x) => x.says)).toContain("Email: robin@mem.test");
+    r.helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "m2", op: "edit", id, fields: { label: "Former email", value: "robin@mem.test" } });
+    expect(await r.accept(preview)).toBeNull();
+    await r.helper.goals.idle();
+    expect(goalMessages(r).find((m) => m.event === "stopped")).toMatchObject({ reason: "sourceChanged" });
+    expect(r.page.shown("e2")).toBe("");
+  });
+
+  it("is not done when the page changes a written value after its last write (P2 review: the final walk is read)", async () => {
+    const two = (): PageControl[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "email", "Email", { value: "" })];
+    const r = await rig({ controls: two });
+    r.page.onAct = (v, p) => {
+      // Caret's write is read back as written; then the page's own script changes the field before the next walk.
+      if (v.kind !== "pageWrite" || v.id !== "e2" || v.sameAs !== undefined) return null;
+      p.find("e2").value = "robin@";
+      return { outcome: "ok", detail: null, readings: { before: "", afterInput: v.value, afterBlur: v.value, invalid: false, error: null } };
+    };
+    const preview = (await r.ask("fill out this form from my note")) as Segment;
+    expect((await r.accept(preview))?.outcome).toBe("done");
+    await r.helper.goals.idle();
+    const finished = goalMessages(r).find((m): m is Finished => m.event === "finished");
+    expect(finished).toMatchObject({ outcome: "partial" });
+    expect(finished?.left[0]).toMatch(/'Email' no longer holds what Caret wrote/);
+  });
+
   it("drops a fill pick for a subject line, as every goal write is held to (code gates still run)", async () => {
     const withSubject = (): PageControl[] => [...mixedControls().slice(0, 2), c("e30", "text", "Subject", { value: "" })];
     const r = await rig({ controls: withSubject, note: `${NOTE}\nSubject: Hello there`, picks: { ...PICKS, Subject: "Hello there" } });

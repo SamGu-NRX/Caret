@@ -67,9 +67,11 @@ export interface ValueBinding {
    * P2: how fill read a value the page planner took from proposeFill (goals/page-planner.ts), which the source must still
    * show the same way right before the write (offers/fill-popup.ts sourceHolds): the span the pick came from, the label
    * of the "Label: value" line it was read from, and the control it was read for. `text` is then what the control takes
-   * (an option's name, a resolved date), which need not be a span of the source. Absent for every other value.
+   * (an option's name, a resolved date), which need not be a span of the source. `memoryLabel`: for a value from what
+   * the user told Caret, the entry's label then, which decided the fields it was offered to (fill/about.ts), so a
+   * renamed entry no longer stands behind it (P2 review). Absent for every other value.
    */
-  fill?: { span: string; context: string | null; control: string };
+  fill?: { span: string; context: string | null; control: string; memoryLabel?: string };
 }
 
 /** Everything a program's refs may stand for, kept on the host side of the sandbox. */
