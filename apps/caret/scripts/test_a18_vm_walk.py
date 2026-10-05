@@ -153,7 +153,8 @@ class WalkFocusLossTests(unittest.TestCase):
         import vm_results
         ok, line = vm_results.verdict(r)
         self.assertFalse(ok)
-        self.assertIn("mid 3 (key right 2: sent 1 of 2, focus app=361 element=361)", line)
+        # The focus owner is named by its process (whatever pid 361 is on this Mac, or "gone").
+        self.assertRegex(line, r"mid 3 \(key right 2: sent 1 of 2, focus app=361 element=361 \([^)]+\)\)")
 
     def test_focus_lost_once_is_retried_from_a_fresh_document(self):
         run = self.walk("once")

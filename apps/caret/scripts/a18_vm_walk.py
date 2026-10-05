@@ -87,8 +87,19 @@ class FocusLost(Exception):
     """fixture-keys refused to go on: another app or element took the keyboard focus."""
 
     def __init__(self, command, sent, of, focus):
+        focus = named(focus)
         super().__init__(f"{command}: sent {sent} of {of}; focus {focus}")
         self.command, self.sent, self.of, self.focus = command, sent, of, focus
+
+
+def named(focus):
+    """`app=355 element=355` with the process's name added, so an interruption says who took the
+    keyboard (H7b: pid 355 took it five times in one run and nothing said what it was)."""
+    m = re.match(r"app=(\d+)", focus or "")
+    if not m:
+        return focus
+    name = subprocess.run(["ps", "-o", "comm=", "-p", m.group(1)], capture_output=True, text=True).stdout.strip()
+    return f"{focus} ({name or 'gone'})"
 
 
 def cua(tool, args):
@@ -238,12 +249,19 @@ def inside(inner, outer, slack=1.0):
             and inner[0] + inner[2] <= outer[0] + outer[2] + slack and inner[1] + inner[3] <= outer[1] + outer[3] + slack)
 
 
-def value(pid, wid):
-    state = cua("get_window_state", {"pid": pid, "window_id": wid})
-    for e in state.get("elements", []):
-        if e.get("role") == "AXTextArea":
-            return e.get("value")
-    return None
+def value(pid):
+    """The app's focused field, read through Accessibility by a17-tool. Never cua-driver's
+    get_window_state, which captures the screen: in H7b's VM run its first call raised macOS's
+    "CuaDriver is requesting to bypass the system private window picker" alert, whose window
+    (UserNotificationCenter, layer 8) covered TextEdit's caret and held every later Tab offer."""
+    tool = os.environ.get("A17_TOOL")
+    if not tool:
+        raise RuntimeError("A17_TOOL is not set: the walk reads TextEdit's text with a17-tool value")
+    out = subprocess.run([tool, "value", str(pid)], capture_output=True, text=True)
+    try:
+        return json.loads(out.stdout).get("value")
+    except json.JSONDecodeError:
+        raise RuntimeError(f"a17-tool value: {out.stdout} {out.stderr}")
 
 
 def shot(name, pid, wid, panels=()):
@@ -488,7 +506,7 @@ def tab_case(name, before, expected, word, taken):
     keys(pid, "key", "opt-right" if word else "tab")
     time.sleep(0.8)
     after_state = host()
-    got = value(pid, wid)
+    got = value(pid)
     lead = expected[: len(expected) - len(expected.lstrip())]
     want = before + (lead + expected.split()[0] if word else expected)
     tap0, tap1 = s.get("tap", {}), after_state.get("tap", {})
