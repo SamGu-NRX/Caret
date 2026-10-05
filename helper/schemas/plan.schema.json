@@ -414,6 +414,68 @@
                     "properties": {
                       "kind": {
                         "type": "string",
+                        "const": "fileAttached"
+                      },
+                      "window": {
+                        "type": "object",
+                        "properties": {
+                          "bundleId": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "titleStartsWith": {
+                            "type": "string"
+                          },
+                          "number": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "target": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "role": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "describe": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "describe"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "wants": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 80
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "window",
+                      "target",
+                      "wants"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
                         "const": "calendarEvent"
                       },
                       "calendar": {
@@ -889,6 +951,68 @@
             "window",
             "target",
             "why"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "fileAttached"
+            },
+            "window": {
+              "type": "object",
+              "properties": {
+                "bundleId": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "titleStartsWith": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "target": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "describe": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "describe"
+              ],
+              "additionalProperties": false
+            },
+            "wants": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          },
+          "required": [
+            "kind",
+            "window",
+            "target",
+            "wants"
           ],
           "additionalProperties": false
         },

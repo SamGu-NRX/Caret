@@ -245,6 +245,37 @@ describe("fill pop-up", () => {
     expect(HelperMessage.safeParse(msg).success).toBe(true);
   });
 
+  it("lists a control Caret never writes as a row the user sets, after the rows it fills (H5)", () => {
+    const m = desk();
+    const size: FillField = {
+      ...nameField,
+      key: FK("popupbutton:pizza size~0"),
+      control: "select",
+      value: null,
+      source: null,
+      choice: "c2",
+      handoff: { value: "Large", display: "Large", source: { pid: 1, bundleId: "b", kind: null, ...mail, nodeKey: MK("statictext:large pizza~0") }, memory: null },
+    };
+    const msg = buildFillPopup(m, proposal([nameField, phoneField]) as GroundedProposal, [size]);
+    expect(msg.spec.blocks.map((b) => b.type)).toEqual(["header", "source", "fields", "fields", "actions"]);
+    expect(msg.spec.blocks[0]).toMatchObject({ title: { text: "Fill 2 fields" } });
+    expect(msg.spec.blocks[3]).toEqual({
+      type: "fields",
+      rows: [
+        {
+          destination: { text: "Field", ref: { rule: "fieldLabel", derived: [{ node: `${FORM}/${FK("popupbutton:pizza size~0")}` }] } },
+          value: { text: "Large", ref: { rule: "handoffValue", derived: [{ node: `${SRC}/${MK("statictext:large pizza~0")}` }] } },
+          state: "yours",
+        },
+      ],
+    });
+    expect(parsePopupSpec(msg.spec)).toEqual(msg.spec);
+    expect(HelperMessage.safeParse(msg).success).toBe(true);
+    // A control with no value to set, and a text field, add no row.
+    const none = buildFillPopup(m, proposal([nameField, phoneField]) as GroundedProposal, [{ ...size, handoff: null }, nameField]);
+    expect(none.spec.blocks.map((b) => b.type)).toEqual(["header", "source", "fields", "actions"]);
+  });
+
   it("lists five rows and counts the rest, and names every source window when there are several", () => {
     const m = desk();
     const fields = LABELS.map((l, i) =>

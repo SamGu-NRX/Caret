@@ -787,6 +787,9 @@ export type SettingsLevel = z.infer<typeof SettingsLevel>;
  * left out disables its producers and withdraws their offers, and the level sets the hourly budget and
  * which families may speak. Roles are listed once each.
  */
+/** A web origin as a page frame reports it: scheme and host, with any port, and nothing after. */
+export const WebOrigin = z.string().regex(/^https?:\/\/[^/\s]+$/);
+
 export const Settings = z.object({
   type: z.literal("settings"),
   v: z.literal(PROTOCOL_VERSION),
@@ -794,6 +797,12 @@ export const Settings = z.object({
   roles: z.array(SettingsRole).refine((r) => new Set(r).size === r.length, "roles lists a role twice"),
   level: SettingsLevel,
   paused: z.boolean(),
+  /**
+   * "Not on this site" (H5): every origin the user turned Caret off for in What Caret knows, the whole list each time.
+   * The helper passes it to every page engine (pageSitesOff), which then reads and acts in no frame at these origins.
+   * Absent from a host before H5, which leaves the list the helper has as it is.
+   */
+  sitesOff: z.array(WebOrigin).max(1000).optional(),
 });
 export type Settings = z.infer<typeof Settings>;
 
@@ -864,7 +873,41 @@ export const SkillAnswer = z.object({
 });
 export type SkillAnswer = z.infer<typeof SkillAnswer>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext]);
+/**
+ * Host to helper (H5, lead decision 7): the user took the file the slip proposed for the plan offer `taskId`, which
+ * attaches one (planProposal `attach`). Sent from the slip only, right before offerAccept, once per run: a path the host
+ * saved never stands for it. The helper reads the file once now and keeps its identity and digest for that task
+ * alone (engines/attach.ts), and answers with fileConfirmReply to this connection.
+ */
+export const FileConfirm = z.object({
+  type: z.literal("fileConfirm"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1),
+  at: ms,
+  taskId: z.string().min(1),
+  /** Absolute. The file's own name is what the page will be given. */
+  path: z.string().min(1).max(4096),
+});
+export type FileConfirm = z.infer<typeof FileConfirm>;
+
+/**
+ * The answer to fileConfirm. `confirmed`: the file is the task's until the run reads it, ends, or GRANT_MAX_MS passes;
+ * `file` names it. `refused`: `says` is the user's sentence, and the run will hand the step over.
+ */
+export const FileConfirmReply = z
+  .object({
+    type: z.literal("fileConfirmReply"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string().min(1),
+    taskId: z.string().min(1),
+    outcome: z.enum(["confirmed", "refused"]),
+    file: z.object({ name: z.string().min(1), size: z.number().int().nonnegative() }).nullable(),
+    says: z.string().min(1).max(400).nullable(),
+  })
+  .refine((m) => (m.outcome === "confirmed") === (m.file !== null && m.says === null), { message: "confirmed carries the file and no sentence; refused carries a sentence and no file", path: ["outcome"] });
+export type FileConfirmReply = z.infer<typeof FileConfirmReply>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -1586,7 +1629,25 @@ export const PlanProposal = z
     window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }).nullable(),
     spec: PopupSpec.nullable(),
     handoff: z.object({ label: z.string(), why: z.enum(["outbound", "destructive", "money", "system", "unverifiable"]) }).nullable(),
-    error: z.object({ code: PlanErrorCode, detail: z.string().min(1) }).nullable(),
+    /**
+     * H5 (lead decision 7): the plan attaches a file at step `step`, into the file input `field`, and `wants` says which
+     * in the user's words ("your resume"). The host proposes the likely file in the slip and sends fileConfirm with the
+     * one the user takes, before offerAccept; without a confirmation the step is the user's. Absent when the plan
+     * attaches nothing, and from a helper before H5.
+     */
+    attach: z.object({ step: z.number().int().nonnegative(), field: z.string().min(1), wants: z.string().min(1).max(80) }).optional(),
+    error: z
+      .object({
+        code: PlanErrorCode,
+        detail: z.string().min(1),
+        /**
+         * What the user reads (H5): the sentence planner/says.ts wrote for this refusal or question, which names no
+         * window id, ref, or model or provider text. The host shows it as it is. Absent from a helper before H5, whose
+         * host builds its own sentence from `code`.
+         */
+        says: z.string().min(1).max(400).optional(),
+      })
+      .nullable(),
   })
   .superRefine((m, ctx) => {
     const proposed = m.outcome === "proposed";
@@ -1623,7 +1684,7 @@ export type PageEngineState = z.infer<typeof PageEngineState>;
 
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
@@ -2052,7 +2113,7 @@ export type PageFocusMoved = z.infer<typeof PageFocusMoved>;
  * replaces the worker's). The worker then walks no frame and acts in no frame at these origins, a tab whose top
  * frame is at one answers `siteOff`, and focus there is not reported. The helper sends it after every hello.
  */
-export const PageSitesOff = z.object({ type: z.literal("pageSitesOff"), v: z.literal(PROTOCOL_VERSION), origins: z.array(z.string().regex(/^https?:\/\/[^/\s]+$/)).max(1000) });
+export const PageSitesOff = z.object({ type: z.literal("pageSitesOff"), v: z.literal(PROTOCOL_VERSION), origins: z.array(WebOrigin).max(1000) });
 export type PageSitesOff = z.infer<typeof PageSitesOff>;
 
 /**

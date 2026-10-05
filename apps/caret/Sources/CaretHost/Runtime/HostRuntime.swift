@@ -45,6 +45,11 @@ public final class HostRuntime {
         /// on the pasteboard after the field settles, so an acceptance run can copy in the middle of a
         /// paste on cue. Ignored in normal use.
         public var pasteRestoreDelay: TimeInterval
+        /// Where a plan's likely file is looked for (H5, `LikelyFiles`): the user's Documents,
+        /// Downloads and Desktop, or the same folders under a test run's `--home`.
+        public var fileRoots: [String] = ["Documents", "Downloads", "Desktop"].map {
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent($0).path
+        }
 
         public init(
             socketPath: String = HostRuntime.defaultSocketPath,
@@ -122,6 +127,7 @@ public final class HostRuntime {
     private let socket: DebugStateSocket
     private let onboarding: OnboardingController
     private let memory: MemoryController
+    private let pageSight: PageSightCoordinator
     private var engineTask: Task<Void, Never>?
     private let servicesBox = ServicesBox()
 
@@ -199,6 +205,13 @@ public final class HostRuntime {
         let perch = PerchController(center: activity, drawsOnScreen: configuration.perchDrawsOnScreen)
         self.perch = perch
         activity.onChange = { perch.refresh() }
+        let pageSight = PageSightCoordinator(draws: !configuration.surfacesHeadless)
+        self.pageSight = pageSight
+        pageSight.paused = { MainActor.assumeIsolated { SettingsStore.shared.settings.paused } }
+        pageSight.sight.onChange = { [weak pageSight] line in
+            pageSight?.redraw(line)
+            status.update { $0.pageSight = pageSight?.sight.debugInfo }
+        }
         // Every helper message takes this route, on main: a line from the helper's socket, and one the
         // debug socket injects (`inject helperLine`), so an injected offer is taken, accepted and
         // reported exactly as a real one.
@@ -234,6 +247,7 @@ public final class HostRuntime {
                 onboarding.receive(progress)
                 perch.ask.receive(progress)
             case .planProposal(let proposal): perch.ask.receive(proposal)
+            case .fileConfirmReply(let reply): perch.ask.receive(reply)
             // An offer the memory row asked for ("Let it run on its own…") is shown there, not at the caret.
             case .skillOffer(let offer): if !memory.book.claim(offer) { surface.skillOffer(offer) }
             case .firstLookReply(let reply): onboarding.receive(reply)
@@ -241,6 +255,10 @@ public final class HostRuntime {
             case .memoryProvenance(let provenance):
                 surface.provenance(provenance)
                 perch.ask.provenance(provenance)
+            // W2: whether Caret can see the front browser's pages.
+            case .pageEngine(let m):
+                pageSight.receive(m)
+                status.update { $0.pageSight = pageSight.sight.debugInfo }
             default: break
             }
         }
@@ -255,7 +273,10 @@ public final class HostRuntime {
                     activity.linkChanged(up)
                     memory.linkChanged(up)
                     perch.ask.linkChanged(up)
-                    if !up { surface.helperGone() }
+                    if !up {
+                        surface.helperGone()
+                        pageSight.sight.helperGone()
+                    }
                 }
             }
         }, authority: authority)
@@ -290,8 +311,11 @@ public final class HostRuntime {
             case .accept(let accept): return askClient.send(accept)
             case .stop(let stop): return askClient.send(stop)
             case .control(let control): return askClient.send(control)
+            case .confirmFile(let confirm): return askClient.send(confirm)
             }
         }
+        let fileRoots = configuration.fileRoots
+        perch.ask.likelyFile = { wants in LikelyFiles.find(wants: wants, roots: fileRoots) }
         perch.ask.dropSession = { [weak askClient] in askClient?.dropSession() }
         // ⌘Z in the app an Ask run acted in, while its card offers it on screen, as a fill's toast does
         // (q1 bug 8). A run that ends while the list is closed shows no card, so it takes no ⌘Z there
@@ -314,11 +338,11 @@ public final class HostRuntime {
         // The helper's gate holds the same roles, level and pause: sent after every hello and on
         // every change (B10). The client drops a change that leaves all three as they were.
         let gateClient = helper
-        gateClient.update(GateSettings(SettingsStore.shared.settings, at: Self.nowMs()))
+        gateClient.update(HostSettings(SettingsStore.shared.settings, at: Self.nowMs()))
         // A setting that closes the gate takes down what it no longer allows at once, not only
         // what arrives next (A7 review).
         SettingsStore.shared.observe { settings in
-            gateClient.update(GateSettings(settings, at: Self.nowMs()))
+            gateClient.update(HostSettings(settings, at: Self.nowMs()))
             if !HostGate.allowsGhostText(settings) {
                 coordinator.gateClosed()
                 writing.gateClosed()
@@ -327,6 +351,7 @@ public final class HostRuntime {
             if settings.paused {
                 authority.revokeAll("paused")
                 surface.gateClosed()
+                pageSight.sight.paused()
             }
         }
         surface.client = helper
@@ -467,6 +492,23 @@ public final class HostRuntime {
             onboarding: { words in MainActor.assumeIsolated { onboarding.command(words) } },
             memory: { words in MainActor.assumeIsolated { memory.command(words) } },
             services: { words in MainActor.assumeIsolated { Self.servicesCommand(words, services: servicesBox.services, testHooks: testHooks) } },
+            pageSight: { words in
+                MainActor.assumeIsolated {
+                    // `pagesight front <pid>`: as if <pid> came to the front, for a headless run with no window (test hooks).
+                    if words.count == 3, words[1] == "front" {
+                        guard testHooks else { return #"{"error":"pagesight front is a test hook: start the host with --test-hooks"}"# }
+                        guard let pid = Int32(words[2]), pid > 0 else { return #"{"error":"usage: pagesight front <pid>"}"# }
+                        pageSight.frontmostChanged(pid)
+                    } else if words.count != 1 {
+                        return #"{"error":"usage: pagesight | pagesight front <pid>"}"#
+                    }
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.sortedKeys]
+                    var info = (try? String(decoding: encoder.encode(pageSight.sight.debugInfo), as: UTF8.self)) ?? "{}"
+                    if info.hasSuffix("}") { info.removeLast(); info += ",\"onScreen\":\(pageSight.onScreen)}" }
+                    return info
+                }
+            },
             testHooks: testHooks
         )
         socket = DebugStateSocket(path: configuration.socketPath) { command in
@@ -509,7 +551,11 @@ public final class HostRuntime {
     /// Onboarding's Add to Chrome, which the app shell runs (`ChromeBridgeInstaller`).
     public var onAddToChrome: () -> Void {
         get { onboarding.onAddToChrome }
-        set { onboarding.onAddToChrome = newValue }
+        set {
+            onboarding.onAddToChrome = newValue
+            // "Caret can't see this page yet" names the same next step.
+            pageSight.onAddToChrome = newValue
+        }
     }
 
     /// The menu's What Caret Knows: the memory window.
@@ -566,6 +612,7 @@ public final class HostRuntime {
         surface.shutdown()
         writing.shutdown()
         perch.shutdown()
+        pageSight.shutdown()
         onboarding.close()
         memory.close()
         overlay.hide()
@@ -619,6 +666,8 @@ public final class HostRuntime {
         let memory: @Sendable ([String]) -> String
         /// `services` and `services restart` (`servicesCommand`).
         let services: @Sendable ([String]) -> String
+        /// `pagesight` and `pagesight front <pid>` (H5: "Caret can't see this page yet").
+        let pageSight: @Sendable ([String]) -> String
         /// The host was started with `--test-hooks`.
         let testHooks: Bool
     }
@@ -816,6 +865,9 @@ public final class HostRuntime {
         case "services":
             let reply = DispatchQueue.main.sync { hooks.services(words) }
             return Data((reply + "\n").utf8)
+        case "pagesight":
+            let reply = DispatchQueue.main.sync { hooks.pageSight(words) }
+            return Data((reply + "\n").utf8)
         case "placement-bounds":
             let reply = DispatchQueue.main.sync { hooks.placementBounds(words) }
             return Data((reply + "\n").utf8)
@@ -890,6 +942,7 @@ public final class HostRuntime {
         }
         state.ghostFits = fields.ghostFits
         state.writing = fields.writing
+        state.pageSight = fields.pageSight
         return state
     }
 }

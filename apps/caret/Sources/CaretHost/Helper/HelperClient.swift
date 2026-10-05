@@ -32,7 +32,7 @@ final class HelperClient: @unchecked Sendable {
     /// sent after hello or sent on its own afterwards, never lost. Writers hold it for the whole line.
     private struct Link {
         var fd: Int32 = -1
-        var settings: GateSettings?
+        var settings: HostSettings?
     }
     private let connection = OSAllocatedUnfairLock(initialState: Link())
     private let running = OSAllocatedUnfairLock(initialState: false)
@@ -157,6 +157,12 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? request.line())
     }
 
+    /// H5: the file the user took for a plan's attach step; answered with `fileConfirmReply` to this connection.
+    @discardableResult
+    func send(_ confirm: FileConfirm) -> Bool {
+        sendLine(try? NDJSON.line(confirm))
+    }
+
     /// M1's "Not right" about a noticed fact; answered with `memoryReply` to this connection.
     @discardableResult
     func send(_ notRight: MemoryNotRight) -> Bool {
@@ -176,9 +182,9 @@ final class HelperClient: @unchecked Sendable {
     /// A write that fails on a live connection shuts it down: the reconnect sends these settings
     /// after its hello. Otherwise the same settings asked for again would be dropped as no change
     /// while the helper still held the old ones (A10 review).
-    func update(_ settings: GateSettings) {
+    func update(_ settings: HostSettings) {
         let sent = connection.withLock { link -> Bool? in
-            if let previous = link.settings, previous.sameGate(as: settings) { return nil }
+            if let previous = link.settings, previous.same(as: settings) { return nil }
             link.settings = settings
             guard link.fd >= 0, let line = try? NDJSON.line(settings) else { return false }
             let written = Self.writeAll(link.fd, line)
@@ -258,7 +264,7 @@ final class HelperClient: @unchecked Sendable {
         let settingsSent = connection.withLock { link -> Bool? in
             link.fd = fd
             guard var settings = link.settings else { return nil }
-            settings.at = Int64((Date().timeIntervalSince1970 * 1000).rounded())
+            settings.gate.at = Int64((Date().timeIntervalSince1970 * 1000).rounded())
             link.settings = settings
             guard let line = try? NDJSON.line(settings) else { return false }
             return Self.writeAll(fd, line)
@@ -320,6 +326,8 @@ final class HelperClient: @unchecked Sendable {
                 s.lastError = String(e.message.prefix(200))
             // H6 acts on route decisions; until then they are counted with the skipped types.
             case .routeDecision: s.skipped[RouteDecision.type, default: 0] &+= 1
+            case .pageEngine: s.pageEngine &+= 1
+            case .fileConfirmReply: s.fileConfirmReplies &+= 1
             case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1
             }
         }

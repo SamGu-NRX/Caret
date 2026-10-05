@@ -21,6 +21,12 @@ const ROLE: Record<PageControlKind, string> = {
   button: "AXButton", link: "AXLink", file: "AXButton", contenteditable: "AXTextArea", range: "AXSlider", color: "AXColorWell",
 };
 
+/**
+ * The subrole a file input's node carries (H5). Chrome's Accessibility shows a file input as a button, so the role
+ * alone cannot tell it from one; the planner reads this to find where a confirmed file goes (planner/attach.ts).
+ */
+export const FILE_INPUT_SUBROLE = "caretFileInput";
+
 /** Kinds a pageWrite sets. A contenteditable is a hand-off in v1 (memo section 1, write path). */
 export const TEXT_KINDS: ReadonlySet<PageControlKind> = new Set(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea"]);
 
@@ -132,6 +138,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         key: nodeKey(f.frameId, c),
         parent,
         role: press ? "AXRadioButton" : ROLE[c.kind],
+        ...(c.kind === "file" ? { subrole: FILE_INPUT_SUBROLE } : {}),
         label: c.name,
         ...(value === undefined ? {} : { value }),
         // A custom listbox takes a value too (pageChooseOption picks the option named exactly that), and so does a native

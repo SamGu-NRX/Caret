@@ -34,12 +34,15 @@ export function wirePageEngines(opts: { host: PageHost; helper: Helper; publish:
     onRemove: (s) => presence.engineGone(s.info.browser),
   });
   const untap = helper.onReaderMessage((m) => presence.onReader(m));
+  // The host's "Not on this site" list, from its settings, to every engine (registry.ts sends it after each hello too).
+  const unsites = helper.onSitesOff((origins) => host.registry.setSitesOff(origins));
   return {
     focus,
     presence,
     stop: () => {
       unlisten();
       untap();
+      unsites();
     },
   };
 }

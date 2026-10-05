@@ -22,6 +22,8 @@ public final class AskCaret {
         case stop(OfferStop)
         /// ⌘Z on a run that wrote: `taskControl undo`, which restores what the helper's ledger recorded.
         case control(TaskControl)
+        /// Tab on a plan that attaches a file: the file the card proposed, for that run (H5).
+        case confirmFile(FileConfirm)
     }
 
     /// A run's writes that ⌘Z may undo, for the arbiter's toast in the app it acted in.
@@ -74,8 +76,17 @@ public final class AskCaret {
         public var press: String?
         /// The process of the window the plan acts in, where ⌘Z undoes the run once it wrote.
         public var pid: Int32?
+        /// H5: the plan attaches a file; the card's step for it, and the file it proposes when one was found.
+        public var attach: Attach?
 
-        public init(title: String, app: String, steps: [Step], more: Int, action: String, offerKey: String, actionId: String, writes: Int, press: String?, pid: Int32? = nil) {
+        public struct Attach: Equatable, Sendable, Codable {
+            public var field: String
+            public var wants: String
+            public var file: ProposedFile?
+            public init(field: String, wants: String, file: ProposedFile?) { self.field = field; self.wants = wants; self.file = file }
+        }
+
+        public init(title: String, app: String, steps: [Step], more: Int, action: String, offerKey: String, actionId: String, writes: Int, press: String?, pid: Int32? = nil, attach: Attach? = nil) {
             self.title = title
             self.app = app
             self.steps = steps
@@ -86,6 +97,7 @@ public final class AskCaret {
             self.writes = writes
             self.press = press
             self.pid = pid
+            self.attach = attach
         }
     }
 
@@ -133,6 +145,15 @@ public final class AskCaret {
     /// The first step of a running plan not yet done, and its step count, from its progress.
     private var nextStep: Int?
     private var steps = 0
+    /// Tab sent the proposed file for the plan on the card; the run starts when the helper confirms it.
+    private var confirming: String?
+
+    /// No answer to a fileConfirm in this long fails the card. Assumed: the helper reads a file of at
+    /// most 10 MB once, which takes well under a second on a Mac.
+    public static let confirmWait: TimeInterval = 5
+
+    /// The user's file the plan most likely means (`LikelyFile`), found by the host; nil for none.
+    public var likelyFile: (_ wants: String) -> ProposedFile? = { _ in nil }
 
     private let clock: SurfaceClock
     /// Writes one message to the helper; false when it is not connected.
@@ -197,10 +218,48 @@ public final class AskCaret {
         return true
     }
 
-    /// Tab: run the proposed plan. False when no card is waiting, so the key does what it would.
+    /// Tab: run the proposed plan. False when no card is waiting, so the key does what it would. A plan
+    /// that attaches a file confirms the file the card proposed first (H5); the run starts on the
+    /// helper's yes. Tab while that answer is on its way takes the key and does nothing more.
     @discardableResult
     public func tab() -> Bool {
-        guard case .proposed(var card) = phase else { return false }
+        guard case .proposed(let card) = phase else { return false }
+        if confirming != nil { return true }
+        if let file = card.attach?.file {
+            requests += 1
+            let id = "file-\(requests)"
+            guard send(.confirmFile(FileConfirm(requestId: id, at: nowMs, taskId: card.offerKey, path: file.path))) else {
+                settle(.ended(card, WorkLines.acceptUnsent))
+                return true
+            }
+            confirming = id
+            waitTimer?.cancel()
+            waitTimer = clock.schedule(after: Self.confirmWait, repeats: false) { [weak self] in
+                guard let self, self.confirming == id else { return }
+                self.settle(.failed(AskCopy.fileUnanswered))
+            }
+            onChange()
+            return true
+        }
+        return run(card)
+    }
+
+    /// The helper's answer to the file Tab confirmed. Confirmed: the run starts. Refused: the card
+    /// says why in the helper's words, and nothing runs.
+    public func receive(_ reply: FileConfirmReply) {
+        guard let id = confirming, reply.requestId == id, case .proposed(let card) = phase, reply.taskId == card.offerKey else { return }
+        confirming = nil
+        waitTimer?.cancel()
+        waitTimer = nil
+        switch reply.outcome {
+        case .confirmed: run(card)
+        case .refused: settle(.failed(reply.says.flatMap { AskCopy.showable($0) ? $0 : nil } ?? AskCopy.fileRefused))
+        }
+    }
+
+    @discardableResult
+    private func run(_ proposed: Card) -> Bool {
+        var card = proposed
         let accept = OfferAccept(offerId: card.offerKey, actionId: card.actionId, overrides: [:], at: nowMs)
         guard send(.accept(accept)) else {
             settle(.ended(card, WorkLines.acceptUnsent))
@@ -320,7 +379,9 @@ public final class AskCaret {
         case .error:
             settle(.failed(AskCopy.planError(proposal.error)))
         case .proposed:
-            guard let card = Self.card(proposal) else { return settle(.failed(AskCopy.planError(nil))) }
+            guard let card = Self.card(proposal, file: proposal.attach.flatMap { likelyFile($0.wants) }, now: clock.now) else {
+                return settle(.failed(AskCopy.planError(nil)))
+            }
             settle(.proposed(card))
         }
     }
@@ -432,31 +493,60 @@ public final class AskCaret {
 
     // MARK: - The card
 
-    /// The card for a proposal: each field write, then the press left to the user. Nil when the
+    /// The card for a proposal: each field write, then each control the user sets (H5: a fields row
+    /// in the state `yours`, "Pizza size: Large"), then the press left to the user. Nil when the
     /// proposal has no spec or no Tab action, which the helper's schema never sends.
-    public static func card(_ proposal: PlanProposal) -> Card? {
+    public static func card(_ proposal: PlanProposal, file: ProposedFile? = nil, now: Date = Date(), calendar: Calendar = .current) -> Card? {
         guard let spec = proposal.spec, let key = proposal.offerKey,
               let tab = spec.actions.first(where: { $0.key == .tab }) else { return nil }
         var steps: [Step] = []
         var fields: [String] = []
+        var controls: [Step] = []
+        var toSet: [String] = []
         var more = 0
+        var moreToSet = 0
         for block in spec.blocks {
-            if case .fields(let list) = block.content {
-                more = list.more
-                for row in list.rows {
+            guard case .fields(let list) = block.content else { continue }
+            // The helper puts controls in a block of their own, so a block's `more` is all writes or all controls.
+            let yoursBlock = !list.rows.isEmpty && list.rows.allSatisfy { $0.state == .yours }
+            if yoursBlock { moreToSet += list.more } else { more += list.more }
+            for row in list.rows {
+                if row.state == .yours {
+                    toSet.append(row.destination.text)
+                    controls.append(Step(text: AskCopy.set(row.value?.text ?? "", in: row.destination.text), yours: true, field: row.destination.text))
+                } else {
                     fields.append(row.destination.text)
                     steps.append(Step(text: AskCopy.write(row.value?.text ?? "", into: row.destination.text), field: row.destination.text))
                 }
             }
         }
         let writes = steps.count + more
+        // H5: the attach step, after the writes. The helper's spec lists it as a ready row, which the
+        // loop above read as a write; the card says it with the file it proposes, or as the user's.
+        var attach: Card.Attach?
+        var attachRow = 0
+        if let a = proposal.attach {
+            attach = Card.Attach(field: a.field, wants: a.wants, file: file)
+            if let i = steps.firstIndex(where: { $0.field == a.field }) {
+                steps.remove(at: i)
+                fields.removeAll { $0 == a.field }
+                attachRow = 1
+            }
+            steps.append(file.map { Step(text: AskCopy.attach($0, in: a.field, now: now, calendar: calendar), field: a.field) }
+                ?? Step(text: AskCopy.set(a.wants, in: a.field), yours: true, field: a.field))
+        }
+        let writesNow = writes - attachRow
+        if moreToSet > 0 { controls.append(Step(text: AskCopy.moreToSet(moreToSet), yours: true)) }
+        steps += controls
         if let handoff = proposal.handoff { steps.append(Step(text: AskCopy.press(handoff.label, why: handoff.why), yours: true)) }
         let app = proposal.window?.appName ?? "the app"
         let press = proposal.handoff.map { $0.label.isEmpty ? AskCopy.unlabelled : $0.label }
+        let title = attach.map { AskCopy.attachTitle($0, writes: writesNow, fields: fields, app: app) }
+            ?? AskCopy.title(fields: fields, writes: writes, press: press, app: app, toSet: toSet + Array(repeating: "", count: moreToSet))
         return Card(
-            title: AskCopy.title(fields: fields, writes: writes, press: press, app: app), app: app, steps: steps, more: more,
-            action: tab.label, offerKey: key, actionId: tab.id, writes: writes, press: press,
-            pid: proposal.window.map { Int32(truncatingIfNeeded: $0.pid) }
+            title: title, app: app, steps: steps, more: more,
+            action: tab.label, offerKey: key, actionId: tab.id, writes: writesNow, press: press,
+            pid: proposal.window.map { Int32(truncatingIfNeeded: $0.pid) }, attach: attach
         )
     }
 
@@ -476,8 +566,9 @@ public final class AskCaret {
             waitTimer = nil
         }
         // Any new line ends the card's wait for a stop's answer (`escape` sets it again after its own
-        // settle); the stop's deadline goes on without it.
+        // settle); the stop's deadline goes on without it. And its wait for a file's confirmation.
         stopping = nil
+        confirming = nil
         switch next {
         case .running, .ended: break
         case .idle, .asking, .proposed, .failed: tracking = nil
@@ -573,10 +664,19 @@ public enum AskCopy {
     ///   Fill Name and Email in Caret Fixture
     ///   Fill 3 fields in Caret Fixture
     ///   You press Send in Mail            (a plan that only hands a press over)
-    public static func title(fields: [String], writes: Int, press: String?, app: String) -> String {
+    ///   You set Pizza size in Chrome      (an Ask whose results are only controls, H5)
+    public static func title(fields: [String], writes: Int, press: String?, app: String, toSet: [String] = []) -> String {
         let names = fields.map(fieldName)
         let named = names.count == writes && !names.contains(where: \.isEmpty)
         switch writes {
+        case 0 where press == nil && !toSet.isEmpty:
+            let set = toSet.map(fieldName)
+            let setNamed = !set.contains(where: \.isEmpty)
+            switch set.count {
+            case 1 where setNamed: return "You set \(set[0]) in \(app)"
+            case 2 where setNamed: return "You set \(set[0]) and \(set[1]) in \(app)"
+            default: return "You set \(Captions.fields(set.count)) in \(app)"
+            }
         case 0: return press.map { "You press \($0) in \(app)" } ?? "Nothing to fill in \(app)"
         case 1 where named: return "Fill \(names[0]) in \(app)"
         case 2 where named: return "Fill \(names[0]) and \(names[1]) in \(app)"
@@ -589,6 +689,35 @@ public enum AskCopy {
         let name = fieldName(field)
         return "Put \u{201C}\(value)\u{201D} in \(name.isEmpty ? field.trimmingCharacters(in: .whitespacesAndNewlines) : name)"
     }
+
+    /// A control the user sets, with its value: Pizza size: Large. Caret never writes or presses it.
+    public static func set(_ value: String, in field: String) -> String {
+        let name = fieldName(field)
+        return "\(name.isEmpty ? field.trimmingCharacters(in: .whitespacesAndNewlines) : name): \(value)"
+    }
+
+    /// The file a plan attaches, as the card proposes it: Resume/CV: Resume.pdf, edited Tue.
+    public static func attach(_ file: ProposedFile, in field: String, now: Date, calendar: Calendar = .current) -> String {
+        "\(set(file.name, in: field)), \(LikelyFile.edited(file.modified, now: now, calendar: calendar))"
+    }
+
+    /// The card's title for a plan that attaches a file: "Attach Resume.pdf in Google Chrome", or what
+    /// the plan wants when no file was found; a plan that also fills says both.
+    public static func attachTitle(_ a: AskCaret.Card.Attach, writes: Int, fields: [String], app: String) -> String {
+        let what = a.file?.name ?? a.wants
+        guard writes > 0 else { return "Attach \(what) in \(app)" }
+        let names = fields.map(fieldName)
+        let filled = writes == 1 && names.count == 1 && !names[0].isEmpty ? names[0] : Captions.fields(writes)
+        return "Fill \(filled) and attach \(what) in \(app)"
+    }
+
+    /// No answer came to the file Tab confirmed.
+    public static let fileUnanswered = "My helper didn't answer about the file, so nothing ran."
+    /// The helper refused the file and sent no sentence Caret may show.
+    public static let fileRefused = "I couldn't use that file, so nothing ran."
+
+    /// Controls past the listed ones: "and 2 more to set".
+    public static func moreToSet(_ n: Int) -> String { "and \(n) more to set" }
 
     /// A field's label as a title names it: without the marker a form puts after a required
     /// field's label. Q1 (A18, bug 16) showed "Fill Email * in Google Chrome" with the asterisk
@@ -643,6 +772,9 @@ public enum AskCopy {
     /// sentence alone, so a changed detail can lose the value but never put a wrong one on screen.
     public static func planError(_ failure: PlanProposal.Failure?) -> String {
         guard let failure else { return "Something went wrong while I planned, so nothing will run." }
+        // H5: the helper's own sentence (B26), shown as it is sent. One that could carry an id or a
+        // ref is not shown, and the code's sentence below stands in.
+        if let says = failure.says, showable(says) { return says }
         let q = quoted(failure)
         switch failure.code {
         case .untracedValue:
@@ -671,6 +803,16 @@ public enum AskCopy {
         case .privacy: return "Planning that would send too much of a window off this Mac, so I didn't."
         case .internal: return "Something went wrong while I planned, so nothing will run."
         }
+    }
+
+    /// Whether the helper's sentence may be shown as it is: one line of at most 400 characters with
+    /// no window id ("5150-1", "page:e1:7") and no element key ("standard/textfield:email~0").
+    /// helper/src/planner/says.ts writes none; this keeps a changed helper from putting one on screen.
+    public static func showable(_ says: String) -> Bool {
+        let trimmed = says.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 400, !trimmed.contains(where: \.isNewline) else { return false }
+        let ids = [#"\b\d+-\d+\b"#, #"\bpage:"#, #"~\d+\b"#, #"/standard/"#, #"\b[a-z]+:[a-z]"#]
+        return !ids.contains { trimmed.range(of: $0, options: .regularExpression) != nil }
     }
 
     /// The single-quoted value in a detail whose format is known to carry one, as the helper writes

@@ -148,21 +148,17 @@ private struct FieldRow: View {
                 .lineLimit(1)
             if let note {
                 Spacer(minLength: 8)
-                Text(note).font(Tokens.Font.chromeSmall).foregroundStyle(Color(token: Tokens.ink2))
+                // A control the user sets is marked as the desk marks a step that is theirs: in Carrot
+                // text, which T1's contrast gate measured on the glass (Tokens.carrotText).
+                Text(note).font(Tokens.Font.chromeSmall)
+                    .fontWeight(row.state == .yours ? .medium : .regular)
+                    .foregroundStyle(Color(token: row.state == .yours ? Tokens.carrotText : Tokens.ink2))
             }
         }
     }
 
     /// Words, not icons or colors: success is not green and failure is not red.
-    private var note: String? {
-        switch row.state {
-        case .ready: return nil
-        case .kept: return "kept"
-        case .unsure: return "unsure"
-        case .done: return "filled"
-        case .failed: return "not filled"
-        }
-    }
+    private var note: String? { SlipSpeech.fieldNote(row.state) }
 }
 
 /// An option row: 24 tall. The chosen row has a 2 pt Carrot edge at its left and its words in Ink;

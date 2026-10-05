@@ -39,6 +39,8 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .memoryProvenance: return "memoryProvenance"
             case .memoryDocumentReply: return "memoryDocumentReply"
             case .routeDecision: return "routeDecision"
+            case .pageEngine(let m): return "pageEngine:\(m.state.rawValue)"
+            case .fileConfirmReply: return "fileConfirmReply"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }
@@ -70,9 +72,8 @@ final class HelperProtocolGoldenTests: XCTestCase {
             // is the host, and a write that marks its element, refused as focusMoved, then an undo
             // write that requires the same element, refused as notSameElement.
             "skip:hello", "skip:helperAuth", "skip:hello", "skip:readerCommand", "skip:verbResult", "skip:readerCommand", "skip:verbResult",
-            // W2: whether Caret can see a browser's pages, missing then connected. The host does not
-            // show it yet ("Caret can't see this page yet" is surface work), so it decodes as unknown.
-            "unknown:pageEngine", "unknown:pageEngine",
+            // W2: whether Caret can see a browser's pages, missing then connected (H5: `PageSight`).
+            "pageEngine:missing", "pageEngine:connected",
         ]
         XCTAssertEqual(kinds, expected)
     }

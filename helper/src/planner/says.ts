@@ -47,6 +47,11 @@ export const SAYS = {
   fillNothing: "Caret found nothing on screen to fill this form with.",
   fillLabelTooLong: "This field's label is too long for Caret to ask about. Fill it yourself.",
   fillFailed: "Caret couldn't fill this form just now. Try again.",
+  paused: "Caret is paused. Turn it back on and ask again.",
+  fileNoPlan: "That plan doesn't attach a file anymore. Ask again.",
+  fileUnreadable: "Caret couldn't read that file, so it attached nothing. Choose another one.",
+  fileTooBig: "That file is over 10 MB, more than Caret attaches. Choose a smaller one.",
+  noReader: "Caret can't read the screen right now, so it can't plan that.",
 } as const;
 
 /**

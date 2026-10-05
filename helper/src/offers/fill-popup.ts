@@ -44,6 +44,13 @@ function valueRef(f: GroundedField): PopupRef {
 
 const nodeRef = (windowId: string, key: string): { node: string } => ({ node: `${windowId}/${key}` });
 
+/** Where a hand-off's value came from: its source node, its memory entry, or the field itself when neither is known. */
+function handoffRef(h: NonNullable<FillField["handoff"]>, windowId: string, key: string): PopupRef {
+  if (h.source !== null) return { rule: "handoffValue", derived: [nodeRef(h.source.windowId, h.source.nodeKey)] };
+  if (h.memory !== null) return { memory: h.memory.id };
+  return { rule: "fieldLabel", derived: [nodeRef(windowId, key)] };
+}
+
 /** "App, Title", or the app alone when the title is empty or repeats it. */
 function sourceText(s: FillSource): string {
   const title = s.windowTitle.trim();
@@ -59,8 +66,12 @@ export function fieldLabel(model: ScreenModel, windowId: string, key: string): s
   return d.label ?? d.nearest ?? d.placeholder ?? "Field";
 }
 
-/** The popup message for an eligible proposal. Its offerKey and spec id are the proposal id. */
-export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPopup {
+/**
+ * The popup message for an eligible proposal. Its offerKey and spec id are the proposal id. `handoffs` are the
+ * proposal's controls that carry a value to set (FillField.handoff): each is a row in a fields block of its own with
+ * the state `yours` (H5), "Pizza size: Large", which Tab never writes or presses.
+ */
+export function buildFillPopup(model: ScreenModel, p: GroundedProposal, handoffs: readonly FillField[] = []): OfferPopup {
   const fields = p.fields;
   const windows = fields.flatMap((f) => (f.source === null ? [] : [f.source]));
   const memories = [...new Set(fields.flatMap((f) => (f.memory === null ? [] : [f.memory.id])))];
@@ -81,8 +92,21 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
     { type: "header", title: { text: `Fill ${fields.length} fields`, ref: { rule: "count", derived: fields.map((f) => nodeRef(p.windowId, f.key)) } } },
     { type: "source", value: { text, ref: source } },
     { type: "fields", rows, ...(more > 0 ? { more } : {}) },
-    { type: "actions", items: [{ id: "fillAll", label: "Fill all", key: "tab" }] },
   ];
+  const yours = handoffs.flatMap((f) => (f.handoff === null ? [] : [{ f, h: f.handoff }]));
+  if (yours.length > 0) {
+    const shown = yours.slice(0, MAX_FILL_ROWS);
+    blocks.push({
+      type: "fields",
+      rows: shown.map(({ f, h }) => ({
+        destination: { text: fieldLabel(model, p.windowId, f.key), ref: { rule: "fieldLabel", derived: [nodeRef(p.windowId, f.key)] } },
+        value: { text: h.display, ref: handoffRef(h, p.windowId, f.key) },
+        state: "yours" as const,
+      })),
+      ...(yours.length > shown.length ? { more: yours.length - shown.length } : {}),
+    });
+  }
+  blocks.push({ type: "actions", items: [{ id: "fillAll", label: "Fill all", key: "tab" }] });
   const form = model.windows.get(p.windowId);
   if (form === undefined) throw new Error(`the form's window ${p.windowId} is not in the model`);
   return {

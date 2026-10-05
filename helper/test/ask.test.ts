@@ -14,6 +14,7 @@ import { intentInput, jevIntentMaker, writerIntentMaker } from "../src/planner/i
 import { intentResponseFormat, IntentInputSchema } from "../src/writer/intent-prompt.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { SAYS, SaidError } from "../src/planner/says.ts";
+import { proposed } from "../src/planner/proposal.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, node, snap, text, value } from "./builders.ts";
 
@@ -302,6 +303,12 @@ describe("planAsk", () => {
     expect(d.route).toBe("fill");
     expect(d.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[KEY("email"), "elena.vance@example.com"]]);
     expect(d.controls).toEqual([{ key: `${P}/timefield:delivery time~0`, name: "Delivery time", value: "20:15", display: "8:15 PM" }]);
+    // H5: the proposal lists the write, then the control as a row of its own that the user sets.
+    const fields = (proposed("r1", d, 3000).spec?.blocks ?? []).filter((b) => b.type === "fields");
+    expect(fields.map((b) => b.rows.map((r) => [r.destination.text, r.value?.text, r.state]))).toEqual([
+      [["Email", "elena.vance@example.com", "ready"]],
+      [["Delivery time", "8:15 PM", "yours"]],
+    ]);
   });
 
   it("asks about a time with no am or pm instead of proposing anything", async () => {
@@ -350,6 +357,12 @@ describe("planAsk", () => {
     expect(d.checked.writes).toEqual([]);
     expect(d.checked.handoff?.node.key).toBe(`${P}/timefield:delivery time~0`);
     expect(d.controls?.[0]?.value).toBe("20:15");
+    // H5: no press is handed over, so the proposal names none; its one row says what to set.
+    const p = proposed("r3", d, 3000);
+    expect(p.handoff).toBeNull();
+    expect(p.spec?.blocks.map((b) => b.type)).toEqual(["header", "fields", "actions"]);
+    expect(p.spec?.blocks[1]).toMatchObject({ type: "fields", rows: [{ destination: { text: "Delivery time" }, value: { text: "8:15 PM" }, state: "yours" }] });
+    expect(p.spec?.blocks[2]).toMatchObject({ type: "actions", items: [{ label: "Got it", key: "tab" }] });
     const e = await planAsk("pay for it", desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker({ route: "refuse", why: "payment" }), writer: null, offerKey: "ask-4", windowId: "form", now: 2000 }).catch((x: unknown) => x);
     expect((e as AskRefused).code).toBe("unsupportedStep");
     expect((e as AskRefused).intent?.why).toBe("payment");

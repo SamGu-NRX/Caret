@@ -1272,6 +1272,14 @@
             },
             "paused": {
               "type": "boolean"
+            },
+            "sitesOff": {
+              "maxItems": 1000,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^https?:\\/\\/[^/\\s]+$"
+              }
             }
           },
           "required": [
@@ -1607,6 +1615,47 @@
             "composing",
             "textRevision",
             "breakpoint"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "fileConfirm"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "taskId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "at",
+            "taskId",
+            "path"
           ],
           "additionalProperties": false
         }
@@ -4900,7 +4949,8 @@
                                     "kept",
                                     "unsure",
                                     "done",
-                                    "failed"
+                                    "failed",
+                                    "yours"
                                   ]
                                 }
                               },
@@ -5427,7 +5477,8 @@
                                     "kept",
                                     "unsure",
                                     "done",
-                                    "failed"
+                                    "failed",
+                                    "yours"
                                   ]
                                 }
                               },
@@ -5939,7 +5990,8 @@
                                             "kept",
                                             "unsure",
                                             "done",
-                                            "failed"
+                                            "failed",
+                                            "yours"
                                           ]
                                         }
                                       },
@@ -6505,7 +6557,8 @@
                                         "kept",
                                         "unsure",
                                         "done",
-                                        "failed"
+                                        "failed",
+                                        "yours"
                                       ]
                                     }
                                   },
@@ -6796,6 +6849,31 @@
                 }
               ]
             },
+            "attach": {
+              "type": "object",
+              "properties": {
+                "step": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "field": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "wants": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                }
+              },
+              "required": [
+                "step",
+                "field",
+                "wants"
+              ],
+              "additionalProperties": false
+            },
             "error": {
               "anyOf": [
                 {
@@ -6829,6 +6907,11 @@
                     "detail": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "says": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 400
                     }
                   },
                   "required": [
@@ -7362,6 +7445,82 @@
             "expires"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "fileConfirmReply"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "taskId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "confirmed",
+                "refused"
+              ]
+            },
+            "file": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "size": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "size"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "says": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "taskId",
+            "outcome",
+            "file",
+            "says"
+          ],
+          "additionalProperties": false
         }
       ],
       "$defs": {
@@ -7585,7 +7744,8 @@
                                   "kept",
                                   "unsure",
                                   "done",
-                                  "failed"
+                                  "failed",
+                                  "yours"
                                 ]
                               }
                             },

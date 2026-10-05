@@ -78,11 +78,13 @@ import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from 
 import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planWithCode } from "./planner/codeplan.ts";
 import { planAsk } from "./planner/ask.ts";
-import { fillSays } from "./planner/says.ts";
+import { fillSays, SaidError, SAYS, saysFor } from "./planner/says.ts";
+import { planAttach } from "./planner/attach.ts";
+import { ConfirmedFiles } from "./engines/attach.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
-import type { PlanErrorCode } from "./protocol.ts";
+import type { FileConfirm, FileConfirmReply, PlanErrorCode } from "./protocol.ts";
 
 /** The planner's failures that mean it could not ground the instruction, after which the code-mode writer is tried. */
 const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
@@ -281,6 +283,8 @@ export class Helper {
   /** Bumped on each reader hello; a fill whose Jev answer arrives in a later session is dropped. */
   private readerSession = 0;
   readonly executor: Executor;
+  /** The file each run may attach, as the user confirmed it in the slip (H5, lead decision 7). */
+  readonly files: ConfirmedFiles;
   readonly memory: MemoryStore;
   /** Runs saved before each act; what a crash left in it is recovered at start (recoverInterrupted). */
   readonly journal: RecoveryJournal;
@@ -411,6 +415,7 @@ export class Helper {
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
     this.socketLink = opts.readerLink === undefined ? new SocketReaderLink(opts.sendToReader ?? (() => false)) : null;
     this.tasks = new TaskRegistry((m) => this.publish(m), this.now);
+    this.files = new ConfirmedFiles(() => this.now());
     this.executor = new Executor({
       model: this.model,
       reader: opts.readerLink ?? (this.socketLink as SocketReaderLink),
@@ -432,6 +437,8 @@ export class Helper {
         return memoryValue(text, part) === value;
       },
       authorize: (a) => this.authorize(a),
+      // The one file each run may attach: confirmed by the user in the slip (fileConfirm), read once (H5).
+      files: this.files,
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
       // The in-progress skill marker rides on each saved run: the skill it counts for, if any.
       journal: {
@@ -642,8 +649,19 @@ export class Helper {
   }
 
   private readonly readerListeners = new Set<(m: ReaderMessage) => void>();
+  /** Who hears the host's "Not on this site" list (H5): the page engines' registry, once wirePageEngines joins it. */
+  private readonly sitesOffListeners = new Set<(origins: readonly string[]) => void>();
+  /** The last list the host sent; null until a host sends one. */
+  private sitesOffList: readonly string[] | null = null;
 
   /** Sees every reader message before the helper handles it (the page engines' presence signal, main.ts). Returns the way to stop. */
+  /** Hears every "Not on this site" list the host sends, starting with the last one, if any. */
+  onSitesOff(l: (origins: readonly string[]) => void): () => void {
+    this.sitesOffListeners.add(l);
+    if (this.sitesOffList !== null) l(this.sitesOffList);
+    return () => this.sitesOffListeners.delete(l);
+  }
+
   onReaderMessage(l: (m: ReaderMessage) => void): () => void {
     this.readerListeners.add(l);
     return () => this.readerListeners.delete(l);
@@ -821,6 +839,13 @@ export class Helper {
     this.executor.recheck();
     this.routing?.settingsChanged();
     this.routing?.observe();
+    // "Not on this site": the engines stop reading and acting at these origins (pageSitesOff), now and after every
+    // engine hello. A host before H5 sends no list, and the helper's stays as it was.
+    if (m.sitesOff !== undefined) {
+      this.sitesOffList = [...new Set(m.sitesOff)];
+      this.opts.store.count("settings.sitesOff", 1);
+      for (const l of this.sitesOffListeners) l(this.sitesOffList);
+    }
   }
 
   /** Whether a task id is in use by a run or an activity record: new offer ids skip these (B23). */
@@ -953,21 +978,34 @@ export class Helper {
   async handlePlanRequest(m: PlanRequest): Promise<PlanProposal> {
     const store = this.opts.store;
     store.count("plan.request", 1);
-    const fail = (code: Parameters<typeof planError>[1], detail: string): PlanProposal => {
+    // Every refusal carries the user's sentence (H5): a SaidError's own, or the one for its code.
+    const fail = (code: Parameters<typeof planError>[1], detail: string, says: string = saysFor(code)): PlanProposal => {
       store.count(`plan.error_${code}`, 1);
-      return planError(m.requestId, code, detail, this.now());
+      return planError(m.requestId, code, detail, this.now(), says);
     };
+    const said = (e: PlannerError): string => (e instanceof SaidError ? e.message : saysFor(e.code));
     const ask = this.ask;
     if (ask === null) return fail("unavailable", "Jev is off");
     if (this.mode !== "live") return fail("unavailable", "the helper is in shadow mode");
-    if (this.gate.settings.paused) return fail("unavailable", "Caret is paused");
-    if (!this.readerConnected) return fail("unavailable", "no reader is connected");
+    if (this.gate.settings.paused) return fail("unavailable", "Caret is paused", SAYS.paused);
+    if (!this.readerConnected) return fail("unavailable", "no reader is connected", SAYS.noReader);
     let offerKey = `plan-${++this.planSeq}-${m.requestId}`;
     while (this.idTaken(offerKey)) offerKey = `plan-${++this.planSeq}-${m.requestId}`;
     const session = this.readerSession;
     let draft: PlanDraft;
     const askConfig = this.askConfig;
-    if (askConfig !== null) {
+    // "Attach my resume" (H5): code plans it, with no model, when the page holds a file input that fits.
+    let attachDraft: PlanDraft | null = null;
+    try {
+      attachDraft = planAttach(m.instruction, this.model, requestedWindow(this.model, m), offerKey);
+    } catch (e) {
+      if (!(e instanceof PlannerError)) throw e;
+      return fail(e.code, e.message, said(e));
+    }
+    if (attachDraft !== null) {
+      store.count("plan.attach", 1);
+      draft = attachDraft;
+    } else if (askConfig !== null) {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
         const windowId = requestedWindow(this.model, m);
@@ -979,7 +1017,7 @@ export class Helper {
       } catch (e) {
         if (!(e instanceof PlannerError)) throw e;
         if (e instanceof AskRefused && e.intent !== null) this.countAskRoute(e.intent.route);
-        return fail(e.code, e.message);
+        return fail(e.code, e.message, said(e));
       }
     } else try {
       const windowId = requestedWindow(this.model, m);
@@ -997,7 +1035,7 @@ export class Helper {
       // planner's own error stands, with the writer's reason added.
       const writer = this.writer;
       const windowId = CODE_PLAN_AFTER.has(e.code) && writer !== null ? (e.windowId ?? requestedWindow(this.model, m)) : null;
-      if (writer === null || windowId === null) return fail(e.code, e.message);
+      if (writer === null || windowId === null) return fail(e.code, e.message, said(e));
       store.count("plan.codeMode", 1);
       try {
         draft = await planWithCode(m.instruction, this.model, { values: () => this.plannerMemory() }, { writer, askJev: ask, offerKey, windowId, now: this.now() });
@@ -1005,12 +1043,12 @@ export class Helper {
       } catch (e2) {
         if (!(e2 instanceof PlannerError)) throw e2;
         store.count(`plan.codeMode_${e2.code}`, 1);
-        return fail(e.code, `${e.message}; the plan writer did not help either: ${e2.message}`);
+        return fail(e.code, `${e.message}; the plan writer did not help either: ${e2.message}`, said(e));
       }
     }
     // Window ids start over with a new reader; a plan drafted in the old session names other windows now.
-    if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
-    if (this.mode !== "live" || this.gate.settings.paused) return fail("unavailable", this.mode !== "live" ? "the helper is in shadow mode" : "Caret is paused");
+    if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply", SAYS.windowChanged);
+    if (this.mode !== "live" || this.gate.settings.paused) return fail("unavailable", this.mode !== "live" ? "the helper is in shadow mode" : "Caret is paused", this.mode !== "live" ? saysFor("unavailable") : SAYS.paused);
     const reply = proposed(m.requestId, draft, this.now());
     const w = draft.checked.window;
     const anchor = draft.checked.writes[0]?.node.key ?? draft.checked.handoff?.node.key ?? w.window.windowId;
@@ -1028,6 +1066,29 @@ export class Helper {
     store.count("plan.proposed", 1);
     if (draft.checked.handoff !== null) store.count(`plan.handoff_${draft.checked.handoff.why}`, 1);
     return reply;
+  }
+
+  /**
+   * The user took the file the slip proposed for a plan offer that attaches one (H5). The helper reads it once now
+   * and keeps it for that task alone; the run reads it again at its attach step and refuses other bytes. The reply
+   * goes to the asker only.
+   */
+  handleFileConfirm(m: FileConfirm): FileConfirmReply {
+    const base = { type: "fileConfirmReply" as const, v: PROTOCOL_VERSION as 1, requestId: m.requestId, taskId: m.taskId };
+    const refuse = (says: string, why: string): FileConfirmReply => {
+      this.opts.store.count("file.confirm_refused", 1);
+      this.opts.warn?.(`fileConfirm for ${m.taskId} refused: ${why}`);
+      return { ...base, outcome: "refused", file: null, says };
+    };
+    const offer = this.planOffers.get(m.taskId);
+    if (offer === undefined || offer.draft.checked.attach === null) return refuse(SAYS.fileNoPlan, "no plan offer under that key attaches a file");
+    const r = this.files.confirm(m.taskId, m.path);
+    // ConfirmedFiles words its refusals for logs; the one the user can act on by choosing another file is the size.
+    if ("refused" in r) return refuse(r.refused.startsWith("the file is ") ? SAYS.fileTooBig : SAYS.fileUnreadable, r.refused);
+    const file = this.files.confirmed(m.taskId);
+    if (file === null) return refuse(SAYS.fileUnreadable, "the confirmation was not kept");
+    this.opts.store.count("file.confirmed", 1);
+    return { ...base, outcome: "confirmed", file, says: null };
   }
 
   /**
@@ -1416,6 +1477,8 @@ export class Helper {
     if (state !== "running" && state !== "paused") {
       this.taskHosts.delete(e.taskId);
       this.taskDeps.delete(e.taskId);
+      // A file confirmed for a run is that run's only: one that ended before reaching its attach step leaves none behind.
+      this.files.forget(e.taskId);
     }
     const cause: TaskCause | null = e.cause ?? (state === "running" ? null : state === "undone" ? "you" : "caret");
     const fields = {
@@ -1656,7 +1719,7 @@ export class Helper {
           return p;
         }
         store.count("fill.popup", 1, now);
-        if (this.publish(buildFillPopup(this.model, written), () => this.acceptFill(written))) {
+        if (this.publish(buildFillPopup(this.model, written, p.fields.filter((f) => f.handoff !== null)), () => this.acceptFill(written))) {
           this.fillPopups.set(written.id, { p: written, form: formKey });
           // The hour runs from when the offer is shown, not from when it was asked for.
           this.gate.spoke(this.now());

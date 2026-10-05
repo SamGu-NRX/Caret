@@ -15,6 +15,8 @@ final class MemoryController {
         @Published var state = MemoryBook.State()
         @Published var files = MemoryFiles.State()
         @Published var tab: MemoryView.Tab = .memory
+        /// "Not on this site" (H5): the Sites tab.
+        @Published var sites = SitesPage.State()
     }
 
     let book: MemoryBook
@@ -50,6 +52,31 @@ final class MemoryController {
         }
         // A saved file can change, add or remove facts: the rows read them again.
         files.onSaved = { [weak self] in self?.book.requestList() }
+        // The sites list lives in the settings file, which the runtime sends to the helper on change.
+        model.sites.off = SettingsStore.shared.settings.sitesOff
+        SettingsStore.shared.observe { [weak self] settings in
+            MainActor.assumeIsolated { self?.model.sites.off = settings.sitesOff }
+        }
+    }
+
+    // MARK: - Not on this site
+
+    /// Turns Caret off for `origin`, or for what the field holds when nil. A field that holds no web
+    /// address says so and changes nothing.
+    @discardableResult
+    func turnSiteOff(_ origin: String?) -> Bool {
+        guard let site = origin ?? SitesPage.origin(typed: model.sites.draft) else {
+            model.sites.problem = SitesPage.notAnAddress
+            return false
+        }
+        SettingsStore.shared.update(source: .menu) { $0.setSite(site, off: true) }
+        if origin == nil { model.sites.draft = "" }
+        model.sites.problem = nil
+        return true
+    }
+
+    func turnSiteOn(_ origin: String) {
+        SettingsStore.shared.update(source: .menu) { $0.setSite(origin, off: false) }
     }
 
     // MARK: - From the helper
@@ -74,6 +101,8 @@ final class MemoryController {
     /// Brings the window forward, reading the list and the files again so it shows what the helper
     /// holds now.
     func open() {
+        // Read while the browser is still the front app: the window coming forward ends that.
+        model.sites.here = BrowserPage.frontOrigin()
         book.requestList()
         files.requestList()
         if let window {
@@ -172,6 +201,11 @@ final class MemoryController {
         case .keepMyText: files.keepMine()
         case .openInEditor:
             if let doc = files.state.editor?.doc, let path = files.state.document(doc)?.path { workspace.openInEditor(path: path) }
+        case .siteDraft(let text):
+            model.sites.draft = text
+            model.sites.problem = nil
+        case .siteOff(let origin): turnSiteOff(origin)
+        case .siteOn(let origin): turnSiteOn(origin)
         }
     }
 
@@ -189,10 +223,11 @@ final class MemoryController {
         var files: MemoryFiles.DebugInfo
         var tab: String
         var windowShown: Bool
+        var sites: SitesPage.State
     }
 
     func debugInfo() -> DebugInfo {
-        DebugInfo(book: book.debugInfo(), files: files.debugInfo(), tab: model.tab.rawValue, windowShown: windowShown)
+        DebugInfo(book: book.debugInfo(), files: files.debugInfo(), tab: model.tab.rawValue, windowShown: windowShown, sites: model.sites)
     }
 
     /// `memory` reads the book and the files. With test hooks, the rest act as the window's controls would:
@@ -216,6 +251,11 @@ final class MemoryController {
     ///   memory text <text...>                     replace the open file's text (\n for a new line)
     ///   memory savefile | closefile | reload | keepmine
     ///   memory show | memory close                the window itself, as the menu opens it (foreground runs only)
+    ///   memory tab sites                          the Sites tab (H5)
+    ///   memory here <url>                         set "The page you were on", as opening over Chrome does
+    ///   memory site off [<url>]                   Not on this site: the page you were on's button, or the field's
+    ///   memory site draft <text...>               type into the Add a site field
+    ///   memory site on <origin>                   Turn back on
     func command(_ words: [String]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -237,7 +277,7 @@ final class MemoryController {
             book.requestList()
             files.requestList()
         case ("tab", 2):
-            guard let tab = MemoryView.Tab(rawValue: rest[1]) else { return #"{"error":"usage: memory tab memory|permissions"}"# }
+            guard let tab = MemoryView.Tab(rawValue: rest[1]) else { return #"{"error":"usage: memory tab memory|permissions|sites"}"# }
             perform(.tab(tab))
         case ("edit", 2): book.beginEdit(rest[1])
         case ("draft", _) where rest.count >= 2:
@@ -276,6 +316,16 @@ final class MemoryController {
         case ("closefile", 1): files.close()
         case ("reload", 1): return reply(["sent": files.reload()])
         case ("keepmine", 1): return reply(["sent": files.keepMine()])
+        case ("here", 2):
+            guard let url = URL(string: rest[1]), let origin = SiteOrigin.of(url) else { return #"{"error":"usage: memory here <http(s) url>"}"# }
+            model.sites.here = origin
+        case ("site", _) where rest.count >= 2:
+            switch rest[1] {
+            case "off": return reply(["sent": turnSiteOff(rest.count > 2 ? (SitesPage.origin(typed: rest[2]) ?? rest[2]) : nil)])
+            case "draft": perform(.siteDraft(rest.count > 2 ? text : ""))
+            case "on" where rest.count == 3: turnSiteOn(rest[2])
+            default: return #"{"error":"usage: memory site off [<url>] | draft <text> | on <origin>"}"#
+            }
         case ("show", 1): open()
         case ("close", 1): close()
         default:
@@ -317,6 +367,6 @@ private struct MemoryRoot: View {
     var send: (MemoryAction) -> Void
 
     var body: some View {
-        MemoryView(state: model.state, files: model.files, tab: model.tab, character: figure.character, editorApp: editorApp(), send: send)
+        MemoryView(state: model.state, files: model.files, tab: model.tab, character: figure.character, sites: model.sites, editorApp: editorApp(), send: send)
     }
 }

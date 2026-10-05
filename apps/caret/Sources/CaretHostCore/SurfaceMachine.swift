@@ -971,6 +971,9 @@ public final class SurfaceMachine {
         info.figure = figure?.rawValue
         info.character = world.character.rawValue
         info.lineText = headless ? lineText : nil
+        // Headless runs draw nothing, so a pop-up's rows are read from what VoiceOver would say of it (H5:
+        // a control the user sets reads "you set this").
+        if headless, let shown, case .popup(let popup) = shown.offer.kind { info.popupSpoken = SlipSpeech.popup(popup.spec, highlight: nil) }
         info.working = work.map { clock.now.timeIntervalSince($0.startedAt) }
         info.workingOn = work?.offerKey
         info.toast = toastInfo

@@ -216,6 +216,10 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var memoryReplies: UInt64 = 0
         /// M1: where the noticed facts behind an offer or a plan came from.
         public var provenances: UInt64 = 0
+        /// W2: the helper's word on whether Caret can see a browser's pages (`PageSight`).
+        public var pageEngine: UInt64 = 0
+        /// H5: answers to the host's `fileConfirm`.
+        public var fileConfirmReplies: UInt64 = 0
         /// `planRequest` lines written from the ask field, and `planProposal` answers received.
         public var planRequests: UInt64 = 0
         public var planProposals: UInt64 = 0
@@ -358,6 +362,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var figure: String?
         public var character: String?
         public var lineText: String?
+        /// Headless only: the pop-up on the panel, as `SlipSpeech.popup` says it.
+        public var popupSpoken: String?
         /// Seconds the accepted work has run.
         public var working: Double?
         /// The offer key (and helper task id) of the accepted work.
@@ -607,6 +613,9 @@ public struct DebugState: Codable, Equatable, Sendable {
     public var otherTabOwners: [String]?
     /// The writing checks in the focused field: marks, and the panels drawn for them.
     public var writing: WritingInfo?
+    /// "Caret can't see this page yet" (`PageSight`): the browser it shows for, the browsers asked
+    /// about this session, and those the helper says it cannot see.
+    public var pageSight: PageSight.DebugInfo?
 
     /// What `WritingCoordinator` holds and draws. Spans and frames, never the field's text.
     public struct WritingInfo: Codable, Equatable, Sendable {

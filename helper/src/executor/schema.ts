@@ -60,6 +60,13 @@ export const EndState = z.discriminatedUnion("kind", [
    * and so could not verify it (`unverifiable`).
    */
   z.object({ kind: z.literal("handoff"), ...InWindow, why: z.enum(["outbound", "destructive", "money", "system", "unverifiable"]) }),
+  /**
+   * The page's file control holds the file the user confirmed for this run (H5, lead decision 7). `wants` says which
+   * file in the user's words ("your resume"), for the slip and a hand-off. The executor attaches only through the
+   * page engine, and only the file confirmed for the task (engines/attach.ts); with no confirmation the step is the
+   * user's. It never holds beforehand, and nothing can undo it: a page may upload a file the moment it gets one.
+   */
+  z.object({ kind: z.literal("fileAttached"), ...InWindow, wants: z.string().min(1).max(80) }),
   /** An event with this title, start and end exists in the named calendar. Checked through the calendar interface, not the screen. */
   z.object({
     kind: z.literal("calendarEvent"),

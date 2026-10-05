@@ -33,6 +33,19 @@ public enum SlipSpeech {
     /// field's destination, value and state, the highlighted choice, a change, the steps, and what
     /// its keys do. The pop-up is one element with these words, so nothing on it is out of reach
     /// of VoiceOver before Tab acts on it.
+    /// A fields row's state in words, shown at the row's end and spoken after it; nil for a row
+    /// that is ready. `yours` (H5): a control Caret never writes or presses.
+    public static func fieldNote(_ state: PopupSpec.Fields.State) -> String? {
+        switch state {
+        case .ready: return nil
+        case .kept: return "kept"
+        case .unsure: return "unsure"
+        case .done: return "filled"
+        case .failed: return "not filled"
+        case .yours: return "you set this"
+        }
+    }
+
     public static func popup(_ spec: PopupSpec, highlight: Int?) -> String {
         var parts: [String] = []
         for block in spec.blocks {
@@ -44,13 +57,8 @@ public enum SlipSpeech {
             case .fields(let fields):
                 parts += fields.rows.map { row in
                     let value = row.value?.text ?? "kept as it is"
-                    let note: String?
-                    switch row.state {
-                    case .ready, .kept: note = nil
-                    case .unsure: note = "unsure"
-                    case .done: note = "filled"
-                    case .failed: note = "not filled"
-                    }
+                    // "kept as it is" already says what a kept row's note would.
+                    let note = row.state == .kept ? nil : fieldNote(row.state)
                     return ["\(row.destination.text): \(value)", note].compactMap { $0 }.joined(separator: ", ")
                 }
                 if fields.more > 0 { parts.append("And \(fields.more) more") }

@@ -106,6 +106,12 @@ export class ConfirmedFiles {
     return { ok: true };
   }
 
+  /** The file confirmed for `taskId`, as the user saw it, without reading it; null when there is none. */
+  confirmed(taskId: string): { name: string; size: number } | null {
+    const c = this.byTask.get(taskId);
+    return c === undefined ? null : { name: c.name, size: c.size };
+  }
+
   /** Drops the task's confirmation: the run ended, or the user took it back. */
   forget(taskId: string): void {
     this.byTask.delete(taskId);

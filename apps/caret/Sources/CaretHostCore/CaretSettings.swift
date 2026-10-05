@@ -93,10 +93,21 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     public var onboarded = false
     /// What the choices say about how the user works, as memory entries (`MemoryEntry`).
     public var memory: [MemoryEntry] = []
+    /// "Not on this site" (H5): web origins the user turned Caret off for in What Caret knows, sorted,
+    /// each once. The helper's page engines read and act in no frame at these origins.
+    public var sitesOff: [String] = []
 
     public init() {}
 
-    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory }
+    /// Turns Caret off or back on for one origin; an origin not in `SiteOrigin`'s form changes nothing.
+    public mutating func setSite(_ origin: String, off: Bool) {
+        guard SiteOrigin.isOrigin(origin) else { return }
+        var set = Set(sitesOff)
+        if off { set.insert(origin) } else { set.remove(origin) }
+        sitesOff = set.sorted()
+    }
+
+    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff }
 
     /// Strict: a file written by a newer host, or a role or level this host does not know, is an
     /// error the caller reports, not a guess.
@@ -115,6 +126,13 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         paused = try c.decode(Bool.self, forKey: .paused)
         onboarded = try c.decode(Bool.self, forKey: .onboarded)
         memory = try c.decode([MemoryEntry].self, forKey: .memory)
+        // Absent from a file written before H5: no site was turned off. An entry not in origin form
+        // is refused with the file, as an unknown role is.
+        let sites = try c.decodeIfPresent([String].self, forKey: .sitesOff) ?? []
+        if let bad = sites.first(where: { !SiteOrigin.isOrigin($0) }) {
+            throw DecodingError.dataCorruptedError(forKey: .sitesOff, in: c, debugDescription: "\(bad) is not a web origin")
+        }
+        sitesOff = Array(Set(sites)).sorted()
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -127,6 +145,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         try c.encode(paused, forKey: .paused)
         try c.encode(onboarded, forKey: .onboarded)
         try c.encode(memory, forKey: .memory)
+        try c.encode(sitesOff, forKey: .sitesOff)
     }
 
     public var gate: GatePolicy { GatePolicy(self) }

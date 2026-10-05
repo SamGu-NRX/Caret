@@ -448,6 +448,8 @@ interface Engine {
   session: EngineSession;
   tabId: number;
   cdp: Cdp | null;
+  /** The reader inside the routed link: in fixture mode it answers every verb noWindow (there is no caret-screen here). */
+  reader?: ReaderLink;
 }
 
 async function walk(e: Engine): Promise<PageSnapshot> {
@@ -882,6 +884,35 @@ async function batch4(e: Engine, site: FixtureSite, tmp: string): Promise<void> 
     const other = await text(site, "#cover_letter-filename");
     expect(shown === fileName && other === "", `the page shows '${shown}' for the resume and '${other}' for the cover letter`);
     return `${detail}; the page shows '${shown}'`;
+  });
+
+  await check("H5: a confirm-file run: 'attach my resume' plans the Greenhouse replica's resume input, the user confirms the file for that run, and the executor attaches it, verified by files[0] and the page's own file name", async () => {
+    await openPage(e, site, "/replica/greenhouse", "Resume/CV*");
+    await link.run({ kind: "walk", pid, windowId });
+    const p = await e.helper.handlePlanRequest({ type: "planRequest", v: 1, requestId: "h5-ask", at: Date.now(), instruction: "attach my resume", windowId });
+    expect(p.outcome === "proposed" && p.attach?.field === "Resume/CV*" && p.handoff === null, `proposal ${JSON.stringify({ outcome: p.outcome, attach: p.attach, error: p.error })}`);
+    const taskId = p.offerKey as string;
+    // Before the confirmation the file is no one's: the helper refuses another task's, and nothing reached the page.
+    expect((await text(site, "#resume-filename")) === "", "the page shows a file before any run");
+    const reply = e.helper.handleFileConfirm({ type: "fileConfirm", v: 1, requestId: "h5-file", at: Date.now(), taskId, path: filePath });
+    expect(reply.outcome === "confirmed" && reply.file?.name === fileName && reply.file.size === fileSize, `confirm ${JSON.stringify(reply)}`);
+    // Fixture mode has no caret-screen; the run's input watch is the reader's to answer, and it says yes for this run only.
+    const reader = e.reader as ReaderLink;
+    const was = reader.run;
+    reader.run = async (verb) => (verb.kind === "watchInput" ? { type: "verbResult", v: 1, id: "h5-watch", at: Date.now(), outcome: "ok", detail: null } : was(verb));
+    let done: Awaited<ReturnType<Helper["handleOfferAccept"]>>;
+    try {
+      done = await e.helper.handleOfferAccept({ type: "offerAccept", v: 1, offerId: taskId, actionId: "run", overrides: {}, at: Date.now() });
+    } finally {
+      reader.run = was;
+    }
+    expect(done?.outcome === "done" && done.acted === 1, `run ${JSON.stringify(done)}`);
+    const shown = await text(site, "#resume-filename");
+    const other = await text(site, "#cover_letter-filename");
+    expect(shown === fileName && other === "", `the page shows '${shown}' for the resume and '${other}' for the cover letter`);
+    // Used once: the confirmation went with the run.
+    expect(e.helper.files.confirmed(taskId) === null, "the confirmation outlived its run");
+    return `proposed '${p.attach?.field}' (${p.attach?.wants}); confirmed ${reply.file?.name} ${reply.file?.size} bytes; run ${done?.outcome}, acted ${done?.acted}; the page shows '${shown}'`;
   });
 
   await check("W4 1: Ashby replica: the clipped input under the resume dropzone is named by its visible label and takes the confirmed file, though the label then names the file too", async () => {
@@ -1853,7 +1884,7 @@ async function main(): Promise<number> {
     results.push({ name: "the active tab can be walked", pass: false, ms: 0, detail: outcome(first.result) });
     return report(front0, { nmProbe, warnings });
   }
-  const e: Engine = { host, helper, session, tabId: first.snapshot.tabId, cdp };
+  const e: Engine = { host, helper, session, tabId: first.snapshot.tabId, cdp, reader: noReader };
   if (args["dump-walk"]) {
     say(JSON.stringify({ frames: first.snapshot.frames.map((f) => ({ frameId: f.frameId, parent: f.parentFrameId, origin: f.origin, path: f.path, iframes: f.iframes, controls: f.controls.length })), missing: first.snapshot.missing }));
     return report(front0);

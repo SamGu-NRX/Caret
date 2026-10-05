@@ -17,6 +17,7 @@ import { GRANT_MAX_MS, PROTOCOL_VERSION, type ActionType, type AppRef, type UseO
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
+import type { ConfirmedFiles } from "../engines/attach.ts";
 import { classifyPress, type RiskClass } from "./risk.ts";
 import type { JournalPort, JournalRecord, LedgerEntry, PendingAct } from "./journal.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
@@ -48,6 +49,8 @@ export interface ExecutorDeps {
   onUse?: (u: TaskUse) => void;
   /** Whether memory entry `id` still holds `value` (Step.memory). Without it, a step that names an entry is refused. */
   memoryHolds?: (id: string, value: string) => boolean;
+  /** The file each task may attach, confirmed by the user (H5). Without it every attach step is handed to the user. */
+  files?: ConfirmedFiles;
   /**
    * Whether the task may still act, asked right before every write, press, raise and calendar add, and by
    * `recheck` for every live task: what it depends on (Caret not paused, its skill still on its own, the
@@ -838,6 +841,7 @@ export class Executor {
       return;
     }
     if (end.kind === "windowFocused") return this.raiseStep(task, i, w, step);
+    if (end.kind === "fileAttached") return this.attachStep(task, i, w, end, step);
     if (end.kind === "handoff") {
       const node = await this.resolve(task, i, w, end.target, step.says);
       const label = (node.label ?? "").trim();
@@ -968,6 +972,41 @@ export class Executor {
     }
     this.checkUnexpected(seen, attribute === "value" ? node.key : null);
     await this.verified(task, i, step);
+  }
+
+  /**
+   * Attaches the file the user confirmed for this task to the page's file input (H5, lead decision 7), through the
+   * page engine, which checks the bytes against the confirmation and the page's own file list after. With no page
+   * engine or no confirmation, the step is the user's. An attach cannot be undone, so it adds nothing to the ledger:
+   * a page may upload a file the moment it gets one.
+   */
+  private async attachStep(task: Task, i: number, w: WindowState, end: Extract<EndState, { kind: "fileAttached" }>, step: Step): Promise<void> {
+    const node = await this.resolve(task, i, w, end.target, step.says);
+    const what = (node.label ?? "").trim() === "" ? end.target.describe : `'${(node.label ?? "").trim()}'`;
+    const files = this.deps.files;
+    const link = this.deps.reader;
+    if (files === undefined || link.attachFile === undefined || !w.window.windowId.startsWith("page:")) {
+      throw StepStop.handoff(`Caret attaches files only on a page Caret for Chrome reads, so attaching ${end.wants} to ${what} is yours`);
+    }
+    // The name, before the engine reads the confirmation (a read uses it up).
+    const name = files.confirmed(task.id)?.name;
+    if (name === undefined) throw StepStop.handoff(`no file was confirmed for this run, so attaching ${end.wants} to ${what} is yours`);
+    this.checkSession(task);
+    this.checkInterrupt(task);
+    this.authorizeAct(task, w.window.windowId);
+    const r = await link.attachFile(w.window.windowId, node.key, task.id, files);
+    if (r.verb.outcome !== "ok" && task.interrupt !== null) throw new Interrupted();
+    // The file the engine refused before the page saw it (a changed file, an expired confirmation): nothing landed.
+    if (r.verb.outcome === "notAllowed") throw StepStop.handoff(`Caret did not attach ${end.wants}: ${r.verb.detail ?? "refused"}; attaching it is yours`);
+    if (r.verb.outcome !== "ok") throw StepStop.stop("reader", `the page did not take the file: ${r.verb.outcome}${r.verb.detail === null ? "" : ` (${r.verb.detail})`}`);
+    // Verified by the page: a file input's own file list names the file; a drop shows its name on the page.
+    const attached = r.page?.attached;
+    const landed = attached !== undefined && (attached.via === "input" ? attached.file?.name === name : attached.shown);
+    if (!landed) {
+      throw StepStop.stop("mismatch", "mismatch: the page does not show the attached file");
+    }
+    task.acted++;
+    this.progress(task, "verified", i, null);
   }
 
   private async pressStep(task: Task, i: number, w: WindowState, target: Target, step: Step): Promise<void> {
@@ -1349,6 +1388,9 @@ export class Executor {
         return w.window.title === end.title;
       case "handoff":
         // The user's own press is never something Caret finds already done.
+        return false;
+      case "fileAttached":
+        // A file input's contents are not in the walk: the attach runs, and the page's own file list verifies it.
         return false;
       case "windowFocused":
         // The window must be the app's focused one and the app the one the user is in: a request walk

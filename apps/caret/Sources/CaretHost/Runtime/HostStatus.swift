@@ -19,6 +19,7 @@ final class HostStatus: @unchecked Sendable {
         /// The ghost overlay's recent attempts, oldest first, at most `GhostFit.keptRecords`.
         var ghostFits: [GhostFit.Record] = []
         var writing: DebugState.WritingInfo?
+        var pageSight: PageSight.DebugInfo?
     }
 
     struct KeyStamp: Equatable {

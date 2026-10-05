@@ -31,7 +31,11 @@ export const ACTION_KEYS = ["tab", "cmd-1", "cmd-2", "cmd-3", "down"] as const;
 export const ActionKey = z.enum(ACTION_KEYS);
 export type ActionKey = z.infer<typeof ActionKey>;
 
-export const FIELD_STATES = ["ready", "kept", "unsure", "done", "failed"] as const;
+/**
+ * A fields row's state. `yours` (H5): a control Caret never writes or presses (a select, a radio group, a date), with
+ * the value the user sets themselves ("Pizza size: Large").
+ */
+export const FIELD_STATES = ["ready", "kept", "unsure", "done", "failed", "yours"] as const;
 export const STEP_STATES = ["pending", "running", "done", "failed"] as const;
 export const BLOCK_CATALOG = ["header", "facts", "fields", "choices", "diff", "steps", "source", "actions"] as const;
 export const MAX_CHOICES = 3;
@@ -289,7 +293,7 @@ export function parseBlock(j: unknown, path: string): PopupBlock {
         const rp = `${path}.rows[${i}]`;
         const row = object(raw, rp);
         const state = str(row, "state", rp);
-        if (!(FIELD_STATES as readonly string[]).includes(state)) throw E.wrongType(`${rp}.state`, "ready, kept, unsure, done or failed");
+        if (!(FIELD_STATES as readonly string[]).includes(state)) throw E.wrongType(`${rp}.state`, "ready, kept, unsure, done, failed or yours");
         const destination = value(row, "destination", rp);
         const v = optValue(row, "value", rp);
         return { destination, ...(v === undefined ? {} : { value: v }), state: state as (typeof FIELD_STATES)[number] };

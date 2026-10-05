@@ -31,6 +31,11 @@ enum MemoryAction: Equatable {
     case keepMyText
     /// The open file in the user's own editor (the app that opens .md files).
     case openInEditor
+    // H5, the Sites tab: the Add a site field's text; Not on this site (an origin, or the field's
+    // when nil); Turn back on.
+    case siteDraft(String)
+    case siteOff(String?)
+    case siteOn(String)
 }
 
 /// "What Caret knows" (DIRECTION.md 5.8): what Caret remembers, in groups, and what it may do per
@@ -48,7 +53,7 @@ enum MemoryAction: Equatable {
 /// motion, since each follows a key or a click the user is watching. Under Reduce Motion only the
 /// wash (a color change) and the fades remain.
 struct MemoryView: View {
-    enum Tab: String, CaseIterable, Codable { case memory, permissions }
+    enum Tab: String, CaseIterable, Codable { case memory, permissions, sites }
 
     /// DIRECTION.md's 620 wide. 600 tall rather than 560: with the permissions footer fixed under the
     /// list, 560 left the table scrolling after its fourth rule in the gallery's state.
@@ -65,6 +70,8 @@ struct MemoryView: View {
     var files = MemoryFiles.State()
     var tab: Tab
     var character: FigureCharacter
+    /// The Sites tab: where Caret stays out (H5).
+    var sites = SitesPage.State()
     var animated = true
     var now = Date()
     /// A row drawn as if the pointer were on it, for renders (hover does not exist off screen).
@@ -90,7 +97,7 @@ struct MemoryView: View {
                 .padding(.horizontal, 32)
                 .padding(.top, 34)
                 .layoutPriority(1)
-            TextTabs(tabs: [(Tab.memory, "Memory"), (.permissions, "Permissions")], current: tab) { send(.tab($0)) }
+            TextTabs(tabs: [(Tab.memory, "Memory"), (.permissions, "Permissions"), (.sites, "Sites")], current: tab) { send(.tab($0)) }
                 .padding(.horizontal, 32)
                 .padding(.top, 18)
                 .layoutPriority(1)
@@ -100,6 +107,7 @@ struct MemoryView: View {
                     switch tab {
                     case .memory: memory
                     case .permissions: permissions
+                    case .sites: sitesList
                     }
                 }
                 .padding(.horizontal, 32)
@@ -128,7 +136,7 @@ struct MemoryView: View {
                     .tracking(-0.3)
                     .foregroundStyle(Color(token: Tokens.ink))
                     .accessibilityAddTraits(.isHeader)
-                Text(tab == .memory ? Self.subtitle : Self.permissionsIntro)
+                Text(tab == .memory ? Self.subtitle : tab == .permissions ? Self.permissionsIntro : SitesPage.intro)
                     .font(Tokens.Font.chrome)
                     .foregroundStyle(Color(token: Tokens.ink2))
                     .fixedSize(horizontal: false, vertical: true)
@@ -218,6 +226,83 @@ struct MemoryView: View {
             }
         }
         .probed("table")
+        .padding(.top, 6)
+    }
+
+    // MARK: - Sites (H5, "Not on this site")
+
+    /// The page the user was on, with its switch; the sites Caret stays out of, each with Turn back
+    /// on; and a field to add one by address. A site turned off or back on fades its row in or out
+    /// over 120 ms, as a forgotten fact's row does; nothing moves under Reduce Motion.
+    private var sitesList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let here = SitesPage.here(sites.here, off: sites.off) {
+                HStack(alignment: .center, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(SitesPage.hereLabel)
+                            .font(Tokens.Font.chromeSmall)
+                            .foregroundStyle(Color(token: Tokens.ink2))
+                        Text(SiteOrigin.display(here))
+                            .font(Tokens.Font.row)
+                            .foregroundStyle(Color(token: Tokens.ink))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 0)
+                    Button(SitesPage.turnOff) { send(.siteOff(here)) }
+                        .buttonStyle(WindowButtonStyle(kind: .ink, small: true))
+                        .accessibilityLabel("Not on \(SiteOrigin.display(here))")
+                }
+                .padding(.vertical, 12)
+                .accessibilityElement(children: .contain)
+                Hairline()
+            }
+            GroupHead(text: SitesPage.offHead)
+                .padding(.top, 20)
+                .padding(.bottom, 2)
+            if sites.off.isEmpty {
+                Text(SitesPage.empty)
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                    .padding(.vertical, 9)
+                Hairline()
+            }
+            ForEach(sites.off, id: \.self) { origin in
+                HStack(alignment: .center, spacing: 14) {
+                    Text(SiteOrigin.display(origin))
+                        .font(Tokens.Font.row)
+                        .foregroundStyle(Color(token: Tokens.ink))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button(SitesPage.turnOn) { send(.siteOn(origin)) }
+                        .buttonStyle(WindowButtonStyle(kind: .key, small: true))
+                        .accessibilityLabel("Turn Caret back on for \(SiteOrigin.display(origin))")
+                }
+                .padding(.vertical, 10)
+                .transition(.opacity.animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil))
+                Hairline()
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                // The field's name stays on screen: a placeholder alone goes as soon as one letter is typed.
+                Text(SitesPage.addTitle)
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                    .accessibilityHidden(true)
+                HStack(alignment: .center, spacing: 10) {
+                    EntryField(
+                        title: SitesPage.addTitle, text: sites.draft, placeholder: SitesPage.placeholder,
+                        onChange: { send(.siteDraft($0)) }, onSubmit: { send(.siteOff(nil)) }
+                    )
+                    .frame(maxWidth: 280)
+                    Button(SitesPage.turnOff) { send(.siteOff(nil)) }
+                        .buttonStyle(WindowButtonStyle(kind: .key, small: true))
+                        .disabled(sites.draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if let problem = sites.problem { ProblemLine(text: problem) }
+            }
+            .padding(.top, 18)
+        }
         .padding(.top, 6)
     }
 

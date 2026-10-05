@@ -17,6 +17,7 @@ import { secretIn, traceValue, type MemoryValue, type Trace } from "./trace.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { misfit } from "../fill/kinds.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
+import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
 
 export class PlannerError extends Error {
   readonly code: PlanErrorCode;
@@ -38,6 +39,8 @@ export interface CheckedPlan {
   writes: { step: number; node: Node; value: string; trace: Trace }[];
   /** The last step, when it hands a press to the user. */
   handoff: { step: number; node: Node; label: string; why: HandoffWhy } | null;
+  /** The step that attaches the file the user confirms (H5), at most one; null when the plan attaches none. */
+  attach: { step: number; node: Node; label: string; wants: string } | null;
 }
 
 export interface PlanContext {
@@ -71,11 +74,12 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
   let windowKey: string | null = null;
   const writes: CheckedPlan["writes"] = [];
   let handoff: CheckedPlan["handoff"] = null;
+  let attach: CheckedPlan["attach"] = null;
   for (const [i, step] of plan.steps.entries()) {
     const at = `step ${i + 1} ('${step.says}')`;
     if (handoff !== null) throw new PlannerError("stepAfterHandoff", `${at} comes after the hand-off at step ${handoff.step + 1}, so it would never run`);
     const end = step.end;
-    if (end.kind !== "valueEquals" && end.kind !== "handoff") throw new PlannerError("unsupportedStep", `${at} is a ${end.kind} step; a planned task only writes fields and hands presses to you`);
+    if (end.kind !== "valueEquals" && end.kind !== "handoff" && end.kind !== "fileAttached") throw new PlannerError("unsupportedStep", `${at} is a ${end.kind} step; a planned task only writes fields, attaches a file you confirm, and hands presses to you`);
     if (step.via !== undefined) throw new PlannerError("unsupportedStep", `${at} acts through ${step.via.kind}; a planned task never presses or opens anything itself`);
 
     const key = JSON.stringify(end.window);
@@ -89,6 +93,13 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
     if ("ambiguous" in found) throw new PlannerError("ambiguousTarget", `${at}: ${found.ambiguous.length} elements match its target in '${w.window.title}'`);
     const node = found.node;
 
+    if (end.kind === "fileAttached") {
+      // Only a page's file input takes a file, through its page engine (engines/page-link.ts attachFile).
+      if (node.subrole !== FILE_INPUT_SUBROLE) throw new PlannerError("notEditable", `${at}: ${node.label === undefined ? "its target" : `'${node.label}'`} is not a file input`);
+      if (attach !== null) throw new PlannerError("unsupportedStep", `${at} attaches a second file; a planned task attaches one`);
+      attach = { step: i, node, label: (node.label ?? "").trim(), wants: end.wants };
+      continue;
+    }
     if (end.kind === "valueEquals") {
       if (node.editable !== true) throw new PlannerError("notEditable", `${at}: ${node.label === undefined ? "its target" : `'${node.label}'`} is not a field Caret can write`);
       if (node.states?.includes("secure")) throw new PlannerError("notEditable", `${at}: its target is a password field, which is left to you`);
@@ -114,7 +125,7 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
   }
   // The schema requires a step, so the loop bound a window.
   if (window === null) throw new PlannerError("schema", "the plan has no steps");
-  return { plan, window, writes, handoff };
+  return { plan, window, writes, handoff, attach };
 }
 
 function bindWindow(model: ScreenModel, sel: WindowSel, at: string): WindowState {

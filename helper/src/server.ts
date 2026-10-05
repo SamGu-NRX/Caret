@@ -220,6 +220,8 @@ export class HelperServer {
                 if (p !== null) s.write(JSON.stringify(p) + "\n");
               });
           }
+          // H5: which file the user took for a run names a path, so the answer goes to the asker only.
+          else if (m.data.type === "fileConfirm") s.write(JSON.stringify(this.helper().handleFileConfirm(m.data)) + "\n");
           // Records hold window titles and status lines, so a list goes to the asker only, as memory does.
           else if (m.data.type === "activityRequest") s.write(JSON.stringify(this.helper().handleActivity(m.data)) + "\n");
           else if (m.data.type === "memoryRequest") {

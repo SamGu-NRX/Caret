@@ -36,6 +36,10 @@ public enum HelperInbound: Equatable, Sendable {
     case memoryDocumentReply(MemoryDocumentReply)
     /// D2-02: the router's decision for a field. Decoded and checked only; H6 acts on it.
     case routeDecision(RouteDecision)
+    /// W2: whether Caret can see a browser's pages (`PageSight`).
+    case pageEngine(PageEngineState)
+    /// H5: the answer to this host's `fileConfirm`, to this connection only.
+    case fileConfirmReply(FileConfirmReply)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -61,6 +65,8 @@ public enum HelperInbound: Equatable, Sendable {
         case .memoryProvenance: return MemoryProvenance.type
         case .memoryDocumentReply: return MemoryDocumentReply.type
         case .routeDecision: return RouteDecision.type
+        case .pageEngine: return PageEngineState.type
+        case .fileConfirmReply: return FileConfirmReply.type
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -102,6 +108,13 @@ public enum HelperInbound: Equatable, Sendable {
             return .memoryProvenance(try MemoryProvenance.decode(line))
         case MemoryDocumentReply.type:
             return .memoryDocumentReply(try MemoryDocumentReply.decode(line))
+        case FileConfirmReply.type:
+            return .fileConfirmReply(try JSONDecoder().decode(FileConfirmReply.self, from: line))
+        case FileConfirm.type:
+            // The host's own confirmation, echoed back; not for a consumer.
+            return .notForConsumer(type: envelope.type)
+        case PageEngineState.type:
+            return .pageEngine(try JSONDecoder().decode(PageEngineState.self, from: line))
         case RouteDecision.type:
             return .routeDecision(try JSONDecoder().decode(RouteDecision.self, from: line))
         case RoutingContext.type:
