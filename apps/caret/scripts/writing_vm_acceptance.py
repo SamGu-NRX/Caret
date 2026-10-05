@@ -209,15 +209,19 @@ def native(pid, out_dir):
     before = last_insertion().get("claimID", 0)
     press(pid, "tab")
     ins = wait_for(lambda: (lambda i: i if i.get("claimID", 0) > before else None)(last_insertion()), 5) or {}
+    fixed_at = time.time()
     fixed = sentence.replace("recieve", "receive")
     check("native: Tab fixed it", ins.get("ok") is True and tool("value", pid).get("value") == fixed, insertion=ins)
-    # The toast holds ⌘Z for its lifetime (UndoGrant.defaultLifetime, 5 s); after it, ⌘Z is TextEdit's.
+    # The toast's grant holds ⌘Z for UndoGrant.defaultLifetime (5 s) from the fix; after it, ⌘Z is
+    # TextEdit's. Waited out by time; the host's lastUndo must not change, which shows Caret took
+    # no part in this ⌘Z.
     gone = wait_for(lambda: (state().get("writing") or {}).get("panelRole") != "toast", 8, 0.2)
-    time.sleep(0.5)
+    time.sleep(max(0, fixed_at + 6.5 - time.time()))
     earlier = state().get("lastUndo")
     u1 = tool("cmdz", pid).get("value")
+    later = state().get("lastUndo")
     check("native: with the toast gone, one TextEdit ⌘Z puts back exactly the sentence as typed",
-          gone is not None and u1 == sentence and state().get("lastUndo") == earlier, value=u1, typed=sentence)
+          u1 == sentence and later == earlier, value=u1, typed=sentence, toastGone=gone is not None, lastUndo=[earlier, later])
     u2 = tool("cmdz", pid).get("value")
     check("native: the next TextEdit ⌘Z undoes the typing", u2 is not None and u2 != u1 and sentence.startswith(u2), value=u2)
 

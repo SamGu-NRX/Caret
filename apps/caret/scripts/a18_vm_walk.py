@@ -264,6 +264,19 @@ def counter(state, name):
     return (state.get("counters") or {}).get(name, 0)
 
 
+def ghost_counters(state):
+    """The host's counters that say why ghost text was or was not offered."""
+    prefixes = ("held.ghost", "offer.", "suppressed.", "discarded.", "withdrawn.ghost", "replay")
+    return {k: v for k, v in (state.get("counters") or {}).items() if k.startswith(prefixes)}
+
+
+def front_app():
+    """LaunchServices' front app, as the keys see it."""
+    asn = subprocess.run(["lsappinfo", "front"], capture_output=True, text=True).stdout.strip()
+    info = subprocess.run(["lsappinfo", "info", "-only", "name", asn], capture_output=True, text=True).stdout.strip()
+    return info.split("=")[-1].strip('" ') if info else None
+
+
 def replay_for(before, after):
     for e in REPLAY:
         if before.endswith(e["before"]) and e["after"].rstrip() == after.rstrip():
@@ -439,7 +452,8 @@ def tab_case(name, before, expected, word, taken):
             offer = s["offer"]
             break
         time.sleep(0.1)
-    if not check(f"{name}: the recorded phrase is offered", offer and offer.get("text") == expected, offer=offer, expected=expected):
+    if not check(f"{name}: the recorded phrase is offered", offer and offer.get("text") == expected, offer=offer, expected=expected,
+                 front=front_app(), counters=ghost_counters(s), fit=(s.get("ghostFits") or [None])[-1]):
         close(pid)
         return
     ensure_focus(pid, wid)
