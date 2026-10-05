@@ -44,8 +44,8 @@ export function dateFormat(n: Node): DateFormat {
  * sign-ups. Plan section 4: "never infer consent from a checkbox label". Written for common form wording, not
  * measured; a control that matches gets no value, written or handed off, even when a source seems to say yes. D2-04's
  * review found certification wording the first list missed ("All information is accurate"), so it names legal and
- * certification phrasing too. A word list stays incomplete; a box is also written only on a label addressed to the
- * user (statementLabel) and a fact the source states (statesFact).
+ * certification phrasing too. A word list stays incomplete, so a box gets a tick only by its label's kind as well
+ * (boxKind: a box the user speaks in never does) and a fact the source states (statesFact).
  */
 const CONSENT = /\b(?:agree|consent|certif(?:y|ies)|acknowledge|confirm|accept|terms|privacy|policy|polic(?:ies)|authori[sz]e|authori[sz]ation|newsletter|marketing|news|offers?|promotions?|specials|coupons|subscribe|sign me up|send me|email me|text me|notify|updates|remember me|save (?:this|my)|keep me|allow|opt|accurate|true and correct|attest|declare|swear|pledge|signature|e-?sign\w*|electronic(?:ally)?|waive[rs]?|waiver|liabilit(?:y|ies)|release|disclos\w*|permission|code of conduct|have read|understand)\b/i;
 export function consentLike(label: string): boolean {

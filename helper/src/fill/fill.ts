@@ -1161,8 +1161,8 @@ export async function proposeFill(
    * - a select or radio group: an option whose name equals the span exactly (matchOption), not one the span merely
    *   names among other words (optionInText, the hand-off's rule);
    * - a box: the span states the fact the box asks (controls.ts statesFact) or lists the box's label among others
-   *   (namedInList); written only from the window the user just left, on a label that asks or speaks for the user (or a
-   *   list item), and never an ARIA switch;
+   *   (namedInList). A box the user speaks in gets no value (boxKind). Written only for a box that asks the user a fact,
+   *   from the yes of a "Label: yes" line in the window the user just left, and never an ARIA switch;
    * - a date, time or date and time: read by the value resolver in that format (when.ts); a month or week is the user's.
    * A control whose label, nearest label or section reads as consent, certification or a sign-up gets no value at all.
    * A Yes/No question built from toggle buttons (W4) is never written: its press cannot be undone with the rest.
