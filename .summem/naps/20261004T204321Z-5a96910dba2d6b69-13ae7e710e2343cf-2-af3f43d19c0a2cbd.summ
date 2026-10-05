@@ -1,1 +1,0 @@
-W3: Helium 0.18 loads --load-extension on a temp profile and reads NativeMessagingHosts there; page.sock proofs bind the helper pid so a swapped socket can't relay the host's hello.

@@ -1,0 +1,1 @@
+B21-W3: only hello host: true is a host; revokes are immediate; reader wants a 0700 socket dir and helperAuth; swift mutation runs use --build-path /tmp; accept.ts needs CARET_HEAVY_LOCK_HELD=1 under a held lock and --sign-identity; connectNative keeps the MV3 worker alive.

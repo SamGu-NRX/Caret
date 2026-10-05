@@ -1,1 +1,0 @@
-W3: bridge reaches host over XPC (no page.sock key); accept.ts needs --sign-identity/--other-identity, boots a temp launchd testhost. Headless CfT: createTarget steals focus, activateTarget won't return it.
