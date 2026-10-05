@@ -10,11 +10,11 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type AppRef, type GoalProgress, type Node, type TypedValue } from "../src/protocol.ts";
-import { INTENT_ROUTE, WRITER_ROUTE } from "../src/writer/config.ts";
+import { CANDIDATES, INTENT_ROUTE, WRITER_ROUTE } from "../src/writer/config.ts";
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
 import { button, goalScene, line, textArea, textField, type DeskWindow, type GoalScene } from "../test/goal-desk.ts";
 
-const { values: a } = parseArgs({ options: { out: { type: "string" }, cases: { type: "string", default: "fixtures/goals/b30-cases.json,fixtures/goals/b30-lead-cases.json" }, budget: { type: "string", default: "0.15" }, "space-ms": { type: "string", default: "25000" }, only: { type: "string" }, maker: { type: "string", default: "writer" } } });
+const { values: a } = parseArgs({ options: { out: { type: "string" }, cases: { type: "string", default: "fixtures/goals/b30-cases.json,fixtures/goals/b30-lead-cases.json" }, budget: { type: "string", default: "0.15" }, "space-ms": { type: "string", default: "25000" }, only: { type: "string" }, maker: { type: "string", default: "writer" }, "goal-model": { type: "string" } } });
 // How Ask makes its intent: the configured writer (INTENT_ROUTE), or Jev's staged questions when the writer's quota is spent.
 if (a.maker !== "writer" && a.maker !== "jev") throw new Error("--maker is writer or jev");
 if (a.out === undefined) throw new Error("usage: node scripts/goal-drafts-eval.ts --out DIR [--cases a.json,b.json] [--budget USD] [--space-ms MS] [--only id,id]");
@@ -97,7 +97,11 @@ function spaced(w: WriterPort): WriterPort {
     },
   };
 }
-const goalWriter = spaced(makeWriterPort(WRITER_ROUTE));
+// The goal writer is the configured WRITER_ROUTE unless --goal-model names another candidate (writer/config.ts), as
+// when the configured model's daily tokens are spent; every row records the model that served it.
+const goalRoute = a["goal-model"] === undefined ? WRITER_ROUTE : CANDIDATES.find((r) => r.model === a["goal-model"]);
+if (goalRoute === undefined) throw new Error(`no writer route ${a["goal-model"]}; one of ${CANDIDATES.map((r) => r.model).join(", ")}`);
+const goalWriter = spaced(makeWriterPort(goalRoute));
 const intentWriter = spaced(makeWriterPort(INTENT_ROUTE));
 const jevLive = makeJevClient(() => loadJevKey());
 let jevSpent = 0;
