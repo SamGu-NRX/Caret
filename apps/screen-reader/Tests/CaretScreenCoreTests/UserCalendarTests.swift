@@ -3,8 +3,8 @@ import Testing
 @testable import CaretScreenCore
 
 /// The user's calendars as EventKit would show them to the shipped app (H8): a synced default calendar,
-/// a second writable one, a read-only subscription, and an event of the user's own that is identical to
-/// the one Caret will add. Every call is logged, so a test can show what was never touched.
+/// a second writable one, a read-only subscription, and, in the second, an event of the user's own that
+/// is identical to the one Caret will add. Every call is logged, so a test can show what was never touched.
 private final class UserCalendars: CalendarBackend, @unchecked Sendable {
     var access = true
     var calls: [String] = []
@@ -17,7 +17,7 @@ private final class UserCalendars: CalendarBackend, @unchecked Sendable {
     struct ReadError: Error, CustomStringConvertible { var description: String { "no full Calendar access" } }
 
     init() {
-        events["users-own"] = BackendEvent(id: "users-own", calendarID: "home", title: "Coffee with Dana", start: t("2026-10-08T15:00:00-05:00"), end: t("2026-10-08T15:30:00-05:00"))
+        events["users-own"] = BackendEvent(id: "users-own", calendarID: "work", title: "Coffee with Dana", start: t("2026-10-08T15:00:00-05:00"), end: t("2026-10-08T15:30:00-05:00"))
     }
 
     func hasFullAccess() -> Bool { calls.append("access"); return access }
@@ -76,7 +76,7 @@ private func add(_ a: CalendarAdapter, task: String = "t1", title: String = "Cof
         let b = UserCalendars()
         let choice = Choice("work")
         let a = CalendarAdapter(backend: b, scope: .user(choice: { choice.id }), zone: chicago)
-        #expect(b.events[try #require(add(a, task: "t1")).id]?.calendarID == "work")
+        #expect(b.events[try #require(add(a, task: "t1", title: "Coffee with Dana and Sam")).id]?.calendarID == "work")
         choice.id = "holidays"
         #expect(b.events[try #require(add(a, task: "t2", title: "Lunch")).id]?.calendarID == "home", "read-only: the default stands in")
         choice.id = "deleted-calendar"
@@ -112,6 +112,23 @@ private func add(_ a: CalendarAdapter, task: String = "t1", title: String = "Cof
         _ = try #require(add(a, task: "t1"))
         #expect(a.perform(.calendarAdd(calendar: label, title: "Coffee with Dana", start: start, end: end, taskId: "t2"))
                 == .refused(.changed, "an identical event is already in the calendar; nothing was added"))
+    }
+
+    /// Review finding 3: a reader that restarted has no record of its earlier adds, so the destination's own
+    /// events stop a second copy, the user's included; nothing is saved and nothing of theirs is touched.
+    @Test func anEventTheCalendarAlreadyHoldsIsNotAddedAgainAfterARestart() throws {
+        let b = UserCalendars()
+        let before = CalendarAdapter(backend: b, scope: .user(choice: { nil }), zone: chicago)
+        _ = try #require(add(before))
+        let restarted = CalendarAdapter(backend: b, scope: .user(choice: { nil }), zone: chicago)
+        #expect(restarted.perform(.calendarAdd(calendar: label, title: "Coffee with Dana", start: start, end: end, taskId: "t9"))
+                == .refused(.changed, "an identical event is already in the calendar; nothing was added"))
+        #expect(b.events.values.filter { $0.calendarID == "home" }.count == 1)
+        let toWork = CalendarAdapter(backend: b, scope: .user(choice: { "work" }), zone: chicago)
+        #expect(toWork.perform(.calendarAdd(calendar: label, title: "Coffee with Dana", start: start, end: end, taskId: "t10"))
+                == .refused(.changed, "an identical event is already in the calendar; nothing was added"), "the user's own identical event")
+        #expect(b.events["users-own"] != nil)
+        #expect(!b.calls.contains("remove users-own"))
     }
 
     /// An event moved out of the calendar Caret put it in is no longer Caret's to remove.

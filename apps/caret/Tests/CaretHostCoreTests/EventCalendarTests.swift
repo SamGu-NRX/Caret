@@ -112,9 +112,10 @@ final class CalendarPermissionFlowTests: XCTestCase {
         ]))
     }
 
-    func testAHelperGoneByTheAnswerEndsOnTheHelperDownLine() throws {
+    /// The accept cannot be written when macOS answers: the helper-down line, at once.
+    func testAnAcceptThatCannotBeSentWhenMacOSAnswersEndsOnTheHelperDownLine() throws {
         let calendars = FakeCalendars()
-        play(rig(calendars), Transition("helper down while macOS asks", [
+        play(rig(calendars), Transition("send fails at the answer", [
             .screen { $0.front() },
             .offer(try eventOffer()),
             .press(Fx.tab()),
@@ -122,6 +123,21 @@ final class CalendarPermissionFlowTests: XCTestCase {
             .calendarAnswered,
             .expect(.workingOn(nil)),
             .expect(.counted("surface.accept.unsent")),
+        ]))
+    }
+
+    /// Review finding 4: the connection closes while macOS asks. The work ends with it, and the
+    /// answer sends nothing.
+    func testTheHelperGoingWhileMacOSAsksDropsTheHeldAccept() throws {
+        let calendars = FakeCalendars()
+        play(rig(calendars), Transition("connection lost while macOS asks", [
+            .screen { $0.front() },
+            .offer(try eventOffer()),
+            .press(Fx.tab()),
+            .linkLost,
+            .expect(.workingOn(nil)),
+            .calendarAnswered,
+            .sent([]),
         ]))
     }
 

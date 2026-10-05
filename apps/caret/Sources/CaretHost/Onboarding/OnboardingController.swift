@@ -52,6 +52,10 @@ final class OnboardingController {
     var sendAccept: (OfferAccept) -> Bool = { _ in false }
     var sendStop: (OfferStop) -> Bool = { _ in false }
     var sendControl: (TaskControl) -> Bool = { _ in false }
+    /// H8: asks for Calendar access before a found event card's accept goes, as at the caret (`SurfaceMachine`).
+    var calendars: CalendarAccessAsking = EventKitCalendars.shared
+    /// The found event card's key while its accept waits on macOS's Calendar prompt.
+    private var calendarHeld: String?
     /// The name and email typed on the `know` screen, for memory to keep.
     var onRemember: ([TypedAbout]) -> Void = { _ in }
     /// Skip after an earlier Continue: those values are not to be kept.
@@ -126,6 +130,7 @@ final class OnboardingController {
         if flow?.state.finished == false {
             flow?.cancelTimers()
             flow = nil
+            calendarHeld = nil
         }
         model.state = flow?.state
     }
@@ -173,8 +178,16 @@ final class OnboardingController {
         case .askFirstLook(let request):
             if !sendFirstLook(request) { flow?.send(.firstLookUnsent) }
         case .accept(let accept):
+            if foundFamily(accept.offerId) == "event", calendars.access == .notDetermined {
+                // H8: the first event card accepted asks for Calendar access first, here as at the caret.
+                calendarHeld = accept.offerId
+                calendars.requestAccess { [weak self] _ in MainActor.assumeIsolated { self?.calendarAnswered(accept) } }
+                return
+            }
             if !sendAccept(accept) { flow?.send(.sendFailed(.accept)) }
         case .stop(let stop):
+            // An accept still waiting on the Calendar prompt never reached the helper: nothing to stop there.
+            if calendarHeld == stop.offerId { calendarHeld = nil; return }
             // A stop that cannot be written leaves nothing to stop: the helper and its run are gone.
             _ = sendStop(stop)
         case .undo(let control):
@@ -182,6 +195,25 @@ final class OnboardingController {
         case .filled: break
         case .close: close()
         }
+    }
+
+    /// The first look's found offer's family, when `offerKey` is its key.
+    private func foundFamily(_ offerKey: String) -> String? {
+        guard case .found(let found)? = flow?.state.firstLook, found.offerKey == offerKey else { return nil }
+        return found.family
+    }
+
+    /// macOS answered: the held accept goes only while its run is still the one on screen (not stopped,
+    /// not closed with the flow).
+    private func calendarAnswered(_ accept: OfferAccept) {
+        guard calendarHeld == accept.offerId, let run = flow?.state.firstLookRun, run.offerKey == accept.offerId, run.working else {
+            calendarHeld = nil
+            return
+        }
+        calendarHeld = nil
+        var sent = accept
+        sent.at = Int64(Date().timeIntervalSince1970 * 1000)
+        if !sendAccept(sent) { flow?.send(.sendFailed(.accept)) }
     }
 
     /// The system's own prompt where there is one, then the pane itself.

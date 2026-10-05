@@ -26,7 +26,9 @@
 // calendar for new events, and never creates or deletes a calendar. The other rules hold there too: it
 // finds, reads and removes only events it added, by their ids, each only while still in the calendar it
 // was added to, and only for the task that added it, so undo removes exactly Caret's event and never one
-// of the user's own, however alike. The helper's calendar name ("Caret") is only a label in this scope.
+// of the user's own, however alike. An add of an event the destination already holds, the user's own
+// included, is refused, so a reader that restarted cannot add a second copy. The helper's calendar name
+// ("Caret") is only a label in this scope.
 import Foundation
 
 /// An event as a backend reports it.
@@ -145,6 +147,10 @@ public final class CalendarAdapter: @unchecked Sendable {
                     } else {
                         return .blocked(.noLocalSource)
                     }
+                    // The same event already there, whoever added it, is refused: this reader's record of its own
+                    // adds dies with it, so after a restart only the calendar itself can stop a second copy. The read
+                    // is of that calendar's events at that time, and no id from it leaves the adapter.
+                    if try match(cid, title, s, e) != nil { return .refused(.changed, "an identical event is already in the calendar; nothing was added") }
                 } else if let known = owned[calendar] {
                     cid = known
                     if try match(cid, title, s, e) != nil { return .refused(.changed, "an identical event is already in the calendar; nothing was added") }

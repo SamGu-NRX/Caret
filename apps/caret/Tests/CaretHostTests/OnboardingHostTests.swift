@@ -1,5 +1,6 @@
 import AppKit
 import CaretHostCore
+import CaretScreenCore
 import XCTest
 @testable import CaretHost
 
@@ -201,5 +202,78 @@ final class OnboardingHostTests: XCTestCase {
     func testWithoutTestHooksTheSocketOnlyReads() {
         let controller = OnboardingController(mode: .hidden, testHooks: false, store: SettingsStore(path: "/nonexistent/caret-settings.json"))
         XCTAssertTrue(controller.command(["onboarding", "open"]).contains("test hooks"))
+    }
+
+    // MARK: - H8: a found event card asks for Calendar access first
+
+    final class FakeAsker: CalendarAccessAsking {
+        var access: CalendarAccess = .notDetermined
+        var asked: [(CalendarAccess) -> Void] = []
+        func requestAccess(_ done: @escaping (CalendarAccess) -> Void) { asked.append(done) }
+    }
+
+    /// A hidden flow at the first look with an event card found, its accept and stop recorded.
+    private func atFoundEvent(_ calendars: FakeAsker, accepts: @escaping (OfferAccept) -> Void, stops: @escaping (OfferStop) -> Void) throws -> (OnboardingController, String, () -> Void) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("caret-onboarding-\(UUID().uuidString)")
+        let store = SettingsStore(path: dir.appendingPathComponent("settings.json").path)
+        let controller = OnboardingController(mode: .hidden, testHooks: true, store: store)
+        controller.calendars = calendars
+        var asked: [FirstLookRequest] = []
+        controller.sendFirstLook = { asked.append($0); return true }
+        controller.sendAccept = { accepts($0); return true }
+        controller.sendStop = { stops($0); return true }
+        controller.knowAvailable = { false }
+        for line in ["onboarding open", "onboarding permissions on on", "onboarding next", "onboarding next", "onboarding next", "onboarding key tab", "onboarding next"] {
+            let words = line.split(separator: " ").map(String.init)
+            XCTAssertFalse(controller.command(words).contains("\"error\""), line)
+        }
+        let request = try XCTUnwrap(asked.last, "the first look asked")
+        XCTAssertTrue(request.families.contains("event"))
+        let key = FirstLookReply.offerKey(requestId: request.requestId)
+        let found = #"{"kind":"action","family":"event","offerKey":"\#(key)","window":{"pid":5151,"windowId":"5151-2","appName":"Messages","title":"Dana"},"spec":{"v":1,"id":"\#(key)","figure":"offering","blocks":[{"type":"header","title":{"text":"Coffee with Dana","ref":{"rule":"eventTitle","derived":[{"node":"5151-2/k"}]}}},{"type":"facts","rows":[{"label":"When","value":{"text":"Thu 3:00 to 3:30 PM","ref":{"rule":"eventTime","derived":[{"node":"5151-2/k"}]}}}]},{"type":"actions","items":[{"id":"add","label":"Add","key":"tab"}]}]}}"#
+        let reply = #"{"type":"firstLookReply","v":1,"requestId":"\#(request.requestId)","at":1,"outcome":"found","found":\#(found),"scanned":null,"error":null}"#
+        let answered = controller.command(["onboarding", "reply", reply])
+        XCTAssertFalse(answered.contains("\"error\""), answered)
+        XCTAssertTrue(answered.contains("\"firstLook\":\"found\""), answered)
+        return (controller, key, { try? FileManager.default.removeItem(at: dir) })
+    }
+
+    func testAFoundEventCardAsksForCalendarAccessBeforeItsAcceptGoes() throws {
+        let calendars = FakeAsker()
+        var accepts: [OfferAccept] = []
+        let (controller, key, cleanup) = try atFoundEvent(calendars, accepts: { accepts.append($0) }, stops: { _ in })
+        defer { cleanup() }
+        XCTAssertTrue(calendars.asked.isEmpty, "showing the card asks nothing")
+        _ = controller.command(["onboarding", "key", "tab"])
+        XCTAssertEqual(calendars.asked.count, 1, "Tab asks macOS once")
+        XCTAssertTrue(accepts.isEmpty, "nothing goes before macOS answers")
+        calendars.access = .fullAccess
+        try XCTUnwrap(calendars.asked.first)(.fullAccess)
+        XCTAssertEqual(accepts.map(\.offerId), [key])
+        XCTAssertEqual(accepts.map(\.actionId), ["add"])
+    }
+
+    func testEscWhileMacOSAsksSendsNeitherTheAcceptNorAStop() throws {
+        let calendars = FakeAsker()
+        var accepts: [OfferAccept] = []
+        var stops: [OfferStop] = []
+        let (controller, _, cleanup) = try atFoundEvent(calendars, accepts: { accepts.append($0) }, stops: { stops.append($0) })
+        defer { cleanup() }
+        _ = controller.command(["onboarding", "key", "tab"])
+        _ = controller.command(["onboarding", "key", "esc"])
+        calendars.asked.first?(.denied)
+        XCTAssertTrue(accepts.isEmpty)
+        XCTAssertTrue(stops.isEmpty, "the helper never heard of the accept")
+    }
+
+    func testOnceMacOSHasAnsweredAFoundEventCardGoesAtOnce() throws {
+        let calendars = FakeAsker()
+        calendars.access = .denied
+        var accepts: [OfferAccept] = []
+        let (controller, key, cleanup) = try atFoundEvent(calendars, accepts: { accepts.append($0) }, stops: { _ in })
+        defer { cleanup() }
+        _ = controller.command(["onboarding", "key", "tab"])
+        XCTAssertTrue(calendars.asked.isEmpty)
+        XCTAssertEqual(accepts.map(\.offerId), [key])
     }
 }

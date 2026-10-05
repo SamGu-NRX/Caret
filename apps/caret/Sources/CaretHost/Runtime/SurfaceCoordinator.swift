@@ -130,13 +130,20 @@ final class SurfaceCoordinator {
 
     // MARK: - Events in, forwarded to the machine
 
+    /// The calendar choice as the reader will read it at the add: from the settings file, not the
+    /// in-memory settings, which keep a change whose save failed (review finding 2). Unreadable, the
+    /// reader refuses the add; the card then names the in-memory choice.
+    static func savedCalendarChoice() -> String? {
+        (try? CalendarChoiceFile.read(SettingsStore.shared.path)) ?? SettingsStore.shared.settings.eventCalendar
+    }
+
     /// An event card arrives naming where Tab would put the event (`EventCardCopy.destined`).
     func receive(_ offer: HelperOffer) {
         guard case .action(let m) = offer, EventCardCopy.isEvent(m) else {
             machine.receive(offer)
             return
         }
-        let destination = calendars.destination(choice: SettingsStore.shared.settings.eventCalendar)
+        let destination = calendars.destination(choice: Self.savedCalendarChoice())
         machine.receive(.action(EventCardCopy.destined(m, line: EventCalendarCopy.cardLine(destination))))
     }
     func provenance(_ p: MemoryProvenance) { machine.provenance(p) }

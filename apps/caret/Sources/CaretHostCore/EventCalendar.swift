@@ -40,6 +40,13 @@ public protocol CalendarDirectory: AnyObject {
     func defaultCalendar() -> WritableCalendar?
 }
 
+/// Asks macOS for Calendar access: the app's EventKit directory, a fake in tests. Main thread.
+public protocol CalendarAccessAsking: AnyObject {
+    var access: CalendarAccess { get }
+    /// Puts macOS's prompt up when Caret has never asked; `done` hears the access that results, on main.
+    func requestAccess(_ done: @escaping (CalendarAccess) -> Void)
+}
+
 /// Where the next accepted event goes, and how the card and What Caret knows say it.
 public enum EventDestination: Equatable, Sendable {
     /// Caret has not asked for Calendar access yet; it asks when the user accepts a card.

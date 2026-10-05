@@ -8,7 +8,7 @@ import Foundation
 /// is made only once access is granted, and made again after any change in access, since a store made
 /// before a grant does not see the calendars. The reader writes the event itself (caret-screen
 /// --calendar-user); as Caret's child it is covered by Caret's answer.
-final class EventKitCalendars: CalendarDirectory {
+final class EventKitCalendars: CalendarDirectory, CalendarAccessAsking {
     static let shared = EventKitCalendars()
 
     /// The Info.plist key macOS shows in its prompt. Without it, asking for access ends the process.
