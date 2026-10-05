@@ -55,9 +55,10 @@ final class GeneralPasteboardTests: XCTestCase {
         XCTAssertEqual(named.string(forType: .string), "Hello")
     }
 
-    /// The refusal rule on a real pasteboard: with a file URL and a private type on it, the save
-    /// refuses, Caret writes nothing, and the contents and change count stay as they were.
-    func testAFileURLAndAPrivateTypeAreLeftUntouched() {
+    /// The refusal rule on a real pasteboard: with a file URL on it, the save refuses, Caret writes
+    /// nothing, and the contents and change count stay as they were. The private type beside it no
+    /// longer refuses (H5).
+    func testAFileURLIsLeftUntouched() {
         named.clearContents()
         let first = NSPasteboardItem()
         first.setString("Hello", forType: .string)
@@ -70,11 +71,32 @@ final class GeneralPasteboardTests: XCTestCase {
         let count = named.changeCount
         let pasteboard = ReconcilingPasteboard(backend: backend)
         pasteboard.save()
-        XCTAssertEqual(pasteboard.clipboard.refused, ["item 1: com.example.private", "item 2: public.file-url"])
+        XCTAssertEqual(pasteboard.clipboard.refused, ["item 2: public.file-url"])
         pasteboard.write("Lumen Labs")
         pasteboard.restore()
         XCTAssertEqual(pasteboard.lastOutcome, .notWritten)
         XCTAssertEqual(named.changeCount, count, "nothing written")
+        XCTAssertEqual(backend.read(), prior)
+    }
+
+    /// A17's finding on a real (private, named) pasteboard: a private type is put back byte for
+    /// byte, and the restore's read-back finds nothing different.
+    func testAPrivateTypeComesBackByteForByte() {
+        named.clearContents()
+        let item = NSPasteboardItem()
+        item.setString("Hello", forType: .string)
+        item.setData(Data([0, 1, 2, 255, 0x7F]), forType: NSPasteboard.PasteboardType("com.example.private"))
+        named.writeObjects([item])
+        let backend = GeneralPasteboard(named)
+        let prior = backend.read()
+        let pasteboard = ReconcilingPasteboard(backend: backend)
+        pasteboard.save()
+        XCTAssertEqual(pasteboard.clipboard.refused, [])
+        pasteboard.write("Lumen Labs")
+        XCTAssertEqual(named.string(forType: .string), "Lumen Labs")
+        pasteboard.restore()
+        XCTAssertEqual(pasteboard.lastOutcome, .restored)
+        XCTAssertEqual(pasteboard.lastMismatched, [])
         XCTAssertEqual(backend.read(), prior)
     }
 

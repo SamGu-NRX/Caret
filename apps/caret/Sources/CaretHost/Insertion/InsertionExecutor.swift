@@ -146,7 +146,7 @@ final class InsertionExecutor: @unchecked Sendable {
         func finish(
             ok: Bool, error: String?, verified: Bool?, method: FillResult.Method? = nil, fellBack: Bool = false,
             undo: UndoGrant? = nil, rejected: Bool = false, stray: String? = nil,
-            clipboard: ReconcilingClipboard.Outcome? = nil, lost: [String] = []
+            clipboard: ReconcilingClipboard.Outcome? = nil, lost: [String] = [], mismatch: [String] = []
         ) {
             var insertion = DebugState.Insertion(
                 claimID: claim.claimID, ok: ok, error: error, text: text,
@@ -159,8 +159,14 @@ final class InsertionExecutor: @unchecked Sendable {
             insertion.strayField = stray
             insertion.clipboard = clipboard?.rawValue
             insertion.clipboardLost = lost.isEmpty ? nil : lost
+            insertion.clipboardMismatch = mismatch.isEmpty ? nil : mismatch
             status.update { $0.lastInsertion = insertion }
             if let clipboard { status.increment("clipboard.\(clipboard.rawValue)") }
+            if !mismatch.isEmpty {
+                // Types and sizes only, never the bytes: the clipboard is the user's.
+                status.increment("clipboard.mismatch")
+                FileHandle.standardError.write(Data("caret: clipboard restore differs from what was saved: \(mismatch.joined(separator: "; "))\n".utf8))
+            }
             onFinished(Result(claim: claim, insertion: insertion, undo: undo, reason: error, rejected: rejected, method: method, strayField: stray))
         }
         func refuse(_ reason: String) {
@@ -266,7 +272,8 @@ final class InsertionExecutor: @unchecked Sendable {
         }
         finish(
             ok: error == nil, error: error, verified: verified, method: method, fellBack: fellBack, undo: grant,
-            stray: stray, clipboard: clipboard, lost: clipboard == nil ? [] : pasteboard.lastLost
+            stray: stray, clipboard: clipboard, lost: clipboard == nil ? [] : pasteboard.lastLost,
+            mismatch: clipboard == nil ? [] : pasteboard.lastMismatched
         )
     }
 

@@ -60,22 +60,23 @@ final class ClipboardReconcileTests: XCTestCase {
         XCTAssertEqual(pb.items, [rich, second], "rich text, HTML, an image and a second item, in order")
     }
 
-    /// The lead's refusal rule (2026-10-04): a file URL (lost 5 of 5 in A17's VM probe while the
-    /// restore said `restored`) and a private type no one has shown Caret can restore both refuse
-    /// the paste route. The save writes nothing, so the user's clipboard is never touched.
-    func testAFileURLAndAnUnknownPrivateTypeRefuseThePaste() {
+    /// The rule since H5 (lead decision after A17's private type came back byte for byte): a file
+    /// URL (lost 5 of 5 in A17's VM probe while the restore said `restored`) refuses the paste
+    /// route, and a private type no longer does. The save writes nothing, so the user's clipboard is
+    /// never touched.
+    func testAFileURLRefusesThePasteAndAPrivateTypeDoesNot() {
         let pb = FakePasteboard()
         let files = item([("public.file-url", "file:///tmp/a.txt"), ("public.utf8-plain-text", "a.txt")])
         let app = item([("com.example.private", "\u{0}\u{1}"), ("public.utf8-plain-text", "Hello")])
         pb.items = [files, app]
         let clipboard = ReconcilingClipboard(backend: pb)
-        XCTAssertEqual(clipboard.unrestorableNow(), ["item 1: public.file-url", "item 2: com.example.private"])
+        XCTAssertEqual(clipboard.unrestorableNow(), ["item 1: public.file-url"])
         XCTAssertEqual(WriteFallback.firstRoute(appPastes: true, clipboardRestorable: false), .axWrite, "an app that pastes gets the AX write instead")
         XCTAssertEqual(WriteFallback.afterAXRefused(clipboardRestorable: false), .failed(WriteFallback.clipboardUnrestorable), "and no paste if that is refused")
 
         let count = pb.changeCount
         clipboard.save()
-        XCTAssertEqual(clipboard.refused, ["item 1: public.file-url", "item 2: com.example.private"])
+        XCTAssertEqual(clipboard.refused, ["item 1: public.file-url"])
         XCTAssertNil(clipboard.writeOwn("Lumen Labs"))
         XCTAssertEqual(pb.changeCount, count, "nothing written")
         XCTAssertEqual(pb.items, [files, app])
@@ -83,10 +84,61 @@ final class ClipboardReconcileTests: XCTestCase {
         XCTAssertEqual(pb.items, [files, app])
         XCTAssertEqual(clipboard.refused, [], "the next save decides afresh")
 
-        for one in [files, app] {
-            pb.items = [rich, one]
-            XCTAssertEqual(clipboard.unrestorableNow().count, 1, "either alone refuses")
+        pb.items = [rich, app]
+        XCTAssertEqual(clipboard.unrestorableNow(), [], "a private type alone may be pasted over")
+        clipboard.save()
+        XCTAssertNotNil(clipboard.writeOwn("Lumen Labs"))
+        XCTAssertEqual(clipboard.restore(), .restored)
+        XCTAssertEqual(pb.items, [rich, app], "and comes back byte for byte")
+        XCTAssertEqual(clipboard.mismatched, [])
+    }
+
+    /// File promises and URL types that hold a file URL name a file as surely as a file URL does.
+    func testFilePromisesAndFileURLsInURLTypesRefuseThePaste() {
+        let pb = FakePasteboard()
+        let clipboard = ReconcilingClipboard(backend: pb)
+        for type in ["com.apple.NSFilePromiseItemMetaData", "com.apple.pasteboard.promised-file-url", "com.apple.pasteboard.promised-file-content-type", "NSFilenamesPboardType"] {
+            pb.items = [item([(type, "x"), ("public.utf8-plain-text", "a")])]
+            XCTAssertEqual(clipboard.unrestorableNow(), ["item 1: \(type)"], type)
         }
+        pb.items = [item([("public.url", "file:///Users/dana/a.pdf")])]
+        XCTAssertEqual(clipboard.unrestorableNow(), ["item 1: public.url"])
+        pb.items = [item([("public.url", "https://example.com/a.pdf"), ("public.utf8-plain-text", "https://example.com/a.pdf")])]
+        XCTAssertEqual(clipboard.unrestorableNow(), [], "a web link is bytes like any other text")
+    }
+
+    /// A pasteboard that keeps only some of what is written to it, as an owner that reads its own
+    /// type back differently would: the restore says `restored` by count, and names what differs.
+    func testARestoreThatComesBackDifferentIsReportedTypeByType() {
+        final class Lossy: PasteboardBackend {
+            var changeCount = 100
+            var items: [PasteboardItemData] = []
+            func read() -> [PasteboardItemData] { items }
+            func replace(with items: [PasteboardItemData]) -> Int {
+                changeCount += 1
+                self.items = items.map { item in
+                    PasteboardItemData(item.entries.compactMap { e in
+                        e.type == "com.example.gone" ? nil : (e.type == "com.example.changed" ? (type: e.type, data: Data([9])) : e)
+                    })
+                }
+                return changeCount
+            }
+        }
+        let pb = Lossy()
+        let saved = PasteboardItemData([
+            ("public.utf8-plain-text", Data("Hello".utf8)), ("com.example.gone", Data([1, 2])), ("com.example.changed", Data([1, 2, 3])),
+        ])
+        pb.items = [saved]
+        let clipboard = ReconcilingClipboard(backend: pb)
+        clipboard.save()
+        XCTAssertNotNil(clipboard.writeOwn("Lumen Labs"))
+        XCTAssertEqual(clipboard.restore(), .restored)
+        XCTAssertEqual(clipboard.mismatched, [
+            "item 1: com.example.gone: missing",
+            "item 1: com.example.changed: 3 bytes came back as 1 different bytes",
+        ])
+        XCTAssertEqual(clipboard.restore(), .notWritten)
+        XCTAssertEqual(clipboard.mismatched, [], "a later restore that does nothing reports nothing")
     }
 
     func testTextRichTextHTMLImagesAndCaretsMarkersMayBePasted() {

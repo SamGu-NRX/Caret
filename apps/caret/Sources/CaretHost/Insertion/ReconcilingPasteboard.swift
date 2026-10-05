@@ -49,6 +49,8 @@ final class ReconcilingPasteboard: CompletionPasteboard {
     private(set) var lastOutcome: ReconcilingClipboard.Outcome?
     /// The types the last save could not read (`ReconcilingClipboard.lost`).
     var lastLost: [String] { clipboard.lost }
+    /// What the last restore read back differently from what it saved (`ReconcilingClipboard.mismatched`).
+    var lastMismatched: [String] { clipboard.mismatched }
 
     init(backend: PasteboardBackend = GeneralPasteboard()) {
         clipboard = ReconcilingClipboard(backend: backend)

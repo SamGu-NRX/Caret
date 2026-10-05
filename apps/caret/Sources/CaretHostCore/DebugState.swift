@@ -170,6 +170,9 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// Types of the user's clipboard Caret could not read before pasting, so its restore could not
         /// bring them back ("item 2: public.file-url"). Nil or empty when every type was read.
         public var clipboardLost: [String]?
+        /// What the restore read back differently from what it saved, entry by entry, types and
+        /// sizes only (`ReconcilingClipboard.mismatches`). Nil when it came back exactly.
+        public var clipboardMismatch: [String]?
 
         public init(claimID: UInt64, ok: Bool, error: String?, text: String, durationMs: Double, verified: Bool?) {
             self.claimID = claimID

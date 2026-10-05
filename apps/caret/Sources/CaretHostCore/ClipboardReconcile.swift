@@ -39,7 +39,8 @@ public protocol PasteboardBackend: AnyObject {
 ///    produced: from then on, that count means "still Caret's".
 /// 3. `restore`, once the paste has landed, puts the saved items back only if the count is still
 ///    Caret's. Any other count means someone wrote in between (the user copied), and their copy
-///    stays. An empty saved pasteboard is restored as empty.
+///    stays. An empty saved pasteboard is restored as empty. A restore reads the pasteboard back
+///    and reports every entry whose bytes differ (`mismatched`).
 ///
 /// Known limit: NSPasteboard has no compare-and-swap, so a copy made in the instant between the
 /// restore's count check and its clear (two adjacent calls on one thread) is overwritten. The clear's
@@ -65,32 +66,53 @@ public final class ReconcilingClipboard {
     ]
     public static let plainText = "public.utf8-plain-text"
 
-    /// Types Caret puts back byte for byte and the owning app reads back as the same thing: text,
-    /// rich text, HTML and images, which are plain data with no reference to anything outside the
-    /// bytes, plus the markers above.
-    ///
-    /// Everything else refuses the paste route for that insert (lead decision, 2026-10-04). A
-    /// silent partial restore is worse than no paste. A17's VM probe (vm-insert run 1,
-    /// clipboard/pasteboard.ndjson) put back an item holding `public.file-url` 5 of 5 times
-    /// reported `restored` with nothing unreadable, and the item was gone each time. So "every
-    /// type read" does not prove "every type restored". A private type round-tripped its bytes in
-    /// that probe, but bytes do not show that its owner reads them back as the same thing (a file
-    /// promise, a reference into the owner's memory). So an unknown type refuses too. This list
-    /// is a judgment from the types' definitions. Only the text types and the probe's own private
-    /// type were tested on a real pasteboard; the image types were not.
-    public static let restorableTypes = Set([
-        "public.utf8-plain-text", "public.utf16-plain-text", "public.utf16-external-plain-text", "public.plain-text",
-        "public.rtf", "com.apple.flat-rtfd", "public.html",
-        "public.png", "public.tiff",
-    ] + markerTypes)
+    /// Types that name a file instead of carrying bytes, and file promises (an app's offer to write
+    /// a file later). A17's VM probe (vm-insert run 1, clipboard/pasteboard.ndjson) put back an
+    /// item holding `public.file-url` 5 of 5 times, reported `restored` with nothing unreadable,
+    /// and the item was gone each time.
+    public static let fileTypes: Set<String> = [
+        "public.file-url", "NSFilenamesPboardType",
+        "com.apple.NSFilePromiseItemMetaData", "Apple files promise pasteboard type", "NSPromiseContentsPboardType",
+    ]
 
-    /// What in `items` a restore could not put back exactly, item by item ("item 2: public.file-url"):
-    /// types it could not read and types outside `restorableTypes`. Empty when the paste route may
-    /// be used.
+    /// Whether this entry names a file or promises one: a type in `fileTypes`, any
+    /// `com.apple.pasteboard.promised-` type, or a URL type whose data holds a file URL.
+    public static func refersToFile(type: String, data: Data) -> Bool {
+        if fileTypes.contains(type) || type.hasPrefix("com.apple.pasteboard.promised-") { return true }
+        guard type == "public.url" || type == "Apple URL pasteboard type" else { return false }
+        return data.range(of: Data("file:".utf8)) != nil
+    }
+
+    /// What in `items` refuses the paste route, item by item ("item 2: public.file-url"): types the
+    /// pasteboard listed but gave no data for, and entries that name or promise a file. Empty when
+    /// the paste route may be used.
+    ///
+    /// Every other type is saved and put back byte for byte, private types included (lead decision
+    /// after A17, H5): its private type came back byte for byte. `restore` reads the pasteboard
+    /// back and reports any entry that differs (`mismatched`). Until H5 every type outside a list of
+    /// text, rich text, HTML and image types refused the paste.
     public static func unrestorable(_ items: [PasteboardItemData]) -> [String] {
         items.enumerated().flatMap { i, item in
-            (item.unreadable + item.types.filter { !restorableTypes.contains($0) }).map { "item \(i + 1): \($0)" }
+            (item.unreadable + item.entries.filter { refersToFile(type: $0.type, data: $0.data) }.map(\.type)).map { "item \(i + 1): \($0)" }
         }
+    }
+
+    /// Where `now` differs from `saved`, entry by entry ("item 1: com.example.private: 4 bytes came
+    /// back as 0", "item 2: missing"). Empty when every type of every item came back with its bytes.
+    public static func mismatches(saved: [PasteboardItemData], now: [PasteboardItemData]) -> [String] {
+        // An item with no readable entry is not written back (`PasteboardBackend.replace`).
+        let expected = saved.filter { !$0.entries.isEmpty }
+        var out: [String] = []
+        for (i, item) in expected.enumerated() {
+            guard i < now.count else { out.append("item \(i + 1): missing"); continue }
+            let back = Dictionary(now[i].entries.map { ($0.type, $0.data) }, uniquingKeysWith: { a, _ in a })
+            for entry in item.entries {
+                guard let data = back[entry.type] else { out.append("item \(i + 1): \(entry.type): missing"); continue }
+                if data != entry.data { out.append("item \(i + 1): \(entry.type): \(entry.data.count) bytes came back as \(data.count) different bytes") }
+            }
+        }
+        if now.count > expected.count { out.append("\(now.count - expected.count) more item(s) than were saved") }
+        return out
     }
 
     private let backend: PasteboardBackend
@@ -103,6 +125,9 @@ public final class ReconcilingClipboard {
     public private(set) var lost: [String] = []
     /// The change count Caret's own write produced.
     public private(set) var ownCount: Int?
+    /// What the last restore read back differently from what it saved (`mismatches`). Empty after
+    /// a restore that came back exactly, and when nothing was restored.
+    public private(set) var mismatched: [String] = []
 
     public init(backend: PasteboardBackend) { self.backend = backend }
 
@@ -141,9 +166,14 @@ public final class ReconcilingClipboard {
             ownCount = nil
             refused = []
         }
+        mismatched = []
         guard let own = ownCount, let saved else { return .notWritten }
         guard backend.changeCount == own else { return .skippedUserCopied }
         let cleared = backend.replace(with: saved)
-        return cleared == own + 1 ? .restored : .raced
+        guard cleared == own + 1 else { return .raced }
+        // Restored by count; the bytes are checked too, since a count says nothing about what an
+        // owner's pasteboard type gives back.
+        mismatched = Self.mismatches(saved: saved, now: backend.read())
+        return .restored
     }
 }
