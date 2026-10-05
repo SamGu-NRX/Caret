@@ -5,8 +5,9 @@
 // "typed": every change since the field was last empty was the user's own typing: a trusted input event of a typing
 // kind. "pasted": a trusted event put in text the user did not type here (a paste, a drop, an autofill, a spelling
 // replacement, an undo that can bring back anything). "other": an untrusted event (the page's script, or Caret's own
-// writes, content/dom.ts), or a value that changed with no input event this script saw. The worst kind seen sticks
-// until the field is emptied.
+// writes, content/dom.ts), or a value that changed with no input event this script saw: text already in the field
+// before an edit that the last edit did not leave there (a page's prefill, a script's silent change). The worst kind
+// seen sticks until the field is emptied by an edit.
 
 export type Entry = "typed" | "pasted" | "other";
 
@@ -42,6 +43,15 @@ export function entryKind(isTrusted: boolean, inputType: string): Entry {
 export class EntryTracker {
   private readonly seen = new WeakMap<object, { entry: Entry; value: string }>();
 
+  /**
+   * A beforeinput on `el`, with the value just before the edit. It must be what the last edit left, or empty when no
+   * edit was seen: anything else got there unseen, and one keystroke after a script's prefill must not make it typed.
+   */
+  onBefore(el: object, value: string): void {
+    const s = this.seen.get(el);
+    if (value !== (s?.value ?? "")) this.seen.set(el, { entry: "other", value });
+  }
+
   /** One input event on `el`, with the value it left. An emptied field starts over. */
   onInput(el: object, isTrusted: boolean, inputType: string, value: string): void {
     if (value === "") {
@@ -57,6 +67,9 @@ export class EntryTracker {
   entryOf(el: object, value: string): Entry | undefined {
     const s = this.seen.get(el);
     if (s === undefined) return undefined;
-    return s.value === value ? s.entry : "other";
+    if (s.value === value) return s.entry;
+    // Changed with no event: kept as other, so the next keystroke cannot make it typed again.
+    this.seen.set(el, { entry: "other", value });
+    return "other";
   }
 }

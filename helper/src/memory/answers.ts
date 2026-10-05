@@ -14,10 +14,11 @@ import type { WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { fieldLabelText } from "../fill/descriptor.ts";
 import { neverTypedNode } from "../fill/fill.ts";
+import { siteKey } from "../fill/answers.ts";
 import { words } from "../fill/kinds.ts";
 import { MemoryDocumentError, type MemoryDocumentStore } from "./documents.ts";
 import { encodeValue, MAX_LINE_CHARS, recordDigest, type MemoryRecord } from "./parse.ts";
-import { refusal, sensitiveKind } from "./sensitive.ts";
+import { refusal, sensitiveKind, statedSecret } from "./sensitive.ts";
 
 /** The window kind of a browser tab the page engine reads (fill.ts PAGE_WINDOW_KIND; repeated to keep this module free of fill's). */
 const PAGE = "page";
@@ -55,16 +56,6 @@ export function normalQuestion(q: string): string {
   return words(q).join(" ");
 }
 
-/** The page an answer was saved on, for "the same question on the same site": host and first path segment, the company on an ATS. */
-function siteKey(site: string | null): string | null {
-  if (site === null) return null;
-  try {
-    const u = new URL(site);
-    return `${u.host}/${u.pathname.split("/").filter((s) => s !== "")[0] ?? ""}`;
-  } catch {
-    return site;
-  }
-}
 
 /** Every usable answer in answers.md, active and paused, read fresh by stat. */
 export function savedAnswers(store: MemoryDocumentStore): SavedAnswer[] {
@@ -95,6 +86,9 @@ export function putAnswer(store: MemoryDocumentStore, fields: AnswerFields): str
   if (fields.answer.length > MAX_ANSWER_CHARS) throw new AnswerError("tooLong", tooLongSays(fields.answer.length));
   // A JSON-quoted answer can grow past what a record line may hold (escapes), and the parser would then disable it.
   if (`- Answer: ${encodeValue(fields.answer)}`.length > MAX_LINE_CHARS) throw new AnswerError("tooLong", "This answer has too many special characters to keep in answers.md.");
+  // documents.ts refuses a secret by its shape on every write; a stated one ("my password is …") is refused here.
+  const stated = statedSecret(fields.answer);
+  if (stated !== null) throw new AnswerError("secret", `${refusal(stated)}, and this answer has one.`);
   const was = answerFor(store, fields.question, fields.site);
   const r: MemoryRecord = { id: was?.id ?? `answer-${randomUUID().slice(0, 8)}`, kind: "answer", status: was?.status ?? "active", noticed: null, fields };
   try {
@@ -159,7 +153,8 @@ export function capture(w: WindowState, key: string, ctx: CaptureContext): Captu
   const question = questionOf(n);
   if (question === null) return no("noQuestion", "This field has no label, so Caret can't tell which question the answer is for.");
   if (text.trim() === "") return no("empty", "The field is empty, so there's nothing to save.");
-  const secret = sensitiveKind(question, text);
+  // A secret by its shape (a card number, a key), or one the text states ("my password is …"): review finding 6.
+  const secret = sensitiveKind(question, text) ?? statedSecret(text);
   if (secret !== null) return no("secret", `${refusal(secret)}, and this answer has one.`);
   // The evidence for whose words these are comes from the page itself (PageEntry), checked before anything else Caret knows.
   if (n.entry === "pasted") return no("pasted", "You pasted some of this text, so Caret can't tell the words are yours.");

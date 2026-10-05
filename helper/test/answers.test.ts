@@ -148,6 +148,9 @@ describe("capture: only the user's own typing, on a page form's prose field", ()
     const ssn = pageModel("Form", [{ key: "q1", label: "Social Security number", extra: { value: "123-45-6789", entry: "typed" } }]).windows.get("page-eng1-7")!;
     expect(capture(ssn, "q1", { site: null, caretWrote: [] })).toMatchObject({ ok: false, why: "neverTyped", says: "Caret doesn't keep government ID numbers in memory." });
     expect(one({ value: `${PROJECT} Card 4111 1111 1111 1111.`, entry: "typed" })).toMatchObject({ ok: false, why: "secret" });
+    // Review finding 6: a secret the text states, though no shape gives it away.
+    expect(one({ value: `${PROJECT} My password is violet-orchard-seven.`, entry: "typed" })).toEqual({ ok: false, why: "secret", says: "Caret doesn't keep passwords in memory, and this answer has one." });
+    expect(one({ value: `${PROJECT} I built the password reset flow.`, entry: "typed" })).toMatchObject({ ok: true });
   });
 
   it("refuses a native window, a short one-line field, and a field with no label", () => {
@@ -179,11 +182,35 @@ describe("the organization guard", () => {
   it("withholds an answer written for another organization, naming both", () => {
     const why = saved("a1", "Why do you want to work at Northwind Robotics?", WHY_NORTHWIND);
     expect(guardAnswer(why, page("Security Engineer, Cloud @ Ramp", RAMP), undefined)).toEqual({ why: "otherOrganization", says: "This answer was written for Northwind Robotics; this page is for Ramp." });
-    // Named only in its text: it mentions the organization.
-    const text = saved("a2", "Why this company?", WHY_NORTHWIND);
+    // Saved elsewhere and naming it only in its text: it mentions the organization.
+    const text = { ...saved("a2", "Anything else we should know?", WHY_NORTHWIND, "https://jobs.lever.co/larkspur/1/apply"), fields: { ...saved("a2", "Anything else we should know?", WHY_NORTHWIND, "https://jobs.lever.co/larkspur/1/apply").fields, form: "Larkspur Health - Site Reliability Engineer" } };
     expect(guardAnswer(text, page("Job Application for Commercial Policy Lead at Discord"), undefined)).toEqual({ why: "otherOrganization", says: "This answer mentions Northwind Robotics; this page is for Discord." });
     // A page code cannot name: the sentence says only what the answer mentions.
     expect(guardAnswer(text, page("Careers"), undefined)?.says).toBe("This answer mentions Northwind Robotics, which this page doesn't.");
+  });
+
+  it("withholds an answer for the organization it was saved for, however the text names it, or a why-us answer anywhere else", () => {
+    const stripe = (answer: string, question = "Why us?", form = "Job Application for Engineer at Stripe") =>
+      ({ id: "s", status: "active" as const, fields: { question, answer, site: "https://job-boards.greenhouse.io/stripe/jobs/1", form, savedOn: "2026-10-01T12:00:00.000Z" } });
+    const ramp = page("Security Engineer, Cloud @ Ramp", RAMP);
+    // Review finding 2: a sentence's first word, and a lower-case name.
+    expect(guardAnswer(stripe("Stripe builds the tools I want to work on."), ramp, undefined)?.says).toBe("This answer was written for Stripe; this page is for Ramp.");
+    expect(guardAnswer(stripe("I admire stripe and want to join the team.", "Anything else?"), ramp, undefined)?.why).toBe("otherOrganization");
+    // A why-us answer that names no one is still for the organization it was saved for.
+    expect(guardAnswer(stripe("The mission matters to me.", "Why do you want to work here?"), ramp, undefined)?.says).toBe("This answer was written for Stripe; this page is for Ramp.");
+    // Saved where code could not tell for whom: a why-us answer is offered nowhere else.
+    const unknown = { id: "u", status: "active" as const, fields: { question: "Why us?", answer: "The mission matters to me.", site: null, form: "Careers", savedOn: "2026-10-01T12:00:00.000Z" } };
+    expect(guardAnswer(unknown, ramp, undefined)?.says).toBe("This answer was written for another organization's form; this page is for Ramp.");
+    // On the organization's own page it is offered.
+    expect(guardAnswer(stripe("Stripe builds the tools I want to work on."), page("Job Application for Backend Engineer at Stripe", "https://job-boards.greenhouse.io/stripe/jobs/2"), undefined)).toBeNull();
+  });
+
+  it("never lets what the applicant typed on the page vouch for an answer (review finding 3)", () => {
+    // Saved on another organization's form, naming Northwind only in passing: only the page's own text may vouch for it.
+    const base = saved("a1", "Anything else we should know?", WHY_NORTHWIND, "https://jobs.lever.co/larkspur/1/apply");
+    const passing = { ...base, fields: { ...base.fields, form: "Larkspur Health - Site Reliability Engineer" } };
+    const model = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "Previous employer", extra: { value: "Northwind Robotics", entry: "typed" } }]);
+    expect(guardAnswer(passing, pageText(model.windows.get("page-eng1-7")!, { site: RAMP, headings: [] }), undefined)?.says).toBe("This answer mentions Northwind Robotics; this page is for Ramp.");
   });
 
   it("offers an answer naming the page's own organization, or no organization at all", () => {
@@ -261,8 +288,11 @@ describe("matching a saved answer in fill", () => {
     const split: AskJev = jevPickingQuestion(() => (n++ === 0 ? "What has been your proudest accomplishment?" : null));
     const p = await proposeFill(model, split, "page-eng1-7", "q1", 2000, { answers, page: { site: RAMP, headings: [] } });
     expect(p.fields.find((x) => x.key === "q1")).toMatchObject({ value: null, withheld: "disagree" });
+    // Review finding 4: no answer text rides in the asks, which a host without the capability is sent.
+    expect(JSON.stringify(p)).not.toContain(PROJECT.slice(0, 40));
     const low = await proposeFill(model, jevPickingQuestion(() => "What has been your proudest accomplishment?", 0.6), "page-eng1-7", "q1", 2000, { answers, page: { site: RAMP, headings: [] } });
     expect(low.fields.find((x) => x.key === "q1")).toMatchObject({ value: null, withheld: "lowConfidence" });
+    expect(JSON.stringify(low)).not.toContain(PROJECT.slice(0, 40));
     const sent: JevRequest[] = [];
     await proposeFill(model, jevPickingQuestion(() => null, 0.9, sent), "page-eng1-7", "q1", 2000, {}).catch(() => undefined);
     expect(sent.some((r) => Object.keys(r.questions).some((q) => q.endsWith("_answer")))).toBe(false);
@@ -328,10 +358,13 @@ describe("a saved answer is never written without the user seeing it whole", () 
     const model = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "Proudest accomplishment?" }]);
     const g = writtenFields(proposal([answerField("q1", PROJECT)]));
     g.fields[0] = { ...g.fields[0]!, descriptor: "Text area. Label: 'Proudest accomplishment?'." };
-    const same = (): { question: string; answer: string } => ({ question: "What has been your proudest accomplishment?", answer: PROJECT });
+    const same = (): SavedAnswer => saved("ans-q1", "What has been your proudest accomplishment?", PROJECT, null);
     expect(recheckFill(model, g, () => null, same)).toBeNull();
-    expect(recheckFill(model, g, () => null, () => ({ question: "What has been your proudest accomplishment?", answer: `${PROJECT} Edited.` }))).toBe('your saved answer to "What has been your proudest accomplishment?" changed');
+    expect(recheckFill(model, g, () => null, () => saved("ans-q1", "What has been your proudest accomplishment?", `${PROJECT} Edited.`, null))).toBe('your saved answer to "What has been your proudest accomplishment?" changed');
     expect(recheckFill(model, g, () => null)).not.toBeNull();
+    // The guards run again before the write: a page that lowered the field's maxlength since the offer stops it.
+    const lowered = pageModel("Security Engineer, Cloud @ Ramp", [{ key: "q1", label: "Proudest accomplishment?", extra: { maxLength: 10 } }]);
+    expect(recheckFill(lowered, g, () => null, same)).toBe(`This answer is ${PROJECT.length} characters, and this field takes at most 10.`);
   });
 });
 
@@ -340,11 +373,25 @@ describe("saving through the helper: an offer when the user leaves the field, an
   let store: Store;
   let helper: Helper;
   let out: HelperMessage[];
+  /** What the page holds now: a walk (the reader link below) shows it, as the page engine would. */
+  let page: { value: string; entry: Node["entry"] };
+  let walks = 0;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "caret-answers-helper-"));
     store = new Store(join(dir, "data"));
     out = [];
-    helper = new Helper({ store, askJev: () => Promise.reject(new Error("no Jev here")), shadow: false, allowBackgroundFocus: true, publish: (m) => void out.push(m), pageContext: () => ({ site: RAMP, headings: [] }) });
+    walks = 0;
+    page = { value: "", entry: undefined };
+    const readerLink = {
+      run: async (verb: { kind: string }) => {
+        if (verb.kind === "walk") {
+          walks++;
+          await walk(page.value, page.entry, "f-name", 9000 + walks);
+        }
+        return { type: "verbResult" as const, v: PROTOCOL_VERSION, id: "page", at: 1, outcome: "ok" as const, detail: null };
+      },
+    };
+    helper = new Helper({ store, askJev: () => Promise.reject(new Error("no Jev here")), shadow: false, allowBackgroundFocus: true, publish: (m) => void out.push(m), pageContext: () => ({ site: RAMP, headings: [] }), readerLink: readerLink as never });
   });
   afterEach(() => {
     helper.shutdown();
@@ -353,8 +400,9 @@ describe("saving through the helper: an offer when the user leaves the field, an
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const walk = (value: string, entry: Node["entry"], focusedKey: string, at: number) =>
-    helper.handleReader(
+  const walk = (value: string, entry: Node["entry"], focusedKey: string, at: number) => {
+    page = { value, entry };
+    return helper.handleReader(
       snap([node("frame-0", "AXWebArea", { label: "Ramp" }), node("q1", "AXTextArea", { label: "What has been your proudest accomplishment?", editable: true, value, ...(entry === undefined ? {} : { entry }) }), field("f-name", "", { label: "Full name" })], {
         at,
         windowId: "page-eng1-7",
@@ -365,6 +413,7 @@ describe("saving through the helper: an offer when the user leaves the field, an
         focusedKey,
       }),
     );
+  };
 
   it("offers to save typed text when focus leaves the field, and saves it on the user's yes", async () => {
     helper.setAnswerHosts(1);
@@ -373,7 +422,7 @@ describe("saving through the helper: an offer when the user leaves the field, an
     const offer = out.find((m) => m.type === "answerSaveOffer");
     expect(offer).toMatchObject({ question: "What has been your proudest accomplishment?", answer: PROJECT, site: RAMP, says: "Save this answer for next time?", replaces: null });
     expect(savedAnswers(helper.memory.files!)).toEqual([]);
-    const reply = helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r1", from: { kind: "offer", offerId: (offer as { id: string }).id } });
+    const reply = await helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r1", from: { kind: "offer", offerId: (offer as { id: string }).id } });
     expect(reply).toMatchObject({ outcome: "saved", why: null, says: 'Saved your answer to "What has been your proudest accomplishment?".' });
     expect(savedAnswers(helper.memory.files!).map((a) => a.fields.answer)).toEqual([PROJECT]);
   });
@@ -393,9 +442,9 @@ describe("saving through the helper: an offer when the user leaves the field, an
     await walk(PROJECT, "typed", "f-name", 2000);
     const offer = out.find((m) => m.type === "answerSaveOffer") as { id: string };
     await walk(`${PROJECT} And one more line.`, "typed", "f-name", 3000);
-    expect(helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r1", from: { kind: "offer", offerId: offer.id } })).toMatchObject({ outcome: "refused", why: "changed", answerId: null });
+    expect(await helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r1", from: { kind: "offer", offerId: offer.id } })).toMatchObject({ outcome: "refused", why: "changed", answerId: null });
     await walk(PROJECT, "pasted", "f-name", 4000);
-    expect(helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r2", from: { kind: "field", windowId: "page-eng1-7", fieldKey: "q1" } })).toEqual({
+    expect(await helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r2", from: { kind: "field", windowId: "page-eng1-7", fieldKey: "q1" } })).toEqual({
       type: "answerSaveReply",
       v: PROTOCOL_VERSION,
       requestId: "r2",
@@ -405,6 +454,29 @@ describe("saving through the helper: an offer when the user leaves the field, an
       says: "You pasted some of this text, so Caret can't tell the words are yours.",
     });
     expect(savedAnswers(helper.memory.files!)).toEqual([]);
+  });
+
+  it("walks the page again at the user's yes, and refuses what a script changed since the offer (review finding 5)", async () => {
+    helper.setAnswerHosts(1);
+    await walk(PROJECT, "typed", "q1", 1000);
+    await walk(PROJECT, "typed", "f-name", 2000);
+    const offer = out.find((m) => m.type === "answerSaveOffer") as { id: string };
+    // The page's script rewrote the field after the last snapshot; only a fresh walk shows it.
+    page = { value: `${PROJECT} Added by the page.`, entry: "other" };
+    const reply = await helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r1", from: { kind: "offer", offerId: offer.id } });
+    expect(walks).toBe(1);
+    expect(reply).toMatchObject({ outcome: "refused", why: "notTyped" });
+    expect(savedAnswers(helper.memory.files!)).toEqual([]);
+  });
+
+  it("never saves what Caret's own executor wrote into the field", async () => {
+    helper.setAnswerHosts(1);
+    // The journal sees every write the executor is about to make; this is that hook, as a run of Caret's would call it.
+    (helper as unknown as { noteWrite(w: string, k: string, v: string): void }).noteWrite("page-eng1-7", "q1", PROJECT);
+    await walk(PROJECT, "typed", "q1", 1000);
+    await walk(PROJECT, "typed", "f-name", 2000);
+    expect(out.filter((m) => m.type === "answerSaveOffer")).toEqual([]);
+    expect(await helper.handleAnswerSave({ type: "answerSave", v: PROTOCOL_VERSION, requestId: "r1", from: { kind: "field", windowId: "page-eng1-7", fieldKey: "q1" } })).toMatchObject({ outcome: "refused", why: "caretWrote" });
   });
 });
 

@@ -1294,7 +1294,9 @@ export async function proposeFill(
     const id = mapId(a.choice);
     const saved = id === undefined ? undefined : savedBy.get(id);
     if (saved === undefined || !(answersFor.get(f.id) ?? []).includes(saved)) throw new FillError("badAnswer", `Jev chose ${a.choice}, which is not a saved answer offered for ${f.id}`);
-    return { choice: id as string, confidence: a.confidence, value: saved.fields.answer };
+    // The answer's text never rides in an ask: a disagreeing or unsure pick carries no `answer` for the server's gate to
+    // find, and would otherwise reach a host that never said it shows answers whole (review finding 4).
+    return { choice: id as string, confidence: a.confidence, value: null };
   };
   const answerField = (f: Field, empty: Omit<FillField, "withheld" | "asks">): FillField => {
     if (r1 === null || r2 === null) return { ...empty, withheld: null, asks: [] };

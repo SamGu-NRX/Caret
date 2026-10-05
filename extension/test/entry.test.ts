@@ -34,7 +34,26 @@ describe("entry", () => {
     expect(t.entryOf(el, "Pasted words and mine")).toBe("pasted");
     // A page script set the value without an input event.
     expect(t.entryOf(el, "Pasted words and something else")).toBe("other");
+    // The silent change sticks: the next keystroke does not make it typed again.
+    t.onBefore(el, "Pasted words and something else");
+    t.onInput(el, true, "insertText", "Pasted words and something else!");
+    expect(t.entryOf(el, "Pasted words and something else!")).toBe("other");
     // A field nobody edited while this script watched reports nothing.
     expect(t.entryOf({}, "Prefilled by the page")).toBeUndefined();
+  });
+
+  it("does not let one keystroke after a page's prefill make the whole text typed", () => {
+    const t = new EntryTracker();
+    const el = {};
+    // The page set a long answer with no event; the user then typed one character.
+    t.onBefore(el, "A prefilled answer the user never wrote");
+    t.onInput(el, true, "insertText", "A prefilled answer the user never wrote!");
+    expect(t.entryOf(el, "A prefilled answer the user never wrote!")).toBe("other");
+    // Emptied by the user, then typed: typed.
+    t.onBefore(el, "A prefilled answer the user never wrote!");
+    t.onInput(el, true, "deleteContentBackward", "");
+    t.onBefore(el, "");
+    t.onInput(el, true, "insertText", "M");
+    expect(t.entryOf(el, "M")).toBe("typed");
   });
 });

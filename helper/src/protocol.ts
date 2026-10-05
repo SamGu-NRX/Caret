@@ -1035,7 +1035,10 @@ export type FillSource = z.infer<typeof FillSource>;
 export const FillAsk = z.object({
   choice: z.string(),
   confidence: z.number(),
-  /** The picked candidate's text, or null for "none". */
+  /**
+   * The picked candidate's text, or null for "none". S1: null for a saved answer's pick too; its text travels only in
+   * FillField.value, beside `answer`, which only a host that shows answers whole is sent.
+   */
   value: z.string().nullable(),
 });
 export type FillAsk = z.infer<typeof FillAsk>;

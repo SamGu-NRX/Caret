@@ -15,7 +15,8 @@ import { describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fil
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import { offerField } from "./field.ts";
-import { ANSWER_SAYS } from "../fill/answers.ts";
+import { ANSWER_SAYS, guardAnswer, pageText, type PageContext } from "../fill/answers.ts";
+import type { SavedAnswer } from "../memory/answers.ts";
 import { SAVED_ANSWER_RULE } from "./answer-gate.ts";
 
 /** Rows the fields block, and the block of fields the user sets, list before "and N more". Assumed, not measured. */
@@ -42,7 +43,7 @@ export type GroundedProposal = Omit<FillProposal, "fields"> & { fields: Grounded
 /** An About entry as a fill may use it now, or null when it is gone, paused, not typed or fits no field (the helper reads memory). */
 export type AboutNow = (id: string) => AboutValue | null;
 /** A saved answer as answers.md holds it now, read by content, or null when it is gone, paused or broken (S1). */
-export type AnswerNow = (id: string) => { question: string; answer: string } | null;
+export type AnswerNow = (id: string) => SavedAnswer | null;
 
 /** Where a value came from, as a pop-up ref: the source node and the span quoted there, or the memory entry. */
 function sourceRef(source: FillSource | null, memory: FillMemory | null, span: string): PopupRef | null {
@@ -209,7 +210,7 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
  * values must be it. A value from memory must still be what that entry holds: forgetting, pausing or editing it ends
  * the offer.
  */
-export function recheckFill(model: ScreenModel, p: GroundedProposal, about: AboutNow, answer: AnswerNow = () => null): string | null {
+export function recheckFill(model: ScreenModel, p: GroundedProposal, about: AboutNow, answer: AnswerNow = () => null, page: PageContext | null = null): string | null {
   const w = model.windows.get(p.windowId);
   if (w === undefined) return "the form's window closed";
   for (const f of p.fields) {
@@ -219,9 +220,12 @@ export function recheckFill(model: ScreenModel, p: GroundedProposal, about: Abou
     if (input === null) return `the field ${f.key} is no longer empty`;
     if (describeInput(w, input) !== f.descriptor) return `the field ${f.key} now reads differently`;
     if (f.source === null && f.answer !== undefined) {
-      // S1: the answer as answers.md holds it now must still be the text shown, word for word, for the same question.
+      // S1: the answer as answers.md holds it now must still be the text shown, word for word, for the same question, and
+      // still pass the guards on the page as it is now: its organization, and a maxlength the page may have lowered.
       const now = answer(f.memory.id);
-      if (now === null || now.answer !== f.value || now.question !== f.memory.label) return `your saved answer to "${f.memory.label}" changed`;
+      if (now === null || now.fields.answer !== f.value || now.fields.question !== f.memory.label) return `your saved answer to "${f.memory.label}" changed`;
+      const held = guardAnswer(now, pageText(w, page ?? { site: null, headings: [] }), node.maxLength);
+      if (held !== null) return held.says;
       continue;
     }
     if (f.source === null) {

@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SAVED_ANSWERS_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryDocumentReply, type MemoryReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SAVED_ANSWERS_CAPABILITY, type ActRevoke, type AnswerSaveReply, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryDocumentReply, type MemoryReply } from "./protocol.ts";
 import { carriesAnswer, withoutAnswers } from "./offers/answer-gate.ts";
 import type { Helper } from "./helper.ts";
 import { planError } from "./planner/proposal.ts";
@@ -248,7 +248,18 @@ export class HelperServer {
           // S1: the user's yes to saving an answer. Only a host that shows answers whole speaks for the user here.
           else if (m.data.type === "answerSave") {
             if (!this.savedAnswers.has(s)) this.reject(s, `answerSave needs a host hello with "${SAVED_ANSWERS_CAPABILITY}" in its capabilities`);
-            else s.write(JSON.stringify(this.helper().handleAnswerSave(m.data)) + "\n");
+            else {
+              const requestId = m.data.requestId;
+              void this.helper()
+                .handleAnswerSave(m.data)
+                .catch((e: unknown): AnswerSaveReply => {
+                  this.warn(`answerSave ${requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
+                  return { type: "answerSaveReply", v: PROTOCOL_VERSION, requestId, outcome: "refused", answerId: null, why: "unavailable", says: "Caret couldn't save the answer; nothing was saved." };
+                })
+                .then((r) => {
+                  if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
+                });
+            }
           }
           else if (m.data.type === "settings") this.helper().handleSettings(m.data, from);
           // The user's Keep makes a skill, which is consent the router acts on (routing/consent.ts): only the host,

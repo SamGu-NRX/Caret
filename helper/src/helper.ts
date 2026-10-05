@@ -114,7 +114,7 @@ import { FILLABLE_ROLES, neverTypedNode } from "./fill/fill.ts";
 import { fieldKinds, valueKinds, words } from "./fill/kinds.ts";
 import { labelledLines } from "./fill/candidates.ts";
 import { fieldAsksFor } from "./fill/about.ts";
-import { AnswerError, answerFor, answerNow, capture, OFFER_MIN_CHARS, OFFER_SAYS, putAnswer, savedAnswers, savedSays } from "./memory/answers.ts";
+import { AnswerError, answerFor, answerNow, capture, OFFER_MIN_CHARS, OFFER_SAYS, putAnswer, savedAnswers, savedSays, type SavedAnswer } from "./memory/answers.ts";
 import type { PageContext } from "./fill/answers.ts";
 import type { ValueKind } from "./protocol.ts";
 import { OFFER_WHEN, sentences, type EventCandidate, type SentenceSource } from "./offers/event-card.ts";
@@ -1036,7 +1036,7 @@ export class Helper {
   private memoryHolds(ref: string, value: string): boolean {
     // S1: a saved answer, checked by content right before it is written: still active, still exactly these words.
     const files = this.memory.files;
-    if (files !== null && files.record(ref)?.kind === "answer") return this.answerText(ref)?.answer === value;
+    if (files !== null && files.record(ref)?.kind === "answer") return this.answerText(ref)?.fields.answer === value;
     const { id, part } = parseMemoryRef(ref);
     const text = this.memory.text(id);
     if (text === null || text === undefined) return false;
@@ -1567,7 +1567,7 @@ export class Helper {
     // S1: Command-1 has no preview of its own, so a saved answer is never written from it; the field is the user's.
     const p = writtenFields(kept.proposal, this.model.windows.get(kept.windowId), { answers: false });
     if (p.fields.length === 0) return this.refuseAccept(m.proposalId, "Caret writes none of this proposal's fields");
-    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText);
+    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
     if (stale !== null) return this.refuseAccept(m.proposalId, `${stale}; nothing was written`);
     this.bindNew(m.proposalId, session);
     const { plan, slots } = fillPlan(this.model, p);
@@ -1674,11 +1674,11 @@ export class Helper {
   }
 
   /** S1: a saved answer as answers.md holds it now (read by content), or null when it is gone, paused or unreadable. */
-  private readonly answerText = (id: string): { question: string; answer: string } | null => {
+  private readonly answerText = (id: string): SavedAnswer | null => {
     const files = this.memory.files;
     if (files === null) return null;
     const a = answerNow(files, id);
-    return a === null || a.status !== "active" ? null : { question: a.fields.question, answer: a.fields.answer };
+    return a === null || a.status !== "active" ? null : a;
   };
 
   /** S1: the server reports how many connected hosts declared SAVED_ANSWERS_CAPABILITY. */
@@ -1731,17 +1731,19 @@ export class Helper {
   }
 
   /**
-   * S1: the user's yes to saving an answer, from an offer or as "remember this answer" on a field. The field is checked
-   * again as it is now, by the same rules as the offer, and an offer's text must be what the field still holds. The
-   * reply goes to the asker only and says why when nothing was saved.
+   * S1: the user's yes to saving an answer, from an offer or as "remember this answer" on a field. The page is walked
+   * again first, so the field is judged as it is at the yes, not as the last snapshot showed it (review finding 5), by
+   * the same rules as the offer; an offer's text must be what the field still holds. The reply goes to the asker only
+   * and says why when nothing was saved.
    */
-  handleAnswerSave(m: AnswerSave): AnswerSaveReply {
+  async handleAnswerSave(m: AnswerSave): Promise<AnswerSaveReply> {
     const refused = (why: AnswerSaveReply["why"] & string, says: string): AnswerSaveReply => {
       this.opts.store.count(`answers.refused_${why}`, 1);
       return { type: "answerSaveReply", v: PROTOCOL_VERSION, requestId: m.requestId, outcome: "refused", answerId: null, why, says };
     };
     const files = this.memory.files;
     if (files === null) return refused("unavailable", "Caret's memory is still in its old encrypted store, so it can't save answers yet.");
+    if (this.mode !== "live") return refused("unavailable", "Caret is only watching right now, so it saves nothing.");
     let windowId: string;
     let key: string;
     let offered: Omit<AnswerFields, "savedOn"> | null = null;
@@ -1751,6 +1753,10 @@ export class Helper {
       ({ windowId, key } = o);
       offered = o.fields;
     } else ({ windowId, fieldKey: key } = m.from);
+    const before = this.model.windows.get(windowId);
+    if (before === undefined) return refused("changed", "That page is no longer open, so nothing was saved.");
+    const walked = await this.readerVerb({ kind: "walk", pid: before.app.pid, windowId }).catch(() => null);
+    if (walked === null || walked.outcome !== "ok") return refused("unavailable", "Caret couldn't read the page again, so nothing was saved.");
     const w = this.model.windows.get(windowId);
     if (w === undefined) return refused("changed", "That page is no longer open, so nothing was saved.");
     const c = capture(w, key, { site: this.opts.pageContext?.(windowId)?.site ?? null, caretWrote: this.caretWrote(windowId, key) });
@@ -2355,7 +2361,7 @@ export class Helper {
       // S1: a saved answer must still be exactly the words matched, under the same question.
       if (f.answer !== undefined && memory !== null) {
         const now = this.answerText(memory.id);
-        return now !== null && now.answer === value && now.question === memory.label;
+        return now !== null && now.fields.answer === value && now.fields.question === memory.label;
       }
       if (memory !== null) {
         const now = this.aboutNow(memory.id);
@@ -2372,7 +2378,7 @@ export class Helper {
    * executor run under the proposal id. The pop-up is withdrawn either way.
    */
   private async acceptFill(p: GroundedProposal): Promise<AcceptResult> {
-    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText);
+    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
     if (stale !== null) {
       this.withdrawFill(p.id, "stale");
       return { refused: `${stale}; nothing was written` };
@@ -2392,7 +2398,7 @@ export class Helper {
     for (const [id, { p, form }] of this.fillPopups) {
       if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;
       const w = this.model.windows.get(p.windowId);
-      let changed = recheckFill(this.model, p, this.aboutNow, this.answerText) !== null;
+      let changed = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null) !== null;
       if (!changed && w !== undefined) {
         try {
           changed = `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form;
@@ -2422,7 +2428,7 @@ export class Helper {
    */
   private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[]): string | null {
     if (focuses.some((f) => !inFillForm(p, f.windowId, f.key))) return "focus left the form";
-    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText);
+    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
     if (stale !== null) return stale;
     const w = this.model.windows.get(p.windowId);
     try {

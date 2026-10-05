@@ -117,6 +117,14 @@ if (globalThis.__caretContent === undefined) {
   const entries = late ? null : new EntryTracker();
   if (entries !== null) {
     addEventListener(
+      "beforeinput",
+      (e) => {
+        const el = e.composedPath()[0];
+        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) entries.onBefore(el, el.value);
+      },
+      { capture: true, passive: true },
+    );
+    addEventListener(
       "input",
       (e) => {
         const el = e.composedPath()[0];

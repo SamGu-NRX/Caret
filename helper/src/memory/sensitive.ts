@@ -112,6 +112,24 @@ export function mentionedKind(text: string): { kind: SensitiveKind; ssn: boolean
   return null;
 }
 
+/**
+ * The kind of secret a sentence states: "my password is violet-orchard-seven", "our API key: …". A label phrase after "my",
+ * "our" or "the", then "is", "was", ":" or "=" and something more. S1 checks a saved answer with it: prose that only
+ * mentions a kind ("I built a password reset flow") is not a secret, and refusing it would refuse ordinary answers.
+ * Written for answers, not measured.
+ */
+export function statedSecret(text: string): SensitiveKind | null {
+  const t = text.toLowerCase();
+  for (const [kind, phrases] of LABEL_PHRASES) {
+    for (const p of phrases) {
+      if (COMMON_IN_SENTENCES.has(p.join(" "))) continue;
+      const phrase = p.map((w) => w.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("[\\s-]+");
+      if (new RegExp(`\\b(?:my|our|the)\\s+(?:\\w+\\s+)?${phrase}s?(?:\\s+(?:number|no|num|nr|code|id))?\\s*(?:is|was|:|=)\\s*\\S`, "u").test(t)) return kind;
+    }
+  }
+  return null;
+}
+
 /** The refusal's wording: "Caret doesn't keep card numbers in memory". */
 export const refusal = (kind: SensitiveKind): string => `Caret doesn't keep ${SENSITIVE_SAYS[kind]} in memory`;
 

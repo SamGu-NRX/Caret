@@ -94,6 +94,19 @@ export interface PageText {
   tokens: string[];
   /** The organization the page is for, as a sentence names it, or null when code cannot tell. */
   org: string | null;
+  /** The page's site as siteKey gives it, or null when unknown. */
+  site: string | null;
+}
+
+/** A page's site for "the same organization": host and first path segment, the company on an ATS address. */
+export function siteKey(site: string | null): string | null {
+  if (site === null) return null;
+  try {
+    const u = new URL(site);
+    return `${u.host}/${u.pathname.split("/").filter((s) => s !== "")[0] ?? ""}`;
+  } catch {
+    return site;
+  }
 }
 
 /** Lower-case letter and digit runs, in order: "Harbor & Pine's" → harbor, pine, s. */
@@ -126,11 +139,15 @@ export function pageOrg(title: string, site: string | null): string | null {
   return slug.split(/[-_]/u).map((w) => (w === "" ? w : w[0]?.toUpperCase() + w.slice(1))).join(" ");
 }
 
-/** The page's text for the guard: title, address, headings, and every label, placeholder and value on the page. */
+/**
+ * The page's text for the guard: title, address, headings, and every label and placeholder, and the value of what no
+ * one types into. Never a field's value: an applicant's "Previous employer: Northwind", or an answer pasted in another
+ * field, would otherwise vouch for an answer that names it (review finding 3).
+ */
 export function pageText(w: WindowState, ctx: PageContext): PageText {
   const parts = [w.window.title, ctx.site ?? "", ...ctx.headings];
-  for (const n of w.nodes.values()) parts.push(n.label ?? "", n.placeholder ?? "", n.value ?? "");
-  return { tokens: tokens(parts.join(" \n ")), org: pageOrg(w.window.title, ctx.site) };
+  for (const n of w.nodes.values()) parts.push(n.label ?? "", n.placeholder ?? "", n.editable === true ? "" : (n.value ?? ""));
+  return { tokens: tokens(parts.join(" \n ")), org: pageOrg(w.window.title, ctx.site), site: siteKey(ctx.site) };
 }
 
 /**
@@ -203,12 +220,47 @@ export function onPage(name: string, page: PageText): boolean {
 }
 
 /**
- * Why a matched answer is withheld on this page, or null when it may be offered. First the organization guard: the
- * question it was saved for, then its text, must name nothing the page does not show. A name from the question says the
- * answer was written for that organization; one from the text says only that it mentions it. Then the field's maxlength.
+ * A question about why this organization or role: "Why us?", "Why do you want to work here?", "What draws you to …?".
+ * Its answer is written for one organization whatever its words name. Written for application questions, not measured;
+ * one it misses still meets the name check, and one it catches wrongly is only withheld.
+ */
+const FOR_THEM = /\bwhy\b.*\b(?:us|here|this|join|joining|work|working|interested|apply|applying|company|team|role|position|opportunity|mission|product)\b|\bwhat\b.*\b(?:draws|attracts|excites|interests|appeals)\b/iu;
+
+/** Whether a text mentions an organization, in any case: its whole name, or its first word of three letters or more. */
+function mentions(text: string, org: string): boolean {
+  const have = tokens(text);
+  const want = tokens(org);
+  const head = want.find((t) => t.length >= 3 && t !== "the");
+  for (let i = 0; i + want.length <= have.length; i++) if (want.every((w, j) => have[i + j] === w)) return true;
+  return head !== undefined && have.includes(head);
+}
+
+/**
+ * Why a matched answer is withheld on this page, or null when it may be offered. Three checks, in order:
+ *
+ * 1. Where it was saved. An answer that mentions the organization it was saved for, in any case and anywhere, or that
+ *    answers a why-this-organization question (FOR_THEM), is offered only on that organization's page: same ATS site,
+ *    same organization by title, or a page that names it. A capitalized-word search alone missed "Stripe builds…" at a
+ *    sentence's start and "I admire stripe" (review finding 2); where the answer was saved says whom it was for.
+ * 2. Names. The question it was saved for, then its text, must name nothing the page does not show (namesIn). A name
+ *    from the question says the answer was written for that organization; one from the text, that it mentions it.
+ * 3. The field's maxlength.
  */
 export function guardAnswer(a: SavedAnswer, page: PageText, maxLength: number | undefined): { why: AnswerWithheld; says: string } | null {
   const forPage = page.org === null ? null : `this page is for ${page.org}`;
+  const savedOrg = pageOrg(a.fields.form ?? "", a.fields.site);
+  const savedSite = siteKey(a.fields.site);
+  const same =
+    (savedSite !== null && savedSite === page.site) ||
+    (savedOrg !== null && page.org !== null && tokens(savedOrg).join(" ") === tokens(page.org).join(" ")) ||
+    (savedOrg !== null && page.org === null && onPage(savedOrg, page));
+  if (!same) {
+    const ownName = savedOrg !== null && (mentions(a.fields.answer, savedOrg) || mentions(a.fields.question, savedOrg));
+    if (ownName || FOR_THEM.test(a.fields.question)) {
+      const whom = savedOrg ?? "another organization's form";
+      return { why: "otherOrganization", says: forPage === null ? `This answer was written for ${whom}, and Caret can't tell whether this page is for the same organization.` : `This answer was written for ${whom}; ${forPage}.` };
+    }
+  }
   const context = [a.fields.question, a.fields.form ?? ""];
   const fromQuestion = namesIn(a.fields.question, context).find((n) => !onPage(n, page));
   if (fromQuestion !== undefined) return { why: "otherOrganization", says: forPage === null ? `This answer was written for ${fromQuestion}, which this page doesn't mention.` : `This answer was written for ${fromQuestion}; ${forPage}.` };
