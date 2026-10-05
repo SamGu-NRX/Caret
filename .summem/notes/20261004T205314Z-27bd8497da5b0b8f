@@ -1,1 +1,0 @@
-U1 v3: HostedPanel frames (size, pin, debugInfo) are the content's; the window is 24 pt larger for the drawn shadow, except interactive panels (the desk), which keep margin 0 and the system shadow so the margin never eats clicks.

@@ -1,1 +1,0 @@
-U1: SwiftUI builds no accessibility tree for an NSHostingView that is not on screen (accessibilityChildren is empty even after cacheDisplay); test slip labels through SlipSpeech, count elements only on screen (VM).

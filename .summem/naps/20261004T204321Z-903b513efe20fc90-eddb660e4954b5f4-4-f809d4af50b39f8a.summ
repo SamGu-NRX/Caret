@@ -1,1 +1,0 @@
-W3, memory: bridge reaches the host over XPC only; accept.ts needs --sign-identity and runs a temp launchd host; headless CfT focus sticks to CDP windows; XPCHostLink sends nothing before a verified reply; memory markdown goes to the real folder only without --data-dir.

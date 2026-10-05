@@ -1,1 +1,0 @@
-Worktree setup: copying llama.xcframework into packages/keytype/Packages/ModelRuntime/Vendor/ when Vendor does not exist makes Vendor the framework (SwiftPM: 'does not contain a binary artifact'); mkdir Vendor first.

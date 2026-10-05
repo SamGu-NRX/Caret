@@ -1,1 +1,0 @@
-U1: token contrast is measured from rendered pixels by ContrastRenderTests (Tokens.hidden blanks one token; changed pixels are its glyphs, the hidden render is their ground); a token change that drops a slip under 4.5 text / 3 marks fails there.

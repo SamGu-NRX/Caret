@@ -1,1 +1,0 @@
-Tasks bind to their host connection and are revoked on close, pause, stop or settings change. Host: compare values by UTF-16 or digest; hello says host: true. caret-screen trusts only a helperAuth-first helper (launch.ts or --auth-fd) in a 0700 socket dir.
