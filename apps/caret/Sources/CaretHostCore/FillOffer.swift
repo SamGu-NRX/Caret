@@ -40,8 +40,9 @@ public struct FillOrigin: Equatable, Sendable {
     public var source: Source
     /// When the helper stamped the proposal, in milliseconds since the epoch.
     public var proposedAtMs: Int64
-    /// Command-1 fills every empty field of the form. False until the host can write fields other
-    /// than the focused one; while false, Command-1 keeps the app's meaning.
+    /// Command-1 fills the form: the host sends `fillAll` and the helper writes every field the
+    /// proposal gives a value it can write, in one transaction (D2-04). True when the proposal has
+    /// at least two (`FillSelection.fillAllWrites`); while false, Command-1 keeps the app's meaning.
     public var fillAll = false
 
     public init(proposalID: String, windowID: String, fieldKey: String, source: Source, proposedAtMs: Int64) {
@@ -212,8 +213,23 @@ public enum FillSelection {
         guard !suppressed.contains(suppressionKey(windowID: proposal.windowId, fieldKey: field.key, value: value)) else {
             return .skip(.suppressed)
         }
-        let origin = FillOrigin(proposalID: proposal.id, windowID: proposal.windowId, fieldKey: field.key, source: from, proposedAtMs: proposal.at)
+        var origin = FillOrigin(proposalID: proposal.id, windowID: proposal.windowId, fieldKey: field.key, source: from, proposedAtMs: proposal.at)
+        origin.fillAll = fillAllWrites(proposal) >= minFillAll
         return .offer(field: field, origin: origin)
+    }
+
+    /// Fields a Fill all of the proposal writes before ⌘1 is offered. One is what Tab already does.
+    public static let minFillAll = 2
+
+    /// The fields the helper writes when this host sends `fillAll` for the proposal, as its
+    /// `writtenFields` counts them (helper/src/offers/fill-popup.ts): every text field with a value
+    /// and where it came from, and (D2-04) every control whose hand-off says Caret writes it.
+    public static func fillAllWrites(_ proposal: FillProposal) -> Int {
+        proposal.fields.filter { f in
+            if f.control == .text { return f.value != nil && (f.source != nil || f.memory != nil) }
+            guard let h = f.handoff else { return false }
+            return h.writes == true && (h.source != nil || h.memory != nil)
+        }.count
     }
 
     /// The proposed field the focused element is: by the element bound to it, else by frame, as

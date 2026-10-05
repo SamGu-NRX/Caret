@@ -39,6 +39,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .memoryProvenance: return "memoryProvenance"
             case .memoryDocumentReply: return "memoryDocumentReply"
             case .routeDecision: return "routeDecision"
+            case .askQuestion: return "askQuestion"
             case .pageEngine(let m): return "pageEngine:\(m.state.rawValue)"
             case .fileConfirmReply: return "fileConfirmReply"
             case .notForConsumer(let type): return "skip:\(type)"
@@ -132,12 +133,12 @@ final class HelperProtocolGoldenTests: XCTestCase {
     private func object(_ data: Data) throws -> NSDictionary { try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary) }
 
     /// B23: the host's hello says it is the host (golden line 62), so the helper counts its session as
-    /// the host's. Only pid and version differ from process to process. Since M1 it also names the
-    /// memoryDocuments capability; `MemoryDocumentsTests` holds it to M1's golden hello.
+    /// the host's. Only pid and version differ from process to process. Since M1 it also names
+    /// capabilities; `RoutingTests` holds which.
     func testTheHostsHelloIsTheGoldenHostHello() throws {
         let golden = try XCTUnwrap(object(goldenLines()[61]).mutableCopy() as? NSMutableDictionary)
-        golden["capabilities"] = ["memoryDocuments"]
-        XCTAssertEqual(try object(NDJSON.line(HostHello.make(pid: golden["pid"] as! Int))), golden)
+        golden["capabilities"] = HostHello.capabilities(routing: false)
+        XCTAssertEqual(try object(NDJSON.line(HostHello.make(pid: golden["pid"] as! Int, routing: false))), golden)
     }
 
     /// B10's settings message, from the host's own settings: golden lines 32 and 33.

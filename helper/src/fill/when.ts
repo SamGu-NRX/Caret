@@ -1,10 +1,11 @@
 // Dates and times for date and time fields (B24, Q1 bug 10), read by code from the span Jev picked. A date
 // goes through the value resolver (values/resolve.ts), which asks rather than guesses: "03/04" with no known
-// source locale, a relative day with no reference instant. A clock time is read here: an hour with am or pm,
-// or a 24-hour time; "at 3" with neither could be morning or afternoon, so it is not read.
+// source locale, a relative day with no reference instant. What a Fill all writes (D2-04) is read only by the
+// resolver, in the field's own format: readDate, readClock, readDateTime. clockTime is B24's looser reading of a time
+// inside prose ("Deliver around 7:45 pm"), kept only for a value handed to the user, who sees it before setting it.
 import { Temporal } from "@js-temporal/polyfill";
 import { ValueResolver, type ResolveContext } from "../values/resolve.ts";
-import { sayDate } from "../values/date-time.ts";
+import { sayDate, sayMoment } from "../values/date-time.ts";
 
 const resolver = new ValueResolver();
 
@@ -40,4 +41,21 @@ export function clockTime(text: string): { value: string; display: string } | nu
   const value = [...found][0] as string;
   const [h, mm] = value.split(":").map(Number) as [number, number];
   return { value, display: `${h % 12 === 0 ? 12 : h % 12}:${String(mm).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}` };
+}
+
+/** The one time of day a span names, as HH:MM (HH:MM:SS with seconds), read by the resolver; null when it asks or cannot read it, or the span or its source is in another zone. */
+export function readClock(text: string, ctx: ResolveContext): { value: string; display: string } | null {
+  const t = resolver.clock(text, ctx);
+  return t.kind === "resolved" ? { value: t.value, display: t.display } : null;
+}
+
+/**
+ * The one date and time a span names, as an HTML datetime-local holds it (YYYY-MM-DDTHH:MM, no zone), when it is a wall
+ * time in the user's own zone: the span names none, or names that zone ("3pm PT" for a user in Los Angeles). A time
+ * in another zone is null: the field holds no zone and the form does not say which it means, so Caret converts none.
+ */
+export function readDateTime(text: string, ctx: ResolveContext): { value: string; display: string } | null {
+  const m = resolver.moment(text, ctx);
+  if (m.kind !== "resolved" || m.value.zone !== ctx.timeZone) return null;
+  return { value: m.value.local, display: sayMoment(m.value) };
 }

@@ -172,7 +172,8 @@ public extension AskCaret.Phase {
         switch self {
         case .idle, .failed, .ended: return .none
         case .asking: return .planning
-        case .proposed: return .waiting
+        // A question waits on the user as a plan does.
+        case .proposed, .question: return .waiting
         case .running(let card): return .running(listed: listed(card.offerKey))
         }
     }

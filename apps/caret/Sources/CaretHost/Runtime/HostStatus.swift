@@ -22,6 +22,7 @@ final class HostStatus: @unchecked Sendable {
         var ghostHold: DebugState.LineHidden?
         var writing: DebugState.WritingInfo?
         var pageSight: PageSight.DebugInfo?
+        var routing: DebugState.RoutingInfo?
     }
 
     struct KeyStamp: Equatable {
@@ -30,6 +31,8 @@ final class HostStatus: @unchecked Sendable {
     }
 
     let latency = LatencyRecorder()
+    /// `latency` for the key that finished a sentence or paragraph: the router's breakpoint (H6).
+    let breakpointLatency = LatencyRecorder()
     /// Fill proposal received, to the offer for it published.
     let proposalToOffer = LatencyRecorder()
     /// A focus notification in a form's app, to the fill offer for the newly focused field.

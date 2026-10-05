@@ -12,7 +12,7 @@ import { describeField } from "../src/fill/descriptor.ts";
 import { HelperMessage, PROTOCOL_VERSION, type FillField, type FillProposal, type OfferAccept, type OfferAction, type OfferPopup } from "../src/protocol.ts";
 import { parsePopupSpec } from "../src/popup.ts";
 import { HostOfferRegistry, acceptRefusal } from "../src/offers/registry.ts";
-import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "../src/offers/fill-popup.ts";
+import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { OpenAppOffers } from "../src/offers/open-app.ts";
 import { OfferGate } from "../src/offers/settings.ts";
 import { offerField } from "../src/offers/field.ts";
@@ -207,7 +207,7 @@ describe("fill pop-up", () => {
 
   it("builds a valid spec in which every shown value names the node it came from", () => {
     const m = desk();
-    const msg = buildFillPopup(m, proposal([nameField, phoneField]) as GroundedProposal);
+    const msg = buildFillPopup(m, writtenFields(proposal([nameField, phoneField])));
     expect(msg).toEqual({
       type: "popup",
       v: PROTOCOL_VERSION,
@@ -245,7 +245,7 @@ describe("fill pop-up", () => {
     expect(HelperMessage.safeParse(msg).success).toBe(true);
   });
 
-  it("lists a control Caret never writes as a row the user sets, after the rows it fills (H5)", () => {
+  it("lists a control Caret never writes as a row the user sets, after the rows it fills (H5, as D2-04 lists them)", () => {
     const m = desk();
     const size: FillField = {
       ...nameField,
@@ -254,26 +254,26 @@ describe("fill pop-up", () => {
       value: null,
       source: null,
       choice: "c2",
+      // Its own question; nameField's would quote the name.
+      asks: [],
       handoff: { value: "Large", display: "Large", source: { pid: 1, bundleId: "b", kind: null, ...mail, nodeKey: MK("statictext:large pizza~0") }, memory: null },
     };
-    const msg = buildFillPopup(m, proposal([nameField, phoneField]) as GroundedProposal, [size]);
-    expect(msg.spec.blocks.map((b) => b.type)).toEqual(["header", "source", "fields", "fields", "actions"]);
+    const msg = buildFillPopup(m, writtenFields(proposal([nameField, phoneField, size])));
+    expect(msg.spec.blocks.map((b) => b.type)).toEqual(["header", "source", "fields", "facts", "actions"]);
     expect(msg.spec.blocks[0]).toMatchObject({ title: { text: "Fill 2 fields" } });
+    const field = { node: `${FORM}/${FK("popupbutton:pizza size~0")}` };
     expect(msg.spec.blocks[3]).toEqual({
-      type: "fields",
-      rows: [
-        {
-          destination: { text: "Field", ref: { rule: "fieldLabel", derived: [{ node: `${FORM}/${FK("popupbutton:pizza size~0")}` }] } },
-          value: { text: "Large", ref: { rule: "handoffValue", derived: [{ node: `${SRC}/${MK("statictext:large pizza~0")}` }] } },
-          state: "yours",
-        },
-      ],
+      type: "facts",
+      id: "yours",
+      rows: [{ label: "You set", value: { text: "Field: Large", ref: { rule: "handoff", derived: [field, { node: `${SRC}/${MK("statictext:large pizza~0")}`, quote: "Large" }] } }, secondary: true }],
     });
+    // Fields are left to the user, so the action says how many it fills instead of "Fill all".
+    expect(msg.spec.blocks[4]).toEqual({ type: "actions", items: [{ id: "fillAll", label: "Fill 2", key: "tab" }] });
     expect(parsePopupSpec(msg.spec)).toEqual(msg.spec);
     expect(HelperMessage.safeParse(msg).success).toBe(true);
-    // A control with no value to set, and a text field, add no row.
-    const none = buildFillPopup(m, proposal([nameField, phoneField]) as GroundedProposal, [{ ...size, handoff: null }, nameField]);
-    expect(none.spec.blocks.map((b) => b.type)).toEqual(["header", "source", "fields", "actions"]);
+    // A control with no value to set is still the user's: its row names the field alone.
+    const none = buildFillPopup(m, writtenFields(proposal([nameField, phoneField, { ...size, handoff: null }])));
+    expect(none.spec.blocks[3]).toMatchObject({ type: "facts", rows: [{ label: "You set", value: { text: "Field" } }] });
   });
 
   it("lists five rows and counts the rest, and names every source window when there are several", () => {
@@ -283,7 +283,7 @@ describe("fill pop-up", () => {
         ? grounded(FK(`textfield:${l.toLowerCase()}~0`), "Austin", { windowId: SRC2, nodeKey: "dev.caret.directory/standard/statictext:austin~0", appName: "Directory Fixture", windowTitle: "Directory Fixture" })
         : { ...nameField, key: FK(`textfield:${l.toLowerCase()}~0`) },
     );
-    const spec = buildFillPopup(m, proposal(fields) as GroundedProposal).spec;
+    const spec = buildFillPopup(m, writtenFields(proposal(fields))).spec;
     const [header, source, rows] = spec.blocks;
     expect(header).toMatchObject({ title: { text: "Fill 6 fields" } });
     expect(source).toEqual({
@@ -303,7 +303,7 @@ describe("fill pop-up", () => {
     const m = desk();
     // Each field as fill describes it, which recheckFill compares with the form as it is now.
     const form = m.windows.get(FORM)!;
-    const p = proposal([nameField, phoneField].map((f) => ({ ...f, descriptor: describeField(form, form.nodes.get(f.key)!).text }))) as GroundedProposal;
+    const p = writtenFields(proposal([nameField, phoneField].map((f) => ({ ...f, descriptor: describeField(form, form.nodes.get(f.key)!).text }))));
     expect(recheckFill(m, p, () => null)).toBeNull();
     m.apply(snap([text(MK("statictext:dana whitfield~0"), "Dana W.")], { at: 4000, windowId: SRC, title: "Order confirmation", app: MAIL_APP, root: MK("statictext:dana whitfield~0") }));
     expect(recheckFill(m, p, () => null)).toBe(`the source ${MK("statictext:dana whitfield~0")} changed`);
@@ -313,7 +313,7 @@ describe("fill pop-up", () => {
   });
 
   it("writes each field by its exact key, with every screen string a slot", () => {
-    const { plan, slots } = fillPlan(desk(), proposal([nameField, phoneField]) as GroundedProposal);
+    const { plan, slots } = fillPlan(desk(), writtenFields(proposal([nameField, phoneField])));
     const filled = fillSlots(Plan.parse(plan), slots);
     expect(filled.steps.map((s) => [s.says, s.end.kind === "valueEquals" && s.end.target.key, s.end.kind === "valueEquals" && s.end.window.title])).toEqual([
       ["Name holds Dana Whitfield", FK("textfield:name~0"), "Checkout {{x}}"],

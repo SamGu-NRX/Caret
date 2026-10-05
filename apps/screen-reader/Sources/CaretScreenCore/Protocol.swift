@@ -470,19 +470,32 @@ public struct FillHandoff: Codable, Equatable, Sendable {
     public var display: String
     public var source: FillSource?
     public var memory: FillMemory?
-    public init(value: String, display: String, source: FillSource?, memory: FillMemory?) {
+    /// D2-04: the label of the "Label: value" line the value was read from; absent otherwise.
+    public var context: String?
+    /// D2-04: true when Caret writes this control in a Fill all (a native select, radio group,
+    /// checkbox, date, time or custom dropdown in a window the page engine owns); absent when the
+    /// control stays the user's.
+    public var writes: Bool?
+    public init(value: String, display: String, source: FillSource?, memory: FillMemory?, context: String? = nil, writes: Bool? = nil) {
         self.value = value; self.display = display; self.source = source; self.memory = memory
+        self.context = context; self.writes = writes
     }
-    enum CodingKeys: String, CodingKey { case value, display, source, memory }
+    enum CodingKeys: String, CodingKey { case value, display, source, memory, context, writes }
+    /// protocol.ts: `context` and `writes` are optional (absent, never null); `writes` is only ever true.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         value = try c.decode(String.self, forKey: .value); display = try c.decode(String.self, forKey: .display)
         source = try c.decodeNullable(FillSource.self, forKey: .source); memory = try c.decodeNullable(FillMemory.self, forKey: .memory)
+        context = try c.decodeOptional(String.self, forKey: .context)
+        if context?.isEmpty == true { throw ProtocolError("handoff.context is at least 1 character") }
+        writes = try c.decodeOptional(Bool.self, forKey: .writes)
+        if writes == false { throw ProtocolError("handoff.writes is true or absent") }
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(value, forKey: .value); try c.encode(display, forKey: .display)
         try c.encode(source, forKey: .source); try c.encode(memory, forKey: .memory)
+        try c.encodeIfPresent(context, forKey: .context); try c.encodeIfPresent(writes, forKey: .writes)
     }
 }
 

@@ -8,7 +8,7 @@
 // release on 2026-10-04, Node 26.5 has no global Temporal, and a probe of that version confirmed the
 // behavior used here (disambiguation and offset "reject" throw for Los Angeles 2026-03-08 02:30,
 // 2026-11-01 01:30 and a wrong offset; "earlier" and "later" return the two real instants).
-import { parseDate, parseInterval, parseMoment, type Interval, type Moment } from "./date-time.ts";
+import { parseClock, parseDate, parseInterval, parseMoment, type Interval, type Moment } from "./date-time.ts";
 import { parseNumber, type Decimal } from "./decimal.ts";
 import { convertQuantity, type Quantity } from "./units.ts";
 
@@ -68,6 +68,11 @@ export class ValueResolver {
   /** A civil date ("2026-10-20"). Never shifted across zones. */
   date(span: string | ValueRef, ctx: ResolveContext): Resolution<string> {
     return parseDate(ref(span), ctx);
+  }
+
+  /** A time of day for a time field: "15:30". A span that names a zone, or a source in another zone, is unsupported. */
+  clock(span: string | ValueRef, ctx: ResolveContext): Resolution<string> {
+    return parseClock(ref(span), ctx);
   }
 
   /** One date and time of day, read in the zone the text names or the source's zone. */

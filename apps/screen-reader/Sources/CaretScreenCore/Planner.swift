@@ -70,6 +70,8 @@ public struct PlanProposal: Codable, Equatable, Sendable {
         case schema, noWindow, unsure, nothingToDo, unsupportedStep, multipleWindows, unknownWindow, ambiguousWindow
         case unknownTarget, ambiguousTarget, notEditable, untracedValue, wrongKind, stepAfterHandoff, riskMismatch, unavailable, jevFailed, privacy, `internal`
         case unseenWindow
+        /// B29: the question an askAnswer names is unknown to this connection, expired or already answered.
+        case questionGone
     }
     public struct Window: Codable, Equatable, Sendable {
         public var pid: Int

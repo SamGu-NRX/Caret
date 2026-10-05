@@ -36,6 +36,8 @@ enum MemoryAction: Equatable {
     case siteDraft(String)
     case siteOff(String?)
     case siteOn(String)
+    /// H6: "Caret decides when to help" (true) or "Always suggest as I type".
+    case routing(Bool)
 }
 
 /// "What Caret knows" (DIRECTION.md 5.8): what Caret remembers, in groups, and what it may do per
@@ -72,6 +74,8 @@ struct MemoryView: View {
     var character: FigureCharacter
     /// The Sites tab: where Caret stays out (H5).
     var sites = SitesPage.State()
+    /// Permissions: "When Caret helps" (H6, `CaretSettings.routing`).
+    var routing = false
     var animated = true
     var now = Date()
     /// A row drawn as if the pointer were on it, for renders (hover does not exist off screen).
@@ -214,6 +218,8 @@ struct MemoryView: View {
 
     private var permissions: some View {
         VStack(alignment: .leading, spacing: 0) {
+            RoutingRowView(routing: routing) { send(.routing($0)) }
+            Hairline()
             let rows = MemoryPage.rules(state, now: now, calendar: calendar, locale: locale)
             ForEach(rows) { row in
                 RuleRowView(row: row) { send(.setRule(row.action, $0)) }
@@ -749,6 +755,43 @@ private struct CorrectionView: View {
 /// One action type: what it covers and its last uses on the left; on the right its rule as a pop-up
 /// button, with what that rule means beneath. Rules this kind of action can never take are in the
 /// menu, disabled, so the ceiling is visible where it applies.
+/// "When Caret helps" (H6): the first row of Permissions. Its words at the left, with what the
+/// current choice does under them, and the choice in the rule rows' column, so the row stays as
+/// short as a rule's. A pick changes the setting at once; the sentence changes with it, with no
+/// motion: it follows a click the user is watching.
+struct RoutingRowView: View {
+    var routing: Bool
+    var choose: (Bool) -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(RoutingCopy.title)
+                    .font(Tokens.Font.row)
+                    .foregroundStyle(Color(token: Tokens.ink))
+                Text(RoutingCopy.covers)
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                Text(RoutingCopy.detail(routing))
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                    .padding(.top, 3)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            PopUpChoice(
+                label: RoutingCopy.title,
+                items: [true, false].map { .init(value: $0, title: RoutingCopy.choice($0), enabled: true) },
+                current: routing, width: RuleRowView.columnWidth, choose: { if $0 != routing { choose($0) } }
+            )
+            .frame(width: RuleRowView.columnWidth, alignment: .leading)
+        }
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .contain)
+        .probed("routing")
+    }
+}
+
 struct RuleRowView: View {
     var row: MemoryPage.RuleRow
     var choose: (HelperMemory.Rule) -> Void

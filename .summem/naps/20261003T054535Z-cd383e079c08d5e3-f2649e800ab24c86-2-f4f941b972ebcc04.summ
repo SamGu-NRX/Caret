@@ -1,1 +1,0 @@
-Host gate, surfaces and perch need FocusedFieldSnapshot.caretRectAX (caretRect is AppKit bottom-left). fill_acceptance popup needs the reader with --act-pids, or the executor stops notAllowed ('The form changed').

@@ -34,8 +34,10 @@ public enum HelperInbound: Equatable, Sendable {
     case memoryProvenance(MemoryProvenance)
     /// M1: the answer to this host's `memoryDocumentRequest`, to this connection only.
     case memoryDocumentReply(MemoryDocumentReply)
-    /// D2-02: the router's decision for a field. Decoded and checked only; H6 acts on it.
+    /// D2-02: the router's decision for a field; ghost text and the writing line follow it (H6).
     case routeDecision(RouteDecision)
+    /// B29: an Ask came back as a question with choices, to this connection only.
+    case askQuestion(AskQuestion)
     /// W2: whether Caret can see a browser's pages (`PageSight`).
     case pageEngine(PageEngineState)
     /// H5: the answer to this host's `fileConfirm`, to this connection only.
@@ -65,6 +67,7 @@ public enum HelperInbound: Equatable, Sendable {
         case .memoryProvenance: return MemoryProvenance.type
         case .memoryDocumentReply: return MemoryDocumentReply.type
         case .routeDecision: return RouteDecision.type
+        case .askQuestion: return AskQuestion.type
         case .pageEngine: return PageEngineState.type
         case .fileConfirmReply: return FileConfirmReply.type
         case .notForConsumer(let type), .unknown(let type): return type
@@ -120,6 +123,14 @@ public enum HelperInbound: Equatable, Sendable {
         case RoutingContext.type:
             // The host's own context, echoed back; validated so a malformed line is still counted.
             _ = try JSONDecoder().decode(RoutingContext.self, from: line)
+            return .notForConsumer(type: envelope.type)
+        case AskQuestion.type:
+            return .askQuestion(try JSONDecoder().decode(AskQuestion.self, from: line))
+        case AskAnswer.type:
+            _ = try JSONDecoder().decode(AskAnswer.self, from: line)
+            return .notForConsumer(type: envelope.type)
+        case FillAllRequest.type:
+            _ = try JSONDecoder().decode(FillAllRequest.self, from: line)
             return .notForConsumer(type: envelope.type)
         case FirstLookReply.type:
             return .firstLookReply(try FirstLookReply.decode(line))
@@ -198,14 +209,23 @@ public struct LineFramer: Sendable {
 
 /// The host's hello to the helper. `host: true` (B23): only the host app's session counts as "host
 /// connected", which a skill needs before it runs on its own, and the helper binds the work the host
-/// accepts to this session. `capabilities` (M1) names `memoryDocuments`, so the helper sends noticed
-/// facts as noticed, with provenance, and accepts "Not right" and the document requests. A helper from
-/// before M1 ignores the key (its hello schema is not strict).
+/// accepts to this session. `capabilities` names what this host understands:
+/// - `memoryDocuments` (M1): noticed facts as noticed, with provenance, "Not right" and the documents.
+/// - `fillAll` (D2-04): ⌘1 on a field's fill sends `fillAll` for the whole form.
+/// - `askChoices` (B29): an Ask may come back as a question with choices, answered with `askAnswer`.
+/// - `routing` (D2-02, H6): only while the user's setting "Caret decides when to help" is on. The
+///   helper then sends route decisions, and its offers wait for them.
+/// A helper from before any of these ignores the names it does not know (its hello schema is not strict).
 public enum HostHello {
-    public static let capabilities = [MemoryDocs.capability]
+    public static let fillAllCapability = "fillAll"
+    public static let askChoicesCapability = "askChoices"
 
-    public static func make(pid: Int) -> Message {
-        Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: true), capabilities: capabilities)
+    public static func capabilities(routing: Bool) -> [String] {
+        [MemoryDocs.capability, fillAllCapability, askChoicesCapability] + (routing ? [Routing.capability] : [])
+    }
+
+    public static func make(pid: Int, routing: Bool) -> Message {
+        Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: true), capabilities: capabilities(routing: routing))
     }
 
     /// CaretScreenCore's `Hello` with the capabilities beside it; that mirror has no such key.

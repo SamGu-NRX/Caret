@@ -89,7 +89,7 @@ public final class SettingsStore {
 
     /// `settings set <name> <value>` on the debug socket, the menu bar's choices by name:
     ///   role fill|repeat|watch|calendar|words on|off, level quiet|balanced|eager,
-    ///   character pebble|seed|wren, paused on|off.
+    ///   character pebble|seed|wren, paused on|off, routing on|off (H6: "Caret decides when to help").
     public func set(_ words: [String]) -> String? {
         func onOff(_ word: String) -> Bool? { word == "on" ? true : (word == "off" ? false : nil) }
         switch (words.first, words.count) {
@@ -105,8 +105,11 @@ public final class SettingsStore {
         case ("paused", 2):
             guard let on = onOff(words[1]) else { return "usage: settings set paused on|off" }
             update(source: .socket) { $0.paused = on }
+        case ("routing", 2):
+            guard let on = onOff(words[1]) else { return "usage: settings set routing on|off" }
+            update(source: .socket) { $0.routing = on }
         default:
-            return "usage: settings set role|level|character|paused ..."
+            return "usage: settings set role|level|character|paused|routing ..."
         }
         return nil
     }

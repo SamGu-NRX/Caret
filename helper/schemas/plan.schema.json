@@ -83,6 +83,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -143,6 +147,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -199,6 +207,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -255,6 +267,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -383,6 +399,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -450,6 +470,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -468,6 +492,66 @@
                       "window",
                       "target",
                       "wants"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "fieldsRevealed"
+                      },
+                      "window": {
+                        "type": "object",
+                        "properties": {
+                          "bundleId": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "titleStartsWith": {
+                            "type": "string"
+                          },
+                          "number": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "target": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "role": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "describe": {
+                            "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
+                          }
+                        },
+                        "required": [
+                          "describe"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "window",
+                      "target"
                     ],
                     "additionalProperties": false
                   },
@@ -529,6 +613,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -628,6 +716,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -688,6 +780,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -744,6 +840,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -800,6 +900,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -928,6 +1032,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -995,6 +1103,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -1013,6 +1125,66 @@
             "window",
             "target",
             "wants"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "fieldsRevealed"
+            },
+            "window": {
+              "type": "object",
+              "properties": {
+                "bundleId": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "titleStartsWith": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "target": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "describe": {
+                  "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
+                }
+              },
+              "required": [
+                "describe"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "kind",
+            "window",
+            "target"
           ],
           "additionalProperties": false
         },

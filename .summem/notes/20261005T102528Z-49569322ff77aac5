@@ -1,1 +1,0 @@
-H7: a18_vm_walk.py writes results.json after every check and in finally; VM jobs judge it with scripts/vm_results.py, never the transcript's last line. test_a18_vm_walk.py runs the walk against stand-ins on any Mac.

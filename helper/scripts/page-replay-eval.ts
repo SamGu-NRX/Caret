@@ -92,7 +92,8 @@ function score(k: { label: string; expected: string; accept?: string[] | undefin
   const withValue = mine.filter((x) => valueOf(x) !== null);
   const proposed = withValue.length === 0 ? null : withValue.map(valueOf).join(" | ");
   const fillable = k.expected !== "none";
-  const base = { label: k.label, expected: k.expected, proposed, handoff: withValue.some((x) => x.value === null) };
+  // A control a Fill all writes (D2-04, FillHandoff.writes) is a write, not a hand-off.
+  const base = { label: k.label, expected: k.expected, proposed, handoff: withValue.some((x) => x.value === null && x.handoff?.writes !== true) };
   const norm = (s: string): string => s.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
   if (proposed !== null) {
     const good = [k.expected, ...(k.accept ?? [])].map(norm);
@@ -135,15 +136,20 @@ for (const [i, [site, fieldsKey]] of Object.entries(key.sites).entries()) {
 const all = results.flatMap((r) => r.scored);
 const count = (xs: readonly Scored[], v: Verdict) => xs.filter((s) => s.verdict === v).length;
 const fillable = (xs: readonly Scored[]) => xs.filter((s) => s.expected !== "none").length;
+/** Fields given a value Caret writes, right or wrong; and fields given one the user sets. */
+const written = (xs: readonly Scored[]) => xs.filter((s) => s.proposed !== null && !s.handoff).length;
+const handed = (xs: readonly Scored[]) => xs.filter((s) => s.proposed !== null && s.handoff).length;
 const md = [
   "# Real-site fill replay (W4)",
   "",
   `Snapshots: ${a.dir}. Jev calls ${calls}, $${spent.toFixed(4)}. Seed ${a.seed}.`,
   "",
-  "| site | fillable | right | wrong | missed | correct blanks | not in model |",
-  "|---|---|---|---|---|---|---|",
-  ...results.map((r) => `| ${r.site}${r.error === null ? "" : ` (error: ${r.error})`} | ${fillable(r.scored)} | ${count(r.scored, "right")} | ${count(r.scored, "wrong")} | ${count(r.scored, "missed")} | ${count(r.scored, "blank")} | ${count(r.scored, "unseen")} |`),
-  `| **all** | ${fillable(all)} | ${count(all, "right")} | ${count(all, "wrong")} | ${count(all, "missed")} | ${count(all, "blank")} | ${count(all, "unseen")} |`,
+  "| site | fillable | right | written | handed off | wrong | missed | correct blanks | not in model |",
+  "|---|---|---|---|---|---|---|---|---|",
+  ...results.map((r) => `| ${r.site}${r.error === null ? "" : ` (error: ${r.error})`} | ${fillable(r.scored)} | ${count(r.scored, "right")} | ${written(r.scored)} | ${handed(r.scored)} | ${count(r.scored, "wrong")} | ${count(r.scored, "missed")} | ${count(r.scored, "blank")} | ${count(r.scored, "unseen")} |`),
+  `| **all** | ${fillable(all)} | ${count(all, "right")} | ${written(all)} | ${handed(all)} | ${count(all, "wrong")} | ${count(all, "missed")} | ${count(all, "blank")} | ${count(all, "unseen")} |`,
+  "",
+  "Written: fields given a value Caret writes in the form's one Fill all; handed off: a value the user sets.",
   "",
   `Right values Caret writes: ${all.filter((s) => s.verdict === "right" && !s.handoff).length}; right values handed to the user (a select, radio, Yes/No question or dropdown): ${all.filter((s) => s.verdict === "right" && s.handoff).length}.`,
   "",

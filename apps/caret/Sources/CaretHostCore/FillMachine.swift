@@ -71,6 +71,8 @@ public struct FillDraw: Equatable, Sendable {
     public var line: FillLineRule.Outcome
     /// The source window's app, for its glyph in the slip; nil for a value from memory.
     public var sourceApp: String? = nil
+    /// ⌘1 fills the form (`FillOrigin.fillAll`): the slip shows its key.
+    public var fillAll = false
 }
 
 /// The line after Tab or ⌘Z, in place of the offer's line.
@@ -96,6 +98,8 @@ public enum FillCommand: Equatable, Sendable {
     case hideOffer(byTyping: Bool)
     /// Tab took the value: the ghost goes, the line stays for the result.
     case markWorking
+    /// ⌘1 on the slip: send `fillAll` for the proposal (D2-04).
+    case fillAll(String)
     case drawToast(FillToastDraw)
     /// The toast ends; a line waiting behind it (`FillLineRule.deferLine`) takes the stage.
     case hideToast(byTyping: Bool)
@@ -244,6 +248,9 @@ public final class FillMachine {
     var lastFieldFrame: CGRect?
     /// Values refused or undone, per field (`FillSelection.suppressionKey`).
     var suppressed: Set<String> = []
+    /// Proposals a field of which went in by Tab, written or failed: a Fill all of them would find
+    /// a destination no longer empty, which the helper refuses (H6 review).
+    var tabbed: Set<String> = []
     /// When each memory entry was last edited, paused or forgotten. The helper cannot take back one
     /// field of a proposal it sent, so a held proposal's value from an entry changed after it
     /// arrived is skipped here; entries older than `proposalMaxAge` are dropped with the proposals.
@@ -347,7 +354,10 @@ public final class FillMachine {
             switch FillSelection.select(candidate.proposal, focusedFrame: focusedFrame, focusedValue: field.value, secure: field.secure,
                                         suppressed: suppressed, changedMemory: changed,
                                         focusedElementID: field.identity.elementID, bound: bound) {
-            case .offer(let proposed, let origin):
+            case .offer(let proposed, var origin):
+                // A proposal the user already took a field of by Tab: the helper's Fill all rechecks
+                // that every destination is still empty, so it would refuse; ⌘1 stays the app's.
+                if tabbed.contains(origin.proposalID) { origin.fillAll = false }
                 return present(proposed, origin: origin, field: field, trigger: trigger)
             case .skip(let reason):
                 // Report the most specific reason: a matched field outranks "nothing here".
@@ -419,7 +429,7 @@ public final class FillMachine {
         emit(.remember(offerID: offerID, bundleID: field.identity.bundleID))
         let caption = origin.sourceCaption
         let line = FillLineRule.resolve(toastSource: toast?.source, offerSource: caption)
-        emit(.drawOffer(FillDraw(offerID: offerID, value: value, field: frame, caption: caption, pid: field.identity.pid, readID: field.readID, line: line, sourceApp: origin.sourceApp)))
+        emit(.drawOffer(FillDraw(offerID: offerID, value: value, field: frame, caption: caption, pid: field.identity.pid, readID: field.readID, line: line, sourceApp: origin.sourceApp, fillAll: origin.fillAll)))
         if line == .replaceToast {
             // The toast gave way to an offer from another source, and its undo went with it. The
             // overlay ends the toast as it draws the new line.
@@ -520,7 +530,17 @@ public final class FillMachine {
 
     public func claimed(_ claim: Claim) {
         syncToast(arbiter.snapshot(), byTyping: false)
-        guard case .fill = claim.offer.kind, claim.offer.id == shownOfferID else { return emit(.publish) }
+        guard case .fill(let origin) = claim.offer.kind, claim.offer.id == shownOfferID else { return emit(.publish) }
+        if claim.choice.fillAll {
+            // ⌘1: the helper fills the form in one run (D2-04) and reports it as a task under the
+            // proposal's id, which the activity list shows. This field's slip has nothing to wait for.
+            emit(.fillAll(origin.proposalID))
+            emit(.hideOffer(byTyping: false))
+            emit(.count("fill.fillAll"))
+            shownOfferID = nil
+            shownKey = nil
+            return emit(.publish)
+        }
         emit(.markWorking)
         shownOfferID = nil
         shownKey = nil
@@ -561,6 +581,7 @@ public final class FillMachine {
             valueLength: result.verified ? result.insertedLength : 0
         ))
 
+        if !result.rejected { tabbed.insert(origin.proposalID) }
         if result.verified {
             // A verified write with no undo grant still filled the field: it says so, with no ⌘Z
             // (CodeRabbit on PR #8: it said "Nothing was filled.").

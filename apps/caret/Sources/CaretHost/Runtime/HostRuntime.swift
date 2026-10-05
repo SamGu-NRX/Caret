@@ -3,6 +3,7 @@ import AppKit
 import CaretHostCore
 import CaretScreenCore
 import Foundation
+import os
 
 /// Builds and owns the host's parts and wires them together. The app shell creates one, calls
 /// `start`, and awaits `shutdown` before exit.
@@ -128,6 +129,13 @@ public final class HostRuntime {
     private let onboarding: OnboardingController
     private let memory: MemoryController
     private let pageSight: PageSightCoordinator
+    /// H6: the helper's router, as ghost text and the writing line follow it.
+    private let routeLink: RouteLink
+    /// Looks again at a re-hello the routing setting asked for while work was live.
+    private var rehelloTimer: Timer?
+    /// How long after this host sent an accept the session counts as owning a run, before the run's
+    /// activity record arrives. Assumed: activity follows an accept within a second on this Mac.
+    static let rehelloAcceptGrace: TimeInterval = 30
     private var engineTask: Task<Void, Never>?
     private let servicesBox = ServicesBox()
 
@@ -155,6 +163,11 @@ public final class HostRuntime {
         self.surface = surface
         let writing = WritingCoordinator(arbiter: arbiter, status: status, policy: policy)
         self.writing = writing
+        let routeLink = RouteLink(status: status, enabled: SettingsStore.shared.settings.routing)
+        self.routeLink = routeLink
+        coordinator.route = routeLink
+        writing.route = routeLink
+        routeLink.onChange = [{ coordinator.routeChanged() }, { writing.routeChanged() }]
         writing.allowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
         // Every host write asks this right before it acts; pause, stop, take over and the helper's
         // connection closing end it (S1 audit #2).
@@ -229,6 +242,8 @@ public final class HostRuntime {
                 return onboarding.knowAvailableChanged(memory.book.state.acceptsAdd)
             }
             if case .memoryDocumentReply(let reply) = message { return memory.receive(reply) }
+            // A decision is no offer: it says when ambient help may show, which the pause already stops.
+            if case .routeDecision(let decision) = message { return routeLink.receive(decision) }
             // Pause and the roles the host can tell apart (`HostGate`); the perch still
             // hears about work, which the user asked to see.
             guard HostGate.allows(message, SettingsStore.shared.settings) else {
@@ -247,6 +262,7 @@ public final class HostRuntime {
                 onboarding.receive(progress)
                 perch.ask.receive(progress)
             case .planProposal(let proposal): perch.ask.receive(proposal)
+            case .askQuestion(let question): perch.ask.receive(question)
             case .fileConfirmReply(let reply): perch.ask.receive(reply)
             // An offer the memory row asked for ("Let it run on its own…") is shown there, not at the caret.
             case .skillOffer(let offer): if !memory.book.claim(offer) { surface.skillOffer(offer) }
@@ -262,6 +278,9 @@ public final class HostRuntime {
             default: break
             }
         }
+        // The client reads this on its own thread at each connect, for its hello's capabilities.
+        let wantsRouting = OSAllocatedUnfairLock(initialState: SettingsStore.shared.settings.routing)
+        let linkedClient = ClientBox()
         helper = HelperClient(path: configuration.helperSocketPath, onMessage: { message in
             let at = DispatchTime.now().uptimeNanoseconds
             DispatchQueue.main.async {
@@ -271,6 +290,7 @@ public final class HostRuntime {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     activity.linkChanged(up)
+                    routeLink.linkChanged(up: up, routing: up && (linkedClient.client?.declaresRouting ?? false))
                     memory.linkChanged(up)
                     perch.ask.linkChanged(up)
                     if !up {
@@ -279,7 +299,10 @@ public final class HostRuntime {
                     }
                 }
             }
-        }, authority: authority)
+        }, authority: authority, wantsRouting: { wantsRouting.withLock { $0 } })
+        linkedClient.client = helper
+        let routeClient = helper
+        routeLink.send = { routeClient.send($0) }
         fill.client = helper
         let firstLookClient = helper
         onboarding.sendFirstLook = { firstLookClient.send($0) }
@@ -312,6 +335,7 @@ public final class HostRuntime {
             case .stop(let stop): return askClient.send(stop)
             case .control(let control): return askClient.send(control)
             case .confirmFile(let confirm): return askClient.send(confirm)
+            case .answer(let answer): return askClient.send(answer)
             }
         }
         let fileRoots = configuration.fileRoots
@@ -521,10 +545,20 @@ public final class HostRuntime {
             guard let self else { return }
             self.surfaceWorking = working
             self.onWorkingChanged?(working || self.perch.lit)
+            self.rehelloForRouting()
         }
         perch.onLitChanged = { [weak self] lit in
             guard let self else { return }
             self.onWorkingChanged?(self.surfaceWorking || lit)
+            self.rehelloForRouting()
+        }
+        // "Caret decides when to help" (H6): ghost text and the writing line follow the change at
+        // once; the helper hears it with the next hello.
+        SettingsStore.shared.observe { [weak self] settings in
+            guard let self, settings.routing != self.routeLink.follower.enabled else { return }
+            wantsRouting.withLock { $0 = settings.routing }
+            self.routeLink.setEnabled(settings.routing)
+            self.rehelloForRouting()
         }
     }
 
@@ -532,6 +566,34 @@ public final class HostRuntime {
     /// a second key tap.
     /// True while accepted work runs at the caret, or work runs, waits or needs the user in another
     /// window (the perch's subject): the menu bar glyph is Carrot (DIRECTION.md 5.10).
+    /// The helper's connection says hello again when its `routing` no longer matches the setting:
+    /// at once when no work Caret accepted is live, else when it ends (closing the connection
+    /// revokes what the session accepted, B22).
+    private func rehelloForRouting() {
+        guard helper.snapshot().connected, helper.declaresRouting != routeLink.follower.enabled else {
+            rehelloTimer?.invalidate()
+            rehelloTimer = nil
+            return
+        }
+        // Work at the caret, or a task in the activity list (an Ask's run included), lights one of
+        // these. Work accepted moments ago may not have its activity record yet (H6 review): it
+        // counts as live for `rehelloAcceptGrace` seconds. Looked at again every few seconds.
+        let justAccepted = helper.lastAcceptAt.map { Date().timeIntervalSince($0) < Self.rehelloAcceptGrace } ?? false
+        if surfaceWorking || perch.lit || justAccepted {
+            status.increment("routing.rehelloDeferred")
+            if rehelloTimer == nil {
+                rehelloTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.rehelloForRouting() }
+                }
+            }
+            return
+        }
+        rehelloTimer?.invalidate()
+        rehelloTimer = nil
+        status.increment("routing.rehello")
+        helper.dropSession()
+    }
+
     public var onWorkingChanged: ((Bool) -> Void)? {
         didSet { onWorkingChanged?(surfaceWorking || perch.lit) }
     }
@@ -816,6 +878,7 @@ public final class HostRuntime {
             return Data("{\"ok\":true}\n".utf8)
         case "latency-reset":
             status.latency.reset()
+            status.breakpointLatency.reset()
             status.proposalToOffer.reset()
             status.focusToOffer.reset()
             return Data("{\"ok\":true}\n".utf8)
@@ -947,8 +1010,15 @@ public final class HostRuntime {
         state.ghostHold = fields.ghostHold
         state.writing = fields.writing
         state.pageSight = fields.pageSight
+        state.routing = fields.routing
+        state.breakpointLatency = status.breakpointLatency.summary()
         return state
     }
+}
+
+/// The helper client, for callbacks made before the runtime holds it.
+private final class ClientBox: @unchecked Sendable {
+    weak var client: HelperClient?
 }
 
 /// Keys the debug socket's test hook can route.

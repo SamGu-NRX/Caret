@@ -111,6 +111,14 @@
         const el = document.querySelector(c.selector);
         return { ok: true, value: el.type === "checkbox" || el.type === "radio" ? String(el.checked) : (el.value ?? el.textContent) };
       }
+      case "check": {
+        // A user's own answer to a radio or box, as the page sees one: checked, then input and change (D2-04 review).
+        const el = document.querySelector(c.selector);
+        el.checked = true;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        return { ok: true };
+      }
       case "attr": return { ok: true, value: document.querySelector(c.selector)?.getAttribute(c.name) ?? "(none)" };
       case "text": return { ok: true, value: document.querySelector(c.selector)?.textContent ?? "(none)" };
       case "focus": document.querySelector(c.selector).focus(); return { ok: true, value: String(document.hasFocus()) };

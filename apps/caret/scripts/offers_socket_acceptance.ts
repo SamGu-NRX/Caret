@@ -19,7 +19,9 @@
 //      is raised.
 //   5. Esc on a fill that has run 3 s sends offerStop, and the run stops.
 //
-//   node apps/caret/scripts/offers_socket_acceptance.ts --out DIR [--runs 3]
+//   node apps/caret/scripts/offers_socket_acceptance.ts --out DIR [--runs 3] [--routing off|live] [--host-routing on|off]
+//
+// --routing and --host-routing (H6) are routing_option.ts's.
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -34,11 +36,12 @@ import type { AskJev } from "../../../helper/src/fill/jev.ts";
 import type { HelperMessage, OfferAccept, OfferStop, TaskControl } from "../../../helper/src/protocol.ts";
 import { jevPickingText } from "../../../helper/test/builders.ts";
 import { SocketReader, loadRecording, until as untilTrue } from "../../../helper/test/socket-reader.ts";
+import { routedJev, routingHarness, routingOptions, type RoutingHarness } from "./routing_option.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
 const CARET = resolve(ROOT, "apps", "caret", ".build", "Caret.app", "Contents", "MacOS", "Caret");
-const { values: a } = parseArgs({ options: { out: { type: "string" }, runs: { type: "string", default: "3" } } });
+const { values: a } = parseArgs({ options: { out: { type: "string" }, runs: { type: "string", default: "3" }, ...routingOptions } });
 if (a.out === undefined) throw new Error("--out is required");
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
@@ -80,6 +83,8 @@ const askJev: AskJev = async (req) => {
   return jevPickingText((_, instructions) => FILL_VALUES[/Label: '([^']+)'/.exec(instructions)?.[1] ?? ""] ?? null)(req);
 };
 
+const routed = routedJev(a.routing, askJev);
+
 interface Stamped<T> {
   at: number;
   m: T;
@@ -93,6 +98,8 @@ interface Session {
   sent: Stamped<HelperMessage>[];
   fromHost: Stamped<OfferAccept | OfferStop | TaskControl>[];
   hooks: { applied: (windowId: string, at: number) => boolean; tick: (at: number) => void };
+  /** The router's timers (H6, --routing live). */
+  routing: RoutingHarness;
 }
 
 async function openSession(): Promise<Session> {
@@ -101,9 +108,11 @@ async function openSession(): Promise<Session> {
   const sent: Stamped<HelperMessage>[] = [];
   const fromHost: Session["fromHost"] = [];
   let server: HelperServer | null = null;
+  const routing = routingHarness(a.routing);
   const helper = new Helper({
     store,
-    askJev,
+    askJev: routed.askJev,
+    ...routing.options,
     shadow: false,
     allowBackgroundFocus: false,
     publish: (m) => {
@@ -137,10 +146,11 @@ async function openSession(): Promise<Session> {
     applied: (windowId: string, at: number): boolean => helper.model.windows.get(windowId)?.updatedAt === at,
     tick: (at: number): void => helper.tick(at),
   };
-  return { helper, server, reader, store, dir, sent, fromHost, hooks };
+  return { helper, server, reader, store, dir, sent, fromHost, hooks, routing };
 }
 
 async function closeSession(s: Session): Promise<void> {
+  await s.routing.stop(s.helper);
   s.reader.close();
   s.helper.shutdown();
   await s.server.close();
@@ -199,6 +209,7 @@ interface HostState {
   helper?: { connected: boolean; offers: number; withdrawals: number; progress: number; accepts: number; stops: number; undecodable: number };
   lastClaim?: { outcome: unknown; candidate?: number; actionID?: string };
   counters?: Record<string, number>;
+  routing?: unknown;
 }
 const state = async (): Promise<HostState> => (await hostCommand("state")) as HostState;
 const surface = async (): Promise<Surface> => (await state()).surface ?? {};
@@ -241,6 +252,8 @@ const result: Record<string, unknown> = {
   at: new Date().toISOString(),
   runs: RUNS,
   mode: "socket only: real helper in process, B7 socket reader replaying synthetic recordings, host --surfaces headless --perch hidden --no-ghost",
+  routing: a.routing,
+  hostRouting: a["host-routing"],
 };
 const offerToHostMs: number[] = [];
 const keyToAcceptMs: number[] = [];
@@ -256,6 +269,7 @@ try {
     }
   }, 15_000, 200);
   check("the host runs headless", true);
+  await hostCommand(`settings set routing ${a["host-routing"]}`);
 
   for (let run = 1; run <= RUNS; run++) {
     // 1. Fill pop-up: Tab fills every field through the executor; the toast's ⌘Z undoes them.
@@ -436,6 +450,7 @@ try {
   result.doneToLineEndMs = summary(doneToLineEndMs);
   result.withdrawalToGoneMs = summary(withdrawToGoneMs);
   result.hostHelperLink = st.helper;
+  result.hostRouting = st.routing ?? null;
   result.hostCounters = Object.fromEntries(Object.entries(st.counters ?? {}).filter(([k]) => k.startsWith("surface.") || k.startsWith("offers.")));
   check("no line from the helper was undecodable by the host", (st.helper?.undecodable ?? 1) === 0, { undecodable: st.helper?.undecodable });
 } catch (e) {
@@ -443,6 +458,7 @@ try {
   // What the host had when it stopped, for diagnosis.
   result.hostAtFailure = await state().catch(() => null);
 } finally {
+  result.routerUsage = routed.usage();
   result.checks = checks;
   result.passed = checks.filter((c) => c.ok).length;
   result.failed = checks.filter((c) => !c.ok).length;

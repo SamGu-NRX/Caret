@@ -1,1 +1,0 @@
-H7: a writing fix's ⌘Z in TextEdit sends TextEdit one pid-directed ⌘Z (UndoGrant.strategy nativeUndo, NativeUndoApps); nothing restores text after it is sent. Other apps keep the AX restore, which TextEdit-like apps record as a new undo step.

@@ -18,6 +18,28 @@ export class SaidError extends PlannerError {
   }
 }
 
+/**
+ * The part of an Ask a refusal leaves unclear (B29): which fields, where to copy from, or whose details. An Unclear
+ * refusal may become a question with choices (planner/choices.ts) when code can list that part's real candidates;
+ * otherwise the user reads its sentence, as before.
+ */
+export type AskPart = "fields" | "source" | "person";
+
+export class Unclear extends SaidError {
+  readonly part: AskPart;
+  constructor(part: AskPart, says: string, detail: string = says) {
+    super("unsure", says, detail);
+    this.part = part;
+  }
+}
+
+/** The question an Ask asks with choices, by part (B29). Short, and in the user's terms. */
+export const ASKS: Record<AskPart, string> = {
+  fields: "Which fields should Caret fill?",
+  source: "Where should Caret copy from?",
+  person: "Whose details go in?",
+};
+
 export const SAYS = {
   payment: "Paying is yours to do. Caret stops before payment.",
   submit: "Submitting is yours to do.",
@@ -52,6 +74,7 @@ export const SAYS = {
   fileUnreadable: "Caret couldn't read that file, so it attached nothing. Choose another one.",
   fileTooBig: "That file is over 10 MB, more than Caret attaches. Choose a smaller one.",
   noReader: "Caret can't read the screen right now, so it can't plan that.",
+  questionGone: "That question has expired. Ask again.",
 } as const;
 
 /**
@@ -116,6 +139,8 @@ export function saysFor(code: PlanErrorCode): string {
       return SAYS.unreachable;
     case "privacy":
       return SAYS.privacy;
+    case "questionGone":
+      return SAYS.questionGone;
   }
 }
 
@@ -127,13 +152,25 @@ export function saysNeverTyped(kind: SensitiveKind, ssn: boolean): string {
 /** Whether a label or an instruction calls a government ID a Social Security number. */
 export const saysSsn = (text: string): boolean => /\b(?:ssn|social\s+security)\b/iu.test(text);
 
+const SEND_WORDS = /\b(?:send|reply|email it|mail it)\b/iu;
+const DELETE_WORDS = /\b(?:delete|remove|scrap|discard|trash)\b/iu;
+const PAY_WORDS = /\b(?:pay|purchase|buy|checkout|check out|place the order)\b/iu;
+const SUBMIT_WORDS = /\b(?:submit|press|click|hit)\b/iu;
+
 /** The press an instruction asks for, by the words it uses: send, delete, pay, or submit for anything else. */
 export function saysPressAsked(instruction: string): string {
-  if (/\b(?:send|reply|email it|mail it)\b/iu.test(instruction)) return SAYS.send;
-  if (/\b(?:delete|remove|scrap|discard|trash)\b/iu.test(instruction)) return SAYS.delete;
-  if (/\b(?:pay|purchase|buy|checkout|check out|place the order)\b/iu.test(instruction)) return SAYS.payment;
+  if (SEND_WORDS.test(instruction)) return SAYS.send;
+  if (DELETE_WORDS.test(instruction)) return SAYS.delete;
+  if (PAY_WORDS.test(instruction)) return SAYS.payment;
   return SAYS.submit;
 }
+
+/**
+ * Whether an instruction uses any word saysPressAsked reads as a press, or a plain submit, press, click or hit (B29:
+ * such an Ask is never asked about with choices). One list for both, since B29's first review found "email it" in
+ * saysPressAsked and missing from a second copy.
+ */
+export const asksPress = (instruction: string): boolean => [SEND_WORDS, DELETE_WORDS, PAY_WORDS, SUBMIT_WORDS].some((re) => re.test(instruction));
 
 /** A plan whose only step hands the user a press: what pressing it is, by the risk table's reason and its label. */
 export function saysPress(why: HandoffWhy, label: string): string {

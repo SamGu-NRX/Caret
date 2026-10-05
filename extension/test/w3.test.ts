@@ -51,6 +51,12 @@ describe("an undo's verb on the wire", () => {
     const m = parseFromHelper({ type: "pageCommand", v: 1, id: "c", expires: 5, verb });
     expect(m?.type === "pageCommand" && m.verb.kind === "pageWrite" && m.verb.rebind).toBe(false);
   });
+
+  it("keeps a radio's undo whole: unchecked, rebind: false and the forward write's mark (D2-04)", () => {
+    const verb = { kind: "pageSetChecked", tabId: 7, frameId: 0, documentId: "D", id: "e5", control: "radio", name: "Night", taskId: "t", checked: false, rebind: false, sameAs: "m5" };
+    const m = parseFromHelper({ type: "pageCommand", v: 1, id: "c", expires: 5, verb });
+    expect(m?.type === "pageCommand" ? m.verb : null).toEqual(verb);
+  });
 });
 
 describe("self-identification names (W3 real-site pass)", () => {

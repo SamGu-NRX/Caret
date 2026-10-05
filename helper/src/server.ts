@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ConsumerMessage, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 import { planError } from "./planner/proposal.ts";
 
@@ -23,6 +23,12 @@ export class HelperServer {
   private readonly memoryDocuments = new Set<Socket>();
   /** Host connections whose hello declared ROUTING_CAPABILITY: they get routeDecision and may send routingContext. */
   private readonly routing = new Set<Socket>();
+  /** Host connections whose hello listed FILL_ALL_CAPABILITY: only they may send fillAll (D2-04). */
+  private readonly fillAll = new Set<Socket>();
+  /** Consumer connections whose hello listed ASK_CHOICES_CAPABILITY: they get Ask questions and may answer them (B29). */
+  private readonly askChoices = new Set<Socket>();
+  /** Host connections whose hello listed GOAL_PLANS_CAPABILITY: only they may plan and accept goals, and only they get goalProgress (D2-06). */
+  private readonly goalPlans = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -69,7 +75,8 @@ export class HelperServer {
   publish(m: HelperMessage): void {
     const line = JSON.stringify(m) + "\n";
     // Provenance is new in M1: a consumer that did not ask for it is not sent it.
-    for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : this.consumers) c.write(line);
+    // A goal's previews and progress quote values and name windows: only hosts that plan goals get them.
+    for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : this.consumers) c.write(line);
   }
 
   async listen(): Promise<void> {
@@ -142,6 +149,9 @@ export class HelperServer {
             // Routing is the host's: a decision tells its writing help when it may run, so only the host may take one.
             const routing = hello.data.host === true && hello.data.capabilities?.includes(ROUTING_CAPABILITY) === true;
             if (routing) this.routing.add(s);
+            if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
+            if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
+            if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
             if (hello.data.host === true) this.helper().hostConnected(session, routing);
             else this.helper().consumerConnected(session);
           } else {
@@ -187,6 +197,31 @@ export class HelperServer {
           // The work an accept starts reports as taskProgress and activity under the offer id; a refusal as error plus a stopped taskProgress.
           else if (m.data.type === "offerAccept") void this.helper().handleOfferAccept(m.data, from);
           else if (m.data.type === "offerStop") void this.helper().handleOfferStop(m.data);
+          // Command-1 on a per-field fill proposal: the whole form in one transaction, reported as an offerAccept's run is.
+          else if (m.data.type === "fillAll") {
+            if (!this.fillAll.has(s)) this.reject(s, `fillAll needs a host hello with "${FILL_ALL_CAPABILITY}" in its capabilities`);
+            else void this.helper().handleFillAll(m.data, from);
+          }
+          // D2-06: a goal plan's request (answered to the asker only) and each segment's acceptance, from a goal-planning host only.
+          else if (m.data.type === "goalRequest" || m.data.type === "goalAccept") {
+            if (!this.goalPlans.has(s)) {
+              this.reject(s, `${m.data.type} needs a host hello with "${GOAL_PLANS_CAPABILITY}" in its capabilities`);
+              continue;
+            }
+            if (m.data.type === "goalAccept") void this.helper().handleGoalAccept(m.data, from, (e) => void (!s.destroyed && s.write(JSON.stringify(e) + "\n")));
+            else {
+              const requestId = m.data.requestId;
+              void this.helper()
+                .handleGoalRequest(m.data, from)
+                .catch((e: unknown) => {
+                  this.warn(`goal ${requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
+                  return this.helper().goals.refused(`goal-failed-${requestId}`.slice(0, 200), requestId, "The planner failed; the helper logged why");
+                })
+                .then((r) => {
+                  if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
+                });
+            }
+          }
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
           else if (m.data.type === "settings") this.helper().handleSettings(m.data);
           else if (m.data.type === "skillAnswer") this.helper().handleSkillAnswer(m.data);
@@ -204,10 +239,17 @@ export class HelperServer {
               });
           }
           // A proposal quotes values and names windows, so it goes to the asker only, as a first look's reply does.
-          else if (m.data.type === "planRequest") {
-            const requestId = m.data.requestId;
-            void this.helper()
-              .handlePlanRequest(m.data)
+          // An askQuestion and an askAnswer's reply go to the asker only too (B29); only a consumer that declared it can
+          // answer a question gets one, and only it may answer.
+          else if (m.data.type === "planRequest" || m.data.type === "askAnswer") {
+            const msg = m.data;
+            const requestId = msg.requestId;
+            if (msg.type === "askAnswer" && !this.askChoices.has(s)) {
+              this.reject(s, `askAnswer needs "${ASK_CHOICES_CAPABILITY}" in the consumer's hello capabilities`);
+              continue;
+            }
+            const canAsk = this.askChoices.has(s);
+            void (msg.type === "planRequest" ? this.helper().handlePlanRequest(msg, from, canAsk) : this.helper().handleAskAnswer(msg, from))
               .catch((e: unknown) => {
                 this.warn(`plan ${requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
                 return planError(requestId, "internal", "the planner failed; the helper logged why", Date.now());
@@ -216,7 +258,7 @@ export class HelperServer {
                 if (s.destroyed) return;
                 s.write(JSON.stringify(r) + "\n");
                 // The noticed facts the plan used, to the asker too, when it understands them.
-                const p = r.outcome === "proposed" && this.memoryDocuments.has(s) ? this.helper().provenanceFor(r.offerKey) : null;
+                const p = r.type === "planProposal" && r.outcome === "proposed" && this.memoryDocuments.has(s) ? this.helper().provenanceFor(r.offerKey) : null;
                 if (p !== null) s.write(JSON.stringify(p) + "\n");
               });
           }
@@ -255,6 +297,9 @@ export class HelperServer {
       this.consumers.delete(s);
       this.memoryDocuments.delete(s);
       this.routing.delete(s);
+      this.fillAll.delete(s);
+      this.askChoices.delete(s);
+      this.goalPlans.delete(s);
       if (session !== null) this.helper().hostDisconnected(session);
       if (this.reader === s) {
         this.reader = null;

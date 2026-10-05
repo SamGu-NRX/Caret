@@ -61,6 +61,7 @@ struct AskSection: View {
     private var fieldHint: String {
         switch phase {
         case .proposed: return "Tab runs the plan below. Escape puts it away."
+        case .question(let q): return AskCopy.questionHint(q.ask.pick)
         case .running: return "A plan is running. Escape stops it."
         case .asking: return "Caret is planning what you asked."
         case .idle, .failed, .ended: return "Return plans it. Nothing runs until you press Tab."
@@ -89,6 +90,8 @@ struct AskSection: View {
         case .proposed(let card):
             AskCard(card: card, ending: nil, running: false, character: character, animated: animated, notRight: notRight,
                     onRun: onRun, onEscape: onEscape, onNotRight: onNotRight).padding(.top, 8)
+        case .question(let q):
+            AskQuestionCard(question: q, onAnswer: onRun, onEscape: onEscape).padding(.top, 8)
         case .running(let card):
             AskCard(card: card, ending: nil, running: true, character: character, animated: animated, onRun: onRun, onEscape: onEscape).padding(.top, 8)
         case .ended(let card, let line):
@@ -343,6 +346,109 @@ struct DeskNotRightRow: View {
     }
 }
 
+/// B29: an Ask's question in the desk, in the card's block: the helper's question in Caret's voice,
+/// one row per choice, and the keys. The highlighted row has the popup's 2 pt Carrot edge and Ink
+/// words; the others are Ink 2. A fields question marks each row with a box Space ticks. Arrows and
+/// Space redraw at once with no motion: each follows a key the user is watching (`emil-design-eng`).
+struct AskQuestionCard: View {
+    var question: AskCaret.Question
+    var onAnswer: () -> Void = {}
+    var onEscape: () -> Void = {}
+
+    var body: some View {
+        Block {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(question.ask.text)
+                    .font(Tokens.Font.voiceLarge(.newYork))
+                    .foregroundStyle(Color(token: Tokens.ink))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(question.ask.options.enumerated()), id: \.element.id) { index, option in
+                        AskChoiceRow(
+                            option: option, highlighted: index == question.highlight,
+                            selected: question.ask.pick == .many ? question.selected.contains(option.id) : nil
+                        )
+                    }
+                }
+                .padding(.top, 6)
+                Hairline().padding(.vertical, 9)
+                HStack(spacing: 12) {
+                    HintView(hint: Hint(key: "Tab", label: AskCopy.answerLabel(question)))
+                    if question.ask.pick == .many { HintView(hint: Hint(key: "Space", label: "Select")) }
+                    HintView(hint: Hint(key: "Esc", label: "Dismiss"))
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 9)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Caret's question")
+        .accessibilityAction(named: Text(AskCopy.answerLabel(question)), onAnswer)
+        .accessibilityAction(named: Text("Dismiss"), onEscape)
+    }
+}
+
+/// One choice: 26 tall, the words and their quieter detail, a box at the left for a fields question.
+private struct AskChoiceRow: View {
+    var option: AskQuestion.Option
+    var highlighted: Bool
+    /// Nil for a question that takes one answer.
+    var selected: Bool?
+
+    static let indent: CGFloat = 12
+
+    var body: some View {
+        let words = AskCopy.option(option)
+        HStack(spacing: 8) {
+            if let selected { Box(on: selected) }
+            Text(words.title)
+                .font(Tokens.Font.chrome)
+                .foregroundStyle(Color(token: highlighted ? Tokens.ink : Tokens.ink2))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if let detail = words.detail {
+                Text(detail)
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, Self.indent)
+        .frame(height: 26)
+        .overlay(alignment: .leading) {
+            if highlighted { Rectangle().fill(Color(token: Tokens.carrot)).frame(width: 2, height: 18) }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(words.detail.map { "\(words.title), \($0)" } ?? words.title)
+        .accessibilityAddTraits(highlighted ? .isSelected : [])
+        .accessibilityValue(selected.map { $0 ? "Selected" : "Not selected" } ?? "")
+    }
+
+    /// A 12 pt box in Ink 2, filled in Ink with a check when selected.
+    private struct Box: View {
+        var on: Bool
+
+        var body: some View {
+            let shape = RoundedRectangle(cornerRadius: 3, style: .continuous)
+            ZStack {
+                shape.fill(Color(token: on ? Tokens.inkFill : Tokens.keyFill))
+                shape.strokeBorder(Color(token: on ? Tokens.inkFill : Tokens.keyEdge), lineWidth: 1)
+                if on {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(Color(token: Tokens.onInk))
+                }
+            }
+            .frame(width: 12, height: 12)
+        }
+    }
+}
+
 /// The keys the card names, also as VoiceOver actions, so it never depends on knowing them.
 private struct CardActions: ViewModifier {
     var proposed: Bool
@@ -464,6 +570,8 @@ struct AskLiveSection: View {
         case .asking: return AskCopy.planning
         case .failed(let sentence): return sentence
         case .proposed(let card): return "\(card.title). Tab to \(card.action.lowercased()), Escape to dismiss."
+        // Said once when the question comes; moving between rows is the rows' own selected state.
+        case .question(let q): return "\(q.ask.text) \(q.ask.options.count) choices."
         case .ended(_, let line): return line.text
         }
     }

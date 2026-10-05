@@ -9,7 +9,7 @@
 // (~/.caret-run/evidence/screen/fill-distractors/fill-eval.md), so agreement and the cutoff exist
 // to turn those into blanks.
 import { randomInt, randomUUID } from "node:crypto";
-import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
+import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, misfit, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
@@ -17,9 +17,9 @@ import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_SAYS, fieldAsksFor, fieldAsksForNamePart, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
-import { consentLike, describeControl, formControls, inWebArea, optionInText, type Control, type FormControl } from "./controls.ts";
+import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, fieldPart, joinName, namePart, partFits, splitAddress, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { clockTime, readDate } from "./when.ts";
+import { clockTime, readClock, readDate, readDateTime } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 
@@ -46,6 +46,10 @@ const INPUT_ROLES: ReadonlySet<string> = new Set(["AXTextField", "AXTextArea", "
  * write to a web dropdown there becomes the engine's pageChooseOption: open the list, type the value as its filter,
  * pick only when exactly one option's name equals it, and verify the control's shown text, react-select's hidden input
  * and aria-expanded. A dropdown read through Accessibility has no such handler, so its value is a hand-off.
+ *
+ * D2-04: there the engine also writes a native select (by option label, verified by selectedOptions), a radio group
+ * and a checkbox (by checked state) and a date, time or date-and-time input (by value), so a Fill all writes those too
+ * (FillHandoff.writes). Through Accessibility they stay hand-offs.
  */
 export const PAGE_WINDOW_KIND = "page";
 
@@ -677,6 +681,9 @@ export async function proposeFill(
     // formFields keeps the trigger whatever it is; one Caret never types (an SSN, a card number) is left to the user.
     if (x.control === "text" && neverTypedNode(w, n) !== null) continue;
     const d = describeField(w, n);
+    // A box whose own label is a consent or sign-up is never asked about (formControls); nor is one whose section or
+    // nearest text is ("Yes" under "Marketing emails"), D2-04: a Fill all may tick a box, so its context counts too.
+    if (x.control === "checkbox" && (boxNeverTicked(d.section ?? "") || boxNeverTicked(d.nearest ?? ""))) continue;
     const c = x.form;
     const label = c === null ? d.label : c.label;
     const texts = c === null ? [d.label, d.nearest, d.placeholder, d.section] : [c.label, label === null ? d.nearest : null, d.section, ...(c.options ?? [])];
@@ -1147,34 +1154,76 @@ export async function proposeFill(
   /** Kinds of the user's own values in memory ("email", "name"). */
   const memoryKinds = new Set<string>((opts.about ?? []).map((a) => a.kind));
 
-  /** The value a control takes from a pick: the option it names, "checked", or an ISO date or time; or why it cannot be read. */
-  const controlValue = (f: Field, p: Pick): { value: string; display: string } | { why: FillWithheld } => {
+  /**
+   * The value a control takes from a pick (the option it names, PAGE_CHECKED, or the input's own date or time format),
+   * whether a Fill all may write it there (D2-04), or why it cannot be read. Only a page window's controls are ever
+   * written, each on a stricter rule than a hand-off, which the user sees and sets themselves:
+   * - a select or radio group: an option whose name equals the span exactly (matchOption), not one the span merely
+   *   names among other words (optionInText, the hand-off's rule);
+   * - a box: the span states the fact the box asks (controls.ts statesFact) or lists the box's label among others
+   *   (namedInList). A box the user speaks in gets no value (boxKind). Written only for a box that asks the user a fact,
+   *   from the yes of a "Label: yes" line in the window the user just left, and never an ARIA switch;
+   * - a date, time or date and time: read by the value resolver in that format (when.ts); a month or week is the user's.
+   * A control whose label, nearest label or section reads as consent, certification or a sign-up gets no value at all.
+   * A Yes/No question built from toggle buttons (W4) is never written: its press cannot be undone with the rest.
+   */
+  const controlValue = (f: Field, p: Pick): { value: string; display: string; writes: boolean } | { why: FillWithheld } => {
     const text = pickText(p);
+    const page = pageOwned;
+    // The control's label, else its nearest label, and its section (Field.texts for a control).
+    const around = [f.form?.label ?? null, f.texts[1] ?? null, f.texts[2] ?? null].filter((t): t is string => t !== null);
+    if (f.control !== "text" && around.some((t) => (f.control === "checkbox" ? boxNeverTicked(t) : consentLike(t)))) return { why: "ambiguous" };
     switch (f.control) {
       case "radio":
       case "select": {
-        const o = f.form?.options === null || f.form?.options === undefined ? null : optionInText(f.form.options, text);
-        return o === null ? { why: "ambiguous" } : { value: o, display: o };
+        const options = f.form?.options ?? null;
+        if (options === null) return { why: "ambiguous" };
+        const exact = matchOption(options, text);
+        const press = f.node.subrole === PAGE_SUBROLE.pressGroup;
+        if (exact !== null) return { value: exact, display: exact, writes: page && !press };
+        const o = optionInText(options, text);
+        return o === null ? { why: "ambiguous" } : { value: o, display: o, writes: false };
       }
-      case "checkbox":
-        // A consent, certification or sign-up box is never ticked (controls.ts consentLike); formControls already leaves it out.
-        if (f.form?.label === null || f.form?.label === undefined || consentLike(f.form.label)) return { why: "ambiguous" };
-        return optionInText([f.form.label], text) !== null ? { value: "checked", display: "Ticked" } : { why: "ambiguous" };
+      case "checkbox": {
+        const label = f.form?.label ?? null;
+        // A box the user speaks in ("I have read …", "I verify …") reads like a consent or certification: never a value.
+        const kind = label === null ? "statement" : boxKind(label);
+        if (label === null || kind === "statement") return { why: "ambiguous" };
+        const c = windowOf(p);
+        // The label of the "Label: value" line the span came from; a value from memory is never offered to a box.
+        const context = p.from === "window" && c?.labelled === true ? c.context : null;
+        const fromLine = context !== null && statesFact(label, text, context) && !/^(?:i|i'm|i've)\b/iu.test(text.trim());
+        const stated = (p.from === "window" || p.from === "instruction") && statesFact(label, text, context);
+        const listed = (p.from === "window" || p.from === "instruction") && namedInList(label, text, context);
+        if (!stated && !listed) return { why: "ambiguous" };
+        // Written only as the yes of a "Label: yes" line in the window the user just left, for a box that asks the user a
+        // fact, and never an ARIA switch: the recheck before the run asks the source for that very line. Anything else
+        // that states the tick is handed to the user (D2-04 second review).
+        const own = c !== null && anchorWindow !== null && c.source.windowId === anchorWindow.window.windowId;
+        return { value: PAGE_CHECKED, display: "Ticked", writes: page && own && fromLine && kind === "question" && f.node.subrole !== PAGE_SUBROLE.switch };
+      }
       case "date": {
+        const format = f.form?.format ?? "date";
+        if (format === "datetime") {
+          const dt = readDateTime(text, resolveCtx);
+          return dt === null ? { why: "ambiguous" } : { ...dt, writes: page };
+        }
         const d = readDate(text, resolveCtx);
-        return d === null ? { why: "ambiguous" } : d;
+        return d === null ? { why: "ambiguous" } : { ...d, writes: page && format === "date" };
       }
       case "time": {
-        const t = clockTime(text);
-        return t === null ? { why: "ambiguous" } : t;
+        const t = page ? readClock(text, resolveCtx) : null;
+        if (t !== null) return { ...t, writes: true };
+        const loose = clockTime(text);
+        return loose === null ? { why: "ambiguous" } : { ...loose, writes: false };
       }
       case "combobox":
         // Read as a text field is, then as one option's name: the page engine types it as the list's filter and picks
         // only an option named exactly that (B27).
         if (misfit(text, f.labelWords) !== null || (f.part !== null && !partFits(f.part, text))) return { why: "wrongKind" };
-        return optionName(text) ? { value: text, display: text } : { why: "ambiguous" };
+        return optionName(text) ? { value: text, display: text, writes: page } : { why: "ambiguous" };
       case "text":
-        return misfit(text, f.labelWords) === null && (f.part === null || partFits(f.part, text)) ? { value: text, display: text } : { why: "wrongKind" };
+        return misfit(text, f.labelWords) === null && (f.part === null || partFits(f.part, text)) ? { value: text, display: text, writes: true } : { why: "wrongKind" };
     }
   };
   const sourceOf = (p: Pick): FillSource | null => windowOf(p)?.source ?? null;
@@ -1231,11 +1280,17 @@ export async function proposeFill(
                   : null;
     const p = withheld === null ? picked : undefined;
     const got = p === undefined || read === null || "why" in read ? null : read;
-    // Caret writes a text field, and (B27) a dropdown the page engine owns: its write is that engine's verified pick.
-    // Any other control's value is handed to the user.
-    const writes = f.control === "text" || (f.control === "combobox" && pageOwned);
-    const handoff: FillHandoff | null = writes || p === undefined || got === null ? null : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f) };
-    const text = writes && p !== undefined && got !== null;
+    // A text field's value is `value`, which Caret writes. Any other control's is a hand-off, which a Fill all writes
+    // when the page engine owns the window and controlValue allows it (D2-04: FillHandoff.writes); the user sets the rest.
+    // A control's value read from a "Label: value" line names that label (FillHandoff.context), so a recheck can ask the
+    // source for the same line, not just the same word: "yes" is in many lines (D2-04 review).
+    const line = p === undefined ? null : windowOf(p);
+    const context = line !== null && line.labelled === true && line.context !== null && p?.from === "window" ? line.context : null;
+    const handoff: FillHandoff | null =
+      f.control === "text" || p === undefined || got === null
+        ? null
+        : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f), ...(context === null ? {} : { context }), ...(got.writes ? { writes: true as const } : {}) };
+    const text = f.control === "text" && p !== undefined && got !== null;
     return {
       ...empty,
       handoff,

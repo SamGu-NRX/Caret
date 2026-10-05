@@ -3,7 +3,10 @@
 // what the run checks to --state every 200 ms: the fake calendar's events and calls, the task
 // progress it published, and its act and calendar grants and revokes.
 //
-//   node apps/caret/scripts/acceptance_helper.ts --socket PATH --state FILE --calendar fake|reader
+//   node apps/caret/scripts/acceptance_helper.ts --socket PATH --state FILE --calendar fake|reader [--routing off|live]
+//
+// --routing live (H6, routing_option.ts): D2-02's router runs, its questions to live Jev; the state file
+// then carries the router's decisions and spend.
 //
 // The fake Jev says yes to "is the writer arranging something they will attend" for the event
 // sentence the run types, and answers the planner from the one instruction the run asks
@@ -20,8 +23,9 @@ import { MemoryStore } from "../../../helper/src/patterns/memory.ts";
 import { FakeCalendar } from "../../../helper/src/executor/means.ts";
 import type { AskJev, JevRequest } from "../../../helper/src/fill/jev.ts";
 import type { HelperMessage, TaskProgress } from "../../../helper/src/protocol.ts";
+import { routedJev, routingHarness } from "./routing_option.ts";
 
-const { values: a } = parseArgs({ options: { socket: { type: "string" }, state: { type: "string" }, calendar: { type: "string", default: "fake" }, "auth-fd": { type: "string" } } });
+const { values: a } = parseArgs({ options: { socket: { type: "string" }, state: { type: "string" }, calendar: { type: "string", default: "fake" }, "auth-fd": { type: "string" }, routing: { type: "string", default: "off" } } });
 // B23: the launch secret caret-screen also gets, read to its end from the descriptor the caller names
 // (0: standard input), so the reader accepts this helper.
 const launchSecret = a["auth-fd"] === undefined ? null : readFileSync(Number(a["auth-fd"]));
@@ -56,6 +60,8 @@ const fakeJev: AskJev = async (req: JevRequest) => {
   return { model: "jev-fake", answers, inputTokens: 0, latencyMs: 0, costUsd: 0 };
 };
 
+const routed = routedJev(a.routing, fakeJev);
+const routing = routingHarness(a.routing);
 const tmp = mkdtempSync(join(tmpdir(), "caret-a13-helper-"));
 const store = new Store(join(tmp, "data"));
 const memory = new MemoryStore(join(tmp, "data"));
@@ -68,7 +74,8 @@ let server: HelperServer | null = null;
 const helper = new Helper({
   store,
   memory,
-  askJev: fakeJev,
+  askJev: routed.askJev,
+  ...routing.options,
   shadow: false,
   allowBackgroundFocus: false,
   publish: (m: HelperMessage) => {
@@ -95,12 +102,15 @@ const write = (): void => {
   writeFileSync(a.state as string, JSON.stringify({
     calendar: a.calendar, events: fake === null ? null : [...fake.events.values()], calls: fake?.calls ?? null,
     progress, grants, offers, asked, errors,
+    router: routed.usage(),
+    decisions: (helper.routing?.decisions ?? []).map((d) => ({ at: d.at, key: d.key, outcome: d.outcome, by: d.by, local: d.local, breakpoint: d.breakpoint, confidence: d.confidence, latencyMs: d.latencyMs, textRevision: d.textRevision })),
   }) + "\n");
 };
 const dump = setInterval(write, 200);
 const stop = async (): Promise<void> => {
   clearInterval(tick);
   clearInterval(dump);
+  await routing.stop(helper);
   write();
   helper.shutdown();
   await server?.close();

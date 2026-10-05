@@ -1,0 +1,1 @@
+D2-06: only a goalAccept (goalId, segment, digest) runs a goal's steps; a goal task (GoalRuns.owns) is never resumed by taskControl, and a pause stops it. Goal targets are Target.exact (key+role, a button's label): resolveLocally never falls back for them.

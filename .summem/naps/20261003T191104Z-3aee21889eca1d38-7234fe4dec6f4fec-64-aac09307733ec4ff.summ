@@ -1,1 +1,0 @@
-B17-B23: event cards judge the last finished sentence; planError needs host sentences for new codes; lease 2 GiB for swift test; one ask per form per 30 s; record last pid post; tasks bind to their host connection; the reader needs a 0700 socket dir and --auth-fd.

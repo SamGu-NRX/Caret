@@ -235,6 +235,9 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var stops: UInt64 = 0
         /// `settings` lines written: after each hello, and on each change of roles, level or pause.
         public var settingsSent: UInt64 = 0
+        /// H6: `routingContext` lines written, and `routeDecision` messages received.
+        public var routingContexts: UInt64 = 0
+        public var routeDecisions: UInt64 = 0
         public var errors: UInt64 = 0
         /// The helper's last error text: window ids and reasons, never screen text.
         public var lastError: String?
@@ -664,6 +667,39 @@ public struct DebugState: Codable, Equatable, Sendable {
     /// "Caret can't see this page yet" (`PageSight`): the browser it shows for, the browsers asked
     /// about this session, and those the helper says it cannot see.
     public var pageSight: PageSight.DebugInfo?
+
+    /// H6: the host following the helper's router (`RouteFollower`). Ids and counts, never text.
+    public var routing: RoutingInfo?
+    /// Keystroke to ghost-text paint for the key that finished a sentence or paragraph, the
+    /// breakpoint the router decides at; `latency` holds every key's.
+    public var breakpointLatency: LatencyRecorder.Summary?
+
+    public struct RoutingInfo: Codable, Equatable, Sendable {
+        /// The user's "Caret decides when to help".
+        public var enabled: Bool
+        /// The helper is connected and took routing in this connection's hello.
+        public var linked: Bool
+        /// No decision came within the budget on this connection, and none applied since.
+        public var unavailable: Bool
+        /// What ambient help may do now: `allow:<why>`, `wait`, or `quiet:<outcome>`.
+        public var gate: String
+        /// `deciding`, or the decision's outcome, and its route for `act`.
+        public var phase: String?
+        public var route: String?
+        /// The helper's ids for the focused field, once a decision named it.
+        public var windowId: String?
+        public var key: String?
+        public var budgetMs: Int64
+        public var stats: RouteFollower.Stats
+        /// Breakpoint or focus to the decision that settled it, as the host saw it.
+        public var entry: LatencyRecorder.Summary
+
+        public init(enabled: Bool, linked: Bool, unavailable: Bool, gate: String, phase: String?, route: String?, windowId: String?, key: String?,
+                    budgetMs: Int64, stats: RouteFollower.Stats, entry: LatencyRecorder.Summary) {
+            self.enabled = enabled; self.linked = linked; self.unavailable = unavailable; self.gate = gate; self.phase = phase; self.route = route
+            self.windowId = windowId; self.key = key; self.budgetMs = budgetMs; self.stats = stats; self.entry = entry
+        }
+    }
 
     /// What `WritingCoordinator` holds and draws. Spans and frames, never the field's text.
     public struct WritingInfo: Codable, Equatable, Sendable {

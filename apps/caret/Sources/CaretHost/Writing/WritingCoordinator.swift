@@ -27,6 +27,11 @@ final class WritingCoordinator {
     private let checker = NativeChecker()
     /// Not paused, and words on (`HostGate.allowsGhostText`): writing help rides the same role.
     var allowed: () -> Bool = { true }
+    /// The router's answer for ambient help (H6): the line is offered only where it allows. The
+    /// marks themselves stay, quiet, whatever it says (lead decision 4). Nil offers as before.
+    var route: RouteLink?
+    /// A check found marks while the router's decision was awaited: offer them when it comes.
+    private var offerWhenRouted = false
     /// This coordinator's toast took the arbiter's toast slot; the other owners take theirs down.
     var onToastShown: (() -> Void)?
 
@@ -131,7 +136,22 @@ final class WritingCoordinator {
         drawMarks()
     }
 
+    /// The router's answer changed: marks a check found while it waited get their line now, if the
+    /// field still reads as it was checked (`offerNearestMark` reads it again).
+    func routeChanged() {
+        // A decision that ends ambient help takes down a line already up; the marks stay, quiet.
+        if shown != nil, !(route?.gate().allows ?? true) {
+            takeLineDown(exit: 0.08)
+            status.increment("routing.writingWithdrawn")
+            offerWhenRouted = true
+            return
+        }
+        guard offerWhenRouted, shown == nil else { return }
+        offerNearestMark()
+    }
+
     private func leaveField() {
+        offerWhenRouted = false
         checkTask?.cancel()
         takeLineDown(exit: 0)
         endResult(exit: 0)
@@ -192,6 +212,15 @@ final class WritingCoordinator {
 
     /// Publishes the line for the mark nearest the caret, against a fresh read of the field.
     private func offerNearestMark() {
+        offerWhenRouted = false
+        switch route?.gate() ?? .allow(.off) {
+        case .allow: break
+        case .wait:
+            offerWhenRouted = true
+            return status.increment("routing.writingHeld")
+        case .quiet(let why):
+            return status.increment("routing.writingQuiet.\(why.rawValue)")
+        }
         guard let element, let field = FieldReader.read(element), field.identity == self.field?.identity,
               field.value.utf16.elementsEqual(marks.value.utf16)
         else { return }

@@ -13,7 +13,7 @@
 // A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
 // reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt, randomUUID } from "node:crypto";
-import { GRANT_MAX_MS, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
@@ -81,11 +81,13 @@ export interface Authorization {
 /**
  * Why a task may no longer act. `you`: the user changed something it depended on (a permission, Caret's
  * pause, the skill, a memory entry, the settings); the run stops as stopped by you. `host`: the host
- * session that started it is gone; the run stops as an error Caret reports.
+ * session that started it is gone; the run stops as an error Caret reports. `screen` (D2-06): the screen
+ * changed under an accepted goal plan (a dialog opened, a source it copies from changed); the run stops as
+ * changed, caused by the screen.
  */
 export interface Revocation {
   why: string;
-  by: "you" | "host";
+  by: "you" | "host" | "screen";
 }
 
 /** One use of a permission by a run: its action type, what it did as a sentence, the app, and how it ended. */
@@ -603,7 +605,7 @@ export class Executor {
   /** The stopped phase of a revoked task: who caused it, and why in the detail. */
   private stoppedBy(task: Task, r: Revocation): string {
     const detail = `stopped ${this.boundary(task)}: ${r.why}`;
-    this.stopped(task, this.stepAt(task), detail, r.by === "you" ? "you" : "caret", r.by === "you" ? "you" : "error");
+    this.stopped(task, this.stepAt(task), detail, r.by === "you" ? "you" : r.by === "screen" ? "screen" : "caret", r.by === "you" ? "you" : r.by === "screen" ? "changed" : "error");
     return detail;
   }
 
@@ -861,6 +863,7 @@ export class Executor {
       if (end.kind === "focused" && step.via === undefined) return this.writeStep(task, i, w, node, "focused", "", step);
     }
     if (step.via === undefined) throw StepStop.stop("unreachable", `no means to reach '${step.says}': the target is not a field and the step names no press or URL`);
+    if (end.kind === "fieldsRevealed" && step.via.kind !== "press") throw StepStop.stop("unreachable", `'${step.says}' reveals fields only through a press`);
     if (step.via.kind === "press") return this.pressStep(task, i, w, step.via.target, step);
     return this.urlStep(task, i, w, step.via.url, step);
   }
@@ -956,10 +959,14 @@ export class Executor {
     const after = this.window(w.window.windowId);
     const now = after.nodes.get(node.key);
     if (attribute === "value") {
-      // The reader wrote, so the write goes in the ledger before it is judged: an app that reformats
-      // the value fails the comparison but must still be undoable. `after` is what the field holds now.
+      // The reader wrote, so the write goes in the ledger before it is judged. Its `after` is the value Caret meant to
+      // write, never this read (B29 lead decision): a keystroke the user typed right as Caret wrote can reach the field
+      // before the read-back and the task's input watch later, so a read that differs may hold the user's typing, and
+      // an app's reformatting looks the same. Such an entry is marked, and undo refuses it rather than restore over
+      // text it cannot tell is its own. Before B29 a reader write kept the read as `after`, and undo erased the keystroke.
       if (now !== undefined && (now.value ?? "") !== before) {
-        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: now.value ?? "", mark: mark ?? null });
+        const ours = sameValue(node, now.value ?? "", value);
+        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, ...(ours ? {} : { mayIncludeInput: true }) });
       }
       // A field the walk lost and then found again (B15's WebKit window) comes back as an added node holding the value.
       const recorded = seen.some((c) => (c.kind === "value" || (c.kind === "added" && seen.some((r) => r.kind === "removed" && r.key === node.key))) && c.key === node.key && c.after === value);
@@ -1027,9 +1034,15 @@ export class Executor {
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `press '${label}'; expect: ${step.says}`);
     await this.deps.beforeAct?.(task.id, i);
+    // A reveal is judged against the fields the window shows right before the press goes out (D2-06): the model as of
+    // the dispatch, after every hook. It holds only with no sheet over the window, the same title, and an editable field
+    // that was not there; a field the app adds on its own at that very moment cannot be told from one the press showed.
+    const before = this.window(w.window.windowId);
+    const shown = step.end.kind === "fieldsRevealed" ? { title: before.window.title, keys: new Set(editableValues(before).keys()) } : null;
     const seen = await this.act(task, { kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label, taskId: task.id }, w.window.windowId);
     this.addLedger(task, { kind: "press", step: i, label, windowId: w.window.windowId });
-    await this.awaitEffect(task, i, step, w.window.windowId, seen);
+    const revealed = (now: WindowState): boolean => shown !== null && now.window.title === shown.title && ![...now.nodes.values()].some((n) => n.role === "AXSheet") && [...editableValues(now).keys()].some((k) => !shown.keys.has(k));
+    await this.awaitEffect(task, i, step, w.window.windowId, seen, shown === null ? undefined : revealed);
     this.checkUnexpected(seen, null);
     await this.verified(task, i, step);
   }
@@ -1158,6 +1171,7 @@ export class Executor {
       ledger,
       pending,
       window: bound === undefined ? null : { app: bound.app, windowId: bound.window.windowId, title: bound.window.title, frame: bound.window.frame },
+      afterIntended: true,
     });
     task.journaled = true;
   }
@@ -1176,7 +1190,9 @@ export class Executor {
    */
   recover(r: JournalRecord): void {
     if (this.tasks.has(r.taskId)) throw new PlanError(`task ${r.taskId} already exists`);
-    const ledger: LedgerEntry[] = [...r.ledger];
+    // A row saved before B29 may hold a native write's read-back as `after` (review 1): its undo is refused, as for
+    // any write that may include the user's input. A write whose answer was lost always kept the value it was writing.
+    const ledger: LedgerEntry[] = r.ledger.map((e) => (r.afterIntended === true || e.kind !== "write" || e.unconfirmed === true ? e : { ...e, mayIncludeInput: true }));
     const p = r.pending;
     if (p?.kind === "write") ledger.push({ kind: "write", step: p.step, pid: p.pid, windowId: p.windowId, key: p.key, role: p.role, before: p.before, after: p.value, mark: p.mark, unconfirmed: true });
     else if (p?.kind === "press") ledger.push({ kind: "press", step: p.step, label: p.label, windowId: p.windowId });
@@ -1243,11 +1259,11 @@ export class Executor {
     this.deps.reader.grant?.({ type: "actRevoke", v: PROTOCOL_VERSION, taskId: task.id, at: Date.now() });
   }
 
-  /** Re-reads the window a few times until the end state holds, collecting changes into `seen`. */
-  private async awaitEffect(task: Task, i: number, step: Step, windowId: string, seen: Change[]): Promise<void> {
+  /** Re-reads the window a few times until the end state holds (or `effect`, when given, does), collecting changes into `seen`. */
+  private async awaitEffect(task: Task, i: number, step: Step, windowId: string, seen: Change[], effect?: (w: WindowState) => boolean): Promise<void> {
     for (let n = 0; ; n++) {
       const w = this.window(windowId);
-      if (step.end.kind !== "calendarEvent" && (await this.holds(task, i, w, step.end))) return;
+      if (effect !== undefined ? effect(w) : step.end.kind !== "calendarEvent" && (await this.holds(task, i, w, step.end))) return;
       if (n >= EFFECT_POLLS) throw StepStop.stop("mismatch", `mismatch: after acting, '${step.says}' does not hold`);
       await this.sleep(EFFECT_POLL_MS);
       seen.push(...(await this.walk(w)));
@@ -1363,7 +1379,7 @@ export class Executor {
   private async resolve(task: Task, i: number, w: WindowState, t: Target, goal: string): Promise<Node> {
     const cacheKey = `${i}|${JSON.stringify(t)}`;
     const cached = task.resolved.get(cacheKey);
-    if (cached?.ok === true) {
+    if (cached?.ok === true && t.exact !== true) {
       const n = w.nodes.get(cached.node.key);
       // A cached choice still has to fit the locator in the current tree.
       if (n !== undefined && (t.role === undefined || n.role === t.role) && (t.label === undefined || norm(n.label) === norm(t.label))) return n;
@@ -1387,7 +1403,8 @@ export class Executor {
       case "windowTitle":
         return w.window.title === end.title;
       case "handoff":
-        // The user's own press is never something Caret finds already done.
+      case "fieldsRevealed":
+        // The user's own press is never something Caret finds already done; nor is a reveal, which is an event.
         return false;
       case "fileAttached":
         // A file input's contents are not in the walk: the attach runs, and the page's own file list verifies it.
@@ -1435,7 +1452,19 @@ export class Executor {
     // that is gone says nothing either way (a Yes/No press whose page then left, B28 review), so it is not counted.
     const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if (e.unconfirmed === true && field !== undefined && (field.value ?? "") === e.before) return UNTOUCHED;
-    const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id, sameAs: e.mark };
+    // B29: undo restores only a field that holds what Caret wrote, decided here from the read just made, so no restore
+    // is sent over text that may be the user's. The reader rechecks the field against that read right before it writes.
+    if (e.mayIncludeInput === true) return final("the field changed while Caret wrote it and may hold your typing, so Caret left it as it is");
+    if (field !== undefined && !sameValue(field, field.value ?? "", e.after)) {
+      return final(
+        e.unconfirmed === true
+          ? "the field does not hold what Caret was writing, so Caret left it as it is"
+          : "the field changed after Caret wrote it, so Caret left it as it is",
+      );
+    }
+    // A field the walk lost (B15's WebKit window) is left to the reader's own check against what Caret wrote.
+    const held = field === undefined ? e.after : (field.value ?? "");
+    const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: held, value: e.before, taskId: task.id, sameAs: e.mark };
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
       for (const c of cs) if (c.windowId === e.windowId) seen.push(c);
@@ -1452,7 +1481,7 @@ export class Executor {
       };
       await refind();
       for (const fallback of FALLBACKS) {
-        if (r.outcome !== "ok" || !this.dropped(e.windowId, e.key, e.after, seen)) break;
+        if (r.outcome !== "ok" || !this.dropped(e.windowId, e.key, held, seen)) break;
         if (task.undoStopped !== null) return task.undoStopped;
         const other = seen.find((c) => c.editable && c.key !== e.key && (c.kind === "value" || c.kind === "removed"));
         if (other !== undefined) return final(`${other.key} changed while the field was restored, so the restore was not tried again`);
@@ -1623,6 +1652,42 @@ function contains(f: [number, number, number, number], p: [number, number]): boo
 
 /** undoWrite's answer for a write a crash cut off that never landed. */
 const UNTOUCHED = Symbol("untouched");
+
+/**
+ * Whether field `n`, read as `held`, holds the value Caret wrote (B29: anything else may be the user's typing). Exactly,
+ * except in a page's number field (PAGE_SUBROLE.number), where both are compared as plain decimal numbers, since a page
+ * may show "1" as "1.00". Never in a text field, and never across grouping separators, signs of locale or units.
+ * The comparison is exact on the digits (canonicalDecimal), not through Number(): review 1 found 9007199254740992 equal
+ * to 9007199254740993, 1e309 to 2e309 and 1e-999 to 0 that way, so undo restored over the user's number.
+ */
+export function sameValue(n: Node, held: string, wrote: string): boolean {
+  if (held === wrote) return true;
+  if (n.subrole !== PAGE_SUBROLE.number) return false;
+  const a = canonicalDecimal(held);
+  return a !== null && a === canonicalDecimal(wrote);
+}
+
+/** A decimal number as an input of type number holds one: optional sign, digits with at most one point, optional exponent. */
+const PLAIN_NUMBER = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d{1,6}))?$/;
+
+/**
+ * One spelling per number: "-123e-2" for -1.23, "0" for any zero. Digits keep every place, so two spellings match only
+ * when they are the same number exactly. Null for anything PLAIN_NUMBER does not take, or one with no digit.
+ */
+export function canonicalDecimal(s: string): string | null {
+  const m = PLAIN_NUMBER.exec(s);
+  if (m === null) return null;
+  const whole = m[2] ?? "";
+  const frac = m[3] ?? "";
+  if (whole === "" && frac === "") return null;
+  let digits = (whole + frac).replace(/^0+/, "");
+  if (digits === "") return "0";
+  let exp = Number(m[4] ?? "0") - frac.length;
+  const trailing = /0+$/.exec(digits)?.[0].length ?? 0;
+  digits = digits.slice(0, digits.length - trailing);
+  exp += trailing;
+  return `${m[1] === "-" ? "-" : ""}${digits}e${exp}`;
+}
 
 /** Why the reader refused a restore, in words for the activity row. */
 function undoRefused(e: Extract<LedgerEntry, { kind: "write" }>, r: VerbResult): string {

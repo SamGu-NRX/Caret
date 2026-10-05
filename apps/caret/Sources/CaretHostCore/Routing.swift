@@ -1,10 +1,10 @@
 import CaretScreenCore
 import Foundation
 
-// D2-02's routing messages (helper/src/protocol.ts, "routing"; golden lines in
-// helper/fixtures/golden/routing.ndjson, read by path). The host decodes both and acts on neither: H6
-// wires them. Until then the host's hello does not name the `routing` capability, so a helper sends
-// it no routeDecision; one that arrives anyway is decoded, checked and counted.
+// D2-02's routing messages (helper/src/protocol.ts, "routing"; the golden lines are
+// helper/fixtures/golden/routing.ndjson, copied byte for byte into the host's test fixtures). The host
+// sends routingContext and follows routeDecision (`RouteFollower`, H6) while the user's setting "Caret
+// decides when to help" is on; only then does its hello name the `routing` capability.
 
 public enum Routing {
     /// The hello capability that makes the helper send route decisions to this host.
@@ -57,10 +57,10 @@ public struct RoutingContext: Codable, Equatable, Sendable {
 
 /// Helper to host: the router's decision for one context. A null outcome means a breakpoint ended the
 /// last decision and a new one is under way.
-public struct RouteDecision: Decodable, Equatable, Sendable {
+public struct RouteDecision: Codable, Equatable, Sendable {
     public static let type = "routeDecision"
 
-    public enum Outcome: String, Decodable, Sendable { case abstain, write, ask, act }
+    public enum Outcome: String, Codable, Sendable { case abstain, write, ask, act }
 
     public var at: Int64
     /// Increasing within one helper process: a lower number is an older decision.
@@ -74,7 +74,21 @@ public struct RouteDecision: Decodable, Equatable, Sendable {
     public var route: String?
     public var expires: Int64
 
+    public init(at: Int64, context: Int, windowId: String, key: String?, textRevision: String, outcome: Outcome?, route: String?, expires: Int64) {
+        self.at = at; self.context = context; self.windowId = windowId; self.key = key
+        self.textRevision = textRevision; self.outcome = outcome; self.route = route; self.expires = expires
+    }
+
     enum CodingKeys: String, CodingKey { case type, v, at, context, windowId, key, textRevision, outcome, route, expires }
+
+    /// Every key, nulls written out, in protocol.ts's order, so a golden line re-encodes to itself.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(Self.type, forKey: .type); try c.encode(Proto.version, forKey: .v)
+        try c.encode(at, forKey: .at); try c.encode(context, forKey: .context); try c.encode(windowId, forKey: .windowId)
+        try c.encode(key, forKey: .key); try c.encode(textRevision, forKey: .textRevision)
+        try c.encode(outcome, forKey: .outcome); try c.encode(route, forKey: .route); try c.encode(expires, forKey: .expires)
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -119,5 +133,24 @@ private enum RoutingWire {
     static func nullable<K: CodingKey, T: Decodable>(_ c: KeyedDecodingContainer<K>, _ t: T.Type, _ k: K) throws -> T? {
         guard c.contains(k) else { throw ProtocolError("missing \(k.stringValue); send null instead") }
         return try c.decodeIfPresent(t, forKey: k)
+    }
+}
+
+/// What Caret knows, Permissions: the setting `CaretSettings.routing` (H6), in the window's words.
+public enum RoutingCopy {
+    public static let title = "When Caret helps"
+    /// What the setting covers: the ambient help the router decides on.
+    public static let covers = "Ghost text, writing fixes, and offers by the caret."
+    public static let decides = "Caret decides when to help"
+    public static let always = "Always suggest as I type"
+
+    public static func choice(_ routing: Bool) -> String { routing ? decides : always }
+
+    /// Under the choice: what it does, in a sentence. The router asks the cloud model (Jev), so the
+    /// on choice says so, as the memory window's subtitle does for fill.
+    public static func detail(_ routing: Bool) -> String {
+        routing
+            ? "Each time what you're doing changes, Caret asks its cloud model whether to help, and stays quiet when nothing fits."
+            : "Ghost text and offers show as you type, without asking the cloud model first."
     }
 }

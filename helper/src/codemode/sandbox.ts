@@ -25,6 +25,11 @@ export type ChooserPort = (req: {
 export interface RunOptions {
   signal?: AbortSignal;
   limits?: Partial<SandboxLimits>;
+  /**
+   * D2-06: a goal plan's steps may target any window the program read; the host cuts them into segments, one
+   * acceptance each (goals/lower.ts). Absent or false keeps D2-05's rule that every step targets the basedOn window.
+   */
+  multiWindow?: boolean;
 }
 
 const WORKER_URL = new URL("./worker.ts", import.meta.url);
@@ -77,7 +82,7 @@ export async function runProgramJs(js: string, programDigest: string, snapshots:
   if (active) return refuse("busy", "another planning run is live");
   active = true;
   try {
-    return await runWorker({ js, programDigest, snapshots: snaps, limits }, choose, opts.signal);
+    return await runWorker({ js, programDigest, snapshots: snaps, limits, multiWindow: opts.multiWindow === true }, choose, opts.signal);
   } finally {
     active = false;
   }

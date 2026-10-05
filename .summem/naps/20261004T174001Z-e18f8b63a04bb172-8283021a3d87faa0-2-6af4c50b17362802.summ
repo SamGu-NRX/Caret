@@ -1,0 +1,1 @@
+A17: paste-then-reconcile takes Caret's changeCount from clearContents()'s return, never a later read; HID keys are VM-only and the VM has no Jev key, so memory_fill_walk runs on the desktop with CARET_A14_TAB=hook (a hook Tab skips the tap's consumed counter).

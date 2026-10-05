@@ -60,11 +60,15 @@ const MAX_VALUES = 40;
 const digest = (s: string): string => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
 /** A value a program may write: its text, how the writer reads it, the window that shows it (or null), and whose it is when code knows. */
-interface Value {
+export interface Value {
   text: string;
   display: string;
   window: WindowState | null;
   owner: "user" | "other" | null;
+  /** The node of `window` the value was read from (D2-06 rechecks it before a goal segment runs); null for the instruction and memory. */
+  key: string | null;
+  /** The memory entry it was copied from, as Step.memory names it ("about-1", or "about-1#first" for a part). */
+  memory: string | null;
 }
 
 /**
@@ -73,16 +77,16 @@ interface Value {
  * an address, by window, most recent first, in at most MAX_SOURCE_WINDOWS windows, as the plan API's
  * readWindow(windowRef) shapes it. Each window's list is held to the writer's per-window budget (plan-prompt.ts).
  */
-function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number, formRoom: number): Value[] {
+export function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number, formRoom: number): Value[] {
   const out: Value[] = [];
   const used = new Map<WindowState | null, number>();
-  const add = (text: string, display: string, win: WindowState | null, owner: Value["owner"]): void => {
+  const add = (text: string, display: string, win: WindowState | null, owner: Value["owner"], key: string | null = null, memoryRef: string | null = null): void => {
     const d = display.length <= 400 ? display : `${display.slice(0, 399)}…`;
     const room = win === null ? formRoom : WINDOW_CHARS - win.window.title.length;
     const u = used.get(win) ?? 0;
     if (out.length >= MAX_VALUES || out.some((v) => v.text === text) || u + d.length > room) return;
     used.set(win, u + d.length);
-    out.push({ text, display: d, window: win, owner });
+    out.push({ text, display: d, window: win, owner, key, memory: memoryRef });
   };
   const spans = instructionValues(instruction);
   if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`, null, null);
@@ -91,9 +95,9 @@ function valueList(instruction: string, model: ScreenModel, w: WindowState, memo
     // Memory holds people as well as the user (helper.ts plannerMemory): whose an entry is comes from the entry.
     const owner = m.whose ?? null;
     const whose = owner === "user" ? "the user's" : owner === "other" ? "someone else's" : "a";
-    add(m.text, `"${m.text}" (${whose} ${m.label}, from memory)`, null, owner);
+    add(m.text, `"${m.text}" (${whose} ${m.label}, from memory)`, null, owner, null, m.id);
     const s = /\bname\b/i.test(m.label) || owner === "other" ? splitName(m.text) : null;
-    if (s?.kind === "split") for (const [part, t] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) if (t !== null) add(t, `"${t}" (the ${part} in ${whose} ${m.label}, from memory)`, null, owner);
+    if (s?.kind === "split") for (const [part, t] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) if (t !== null) add(t, `"${t}" (the ${part} in ${whose} ${m.label}, from memory)`, null, owner, null, `${m.id}#${part.split(" ")[0]}`);
   }
   const cands = generateCandidates(model, w.window.windowId, MAX_VALUES, now, ledger);
   const windows = [...new Set(cands.map((c) => c.source.windowId))].slice(0, MAX_SOURCE_WINDOWS);
@@ -101,14 +105,14 @@ function valueList(instruction: string, model: ScreenModel, w: WindowState, memo
     const win = model.windows.get(id) ?? null;
     if (win === null) continue;
     const mine = cands.filter((c) => c.source.windowId === id);
-    for (const c of mine) add(c.text, describeCandidate(c), win, null);
+    for (const c of mine) add(c.text, describeCandidate(c), win, null, c.source.nodeKey);
     for (const c of mine) {
       const parts = splitAddress(c.text);
-      if (parts !== null) for (const [k, v] of Object.entries(parts)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, win, null);
+      if (parts !== null) for (const [k, v] of Object.entries(parts)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, win, null, c.source.nodeKey);
       const name = c.context !== null && /\bname\b/i.test(c.context) && isNameLike(c.text, c.context) ? splitName(c.text) : null;
       if (name?.kind === "split") for (const part of ["first", "middle", "last"] as const) {
         const t = namePart(name, part);
-        if (t !== null) add(t, `"${t}" (the ${part} name in ${describeCandidate(c)})`, win, null);
+        if (t !== null) add(t, `"${t}" (the ${part} name in ${describeCandidate(c)})`, win, null, c.source.nodeKey);
       }
     }
   }

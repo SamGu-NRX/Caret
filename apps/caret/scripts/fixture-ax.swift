@@ -7,6 +7,7 @@
 // Usage: fixture-ax focus <pid> <x,y,w,h>     focus the text field with that AX frame
 //        fixture-ax value <pid> <x,y,w,h>     print {"value": ...} for that field
 //        fixture-ax focused <pid>             print the focused element's role and frame
+//        fixture-ax focused-value <pid>       print {"value": ...}, the focused element's AXValue (a text area too)
 //        fixture-ax set-text <pid> <window title> <old> <new>   rewrite a label (AXValue) if settable
 //        fixture-ax set-field <pid> <x,y,w,h> <value>  write a text field's AXValue, as typing it would
 //        fixture-ax caret-end <pid> <x,y,w,h>  put the caret after the field's text (AXSelectedTextRange)
@@ -183,6 +184,10 @@ case "focused" where args.count == 2:
     let element = unsafeBitCast(raw, to: AXUIElement.self)
     let f = frame(element)
     emit(["role": string(element, kAXRoleAttribute) ?? NSNull(), "frame": f.map { [$0.minX, $0.minY, $0.width, $0.height] } ?? NSNull()])
+case "focused-value" where args.count == 2:
+    let pid = requirePID(args[1])
+    guard let raw = attribute(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute) else { emit(["value": NSNull()]); break }
+    emit(["value": string(unsafeBitCast(raw, to: AXUIElement.self), kAXValueAttribute) ?? NSNull()])
 case "set-text" where args.count == 5:
     let pid = requirePID(args[1])
     var target: AXUIElement?

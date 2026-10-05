@@ -93,11 +93,14 @@ final class FillCoordinator {
             overlay.showOffer(
                 value: draw.value, fieldFrame: draw.field,
                 style: element.map(FieldStyleProbe.style(of:)) ?? OverlayTextStyle(),
-                caption: draw.caption, sourceApp: draw.sourceApp, pid: draw.pid, outcome: draw.line,
+                caption: draw.caption, sourceApp: draw.sourceApp, fillAll: draw.fillAll, pid: draw.pid, outcome: draw.line,
                 hasPlaceholder: !(element.flatMap { AXRead.string(kAXPlaceholderValueAttribute, on: $0) } ?? "").isEmpty
             )
         case .hideOffer(let byTyping): overlay.hideOffer(byTyping: byTyping)
         case .markWorking: overlay.markWorking()
+        case .fillAll(let proposalId):
+            let at = Int64((Date().timeIntervalSince1970 * 1000).rounded())
+            if client?.send(FillAllRequest(proposalId: proposalId, at: at)) != true { status.increment("fill.fillAllUnsent") }
         case .drawToast(let draw):
             overlay.showToast(
                 FillOverlay.ToastKind(rawValue: draw.kind.rawValue) ?? .error, lead: draw.lead, text: draw.text,

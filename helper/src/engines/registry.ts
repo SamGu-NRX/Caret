@@ -87,6 +87,17 @@ export class EngineRegistry implements EngineDirectory {
     return [...this.sessions.values()].map((e) => e.session);
   }
 
+  /**
+   * A page window's document generation as its last walk saw it: each frame's document and navigation, so a reload or a
+   * navigation of any frame changes it (D2-06: a goal plan made before one is another page's). Null for a native
+   * window, or a tab no live engine has walked.
+   */
+  documentOf(windowId: string): string | null {
+    const w = parsePageWindow(windowId);
+    const tab = w === null ? undefined : this.sessions.get(w.engine)?.session.tabs.get(w.tabId);
+    return tab === undefined ? null : tab.frames.map((f) => `${f.frameId}:${f.documentId}:${f.navGen}`).join("|");
+  }
+
   engineFor(windowId: string): ReaderLink | null {
     const w = parsePageWindow(windowId);
     return w === null ? null : (this.sessions.get(w.engine)?.link ?? null);
