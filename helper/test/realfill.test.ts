@@ -723,3 +723,58 @@ describe("B27 review", () => {
     expect(kept.map((x) => x.control)).toEqual(["text", "radio", "radio", "checkbox"]);
   });
 });
+
+// What the B27 second review found, each with its input.
+describe("B27 second review", () => {
+  const W = "dev.caret.page/review2";
+  const CHROME = { pid: 7102, bundleId: "com.google.Chrome", name: "Google Chrome" };
+  function desk(source: Node[], inputs: Node[], app = MAIL_APP): ScreenModel {
+    const m = new ScreenModel();
+    m.apply(snap(source, { at: 900, windowId: "src", title: "Source", app, focused: true }));
+    const nodes = [node(`${W}/webarea:~0`, "AXWebArea", { label: "Form" }), field(`${W}/textfield:company~0`, "", { parent: `${W}/webarea:~0`, label: "Company", frame: [100, 60, 200, 20] }), ...inputs];
+    m.apply(snap(nodes, { at: 1000, windowId: "form", kind: PAGE_WINDOW_KIND, title: "Form", app: CHROME, focused: true, focusedKey: `${W}/textfield:company~0` }));
+    return m;
+  }
+  const byLabel = (table: Record<string, string>) => (_: string, ins: string): string | null => table[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null;
+  /** Sets every whose answer's and every owner answer's confidence, leaving the choices as given. */
+  const at = (inner: AskJev, whose: number, owner: number): AskJev => async (r) => {
+    const out = await inner(r);
+    for (const [id, a] of Object.entries(out.answers)) {
+      if (id.endsWith("_whose")) a.confidence = whose;
+      if (id.endsWith("_owner")) a.confidence = owner;
+    }
+    return out;
+  };
+
+  it("vetoes a value both owner asks call someone else's when both whose asks say the user's under the whose cutoff", async () => {
+    const sig = "Thanks,\nDana Whitfield\nOperations Lead, Lumen Labs\n(415) 555-0162";
+    const m = desk([text("src/sig", sig)], [field(`${W}/textfield:phone~0`, "", { parent: `${W}/webarea:~0`, label: "Phone number", frame: [100, 100, 200, 20] })]);
+    m.apply(snap([text("src/sig", sig)], { at: 900, windowId: "src", title: "Re: deposit", app: MAIL_APP, values: [value("phone", "(415) 555-0162", "src/sig")] }));
+    const ask = at(jevPickingText(byLabel({ "Phone number": "(415) 555-0162" }), 0.92, () => "user", () => "other"), 0.49, 0.47);
+    const p = await proposeFill(m, ask, "form", `${W}/textfield:company~0`, 2000);
+    expect(p.fields.find((f) => f.key === `${W}/textfield:phone~0`)).toMatchObject({ value: null });
+  });
+
+  it.each([
+    ["Tbilisi, Georgia", null],
+    ["Atlanta, Georgia, USA", { city: "Atlanta", state: "Georgia", country: "USA" }],
+    ["Atlanta, Georgia, United States", { city: "Atlanta", state: "Georgia", country: "United States" }],
+    ["Atlanta, GA", { city: "Atlanta", state: "GA", country: null }],
+  ])("splitPlace(%j): Georgia is the state only beside the United States", (t, want) => {
+    expect(splitPlace(t)).toEqual(want);
+  });
+
+  it("derives no State from a city in the country Georgia", async () => {
+    const m = desk([field("src/note", "Location: Tbilisi, Georgia", { role: "AXTextArea" })], [field(`${W}/textfield:state~0`, "", { parent: `${W}/webarea:~0`, label: "State", frame: [100, 100, 200, 20] })], { pid: 7101, bundleId: "com.apple.TextEdit", name: "TextEdit" });
+    const p = await proposeFill(m, jevPickingText(byLabel({ State: "Georgia" }), 0.95), "form", `${W}/textfield:company~0`, 2000);
+    expect(p.fields.find((f) => f.key === `${W}/textfield:state~0`)).toMatchObject({ value: null });
+  });
+
+  it("holds a pop-up menu that takes a person's name to the owner veto, with no hand-off", async () => {
+    const menu = node(`${W}/popupbutton:your full name~0`, "AXPopUpButton", { parent: `${W}/webarea:~0`, label: "Your full name", value: "Select...", frame: [100, 100, 200, 20] });
+    const items = ["Dana Whitfield", "Sam Rivera"].map((o) => node(`${W}/popupbutton:your full name/menuitem:${o}~0`, "AXMenuItem", { parent: menu.key, label: o }));
+    const m = desk([field("src/mail", "Name: Dana Whitfield\nTeam: Operations", { role: "AXTextArea" })], [menu, ...items]);
+    const p = await proposeFill(m, jevPickingText(byLabel({ "Your full name": "Dana Whitfield" }), 0.95, () => "user", () => "other"), "form", `${W}/textfield:company~0`, 2000);
+    expect(p.fields.find((f) => f.key === menu.key)).toMatchObject({ value: null, handoff: null });
+  });
+});

@@ -37,6 +37,25 @@ describe("what a failed fill says", () => {
     store.close();
   });
 
+  it.each([
+    ["an unknown window", "9191-33", EMAIL, SAYS.windowClosed],
+    ["a field the window lacks", FORM, "dev.caret.fixture/standard/textfield:absent~0", SAYS.notEditable],
+  ])("publishes a sentence with no id for %s, and logs the ids (B27 second review)", async (_, windowId, fieldKey, says) => {
+    dir = mkdtempSync(join(tmpdir(), "caret-fill-says-"));
+    const store = new Store(dir);
+    const sent: HelperMessage[] = [];
+    const warned: string[] = [];
+    const helper = new Helper({ store, askJev: jevPickingText(() => null), shadow: false, allowBackgroundFocus: false, publish: (m) => sent.push(m), warn: (m) => warned.push(m) });
+    await helper.handleReader(snap([field(EMAIL, "", { label: "Email", frame: [100, 40, 200, 24] })], { at: Date.now(), windowId: FORM, title: "Claim form", focused: true }));
+    await helper.handleConsumer({ type: "fillRequest", v: PROTOCOL_VERSION, windowId, fieldKey });
+    const errors = sent.flatMap((m) => (m.type === "error" ? [m.message] : []));
+    expect(errors).toEqual([says]);
+    expect(errors[0]).not.toContain(windowId);
+    expect(warned.some((w) => w.startsWith("fill: ") && (w.includes(windowId) || w.includes(fieldKey)))).toBe(true);
+    helper.memory.close();
+    store.close();
+  });
+
   it.each<[FillErrorWhy | null, string]>([
     ["noWindow", SAYS.windowClosed],
     ["noField", SAYS.notEditable],

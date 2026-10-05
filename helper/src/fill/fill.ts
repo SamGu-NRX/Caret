@@ -694,7 +694,13 @@ export async function proposeFill(
     const part = typed && derive ? (fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : null;
     // A country is no one's detail, so it asks no whose question. A dropdown that takes a person's details meets the owner
     // veto and the whose gate as a text field does (B27 review: "Your full name" took another person's name otherwise).
-    const personal = typed && ((part !== null && part !== "country") || [...kinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
+    // So does a list of options, read by its label alone: a "Your full name" pop-up menu listing two people was handed
+    // the other one's name (B27 second review).
+    const listed = x.control === "select" || x.control === "radio";
+    const personKinds = typed ? kinds : listed ? fieldKinds(labelWords) : new Set<ValueKind>();
+    const personal =
+      (typed || listed) &&
+      ((part !== null && part !== "country") || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
     // An Ask that names no memory, or names another person for a personal field, is not offered the user's own.
     const memoryOk = scope === undefined || (scope.memory && (scope.person === null || !personal));
     const about = x.control === "text" && memoryOk ? (opts.about ?? []).filter((a) => fieldAsksFor(a, name)) : [];
@@ -1072,8 +1078,9 @@ export async function proposeFill(
     // A veto only withholds, so both asks calling the value someone else's is enough at any confidence when the field
     // wants the user's. B27's corpus run put a colleague's signature phone in a demo request's Phone number: in five
     // reruns all ten owner answers said "other", at 0.47 to 0.67, and the one under WHOSE_CUTOFF let it through
-    // (evidence/screen/b27/b2b-probe, seed 24).
-    if (wants === "user" && sameChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? "")) === "other") return true;
+    // (evidence/screen/b27/b2b-probe, seed 24). The field's whose answers count at any confidence too: with both at
+    // 0.49 "user", the settled `wants` was null and the colleague's phone went in (B27 second review).
+    if (sameChoice(whoseId(f.id)) === "user" && sameChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? "")) === "other") return true;
     // Someone else's value goes only in a field both asks say wants someone else's: an RSVP's Phone, its whose
     // answer split at 0.48 and 0.60, took the sender's signature phone, which both asks called hers (dev-10).
     if (is === "other") return true;

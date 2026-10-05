@@ -10,7 +10,7 @@ import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
 import type { AskJev, JevRequest } from "./fill/jev.ts";
-import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryValue, parseMemoryRef, proposeFill } from "./fill/fill.ts";
+import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryValue, parseMemoryRef, proposeFill, type FillErrorWhy } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
   HelperMessage,
@@ -1200,14 +1200,14 @@ export class Helper {
     }
     const w = this.model.windows.get(windowId);
     if (w === undefined) {
-      this.error(`fill: unknown window ${windowId}`);
+      this.fillFailed(`unknown window ${windowId}`, "noWindow");
       return null;
     }
     let formKey: string;
     try {
       formKey = `${windowId}|${formFields(w, key).map((n) => n.key).sort().join(",")}`;
     } catch (e) {
-      this.error(`fill: ${(e as Error).message}`);
+      this.fillFailed(e instanceof FillError ? e.message : String(e), e instanceof FillError ? e.why : null);
       return null;
     }
     if (this.inflight.has(formKey)) {
@@ -1277,9 +1277,7 @@ export class Helper {
       return p;
     } catch (e) {
       store.count("fill.error", 1, now);
-      // The user reads a plain sentence (planner/says.ts); what the check found, with its window and field ids, is logged.
-      this.opts.warn?.(`fill: ${e instanceof FillError ? e.message : String(e)}`);
-      this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: fillSays(e instanceof FillError ? e.why : null) });
+      this.fillFailed(e instanceof FillError ? e.message : String(e), e instanceof FillError ? e.why : null);
       return null;
     } finally {
       this.pendingFills.delete(focuses);
@@ -1476,6 +1474,15 @@ export class Helper {
     this.shown.add(key);
     const app = this.model.windows.get(windowId)?.app.name ?? null;
     this.memory.recordUse("show", { at: this.now(), says: `Offered ${what}${app === null ? "" : ` in ${app}`}`, app, outcome: "done" });
+  }
+
+  /**
+   * A fill that failed: the user reads a plain sentence (planner/says.ts), and what the check found, with its window
+   * and field ids, goes to the log (B27; the early exits before proposeFill published the ids until its second review).
+   */
+  private fillFailed(detail: string, why: FillErrorWhy | null): void {
+    this.opts.warn?.(`fill: ${detail}`);
+    this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: fillSays(why) });
   }
 
   private error(message: string): void {
