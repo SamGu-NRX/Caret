@@ -1,0 +1,1 @@
+H5: an executor run stops at once unless the reader link answers watchInput ok; accept.ts's fixture noReader answers noWindow, so a run there (the confirm-file check) answers watchInput itself via e.reader.

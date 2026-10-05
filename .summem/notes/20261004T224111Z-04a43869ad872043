@@ -1,1 +1,0 @@
-B26: Groq answers a one-token probe even when a model's tokens-per-day is spent; only a real-size request shows the 429 TPD. gpt-oss-120b's day ran out during B26's first Ask run.

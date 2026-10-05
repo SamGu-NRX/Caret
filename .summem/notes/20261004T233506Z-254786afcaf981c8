@@ -1,1 +1,0 @@
-D2-02: Groq gpt-oss-120b (the Ask intent writer) allows 8,000 tokens a minute; an intent is about 2,000, so Ask evals space calls 30 s or get 429 'unavailable'.

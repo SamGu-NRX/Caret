@@ -1,1 +1,0 @@
-H4: build-app.sh takes build.lock for the whole run (compile, copy, sign); a caller already under heavy.sh or lockf sets CARET_NO_LOCK=1 or it deadlocks. release and acceptance need IDENTITY (team cert SHA-1); debug is ad hoc.

@@ -1,1 +1,0 @@
-CodeRabbit #9: the host debug socket refuses key, control, click and settings set without --test-hooks (HostRuntime.testHookRefusal); acceptance scripts that drive keys start the host with --test-hooks.

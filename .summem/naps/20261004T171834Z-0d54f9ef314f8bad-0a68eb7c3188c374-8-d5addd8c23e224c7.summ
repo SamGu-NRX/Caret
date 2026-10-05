@@ -1,1 +1,0 @@
-B23/W1/W2/I1: recovery rows return stopped with undo; open connectNative port keeps the MV3 worker alive; accept.ts under a held lock needs CARET_HEAVY_LOCK_HELD=1; worker result() forwards only named ActAnswer fields; caret-screen needs --auth-fd 0 + secret.

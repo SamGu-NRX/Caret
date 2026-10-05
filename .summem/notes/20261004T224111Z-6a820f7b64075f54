@@ -1,1 +1,0 @@
-B26: offline generator measurements (scripts/realfill-budgets.ts and the like) must pin setGeneratorClock, or cold first forms are cut short by the time budget and the numbers vary run to run.

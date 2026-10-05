@@ -1,1 +1,0 @@
-W4: hcaptcha/recaptcha hosts are HSTS-preloaded, so --host-resolver-rules cannot point a test browser's captcha frame at a local http server (the load hangs); test captcha frame composition through extension/src/worker/compose.ts unit tests instead.

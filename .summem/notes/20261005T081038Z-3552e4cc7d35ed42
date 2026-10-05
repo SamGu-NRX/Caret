@@ -1,0 +1,1 @@
+H5: Chrome's AX shows a file input as a plain AXButton; page-link marks page file inputs with subrole caretFileInput (FILE_INPUT_SUBROLE), which validate.ts and planner/attach.ts require for fileAttached steps.
