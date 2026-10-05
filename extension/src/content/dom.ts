@@ -97,7 +97,7 @@ export function pressToggle(el: Element, beforeClick: () => boolean): boolean {
   return true;
 }
 
-const KEY_CODES = { Escape: 27, Enter: 13 } as const;
+const KEY_CODES = { Escape: 27, Enter: 13, Backspace: 8 } as const;
 
 /** keydown then keyup of one named key. */
 export function keyEvents(el: Element, key: keyof typeof KEY_CODES): void {

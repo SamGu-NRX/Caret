@@ -130,6 +130,9 @@ export class FixtureSite {
         return html(res, read("frame.html").replaceAll("__TITLE__", "Referral").replaceAll("__ID__", "referral").replaceAll("__NAME__", "referral_code").replaceAll("__LABEL__", "Referral code"));
       case "GET /holds":
         return html(res, read("holds.html"));
+      // D2-04: one of each control a Fill all writes, beside the ones it leaves to the user.
+      case "GET /mixed":
+        return html(res, read("mixed.html"));
       case "GET /holds.js":
         return send(res, "text/javascript", read("holds.js"));
       case "GET /hold": {

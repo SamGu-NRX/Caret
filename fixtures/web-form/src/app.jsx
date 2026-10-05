@@ -37,7 +37,8 @@ function App() {
       </p>
       <div>
         <label id="rs-country-label" htmlFor="rs-country">Country of residence</label>
-        <Select inputId="rs-country" name="rs_country" aria-labelledby="rs-country-label" options={COUNTRIES} value={country} onChange={setCountry} />
+        {/* Clearable (D2-04): the undo of Caret's pick empties it with Backspace, as a person can only when it allows clearing. */}
+        <Select inputId="rs-country" name="rs_country" aria-labelledby="rs-country-label" options={COUNTRIES} value={country} onChange={setCountry} isClearable />
       </div>
       <pre id="react-state">{JSON.stringify(state)}</pre>
     </form>

@@ -69,6 +69,7 @@ import { Browser, computeExecutablePath, detectBrowserPlatform, install } from "
 import { Helper } from "../../helper/src/helper.ts";
 import { Store } from "../../helper/src/store.ts";
 import { pageHost, type PageHost } from "../../helper/src/engines/host.ts";
+import { PAGE_SUBROLE } from "../../helper/src/protocol.ts";
 import { newLaunchSecret } from "../../helper/src/launch.ts";
 import type { EngineSession } from "../../helper/src/engines/session.ts";
 import { pageWindowId } from "../../helper/src/engines/windows.ts";
@@ -77,7 +78,7 @@ import { ConfirmedFiles } from "../../helper/src/engines/attach.ts";
 import { toVerbOutcome, type PageEngineLink } from "../../helper/src/engines/page-link.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
 import type { AskJev } from "../../helper/src/fill/jev.ts";
-import type { HelperMessage, PageControl, PageFrame, PageResult, PageSnapshot, PageVerb } from "../../helper/src/protocol.ts";
+import type { HelperMessage, OfferPopup, PageControl, PageFrame, PageResult, PageSnapshot, PageVerb } from "../../helper/src/protocol.ts";
 import { FixtureSite } from "./server.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
@@ -828,6 +829,208 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
   });
 }
 
+// ---- D2-04: one Fill all over a form of every kind of control (public/mixed.html) ----
+
+const MIXED_TITLE = "Apply: Mixed controls";
+/** The note the user just left, shown to the helper as the reader would show a TextEdit window: values for every field Caret may fill, and an age that answers no box. */
+const MIXED_NOTE = [
+  "Full name: Robin Vale",
+  "Email: robin@example.test",
+  "Preferred name: Robin Vale",
+  "Country: Canada",
+  "Shift: Night",
+  "I have a valid driving license: yes",
+  "Age: 34",
+  "Start date: October 20, 2026",
+  "Interview time: 3:30 PM",
+  "Available from: Oct 19, 2026 at 9:00 AM",
+  "Country of residence: United States",
+].join("\n");
+/**
+ * What canned Jev picks on the mixed form, by the label its question quotes: what a careful model picks, and "34" for
+ * "Are you over 18?", which an over-eager one might, so the box rule is what keeps that box unticked.
+ */
+const MIXED_PICKS: Record<string, string> = {
+  "Full name": "Robin Vale",
+  Email: "robin@example.test",
+  "Preferred name": "Robin Vale",
+  Country: "Canada",
+  Shift: "Night",
+  "I have a valid driving license": "yes",
+  "Are you over 18?": "34",
+  "Start date": "October 20, 2026",
+  "Interview time": "3:30 PM",
+  "Available from": "Oct 19, 2026 at 9:00 AM",
+  "Country of residence": "United States",
+};
+/** Each control of the mixed form and what it reads after one Fill all (fixture.js "read": a box or radio as "true"/"false"). */
+const MIXED_FILLED: Record<string, string> = {
+  "#m_name": "Robin Vale",
+  "#m_email": "robin@example.test",
+  "#m_country": "ca",
+  'input[name="shift"][value="day"]': "false",
+  'input[name="shift"][value="night"]': "true",
+  "#m_license": "true",
+  "#m_over18": "false",
+  "#m_news": "false",
+  "#m_terms": "false",
+  "#m_start": "2026-10-20",
+  "#m_time": "15:30",
+  "#m_from": "2026-10-19T09:00",
+  "#m_resume": "",
+  "#preferred": "Robin Vale",
+};
+const MIXED_EMPTY: Record<string, string> = Object.fromEntries(Object.keys(MIXED_FILLED).map((k) => [k, k.includes("shift") || ["#m_license", "#m_over18", "#m_news", "#m_terms"].includes(k) ? "false" : ""]));
+
+async function batch5(e: Engine, site: FixtureSite, published: HelperMessage[]): Promise<void> {
+  const windowId = pageWindowId(e.session.info.engine, e.tabId);
+  const textEdit = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
+  const readAll = async (): Promise<Record<string, string>> => Object.fromEntries(await Promise.all(Object.keys(MIXED_FILLED).map(async (k) => [k, (await read(site, k)) ?? "(none)"] as const)));
+  const diff = (got: Record<string, string>, want: Record<string, string>): string => Object.entries(want).filter(([k, v]) => got[k] !== v).map(([k, v]) => `${k} ${JSON.stringify(got[k])} (want ${JSON.stringify(v)})`).join("; ");
+  /** A fresh load of the mixed form, then the note focused and left for the browser, as the user would. */
+  const open = async (): Promise<void> => {
+    await openPage(e, site, "/mixed", "Country of residence");
+    const at = Date.now();
+    await e.helper.handleReader({ type: "snapshot", v: 1, seq: 1, at, reason: "focus", app: textEdit, window: { windowId: "7001-1", kind: "standard", title: "Robin's details.txt", frame: [0, 0, 600, 400] }, focused: true, root: null, nodes: [{ key: "com.apple.TextEdit/standard/textarea:~0", parent: null, role: "AXTextArea", value: MIXED_NOTE, editable: true }], values: [], focusedKey: null, stats: { walkMs: 1, visited: 1, truncated: false } });
+    await e.helper.handleReader({ type: "focus", v: 1, at, app: textEdit, windowId: "7001-1", key: "com.apple.TextEdit/standard/textarea:~0", role: "AXTextArea", editable: true, empty: false, frontmost: true });
+    e.helper.handleReader({ type: "appSwitch", v: 1, at: Date.now(), from: textEdit, to: e.session.info.browser });
+  };
+  /** Every page verb and scoped grant the run sends while `fn` runs. */
+  const watched = async <T>(fn: (seen: PageVerb[], grants: string[]) => Promise<T>): Promise<T> => {
+    const seen: PageVerb[] = [];
+    const grants: string[] = [];
+    const command = e.session.command.bind(e.session);
+    const grantFn = e.session.grant.bind(e.session);
+    e.session.command = (v, ms) => (seen.push(v), command(v, ms));
+    e.session.grant = (g) => (grants.push(g.taskId), grantFn(g));
+    try {
+      return await fn(seen, grants);
+    } finally {
+      e.session.command = command;
+      e.session.grant = grantFn;
+    }
+  };
+  const acts = (seen: readonly PageVerb[]): Exclude<PageVerb, { kind: "pageWalk" }>[] => seen.flatMap((v) => (v.kind === "pageWalk" ? [] : [v]));
+  const fullName = (): string => {
+    const n = [...(e.helper.model.windows.get(windowId)?.nodes.values() ?? [])].find((x) => x.label === "Full name");
+    if (n === undefined) throw new Error("the model has no Full name field");
+    return n.key;
+  };
+  let taskId = "";
+
+  await check("D2-04: one Fill all writes every control of a mixed form (text, select, radio, box, date, time, date and time, react-select) and reads each back, under one grant, pressing nothing", async () => {
+    await open();
+    const mark = published.length;
+    const focused = await site.command({ cmd: "focus", selector: "#m_name" });
+    let popup: OfferPopup | undefined;
+    for (let i = 0; i < 60 && popup === undefined; i++) {
+      await sleep(250);
+      popup = published.slice(mark).find((m): m is OfferPopup => m.type === "popup" && m.field.windowId === windowId);
+    }
+    // Without a pop-up, say what fill made of each field: a text field without a value keeps the form to per-field offers.
+    const said = published.slice(mark).map((m) => (m.type === "error" ? `error ${m.message}` : m.type === "fillProposal" ? `fillProposal [${m.fields.map((f) => `${f.descriptor.slice(0, 40)} -> ${f.value ?? f.handoff?.value ?? f.withheld ?? f.choice}`).join(" | ")}]` : m.type));
+    expect(popup !== undefined, `no pop-up for ${windowId} (page hasFocus ${focused.value}); published since: ${said.join(", ") || "nothing"}`);
+    const header = popup!.spec.blocks.find((b) => b.type === "header");
+    expect(header?.type === "header" && header.title.text === "Fill 10 fields", `header ${JSON.stringify(header)}`);
+    taskId = popup!.offerKey;
+    const r = await watched(async (seen, grants) => {
+      const out = await e.helper.handleOfferAccept({ type: "offerAccept", v: 1, offerId: taskId, actionId: "fillAll", overrides: {}, at: Date.now() });
+      return { out, seen: acts(seen), grants };
+    });
+    expect(r.out?.outcome === "done", `the run ended ${r.out?.outcome}: ${r.out?.detail}`);
+    const got = await readAll();
+    expect(diff(got, MIXED_FILLED) === "", `after Fill all: ${diff(got, MIXED_FILLED)}`);
+    await stateHas(site, "country", "us");
+    await stateHas(site, "preferred", "Robin Vale");
+    const kinds = r.seen.map((v) => v.kind);
+    expect(r.seen.length === 10 && kinds.every((k) => k !== "pagePress" && k !== "pageAttachFile") && r.seen.every((v) => v.taskId === taskId), `acts: ${kinds.join(", ")}`);
+    expect(new Set(r.grants).size === 1 && r.grants[0] === taskId, `grants: ${r.grants.join(", ")}`);
+    return `pop-up '${header?.type === "header" ? header.title.text : ""}', ${r.out?.detail}; acts ${kinds.join(", ")}; one task's grant to ${new Set(r.grants).size} task(s)`;
+  });
+
+  await check("D2-04: the box the source does not answer, the sign-up box and the file input are untouched and listed as yours; the terms box never leaves the page", async () => {
+    const popup = published.find((m): m is OfferPopup => m.type === "popup" && m.offerKey === taskId);
+    const yours = popup?.spec.blocks.find((b) => b.id === "yours");
+    const rows = yours?.type === "facts" ? yours.rows.map((x) => x.value.text) : [];
+    expect(JSON.stringify(rows) === JSON.stringify(["Are you over 18?", "Send me news and offers", "Resume"]), `yours: ${JSON.stringify(rows)}`);
+    const action = popup?.spec.blocks.find((b) => b.type === "actions");
+    expect(action?.type === "actions" && action.items[0]?.label === "Fill 10", `action ${JSON.stringify(action)}`);
+    const untouched = ["#m_over18", "#m_news", "#m_terms", "#m_resume"].map((k) => `${k}=${JSON.stringify(MIXED_FILLED[k])}`);
+    return `yours ${JSON.stringify(rows)}; ${untouched.join(", ")} (read in the check above)`;
+  });
+
+  await check("D2-04: one undo restores every field, newest first, each only on the element Caret wrote (rebind: false)", async () => {
+    const r = await watched(async (seen) => ({ u: await e.helper.executor.undo(taskId), seen: acts(seen) }));
+    expect(r.u.restored === 10 && r.u.notRestored.length === 0, `undo ${JSON.stringify(r.u)}`);
+    expect(r.seen.length === 10 && r.seen.every((v) => v.rebind === false && typeof v.sameAs === "string"), `restores: ${JSON.stringify(r.seen.map((v) => [v.kind, v.rebind, v.sameAs !== undefined]))}`);
+    const got = await readAll();
+    expect(diff(got, MIXED_EMPTY) === "", `after undo: ${diff(got, MIXED_EMPTY)}`);
+    await stateHas(site, "country", null);
+    await stateHas(site, "preferred", "");
+    return `restored ${r.u.restored}, not restored ${r.u.notRestored.length}; restores ${r.seen.map((v) => v.kind).join(", ")}`;
+  });
+
+  await check("D2-04: a reload mid-task stops the transaction (the host's Command-1 path, fillAll), and nothing goes into the new page", async () => {
+    await open();
+    const p = await e.helper.handleConsumer({ type: "fillRequest", v: 1, windowId, fieldKey: fullName() });
+    expect(p !== null, "no proposal");
+    const r = await watched(async (seen) => {
+      const command = e.session.command.bind(e.session);
+      let n = 0;
+      e.session.command = async (v, ms) => {
+        const a = await command(v, ms);
+        if (v.kind !== "pageWalk" && ++n === 3) {
+          const since = Date.now();
+          await site.command({ cmd: "navigate", url: `${site.mainOrigin}/mixed` });
+          await site.waitForLoad((h) => h.endsWith("/mixed"), since);
+        }
+        return a;
+      };
+      return { out: await e.helper.handleFillAll({ type: "fillAll", v: 1, proposalId: p!.id, at: Date.now() }), seen: acts(seen) };
+    });
+    expect(r.out?.outcome === "stopped", `the run ended ${r.out?.outcome}: ${r.out?.detail}`);
+    await sleep(500);
+    const got = await readAll();
+    expect(diff(got, MIXED_EMPTY) === "", `the reloaded page holds: ${diff(got, MIXED_EMPTY)}`);
+    return `${r.out?.outcome}: ${r.out?.detail}; ${r.seen.length} acts sent (3 before the reload)`;
+  });
+
+  await check("D2-04: a click in the page mid-task stops the transaction; what it wrote stays for undo", async () => {
+    await open();
+    const cdp = need(e.cdp, "DevTools pipe");
+    const { sessionId } = await cdp.page(`${site.mainOrigin}/mixed`);
+    const p = await e.helper.handleConsumer({ type: "fillRequest", v: 1, windowId, fieldKey: fullName() });
+    expect(p !== null, "no proposal");
+    const r = await watched(async (seen) => {
+      const command = e.session.command.bind(e.session);
+      let n = 0;
+      e.session.command = async (v, ms) => {
+        const a = await command(v, ms);
+        if (v.kind !== "pageWalk" && ++n === 3) {
+          await cdp.click(sessionId, "#m_title");
+          await sleep(500);
+        }
+        return a;
+      };
+      return { out: await e.helper.handleFillAll({ type: "fillAll", v: 1, proposalId: p!.id, at: Date.now() }), seen: acts(seen) };
+    });
+    expect(r.out?.outcome === "paused" && /click/.test(r.out.detail ?? ""), `the run ended ${r.out?.outcome}: ${r.out?.detail}`);
+    const ledger = e.helper.executor.ledger(p!.id).length;
+    expect(r.seen.length === 3 && ledger === 3, `${r.seen.length} acts, ${ledger} in the ledger`);
+    const u = await e.helper.executor.undo(p!.id);
+    const got = await readAll();
+    expect(u.restored === 3 && diff(got, MIXED_EMPTY) === "", `undo ${JSON.stringify(u)}; page ${diff(got, MIXED_EMPTY)}`);
+    return `${r.out?.outcome}: ${r.out?.detail}; ${ledger} writes kept and undone`;
+  });
+
+  await check("D2-04: /submitted reads 0 after every Fill all, undo and stop", async () => {
+    const count = ((await (await fetch(`${site.mainOrigin}/submitted`)).json()) as { count: number }).count;
+    expect(count === 0, `/submitted reads ${count}`);
+    e.helper.handleReader({ type: "windowClosed", v: 1, at: Date.now(), windowId: "7001-1" });
+    return `/submitted ${count}`;
+  });
+}
+
 // ---- W4: what real application forms need (replicas built from the saved real-site markup) ----
 
 const Q_YEARS = "Do you have a minimum of 7 years of experience building software?";
@@ -906,7 +1109,8 @@ async function batch4(e: Engine, site: FixtureSite, tmp: string): Promise<void> 
   await check("W4 2: Ashby replica: a toggle the page never marks is failed, one whose mousedown moves it into a form is never clicked, a question whose name changed is stale, a veteran question (with unreadable text beside it) and buttons in a form or a disabled fieldset are no press group, and pagePress stays a hand-off", async () => {
     const s = await walk(e);
     const w = e.helper.model.windows.get(windowId);
-    const groups = [...(w?.nodes.values() ?? [])].filter((n) => n.role === "AXGroup" && n.subrole === "AXFieldset").map((n) => n.label);
+    // Question groups of either kind: a radio group (AXFieldset) or, since D2-04 marks it apart, a Yes/No press group.
+    const groups = [...(w?.nodes.values() ?? [])].filter((n) => n.role === "AXGroup" && (n.subrole === "AXFieldset" || n.subrole === PAGE_SUBROLE.pressGroup)).map((n) => n.label);
     // The veteran question stays out though unreadable text sits beside its buttons; buttons in a form or a disabled fieldset are no press group.
     expect(groups.includes("Do you hold a current security clearance?") && !groups.includes("Are you a protected veteran?") && !groups.includes("Are you willing to relocate?") && !groups.includes("Can you work night shifts?") && !groups.some((g) => (g ?? "").includes("pizza")), `question groups: ${JSON.stringify(groups)}`);
     const broken = [...(w?.nodes.values() ?? [])].find((n) => n.role === "AXGroup" && n.label === "Do you hold a current security clearance?");
@@ -1695,13 +1899,17 @@ async function main(): Promise<number> {
   const sockPath = join(sockDir, "page.sock");
   let jevCalls = 0;
   // Canned Jev: picks the About email batch 2 adds wherever a question offers it, says such a field is the user's,
-  // and answers none to everything else.
+  // and answers none to everything else. On D2-04's mixed form it picks each field's value by the label its question
+  // quotes (MIXED_PICKS), and says every value there is the user's.
   const askJev: AskJev = async (req) => {
     jevCalls++;
+    const mixed = JSON.stringify(req.state).includes(MIXED_TITLE);
     const answers = Object.fromEntries(
       Object.entries(req.questions).map(([k, q]) => {
-        if (k.endsWith("_whose")) return [k, { choice: "user", confidence: 0.95 }];
-        const pick = Object.entries(q.criteria).find(([, t]) => t?.includes('"robin@example.test"'))?.[0];
+        if (k.endsWith("_whose") || (mixed && k.endsWith("_owner"))) return [k, { choice: "user", confidence: 0.95 }];
+        const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
+        const want = mixed ? MIXED_PICKS[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] : undefined;
+        const pick = Object.entries(q.criteria).find(([, t]) => (want === undefined ? t?.includes('"robin@example.test"') : t?.startsWith(`"${want}"`)))?.[0];
         return [k, pick === undefined ? { choice: "none", confidence: 0.9 } : { choice: pick, confidence: 0.95 }];
       }),
     );
@@ -1709,7 +1917,10 @@ async function main(): Promise<number> {
   };
   const warnings: string[] = [];
   const warn = (l: string): void => void warnings.push(l);
-  const noReader: ReaderLink = { run: async () => ({ type: "verbResult", v: 1, id: "none", at: Date.now(), outcome: "noWindow", detail: "no reader in fixture mode" }) };
+  // No native reader here. Its one verb the executor needs for a page task is watchInput (the browser's real key and
+  // pointer input), which a headless browser on no screen never gets: the stand-in answers it ok, so a run reaches the
+  // page engine, whose own guard reports the user's input in the page (D2-04). Every other verb has no window.
+  const noReader: ReaderLink = { run: async (v) => ({ type: "verbResult", v: 1, id: "none", at: Date.now(), outcome: v.kind === "watchInput" ? "ok" : "noWindow", detail: v.kind === "watchInput" ? null : "no reader in fixture mode" }) };
   const store = new Store(join(tmp, "data"));
   // Assigned right below; the host needs a way to reach it before it exists.
   let helper: Helper;
@@ -1821,6 +2032,7 @@ async function main(): Promise<number> {
 
   await checks(e, site);
   await batch2(e, site, tmp, published);
+  await batch5(e, site, published);
   // Batch 3 before the decoy page, which has no control channel to navigate away from.
   await batch3(e, site);
   await batch4(e, site, tmp);
