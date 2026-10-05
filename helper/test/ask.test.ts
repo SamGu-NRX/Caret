@@ -563,13 +563,19 @@ describe("a grounded whole-form scope (B28)", () => {
   /** The Greenhouse replica's text fields, under `groups` headings when given ({ heading: labels }), else under none. */
   const greenhouse = (groups: Record<string, string[]> | null = null, title = "Apply: Software Engineer Intern"): ScreenModel => {
     const labels = ["First Name", "Last Name", "Email", "Phone", "Graduation Date (MM/YYYY)", "LinkedIn Profile"];
+    // A group's key is its heading; "Outer > Inner" nests Inner's group in Outer's, and "Heading #2" is a second
+    // group with the same heading.
+    const groupKey = (g: string): string => `${G}/group:${g.toLowerCase()}~0`;
+    const headingOf = (g: string): string => (g.split(" > ").at(-1) as string).replace(/ #\d+$/u, "");
     const parentOf = (label: string): string => {
       const g = groups === null ? undefined : Object.entries(groups).find(([, ls]) => ls.includes(label))?.[0];
-      return g === undefined ? `${G}/webarea:~0` : `${G}/group:${g.toLowerCase()}~0`;
+      return g === undefined ? `${G}/webarea:~0` : groupKey(g);
     };
+    const outers = [...new Set(Object.keys(groups ?? {}).filter((g) => g.includes(" > ")).map((g) => g.split(" > ")[0] as string))];
     const nodes: Node[] = [
       node(`${G}/webarea:~0`, "AXWebArea", { label: "Apply" }),
-      ...Object.keys(groups ?? {}).map((g) => node(`${G}/group:${g.toLowerCase()}~0`, "AXGroup", { parent: `${G}/webarea:~0`, label: g })),
+      ...outers.map((o) => node(groupKey(o), "AXGroup", { parent: `${G}/webarea:~0`, label: o })),
+      ...Object.keys(groups ?? {}).map((g) => node(groupKey(g), "AXGroup", { parent: g.includes(" > ") ? groupKey(g.split(" > ")[0] as string) : `${G}/webarea:~0`, label: headingOf(g) })),
       ...labels.map((l, i) => field(GKEY(l.toLowerCase()), "", { parent: parentOf(l), label: l, frame: [100, 100 + 30 * i, 200, 20] })),
     ];
     const m = new ScreenModel();
@@ -639,6 +645,20 @@ describe("a grounded whole-form scope (B28)", () => {
     const ref = greenhouse({ "Reference details": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
     const r = await askG("fill in my details", ref, () => "no").run.catch((x: unknown) => x);
     expect((r as AskRefused).message).toBe(SAYS.whichFields);
+  });
+
+  it("asks when the matching heading sits inside another heading (B28 review 6 re-check)", async () => {
+    const nested = greenhouse({ "About you": ["First Name", "Last Name"], "Emergency contact > Contact information": ["Email", "Phone"], Education: ["Graduation Date (MM/YYYY)"], Links: ["LinkedIn Profile"] });
+    const e = await askG("fill in my contact info only", nested, () => "no").run.catch((x: unknown) => x);
+    expect((e as AskRefused).message).toBe(SAYS.whichFields);
+    expect((e as AskRefused).detail).toContain("Emergency contact");
+  });
+
+  it("asks when two parts of the form share the matching heading (B28 review 6 re-check)", async () => {
+    const twice = greenhouse({ "Contact information": ["First Name", "Last Name"], "Contact information #2": ["Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
+    const d = await askG("just do my contact info up top", twice, () => "no").run.catch((x: unknown) => x);
+    expect((d as AskRefused).message).toBe(SAYS.whichFields);
+    expect((d as AskRefused).detail).toContain("more than one part");
   });
 
   it("asks which fields for a section phrase in any sentence but a section request, even when Jev would say yes", async () => {

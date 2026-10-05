@@ -7,10 +7,11 @@
 //   - ask or refuse: a PlannerError whose sentence code wrote.
 // Nothing here acts.
 import type { ScreenModel, WindowState } from "../model.ts";
-import type { FillField, FillProposal } from "../protocol.ts";
+import type { FillField, FillProposal, Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
 import { FillError, memoryRefOf, proposeFill } from "../fill/fill.ts";
+import { fieldLabelText, sectionNode } from "../fill/descriptor.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
 import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, type PlanDraft, type PlannerMemory } from "./planner.ts";
@@ -287,6 +288,17 @@ function sectionScope(instruction: string, checked: FillChecked, snap: IntentSna
     const has = snap.sections.length === 0 ? "the form has no sections" : `the form's sections are ${snap.sections.map((s) => `'${s.name}'`).join(", ")}`;
     throw new SaidError("unsure", SAYS.whichFields, `the instruction names a part of the form by ${said}, and ${why ?? "no one section means that"} (${has})`);
   }
+  // The heading is matched by its text, and the text says nothing of whose it is when it sits inside another heading
+  // ("Contact information" inside "Emergency contact"), or which part is meant when two parts share it. Both ask.
+  const w = snap.window;
+  const heads = new Map(snap.fields.filter((f) => f.section === section).map((f) => {
+    const n = w.nodes.get(f.key);
+    const h = n === undefined ? null : sectionNode(w, n);
+    return [h?.key ?? null, h] as const;
+  }));
+  if (heads.size !== 1 || heads.has(null)) throw new SaidError("unsure", SAYS.whichFields, `${said} means '${section}', and more than one part of the form is headed that`);
+  const outer = sectionNode(w, [...heads.values()][0] as Node);
+  if (outer !== null) throw new SaidError("unsure", SAYS.whichFields, `${said} means '${section}', which sits inside '${fieldLabelText(outer.label) ?? ""}' and may be someone else's`);
   return narrowed(checked, (f) => f.section === section, () => new SaidError("nothingToDo", SAYS.nothingToDo, `${said} means the section '${section}', which has no empty field Caret may type`));
 }
 
