@@ -17,6 +17,12 @@ export const WindowSel = z
      * reader read one, so two windows of one app with one title ("Untitled") are told apart (B21 review).
      */
     number: z.number().int().positive().optional(),
+    /**
+     * H10: only a page engine's window (WindowRef.kind "page") matches. A browser's page and the reader's window of the
+     * same browser share its bundle id and title, and the page has no window number, so without this a plan for a
+     * page matched both and stopped as ambiguous. Absent: any window, as before.
+     */
+    page: z.literal(true).optional(),
   })
   .refine((w) => w.title !== undefined || w.titleStartsWith !== undefined, { message: "a window needs title or titleStartsWith" });
 export type WindowSel = z.infer<typeof WindowSel>;

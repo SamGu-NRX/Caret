@@ -15,6 +15,7 @@ import {
   HOST_OFFER_TYPES,
   HelperMessage,
   PROTOCOL_VERSION,
+  fillFieldTask,
   type ActivityReply,
   type ActivityRequest,
   type FillAll,
@@ -94,6 +95,7 @@ import { planAsk } from "./planner/ask.ts";
 import { fillSays, SaidError, SAYS, saysFor } from "./planner/says.ts";
 import { planAttach } from "./planner/attach.ts";
 import { ConfirmedFiles } from "./engines/attach.ts";
+import { isPageWindow } from "./engines/windows.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
@@ -159,6 +161,13 @@ export interface HelperOptions {
    * such a browser then asks for no fill: that browser's pages are filled from the page engine (engines/page-focus.ts).
    */
   pageCovers?: (pid: number) => boolean;
+  /**
+   * H10: the page window of the tab the user is in, in this browser process, from a walk made now (engines/front.ts):
+   * the active tab of the window the browser last focused. Null when no engine can say: none is connected, the site is
+   * one Caret is off for, no frame answered, or that tab is not active in a focused window. Ask plans in it, never in
+   * Accessibility's view of the browser, which shows no web content (evidence/host/h10/probe).
+   */
+  pageFront?: (pid: number) => Promise<string | null>;
   /**
    * Where calendar end states are written: a port, "reader" for the reader's EventKit adapter over the
    * same link the executor acts through (ReaderCalendar), or null for none.
@@ -1185,6 +1194,16 @@ export class Helper {
       if (!(e instanceof PlannerError)) throw e;
       return this.planFailed(m.requestId, e.code, e.message, e instanceof SaidError ? e.message : saysFor(e.code));
     }
+    // H10: in a browser a page engine covers, Ask reads the page of the tab the user is in, walked now. The reader's
+    // window of the same browser shows only its toolbar, so planning there said "This form has no field for that"
+    // (Q2's VM run); the model's most recent focus could name either, as both belong to the browser's process.
+    const browser = windowId === null ? this.model.frontmostPid : (this.model.windows.get(windowId)?.app.pid ?? null);
+    if (browser !== null && (windowId === null || !isPageWindow(windowId)) && this.opts.pageCovers?.(browser) === true) {
+      const page = (await this.opts.pageFront?.(browser)) ?? null;
+      if (page === null) return this.planFailed(m.requestId, "noWindow", `the page engine for process ${browser} could not read the tab the user is in`, SAYS.pageUnread);
+      this.opts.store.count("plan.pageWindow", 1);
+      windowId = page;
+    }
     return this.planAndPropose(m.requestId, m.instruction, windowId, undefined, from, canAsk, canGoal);
   }
 
@@ -1606,17 +1625,22 @@ export class Helper {
    */
   async handleFillAll(m: FillAll, session?: string): Promise<TaskResult | null> {
     if (this.mode !== "live") return this.refuseAccept(m.proposalId, "the helper is in shadow mode and does not act");
+    // H10: with fieldKey, one field of the proposal, as its own task; the proposal's other fields stay for their own Tab.
+    const taskId = m.fieldKey === undefined ? m.proposalId : fillFieldTask(m.proposalId, m.fieldKey);
     const kept = this.proposals.get(m.proposalId);
-    if (kept === undefined) return this.refuseAccept(m.proposalId, "no such fill proposal, or it expired");
-    if (this.executor.has(m.proposalId)) return this.refuseAccept(m.proposalId, "this proposal was already filled");
-    const p = writtenFields(kept.proposal, this.model.windows.get(kept.windowId));
-    if (p.fields.length === 0) return this.refuseAccept(m.proposalId, "Caret writes none of this proposal's fields");
+    if (kept === undefined) return this.refuseAccept(taskId, "no such fill proposal, or it expired");
+    if (this.executor.has(taskId)) return this.refuseAccept(taskId, m.fieldKey === undefined ? "this proposal was already filled" : "this field was already filled");
+    // A whole Fill all after one field went in would find that field no longer empty; it is refused here by name.
+    if (m.fieldKey === undefined && kept.proposal.fields.some((f) => this.executor.has(fillFieldTask(m.proposalId, f.key)))) return this.refuseAccept(taskId, "a field of this proposal was already filled on its own");
+    const all = writtenFields(kept.proposal, this.model.windows.get(kept.windowId));
+    const p = m.fieldKey === undefined ? all : { ...all, fields: all.fields.filter((f) => f.key === m.fieldKey) };
+    if (p.fields.length === 0) return this.refuseAccept(taskId, m.fieldKey === undefined ? "Caret writes none of this proposal's fields" : `Caret writes no field ${m.fieldKey} of this proposal`);
     const stale = recheckFill(this.model, p, this.aboutNow);
-    if (stale !== null) return this.refuseAccept(m.proposalId, `${stale}; nothing was written`);
-    this.bindNew(m.proposalId, session);
+    if (stale !== null) return this.refuseAccept(taskId, `${stale}; nothing was written`);
+    this.bindNew(taskId, session);
     const { plan, slots } = fillPlan(this.model, p);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
-    return this.runFrom("fill", m.proposalId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+    return this.runFrom("fill", taskId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
   }
 
   /** Esc on running work: a stop for the task the offer started. */

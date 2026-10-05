@@ -20,6 +20,7 @@ import { loadJevKey, makeJevClient } from "./fill/jev.ts";
 import { SocketReaderLink } from "./executor/means.ts";
 import { defaultPageSocket, pageHost, type PageHost } from "./engines/host.ts";
 import { wirePageEngines } from "./engines/wire.ts";
+import { pageFront } from "./engines/front.ts";
 import { makeWriterPort, type WriterPort } from "./writer/port.ts";
 import { ASK_MAKER, INTENT_ROUTE, WRITER_ROUTE } from "./writer/config.ts";
 import { readKey } from "./writer/env.ts";
@@ -142,7 +143,7 @@ helper = new Helper({
   ...(args["fill-cutoff"] === undefined ? {} : { fillCutoff: Number(args["fill-cutoff"]) }),
   publish: (m) => server?.publish(m),
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
-  ...(pages === null ? {} : { readerLink: pages.link, readerAnswers: readerSocket, pageCovers: (pid: number) => pages.registry.forBrowser(pid) !== undefined, pageDocument: (id: string) => pages.registry.documentOf(id) }),
+  ...(pages === null ? {} : { readerLink: pages.link, readerAnswers: readerSocket, pageCovers: (pid: number) => pages.registry.forBrowser(pid) !== undefined, pageFront: (pid: number) => pageFront(pages.registry, pid), pageDocument: (id: string) => pages.registry.documentOf(id) }),
   // Event cards add to the reader's EventKit adapter, which answers only when started with --calendar-test.
   calendar: "reader",
   // The code-mode plan writer (B24), when a Groq key is configured; without one, Ask works as before.

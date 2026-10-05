@@ -239,6 +239,11 @@ async function walk(id: string, tabId: number | null): Promise<void> {
   missing.push(...composed.missing);
   if (kept.length === 0) return result(id, { outcome: "noElement", detail: `no frame of tab ${tab.id} answered: ${missing.map((m) => m.reason).join("; ")}` });
   const focusedFrame = kept.filter((k) => k.r.focused !== null).sort((a, b) => Number(b.r.hasFocus) - Number(a.r.hasFocus))[0];
+  // H10: where the tab's viewport is on screen, so the helper can give each control a screen frame. From the top frame
+  // only: a child frame reports its own viewport, and the window is the same for every frame.
+  const topReport = answered.find((x) => x.f.frameId === 0)?.r;
+  const zoom = await chrome.tabs.getZoom(tab.id).catch(() => null);
+  const view = topReport !== undefined && Array.isArray(topReport.screen) && zoom !== null && zoom > 0 ? { window: topReport.screen, viewport: topReport.viewport, zoom } : null;
   send({
     type: "pageSnapshot",
     v: 1,
@@ -265,6 +270,7 @@ async function walk(id: string, tabId: number | null): Promise<void> {
     })),
     missing: missing.sort((a, b) => a.frameId - b.frameId),
     focused: focusedFrame?.r.focused === undefined || focusedFrame.r.focused === null ? null : { frameId: focusedFrame.f.frameId, ...focusedFrame.r.focused },
+    view,
   });
   result(id, { outcome: "ok", detail: null });
 }
@@ -399,6 +405,30 @@ chrome.runtime.onMessage.addListener((m: unknown, sender) => {
   })();
   return false;
 });
+
+/**
+ * H10: the tab the user is in changed (another tab selected, another browser window focused) or its zoom changed. The
+ * helper walks the new active tab as for a focus report, so the host learns which field, if any, has focus there now,
+ * rather than keeping the field of a tab the user left. Sent only for the active tab of the focused window, and not
+ * for a site Caret is off for.
+ */
+async function frontTabChanged(): Promise<void> {
+  if (engine === null) return;
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => [] as chrome.tabs.Tab[]);
+  const win = await chrome.windows.getLastFocused().catch(() => undefined);
+  if (tab?.id === undefined || win === undefined || !win.focused || tab.windowId !== win.id) return;
+  const top = frameOrigin((await chrome.webNavigation.getAllFrames({ tabId: tab.id })) ?? [], 0);
+  if (top !== null && sitesOff.has(top)) return;
+  const now = Date.now();
+  if (now - (lastFocus.get(tab.id) ?? 0) < FOCUS_EVERY_MS) return;
+  lastFocus.set(tab.id, now);
+  send({ type: "pageFocus", v: 1, at: now, tabId: tab.id, frameId: 0 });
+}
+chrome.tabs.onActivated.addListener(() => void frontTabChanged());
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  if (windowId !== chrome.windows.WINDOW_ID_NONE) void frontTabChanged();
+});
+chrome.tabs.onZoomChange.addListener(() => void frontTabChanged());
 
 /**
  * The user pressed a pointer or a key in a frame this worker armed (W3). Accepted only from this extension's content

@@ -22,6 +22,7 @@ import { classifyPress, type RiskClass } from "./risk.ts";
 import type { JournalPort, JournalRecord, LedgerEntry, PendingAct } from "./journal.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
+import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 
 export interface ExecutorDeps {
   model: ScreenModel;
@@ -1355,7 +1356,8 @@ export class Executor {
         (sel.bundleId === undefined || w.app.bundleId === sel.bundleId) &&
         (sel.title === undefined || w.window.title === sel.title) &&
         (sel.titleStartsWith === undefined || w.window.title.startsWith(sel.titleStartsWith)) &&
-        (sel.number === undefined || w.window.number === sel.number),
+        (sel.number === undefined || w.window.number === sel.number) &&
+        (sel.page === undefined || w.window.kind === PAGE_WINDOW_KIND),
     );
     if (hits.length === 0) throw StepStop.stop("windowGone", `no window matches ${k}`, "screen");
     if (hits.length > 1) throw StepStop.stop("ambiguous", `${hits.length} windows match ${k}; the plan must name one`);

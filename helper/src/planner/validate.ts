@@ -18,6 +18,7 @@ import { describeField } from "../fill/descriptor.ts";
 import { misfit } from "../fill/kinds.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
+import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 
 export class PlannerError extends Error {
   readonly code: PlanErrorCode;
@@ -134,7 +135,8 @@ function bindWindow(model: ScreenModel, sel: WindowSel, at: string): WindowState
       (sel.bundleId === undefined || w.app.bundleId === sel.bundleId) &&
       (sel.title === undefined || w.window.title === sel.title) &&
       (sel.titleStartsWith === undefined || w.window.title.startsWith(sel.titleStartsWith)) &&
-      (sel.number === undefined || w.window.number === sel.number),
+      (sel.number === undefined || w.window.number === sel.number) &&
+      (sel.page === undefined || w.window.kind === PAGE_WINDOW_KIND),
   );
   const named = sel.title ?? sel.titleStartsWith ?? "";
   if (hits.length === 0) throw new PlannerError("unknownWindow", `${at}: no open window matches '${named}'`);

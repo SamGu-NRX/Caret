@@ -76,6 +76,7 @@ function walk(reg: Registry): FrameReport {
     // frame id for an element (chrome.runtime.getFrameId is undefined there in Chrome 154).
     iframes: [...document.querySelectorAll("iframe")].filter((f) => visible(f) && contentBox(f)[0] > 1 && contentBox(f)[1] > 1).map((f) => ({ src: srcOf(f), rect: r(f), inner: contentBox(f) })),
     viewport: [window.innerWidth, window.innerHeight],
+    screen: [window.screenX, window.screenY, window.outerWidth, window.outerHeight],
     excluded: out.excluded,
     truncated: out.truncated,
     focused,
@@ -139,16 +140,25 @@ if (globalThis.__caretContent === undefined) {
   /** Assumed: one report per burst of focus changes is enough for the helper to walk once. */
   const FOCUS_EVERY_MS = 150;
   let focusTimer: ReturnType<typeof setTimeout> | null = null;
+  const focusMoved = (): void => {
+    if (focusTimer !== null || document.visibilityState !== "visible" || !document.hasFocus()) return;
+    focusTimer = setTimeout(() => {
+      focusTimer = null;
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      const m: FocusMoved = { caret: 1, op: "focusMoved" };
+      chrome.runtime.sendMessage(m).catch(() => {});
+    }, FOCUS_EVERY_MS);
+  };
+  // focusout too: focus that leaves a field for no other field (a click on the page's background) sends no focusin, and
+  // the host would keep a fill offer drawn at a field the user left (H10).
+  addEventListener("focusin", focusMoved, { capture: true, passive: true });
+  addEventListener("focusout", focusMoved, { capture: true, passive: true });
+  // H10: a scroll moves the focused field on screen, so the host's offer drawn at it must move with it. Only while a
+  // control has focus: a page read with nothing focused has no offer to move.
   addEventListener(
-    "focusin",
+    "scroll",
     () => {
-      if (focusTimer !== null || document.visibilityState !== "visible" || !document.hasFocus()) return;
-      focusTimer = setTimeout(() => {
-        focusTimer = null;
-        if (document.visibilityState !== "visible" || !document.hasFocus()) return;
-        const m: FocusMoved = { caret: 1, op: "focusMoved" };
-        chrome.runtime.sendMessage(m).catch(() => {});
-      }, FOCUS_EVERY_MS);
+      if (deepActiveElement() !== null) focusMoved();
     },
     { capture: true, passive: true },
   );

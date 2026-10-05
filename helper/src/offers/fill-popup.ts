@@ -15,6 +15,7 @@ import { describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fil
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import { offerField } from "./field.ts";
+import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 
 /** Rows the fields block, and the block of fields the user sets, list before "and N more". Assumed, not measured. */
 export const MAX_FILL_ROWS = 5;
@@ -261,7 +262,7 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory) }),
       end: {
         kind: "valueEquals" as const,
-        window: { bundleId: p.bundleId, title: "{{title}}" },
+        window: { bundleId: p.bundleId, title: "{{title}}", ...(w?.window.kind === PAGE_WINDOW_KIND ? { page: true as const } : {}) },
         target: { key: f.key, describe: `the {{l${i}}} field` },
         value: `{{v${i}}}`,
       },

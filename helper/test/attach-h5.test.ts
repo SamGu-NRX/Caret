@@ -69,7 +69,7 @@ describe("planAttach", () => {
   it("plans one attach step into the file input the instruction names", async () => {
     const model = await walked([email, file("e4", "Resume/CV", 30), file("e5", "Cover Letter", 60)]);
     const d = planAttach("attach my resume", model, W, "plan-1");
-    expect(d?.plan.steps).toEqual([{ says: "Resume/CV holds your resume", end: { kind: "fileAttached", window: { bundleId: chrome.bundleId, title: "Apply: Synthetic Role" }, target: { key: "f0/form[apply]/button:resume/cv~0", describe: "the Resume/CV input" }, wants: "your resume" } }]);
+    expect(d?.plan.steps).toEqual([{ says: "Resume/CV holds your resume", end: { kind: "fileAttached", window: { bundleId: chrome.bundleId, title: "Apply: Synthetic Role", page: true }, target: { key: "f0/form[apply]/button:resume/cv~0", describe: "the Resume/CV input" }, wants: "your resume" } }]);
     expect(d?.checked.attach).toMatchObject({ step: 0, label: "Resume/CV", wants: "your resume" });
     expect(planAttach("upload my cover letter", model, W, "plan-2")?.checked.attach?.label).toBe("Cover Letter");
     // The proposal says what it attaches, names no press, and Tab says what it does.

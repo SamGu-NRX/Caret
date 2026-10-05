@@ -7,7 +7,7 @@ import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type ActGrant, type ActRe
 import type { ReaderLink } from "../executor/means.ts";
 import type { EngineSession } from "./session.ts";
 import { ConfirmedFiles } from "./attach.ts";
-import { pageWindowId, parsePageWindow } from "./windows.ts";
+import { PAGE_WINDOW_KIND, pageWindowId, parsePageWindow } from "./windows.ts";
 
 /**
  * The reader role a page control reads as, so plans, the planner and fill (fill/controls.ts) see pages as they see
@@ -128,6 +128,34 @@ function subroleOf(c: PageControl): string | undefined {
 }
 
 /**
+ * A rect of the top frame's viewport (CSS pixels, PageRect) in screen points, top-left origin (Frame), or null when the
+ * walk did not say where the viewport is (PageSnapshot.view).
+ *
+ * The viewport is taken to fill the window's width from its left edge and to end at its bottom edge, with the browser's
+ * own toolbars, tab strip and infobars above it. Measured in the rig VM (evidence/host/h10/probe): Chrome for Testing's
+ * page read the window server's own frame as its screen position and outer size, and the space above the viewport was
+ * outerHeight − innerHeight × zoom (143 points, with Chrome for Testing's infobar) at 100% and at 125% zoom alike. That
+ * space is not a constant: H5 assumed an 88-point toolbar. Developer tools docked beside or below the page break the
+ * edges assumed here; a fill offer would then be drawn off its field. Not measured.
+ */
+export function screenRect(view: NonNullable<PageSnapshot["view"]>, rect: readonly [number, number, number, number]): [number, number, number, number] {
+  const [wx, wy, , wh] = view.window;
+  const z = view.zoom;
+  const top = wy + wh - view.viewport[1] * z;
+  return [wx + rect[0] * z, top + rect[1] * z, rect[2] * z, rect[3] * z];
+}
+
+/** The smallest rect holding every one of `rects`, or null for none. */
+function union(rects: readonly (readonly [number, number, number, number])[]): [number, number, number, number] | null {
+  if (rects.length === 0) return null;
+  const x0 = Math.min(...rects.map((r) => r[0]));
+  const y0 = Math.min(...rects.map((r) => r[1]));
+  const x1 = Math.max(...rects.map((r) => r[0] + r[2]));
+  const y1 = Math.max(...rects.map((r) => r[1] + r[3]));
+  return [x0, y0, x1 - x0, y1 - y0];
+}
+
+/**
  * The window snapshot the screen model takes for a tab: one AXWebArea per frame, its controls below it.
  *
  * A press group (W4: Ashby's Yes/No questions built from toggle buttons) reads as Chrome shows a radio group: an AXGroup
@@ -143,8 +171,16 @@ function subroleOf(c: PageControl): string | undefined {
 export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: number): Snapshot {
   const nodes: Node[] = [];
   let focusedKey: string | null = null;
+  const view = s.view ?? null;
   for (const f of s.frames) {
-    nodes.push({ key: frameKey(f.frameId), parent: f.parentFrameId < 0 ? null : frameKey(f.parentFrameId), role: "AXWebArea", label: f.title || `${f.origin}${f.path}` });
+    // H10: screen frames for the top frame's nodes only. A child frame's rects are in its own viewport, whose place in
+    // the page this walk does not pin down; its controls have no frame, so the host draws no offer at them.
+    const onScreen = view !== null && f.parentFrameId < 0 ? (r: readonly [number, number, number, number]) => ({ frame: screenRect(view, r) }) : () => ({});
+    const groupFrame = (members: readonly PageControl[]) => {
+      const u = view !== null && f.parentFrameId < 0 ? union(members.map((m) => screenRect(view, m.rect))) : null;
+      return u === null ? {} : { frame: u };
+    };
+    nodes.push({ key: frameKey(f.frameId), parent: f.parentFrameId < 0 ? null : frameKey(f.parentFrameId), role: "AXWebArea", label: f.title || `${f.origin}${f.path}`, ...(view !== null && f.parentFrameId < 0 ? onScreen([0, 0, view.viewport[0], view.viewport[1]]) : {}) });
     const groups = new Set<string>();
     for (const c of f.controls) {
       let parent = frameKey(f.frameId);
@@ -152,8 +188,9 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         parent = radioGroupKey(f.frameId, c);
         if (!groups.has(parent)) {
           groups.add(parent);
-          const checked = radioMembers(f, parent).find((m) => m.checked === true);
-          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", ...(c.group === undefined ? {} : { label: c.group.name }), value: checked?.name ?? "", editable: true });
+          const members = radioMembers(f, parent);
+          const checked = members.find((m) => m.checked === true);
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", ...(c.group === undefined ? {} : { label: c.group.name }), value: checked?.name ?? "", editable: true, ...groupFrame(members) });
         }
       }
       const press = isPressOption(c);
@@ -162,7 +199,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         if (!groups.has(parent)) {
           groups.add(parent);
           const options = f.controls.filter((o) => isPressOption(o) && o.group.id === c.group.id);
-          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup, label: c.group.name, value: pressedValue(options), editable: true });
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup, label: c.group.name, value: pressedValue(options), editable: true, ...groupFrame(options) });
         }
       }
       const states: NodeState[] = [];
@@ -191,6 +228,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         // the executor never reaches their write.
         ...(VALUE_KINDS.has(c.kind) || box ? { editable: true as const } : {}),
         ...(states.length > 0 ? { states } : {}),
+        ...onScreen(c.rect),
       });
       // A native select's options, as the AXMenuItem children fill reads a select's options from (controls.ts), so a
       // hand-off for it can name one. Chrome's Accessibility shows only the selected one. An option whose value is
@@ -207,7 +245,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
     at: s.at,
     reason: "request",
     app: session.info.browser,
-    window: { windowId: pageWindowId(session.info.engine, s.tabId), kind: "page", title: s.title, frame: null },
+    window: { windowId: pageWindowId(session.info.engine, s.tabId), kind: PAGE_WINDOW_KIND, title: s.title, frame: view === null ? null : [...view.window] },
     // The selected tab of a background browser window is not where the user is (W3): only the selected tab of the
     // window Chrome last focused counts, and the model's frontmost app (the reader's) decides whether that browser does.
     focused: s.active && s.inFocusedWindow,

@@ -74,6 +74,8 @@ export const SAYS = {
   fileUnreadable: "Caret couldn't read that file, so it attached nothing. Choose another one.",
   fileTooBig: "That file is over 10 MB, more than Caret attaches. Choose a smaller one.",
   noReader: "Caret can't read the screen right now, so it can't plan that.",
+  // H10: the browser is in front, its page engine is connected, and the tab the user is in could not be read.
+  pageUnread: "Caret can't read this page. Reload it and ask again.",
   questionGone: "That question has expired. Ask again.",
 } as const;
 

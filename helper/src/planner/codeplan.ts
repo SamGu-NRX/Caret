@@ -28,6 +28,7 @@ import type { JevRequest } from "../fill/jev.ts";
 import { PlannerError, validatePlan, type PlanContext } from "./validate.ts";
 import type { MemoryValue } from "./trace.ts";
 import type { Snippet } from "../privacy.ts";
+import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 
 export interface CodePlanOptions {
   writer: WriterPort;
@@ -214,7 +215,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   }), o.askJev, ledger);
   const unvetoed = kept.filter((f) => !dropped.has(f.ref));
   if (unvetoed.length === 0) throw new PlannerError("unsure", "Jev did not confirm any value the plan program chose for its field");
-  const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }) };
+  const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const } : {}) };
   const slots: Record<string, string> = {};
   const slotNames: Record<string, string> = {};
   const seenTargets = new Set<string>();

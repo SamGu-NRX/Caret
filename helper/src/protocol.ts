@@ -465,8 +465,20 @@ export const FillAll = z.object({
   v: z.literal(PROTOCOL_VERSION),
   proposalId: z.string().min(1),
   at: ms,
+  /**
+   * H10: Tab on one field of a page proposal. The host cannot write a page field itself (Chrome shows Accessibility no
+   * web content), so it asks for this field only: the same transaction, rechecks and undo, for this one field, as the
+   * task fillFieldTask(proposalId, fieldKey). Each field of a proposal can be run once; a Fill all of the whole
+   * proposal is still refused after one, as after a Tab into a native form (the host stops offering ⌘1 then).
+   */
+  fieldKey: z.string().min(1).optional(),
 });
 export type FillAll = z.infer<typeof FillAll>;
+
+/** The task a `fillAll` with `fieldKey` runs as (H10): the proposal's id, a slash, the field's key. The host forms the same id. */
+export function fillFieldTask(proposalId: string, fieldKey: string): string {
+  return `${proposalId}/${fieldKey}`;
+}
 
 /** Runs a plan (executor/schema.ts) with its slots filled. Progress comes back as taskProgress. */
 export const RunPlan = z.object({
@@ -1898,6 +1910,31 @@ export const PageEngineState = z.object({
 export type PageEngineState = z.infer<typeof PageEngineState>;
 
 /**
+ * H10: the field the user is in on a page, for the host, which cannot read it: Chrome shows Accessibility no web
+ * content and no focused element while a page field has focus (evidence/host/h10/probe). Sent after each walk of the
+ * tab the user is in (engines/page-focus.ts): when focus moves in it, when another tab or browser window comes to the
+ * front, and when the page scrolls or zooms while a control has focus. `key` is the focused control's node key in the
+ * page window, the key fill proposals and offers name; null when no control of that tab has focus, or the tab is not
+ * the user's. `frame` is the control in screen points (page-link screenRect), null when the walk did not say where the
+ * viewport is. The browser is `app`, the process the bridge was launched by, never one the page names. No value, no
+ * label: `empty` says only whether the control holds any text.
+ */
+export const PageField = z.object({
+  type: z.literal("pageField"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  app: AppRef,
+  windowId: z.string().min(1),
+  title: z.string(),
+  key: z.string().min(1).nullable(),
+  role: z.string(),
+  editable: z.boolean(),
+  empty: z.boolean(),
+  frame: Frame.nullable(),
+});
+export type PageField = z.infer<typeof PageField>;
+
+/**
  * One step of a goal as the user reads it: what it does, and whether Caret does it or hands it over. `drafted` (B30) is
  * present only on a write of text Caret composed rather than copied: the whole text, which `says` also holds after the
  * field's name. A host shows it marked as Caret's, with an Edit action; it is written only on acceptance.
@@ -1992,7 +2029,7 @@ export type GoalProgress = z.infer<typeof GoalProgress>;
 
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
@@ -2169,6 +2206,20 @@ export const PageSnapshot = z.object({
   missing: z.array(z.object({ frameId: z.number().int().nonnegative(), reason: z.string() })),
   /** The focused control and its text and selection, when one has focus. */
   focused: z.object({ frameId: z.number().int().nonnegative(), id: z.string().min(1), selection: z.tuple([z.number().int(), z.number().int()]).nullable() }).nullable(),
+  /**
+   * H10: where the tab's viewport is on screen, from the top frame. `window`: the browser window's outer frame as the
+   * page reads it (screenX, screenY, outerWidth, outerHeight), in screen points, top-left origin. `viewport`: the top
+   * frame's innerWidth and innerHeight in CSS pixels. `zoom`: the tab's page zoom (chrome.tabs.getZoom). Null or absent
+   * from a worker before H10, or when the top frame did not answer; the page's controls then have no screen frame.
+   */
+  view: z
+    .object({
+      window: z.tuple([z.number(), z.number(), z.number().positive(), z.number().positive()]),
+      viewport: z.tuple([z.number().nonnegative(), z.number().nonnegative()]),
+      zoom: z.number().positive(),
+    })
+    .nullable()
+    .optional(),
 });
 export type PageSnapshot = z.infer<typeof PageSnapshot>;
 

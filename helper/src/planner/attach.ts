@@ -13,6 +13,7 @@ import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
 import { SAYS, SaidError } from "./says.ts";
 import { validatePlan } from "./validate.ts";
 import type { PlanDraft } from "./planner.ts";
+import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 
 /** The files people attach to forms, the words that name each, and how the slip says it. */
 const KINDS: readonly { words: RegExp; wants: string }[] = [
@@ -54,7 +55,7 @@ export function planAttach(instruction: string, model: ScreenModel, windowId: st
   const named = inputs.filter((n) => kind.words.test(n.label ?? ""));
   const target = named.length === 1 ? named[0] : inputs.length === 1 ? inputs[0] : undefined;
   if (target === undefined) throw new SaidError("ambiguousTarget", SAYS.whichField, `${inputs.length} file inputs in '${w.window.title}', and ${named.length} of their labels name ${kind.wants}`);
-  const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }) };
+  const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const } : {}) };
   const label = (target.label ?? "").trim();
   const plan: Plan = {
     id: offerKey,

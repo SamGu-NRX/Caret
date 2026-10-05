@@ -2,6 +2,9 @@
 // id, so window ids from an earlier session match nothing, as the reader's do after readerRestarted().
 const PREFIX = "page:";
 
+/** A page engine's window's kind (WindowRef.kind), which no reader window has. */
+export const PAGE_WINDOW_KIND = "page";
+
 export function pageWindowId(engine: string, tabId: number): string {
   return `${PREFIX}${engine}:${tabId}`;
 }

@@ -118,6 +118,12 @@ export interface FrameReport {
   iframes: { src: string; rect: Rect; inner: [number, number] }[];
   /** The frame's own viewport, [innerWidth, innerHeight]: 0 by 0 inside an iframe its embedder hides with display:none. */
   viewport: [number, number];
+  /**
+   * H10: the browser window's outer frame as the page sees it, [screenX, screenY, outerWidth, outerHeight], in screen
+   * points with a top-left origin. Measured in the rig VM (evidence/host/h10/probe): Chrome for Testing reported the
+   * window server's own frame for its window here, at 100% and 125% page zoom alike. The worker reads the top frame's.
+   */
+  screen: [number, number, number, number];
   excluded: Partial<Record<PageExclusion, number>>;
   truncated: boolean;
   focused: { id: string; selection: [number, number] | null } | null;

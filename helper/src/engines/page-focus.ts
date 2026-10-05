@@ -3,7 +3,13 @@
 // window in the screen model, and hands the helper the same focus message the reader sends for a native field: the
 // page window and the focused control's node. The helper then asks for a fill exactly as it does on a native focus
 // (Helper.handleReader "focus"), so a form in Chrome is filled from the page engine, never from Accessibility.
-import { PROTOCOL_VERSION, type Focus, type PageFocusMoved } from "../protocol.ts";
+//
+// H10: each walk also tells the host which field has focus there and where it is on screen (pageField), because the
+// host cannot see it: Chrome shows Accessibility no web content (evidence/host/h10/probe). The worker reports focus
+// moving, focus leaving, a scroll or zoom while a control has focus, and another tab or window coming to the front, so
+// the record follows the field. The helper's own focus message goes out only when the field changed: a scroll is no
+// new focus, and must not ask for a fill again.
+import { PROTOCOL_VERSION, type Focus, type PageField, type PageFocusMoved } from "../protocol.ts";
 import type { ScreenModel } from "../model.ts";
 import type { EngineSession } from "./session.ts";
 import { pageWindowId } from "./windows.ts";
@@ -12,6 +18,8 @@ export interface PageFocusOptions {
   model: ScreenModel;
   /** Hands the helper a focus message (Helper.handleReader). */
   focus: (m: Focus) => void;
+  /** Tells consumers which page field has focus (H10); absent in tests that need only the helper's focus. */
+  publish?: (m: PageField) => void;
   /** Tests and evals that play the user without a reader (Helper allowBackgroundFocus): walk whatever the browser's place. */
   allowBackground?: boolean;
   warn: (line: string) => void;
@@ -21,6 +29,8 @@ export class PageFocus {
   private readonly opts: PageFocusOptions;
   /** Tabs being walked, and whether another report came meanwhile (then one more walk follows). */
   private readonly walking = new Map<string, boolean>();
+  /** The last focus handed to the helper, per browser process: "windowId key". */
+  private readonly lastFocus = new Map<number, string>();
 
   constructor(opts: PageFocusOptions) {
     this.opts = opts;
@@ -54,20 +64,46 @@ export class PageFocus {
     }
   }
 
+  /** The host's record of the field the user is in on this tab: `key` null for none. */
+  private tell(session: EngineSession, windowId: string, title: string, at: number, n: { key: string; role: string; editable: boolean; empty: boolean; frame: PageField["frame"] } | null): void {
+    this.opts.publish?.({
+      type: "pageField",
+      v: PROTOCOL_VERSION,
+      at,
+      app: session.info.browser,
+      windowId,
+      title,
+      key: n?.key ?? null,
+      role: n?.role ?? "",
+      editable: n?.editable ?? false,
+      empty: n?.empty ?? true,
+      frame: n?.frame ?? null,
+    });
+  }
+
   private async walkAndFocus(session: EngineSession, tabId: number): Promise<void> {
     const a = await session.command({ kind: "pageWalk", tabId });
+    const windowId = pageWindowId(session.info.engine, tabId);
     if (a.result.outcome !== "ok" || a.snapshot === null) {
       if (a.result.outcome !== "siteOff") this.opts.warn(`page focus: walking tab ${tabId} gave ${a.result.outcome}${a.result.detail === null ? "" : `: ${a.result.detail}`}`);
-      return;
+      // A tab Caret cannot read (a site it is off for, a page with no frame that answered) has no field of Caret's.
+      this.lastFocus.delete(session.info.browser.pid);
+      return this.tell(session, windowId, "", Date.now(), null);
     }
     // Only the active tab of the focused window counts: the worker sent the report for it, and the walk shows it still is.
     // A background window's selected tab is active too, so the window must be the one Chrome last focused (W3).
     if (!a.snapshot.active || !a.snapshot.inFocusedWindow) return;
-    const windowId = pageWindowId(session.info.engine, tabId);
     const w = this.opts.model.windows.get(windowId);
-    if (w === undefined || w.focusedKey === null) return;
-    const n = w.nodes.get(w.focusedKey);
-    if (n === undefined) return;
+    const n = w === undefined || w.focusedKey === null ? undefined : w.nodes.get(w.focusedKey);
+    const pid = session.info.browser.pid;
+    if (w === undefined || n === undefined) {
+      this.lastFocus.delete(pid);
+      return this.tell(session, windowId, a.snapshot.title, a.snapshot.at, null);
+    }
+    this.tell(session, windowId, w.window.title, a.snapshot.at, { key: n.key, role: n.role, editable: n.editable === true, empty: (n.value ?? "") === "", frame: n.frame ?? null });
+    const said = `${windowId} ${n.key}`;
+    if (this.lastFocus.get(pid) === said) return;
+    this.lastFocus.set(pid, said);
     this.opts.focus({
       type: "focus",
       v: PROTOCOL_VERSION,
