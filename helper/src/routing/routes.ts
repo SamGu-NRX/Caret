@@ -5,6 +5,7 @@
 // checks, and acting still needs the user's acceptance and the executor's grant.
 import type { AskRoute } from "../planner/intent.ts";
 import type { WindowState } from "../model.ts";
+import type { ConsentClaim } from "./consent.ts";
 
 export const OUTCOMES = ["abstain", "write", "ask", "act"] as const;
 export type Outcome = (typeof OUTCOMES)[number];
@@ -54,6 +55,11 @@ export interface RouteCandidate {
   run: () => void;
   /** The context's decision did not choose it. Producers that held an offer for this moment let it go. */
   drop?: () => void;
+  /**
+   * The record of the user's consent this offer rests on, if the producer knows one: a claim only. The coordinator
+   * asks its ledger (consent.ts) whether that record exists; with no record, the candidate is routed like any other.
+   */
+  consent?: ConsentClaim;
 }
 
 /** A route as Router 2 lists it: a code-assigned option id and what it is. */

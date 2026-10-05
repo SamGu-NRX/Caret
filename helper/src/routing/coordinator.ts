@@ -12,12 +12,22 @@
 //      (R2 lead decision 1), so the host can tell "the router said no" from "the router did not answer" and fall back.
 //   3. Router 2, only after act: one Choice over the registry frozen for the same context, skipped when it lists one
 //      real route.
+// Two things never wait for a router (R2 lead decisions 2 and 3):
+//   - An offer the user already consented to, by a record the helper itself wrote (consent.ts), goes out as soon as
+//     it is listed, unless a local rule holds the moment. It is not part of any routing context, so its arrival
+//     neither opens a decision nor ends a write session. Its decision is logged with the code-written reason and is
+//     not sent to the host: it arrives as the producer's own offer.
+//   - A write session lives through a sentence or paragraph end in its own field: that context is decided `write` at
+//     once, with no model call, and only its act candidates (an event card, say) go to Router 1, whose answer is never
+//     sent as the context's decision: a chosen task is offered beside the writing help. A change of field, selection,
+//     composition, candidates without a sentence end, memory or settings decides again.
 // A decision grants nothing. The chosen producer runs its own checks and makes an offer the user still has to accept;
 // skills keep only the autonomy the user already gave them (patterns/skills.ts), which this file never reads.
 import type { AskJev } from "../fill/jev.ts";
 import type { ScreenModel } from "../model.ts";
 import type { RouteFailure } from "../protocol.ts";
-import { breakpoint, contextNow, type Breakpoint, type FocusSeen, type HostEditing, type RoutingContext } from "./context.ts";
+import { breakpoint, contextNow, sentenceOnly, type Breakpoint, type FocusSeen, type HostEditing, type RoutingContext } from "./context.ts";
+import type { Consent, ConsentClaim } from "./consent.ts";
 import { PrivacyRefusal, ROUTER1_FLOOR, ROUTER2_FLOOR, router1Request, router2Request, sendRouter, type Read, type Refusal } from "./judge.ts";
 import { freeze, realRoutes, type Outcome, type Registry, type Route, type RouteCandidate } from "./routes.ts";
 
@@ -31,6 +41,9 @@ export const DENIED_WINDOW_KINDS: ReadonlySet<string> = new Set(["systemdialog"]
 const ASKED_KEEP = 500;
 /** Decisions and latencies kept in memory for evaluations, newest last; counts go to the store. A bound, not measured. */
 const DECISIONS_KEEP = 2000;
+
+/** The route a chosen candidate logs as: its kind, or "workflow:<producer>". */
+const routeOf = (c: RouteCandidate): string => (c.workflow === undefined ? c.kind : `workflow:${c.workflow}`);
 
 /** Appends to a bounded record, dropping the oldest. */
 function keep<T>(xs: T[], x: T): void {
@@ -52,8 +65,18 @@ export interface Decision {
   /** `error`: the router did not decide (`failure` says why); the host falls back for this context. */
   outcome: Outcome | "error";
   failure: RouteFailure | null;
-  /** Which step decided: local rules, Router 1, or Router 2 (or code, when Router 2 had one route). */
-  by: "local" | "router1" | "router2" | "single";
+  /**
+   * Which step decided: local rules, Router 1, or Router 2 (or code, when Router 2 had one route); `consent`, an offer
+   * the user consented to (consent.ts); `session`, a write session kept across a sentence end.
+   */
+  by: "local" | "router1" | "router2" | "single" | "consent" | "session";
+  /** For `consent`: which record, and the reason code wrote. */
+  consent: Consent | null;
+  /**
+   * Whether this is the context's decision, sent to the host. False for a consented offer and for the act check
+   * beside a kept write session: those arrive as the producer's own offer.
+   */
+  published: boolean;
   local: LocalReason | null;
   refused: { router: 1 | 2; why: Refusal } | null;
   /** The route that ran for act, the workflow name for a workflow, "handoff" for a handoff, the question's candidate for ask. */
@@ -85,6 +108,14 @@ export interface RoutingStats {
   byBreakpoint: Record<string, number>;
   byLocal: Record<string, number>;
   byOutcome: Record<string, number>;
+  /** Outcomes of the act checks made beside a kept write session (not the contexts' decisions). */
+  besideOutcome: Record<string, number>;
+  /** Offers passed on consent, by record kind. */
+  consented: Record<string, number>;
+  /** Consented offers a local rule held at the moment they were listed. */
+  consentHeld: number;
+  /** Sentence ends that kept a write session. */
+  sessionKept: number;
   byRoute: Record<string, number>;
   refused: Record<string, number>;
   /** Router call latencies, ms, the latest DECISIONS_KEEP. */
@@ -99,6 +130,8 @@ export interface RoutingDeps {
   askJev: AskJev;
   /** The candidates for this context, listed by code. Called when the context may have changed. */
   candidates: (ctx: RoutingContext) => RouteCandidate[];
+  /** Finds the record behind a candidate's consent claim (ConsentLedger.verify); null when there is none. Absent: none ever. */
+  consent?: (claim: ConsentClaim | undefined) => Consent | null;
   /** A connected host consumes write decisions; until one does, write is not a legal outcome. */
   hostWrites: () => boolean;
   /** The settings' words role (the host's writing help) is on. */
@@ -130,6 +163,8 @@ interface Current {
   at: number;
   calls: number;
   decided: boolean;
+  /** The act check beside a kept write session: its answer is logged, not published. */
+  beside: boolean;
 }
 
 const bump = (m: Record<string, number>, k: string, n = 1): void => {
@@ -170,6 +205,10 @@ export class RoutingCoordinator {
     byBreakpoint: {},
     byLocal: {},
     byOutcome: {},
+    besideOutcome: {},
+    consented: {},
+    consentHeld: 0,
+    sessionKept: 0,
     byRoute: {},
     refused: {},
     callMs: [],
@@ -293,39 +332,104 @@ export class RoutingCoordinator {
     }
     let ctx = base;
     let bp = breakpoint(this.prev, base);
+    let consented: { cand: RouteCandidate; consent: Consent }[] = [];
     if (bp !== null || this.candidatesDirty) {
       this.candidatesDirty = false;
-      this.lastCandidates = this.deps.candidates(base);
+      const listed = this.deps.candidates(base);
+      for (const cand of listed) {
+        const consent = this.deps.consent?.(cand.consent) ?? null;
+        if (consent !== null) consented.push({ cand, consent });
+      }
+      this.lastCandidates = listed.filter((c) => !consented.some((x) => x.cand === c));
       ctx = { ...base, candidates: this.lastCandidates.map((c) => c.id).sort().join("\u0000") };
       bp = breakpoint(this.prev, ctx);
     }
+    const prev = this.prev;
     this.prev = ctx;
     if (bp === null) {
       this.stats.sameContext++;
       if (this.cur !== null) this.cur.ctx = ctx;
-      return;
-    }
-    this.open(ctx, bp, this.lastCandidates);
+    } else this.open(ctx, bp, this.lastCandidates, prev);
+    if (consented.length > 0) this.passThrough(ctx, consented);
   }
 
-  private open(ctx: RoutingContext, bp: Breakpoint, candidates: RouteCandidate[]): void {
+  /**
+   * Offers the user consented to go out now, with no router question. A local rule that holds the moment (paused, a
+   * secure or denied field, an unread focus, a composition) holds them too: they stay with their producers and are
+   * listed again at the next breakpoint.
+   */
+  private passThrough(ctx: RoutingContext, list: readonly { cand: RouteCandidate; consent: Consent }[]): void {
+    const held = this.holds(ctx);
+    if (held !== null) {
+      this.stats.consentHeld += list.length;
+      this.deps.count?.(`route.consent_held_${held}`, list.length);
+      return;
+    }
+    const now = this.deps.now();
+    for (const { cand, consent } of list) {
+      const decision: Decision = {
+        gen: this.gen,
+        at: now,
+        windowId: ctx.windowId,
+        key: ctx.field?.key ?? null,
+        breakpoint: "candidates",
+        legal: ["act"],
+        outcome: "act",
+        failure: null,
+        by: "consent",
+        local: null,
+        refused: null,
+        route: routeOf(cand),
+        consent,
+        published: false,
+        calls: 0,
+        latencyMs: 0,
+        confidence: null,
+        answered: null,
+        textRevision: ctx.textRevision,
+      };
+      keep(this.decisions, decision);
+      bump(this.stats.consented, consent.kind);
+      this.deps.count?.(`route.consent_${consent.kind}`);
+      this.deps.onDecision?.(decision);
+      this.run(cand);
+    }
+  }
+
+  private open(ctx: RoutingContext, bp: Breakpoint, candidates: RouteCandidate[], prev: RoutingContext | null): void {
     const now = this.deps.now();
     if (this.waiting && this.cur !== null && !this.cur.decided) {
       this.stats.replaced++;
       this.deps.count?.("route.replaced");
     }
     const gen = ++this.gen;
-    this.endWrite(bp);
+    const w = this.writeSession;
+    const kept = w !== null && prev !== null && ctx.field !== null && w.windowId === ctx.windowId && w.key === ctx.field.key && sentenceOnly(prev, ctx) && this.holds(ctx) === null;
+    if (!kept) this.endWrite(bp);
     const reg = freeze(gen, candidates, this.asked);
     const legal: Outcome[] = ["abstain"];
-    if (ctx.field?.prose === true && this.deps.hostWrites() && this.deps.wordsOn()) legal.push("write");
-    if (reg.question !== null) legal.push("ask");
+    if (!kept && ctx.field?.prose === true && this.deps.hostWrites() && this.deps.wordsOn()) legal.push("write");
+    // Beside a kept write session only tasks are checked: a question waits for the next decision.
+    if (!kept && reg.question !== null) legal.push("ask");
     if (reg.routes.length > 0) legal.push("act");
-    const c: Current = { gen, ctx, reg, legal, candidates, breakpoint: bp, at: now, calls: 0, decided: false };
+    const c: Current = { gen, ctx, reg, legal, candidates, breakpoint: bp, at: now, calls: 0, decided: false, beside: kept };
     this.cur = c;
     this.stats.contexts++;
     bump(this.stats.byBreakpoint, bp);
     this.deps.count?.("route.context");
+    if (kept) {
+      this.keepWriting(c);
+      // Nothing to check beside it: the context is decided.
+      this.waiting = legal.includes("act");
+      if (!this.waiting) {
+        c.decided = true;
+        this.cancelTimer?.();
+        this.cancelTimer = null;
+        return;
+      }
+      this.pump();
+      return;
+    }
     const local = this.localRule(ctx, legal);
     if (local !== null) {
       this.waiting = false;
@@ -340,13 +444,56 @@ export class RoutingCoordinator {
 
   /** The local rules, in order; null when Router 1 should decide. Privacy is checked when the request is built. */
   private localRule(ctx: RoutingContext, legal: readonly Outcome[]): LocalReason | null {
+    const held = this.holds(ctx);
+    if (held !== null) return held;
+    if (legal.length === 1) return "noCapability";
+    return null;
+  }
+
+  /** The local rules about the moment itself, whatever is legal in it. */
+  private holds(ctx: RoutingContext): Exclude<LocalReason, "noCapability" | "privacy"> | null {
     if (this.deps.paused()) return "paused";
     if (ctx.field?.secure === true) return "secure";
     if ((ctx.field !== null && DENIED_ROLES.has(ctx.field.role)) || DENIED_WINDOW_KINDS.has(ctx.windowKind)) return "deniedRole";
     if (ctx.incomplete) return "incomplete";
     if (ctx.composing) return "composing";
-    if (legal.length === 1) return "noCapability";
     return null;
+  }
+
+  /**
+   * A sentence end in the write session's field: the session goes on under the new context, decided `write` now with
+   * no model call, so the host's writing help does not wait on a router at the end of every sentence.
+   */
+  private keepWriting(c: Current): void {
+    const w = this.writeSession as NonNullable<typeof this.writeSession>;
+    const now = this.deps.now();
+    this.writeSession = { ...w, gen: c.gen, at: now, textRevision: c.ctx.textRevision };
+    const decision: Decision = {
+      gen: c.gen,
+      at: now,
+      windowId: c.ctx.windowId,
+      key: w.key,
+      breakpoint: c.breakpoint,
+      legal: ["write"],
+      outcome: "write",
+      failure: null,
+      by: "session",
+      local: null,
+      refused: null,
+      route: null,
+      consent: null,
+      published: true,
+      calls: 0,
+      latencyMs: now - c.at,
+      confidence: null,
+      answered: null,
+      textRevision: c.ctx.textRevision,
+    };
+    keep(this.decisions, decision);
+    this.stats.sessionKept++;
+    bump(this.stats.byOutcome, "write");
+    this.deps.count?.("route.session_kept");
+    this.deps.onDecision?.(decision);
   }
 
   /** Starts the waiting context's Router 1 call when the slot is free and the cooldown has passed. */
@@ -471,7 +618,7 @@ export class RoutingCoordinator {
   private choose(c: Current, route: Route, by: "router2" | "single", confidence: number): void {
     if (route.candidate === null) return this.finish(c, { outcome: "act", by, local: null, refused: null, route: `handoff: ${route.reason ?? ""}`, confidence, answered: route.option });
     const cand = route.candidate;
-    this.finish(c, { outcome: "act", by, local: null, refused: null, route: cand.workflow === undefined ? cand.kind : `workflow:${cand.workflow}`, confidence, answered: by === "single" ? "act" : route.option }, cand);
+    this.finish(c, { outcome: "act", by, local: null, refused: null, route: routeOf(cand), confidence, answered: by === "single" ? "act" : route.option }, cand);
     this.run(cand);
   }
 
@@ -495,10 +642,10 @@ export class RoutingCoordinator {
   private finish(c: Current, d: Pick<Decision, "outcome" | "by" | "local" | "refused" | "route" | "confidence" | "answered"> & { failure?: RouteFailure | null }, chosen: RouteCandidate | null = null, release = true): void {
     c.decided = true;
     const now = this.deps.now();
-    const decision: Decision = { gen: c.gen, at: now, windowId: c.ctx.windowId, key: c.ctx.field?.key ?? null, breakpoint: c.breakpoint, legal: c.legal, ...d, failure: d.failure ?? null, calls: c.calls, latencyMs: now - c.at, textRevision: c.ctx.textRevision };
+    const decision: Decision = { gen: c.gen, at: now, windowId: c.ctx.windowId, key: c.ctx.field?.key ?? null, breakpoint: c.breakpoint, legal: c.legal, ...d, failure: d.failure ?? null, consent: null, published: !c.beside, calls: c.calls, latencyMs: now - c.at, textRevision: c.ctx.textRevision };
     keep(this.decisions, decision);
     const s = this.stats;
-    bump(s.byOutcome, d.outcome);
+    bump(c.beside ? s.besideOutcome : s.byOutcome, d.outcome);
     this.deps.count?.(`route.outcome_${d.outcome}`);
     if (d.by === "local") {
       s.avoided++;

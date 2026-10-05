@@ -88,8 +88,8 @@ export class OpenAppOffers {
   }
 
   /** Offers waiting for a field, for the router: each one's key, its watched window and the status line it quotes. */
-  heldOffers(): { offerKey: string; windowId: string; status: string; app: string }[] {
-    return [...this.entries.values()].flatMap((e) => (e.boundTo !== null ? [] : [{ offerKey: e.offerKey, windowId: e.windowId, status: e.status, app: this.deps.model.windows.get(e.windowId)?.app.name ?? "" }]));
+  heldOffers(): { offerKey: string; watchId: string; windowId: string; status: string; app: string }[] {
+    return [...this.entries.values()].flatMap((e) => (e.boundTo !== null ? [] : [{ offerKey: e.offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, app: this.deps.model.windows.get(e.windowId)?.app.name ?? "" }]));
   }
 
   /** The router chose this held offer for the field the user is in. */

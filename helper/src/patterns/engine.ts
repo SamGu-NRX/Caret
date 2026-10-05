@@ -102,6 +102,8 @@ export interface HeldPatternOffer {
   says: string;
   /** The routine's skill, when the user kept it as one. */
   skill: boolean;
+  /** The routine the offer runs; null for a loop. The router's consent claim names it (routing/consent.ts). */
+  routineId: string | null;
   /** The pattern's matched predictions, the router's relevance among workflows. */
   hits: number;
   /** Values it would write, and the apps it copies them from. */
@@ -291,7 +293,7 @@ export class PatternEngine {
     return [...this.held.values()].flatMap(({ o, evidence }) =>
       o.msg.windowId !== windowId
         ? []
-        : [{ id: o.msg.id, kind: o.msg.kind, windowId: o.msg.windowId, says: o.msg.says, skill: this.skills.activeSkill(o.routineId) !== null, hits: evidence.hits, values: o.cells.length, from: [...new Set(o.msg.cells.map((c) => c.source.appName))] }],
+        : [{ id: o.msg.id, kind: o.msg.kind, windowId: o.msg.windowId, says: o.msg.says, skill: this.skills.activeSkill(o.routineId) !== null, routineId: o.routineId, hits: evidence.hits, values: o.cells.length, from: [...new Set(o.msg.cells.map((c) => c.source.appName))] }],
     );
   }
 

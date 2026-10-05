@@ -152,6 +152,16 @@ export function contextNow(i: ContextInputs): RoutingContext | null {
 }
 
 /**
+ * Whether `next` differs from `prev` by finished sentences or paragraphs (the reader's or the host's), and at most the
+ * candidates that come with them, with the same field, selection mode, composition, memory and settings: the change a
+ * write session lives through (R2 lead decision 3). `breakpoint` reports the first difference only, so a settings or
+ * memory change at the same moment is checked here too.
+ */
+export function sentenceOnly(prev: RoutingContext, next: RoutingContext): boolean {
+  return breakpoint(prev, next) === "sentence" && prev.memoryRevision === next.memoryRevision && prev.settingsRevision === next.settingsRevision;
+}
+
+/**
  * The first way `next` differs from `prev` that opens a new decision, or null when it is the same context (ordinary
  * typing, or nothing changed). Order matters only for which reason is logged.
  */

@@ -134,16 +134,26 @@ describe("route decisions through the helper and the server", () => {
     expect(write).toMatchObject({ windowId: DOC, key: BODY, route: null });
     expect(write.expires).toBeGreaterThan(write.at);
 
-    // The host's own revision and a sentence end it saw before the reader's walk: the write ends, then a new decision.
+    // The host reports the field: its selection was unknown to the helper, so the write ends and is decided again.
     advance(2000);
-    host.send({ type: "routingContext", v: PROTOCOL_VERSION, at: clock, windowId: DOC, key: BODY, selection: "caret", composing: false, textRevision: "r31", breakpoint: "sentence" });
+    host.send({ type: "routingContext", v: PROTOCOL_VERSION, at: clock, windowId: DOC, key: BODY, selection: "caret", composing: false, textRevision: "r30", breakpoint: null });
     const deciding = await host.waitFor<RouteDecision>((m) => m.type === "routeDecision" && m.outcome === null);
     expect(deciding).toMatchObject({ key: BODY, textRevision: write.textRevision });
     expect(deciding.context).toBeGreaterThan(write.context);
     advance(2000);
     await settle();
     const next = await host.waitFor<RouteDecision>((m) => m.type === "routeDecision" && m.context === deciding.context && m.outcome !== null);
-    expect(next).toMatchObject({ outcome: "write", textRevision: "r31" });
+    expect(next).toMatchObject({ outcome: "write", textRevision: "r30" });
+    // A sentence end the host saw before the reader's walk keeps the session: write again for the new context, at
+    // once and with no router call, and no null decision first (R2 decision 3).
+    const before = decisions(host).length;
+    host.send({ type: "routingContext", v: PROTOCOL_VERSION, at: clock, windowId: DOC, key: BODY, selection: "caret", composing: false, textRevision: "r31", breakpoint: "sentence" });
+    const kept = await host.waitFor<RouteDecision>((m) => m.type === "routeDecision" && m.textRevision === "r31");
+    expect(kept).toMatchObject({ outcome: "write", key: BODY });
+    expect(kept.context).toBeGreaterThan(next.context);
+    expect(kept.at).toBe(clock);
+    expect(decisions(host).slice(before).map((d) => d.outcome)).toEqual(["write"]);
+    expect(helper.routing?.decisions.at(-1)).toMatchObject({ by: "session", calls: 0 });
     // Composing in an input method abstains at once, with no call.
     advance(2000);
     host.send({ type: "routingContext", v: PROTOCOL_VERSION, at: clock, windowId: DOC, key: BODY, selection: "caret", composing: true, textRevision: "r33", breakpoint: null });

@@ -104,6 +104,7 @@ import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskGoal, type Ask
 import type { AskFixed } from "./planner/intent.ts";
 import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
 import { ASK_ROUTES, type RouteCandidate } from "./routing/routes.ts";
+import { ConsentLedger } from "./routing/consent.ts";
 import type { RoutingContext } from "./routing/context.ts";
 import { FILLABLE_ROLES, neverTypedNode } from "./fill/fill.ts";
 import { fieldKinds, valueKinds, words } from "./fill/kinds.ts";
@@ -381,6 +382,8 @@ export class Helper {
   private readonly taskDeps = new Map<string, { family: Family | null; routineId: string | null }>();
   /** Decides once per moment which producer, if any, makes an offer; null when producers trigger themselves. */
   readonly routing: RoutingCoordinator | null;
+  /** What the user consented to, from the helper's own records: what passes the routers with no question (R2). */
+  readonly consent: ConsentLedger;
   /** Host sessions whose hello declared ROUTING_CAPABILITY: they take route decisions, so write is legal while one is here. */
   private readonly routingHosts = new Set<string>();
 
@@ -595,6 +598,7 @@ export class Helper {
     });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
     const ro = opts.routing ?? null;
+    this.consent = new ConsentLedger({ memory: this.memory, task: (id) => this.tasks.get(id) });
     this.routing =
       ro === null || this.ask === null
         ? null
@@ -603,6 +607,7 @@ export class Helper {
             // Through the recording wrapper: a router's request carries screen text, so it is a "Read and prepare" use.
             askJev: this.ask,
             candidates: (ctx) => this.routeCandidates(ctx),
+            consent: (claim) => this.consent.verify(claim),
             // A connected host that takes route decisions, or an evaluation that says it plays one.
             hostWrites: () => [...this.routingHosts].some((h) => this.hosts.has(h)) || (ro.hostWrites?.() ?? false),
             wordsOn: () => this.gate.settings.roles.includes("words"),
@@ -613,7 +618,8 @@ export class Helper {
             ...(ro.setTimer === undefined ? {} : { setTimer: ro.setTimer }),
             count: (m, n) => opts.store.count(m, n ?? 1),
             onDecision: (d) => {
-              this.publishRouteDecision({ context: d.gen, windowId: d.windowId, key: d.key, textRevision: d.textRevision, outcome: d.outcome, route: d.outcome === "act" ? d.route : null, ...(d.failure === null ? {} : { failure: d.failure }) });
+              // A consented offer, or a task offered beside a kept write session, is not the context's decision.
+              if (d.published) this.publishRouteDecision({ context: d.gen, windowId: d.windowId, key: d.key, textRevision: d.textRevision, outcome: d.outcome, route: d.outcome === "act" ? d.route : null, ...(d.failure === null ? {} : { failure: d.failure }) });
               ro.onDecision?.(d);
             },
             onWriteEnded: (w) => this.publishRouteDecision({ context: w.gen, windowId: w.windowId, key: w.key, textRevision: w.textRevision, outcome: null, route: null }),
@@ -851,9 +857,11 @@ export class Helper {
 
   /**
    * The host's settings message. It applies to the next decision of every producer; offers of families it
-   * no longer allows are withdrawn as `settings` now, and turning the watch role off ends every watch.
+   * no longer allows are withdrawn as `settings` now, and turning the watch role off ends every watch. `from`: the
+   * session that sent it. Only a host session's records the watch role as the user's consent (routing/consent.ts).
    */
-  handleSettings(m: Settings): void {
+  handleSettings(m: Settings, from?: string): void {
+    this.consent.settings(m.roles, from !== undefined && this.hosts.has(from));
     const off = this.gate.apply(m);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
     this.opts.store.count("settings.applied", 1);
@@ -2035,6 +2043,7 @@ export class Helper {
             id: `openApp:${h.offerKey}`,
             kind: "workflow",
             workflow: "openApp",
+            consent: { kind: "watch", watchId: h.watchId },
             says: `Open ${h.app}, whose window the user was waiting on now says "${h.status}"`,
             plain: `Open ${h.app}, whose window the user was waiting on changed`,
             quotes: [{ window: watched, kind: "candidate", texts: [h.status] }],
@@ -2062,6 +2071,7 @@ export class Helper {
         quotes: [],
         // A kept skill first, then the pattern that matched most often.
         relevance: 10 + (h.skill ? 1000 : 0) + h.hits,
+        ...(h.routineId === null ? {} : { consent: { kind: "skill" as const, routineId: h.routineId } }),
         run: () => this.patterns.release(h.id),
         drop: () => this.patterns.dropHeld(h.id),
       });
