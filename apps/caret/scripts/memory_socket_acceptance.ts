@@ -33,11 +33,14 @@ import { Store } from "../../../helper/src/store.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type MemoryRequest, type PatternOffer } from "../../../helper/src/protocol.ts";
 import { Desk, grid, roster, type GridWindow, type ListWindow } from "../../../helper/test/scene.ts";
 import { FIXTURE_APP, MAIL_APP } from "../../../helper/test/builders.ts";
+import { helperRouting, routedJev, routingOptions } from "./routing_option.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
 const CARET = resolve(ROOT, "apps", "caret", ".build", "Caret.app", "Contents", "MacOS", "Caret");
-const { values: a } = parseArgs({ options: { out: { type: "string" }, runs: { type: "string", default: "3" } } });
+const { values: a } = parseArgs({ options: { out: { type: "string" }, runs: { type: "string", default: "3" }, ...routingOptions } });
+// H6: --routing live runs D2-02's router with live Jev; this desk asks Jev nothing else (routing_option.ts).
+const routed = routedJev(a.routing, null);
 if (a.out === undefined) throw new Error("--out is required");
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
@@ -82,7 +85,8 @@ async function openSession(): Promise<Session> {
   let server: HelperServer | null = null;
   const helper = new Helper({
     store,
-    askJev: null,
+    askJev: routed.askJev,
+    ...helperRouting(a.routing),
     shadow: false,
     allowBackgroundFocus: false,
     publish: (m) => {
@@ -240,6 +244,8 @@ const result: Record<string, unknown> = {
   at: new Date().toISOString(),
   runs: RUNS,
   mode: "socket only: real helper in process on a temporary data dir, the pattern tests' desk as its reader, host --surfaces headless --perch hidden --no-ghost --test-hooks",
+  routing: a.routing,
+  hostRouting: a["host-routing"],
 };
 const editToReadBackMs: number[] = [];
 
@@ -251,6 +257,7 @@ try {
       return null;
     }
   }, 15_000, 200);
+  await hostCommand(`settings set routing ${a["host-routing"]}`);
 
   for (let run = 1; run <= RUNS; run++) {
     const s = await openSession();
@@ -359,6 +366,7 @@ const passed = checks.filter((c) => c.ok).length;
 result.passed = passed;
 result.total = checks.length;
 result.checks = checks;
+result.routerUsage = routed.usage();
 writeFileSync(join(OUT, "memory-socket.json"), JSON.stringify(result, null, 2));
 writeFileSync(join(OUT, "memory-socket.log"), log.join("\n"));
 console.log(`${passed}/${checks.length} passed`);
