@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ConsumerMessage, FILL_ALL_CAPABILITY, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 import { planError } from "./planner/proposal.ts";
 
@@ -25,6 +25,8 @@ export class HelperServer {
   private readonly routing = new Set<Socket>();
   /** Host connections whose hello listed FILL_ALL_CAPABILITY: only they may send fillAll (D2-04). */
   private readonly fillAll = new Set<Socket>();
+  /** Consumer connections whose hello listed ASK_CHOICES_CAPABILITY: they get Ask questions and may answer them (B29). */
+  private readonly askChoices = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -145,6 +147,7 @@ export class HelperServer {
             const routing = hello.data.host === true && hello.data.capabilities?.includes(ROUTING_CAPABILITY) === true;
             if (routing) this.routing.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
+            if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
             if (hello.data.host === true) this.helper().hostConnected(session, routing);
             else this.helper().consumerConnected(session);
           } else {
@@ -212,10 +215,17 @@ export class HelperServer {
               });
           }
           // A proposal quotes values and names windows, so it goes to the asker only, as a first look's reply does.
-          else if (m.data.type === "planRequest") {
-            const requestId = m.data.requestId;
-            void this.helper()
-              .handlePlanRequest(m.data)
+          // An askQuestion and an askAnswer's reply go to the asker only too (B29); only a consumer that declared it can
+          // answer a question gets one, and only it may answer.
+          else if (m.data.type === "planRequest" || m.data.type === "askAnswer") {
+            const msg = m.data;
+            const requestId = msg.requestId;
+            if (msg.type === "askAnswer" && !this.askChoices.has(s)) {
+              this.reject(s, `askAnswer needs "${ASK_CHOICES_CAPABILITY}" in the consumer's hello capabilities`);
+              continue;
+            }
+            const canAsk = this.askChoices.has(s);
+            void (msg.type === "planRequest" ? this.helper().handlePlanRequest(msg, from, canAsk) : this.helper().handleAskAnswer(msg, from))
               .catch((e: unknown) => {
                 this.warn(`plan ${requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
                 return planError(requestId, "internal", "the planner failed; the helper logged why", Date.now());
@@ -224,7 +234,7 @@ export class HelperServer {
                 if (s.destroyed) return;
                 s.write(JSON.stringify(r) + "\n");
                 // The noticed facts the plan used, to the asker too, when it understands them.
-                const p = r.outcome === "proposed" && this.memoryDocuments.has(s) ? this.helper().provenanceFor(r.offerKey) : null;
+                const p = r.type === "planProposal" && r.outcome === "proposed" && this.memoryDocuments.has(s) ? this.helper().provenanceFor(r.offerKey) : null;
                 if (p !== null) s.write(JSON.stringify(p) + "\n");
               });
           }
@@ -262,6 +272,7 @@ export class HelperServer {
       this.memoryDocuments.delete(s);
       this.routing.delete(s);
       this.fillAll.delete(s);
+      this.askChoices.delete(s);
       if (session !== null) this.helper().hostDisconnected(session);
       if (this.reader === s) {
         this.reader = null;

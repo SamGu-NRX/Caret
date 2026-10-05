@@ -277,6 +277,15 @@ describe("the intent makers", () => {
     expect((await make(jevAnswers({ route: "refuse", why: "payment" }), "pay for it")).intent).toMatchObject({ route: "refuse", why: "payment" });
     expect((await make(jevAnswers({ route: "fill", scope: "list", source: "any" }), "my email please")).intent).toMatchObject({ route: "ask", why: "whichFields" });
   });
+
+  it("Jev: keeps what both asks settled beside the parts it leaves open, in the order they are asked (B29)", async () => {
+    // Route unsettled: the fields are open; the agreed source and person stand.
+    expect((await make(jevAnswers({ route: "fill", scope: "all", source: "w1", whose: "user" }, {}, { route: "plan" }), "fill this out from my note")).intent).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"], sources: ["w1"], whose: "user" });
+    // Source and person both unsettled: both open, the source first.
+    expect((await make(jevAnswers({ route: "fill", scope: "all", source: "w1", whose: "p1" }, {}, { source: "w2", whose: "user" }), "use Gary for this")).intent).toMatchObject({ route: "ask", why: "whichSource", open: ["source", "person"], scope: "all" });
+    // Someone else's details, unnamed: the person is open, no longer a refusal.
+    expect((await make(jevAnswers({ route: "fill", scope: "all", source: "any", whose: "unnamed" }), "add his number")).intent).toMatchObject({ route: "ask", why: "otherPersonUnnamed", open: ["person"] });
+  });
 });
 
 const maker = (x: Partial<AskIntent> | ((s: IntentSnapshot) => Partial<AskIntent>)): IntentMaker => ({

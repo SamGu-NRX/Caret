@@ -872,6 +872,24 @@ export const PlanRequest = z
   .refine((m) => m.windowId === undefined || m.window === undefined, "a planRequest names its window by window or windowId, not both");
 export type PlanRequest = z.infer<typeof PlanRequest>;
 
+/** Options one askQuestion lists at most. Assumed, not measured: the brief's cap for "which fields". */
+export const MAX_ASK_OPTIONS = 8;
+
+/**
+ * Consumer to helper (B29): the user's answer to an askQuestion, by option id. A question takes one answer, from the
+ * connection it was sent to. The helper replies under this message's `requestId` with a planProposal (or a further
+ * askQuestion); a question that is unknown, expired or answered gets a planProposal error with code `questionGone`.
+ */
+export const AskAnswer = z.object({
+  type: z.literal("askAnswer"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1).max(200),
+  at: ms,
+  questionId: z.string().min(1),
+  picks: z.array(z.string().min(1)).min(1).max(MAX_ASK_OPTIONS),
+});
+export type AskAnswer = z.infer<typeof AskAnswer>;
+
 /**
  * The user's answer to a skillOffer (B19), by the offer's `id`. The helper ends the offer with
  * offerWithdrawn: `taken` after accept, `dismissed` after decline. An answer to an offer that is gone
@@ -886,7 +904,7 @@ export const SkillAnswer = z.object({
 });
 export type SkillAnswer = z.infer<typeof SkillAnswer>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, AskAnswer]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -1581,7 +1599,6 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
 
 // MARK: - the planner: "do X" becomes a checked plan
 
-
 /**
  * Why no plan was proposed. `schema`: the drafted plan is not a valid plan. `noWindow`: no open window
  * can carry the task, or Jev chose none. `unsure`: Jev's two asks disagreed, or agreed below the cutoff.
@@ -1596,12 +1613,13 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
  * is not the one the risk table gives its control. `unavailable`: Jev is off, the helper is in shadow
  * mode, Caret is paused, or no reader is connected. `jevFailed`: the Jev request failed. `privacy`: the
  * question would carry more of a window than one Jev request may (privacy.ts), so it was not asked. `internal`: the
- * planner failed in a way no other code names; the helper logged why.
+ * planner failed in a way no other code names; the helper logged why. `questionGone`: an askAnswer named a question that
+ * is unknown, expired, already answered or another connection's (B29).
  */
 export const PlanErrorCode = z.enum([
   "schema", "noWindow", "unsure", "nothingToDo", "unsupportedStep", "multipleWindows", "unknownWindow", "ambiguousWindow",
   "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "wrongKind", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
-  "unseenWindow",
+  "unseenWindow", "questionGone",
 ]);
 export type PlanErrorCode = z.infer<typeof PlanErrorCode>;
 
@@ -1644,6 +1662,61 @@ export const PlanProposal = z
 export type PlanProposal = z.infer<typeof PlanProposal>;
 
 /**
+ * The hello capability for Ask questions with choices (B29). A consumer that sends it may get an askQuestion in place
+ * of a planProposal whose error asks the user something, and may answer it with askAnswer. Any other consumer gets
+ * the planProposal error as before; an askAnswer from it is refused by name.
+ */
+export const ASK_CHOICES_CAPABILITY = "askChoices";
+
+/**
+ * One choice of an askQuestion, typed by what it fixes. `id` is the helper's, valid for that question only; the host
+ * sends it back and never a field key or window id. `field`: a field of the form (its label, and its section's
+ * heading). `window`: an open window to copy from, as the user knows it. `you`: the user's own details. `person`:
+ * someone named in the instruction or on screen.
+ */
+export const AskOption = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("field"), id: z.string().min(1), label: z.string().min(1), section: z.string().nullable() }),
+  z.object({ kind: z.literal("window"), id: z.string().min(1), app: z.string(), title: z.string() }),
+  z.object({ kind: z.literal("you"), id: z.string().min(1) }),
+  z.object({ kind: z.literal("person"), id: z.string().min(1), name: z.string().min(1) }),
+]);
+export type AskOption = z.infer<typeof AskOption>;
+
+/**
+ * Helper to the asker, in place of a planProposal (B29): the Ask needs one part settled, and code listed that part's
+ * real choices from the screen. `part` says which: `fields` (pick one or more), `source` (one window) or `person` (whose
+ * details). `text` is the question as the user reads it. Answered with askAnswer naming `questionId` and the picks,
+ * once, before `expires`; the answer's reply is a planProposal or another askQuestion. `window` is the form.
+ */
+export const AskQuestion = z
+  .object({
+    type: z.literal("askQuestion"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string(),
+    at: ms,
+    questionId: z.string().min(1),
+    part: z.enum(["fields", "source", "person"]),
+    text: z.string().min(1),
+    pick: z.enum(["one", "many"]),
+    options: z.array(AskOption).min(1).max(MAX_ASK_OPTIONS),
+    window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }),
+    expires: ms,
+  })
+  .superRefine((m, ctx) => {
+    const kinds = { fields: ["field"], source: ["window"], person: ["you", "person"] }[m.part];
+    const pick = m.part === "fields" ? "many" : "one";
+    const problem = m.pick !== pick
+      ? `a ${m.part} question picks ${pick}`
+      : m.options.some((o) => !kinds.includes(o.kind))
+        ? `a ${m.part} question lists only ${kinds.join(" or ")} options`
+        : new Set(m.options.map((o) => o.id)).size !== m.options.length
+          ? "option ids repeat"
+          : null;
+    if (problem !== null) ctx.addIssue({ code: "custom", message: problem, path: ["options"] });
+  });
+export type AskQuestion = z.infer<typeof AskQuestion>;
+
+/**
  * Whether Caret can see the pages of a Chromium browser (browser layer W2, memo section 6). `missing`: the reader
  * reports the browser frontmost, the user has typed in it since it came to the front, and no Caret page engine is
  * connected for that process. The host shows "Caret can't see this page yet" at most once per browser per session
@@ -1661,7 +1734,7 @@ export type PageEngineState = z.infer<typeof PageEngineState>;
 
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, AskQuestion,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);

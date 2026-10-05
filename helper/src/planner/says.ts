@@ -18,6 +18,28 @@ export class SaidError extends PlannerError {
   }
 }
 
+/**
+ * The part of an Ask a refusal leaves unclear (B29): which fields, where to copy from, or whose details. An Unclear
+ * refusal may become a question with choices (planner/choices.ts) when code can list that part's real candidates;
+ * otherwise the user reads its sentence, as before.
+ */
+export type AskPart = "fields" | "source" | "person";
+
+export class Unclear extends SaidError {
+  readonly part: AskPart;
+  constructor(part: AskPart, says: string, detail: string = says) {
+    super("unsure", says, detail);
+    this.part = part;
+  }
+}
+
+/** The question an Ask asks with choices, by part (B29). Short, and in the user's terms. */
+export const ASKS: Record<AskPart, string> = {
+  fields: "Which fields should Caret fill?",
+  source: "Where should Caret copy from?",
+  person: "Whose details go in?",
+};
+
 export const SAYS = {
   payment: "Paying is yours to do. Caret stops before payment.",
   submit: "Submitting is yours to do.",
@@ -47,6 +69,7 @@ export const SAYS = {
   fillNothing: "Caret found nothing on screen to fill this form with.",
   fillLabelTooLong: "This field's label is too long for Caret to ask about. Fill it yourself.",
   fillFailed: "Caret couldn't fill this form just now. Try again.",
+  questionGone: "That question has expired. Ask again.",
 } as const;
 
 /**
@@ -111,6 +134,8 @@ export function saysFor(code: PlanErrorCode): string {
       return SAYS.unreachable;
     case "privacy":
       return SAYS.privacy;
+    case "questionGone":
+      return SAYS.questionGone;
   }
 }
 
