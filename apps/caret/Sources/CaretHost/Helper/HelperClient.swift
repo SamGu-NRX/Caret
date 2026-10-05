@@ -318,6 +318,8 @@ final class HelperClient: @unchecked Sendable {
                 if e.message.hasPrefix("invalid consumer message") { s.resultsRejected &+= 1 }
                 // The helper's error text names windows and reasons, never screen text.
                 s.lastError = String(e.message.prefix(200))
+            // H6 acts on route decisions; until then they are counted with the skipped types.
+            case .routeDecision: s.skipped[RouteDecision.type, default: 0] &+= 1
             case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1
             }
         }

@@ -34,6 +34,8 @@ public enum HelperInbound: Equatable, Sendable {
     case memoryProvenance(MemoryProvenance)
     /// M1: the answer to this host's `memoryDocumentRequest`, to this connection only.
     case memoryDocumentReply(MemoryDocumentReply)
+    /// D2-02: the router's decision for a field. Decoded and checked only; H6 acts on it.
+    case routeDecision(RouteDecision)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -58,6 +60,7 @@ public enum HelperInbound: Equatable, Sendable {
         case .skillOffer: return SkillOffer.type
         case .memoryProvenance: return MemoryProvenance.type
         case .memoryDocumentReply: return MemoryDocumentReply.type
+        case .routeDecision: return RouteDecision.type
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -99,6 +102,12 @@ public enum HelperInbound: Equatable, Sendable {
             return .memoryProvenance(try MemoryProvenance.decode(line))
         case MemoryDocumentReply.type:
             return .memoryDocumentReply(try MemoryDocumentReply.decode(line))
+        case RouteDecision.type:
+            return .routeDecision(try JSONDecoder().decode(RouteDecision.self, from: line))
+        case RoutingContext.type:
+            // The host's own context, echoed back; validated so a malformed line is still counted.
+            _ = try JSONDecoder().decode(RoutingContext.self, from: line)
+            return .notForConsumer(type: envelope.type)
         case FirstLookReply.type:
             return .firstLookReply(try FirstLookReply.decode(line))
         case HelperMemory.Reply.type:

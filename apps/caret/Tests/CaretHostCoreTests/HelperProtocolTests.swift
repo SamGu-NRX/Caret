@@ -38,6 +38,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .skillOffer: return "skillOffer"
             case .memoryProvenance: return "memoryProvenance"
             case .memoryDocumentReply: return "memoryDocumentReply"
+            case .routeDecision: return "routeDecision"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }
