@@ -255,10 +255,10 @@ describe("page link: undo writes only the element its write went to (B23 on page
   it("refuses an undo when the key is now in another document; another registry id goes to the page, which checks the object under the mark (W3)", async () => {
     const changes: { id: string; documentId: string; sent: number }[] = [{ id: "e9", documentId: "D0", sent: 2 }, { id: "e2", documentId: "D1", sent: 1 }];
     for (const change of changes) {
-      let walks = 0;
+      let moved = false;
       const { session, sent } = rig(undefined, (id) => {
         const s = snapshot(id);
-        if (++walks <= 2) return s;
+        if (!moved) return s;
         const f = s.frames[0]!;
         const controls = f.controls.map((c) => (c.id === "e2" ? { ...c, id: change.id } : c));
         return { ...s, frames: [{ ...f, controls, documentId: change.documentId }] };
@@ -266,6 +266,7 @@ describe("page link: undo writes only the element its write went to (B23 on page
       const link = new PageEngineLink(session, () => {});
       await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
       expect((await link.run(write({ mark: "m1" }))).outcome).toBe("ok");
+      moved = true;
       await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
       const r = await link.run(write({ sameAs: "m1" }, "", "robin@example.test"));
       expect(commands(sent).filter((v) => v.kind === "pageWrite"), JSON.stringify(change)).toHaveLength(change.sent);

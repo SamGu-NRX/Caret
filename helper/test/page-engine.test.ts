@@ -217,7 +217,7 @@ describe("engine session and page link", () => {
     expect(sent).toEqual([]);
   });
 
-  it("writes the element the walk named, by value for a select, then re-walks before answering", async () => {
+  it("writes the element the walk named, by value for a select, and patches the model before answering, with no walk", async () => {
     const { session, sent, link, applied, answer } = rig();
     answer(walker(session));
     await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
@@ -226,12 +226,14 @@ describe("engine session and page link", () => {
     expect(r.outcome).toBe("ok");
     const verbs = sent.filter((m) => m.type === "pageCommand").map((m) => (m.type === "pageCommand" ? m.verb : null));
     expect(verbs[1]).toEqual({ kind: "pageSelect", tabId: 7, frameId: 0, documentId: "D0", id: "e2", control: "select", name: "Country", taskId: "t1", expect: "", value: "ca" });
-    expect(verbs[2]).toEqual({ kind: "pageWalk", tabId: 7 });
+    expect(verbs).toHaveLength(2);
     expect(applied.length).toBe(before + 1);
+    expect(applied.at(-1)?.nodes.find((n) => n.key === "f0/combobox:country~0")?.value).toBe("Canada");
     const text = await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f4/textbox:referral~0", role: "AXTextField", attribute: "value", expect: "x", value: "ABC", taskId: "t1" });
     expect(text.outcome).toBe("ok");
-    expect(verbs.length).toBe(3);
-    const last = sent.filter((m) => m.type === "pageCommand").at(-2);
+    link.cancelTrailingWalks();
+    expect(sent.filter((m) => m.type === "pageCommand")).toHaveLength(3);
+    const last = sent.filter((m) => m.type === "pageCommand").at(-1);
     expect(last?.type === "pageCommand" && last.verb).toMatchObject({ kind: "pageWrite", frameId: 4, documentId: "D4", id: "e1", expect: "x", value: "ABC" });
   });
 

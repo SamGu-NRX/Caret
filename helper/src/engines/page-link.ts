@@ -39,6 +39,14 @@ export const SLOW_VERB_TIMEOUT_MS = 10_000;
  */
 export const MAX_MARKS = 512;
 
+/**
+ * How long after the last patched act (see act()) the link walks the tab once, so the model catches what the page did
+ * in reaction (a revealed field, reformatting, another injector). Each later act on the tab pushes it back; any walk of
+ * the tab cancels it. Assumed, not measured: long enough that an executor's next step (whose refresh walk cancels it)
+ * normally comes first, so it runs once at the end of a run of writes.
+ */
+export const TRAILING_WALK_MS = 150;
+
 /** The page element a forward write went to, kept under the write's mark so its undo can require the same element. */
 interface MarkedElement {
   tabId: number;
@@ -317,6 +325,8 @@ export class PageEngineLink implements ReaderLink {
   private readonly apply: (s: Snapshot) => void;
   /** Told each command's timing (P1); nothing is kept here. */
   private readonly onTiming: ((t: VerbTiming) => void) | null;
+  /** Per tab: the trailing walk waiting to run, and the one on its way (see act()). */
+  private readonly trailing = new Map<number, { timer: NodeJS.Timeout | null; running: Promise<void> | null }>();
 
   constructor(session: EngineSession, apply: (s: Snapshot) => void, onTiming: ((t: VerbTiming) => void) | null = null) {
     this.session = session;
@@ -467,7 +477,7 @@ export class PageEngineLink implements ReaderLink {
 
   private async walk(tabId: number): Promise<VerbResult> {
     const verb: PageVerb = { kind: "pageWalk", tabId };
-    const { answer: a, commandMs, extensionMs } = await this.timed(verb);
+    const { answer: a, commandMs, extensionMs } = await this.walkCommand(tabId);
     this.report(verb, a.result.outcome, commandMs, extensionMs, null);
     if (a.result.outcome !== "ok") return toVerbOutcome(a.result);
     return a.snapshot === null ? verbResult("axError", "the engine answered the walk without a snapshot") : verbResult("ok", null);
@@ -488,8 +498,9 @@ export class PageEngineLink implements ReaderLink {
     const file = files.read(taskId);
     if ("refused" in file) return { verb: verbResult("notAllowed", file.refused), page: null };
     const verb: PageVerb = { kind: "pageAttachFile", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId, file };
+    await this.trailing.get(w.tabId)?.running;
     const { answer: a, commandMs } = await this.timed(verb, SLOW_VERB_TIMEOUT_MS);
-    const rewalk = a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff" ? await this.timed({ kind: "pageWalk", tabId: w.tabId }) : null;
+    const rewalk = a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff" ? await this.walkCommand(w.tabId) : null;
     this.report(verb, a.result.outcome, commandMs, null, rewalk === null ? null : { commandMs: rewalk.commandMs, extensionMs: rewalk.extensionMs });
     return { verb: toVerbOutcome(a.result), page: a.result };
   }
@@ -501,20 +512,122 @@ export class PageEngineLink implements ReaderLink {
   }
 
   /**
-   * Acts, then re-walks the tab so the model holds the result before the executor reads the answer. A press after which
-   * the page left is answered at once, with no walk: the run stops on it, and a page on its way out may not answer a
-   * walk before the command times out (B28 review).
+   * Acts, then brings the model up to date before the executor reads the answer.
+   *
+   * A text write, native select or tick/radio check the page verified (ok or alreadyTrue) is not followed by a walk:
+   * the model is patched for that one control from what the verb set and the page read back (patched()). P1 measured
+   * about 110 ms per re-walk on Lever against about 1 ms for the hop (~/.caret-run/evidence/screen/p1/loop-canned/
+   * page-loop.md), and the executor walks the window again at the start of its next step anyway, so each write paid
+   * for two walks. The content script's `expect` check still guards each write against a field that changed since the
+   * walk. What the page does in reaction (a revealed field, reformatting, another injector's write) is seen by the next
+   * step's refresh walk, and after the last such act by one trailing walk (TRAILING_WALK_MS).
+   *
+   * Every other act re-walks the tab, as before: a combobox or Yes/No pick and an attach change more than one value,
+   * and a failed or refused act may have left anything. A press after which the page left is answered at once, with no
+   * walk: the run stops on it, and a page on its way out may not answer a walk before the command times out (B28 review).
    */
   private async act(verb: PageVerb, tabId: number): Promise<VerbResult> {
+    await this.trailing.get(tabId)?.running;
     const { answer: a, commandMs } = await this.timed(verb, verb.kind === "pageChooseOption" || verb.kind === "pageAttachFile" ? SLOW_VERB_TIMEOUT_MS : undefined);
     const out = toVerbOutcome(a.result);
     if (a.result.pageChanged !== undefined) {
+      // The page is leaving; a trailing walk of it would only wait out its timeout.
+      this.cancelTrailingWalks(tabId);
       this.report(verb, a.result.outcome, commandMs, null, null);
       return out;
     }
-    const rewalk = a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff" ? await this.timed({ kind: "pageWalk", tabId }) : null;
+    const patched = this.patched(verb, a.result);
+    if (patched !== null) {
+      this.session.tabs.set(tabId, patched);
+      this.apply(toWindowSnapshot(patched, this.session, ++this.seq));
+      this.scheduleTrailingWalk(tabId);
+      this.report(verb, a.result.outcome, commandMs, null, null);
+      return out;
+    }
+    const rewalk = a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff" ? await this.walkCommand(tabId) : null;
+    // A refused act changed nothing, so a trailing walk still pending waits out this act too.
+    if (rewalk === null && (this.trailing.get(tabId)?.timer ?? null) !== null) this.scheduleTrailingWalk(tabId);
     this.report(verb, a.result.outcome, commandMs, null, rewalk === null ? null : { commandMs: rewalk.commandMs, extensionMs: rewalk.extensionMs });
     return out;
+  }
+
+  /**
+   * The tab's last walk with the one control a verified write, select or check set, or null when the act does not
+   * qualify (see act()) or the control is not in that walk. A new snapshot: the stored one is never changed in place.
+   */
+  private patched(verb: PageVerb, r: PageResult): PageSnapshot | null {
+    if (r.outcome !== "ok" && r.outcome !== "alreadyTrue") return null;
+    if (verb.kind !== "pageWrite" && verb.kind !== "pageSelect" && verb.kind !== "pageSetChecked") return null;
+    const last = this.session.tabs.get(verb.tabId);
+    if (last === undefined) return null;
+    const s = structuredClone(last);
+    // Not a walk: no walk time to report for it.
+    delete s.walkMs;
+    s.at = Date.now();
+    const f = s.frames.find((x) => x.frameId === verb.frameId && x.documentId === verb.documentId);
+    const c = f?.controls.find((x) => x.id === verb.id);
+    if (f === undefined || c === undefined || c.kind !== verb.control) return null;
+    switch (verb.kind) {
+      case "pageWrite":
+        // ok means both readings hold the value; alreadyTrue, that the field held it already.
+        c.value = r.readings?.afterBlur ?? verb.value;
+        return s;
+      case "pageSelect":
+        // The verb names the option by value (the model shows its label, toWindowSnapshot).
+        if (c.options?.some((o) => o.value === verb.value) !== true) return null;
+        c.options = c.options.map((o) => ({ ...o, selected: o.value === verb.value }));
+        return s;
+      case "pageSetChecked":
+        if (c.kind === "checkbox") {
+          c.checked = verb.checked;
+          return s;
+        }
+        if (c.kind !== "radio") return null;
+        c.checked = verb.checked;
+        if (verb.checked) {
+          const group = radioGroupKey(f.frameId, c);
+          for (const other of radioMembers(f, group)) if (other !== c) other.checked = false;
+        }
+        return s;
+    }
+  }
+
+  /** Walks the tab for an act or the executor: any trailing walk waiting is dropped, and one on its way is let finish first. */
+  private async walkCommand(tabId: number): ReturnType<PageEngineLink["timed"]> {
+    this.cancelTrailingWalks(tabId);
+    await this.trailing.get(tabId)?.running;
+    return this.timed({ kind: "pageWalk", tabId });
+  }
+
+  /** (Re)starts the tab's trailing walk timer. The walk is a read; its outcome only goes to the timing report. */
+  private scheduleTrailingWalk(tabId: number): void {
+    const t = this.trailing.get(tabId) ?? { timer: null, running: null };
+    if (t.timer !== null) clearTimeout(t.timer);
+    t.timer = setTimeout(() => {
+      t.timer = null;
+      // EngineSession has no close hook: a session closed meanwhile is not walked.
+      if (this.session.closed) return;
+      const verb: PageVerb = { kind: "pageWalk", tabId };
+      const running = this.timed(verb).then(
+        ({ answer, commandMs, extensionMs }) => this.report(verb, answer.result.outcome, commandMs, extensionMs, null),
+        () => undefined,
+      ).finally(() => {
+        if (t.running === running) t.running = null;
+        if (t.timer === null && t.running === null && this.trailing.get(tabId) === t) this.trailing.delete(tabId);
+      });
+      t.running = running;
+    }, TRAILING_WALK_MS);
+    t.timer.unref();
+    this.trailing.set(tabId, t);
+  }
+
+  /** Drops the trailing walk waiting for one tab, or for every tab. A walk already on its way runs to its end. */
+  cancelTrailingWalks(tabId?: number): void {
+    for (const [id, t] of this.trailing) {
+      if (tabId !== undefined && id !== tabId) continue;
+      if (t.timer !== null) clearTimeout(t.timer);
+      t.timer = null;
+    }
   }
 
   grant(m: ActGrant | ActRevoke | CalendarGrant): void {
