@@ -6,6 +6,7 @@
 // answers write verbs the way caret-screen does. The host runs with `--perch hidden`, so it
 // computes the perch and the list and reports them on its debug socket but never draws, and with
 // ghost text off and offers limited to a pid that does not exist, so it takes no key from anyone.
+// It has a temporary home (its settings stay out of the user's) and no menu bar item.
 // No fixture, no window, no screenshot, no event posted.
 //
 //   1. watch records Running -> Done and Running -> needs you, driven through the real registry:
@@ -15,7 +16,12 @@
 //      must say where the run stopped. Continue from the row's own path finishes it.
 //   3. the same plan; Take over from the row after step 3 reports step 4.
 //   4. a click attributed to the app pauses a run the same way (`click`).
-//   5. a field near the perch's corner moves it (`perch-avoid`).
+//   5. the rim and the task-window perch (v3), H3's side of it: the fake reader's window belongs to a
+//      pid that does not exist, so the host finds no window on screen for the task. No rim, no perch
+//      and no caption go up; the menu bar glyph is lit instead and goes out when the task ends.
+//      `perch-avoid`, the old corner perch's command, is refused with its reason. The drawn side (a
+//      clear window gets the rim, perch and caption) needs a real window on screen: PerchTests'
+//      Rim.seen cases and the rim-* renders cover it.
 //
 //   node apps/caret/scripts/perch_socket_acceptance.ts --out DIR [--runs 5]
 import { spawn, execFile, type ChildProcess } from "node:child_process";
@@ -98,7 +104,11 @@ const PLAN: Plan = { id: "six-fields", title: "Fill the six fields", slots: {}, 
 // MARK: - the host, hidden
 
 // --test-hooks: `key`, `control` and `click` on the debug socket need it (CodeRabbit on PR #9).
-const host: ChildProcess = spawn(CARET, ["--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--test-hooks", "--no-ghost", "--allow-pids", String(FIXTURE_APP.pid), "--perch", "hidden"]);
+const hostHome = mkdtempSync(join(tmpdir(), "caret-a4-home-"));
+const host: ChildProcess = spawn(CARET, [
+  "--home", hostHome, "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--test-hooks", "--no-ghost",
+  "--allow-pids", String(FIXTURE_APP.pid), "--perch", "hidden", "--status-item", "off",
+]);
 host.stderr?.setEncoding("utf8");
 host.stderr?.on("data", (d: string) => log.push(`host: ${d.trim().slice(0, 300)}`));
 process.on("exit", () => host.kill("SIGTERM"));
@@ -120,17 +130,22 @@ function hostCommand(command: string): Promise<Record<string, unknown>> {
     s.on("error", rej);
   });
 }
+/** The host's `perch` reply. Its JSON leaves out nil keys, so every optional field may be absent. */
 interface PerchInfo {
   presented: boolean;
   onScreen: boolean;
   drawsOnScreen: boolean;
-  subject: { taskId: string; mood: string; needsYou: number; pid: number | null } | null;
-  figure: string | null;
-  gaze: number[];
-  home: string | null;
-  frame: number[] | null;
-  targetWindow: number[] | null;
-  overlapsField: boolean | null;
+  subject?: { taskId: string; mood: string; needsYou: number; pid?: number };
+  figure?: string;
+  /** The menu bar glyph is lit. */
+  lit: boolean;
+  /** H3: `clear`, `covered` or `notFound`, for the task's window. */
+  seen: string;
+  targetWindow?: number[];
+  frame?: number[];
+  rim?: number[];
+  rimShown: boolean;
+  caption?: string;
   isKey: boolean;
   listOpen: boolean;
   listOnScreen: boolean;
@@ -236,7 +251,7 @@ try {
     if (i === 0) {
       check("needs you outranks newer running work", n.q.subject?.taskId === upload, { subject: n.q.subject, needsYouCount: n.q.subject?.needsYou });
       check("needs you row with the watch", n.q.rows.some((r) => r.id === upload && r.section === "needsYou"), { rows: n.q.rows.length });
-      result.gazeWithoutFrame = { gaze: n.q.gaze, targetWindow: n.q.targetWindow, note: "the reader's window is synthetic (pid 5150 does not exist), so the host finds no frame and looks straight out" };
+      result.windowWithoutFrame = { seen: n.q.seen, targetWindow: n.q.targetWindow ?? null, rimShown: n.q.rimShown, note: "the reader's window is synthetic (its pid does not exist), so the host finds no window on screen" };
     }
     // Clear this round: the watch ends as done by the user, the plan is withdrawn.
     helper.tasks.update(upload, { state: "done", cause: "you" });
@@ -321,23 +336,32 @@ try {
   control(cid, "stop");
   await until("click run stopped", () => latest(cid)?.state === "failed");
 
-  // 5. Yield: a field at the perch's corner moves it; the activity list never becomes key.
-  watchRecord("watch-yield", "Caret Fixture — Upload");
-  const y0 = await until("a working perch", async () => {
+  // 5. The rim and the task-window perch, H3: no window on screen for the task means nothing drawn
+  // on it and the glyph lit; the glyph goes out with the task. The old corner command is refused.
+  watchRecord("watch-rim", "Caret Fixture — Upload");
+  await until("a working subject", async () => {
     const q = await perch();
-    return q.subject?.taskId === "watch-yield" && q.frame !== null ? q : null;
+    return q.subject?.taskId === "watch-rim" && q.subject.mood === "working" ? q : null;
   }, 3000);
-  const [fx, fy, fw, fh] = y0.frame as [number, number, number, number];
-  await hostCommand(`perch-avoid ${fx - 200} ${fy + fh / 2 - 11} ${fw + 190} 22`);
-  const y1 = await perch();
-  await hostCommand("perch-avoid clear");
-  const y2 = await perch();
-  check("the perch moves aside for a field at its corner, and stays put after", y1.home !== y0.home && y1.overlapsField === false && y2.home === y1.home, { before: y0.home, during: y1.home, after: y2.home });
+  // The window locator answers off the main thread; one Accessibility round (2 s) has come back empty by now.
+  await sleep(2500);
+  const r1 = await perch();
+  check("no window on screen for the task: no rim, perch or caption; the glyph is lit (H3)",
+    r1.seen === "notFound" && !r1.rimShown && !r1.presented && r1.caption === undefined && r1.rim === undefined && r1.lit,
+    { seen: r1.seen, rimShown: r1.rimShown, presented: r1.presented, caption: r1.caption ?? null, lit: r1.lit });
+  helper.tasks.update("watch-rim", { state: "done", cause: "screen" });
+  const r2 = await until("the glyph out", async () => {
+    const q = await perch();
+    return q.lit ? null : q;
+  }, 5000, 50);
+  check("the glyph goes out when the task ends", !r2.lit && !r2.rimShown, { subject: r2.subject ?? null });
+  const avoid = await hostCommand("perch-avoid 0 0 10 10");
+  check("perch-avoid is refused, with the reason", typeof avoid.error === "string" && avoid.error.includes("no longer applies"), { avoid });
   await hostCommand("activity open");
   const lo = await perch();
   await hostCommand("activity close");
-  check("the list opens without becoming key", lo.listOpen === true && lo.isKey === false, { rows: lo.rows.length, listOnScreen: lo.listOnScreen });
-  helper.tasks.update("watch-yield", { state: "done", cause: "screen" });
+  // Hidden mode only: drawn, the desk takes key focus by design (DIRECTION.md H4).
+  check("hidden, the desk opens without drawing or taking key", lo.listOpen && !lo.listOnScreen && !lo.isKey, { rows: lo.rows.length, listOnScreen: lo.listOnScreen });
 
   // Host CPU over 10 s with nothing to report, then with a task running; nothing drawn either way.
   const cpu = async (): Promise<number> => (await run("ps", ["-o", "cputime=", "-p", String(host.pid)], { encoding: "utf8" })).stdout.trim().split(":").map(Number).reduce((s, x) => s * 60 + x, 0);
@@ -364,6 +388,7 @@ try {
   helper.memory.close();
   store.close();
   rmSync(dataDir, { recursive: true, force: true });
+  rmSync(hostHome, { recursive: true, force: true });
 }
 result.checks = checks;
 result.helperErrors = sent.flatMap((x) => (x.m.type === "error" ? [x.m.message] : []));
