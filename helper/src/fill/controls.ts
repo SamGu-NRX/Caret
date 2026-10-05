@@ -1,16 +1,24 @@
 // The form controls fill reads besides text fields (Q1 bug 10): native selects, radio groups, checkboxes,
 // and date and time inputs, found by the reader's Accessibility roles. Chrome exposes them as AXPopUpButton,
 // AXRadioButton under an AXFieldset group, AXCheckBox, AXDateField and AXTimeField (B24 capture,
-// evidence/screen/b24/capture-2). Caret does not write any of them: the executor writes text through the
-// reader, and how Chrome applies an AX write to these controls is unverified. So a value proposed for one
-// is a hand-off the user applies (FillField.handoff); the browser layer (plans/browser-layer.md) will
-// take them over. Code checks every such value: an option must be one the control shows, exactly; a box is
-// ticked only when the chosen source text names it; a date or time is read by the value resolver.
-import type { Node } from "../protocol.ts";
+// evidence/screen/b24/capture-2). Through Accessibility Caret writes none of them: how Chrome applies an AX write to
+// these controls is unverified, so a value proposed for one is a hand-off the user applies (FillField.handoff). In a
+// window the page engine owns, Caret writes them itself in a Fill all (D2-04), through the engine's verified handlers
+// (engines/page-link.ts), on stricter rules (fill.ts controlValue). Code checks every value: an option must be one the
+// control shows; a box is ticked only when the chosen source text says so; a date or time is read by the value
+// resolver.
+import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import { fieldLabelText } from "./descriptor.ts";
 
 export type Control = "text" | "date" | "time" | "select" | "radio" | "checkbox" | "combobox";
+
+/**
+ * The value a date-like field holds, in its own wire format (D2-04): "date" YYYY-MM-DD, "datetime" YYYY-MM-DDTHH:MM (an
+ * HTML datetime-local, with no zone), "month" YYYY-MM, "week" YYYY-Www. Read from the page engine's subrole
+ * (PAGE_SUBROLE); a date field read through Accessibility is "date".
+ */
+export type DateFormat = "date" | "datetime" | "month" | "week";
 
 export interface FormControl {
   /** The node the proposal names: the control itself, or a radio group's container. */
@@ -22,6 +30,13 @@ export interface FormControl {
   options: string[] | null;
   /** A radio group's buttons, in document order. */
   members: Node[];
+  /** A date field's value format; absent for every other control. */
+  format?: DateFormat;
+}
+
+/** A date field's value format, from the page engine's subrole; "date" for anything else (an Accessibility date field). */
+export function dateFormat(n: Node): DateFormat {
+  return n.subrole === PAGE_SUBROLE.datetime ? "datetime" : n.subrole === PAGE_SUBROLE.month ? "month" : n.subrole === PAGE_SUBROLE.week ? "week" : "date";
 }
 
 /**
@@ -86,7 +101,7 @@ export function formControls(w: WindowState): FormControl[] {
     }
     if (n.role === "AXDateField" || n.role === "AXTimeField") {
       if ((n.value ?? "") !== "") continue;
-      out.push({ node: n, control: n.role === "AXDateField" ? "date" : "time", label: label(n), options: null, members: [] });
+      out.push({ node: n, control: n.role === "AXDateField" ? "date" : "time", label: label(n), options: null, members: [], ...(n.role === "AXDateField" ? { format: dateFormat(n) } : {}) });
       continue;
     }
     // A date or time field's own picker button is part of that field.
@@ -125,6 +140,45 @@ export function optionInText(options: readonly string[], text: string): string |
   return hits.length === 1 ? (hits[0] as string) : null;
 }
 
+/** Words that turn a statement into its opposite; a box is never ticked from text that holds one its label lacks. Any word ending in n't is one too. */
+const NEGATION = new Set(["no", "not", "never", "none", "without", "nor", "neither", "cannot", "dont", "doesnt", "isnt", "arent", "wont", "cant"]);
+/** Words that open a box's label as a question or a statement about the user: "Are you", "I have", "Do you have a". */
+const STEM = new Set(["are", "you", "do", "does", "have", "has", "i", "am", "is", "was", "were", "will", "would", "can", "a", "an", "the", "your", "my", "currently"]);
+/** Answers that say yes to a "Label: answer" line. */
+const AFFIRMATIVE = /^(?:yes|y|true|✓|✔)$/i;
+
+/** The words of a box's label or a source line that state its fact: lower case, without question or subject words. */
+function factWords(s: string): string {
+  return wordsOf(s.replace(/[’‘]/g, "'"))
+    .filter((w) => !STEM.has(w))
+    .join(" ");
+}
+
+/** Lower-case words with their apostrophes kept, so "don't" stays one word. */
+const tokens = (s: string): string[] => norm(s.replace(/[’‘]/g, "'")).split(/[^\p{L}\p{N}']+/u).filter((w) => w !== "");
+
+/** Whether the text holds a negating word the label does not. */
+export function negates(label: string, text: string): boolean {
+  const own = new Set(tokens(label));
+  return tokens(text).some((w) => (NEGATION.has(w) || w.endsWith("n't")) && !own.has(w));
+}
+
+/**
+ * Whether a source states the fact a box asks (D2-04), so a Fill all may tick it: the picked span says the box's own
+ * statement ("I have a valid driver's license" for "Do you have a valid driver's license?"), or it is the yes of a
+ * "Label: answer" line whose label is that statement ("Valid driver's license: yes"). Question and subject words and
+ * articles are set aside on both sides (factWords); every other word must match, in order. Nothing is inferred from a
+ * related fact: "Age: 34" does not tick "Are you over 18?". A consent, certification or sign-up box never reaches this
+ * (fill.ts drops it), and a span with a negating word the label lacks never ticks one.
+ */
+export function statesFact(label: string, span: string, context: string | null): boolean {
+  const want = factWords(label);
+  // A question is no statement: a mail asking "Are you a US citizen?" says nothing about the answer.
+  if (want === "" || negates(label, span) || /\?\s*$/u.test(span)) return false;
+  if (factWords(span.replace(/[.!]+$/u, "")) === want) return true;
+  return context !== null && !negates(label, context) && factWords(context) === want && AFFIRMATIVE.test(span.trim().replace(/[.!]+$/u, ""));
+}
+
 const ROLE_NAMES: Record<FormControl["control"], string> = {
   combobox: "Dropdown",
   select: "Pop-up menu",
@@ -136,7 +190,7 @@ const ROLE_NAMES: Record<FormControl["control"], string> = {
 
 /** The descriptor a question carries for a control: what it is, its label, its section, and the options it shows. */
 export function describeControl(c: FormControl, section: string | null, nearest: string | null): string {
-  const parts = [`${ROLE_NAMES[c.control]}.`];
+  const parts = [`${c.format === "datetime" ? "Date and time field" : ROLE_NAMES[c.control]}.`];
   if (c.label !== null) parts.push(`Label: '${c.label}'.`);
   else if (nearest !== null) parts.push(`Nearest label: '${nearest}'.`);
   if (c.options !== null) parts.push(`Options: ${c.options.map((o) => `'${o}'`).join(", ")}.`);

@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ConsumerMessage, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
+import { ConsumerMessage, FILL_ALL_CAPABILITY, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 import { planError } from "./planner/proposal.ts";
 
@@ -23,6 +23,8 @@ export class HelperServer {
   private readonly memoryDocuments = new Set<Socket>();
   /** Host connections whose hello declared ROUTING_CAPABILITY: they get routeDecision and may send routingContext. */
   private readonly routing = new Set<Socket>();
+  /** Host connections whose hello listed FILL_ALL_CAPABILITY: only they may send fillAll (D2-04). */
+  private readonly fillAll = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -142,6 +144,7 @@ export class HelperServer {
             // Routing is the host's: a decision tells its writing help when it may run, so only the host may take one.
             const routing = hello.data.host === true && hello.data.capabilities?.includes(ROUTING_CAPABILITY) === true;
             if (routing) this.routing.add(s);
+            if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
             if (hello.data.host === true) this.helper().hostConnected(session, routing);
             else this.helper().consumerConnected(session);
           } else {
@@ -187,6 +190,11 @@ export class HelperServer {
           // The work an accept starts reports as taskProgress and activity under the offer id; a refusal as error plus a stopped taskProgress.
           else if (m.data.type === "offerAccept") void this.helper().handleOfferAccept(m.data, from);
           else if (m.data.type === "offerStop") void this.helper().handleOfferStop(m.data);
+          // Command-1 on a per-field fill proposal: the whole form in one transaction, reported as an offerAccept's run is.
+          else if (m.data.type === "fillAll") {
+            if (!this.fillAll.has(s)) this.reject(s, `fillAll needs a host hello with "${FILL_ALL_CAPABILITY}" in its capabilities`);
+            else void this.helper().handleFillAll(m.data, from);
+          }
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
           else if (m.data.type === "settings") this.helper().handleSettings(m.data);
           else if (m.data.type === "skillAnswer") this.helper().handleSkillAnswer(m.data);
@@ -253,6 +261,7 @@ export class HelperServer {
       this.consumers.delete(s);
       this.memoryDocuments.delete(s);
       this.routing.delete(s);
+      this.fillAll.delete(s);
       if (session !== null) this.helper().hostDisconnected(session);
       if (this.reader === s) {
         this.reader = null;

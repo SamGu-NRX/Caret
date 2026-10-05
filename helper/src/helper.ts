@@ -17,6 +17,7 @@ import {
   PROTOCOL_VERSION,
   type ActivityReply,
   type ActivityRequest,
+  type FillAll,
   type FillProposal,
   type FillResult,
   type FillRequest,
@@ -264,7 +265,7 @@ export class Helper {
   /** Forms whose fill was in flight when an About entry was added; the focused field is asked about again when that fill ends. */
   private readonly refillAfter = new Set<string>();
   /** Recent proposals, by id: the window and each proposed field's value, so fillResult can be checked and matched. */
-  private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string>; labels: Map<string, string>; app: string | null }>();
+  private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string>; labels: Map<string, string>; app: string | null; proposal: FillProposal }>();
   /** Every Jev request goes through this, which records it as a use of "Read and prepare" (B17). Null when Jev is off. */
   private readonly ask: AskJev | null;
   /** The configured plan writer, wrapped so each request is recorded (recordRead). */
@@ -1254,6 +1255,28 @@ export class Helper {
     return out;
   }
 
+  /**
+   * The host's Command-1 on a per-field fill proposal (D2-04, protocol FillAll): the transaction the fill pop-up's Fill
+   * all runs, for every field the proposal gives a value Caret writes. The proposal must be one this helper published
+   * and still keeps, not run before, and every destination and source must still show what it showed (recheckFill).
+   * The run is the task `proposalId`, bound to the host session that asked. A refusal is an error and a stopped
+   * taskProgress, as an offerAccept's is.
+   */
+  async handleFillAll(m: FillAll, session?: string): Promise<TaskResult | null> {
+    if (this.mode !== "live") return this.refuseAccept(m.proposalId, "the helper is in shadow mode and does not act");
+    const kept = this.proposals.get(m.proposalId);
+    if (kept === undefined) return this.refuseAccept(m.proposalId, "no such fill proposal, or it expired");
+    if (this.executor.has(m.proposalId)) return this.refuseAccept(m.proposalId, "this proposal was already filled");
+    const p = writtenFields(kept.proposal, this.model.windows.get(kept.windowId));
+    if (p.fields.length === 0) return this.refuseAccept(m.proposalId, "Caret writes none of this proposal's fields");
+    const stale = recheckFill(this.model, p, this.aboutNow);
+    if (stale !== null) return this.refuseAccept(m.proposalId, `${stale}; nothing was written`);
+    this.bindNew(m.proposalId, session);
+    const { plan, slots } = fillPlan(this.model, p);
+    // The destinations were empty just now; one the user fills before the run's first read stops it.
+    return this.runFrom("fill", m.proposalId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+  }
+
   /** Esc on running work: a stop for the task the offer started. */
   handleOfferStop(m: OfferStop): Promise<TaskResult | UndoResult | null> {
     return this.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: m.offerId, action: "stop" });
@@ -1648,9 +1671,10 @@ export class Helper {
       // no per-field insert for a fillResult to report, and the proposal is not kept for one. An
       // explicit fillRequest asks for the proposal itself (scripts/fill-eval.ts reads its fields), so it
       // always gets one.
-      // The pop-up runs the fields Caret writes; a form's selects, boxes, dates and times are hand-offs (B24).
-      const written = writtenFields(p);
-      if (!explicit && fillPopupEligible(written)) {
+      // The pop-up runs the fields Caret writes: text, and in a page the engine owns, the controls it writes (D2-04).
+      // What it leaves to the user, the pop-up lists.
+      const written = writtenFields(p, this.model.windows.get(p.windowId));
+      if (!explicit && fillPopupEligible(p)) {
         if (this.fillOverBeforeShown(written, formKey, focuses) !== null) {
           store.count("fill.popup_stale", 1, now);
           return p;
@@ -1671,6 +1695,8 @@ export class Helper {
         // For the use a fillResult records: the field's name and the form's app, as they were when proposed.
         labels: new Map(valued.map((f) => [f.key, fieldLabel(this.model, p.windowId, f.key)])),
         app: this.model.windows.get(p.windowId)?.app.name ?? null,
+        // For the host's Command-1 (fillAll), which runs the whole proposal as the pop-up's Fill all does.
+        proposal: p,
       });
       this.publish(p);
       if (!explicit && p.fields.some((f) => f.value !== null)) this.gate.spoke(this.now());
@@ -2226,7 +2252,8 @@ function clipUse(s: string): string {
 
 /** Whether a field is the pop-up's trigger or one of the fields it fills. */
 function inFillForm(p: GroundedProposal, windowId: string, key: string): boolean {
-  return windowId === p.windowId && (key === p.triggerKey || p.fields.some((f) => f.key === key));
+  // A field the pop-up leaves to the user is part of the form too: setting it first keeps the offer (D2-04).
+  return windowId === p.windowId && (key === p.triggerKey || p.fields.some((f) => f.key === key) || p.yours.some((y) => y.key === key));
 }
 
 /** A zod issue path as a JSON path: ["spec", "blocks", 2, "rows", 0] is spec.blocks[2].rows[0]. */

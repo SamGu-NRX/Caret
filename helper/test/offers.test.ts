@@ -12,7 +12,7 @@ import { describeField } from "../src/fill/descriptor.ts";
 import { HelperMessage, PROTOCOL_VERSION, type FillField, type FillProposal, type OfferAccept, type OfferAction, type OfferPopup } from "../src/protocol.ts";
 import { parsePopupSpec } from "../src/popup.ts";
 import { HostOfferRegistry, acceptRefusal } from "../src/offers/registry.ts";
-import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "../src/offers/fill-popup.ts";
+import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { OpenAppOffers } from "../src/offers/open-app.ts";
 import { OfferGate } from "../src/offers/settings.ts";
 import { offerField } from "../src/offers/field.ts";
@@ -207,7 +207,7 @@ describe("fill pop-up", () => {
 
   it("builds a valid spec in which every shown value names the node it came from", () => {
     const m = desk();
-    const msg = buildFillPopup(m, proposal([nameField, phoneField]) as GroundedProposal);
+    const msg = buildFillPopup(m, writtenFields(proposal([nameField, phoneField])));
     expect(msg).toEqual({
       type: "popup",
       v: PROTOCOL_VERSION,
@@ -252,7 +252,7 @@ describe("fill pop-up", () => {
         ? grounded(FK(`textfield:${l.toLowerCase()}~0`), "Austin", { windowId: SRC2, nodeKey: "dev.caret.directory/standard/statictext:austin~0", appName: "Directory Fixture", windowTitle: "Directory Fixture" })
         : { ...nameField, key: FK(`textfield:${l.toLowerCase()}~0`) },
     );
-    const spec = buildFillPopup(m, proposal(fields) as GroundedProposal).spec;
+    const spec = buildFillPopup(m, writtenFields(proposal(fields))).spec;
     const [header, source, rows] = spec.blocks;
     expect(header).toMatchObject({ title: { text: "Fill 6 fields" } });
     expect(source).toEqual({
@@ -272,7 +272,7 @@ describe("fill pop-up", () => {
     const m = desk();
     // Each field as fill describes it, which recheckFill compares with the form as it is now.
     const form = m.windows.get(FORM)!;
-    const p = proposal([nameField, phoneField].map((f) => ({ ...f, descriptor: describeField(form, form.nodes.get(f.key)!).text }))) as GroundedProposal;
+    const p = writtenFields(proposal([nameField, phoneField].map((f) => ({ ...f, descriptor: describeField(form, form.nodes.get(f.key)!).text }))));
     expect(recheckFill(m, p, () => null)).toBeNull();
     m.apply(snap([text(MK("statictext:dana whitfield~0"), "Dana W.")], { at: 4000, windowId: SRC, title: "Order confirmation", app: MAIL_APP, root: MK("statictext:dana whitfield~0") }));
     expect(recheckFill(m, p, () => null)).toBe(`the source ${MK("statictext:dana whitfield~0")} changed`);
@@ -282,7 +282,7 @@ describe("fill pop-up", () => {
   });
 
   it("writes each field by its exact key, with every screen string a slot", () => {
-    const { plan, slots } = fillPlan(desk(), proposal([nameField, phoneField]) as GroundedProposal);
+    const { plan, slots } = fillPlan(desk(), writtenFields(proposal([nameField, phoneField])));
     const filled = fillSlots(Plan.parse(plan), slots);
     expect(filled.steps.map((s) => [s.says, s.end.kind === "valueEquals" && s.end.target.key, s.end.kind === "valueEquals" && s.end.window.title])).toEqual([
       ["Name holds Dana Whitfield", FK("textfield:name~0"), "Checkout {{x}}"],

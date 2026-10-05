@@ -8,7 +8,7 @@ import { ScreenModel } from "../src/model.ts";
 import { formControls } from "../src/fill/controls.ts";
 import { PageEngineLink, toVerbOutcome, toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
-import { PageResult, PROTOCOL_VERSION, type HelperToEngine, type PageControl, type PageSnapshot, type PageVerb } from "../src/protocol.ts";
+import { PAGE_SUBROLE, PageResult, PROTOCOL_VERSION, type HelperToEngine, type PageControl, type PageSnapshot, type PageVerb } from "../src/protocol.ts";
 
 const ORIGIN = "https://jobs.example.test";
 const X = "kcmlnoabcdefghijklmnopabcdefghij";
@@ -113,7 +113,7 @@ describe("a Yes/No question built from toggle buttons (Ashby)", () => {
 
   it("reads as a radio group holding its answer, checked where pressed, and leaves an answered one out of fill", () => {
     const w = modelOf(controls({ yes: false, no: true })).windows.get(WIN)!;
-    expect(w.nodes.get(GROUP)).toMatchObject({ role: "AXGroup", subrole: "AXFieldset", label: Q_YEARS, value: "No", editable: true });
+    expect(w.nodes.get(GROUP)).toMatchObject({ role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup, label: Q_YEARS, value: "No", editable: true });
     const kids = [...w.nodes.values()].filter((n) => n.parent === GROUP).map((n) => [n.role, n.label, n.states ?? []]);
     expect(kids).toEqual([["AXRadioButton", "Yes", []], ["AXRadioButton", "No", ["checked"]]]);
     expect(formControls(w).filter((c) => c.control === "radio").map((c) => c.label)).toEqual([Q_AUTH]);

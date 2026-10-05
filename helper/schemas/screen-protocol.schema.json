@@ -889,6 +889,36 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "fillAll"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "proposalId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "proposalId",
+            "at"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "runPlan"
             },
             "v": {
@@ -1779,6 +1809,10 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "writes": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [

@@ -446,6 +446,28 @@ export const FillRequest = z.object({
 });
 export type FillRequest = z.infer<typeof FillRequest>;
 
+/**
+ * The hello capability for `fillAll` (D2-04). Only a host that sends it may send one; anyone else's is refused by
+ * name, as a routingContext without ROUTING_CAPABILITY is.
+ */
+export const FILL_ALL_CAPABILITY = "fillAll";
+
+/**
+ * Host to helper (D2-04): Command-1 on a per-field fill proposal (ghost fill) asks the helper to fill the whole form
+ * in one transaction, as the fill pop-up's Fill all does: every field the proposal gives a value Caret writes (text,
+ * and the controls whose handoff says `writes`), under one grant, each read back, undone in one undo. The run is the
+ * task `proposalId`, reported as taskProgress under that id; a refusal is an error plus a stopped taskProgress with
+ * stopReason "refused", as an offerAccept's is. A proposal can be run once, and only while every field and source
+ * still shows what it showed.
+ */
+export const FillAll = z.object({
+  type: z.literal("fillAll"),
+  v: z.literal(PROTOCOL_VERSION),
+  proposalId: z.string().min(1),
+  at: ms,
+});
+export type FillAll = z.infer<typeof FillAll>;
+
 /** Runs a plan (executor/schema.ts) with its slots filled. Progress comes back as taskProgress. */
 export const RunPlan = z.object({
   type: z.literal("runPlan"),
@@ -864,7 +886,7 @@ export const SkillAnswer = z.object({
 });
 export type SkillAnswer = z.infer<typeof SkillAnswer>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -915,22 +937,26 @@ export const FillWithheld = z.enum(["disagree", "lowConfidence", "sourceCut", "w
 export type FillWithheld = z.infer<typeof FillWithheld>;
 
 /**
- * What a control is (B24): a text field Caret writes, or a control the user sets from Caret's proposal. Chrome
- * shows native selects, radio groups, checkboxes and date and time inputs through Accessibility; the executor
- * writes none of them yet, so their values come as `handoff`. "combobox" is a web page's custom dropdown
- * (react-select and the like): typing into it does not pick an option. Since B27 its value is `value`, a write, only
- * in a window the page engine owns, whose write is the engine's verified pick (pageChooseOption); anywhere else it is
- * a `handoff` the user sets.
+ * What a control is (B24): a text field Caret writes, or a control whose value comes as `handoff`. "combobox" is a
+ * web page's custom dropdown (react-select and the like): typing into it does not pick an option. A control's value
+ * is never `value`, whoever sets it: in a window the page engine owns, Caret writes it in a Fill all (D2-04,
+ * FillHandoff.writes); anywhere else the user sets it.
  */
 export const FillControl = z.enum(["text", "date", "time", "select", "radio", "checkbox", "combobox"]);
 export type FillControl = z.infer<typeof FillControl>;
 
 /**
- * A value for a control Caret does not write: the option to pick, "checked" for a box to tick, or an ISO date
- * (YYYY-MM-DD) or time (HH:MM, 24-hour), with what it is read from. `value` stays null for such a control, so a
- * consumer that does not know this key never writes it. `display` is how the host says it ("Mar 3, 1991").
+ * A value for a control: the option to pick, "checked" for a box to tick, or the input's own wire format of a date
+ * (YYYY-MM-DD), time (HH:MM, 24-hour) or date and time (YYYY-MM-DDTHH:MM), with what it is read from. `value` stays
+ * null for such a control, so a consumer that does not know this key never writes it itself. `display` is how the
+ * host says it ("Mar 3, 1991").
+ *
+ * `writes` (D2-04): Caret writes this control in the form's one Fill all transaction, through the page engine's
+ * verified handler for it (a native select by option label, a checkbox or radio by its checked state, a date or time
+ * by its value, a custom dropdown by its option's name), and undoes it with the rest. Absent: the user sets it. Before
+ * D2-04 a page dropdown's pick came as `value`, which the host's decoder refuses on any control but text.
  */
-export const FillHandoff = z.object({ value: z.string(), display: z.string(), source: FillSource.nullable(), memory: FillMemory.nullable() });
+export const FillHandoff = z.object({ value: z.string(), display: z.string(), source: FillSource.nullable(), memory: FillMemory.nullable(), writes: z.literal(true).optional() });
 export type FillHandoff = z.infer<typeof FillHandoff>;
 
 export const FillField = z.object({
@@ -1680,6 +1706,31 @@ export const PageControlKind = z.enum([
   "select", "checkbox", "radio", "combobox", "button", "link", "file", "contenteditable", "range", "color",
 ]);
 export type PageControlKind = z.infer<typeof PageControlKind>;
+
+/**
+ * Subroles the page engine's window snapshot (engines/page-link.ts toWindowSnapshot) gives nodes whose reader role
+ * alone does not say what fill must know (D2-04): a date-like input's own value format (each is AXDateField or
+ * AXTimeField, as Chrome's Accessibility shows them), a file input (an AXButton, like a dropzone), an ARIA switch (an
+ * AXCheckBox that often acts at once, which a Fill all leaves to the user), and a Yes/No question built from toggle
+ * buttons (W4), whose press cannot be taken back, so a Fill all leaves it to the user too. A radio group keeps
+ * Chrome's AXFieldset.
+ */
+export const PAGE_SUBROLE = {
+  date: "CaretDateInput",
+  time: "CaretTimeInput",
+  datetime: "CaretDateTimeInput",
+  month: "CaretMonthInput",
+  week: "CaretWeekInput",
+  file: "CaretFileInput",
+  switch: "AXSwitch",
+  pressGroup: "CaretPressGroup",
+} as const;
+
+/**
+ * What a page checkbox's node holds while it is ticked (D2-04); "" while it is not. A Fill all writes this value to tick
+ * one, and its undo writes "" back. It is the value FillHandoff carries for a box to tick.
+ */
+export const PAGE_CHECKED = "checked";
 
 /** [x, y, width, height] in CSS pixels of the frame's own viewport. */
 export const PageRect = z.tuple([z.number(), z.number(), z.number(), z.number()]);

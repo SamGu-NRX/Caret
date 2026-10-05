@@ -64,6 +64,8 @@ export class TransferDetector {
       const id = `${c.windowId}\u0000${c.key}`;
       const p = this.pending.get(id);
       const w = this.model.windows.get(c.windowId);
+      // A page checkbox is editable since D2-04 and holds "checked" while ticked: a state, not text anyone entered.
+      if (w?.nodes.get(c.key)?.role === "AXCheckBox") continue;
       const focused = w?.focused === true;
       const after = c.after ?? "";
       if (after.trim() === "") {
