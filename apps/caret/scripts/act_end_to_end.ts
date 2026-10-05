@@ -70,6 +70,9 @@ const { values: a } = parseArgs({
     "idle-min": { type: "string", default: "300" },
     /** A directory a screenshot server watches (the rig job's bash loop): this script asks it for shots. */
     shots: { type: "string" },
+    /** `shown` draws the perch, so the rim around the working window is on screen (the VM only;
+     * the default keeps the desktop runs' host from drawing it). */
+    perch: { type: "string", default: "hidden" },
   },
 });
 const TARGET = a.target;
@@ -86,6 +89,8 @@ const ESC_RUNS = Number(a["esc-runs"]);
 const IDLE_MIN = Number(a["idle-min"]);
 if (!Number.isInteger(RUNS) || !Number.isInteger(ESC_RUNS) || RUNS < 0 || ESC_RUNS < 0 || RUNS + ESC_RUNS === 0) throw new Error("--runs and --esc-runs are whole numbers, and at least one run is asked for");
 if (!Number.isFinite(IDLE_MIN) || IDLE_MIN < 0) throw new Error("--idle-min is a number of seconds");
+const PERCH = a.perch as string;
+if (PERCH !== "hidden" && PERCH !== "shown") throw new Error("--perch is hidden or shown");
 const FORM = resolve(ROOT, "helper", "fixtures", "web", "form.html");
 const TEXTEDIT = "/System/Applications/TextEdit.app/Contents/MacOS/TextEdit";
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -632,7 +637,7 @@ try {
   reader.stderr.on("data", (d: string) => (readerLog += d));
   const settings = join(sockDir, "settings.json");
   const host = spawn(CARET, [
-    "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", "hidden", "--allow-pids", String(t.pid),
+    "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", PERCH, "--allow-pids", String(t.pid),
     "--test-hooks", "--status-item", "off", "--onboarding", "off", "--settings", settings,
   ]);
   started("caret host", host);
@@ -730,11 +735,17 @@ try {
       };
       if (kind === "esc") {
         // One snapshot per poll, and it must be this task's working line.
-        await until("the working line to offer Esc", async () => {
+        const working = await until("the working line to offer Esc", async () => {
           const x = await surface();
           return x.workingOn === offerKey && (x.working ?? 0) >= 3.2 ? x : null;
         }, 10_000);
-        if (r === 0) await shot("esc-working");
+        if (r === 0) {
+          // What the first working shot shows, as the host reports it: the working slip's panel and
+          // placement, and the perch's rim around the task's window (drawn only with --perch shown).
+          const perch = await hostCommand("perch").catch((e: unknown) => ({ error: String(e) }));
+          writeFileSync(join(OUT, "working.json"), JSON.stringify({ surface: working, perch, window: windowOf()?.window ?? null }, null, 1) + "\n");
+          await shot("esc-working");
+        }
         await key(t.pid, "escape");
         await until("the stopped line", async () => {
           const x = await surface();
