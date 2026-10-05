@@ -6,9 +6,9 @@
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { formControls } from "../src/fill/controls.ts";
-import { PageEngineLink, toWindowSnapshot } from "../src/engines/page-link.ts";
+import { PageEngineLink, toVerbOutcome, toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
-import { PROTOCOL_VERSION, type HelperToEngine, type PageControl, type PageSnapshot, type PageVerb } from "../src/protocol.ts";
+import { PageResult, PROTOCOL_VERSION, type HelperToEngine, type PageControl, type PageSnapshot, type PageVerb } from "../src/protocol.ts";
 
 const ORIGIN = "https://jobs.example.test";
 const X = "kcmlnoabcdefghijklmnopabcdefghij";
@@ -141,5 +141,22 @@ describe("a Yes/No question built from toggle buttons (Ashby)", () => {
     expect((await write("Yes", "")).outcome).toBe("changed");
     expect((await write("", "No", "m1")).outcome).toBe("notSameElement");
     expect(verbs().filter((v) => v.kind !== "pageWalk")).toEqual([]);
+  });
+});
+
+describe("a Yes/No press after which the page left (B28)", () => {
+  const changed = { type: "pageResult" as const, v: 1 as const, id: "x", at: 1, outcome: "failed" as const, detail: "the page changed after the press (navigated), so Caret stopped", pageChanged: ["navigated" as const] };
+
+  it("reaches the executor as axError carrying what changed, so the run stops with the press possibly landed", () => {
+    expect(toVerbOutcome(changed)).toMatchObject({ outcome: "axError", pageChanged: ["navigated"] });
+    // Without pageChanged a failed press keeps W4's reading, and carries none.
+    expect(toVerbOutcome({ ...changed, pageChanged: undefined }).pageChanged).toBeUndefined();
+  });
+
+  it("takes pageChanged only on a failed result with no readings", () => {
+    expect(PageResult.safeParse(changed).success).toBe(true);
+    expect(PageResult.safeParse({ ...changed, outcome: "ok" }).success).toBe(false);
+    expect(PageResult.safeParse({ ...changed, readings: { before: "", afterInput: "Yes", afterBlur: "Yes", invalid: false, error: null } }).success).toBe(false);
+    expect(PageResult.safeParse({ ...changed, pageChanged: [] }).success).toBe(false);
   });
 });

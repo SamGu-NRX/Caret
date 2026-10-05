@@ -639,6 +639,22 @@
                 "tcc",
                 "noLocalSource"
               ]
+            },
+            "pageChanged": {
+              "minItems": 1,
+              "maxItems": 6,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "navigated",
+                  "navigationStarted",
+                  "documentGone",
+                  "beforeunload",
+                  "pagehide",
+                  "submit"
+                ]
+              }
             }
           },
           "required": [

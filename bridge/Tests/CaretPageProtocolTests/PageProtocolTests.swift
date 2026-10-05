@@ -40,7 +40,18 @@ private func goldenLines() throws -> [Data] {
                           "pagePing", "pagePong", "pageChunk", "scopedActGrant",
                           "pageResult", "pageResult", "pageFocus", "pageSitesOff", "pageResult",
                           "pageCommand", "pageResult", "pageInput",
-                          "pageSnapshot", "pageCommand", "pageResult"])
+                          "pageSnapshot", "pageCommand", "pageResult",
+                          "pageResult"])
+    }
+
+    /// B28: a Yes/No press after which the page left: failed, no readings, and what showed the change.
+    @Test func readsTheB28Message() throws {
+        let lines = try goldenLines()
+        guard case let .pageResult(res) = try JSONDecoder().decode(PageMessage.self, from: lines[37]) else { Issue.record("line 38 is not a pageResult"); return }
+        #expect(res.outcome == .failed && res.readings == nil && res.choice?.flavor == .pressGroup)
+        #expect(res.pageChanged == ["navigationStarted", "beforeunload"])
+        let again = try JSONDecoder().decode(PageResult.self, from: JSONEncoder().encode(res))
+        #expect(again == res)
     }
 
     /// W4: a radio group's question, a press group's options, and the press that names its question.

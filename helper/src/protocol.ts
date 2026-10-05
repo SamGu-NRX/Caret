@@ -385,8 +385,14 @@ export const VerbResult = z
     detail: z.string().nullable(),
     event: CalendarEventShape.optional(),
     blocked: CalendarBlock.optional(),
+    /**
+     * Page engines only (B28): the write was a Yes/No press, and the page then navigated or submitted (PageResult
+     * pageChanged). Comes with outcome axError: the press may have landed, and the run stops at once.
+     */
+    pageChanged: z.lazy(() => PageChanges).optional(),
   })
-  .refine((r) => (r.outcome === "blocked") === (r.blocked !== undefined), { message: "blocked comes with outcome blocked, and blocked needs it", path: ["blocked"] });
+  .refine((r) => (r.outcome === "blocked") === (r.blocked !== undefined), { message: "blocked comes with outcome blocked, and blocked needs it", path: ["blocked"] })
+  .refine((r) => r.pageChanged === undefined || r.outcome === "axError", { message: "pageChanged comes with outcome axError", path: ["pageChanged"] });
 export type VerbResult = z.infer<typeof VerbResult>;
 
 /**
@@ -1924,6 +1930,14 @@ export const PageAttached = z.object({
 });
 export type PageAttached = z.infer<typeof PageAttached>;
 
+/**
+ * What showed that the page changed after a Yes/No press (B28): the worker saw the frame's navigation generation move
+ * (`navigated`), a navigation begin in it (`navigationStarted`), or its document go before answering
+ * (`documentGone`); the content script saw beforeunload, pagehide or submit in the frame.
+ */
+export const PageChanges = z.array(z.enum(["navigated", "navigationStarted", "documentGone", "beforeunload", "pagehide", "submit"])).min(1).max(6);
+export type PageChanges = z.infer<typeof PageChanges>;
+
 export const PageResult = z
   .object({
     type: z.literal("pageResult"),
@@ -1943,8 +1957,11 @@ export const PageResult = z
     choice: PageChoice.optional(),
     /** pageAttachFile only. */
     attached: PageAttached.optional(),
+    /** A Yes/No press after which the page navigated or submitted (B28): with outcome failed and no readings. */
+    pageChanged: PageChanges.optional(),
   })
-  .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] });
+  .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] })
+  .refine((r) => r.pageChanged === undefined || (r.outcome === "failed" && r.readings === undefined), { message: "pageChanged comes with outcome failed and no readings", path: ["pageChanged"] });
 export type PageResult = z.infer<typeof PageResult>;
 
 /** The worker's first message once the bridge says the engine is ready. One per worker instance and connection. */

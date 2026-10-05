@@ -19,6 +19,7 @@ describe("page golden lines", () => {
       "pageResult", "pageResult", "pageFocus", "pageSitesOff", "pageResult",
       "pageCommand", "pageResult", "pageInput",
       "pageSnapshot", "pageCommand", "pageResult",
+      "pageResult",
     ]);
   });
 
@@ -172,5 +173,14 @@ describe("W4 page lines", () => {
     expect(PageResult.parse(lines[36]).choice?.flavor).toBe("pressGroup");
     // An empty question or group name is not one.
     expect(PageCommand.safeParse({ ...cmd, verb: { ...cmd.verb, question: "" } }).success).toBe(false);
+  });
+});
+
+describe("B28 page lines", () => {
+  it("carries what showed the page changed after a Yes/No press, on a failed result with no readings", () => {
+    const r = PageResult.parse(lines[37]);
+    expect(r.outcome === "failed" && r.readings === undefined && r.choice?.flavor === "pressGroup").toBe(true);
+    expect(r.pageChanged).toEqual(["navigationStarted", "beforeunload"]);
+    expect(PageResult.safeParse({ ...lines[37], pageChanged: ["reloaded"] }).success).toBe(false);
   });
 });

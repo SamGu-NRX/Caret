@@ -167,6 +167,9 @@ public struct PageAttached: Codable, Equatable, Sendable {
 public struct PageResult: Codable, Equatable, Sendable {
     public var v: Int, id: String, at: Int64, outcome: PageOutcome, detail: String?, readings: PageWriteReadings?, risk: String?
     public var choice: PageChoice?, attached: PageAttached?
+    /// B28: a Yes/No press after which the page navigated or submitted, with outcome failed. The helper's zod schema
+    /// (PageChanges) names the values; the bridge only relays them.
+    public var pageChanged: [String]?
 }
 
 /// Focus moved in the tab the user is in (W2); nothing about the element.

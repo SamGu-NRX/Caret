@@ -191,6 +191,7 @@ function verbResult(outcome: VerbOutcome, detail: string | null): VerbResult {
  * A page outcome as the executor reads a reader outcome. `failed` with the old value back is `changed` (nothing
  * landed, the run stops). A failed write that left another value, or that stopped midway with no readings (the
  * field changed under it), is `axError`, which the executor treats as "may have landed" and judges by re-reading.
+ * A failed press with `pageChanged` keeps it, so the executor stops without judging (B28).
  */
 export function toVerbOutcome(r: PageResult): VerbResult {
   const detail = r.detail === null ? r.outcome : `${r.outcome}: ${r.detail}`;
@@ -211,6 +212,8 @@ export function toVerbOutcome(r: PageResult): VerbResult {
     case "handoff":
       return verbResult("notAllowed", detail);
     case "failed":
+      // A Yes/No press after which the page navigated or submitted (B28): may have landed, and the executor stops at once.
+      if (r.pageChanged !== undefined) return { ...verbResult("axError", detail), pageChanged: r.pageChanged };
       return verbResult(r.readings === undefined || r.readings.afterBlur !== r.readings.before ? "axError" : "changed", detail);
     case "unsupported":
     case "error":

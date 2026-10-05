@@ -8,12 +8,15 @@
 //     have no type attribute and no <form> around them, so the browser's own submit does nothing);
 //   - the verb names the group's question (`question`, from the walk the plan was made on), and it is still the text
 //     around the group, and it is not a self-identification or consent question (walker.exclusionOf);
-//   - afterwards the page's own state says it took the answer: this button aria-pressed "true", every other "false".
+//   - afterwards the page's own state says it took the answer: this button aria-pressed "true", every other "false";
+//   - and the page did not leave or submit (B28 lead decision 2): from just before the click until the answer, this
+//     frame fired no beforeunload, pagehide or submit (watchLeaving). The worker checks the frame's navigation as well.
 // Only the named button is pressed, once, and its click's default action is cancelled (dom.ts pressToggle), so the
 // browser itself submits nothing from it. What the page's own click handler does is the page's: this exception, like
 // the combobox one, runs page script on the user's accepted plan (W4 review #1, a lead decision). A press that the
-// page does not show as taken is `failed` with readings, which the helper treats as "may have landed".
-import type { ActAnswer, ActVerb, Choice } from "../shared/messages.ts";
+// page does not show as taken is `failed` with readings, which the helper treats as "may have landed". A press after
+// which the page left or submitted is `failed` with `pageChanged` and no readings: the run stops there.
+import type { ActAnswer, ActVerb, Choice, PageChange } from "../shared/messages.ts";
 import { normalizeName } from "../shared/choose.ts";
 import { clean } from "./names.ts";
 import { pressToggle, settle, until } from "./dom.ts";
@@ -28,6 +31,31 @@ const pressed = (b: Element): boolean => b.getAttribute("aria-pressed") === "tru
 /** What the group shows as its answer: the pressed options' names, comma-joined; "" when none is pressed. */
 export function pressedValue(g: PressGroup): string {
   return g.options.filter(pressed).map((b) => controlName(b, "button")).join(", ");
+}
+
+/**
+ * Watches this frame for the page leaving or submitting: beforeunload and pagehide on the window, submit anywhere in
+ * the document, all in the capture phase so a page handler cannot hide them. form.submit() fires no submit event, but
+ * the navigation it starts fires beforeunload. `stop` removes the listeners and returns what was seen, in order.
+ */
+export function watchLeaving(): { seen: () => PageChange[]; stop: () => PageChange[] } {
+  const seen: PageChange[] = [];
+  const on = (kind: "beforeunload" | "pagehide" | "submit") => (): void => {
+    if (!seen.includes(kind)) seen.push(kind);
+  };
+  const handlers = { beforeunload: on("beforeunload"), pagehide: on("pagehide"), submit: on("submit") };
+  window.addEventListener("beforeunload", handlers.beforeunload, true);
+  window.addEventListener("pagehide", handlers.pagehide, true);
+  document.addEventListener("submit", handlers.submit, true);
+  return {
+    seen: () => [...seen],
+    stop: () => {
+      window.removeEventListener("beforeunload", handlers.beforeunload, true);
+      window.removeEventListener("pagehide", handlers.pagehide, true);
+      document.removeEventListener("submit", handlers.submit, true);
+      return [...seen];
+    },
+  };
 }
 
 export async function pressOption(el: Element, verb: ChooseVerb, check: () => ActAnswer | null, alive: () => Promise<boolean>): Promise<ActAnswer> {
@@ -57,9 +85,22 @@ export async function pressOption(el: Element, verb: ChooseVerb, check: () => Ac
     const g2 = pressGroup(el);
     return el instanceof HTMLButtonElement && sendsNoForm(el) && g2 !== null && g2.container === g.container && g2.question === g.question && check() === null;
   };
-  if (!pressToggle(el, same)) return answer("failed", "the page changed the button while Caret pressed it, so Caret did not click", { choice: choice([mine]) });
-  await until(() => (pressed(el) ? true : null), PRESS_WAIT_MS);
-  await settle();
+  // Watched from the first pointer event: a page may leave from its mousedown handler, before the click.
+  const leaving = watchLeaving();
+  let clicked = false;
+  let left: PageChange[];
+  try {
+    clicked = pressToggle(el, same);
+    if (clicked) {
+      await until(() => (pressed(el) || leaving.seen().length > 0 ? true : null), PRESS_WAIT_MS);
+      await settle();
+    }
+  } finally {
+    left = leaving.stop();
+  }
+  // The page left or submitted: whatever it shows now, the press may have landed, and the run stops.
+  if (left.length > 0) return answer("failed", `the page changed after the press (${left.join(", ")})`, { choice: choice([mine]), pageChanged: left });
+  if (!clicked) return answer("failed", "the page changed the button while Caret pressed it, so Caret did not click", { choice: choice([mine]) });
   // After the press: a stop leaves the page alone and is `failed` with no readings, which the helper reads as "may have landed".
   const end = check();
   if (end !== null) return answer("failed", `the press went in, then ${end.detail ?? end.outcome}; Caret stopped there`, { choice: choice([mine]) });

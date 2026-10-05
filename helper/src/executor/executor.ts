@@ -275,6 +275,9 @@ class Interrupted extends Error {}
 /** The reader focused a web field for a focus-first write and focus was then elsewhere; it wrote nothing (verbResult focusMoved). */
 class FocusMoved extends Error {}
 
+/** A page engine's Yes/No press after which the page navigated or submitted (verbResult pageChanged, B28): it may have landed. */
+class PageChanged extends Error {}
+
 export class Executor {
   private readonly tasks = new Map<string, Task>();
   /** Every Jev target question this executor asked, for evaluation. Holds element keys, not screen text. */
@@ -889,6 +892,14 @@ export class Executor {
           task.handedOff = { action: w.window.windowId === task.userWindow ? "writeHere" : "writeElsewhere", what: field, windowId: w.window.windowId };
           throw StepStop.handoff(`focus moved away from ${field} when Caret focused it, so Caret did not write it; it is yours to fill`);
         }
+        // B28 lead decision 2: a Yes/No press after which the page navigated or submitted. The press may have landed,
+        // so it goes in the ledger unconfirmed for undo, and the run stops here, before any fallback or re-read: the
+        // page Caret was acting on is gone or going.
+        if (e instanceof PageChanged) {
+          this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true });
+          this.deps.warn?.(`executor: task ${task.id} step ${i}: the page changed after the press: ${e.message}`);
+          throw StepStop.stop("changed", `The page changed after Caret pressed '${value}', so Caret stopped.`);
+        }
         // An axError may come after the value was set (a timeout while the reader settles and re-walks; a page pick or
         // write that went in before a revoke stopped its later stages, W3), so the write is recorded before any verify,
         // unconfirmed: undo restores it only if the field holds `value`, and counts it as never landed if the field
@@ -1069,6 +1080,8 @@ export class Executor {
     });
     try {
       const r = await this.deps.reader.run(verb);
+      // The page left or submitted after a press: nothing more runs, whatever else came in meanwhile (B28).
+      if (r.pageChanged !== undefined) throw new PageChanged(`${r.pageChanged.join(", ")}${r.detail === null ? "" : ` (${r.detail})`}`);
       // A pause, stop or take-over came in while the verb was on its way (a stop or take-over also revoked
       // the grant, so the reader refused). The reader acted on none of these outcomes, so the run ends as the
       // user asked, not as a reader failure. An axError may follow an act that landed, so it keeps its path.
