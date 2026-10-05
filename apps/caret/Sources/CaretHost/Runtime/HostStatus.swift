@@ -23,6 +23,7 @@ final class HostStatus: @unchecked Sendable {
         var writing: DebugState.WritingInfo?
         var pageSight: PageSight.DebugInfo?
         var routing: DebugState.RoutingInfo?
+        var spend: HelperSpend?
     }
 
     struct KeyStamp: Equatable {

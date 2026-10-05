@@ -23,6 +23,10 @@ import { wirePageEngines } from "./engines/wire.ts";
 import { makeWriterPort, type WriterPort } from "./writer/port.ts";
 import { ASK_MAKER, INTENT_ROUTE, WRITER_ROUTE } from "./writer/config.ts";
 import { readKey } from "./writer/env.ts";
+import { ledgeredJev, ledgeredWriter, SpendLedger, throttledTotals } from "./spend.ts";
+
+/** Every model call this process makes, counted from the providers' usage reports (H8): sent to "spend" consumers. */
+const spend = new SpendLedger();
 
 /** The configured plan writer, or null with a warning when its key is missing (the key is read again at each call, never printed). */
 function writerFromEnv(say: (line: string) => void): WriterPort | null {
@@ -32,7 +36,7 @@ function writerFromEnv(say: (line: string) => void): WriterPort | null {
     say(`plan writer off: ${e instanceof Error ? e.message : String(e)}`);
     return null;
   }
-  return makeWriterPort(WRITER_ROUTE);
+  return ledgeredWriter(makeWriterPort(WRITER_ROUTE), spend);
 }
 
 const DEFAULT_DATA_DIR = join(homedir(), "Library", "Application Support", "CaretV2");
@@ -49,7 +53,7 @@ function askFromEnv(say: (line: string) => void): { maker: "jev" } | { maker: "w
     say(`Ask intent writer off, so Ask runs the planner as before B25: ${e instanceof Error ? e.message : String(e)}`);
     return null;
   }
-  return { maker: "writer", writer: makeWriterPort(INTENT_ROUTE) };
+  return { maker: "writer", writer: ledgeredWriter(makeWriterPort(INTENT_ROUTE), spend) };
 }
 
 const { values: args } = parseArgs({
@@ -130,7 +134,7 @@ helper = new Helper({
   store,
   memoryDir,
   watchMemory: true,
-  askJev: args["no-jev"] ? null : makeJevClient(() => loadJevKey()),
+  askJev: args["no-jev"] ? null : ledgeredJev(makeJevClient(() => loadJevKey()), spend),
   shadow: args.shadow,
   allowBackgroundFocus: args["allow-background-focus"],
   audit: auditOut !== undefined,
@@ -151,6 +155,8 @@ helper = new Helper({
   warn,
 });
 server = new HelperServer(args.socket, () => helper, warn, secret);
+server.spendNow = () => spend.message();
+throttledTotals(spend, (m) => server?.publish(m));
 await server.listen();
 if (pages !== null) {
   wirePageEngines({ host: pages, helper, publish: (m) => server?.publish(m), warn });

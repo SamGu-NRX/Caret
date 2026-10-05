@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply, type Spend } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 import { planError } from "./planner/proposal.ts";
 
@@ -31,6 +31,10 @@ export class HelperServer {
   private readonly askChoices = new Set<Socket>();
   /** Host connections whose hello listed GOAL_PLANS_CAPABILITY: only they may plan and accept goals, and only they get goalProgress (D2-06). */
   private readonly goalPlans = new Set<Socket>();
+  /** Consumers whose hello listed SPEND_CAPABILITY: only they get `spend` (H8). */
+  private readonly spend = new Set<Socket>();
+  /** The spend totals now, sent to a consumer that asks for them as it connects; null when nothing counts spend. */
+  spendNow: (() => Spend) | null = null;
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -78,7 +82,8 @@ export class HelperServer {
     const line = JSON.stringify(m) + "\n";
     // Provenance is new in M1: a consumer that did not ask for it is not sent it.
     // A goal's previews and progress quote values and name windows: only hosts that plan goals get them.
-    for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : this.consumers) c.write(line);
+    const to = m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : m.type === "spend" ? this.spend : this.consumers;
+    for (const c of to) c.write(line);
   }
 
   async listen(): Promise<void> {
@@ -155,6 +160,10 @@ export class HelperServer {
             if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
             if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
+            if (hello.data.capabilities?.includes(SPEND_CAPABILITY) === true) {
+              this.spend.add(s);
+              if (this.spendNow !== null) s.write(JSON.stringify(this.spendNow()) + "\n");
+            }
             if (hello.data.host === true) this.helper().hostConnected(session, routing);
             else this.helper().consumerConnected(session);
           } else {
@@ -316,6 +325,7 @@ export class HelperServer {
       this.fillAll.delete(s);
       this.askChoices.delete(s);
       this.goalPlans.delete(s);
+      this.spend.delete(s);
       if (session !== null) this.helper().hostDisconnected(session);
       if (this.reader === s) {
         this.reader = null;

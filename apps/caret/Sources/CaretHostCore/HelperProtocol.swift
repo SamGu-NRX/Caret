@@ -42,6 +42,8 @@ public enum HelperInbound: Equatable, Sendable {
     case pageEngine(PageEngineState)
     /// H5: the answer to this host's `fileConfirm`, to this connection only.
     case fileConfirmReply(FileConfirmReply)
+    /// H8: the helper's model spend since it started (`HelperSpend`), shown on the debug socket.
+    case spend(HelperSpend)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -70,6 +72,7 @@ public enum HelperInbound: Equatable, Sendable {
         case .askQuestion: return AskQuestion.type
         case .pageEngine: return PageEngineState.type
         case .fileConfirmReply: return FileConfirmReply.type
+        case .spend: return HelperSpend.type
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -118,6 +121,8 @@ public enum HelperInbound: Equatable, Sendable {
             return .notForConsumer(type: envelope.type)
         case PageEngineState.type:
             return .pageEngine(try JSONDecoder().decode(PageEngineState.self, from: line))
+        case HelperSpend.type:
+            return .spend(try JSONDecoder().decode(HelperSpend.self, from: line))
         case RouteDecision.type:
             return .routeDecision(try JSONDecoder().decode(RouteDecision.self, from: line))
         case RoutingContext.type:
@@ -221,7 +226,7 @@ public enum HostHello {
     public static let askChoicesCapability = "askChoices"
 
     public static func capabilities(routing: Bool) -> [String] {
-        [MemoryDocs.capability, fillAllCapability, askChoicesCapability] + (routing ? [Routing.capability] : [])
+        [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability] + (routing ? [Routing.capability] : [])
     }
 
     public static func make(pid: Int, routing: Bool) -> Message {

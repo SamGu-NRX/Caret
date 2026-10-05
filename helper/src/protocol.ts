@@ -554,6 +554,36 @@ export const MemoryRequest = z.object({
 });
 export type MemoryRequest = z.infer<typeof MemoryRequest>;
 
+// MARK: - spend (H8 decision 4)
+
+/** The hello capability for `spend`: a consumer that names it gets the helper's model spend. */
+export const SPEND_CAPABILITY = "spend";
+
+/** Calls to one kind of model, and what their providers reported. A failed call reported no usage and adds none. */
+export const SpendBucket = z.object({
+  calls: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative(),
+});
+export type SpendBucket = z.infer<typeof SpendBucket>;
+
+/**
+ * Helper to consumer: what this helper process has spent on models since `since`, when it started (src/spend.ts).
+ * `jev` is TypeSafe's Jev (input tokens only; output is free), `writer` every writer route (plan, goal, intent).
+ * Sent to consumers whose hello names SPEND_CAPABILITY when they connect and within a second after model calls.
+ */
+export const Spend = z.object({
+  type: z.literal("spend"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  since: ms,
+  jev: SpendBucket,
+  writer: SpendBucket,
+});
+export type Spend = z.infer<typeof Spend>;
+
 // MARK: - routing (D2-02, action engine v2 section 3)
 
 /**
@@ -1938,7 +1968,7 @@ export type GoalProgress = z.infer<typeof GoalProgress>;
 
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);

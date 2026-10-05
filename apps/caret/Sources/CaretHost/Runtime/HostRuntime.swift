@@ -244,6 +244,7 @@ public final class HostRuntime {
             if case .memoryDocumentReply(let reply) = message { return memory.receive(reply) }
             // A decision is no offer: it says when ambient help may show, which the pause already stops.
             if case .routeDecision(let decision) = message { return routeLink.receive(decision) }
+            if case .spend(let spend) = message { return status.update { $0.spend = spend } }
             // Pause and the roles the host can tell apart (`HostGate`); the perch still
             // hears about work, which the user asked to see.
             guard HostGate.allows(message, SettingsStore.shared.settings) else {
@@ -1017,6 +1018,7 @@ public final class HostRuntime {
         state.writing = fields.writing
         state.pageSight = fields.pageSight
         state.routing = fields.routing
+        state.spend = fields.spend
         state.breakpointLatency = status.breakpointLatency.summary()
         return state
     }

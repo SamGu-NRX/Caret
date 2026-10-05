@@ -224,6 +224,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var pageEngine: UInt64 = 0
         /// H5: answers to the host's `fileConfirm`.
         public var fileConfirmReplies: UInt64 = 0
+        /// H8: the helper's spend totals received.
+        public var spend: UInt64 = 0
         /// `planRequest` lines written from the ask field, and `planProposal` answers received.
         public var planRequests: UInt64 = 0
         public var planProposals: UInt64 = 0
@@ -672,6 +674,8 @@ public struct DebugState: Codable, Equatable, Sendable {
     public var routing: RoutingInfo?
     /// H8: Calendar access and where the next accepted event goes. Ids and the calendar's title only.
     public var calendar: CalendarInfo?
+    /// H8: the helper's model spend since it started, as it last sent it.
+    public var spend: HelperSpend?
 
     public struct CalendarInfo: Codable, Equatable, Sendable {
         /// `CalendarAccess` by name.
