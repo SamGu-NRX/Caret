@@ -26,7 +26,7 @@ const PAGE = "page";
  * A one-line text input counts as a prose field once it holds more than this many characters (lead decision, S1 brief:
  * "a text input over about 120 characters"). A textarea always does.
  */
-export const PROSE_INPUT_CHARS = 120;
+const PROSE_INPUT_CHARS = 120;
 /**
  * Leaving a field offers to save it only from this length up: "N/A" or "Yes" is not worth a question. Assumed, not
  * measured. A direct "remember this answer" has no minimum.
@@ -52,7 +52,7 @@ export class AnswerError extends Error {
 }
 
 /** The question in a comparable form: lower case, its words only ("Why do you want to work here?" → "why do you want work here"). */
-export function normalQuestion(q: string): string {
+function normalQuestion(q: string): string {
   return words(q).join(" ");
 }
 
@@ -116,13 +116,13 @@ const no = (why: AnswerRefusal, says: string): CaptureResult => ({ ok: false, wh
 const tooLongSays = (n: number): string => `This answer is ${n.toLocaleString("en-US")} characters, and Caret keeps answers up to ${MAX_ANSWER_CHARS.toLocaleString("en-US")}.`;
 
 /** Whether a node is a field for a written answer: a text area, or a one-line input holding more than PROSE_INPUT_CHARS. */
-export function isProseNode(n: Node, value = n.value ?? ""): boolean {
+function isProseNode(n: Node, value = n.value ?? ""): boolean {
   if (n.editable !== true || n.states?.includes("secure") === true) return false;
   return n.role === "AXTextArea" || (n.role === "AXTextField" && value.length > PROSE_INPUT_CHARS);
 }
 
 /** The question a field asks, from its own label (uncut, unlike a Jev descriptor), one line, at most MAX_QUESTION_CHARS. */
-export function questionOf(n: Node): string | null {
+function questionOf(n: Node): string | null {
   const t = fieldLabelText(n.label);
   if (t === null) return null;
   return t.length <= MAX_QUESTION_CHARS ? t : `${t.slice(0, MAX_QUESTION_CHARS - 1).trimEnd()}…`;
