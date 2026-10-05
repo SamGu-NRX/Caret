@@ -150,7 +150,7 @@ async function replay(mode: "off" | "live", file: string, wanted: string, routed
   for (const m of sent) if (m.type === "popup" || m.type === "alternatives" || m.type === "action") offersSent[m.type] = (offersSent[m.type] ?? 0) + 1;
   const ats = lines.map((l) => (l as { at?: number }).at).filter((x): x is number => typeof x === "number");
   const decisions = (helper.routing?.decisions ?? []).map((d) => ({ outcome: d.outcome, by: d.by, local: d.local, route: d.route, breakpoint: d.breakpoint, confidence: d.confidence, latencyMs: d.latencyMs }));
-  routing.cancel();
+  await routing.stop(helper);
   reader.close();
   helper.shutdown();
   await server.close();

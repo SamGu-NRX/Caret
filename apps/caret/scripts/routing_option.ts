@@ -58,15 +58,17 @@ export function routedJev(mode: string, fake: AskJev | null): RoutedJev {
 
 /**
  * The Helper option that turns the router on, with its timers kept here (Router 1's cooldown runs on real time) so a
- * session can wait for routing to settle and cancel what is pending before it closes the helper: Helper.shutdown does
- * not stop the router, and a cooldown timer that fires after the stores close throws in the router's next observe.
+ * session can wait for routing to settle, and stop it before it closes the helper's stores. Helper.shutdown does not
+ * stop the router: a cooldown timer, or a producer's answer that lists candidates again, reaches the router's observe
+ * after the stores close and throws ("statement has been finalized"), ending the run.
  */
 export interface RoutingHarness {
   options: { routing?: { setTimer: (fn: () => void, ms: number) => () => void } };
   /** Resolves once no router call is in flight or waiting and the work its decisions started has ended. */
   settle: (h: Helper) => Promise<void>;
-  /** Cancels every pending router timer; call before Helper.shutdown. */
-  cancel: () => void;
+  /** Stops routing for good: the helper goes to shadow (the router's live() is false), pending timers are cancelled,
+   * and the call returns once no router call or routed work is in flight. Call before Helper.shutdown. */
+  stop: (h: Helper) => Promise<void>;
 }
 
 export function routingHarness(mode: string): RoutingHarness {
@@ -93,9 +95,12 @@ export function routingHarness(mode: string): RoutingHarness {
         await sleep(50);
       }
     },
-    cancel: () => {
+    stop: async (h) => {
+      h.mode = "shadow";
       for (const t of timers) clearTimeout(t);
       timers.clear();
+      await h.routing?.idle();
+      await h.routedSettled;
     },
   };
 }

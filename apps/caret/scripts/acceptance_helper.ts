@@ -110,7 +110,7 @@ const dump = setInterval(write, 200);
 const stop = async (): Promise<void> => {
   clearInterval(tick);
   clearInterval(dump);
-  routing.cancel();
+  await routing.stop(helper);
   write();
   helper.shutdown();
   await server?.close();

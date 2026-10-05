@@ -150,7 +150,7 @@ async function openSession(): Promise<Session> {
 }
 
 async function closeSession(s: Session): Promise<void> {
-  s.routing.cancel();
+  await s.routing.stop(s.helper);
   s.reader.close();
   s.helper.shutdown();
   await s.server.close();

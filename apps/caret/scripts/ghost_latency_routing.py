@@ -45,7 +45,7 @@ PASSAGE = [
     "Thanks for sending the notes. ",
     "I read them on the train this morning. ",
     "The budget section needs one more pass. ",
-    "Can we talk it over on Thursday. ",
+    "Can we talk it over soon. ",
 ]
 
 
