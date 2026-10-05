@@ -2,12 +2,15 @@
 // passes the routers with no Jev question: it is a legal act route whose reason code wrote, and it still needs Tab.
 // Routing grants no autonomy here or anywhere else.
 //
-// This is a consent boundary. A producer may only *claim* consent, by naming the record it rests on (ConsentClaim);
-// the claim counts when ConsentLedger finds that record among what the helper wrote when the user acted. Nothing a
-// producer says (its `says`, its relevance, any flag) and nothing on screen can make a candidate consented. The records:
+// This is a consent boundary. Producers' candidates carry nothing the router reads as consent: no claim, flag or
+// wording of theirs counts, and nothing on screen does. One helper function (Helper.consentedCandidates) builds each
+// consented candidate around a held offer and asks ConsentLedger for that offer's own record (its routine, its watch),
+// so the candidate's `run` shows exactly the offer the record is about. The records, all written by the helper when
+// the user acted, through a host session where a message carries the act:
 //
 //   skill  the user answered Keep to "Keep this as a skill?" (patterns/skills.ts answer -> MemoryStore.addSkill), the
-//          skill is not paused or forgotten, and its routine is marked kept. The claim names the routine.
+//          skill is not paused or forgotten, and its routine is marked kept. The server takes skillAnswer, and a
+//          skill's resume, only from the host.
 //   watch  the helper's own pending watch (tasks/pending.ts) resolved by what the screen showed (task state done or
 //          needsYou, cause screen; a watch the user stopped does not count), and the user's watch role came in a
 //          settings message from a host session. Watches start on their own when the user leaves a window with work
@@ -20,6 +23,7 @@
 import type { TaskRecord } from "../protocol.ts";
 import type { MemoryStore } from "../patterns/memory.ts";
 
+/** The record a consented offer rests on: its routine, or its watch. Built only by Helper.consentedCandidates. */
 export type ConsentClaim = { kind: "skill"; routineId: string } | { kind: "watch"; watchId: string };
 
 /** A claim the ledger found a record for, with the reason the decision log carries. */

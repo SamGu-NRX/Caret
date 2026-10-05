@@ -138,7 +138,8 @@ describe("route decisions through the helper and the server", () => {
     advance(2000);
     host.send({ type: "routingContext", v: PROTOCOL_VERSION, at: clock, windowId: DOC, key: BODY, selection: "caret", composing: false, textRevision: "r30", breakpoint: null });
     const deciding = await host.waitFor<RouteDecision>((m) => m.type === "routeDecision" && m.outcome === null);
-    expect(deciding).toMatchObject({ key: BODY, textRevision: write.textRevision });
+    // The end carries the host's own latest revision, which the host checks a decision against (review).
+    expect(deciding).toMatchObject({ key: BODY, textRevision: "r30" });
     expect(deciding.context).toBeGreaterThan(write.context);
     advance(2000);
     await settle();

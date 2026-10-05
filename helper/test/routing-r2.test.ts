@@ -177,6 +177,33 @@ describe("A5's recordings with routing on, over the socket", () => {
     expect(helper.routing?.decisions.some((d) => d.by === "consent")).toBe(false);
   });
 
+  it("takes the user's Keep and a skill's resume only from the host: no other consumer can write a consent record (review)", async () => {
+    const step = { shapeHash: "s", srcBundle: "a", srcApp: "A", srcWindowKind: "standard", srcTemplateHash: "t", srcPos: 0, part: "whole", dstBundle: "b", dstApp: "Tracker", dstWindowKind: "standard", dstTemplateHash: "u", dstPos: 0 };
+    const routineId = helper.memory.recordRoutine("sig", [step], 1)?.id as string;
+    const skill = helper.memory.addSkill(routineId, { name: "Copy tracking", trigger: "a Tracker window opens with Order empty", needed: 3, handsOff: null }, 2);
+    helper.memory.setPaused(skill.id, true);
+    reader = await SocketReader.connect(join(dir, "screen.sock"));
+    let answered = 0;
+    const real = helper.handleSkillAnswer.bind(helper);
+    helper.handleSkillAnswer = (m) => {
+      answered++;
+      real(m);
+    };
+    const other = await connect({ pid: 2, version: "page-engine" });
+    other.send({ type: "skillAnswer", v: PROTOCOL_VERSION, id: "skill-offer-1", answer: "accept", at: 3 });
+    expect(await other.waitFor((m) => m.type === "error")).toMatchObject({ message: 'skillAnswer needs a host hello (host: true): only the host shows keep and promote questions' });
+    other.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "r1", op: "resume", id: skill.id });
+    expect(await other.waitFor((m) => m.type === "memoryReply")).toMatchObject({ requestId: "r1", error: "resume needs a host hello (host: true): a paused skill comes back only from you", entries: [] });
+    expect(answered).toBe(0);
+    expect(helper.memory.skill(skill.id)?.paused).toBe(true);
+    expect(helper.consent.verify({ kind: "skill", routineId })).toBeNull();
+    // The host may: its resume is the user's.
+    const host = await connect({ pid: 1, version: "host-test", host: true });
+    host.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "r2", op: "resume", id: skill.id });
+    expect(await host.waitFor((m) => m.type === "memoryReply")).toMatchObject({ requestId: "r2", error: null });
+    expect(helper.consent.verify({ kind: "skill", routineId })).not.toBeNull();
+  });
+
   it("sends a learned loop's next row to Router 1, which may say no, whatever the host consented to", async () => {
     const host = await connect({ pid: 1, version: "host-test", host: true, capabilities: [ROUTING_CAPABILITY] });
     host.send(settings);

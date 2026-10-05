@@ -16,5 +16,5 @@
 {"type":"routingContext","v":1,"at":1790000041000,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","selection":"caret","composing":false,"textRevision":"r52","breakpoint":"sentence"}
 {"type":"routeDecision","v":1,"at":1790000041001,"context":19,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r52","outcome":"write","route":null,"expires":1790001841001}
 {"type":"routingContext","v":1,"at":1790000046000,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","selection":"range","composing":false,"textRevision":"r57","breakpoint":null}
-{"type":"routeDecision","v":1,"at":1790000046001,"context":20,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r52","outcome":null,"route":null,"expires":1790001846001}
+{"type":"routeDecision","v":1,"at":1790000046001,"context":20,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r57","outcome":null,"route":null,"expires":1790001846001}
 {"type":"routeDecision","v":1,"at":1790000046400,"context":20,"windowId":"4242-1","key":"dev.caret.notes/standard/textarea:body~0","textRevision":"r57","outcome":"error","route":null,"failure":"stale","expires":1790001846400}

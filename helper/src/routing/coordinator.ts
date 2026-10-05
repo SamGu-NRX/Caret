@@ -27,7 +27,7 @@ import type { AskJev } from "../fill/jev.ts";
 import type { ScreenModel } from "../model.ts";
 import type { RouteFailure } from "../protocol.ts";
 import { breakpoint, contextNow, sentenceOnly, type Breakpoint, type FocusSeen, type HostEditing, type RoutingContext } from "./context.ts";
-import type { Consent, ConsentClaim } from "./consent.ts";
+import type { Consent } from "./consent.ts";
 import { PrivacyRefusal, ROUTER1_FLOOR, ROUTER2_FLOOR, router1Request, router2Request, sendRouter, type Read, type Refusal } from "./judge.ts";
 import { freeze, realRoutes, type Outcome, type Registry, type Route, type RouteCandidate } from "./routes.ts";
 
@@ -130,8 +130,12 @@ export interface RoutingDeps {
   askJev: AskJev;
   /** The candidates for this context, listed by code. Called when the context may have changed. */
   candidates: (ctx: RoutingContext) => RouteCandidate[];
-  /** Finds the record behind a candidate's consent claim (ConsentLedger.verify); null when there is none. Absent: none ever. */
-  consent?: (claim: ConsentClaim | undefined) => Consent | null;
+  /**
+   * The offers the user consented to now, each built by the helper around the record it rests on (Helper
+   * consentedCandidates, ConsentLedger.verify). The only way a candidate passes without Router 1: nothing a candidate
+   * from `candidates` carries is read for consent. A listed candidate with the same id is not routed. Absent: none.
+   */
+  consented?: (ctx: RoutingContext) => { cand: RouteCandidate; consent: Consent }[];
   /** A connected host consumes write decisions; until one does, write is not a legal outcome. */
   hostWrites: () => boolean;
   /** The settings' words role (the host's writing help) is on. */
@@ -240,12 +244,17 @@ export class RoutingCoordinator {
     if (breakpoint) this.hostBreaks++;
   }
 
-  private endWrite(why: string): void {
+  /**
+   * Ends the write session. `now`: the context that ended it. In the session's own field its text revision is the
+   * host's latest, which the host checks the end against; in another field the session's last one is all there is.
+   */
+  private endWrite(why: string, now: RoutingContext | null = null): void {
     const w = this.writeSession;
     if (w === null) return;
     this.writeSession = null;
+    const here = now !== null && now.windowId === w.windowId && now.field?.key === w.key;
     this.deps.count?.(`route.write_closed_${why}`);
-    this.deps.onWriteEnded?.({ gen: this.gen, windowId: w.windowId, key: w.key, textRevision: w.textRevision, why });
+    this.deps.onWriteEnded?.({ gen: this.gen, windowId: w.windowId, key: w.key, textRevision: here ? now.textRevision : w.textRevision, why });
   }
 
   /** A producer's candidates changed outside the user's own field (a conversation line, a held pattern offer, a watch). */
@@ -335,12 +344,9 @@ export class RoutingCoordinator {
     let consented: { cand: RouteCandidate; consent: Consent }[] = [];
     if (bp !== null || this.candidatesDirty) {
       this.candidatesDirty = false;
-      const listed = this.deps.candidates(base);
-      for (const cand of listed) {
-        const consent = this.deps.consent?.(cand.consent) ?? null;
-        if (consent !== null) consented.push({ cand, consent });
-      }
-      this.lastCandidates = listed.filter((c) => !consented.some((x) => x.cand === c));
+      consented = this.deps.consented?.(base) ?? [];
+      const passing = new Set(consented.map((x) => x.cand.id));
+      this.lastCandidates = this.deps.candidates(base).filter((c) => !passing.has(c.id));
       ctx = { ...base, candidates: this.lastCandidates.map((c) => c.id).sort().join("\u0000") };
       bp = breakpoint(this.prev, ctx);
     }
@@ -405,7 +411,7 @@ export class RoutingCoordinator {
     const gen = ++this.gen;
     const w = this.writeSession;
     const kept = w !== null && prev !== null && ctx.field !== null && w.windowId === ctx.windowId && w.key === ctx.field.key && sentenceOnly(prev, ctx) && this.holds(ctx) === null;
-    if (!kept) this.endWrite(bp);
+    if (!kept) this.endWrite(bp, ctx);
     const reg = freeze(gen, candidates, this.asked);
     const legal: Outcome[] = ["abstain"];
     if (!kept && ctx.field?.prose === true && this.deps.hostWrites() && this.deps.wordsOn()) legal.push("write");

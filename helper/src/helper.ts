@@ -66,7 +66,7 @@ import { RecoveryJournal, type JournalRecord } from "./executor/journal.ts";
 import { MemoryError, MemoryStore } from "./patterns/memory.ts";
 import { MemoryConflictError, MemoryDocumentError, type DocumentInfo } from "./memory/documents.ts";
 import type { DocId } from "./memory/parse.ts";
-import { PatternEngine } from "./patterns/engine.ts";
+import { PatternEngine, type HeldPatternOffer } from "./patterns/engine.ts";
 import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
@@ -104,7 +104,7 @@ import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskGoal, type Ask
 import type { AskFixed } from "./planner/intent.ts";
 import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
 import { ASK_ROUTES, type RouteCandidate } from "./routing/routes.ts";
-import { ConsentLedger } from "./routing/consent.ts";
+import { ConsentLedger, type Consent } from "./routing/consent.ts";
 import type { RoutingContext } from "./routing/context.ts";
 import { FILLABLE_ROLES, neverTypedNode } from "./fill/fill.ts";
 import { fieldKinds, valueKinds, words } from "./fill/kinds.ts";
@@ -607,7 +607,7 @@ export class Helper {
             // Through the recording wrapper: a router's request carries screen text, so it is a "Read and prepare" use.
             askJev: this.ask,
             candidates: (ctx) => this.routeCandidates(ctx),
-            consent: (claim) => this.consent.verify(claim),
+            consented: (ctx) => this.consentedCandidates(ctx),
             // A connected host that takes route decisions, or an evaluation that says it plays one.
             hostWrites: () => [...this.routingHosts].some((h) => this.hosts.has(h)) || (ro.hostWrites?.() ?? false),
             wordsOn: () => this.gate.settings.roles.includes("words"),
@@ -2034,47 +2034,81 @@ export class Helper {
           drop: () => this.events.forgetHeard(l),
         });
       }
-      if (this.gate.holds("pending", now).length === 0) {
-        for (const h of this.openApp.heldOffers()) {
-          const watched = this.model.windows.get(h.windowId);
-          if (watched === undefined || h.windowId === w.window.windowId) continue;
-          const key = f.key;
-          out.push({
-            id: `openApp:${h.offerKey}`,
-            kind: "workflow",
-            workflow: "openApp",
-            consent: { kind: "watch", watchId: h.watchId },
-            says: `Open ${h.app}, whose window the user was waiting on now says "${h.status}"`,
-            plain: `Open ${h.app}, whose window the user was waiting on changed`,
-            quotes: [{ window: watched, kind: "candidate", texts: [h.status] }],
-            relevance: 0,
-            run: () => this.openApp.showHeld(h.offerKey, offerField(w, key)),
-          });
-        }
-      }
+      for (const { cand } of this.openAppCandidates(w, f.key, now)) out.push(cand);
     }
-    for (const h of this.patterns.heldOffers(w.window.windowId)) {
-      const from = h.from.join(" and ");
-      const plain = h.skill
-        ? `Run the user's saved skill "${h.says}" here`
-        : h.kind === "loopNext"
-          ? `Offer the next row of what the user is copying from ${from}`
-          : h.kind === "loopFinish"
-            ? `Finish the rest of what the user is copying from ${from} (${h.values} values)`
-            : `Fill ${h.values} fields from ${from} the way the user did before`;
-      out.push({
-        id: `pattern:${h.id}`,
+    for (const h of this.patterns.heldOffers(w.window.windowId)) out.push(this.patternCandidate(h));
+    return out;
+  }
+
+  /** "Open <app>" for each watch that resolved while the user was in another window, held for the field they are in now. */
+  private openAppCandidates(w: WindowState, key: string, now: number): { cand: RouteCandidate; watchId: string }[] {
+    if (this.gate.holds("pending", now).length > 0) return [];
+    return this.openApp.heldOffers().flatMap((h) => {
+      const watched = this.model.windows.get(h.windowId);
+      if (watched === undefined || h.windowId === w.window.windowId) return [];
+      const cand: RouteCandidate = {
+        id: `openApp:${h.offerKey}`,
         kind: "workflow",
-        workflow: h.skill ? "skill" : h.kind === "routine" ? "routine" : "loop",
-        says: plain,
-        plain,
-        quotes: [],
-        // A kept skill first, then the pattern that matched most often.
-        relevance: 10 + (h.skill ? 1000 : 0) + h.hits,
-        ...(h.routineId === null ? {} : { consent: { kind: "skill" as const, routineId: h.routineId } }),
-        run: () => this.patterns.release(h.id),
-        drop: () => this.patterns.dropHeld(h.id),
-      });
+        workflow: "openApp",
+        says: `Open ${h.app}, whose window the user was waiting on now says "${h.status}"`,
+        plain: `Open ${h.app}, whose window the user was waiting on changed`,
+        quotes: [{ window: watched, kind: "candidate", texts: [h.status] }],
+        relevance: 0,
+        run: () => this.openApp.showHeld(h.offerKey, offerField(w, key)),
+      };
+      return [{ cand, watchId: h.watchId }];
+    });
+  }
+
+  /** A loop, routine or kept skill's offer the recognizers held for this window. */
+  private patternCandidate(h: HeldPatternOffer): RouteCandidate {
+    const from = h.from.join(" and ");
+    const plain = h.skill
+      ? `Run the user's saved skill "${h.says}" here`
+      : h.kind === "loopNext"
+        ? `Offer the next row of what the user is copying from ${from}`
+        : h.kind === "loopFinish"
+          ? `Finish the rest of what the user is copying from ${from} (${h.values} values)`
+          : `Fill ${h.values} fields from ${from} the way the user did before`;
+    return {
+      id: `pattern:${h.id}`,
+      kind: "workflow",
+      workflow: h.skill ? "skill" : h.kind === "routine" ? "routine" : "loop",
+      says: plain,
+      plain,
+      quotes: [],
+      // A kept skill first, then the pattern that matched most often.
+      relevance: 10 + (h.skill ? 1000 : 0) + h.hits,
+      run: () => this.patterns.release(h.id),
+      drop: () => this.patterns.dropHeld(h.id),
+    };
+  }
+
+  /**
+   * The offers the user already consented to, for the router to pass with no question (routing/consent.ts). This is
+   * the one place consent is decided: each candidate is built here around the held offer whose own record the ledger
+   * checks, so its `run` shows exactly the offer the record is about:
+   *   - "Open <app>" for a held open-app offer whose watch (the entry's own watchId) resolved, while a host sent the
+   *     watch role;
+   *   - a held pattern offer whose routine (the offer's own routineId) the user kept as a skill.
+   * Learned loops have no routine and are never here. The router lists the same offers in routeCandidates and routes
+   * whichever this does not pass.
+   */
+  private consentedCandidates(ctx: RoutingContext): { cand: RouteCandidate; consent: Consent }[] {
+    const out: { cand: RouteCandidate; consent: Consent }[] = [];
+    const w = this.model.windows.get(ctx.windowId);
+    if (w === undefined) return out;
+    const f = ctx.field;
+    const node = f === null ? undefined : w.nodes.get(f.key);
+    if (f !== null && node !== undefined && f.editable && !f.secure)
+      for (const { cand, watchId } of this.openAppCandidates(w, f.key, this.now())) {
+        const consent = this.consent.verify({ kind: "watch", watchId });
+        if (consent !== null) out.push({ cand, consent });
+      }
+    for (const h of this.patterns.heldOffers(w.window.windowId)) {
+      if (h.routineId === null) continue;
+      const consent = this.consent.verify({ kind: "skill", routineId: h.routineId });
+      if (consent !== null) out.push({ cand: this.patternCandidate(h), consent });
     }
     return out;
   }

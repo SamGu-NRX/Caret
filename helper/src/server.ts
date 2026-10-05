@@ -23,6 +23,8 @@ export class HelperServer {
   private readonly memoryDocuments = new Set<Socket>();
   /** Host connections whose hello declared ROUTING_CAPABILITY: they get routeDecision and may send routingContext. */
   private readonly routing = new Set<Socket>();
+  /** Consumers whose hello said host: true. Only they speak for the user where a record becomes consent (routing/consent.ts). */
+  private readonly hosts = new Set<Socket>();
   /** Host connections whose hello listed FILL_ALL_CAPABILITY: only they may send fillAll (D2-04). */
   private readonly fillAll = new Set<Socket>();
   /** Consumer connections whose hello listed ASK_CHOICES_CAPABILITY: they get Ask questions and may answer them (B29). */
@@ -149,6 +151,7 @@ export class HelperServer {
             // Routing is the host's: a decision tells its writing help when it may run, so only the host may take one.
             const routing = hello.data.host === true && hello.data.capabilities?.includes(ROUTING_CAPABILITY) === true;
             if (routing) this.routing.add(s);
+            if (hello.data.host === true) this.hosts.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
             if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
@@ -224,7 +227,12 @@ export class HelperServer {
           }
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
           else if (m.data.type === "settings") this.helper().handleSettings(m.data, from);
-          else if (m.data.type === "skillAnswer") this.helper().handleSkillAnswer(m.data);
+          // The user's Keep makes a skill, which is consent the router acts on (routing/consent.ts): only the host,
+          // which shows the question, may answer it.
+          else if (m.data.type === "skillAnswer") {
+            if (!this.hosts.has(s)) this.reject(s, "skillAnswer needs a host hello (host: true): only the host shows keep and promote questions");
+            else this.helper().handleSkillAnswer(m.data);
+          }
           // The reply names windows and quotes values, so it goes to the asker only, as memory does.
           else if (m.data.type === "firstLook") {
             const requestId = m.data.requestId;
@@ -267,6 +275,11 @@ export class HelperServer {
           // Records hold window titles and status lines, so a list goes to the asker only, as memory does.
           else if (m.data.type === "activityRequest") s.write(JSON.stringify(this.helper().handleActivity(m.data)) + "\n");
           else if (m.data.type === "memoryRequest") {
+            // Resuming a paused skill brings back the consent it rests on; only the host's resume is the user's.
+            if (m.data.op === "resume" && !this.hosts.has(s)) {
+              s.write(JSON.stringify({ type: "memoryReply", v: PROTOCOL_VERSION, requestId: m.data.requestId, error: "resume needs a host hello (host: true): a paused skill comes back only from you", entries: [] }) + "\n");
+              continue;
+            }
             // A bad request is answered in the reply; this catches only a failure of the store itself.
             try {
               s.write(JSON.stringify(this.forConsumer(s, this.helper().handleMemory(m.data))) + "\n");
@@ -297,6 +310,7 @@ export class HelperServer {
       this.consumers.delete(s);
       this.memoryDocuments.delete(s);
       this.routing.delete(s);
+      this.hosts.delete(s);
       this.fillAll.delete(s);
       this.askChoices.delete(s);
       this.goalPlans.delete(s);
