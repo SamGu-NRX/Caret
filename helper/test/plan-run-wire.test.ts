@@ -121,6 +121,9 @@ describe("goal messages on the socket", () => {
     // An acceptance of a goal that does not exist runs nothing and says why.
     host.send(accept);
     await host.waitFor((m) => m.type === "error" && m.message === "goalAccept refused: no goal goal-1-r1");
+    // The refusal names the goal: it goes to the asker alone.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(other.received.filter((m) => (m as { type: string }).type === "error")).toEqual([]);
     host.close();
     other.close();
   });

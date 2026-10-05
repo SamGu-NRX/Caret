@@ -208,7 +208,7 @@ export class HelperServer {
               this.reject(s, `${m.data.type} needs a host hello with "${GOAL_PLANS_CAPABILITY}" in its capabilities`);
               continue;
             }
-            if (m.data.type === "goalAccept") void this.helper().handleGoalAccept(m.data, from);
+            if (m.data.type === "goalAccept") void this.helper().handleGoalAccept(m.data, from, (e) => void (!s.destroyed && s.write(JSON.stringify(e) + "\n")));
             else {
               const requestId = m.data.requestId;
               void this.helper()

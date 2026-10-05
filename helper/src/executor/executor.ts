@@ -994,12 +994,16 @@ export class Executor {
     }
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `press '${label}'; expect: ${step.says}`);
-    // A reveal is judged against the fields the window shows right before the press (D2-06).
-    const shown = step.end.kind === "fieldsRevealed" ? { title: w.window.title, keys: new Set(editableValues(w).keys()) } : null;
     await this.deps.beforeAct?.(task.id, i);
+    // A reveal is judged against the fields the window shows right before the press goes out (D2-06): the model as of
+    // the dispatch, after every hook. It holds only with no sheet over the window, the same title, and an editable field
+    // that was not there; a field the app adds on its own at that very moment cannot be told from one the press showed.
+    const before = this.window(w.window.windowId);
+    const shown = step.end.kind === "fieldsRevealed" ? { title: before.window.title, keys: new Set(editableValues(before).keys()) } : null;
     const seen = await this.act(task, { kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label, taskId: task.id }, w.window.windowId);
     this.addLedger(task, { kind: "press", step: i, label, windowId: w.window.windowId });
-    await this.awaitEffect(task, i, step, w.window.windowId, seen, shown === null ? undefined : (now) => now.window.title === shown.title && [...editableValues(now).keys()].some((k) => !shown.keys.has(k)));
+    const revealed = (now: WindowState): boolean => shown !== null && now.window.title === shown.title && ![...now.nodes.values()].some((n) => n.role === "AXSheet") && [...editableValues(now).keys()].some((k) => !shown.keys.has(k));
+    await this.awaitEffect(task, i, step, w.window.windowId, seen, shown === null ? undefined : revealed);
     this.checkUnexpected(seen, null);
     await this.verified(task, i, step);
   }
@@ -1336,7 +1340,7 @@ export class Executor {
   private async resolve(task: Task, i: number, w: WindowState, t: Target, goal: string): Promise<Node> {
     const cacheKey = `${i}|${JSON.stringify(t)}`;
     const cached = task.resolved.get(cacheKey);
-    if (cached?.ok === true) {
+    if (cached?.ok === true && t.exact !== true) {
       const n = w.nodes.get(cached.node.key);
       // A cached choice still has to fit the locator in the current tree.
       if (n !== undefined && (t.role === undefined || n.role === t.role) && (t.label === undefined || norm(n.label) === norm(t.label))) return n;

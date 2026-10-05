@@ -18,11 +18,11 @@
 // goal is then offered again as a fresh plan built from the screen as it is now; it needs its own acceptance. Nothing
 // here persists: a helper that crashes leaves the executor's journal row (B23), and no goal resumes on its own.
 import type { Change, ScreenModel } from "../model.ts";
-import type { Executor, TaskResult } from "../executor/executor.ts";
+import type { Executor, Revocation, TaskResult } from "../executor/executor.ts";
 import { nodeText } from "../model.ts";
 import { PROTOCOL_VERSION, type GoalAccept, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { windowRevision } from "./inventory.ts";
-import type { GoalPlan, GoalSegment, GoalStep } from "./plan.ts";
+import { executable, segmentDigest, type GoalPlan, type GoalSegment, type GoalStep } from "./plan.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
 export const ACCEPT_MS = 120_000;
@@ -33,6 +33,9 @@ export interface StepReceipt {
   step: number;
   stepRef: string;
   status: "verified" | "alreadyTrue" | "handoff";
+  /** What the step acted on, and the effect a press had: a fresh plan may not press the same control for it again. */
+  target: { windowId: string | null; key: string };
+  effect: string | null;
   /** The window's revision when the plan was frozen, and right after the step (the executor's fresh read). */
   before: string;
   after: string;
@@ -66,8 +69,8 @@ interface Run {
   expires: number;
   /** Segments accepted, each at most once. */
   accepted: Set<number>;
-  /** The segment's executor task while it runs, with the windows its app showed when it started. */
-  task: { id: string; segment: number; pid: number | null; windows: Set<string> } | null;
+  /** The segment's executor task while it runs, with the windows its app (by process or bundle id) showed when it started. */
+  task: { id: string; segment: number; pid: number | null; bundleId: string | null; windows: Set<string> } | null;
   /** Why code revoked the running task, when it did: the stop is reported as this, not as the executor's wording. */
   cause: { reason: GoalStopReason; says: string } | null;
 }
@@ -104,6 +107,7 @@ const SAYS: Record<GoalStopReason, string> = {
   targetChanged: "a field changed before Caret reached it",
   timeout: "a step's effect did not show in time",
   unexpectedEffect: "something other than what Caret expected changed",
+  handedOff: "Caret could not do a step and left it to you",
   windowGone: "the window closed",
   you: "you stopped it",
   readerRestarted: "the screen reader restarted",
@@ -117,8 +121,10 @@ const REPLANNABLE: ReadonlySet<GoalStopReason> = new Set(["dialog", "reload", "s
 
 export class GoalRuns {
   private readonly runs = new Map<string, Run>();
-  /** Executor task id to its goal. */
+  /** Executor task id to its goal, while the task runs. */
   private readonly tasks = new Map<string, string>();
+  /** Every task id a goal ever ran: none of them is resumed or run by any other path (owns). */
+  private readonly ever = new Set<string>();
   private replans = 0;
   /** Stops and fresh plans under way (each may wait on the writer): idle() waits for them. */
   private readonly pending = new Set<Promise<unknown>>();
@@ -138,14 +144,22 @@ export class GoalRuns {
     void p.finally(() => this.pending.delete(p));
   }
 
+  /** Whether a goal ran this task: a generic resume of it is refused (Helper.handleTask), since only an acceptance runs a goal's steps. */
+  owns(taskId: string): boolean {
+    return this.ever.has(taskId);
+  }
+
   get(goalId: string): { state: State; cursor: GoalCursor } | null {
     const r = this.runs.get(goalId);
     return r === undefined ? null : { state: r.state, cursor: structuredClone(r.cursor) };
   }
 
   /** Offers a goal's first segment for acceptance, as the reply to `requestId` (or as a fresh plan replacing another). */
-  propose(plan: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[] } | null = null): GoalProgress {
-    if (this.runs.has(plan.goalId)) throw new Error(`goal ${plan.goalId} already exists`);
+  propose(given: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[] } | null = null): GoalProgress {
+    if (this.runs.has(given.goalId)) throw new Error(`goal ${given.goalId} already exists`);
+    // The run owns its own frozen copy: what is shown is what runs, whatever the caller does with its object later.
+    const plan = structuredClone(given);
+    for (const seg of plan.segments) deepFreeze(seg);
     const bindings: GoalCursor["bindings"] = {};
     for (const t of plan.inventory.targets.values()) bindings[t.ref] = { windowId: t.domain.kind === "window" ? t.domain.windowId : null, key: t.key, role: t.role, label: t.label };
     const run: Run = {
@@ -183,6 +197,8 @@ export class GoalRuns {
     if (m.segment !== run.cursor.segment) return { refused: `goal ${m.goalId} waits for segment ${run.cursor.segment + 1}, not ${m.segment + 1}` };
     const seg = run.plan.segments[m.segment] as GoalSegment;
     if (m.digest !== seg.digest) return { refused: `the acceptance names another plan than the one shown for segment ${m.segment + 1}; nothing runs` };
+    // What is about to run must still be what that digest covers: its steps, and the executor plan and slots made from them.
+    if (segmentDigest(run.plan.programHash, seg, run.plan.warnings, executable(seg)) !== seg.digest) return { refused: `segment ${m.segment + 1} of goal ${m.goalId} no longer matches its digest; nothing runs` };
     if (this.deps.now() > run.expires) {
       this.stop(run, "expired", null, `${SAYS.expired}; nothing was done for it`);
       return { refused: `segment ${m.segment + 1} of goal ${m.goalId} expired before it was accepted` };
@@ -196,10 +212,13 @@ export class GoalRuns {
     const taskId = `${run.plan.goalId}:s${seg.index}`;
     const w = seg.domain.kind === "window" ? this.deps.model.windows.get(seg.domain.windowId) : undefined;
     const pid = w?.app.pid ?? null;
-    run.task = { id: taskId, segment: seg.index, pid, windows: new Set(pid === null ? [] : [...this.deps.model.windows.values()].filter((x) => x.app.pid === pid).map((x) => x.window.windowId)) };
+    const bundleId = w?.app.bundleId ?? null;
+    const sameApp = (x: { app: { pid: number; bundleId: string } }): boolean => (pid !== null && x.app.pid === pid) || (bundleId !== null && x.app.bundleId === bundleId);
+    run.task = { id: taskId, segment: seg.index, pid, bundleId, windows: new Set([...this.deps.model.windows.values()].filter(sameApp).map((x) => x.window.windowId)) };
     run.state = "running";
     run.cause = null;
     this.tasks.set(taskId, run.plan.goalId);
+    this.ever.add(taskId);
     this.deps.bind(taskId, session);
     // What the precheck just read is what the task's first walk must still find: a field typed into in between stops it.
     const expect: Record<string, Record<string, string>> = {};
@@ -264,13 +283,35 @@ export class GoalRuns {
     const run = goalId === undefined ? undefined : this.runs.get(goalId);
     if (run === undefined || run.task === null || run.task.id !== m.taskId) return;
     const seg = run.plan.segments[run.task.segment] as GoalSegment;
-    if ((m.phase === "verified" || m.phase === "skipped" || m.phase === "handoff") && m.step !== null) {
+    if ((m.phase === "verified" || m.phase === "skipped") && m.step !== null) {
       const s = seg.steps[m.step];
-      if (s !== undefined) this.receipt(run, seg, s, m.phase === "verified" ? "verified" : m.phase === "skipped" ? "alreadyTrue" : "handoff");
+      if (s !== undefined) this.receipt(run, seg, s, m.phase === "verified" ? "verified" : "alreadyTrue");
     }
     if (m.phase === "done") this.segmentDone(run, seg);
-    else if (m.phase === "handoff") this.finish(run, "handoff");
-    else if (m.phase === "stopped") this.track(this.segmentStopped(run, seg, m));
+    else if (m.phase === "handoff") {
+      const s = m.step === null ? undefined : seg.steps[m.step];
+      // The planned hand-off was reached: the goal is ready for the user's press. Any other hand-off is a step Caret
+      // could not do (a write the app did not take, focus that moved): the goal stops there and says so.
+      if (s?.kind === "handoff") {
+        this.receipt(run, seg, s, "handoff");
+        this.finish(run, "handoff");
+      } else {
+        run.cause = { reason: "handedOff", says: m.detail ?? "Caret could not do a step and left it to you" };
+        this.track(this.segmentStopped(run, seg, { step: m.step, stopReason: "error", detail: m.detail }));
+      }
+    } else if (m.phase === "paused") {
+      // A goal's segment does not wait paused: going on would run steps the user took the window back from, without
+      // an acceptance. The task stops (after the executor has finished reporting the pause) and the goal with it.
+      run.cause = { reason: "you", says: `you took the window back (${m.detail ?? "paused"})` };
+      const taskId = m.taskId;
+      queueMicrotask(() => {
+        try {
+          this.deps.executor.stop(taskId);
+        } catch {
+          // Already ended another way (stopped or undone): nothing more to stop.
+        }
+      });
+    } else if (m.phase === "stopped") this.track(this.segmentStopped(run, seg, m));
   }
 
   private receipt(run: Run, seg: GoalSegment, s: GoalStep, status: StepReceipt["status"]): void {
@@ -279,7 +320,7 @@ export class GoalRuns {
     const w = windowId === null ? undefined : this.deps.model.windows.get(windowId);
     const before = windowId === null ? "calendar" : (run.plan.inventory.revisions.get(windowId) ?? "");
     const after = windowId === null ? "calendar" : w === undefined ? "gone" : windowRevision(w);
-    run.cursor.receipts.push({ goalId: run.plan.goalId, segment: seg.index, step: s.index, stepRef: s.ref, status, before, after, at: this.deps.now() });
+    run.cursor.receipts.push({ goalId: run.plan.goalId, segment: seg.index, step: s.index, stepRef: s.ref, status, target: { windowId, key: s.target.key }, effect: s.effect, before, after, at: this.deps.now() });
     if (status !== "handoff") run.cursor.nextStep = s.index + 1;
     const total = run.plan.segments.reduce((n, x) => n + x.steps.length, 0);
     this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "step", segment: seg.index, taskId: run.task?.id ?? "", step: s.index, steps: total, phase: status === "verified" ? "verified" : status === "alreadyTrue" ? "skipped" : "handoff", says: s.says });
@@ -311,7 +352,7 @@ export class GoalRuns {
     this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "finished", outcome, verified, skipped, says });
   }
 
-  private async segmentStopped(run: Run, seg: GoalSegment, m: Extract<TaskProgress, { phase: "stopped" }>): Promise<void> {
+  private async segmentStopped(run: Run, seg: GoalSegment, m: Pick<Extract<TaskProgress, { phase: "stopped" }>, "step" | "stopReason" | "detail">): Promise<void> {
     const why = run.cause ?? this.classify(run, seg, m.stopReason, m.detail ?? "");
     const at = m.step === null ? null : (seg.steps[m.step]?.index ?? null);
     this.endTask(run);
@@ -407,38 +448,65 @@ export class GoalRuns {
   }
 
   /**
-   * A window's snapshot or changes arrived. For a running segment: a new window of its app (a dialog, a sheet window)
-   * revokes it; so does a source of its values that no longer shows the value.
+   * Asked by the helper's authorize right before every act of every task (Executor.authorizeAct, S1's live-scope check):
+   * for a goal's running segment, why it may no longer act (screenMoved), or null. The cause is kept so the stop reports
+   * it in the goal's words. A finished segment's task is no goal's anymore: its undo is never blocked here.
    */
-  onChanges(changes: readonly Change[]): void {
+  blocked(taskId: string): Revocation | null {
+    const goalId = this.tasks.get(taskId);
+    const run = goalId === undefined ? undefined : this.runs.get(goalId);
+    if (run === undefined || run.state !== "running" || run.task?.id !== taskId) return null;
+    const why = this.screenMoved(run);
+    if (why === null) return null;
+    run.cause ??= why;
+    return { why: why.says, by: "screen" };
+  }
+
+  /**
+   * A snapshot, change or closed window arrived: a running segment the screen moved under is revoked at once, so an act
+   * already queued in the reader is refused there; blocked() catches the same right before the next act.
+   */
+  onChanges(_changes: readonly Change[]): void {
     for (const run of this.runs.values()) {
       if (run.state !== "running" || run.task === null) continue;
-      const task = run.task;
-      const seg = run.plan.segments[task.segment] as GoalSegment;
-      if (task.pid !== null) {
-        const opened = [...this.deps.model.windows.values()].find((w) => w.app.pid === task.pid && !task.windows.has(w.window.windowId));
-        if (opened !== undefined) {
-          this.revoke(run, "dialog", `a new window '${opened.window.title}' opened in ${opened.app.name}`);
-          continue;
-        }
-      }
-      const touched = new Set(changes.map((c) => c.windowId));
-      for (const s of seg.steps) {
-        const src = s.value?.source;
-        if (src === undefined || src === null || !touched.has(src.windowId) || run.cursor.receipts.some((r) => r.step === s.index)) continue;
-        const node = this.deps.model.windows.get(src.windowId)?.nodes.get(src.key);
-        const want = s.value?.event?.sentence ?? s.value?.text ?? "";
-        if (node === undefined || !nodeText(node).includes(want)) {
-          this.revoke(run, "sourceChanged", `the window Caret copies '${s.target.label}' from no longer shows it`);
-          break;
-        }
-      }
+      const why = this.screenMoved(run);
+      if (why !== null) this.revoke(run, why.reason, why.says);
     }
   }
 
+  /**
+   * What moved under a running segment, or null: its page reloaded or navigated; its app (by process or bundle id) opened
+   * a window it did not show when the segment started, or a sheet over the segment's window; a value a step not yet
+   * done copies is no longer shown by its source window, or its window closed.
+   */
+  private screenMoved(run: Run): { reason: GoalStopReason; says: string } | null {
+    const task = run.task;
+    if (task === null) return null;
+    const seg = run.plan.segments[task.segment] as GoalSegment;
+    if (seg.domain.kind === "window") {
+      const d = seg.domain;
+      const doc = run.plan.inventory.documents.get(d.windowId);
+      if (doc !== undefined && this.deps.pageDocument?.(d.windowId) !== doc) return { reason: "reload", says: `'${d.title}' reloaded or went to another page` };
+      const opened = [...this.deps.model.windows.values()].find((w) => ((task.pid !== null && w.app.pid === task.pid) || (task.bundleId !== null && w.app.bundleId === task.bundleId)) && !task.windows.has(w.window.windowId));
+      if (opened !== undefined) return { reason: "dialog", says: `a new window '${opened.window.title}' opened in ${opened.app.name}` };
+      const w = this.deps.model.windows.get(d.windowId);
+      if (w !== undefined && [...w.nodes.values()].some((n) => n.role === "AXSheet")) return { reason: "dialog", says: `a sheet opened over '${d.title}'` };
+    }
+    for (const s of seg.steps) {
+      const src = s.value?.source;
+      if (src === undefined || src === null || run.cursor.receipts.some((r) => r.step === s.index)) continue;
+      const sw = this.deps.model.windows.get(src.windowId);
+      const node = sw?.nodes.get(src.key);
+      const want = s.value?.event?.sentence ?? s.value?.text ?? "";
+      const typed = sw?.values.some((x) => x.nodeKey === src.key && x.text === want) === true;
+      if (sw === undefined || node === undefined || (!nodeText(node).includes(want) && !typed)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
+    }
+    return null;
+  }
+
   private revoke(run: Run, reason: GoalStopReason, says: string): void {
-    if (run.task === null || run.cause !== null) return;
-    run.cause = { reason, says };
+    if (run.task === null) return;
+    run.cause ??= { reason, says };
     this.deps.executor.revoke(run.task.id, { why: says, by: "screen" });
   }
 
@@ -456,4 +524,12 @@ export class GoalRuns {
   readerRestarted(): void {
     for (const run of this.runs.values()) if (run.state === "awaiting") this.stop(run, "readerRestarted", null, `${SAYS.readerRestarted}, so the plan's windows no longer apply`);
   }
+}
+
+function deepFreeze<T>(v: T): T {
+  if (v !== null && typeof v === "object" && !Object.isFrozen(v)) {
+    Object.freeze(v);
+    for (const x of Object.values(v)) deepFreeze(x);
+  }
+  return v;
 }

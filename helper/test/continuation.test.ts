@@ -4,7 +4,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { GoalProgress, ReaderVerb } from "../src/protocol.ts";
 import { YOURS_EFFECT } from "../src/goals/capabilities.ts";
-import { areaKey, button, buttonKey, caseWindow, detailsWindow, fieldKey, goalScene, line, MAIL, mailWindow, replyWindow, SUPPORT, textKey, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { buildInventory } from "../src/goals/inventory.ts";
+import { lowerGoal } from "../src/goals/lower.ts";
+import { runCodePlan } from "../src/codemode/sandbox.ts";
+import { macClock } from "../src/offers/event-time.ts";
+import { areaKey, button, buttonKey, cannedProgram, caseWindow, detailsWindow, fieldKey, goalScene, line, MAIL, mailWindow, replyWindow, SUPPORT, textKey, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
 
 const scenes: GoalScene[] = [];
 afterEach(async () => {
@@ -296,3 +300,129 @@ describe("no goal survives its helper", () => {
     expect(acts(sc)).toEqual([]);
   });
 });
+
+// MARK: - the authority review's cases (theo-astra-reviewer adb294b23bd436f89 on 12c786f..c5554c8)
+
+describe("review: what may press, and when a segment may act", () => {
+  const wizard: CannedStep[] = [
+    { fill: { window: "Report a problem", target: "Order number", value: ORDER } },
+    { press: { window: "Report a problem", target: "Next", effect: "e:reveal" } },
+  ];
+
+  it("never presses a look-alike: a Next link that replaced the accepted Next button stops the goal, unpressed", async () => {
+    const sc = scene({ scripts: [wizard], windows: [mailWindow(), wizardWindow()], userWindow: "7171-3" });
+    const first = await sc.request("report the damaged lamp");
+    sc.desk.afterAct = () => {
+      sc.desk.afterAct = null;
+      const w = sc.desk.windows.get("7171-3") as DeskWindow;
+      // Same key, same label, another kind of control: a link the reader would press.
+      w.nodes = w.nodes.map((n) => (n.key === buttonKey(SUPPORT, "Next") ? { key: n.key, parent: null, role: "AXLink", label: "Next" } : n));
+      sc.desk.show(w);
+    };
+    expect((await sc.accept(first.goalId))?.outcome).toBe("stopped");
+    expect(sc.desk.pressed).toEqual([]);
+    expect(sc.desk.verbs.filter((v) => v.kind === "press")).toEqual([]);
+  });
+
+  it("a goal's paused segment stops, and a generic resume of its task is refused: nothing more is written", async () => {
+    const sc = scene({ scripts: [TO_SUPPORT_ONE_WINDOW], windows: [mailWindow(), replyWindow()], userWindow: "6161-2" });
+    const first = await sc.request("reply to Priya with the problem");
+    const taskId = `${first.goalId}:s0`;
+    sc.desk.afterAct = () => {
+      sc.desk.afterAct = null;
+      sc.helper.executor.pause(taskId, false, "input");
+    };
+    await sc.accept(first.goalId);
+    const stop = last(sc, "stopped");
+    expect(stop && [stop.reason, stop.freshPlan]).toEqual(["you", null]);
+    const writes = sc.desk.writes.length;
+    expect(writes).toBe(1);
+    await sc.helper.handleTask({ type: "taskControl", v: 1, taskId, action: "resume" }, "any-consumer");
+    expect(errors(sc).at(-1)).toMatch(/is a goal's step; a goal goes on only from a fresh acceptance/);
+    expect(sc.desk.writes.length).toBe(writes);
+  });
+
+  it("a dialog from another process of the same app stops the segment before its next write", async () => {
+    const sc = scene({ scripts: [TO_SUPPORT_ONE_WINDOW], windows: [mailWindow(), replyWindow()], userWindow: "6161-2" });
+    const first = await sc.request("reply to Priya with the problem");
+    sc.desk.afterAct = () => {
+      sc.desk.afterAct = null;
+      sc.desk.show({ windowId: "6299-1", app: { ...MAIL, pid: 6299 }, title: "Mail Fixture Helper", kind: "dialog", nodes: [button({ ...MAIL, pid: 6299 }, "OK")] });
+    };
+    expect((await sc.accept(first.goalId))?.outcome).toBe("stopped");
+    expect(last(sc, "stopped")?.reason).toBe("dialog");
+    expect(sc.desk.writes.length).toBe(1);
+  });
+
+  it("a Next that opens a sheet with a field is a dialog, never a verified reveal", async () => {
+    const win = wizardWindow();
+    win.buttons?.set(buttonKey(SUPPORT, "Next"), (w) => {
+      w.nodes.push({ key: `${SUPPORT.bundleId}/standard/sheet:~0`, parent: null, role: "AXSheet" }, { key: `${SUPPORT.bundleId}/standard/sheet:/textfield:reason~0`, parent: `${SUPPORT.bundleId}/standard/sheet:~0`, role: "AXTextField", label: "Reason", editable: true });
+    });
+    const sc = scene({ scripts: [wizard], windows: [mailWindow(), win], userWindow: "7171-3" });
+    const first = await sc.request("report the damaged lamp");
+    expect((await sc.accept(first.goalId))?.outcome).toBe("stopped");
+    expect(last(sc, "stopped")?.reason).toBe("dialog");
+    expect(sc.goals.filter((g) => g.event === "step" && g.phase === "verified").length).toBe(1);
+    expect(last(sc, "finished")).toBeUndefined();
+  });
+
+  it("closing the source window after the first write stops the goal before the second", async () => {
+    const sc = scene({ scripts: [[{ fill: { window: "Re: Order", target: "To", value: "priya.raman@northwind.example" } }, { fill: { window: "Re: Order", target: "Message", value: "cracked base" } }]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2" });
+    const first = await sc.request("reply to Priya with the problem");
+    sc.desk.afterAct = () => {
+      sc.desk.afterAct = null;
+      sc.desk.close("6161-1");
+    };
+    expect((await sc.accept(first.goalId))?.outcome).toBe("stopped");
+    expect(last(sc, "stopped")?.reason).toBe("sourceChanged");
+    expect(sc.desk.writes.length).toBe(1);
+  });
+
+  it("a fresh plan may not press what the goal already pressed: Next is not pressed twice", async () => {
+    const again: CannedStep[] = [{ press: { window: "Report a problem", target: "Next", effect: "e:reveal" } }];
+    // Next stays on screen and reveals nothing the second time; the replan asks to press it again.
+    const sc = scene({ scripts: [wizard, again], windows: [mailWindow(), wizardWindow()], userWindow: "7171-3" });
+    const first = await sc.request("report the damaged lamp");
+    await sc.accept(first.goalId);
+    await sc.helper.goals.idle();
+    expect(sc.desk.pressed.length).toBe(1);
+    expect(sc.goals.filter((g) => g.event === "segment" && g.replaces !== null)).toEqual([]);
+    expect(sc.warnings.some((l) => /would press 'Next' again, which Caret already did for this goal/.test(l))).toBe(true);
+  });
+
+  it("a write Caret could not make stops the goal as handed off; it never says the draft is ready", async () => {
+    const steps: CannedStep[] = [
+      { fill: { window: "Re: Order", target: "To", value: "priya.raman@northwind.example" } },
+      { fill: { window: "Re: Order", target: "Message", value: "cracked base" } },
+      { press: { window: "Re: Order", target: "Send", effect: YOURS_EFFECT } },
+    ];
+    const sc = scene({ scripts: [steps], windows: [mailWindow(), replyWindow()], userWindow: "6161-2" });
+    sc.desk.focusMovesOn.add(fieldKey(MAIL, "To"));
+    const first = await sc.request("reply to Priya with the problem");
+    expect((await sc.accept(first.goalId))?.outcome).toBe("handoff");
+    expect(last(sc, "finished")).toBeUndefined();
+    const stop = last(sc, "stopped");
+    expect(stop && [stop.reason, /^Focus moved away from the To field/.test(stop.says)]).toEqual(["handedOff", true]);
+    expect(sc.desk.writes).toEqual([]);
+  });
+
+  it("what runs is the frozen copy that was shown: changing the offered plan object afterwards changes nothing", async () => {
+    const sc = scene({ scripts: [], windows: supportDesk(), userWindow: "7171-1" });
+    const inv = buildInventory(sc.helper.model, { instruction: "file a support case", windows: ["7171-1"], memory: [], calendar: null, clock: macClock(new Date(sc.desk.at)), now: sc.desk.at, readerSession: 1 });
+    const ran = await runCodePlan(cannedProgram(inv.snapshots, [TO_SUPPORT[0] as CannedStep]), inv.snapshots, async () => null, { multiWindow: true });
+    if (!ran.ok) throw new Error(ran.detail);
+    const plan = lowerGoal("goal-frozen", "file a support case", ran.plan, inv.inventory);
+    const offered = sc.helper.goals.propose(plan, sc.session, "r-frozen");
+    const seg = plan.segments[0] as (typeof plan.segments)[number];
+    seg.slots.v0 = "ORD-SOMETHING-ELSE";
+    seg.plan.steps[0] = { ...(seg.plan.steps[0] as (typeof seg.plan.steps)[number]), says: "changed" };
+    expect(offered.event === "segment" && (await sc.helper.handleGoalAccept({ type: "goalAccept", v: 1, goalId: "goal-frozen", segment: 0, digest: offered.digest, at: sc.desk.at }, sc.session))?.outcome).toBe("done");
+    expect(sc.desk.writes.map((w) => w.value)).toEqual([ORDER]);
+  });
+});
+
+const TO_SUPPORT_ONE_WINDOW: CannedStep[] = [
+  { fill: { window: "Re: Order", target: "To", value: "priya.raman@northwind.example" } },
+  { fill: { window: "Re: Order", target: "Message", value: "cracked base" } },
+];

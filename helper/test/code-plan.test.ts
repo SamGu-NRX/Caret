@@ -82,7 +82,8 @@ describe("lowering", () => {
       [1, "crossWindow", "7171-2", ["write"]],
     ]);
     const [a, b] = g.segments;
-    expect(a?.plan.steps[0]?.end).toMatchObject({ kind: "valueEquals", window: { bundleId: "dev.caret.supportfixture", title: "{{title}}" }, target: { key: "{{k0}}" }, value: "{{v0}}" });
+    // Exact targets: the previewed element by key and role, never a look-alike by label.
+    expect(a?.plan.steps[0]?.end).toMatchObject({ kind: "valueEquals", window: { bundleId: "dev.caret.supportfixture", title: "{{title}}" }, target: { key: "{{k0}}", role: "{{r0}}", exact: true }, value: "{{v0}}" });
     expect(a?.slots).toMatchObject({ title: "Support — New case", k0: "dev.caret.supportfixture/standard/textfield:order number~0", v0: "ORD-2026-48213" });
     expect(b?.slots.v0).toBe("The desk lamp arrived with a cracked base and does not switch on.");
     // Each value names where it was read, which the digest covers and a recheck reads again.
@@ -139,7 +140,8 @@ describe("lowering", () => {
       { press: { window: "Report a problem", target: "Next", effect: "e:reveal" } },
     ]);
     expect(g.segments.map((s) => [s.reason, s.steps.map((x) => [x.kind, x.effect])])).toEqual([["start", [["write", null], ["press", "e:reveal"]]]]);
-    expect(g.segments[0]?.plan.steps[1]).toMatchObject({ end: { kind: "fieldsRevealed", target: { key: "{{k1}}" } }, via: { kind: "press", target: { key: "{{k1}}", label: "{{l1}}" } } });
+    expect(g.segments[0]?.plan.steps[1]).toMatchObject({ end: { kind: "fieldsRevealed", target: { key: "{{k1}}", role: "{{r1}}", exact: true } }, via: { kind: "press", target: { key: "{{k1}}", role: "{{r1}}", label: "{{l1}}", exact: true } } });
+    expect(g.segments[0]?.slots).toMatchObject({ r1: "AXButton", l1: "Next" });
     const after = await lowered([mailWindow(), wizardWindow()], ["7171-3"], [
       { press: { window: "Report a problem", target: "Next", effect: "e:reveal" } },
       { fill: { window: "Report a problem", target: "Order number", value: "ORD-2026-48213" } },
@@ -236,13 +238,14 @@ describe("lowering refuses, by name", () => {
 describe("the digest", () => {
   const step: GoalStep = { ref: "a", index: 0, kind: "write", says: "Field t1: ORD-1", target: tgt("t1"), value: val("v1", "ORD-1"), writes: "ORD-1", effect: null, handoff: null };
   const base: { index: number; domain: GoalDomain; reason: "start"; steps: GoalStep[] } = { index: 0, domain: win, reason: "start", steps: [step] };
-  const d0 = segmentDigest("p".repeat(64), base, []);
-  const variant = (over: Partial<GoalStep>, warnings: string[] = [], program = "p".repeat(64)): string => segmentDigest(program, { ...base, steps: [{ ...step, ...over }] }, warnings);
+  const X = "e".repeat(64);
+  const d0 = segmentDigest("p".repeat(64), base, [], X);
+  const variant = (over: Partial<GoalStep>, warnings: string[] = [], program = "p".repeat(64)): string => segmentDigest(program, { ...base, steps: [{ ...step, ...over }] }, warnings, X);
 
-  it("is the same for the same plan and differs for any change of order, target, value, provenance, precondition, effect or warning", () => {
-    expect(segmentDigest("p".repeat(64), structuredClone(base), [])).toBe(d0);
+  it("is the same for the same plan and differs for any change of order, target, value, provenance, precondition, effect, warning or executable plan", () => {
+    expect(segmentDigest("p".repeat(64), structuredClone(base), [], X)).toBe(d0);
     const changed = {
-      order: segmentDigest("p".repeat(64), { ...base, steps: [{ ...step, index: 1 }] }, []),
+      order: segmentDigest("p".repeat(64), { ...base, steps: [{ ...step, index: 1 }] }, [], X),
       target: variant({ target: tgt("t1", { key: "k-other" }) }),
       value: variant({ value: val("v1", "ORD-2"), writes: "ORD-2" }),
       provenance: variant({ value: val("v1", "ORD-1", { source: { windowId: "w-other", key: "src", revision: "r" } }) }),
@@ -251,7 +254,8 @@ describe("the digest", () => {
       effect: variant({ kind: "press", effect: "e:reveal", value: null, writes: null }),
       warning: variant({}, ["'Send' reads as outbound; you press it."]),
       program: variant({}, [], "q".repeat(64)),
-      window: segmentDigest("p".repeat(64), { ...base, domain: { ...win, windowId: "w-b" } }, []),
+      window: segmentDigest("p".repeat(64), { ...base, domain: { ...win, windowId: "w-b" } }, [], X),
+      executable: segmentDigest("p".repeat(64), base, [], "f".repeat(64)),
     };
     for (const [what, d] of Object.entries(changed)) expect(d, what).not.toBe(d0);
     expect(new Set(Object.values(changed)).size).toBe(Object.keys(changed).length);

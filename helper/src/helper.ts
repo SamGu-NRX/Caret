@@ -19,6 +19,7 @@ import {
   type ActivityRequest,
   type FillAll,
   type GoalAccept,
+  type HelperError,
   type GoalProgress,
   type GoalRequest,
   type FillProposal,
@@ -85,7 +86,7 @@ import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planWithCode } from "./planner/codeplan.ts";
 import { GoalRuns } from "./goals/runs.ts";
 import { planGoal } from "./goals/propose.ts";
-import { GoalError } from "./goals/lower.ts";
+import { GoalError, type DonePress } from "./goals/lower.ts";
 import type { GoalPlan } from "./goals/plan.ts";
 import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
@@ -494,7 +495,7 @@ export class Helper {
       bind: (taskId, session) => this.bindNew(taskId, session),
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
-      replan: (r) => this.replanGoal(r.goalId, r.instruction),
+      replan: (r) => this.replanGoal(r.goalId, r.instruction, r.completed.filter((x) => x.effect !== null).map((x) => ({ windowId: x.target.windowId, key: x.target.key, effect: x.effect }))),
     });
     this.journal = opts.journal ?? new RecoveryJournal(opts.store.dir);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
@@ -655,6 +656,9 @@ export class Helper {
    * permission is not one Caret always hands off.
    */
   private authorize(a: Authorization): Revocation | null {
+    // A goal's running segment acts only while the screen it was accepted on still holds (D2-06, goals/runs.ts).
+    const moved = this.goals.blocked(a.taskId);
+    if (moved !== null) return moved;
     const bound = this.taskHosts.get(a.taskId);
     if (bound !== undefined && [...bound].some((h) => !this.sessions.has(h))) return { why: "the host that started it disconnected", by: "host" };
     if (a.unprompted && (bound === undefined || bound.size === 0)) return { why: "no host was connected to show it", by: "host" };
@@ -805,6 +809,8 @@ export class Helper {
         this.audit?.onWindowClosed(m.windowId, m.at);
         this.model.close(m.windowId, m.at);
         forgetWindow(m.windowId);
+        // A goal segment that copies from this window, or acts in it, stops now (D2-06).
+        this.goals.onChanges([]);
         this.checkFills(m.windowId);
         this.routing?.candidatesChanged();
         this.routing?.observe();
@@ -1024,12 +1030,17 @@ export class Helper {
     }
   }
 
-  /** The host's acceptance of one goal segment. A refusal goes back as an error naming why; nothing runs. */
-  async handleGoalAccept(m: GoalAccept, session?: string): Promise<TaskResult | null> {
+  /**
+   * The host's acceptance of one goal segment. A refusal goes back as an error naming why, to `reply` (the asker's own
+   * connection) when given, else published as in-process callers read it; nothing runs.
+   */
+  async handleGoalAccept(m: GoalAccept, session?: string, reply?: (e: HelperError) => void): Promise<TaskResult | null> {
     const r = await this.goals.accept(m, session);
     if ("refused" in r) {
       this.opts.store.count("goal.acceptRefused", 1);
-      this.opts.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: `goalAccept refused: ${r.refused}` });
+      const e: HelperError = { type: "error", v: PROTOCOL_VERSION, at: this.now(), message: `goalAccept refused: ${r.refused}` };
+      if (reply === undefined) this.opts.publish(e);
+      else reply(e);
       return null;
     }
     return r.result;
@@ -1048,7 +1059,7 @@ export class Helper {
     return [...(user === null || user === undefined ? [] : [user]), ...rest].map((w) => w.window.windowId);
   }
 
-  private goalPlan(goalId: string, instruction: string): ReturnType<typeof planGoal> {
+  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = []): ReturnType<typeof planGoal> {
     const writer = this.writer;
     if (writer === null) throw new GoalError("nothingToDo", "no plan writer is configured");
     const calendar = this.executorHasCalendar ? (this.opts.eventCalendar ?? "Caret") : null;
@@ -1064,14 +1075,15 @@ export class Helper {
       now: this.now(),
       readerSession: this.readerSession,
       ...(this.opts.pageDocument === undefined ? {} : { pageDocument: this.opts.pageDocument }),
+      done,
     });
   }
 
   /** A fresh plan for a stopped goal's instruction, from the screen as it is now; null when none can be offered. */
-  private async replanGoal(goalId: string, instruction: string): Promise<GoalPlan | null> {
+  private async replanGoal(goalId: string, instruction: string, done: readonly DonePress[]): Promise<GoalPlan | null> {
     if (this.writer === null || this.mode !== "live" || this.gate.settings.paused) return null;
     try {
-      return await this.goalPlan(goalId, instruction);
+      return await this.goalPlan(goalId, instruction, done);
     } catch (e) {
       if (!(e instanceof GoalError)) throw e;
       this.opts.warn?.(`goal ${goalId}: no fresh plan: ${e.message}`);
@@ -1705,6 +1717,8 @@ export class Helper {
       }
       switch (m.action) {
         case "resume":
+          // A goal's segment runs only from an acceptance of its digest (D2-06): never from a generic resume.
+          if (this.goals.owns(m.taskId)) throw new Error(`task ${m.taskId} is a goal's step; a goal goes on only from a fresh acceptance`);
           this.rebind(m.taskId, session, this.executor.resumeRefusal(m.taskId));
           return await this.executor.resume(m.taskId);
         case "undo":

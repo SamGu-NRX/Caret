@@ -124,12 +124,13 @@ export const sha256 = (s: string): string => createHash("sha256").update(s).dige
 /**
  * A segment's digest: the program, the segment's place and window, and per step its order, target as frozen (what it
  * held is the step's precondition), value with its provenance, the effect a press must have, and the hand-off, plus
- * the goal's warnings.
+ * the goal's warnings and the hash of the executor plan and slots made from them (runs.ts executable).
  */
-export function segmentDigest(programHash: string, s: Omit<GoalSegment, "digest" | "plan" | "slots">, warnings: readonly string[]): string {
+export function segmentDigest(programHash: string, s: Omit<GoalSegment, "digest" | "plan" | "slots">, warnings: readonly string[], executable: string): string {
   return sha256(
     canonical({
       programHash,
+      executable,
       index: s.index,
       reason: s.reason,
       domain: s.domain,
@@ -147,6 +148,11 @@ export function segmentDigest(programHash: string, s: Omit<GoalSegment, "digest"
       warnings,
     }),
   );
+}
+
+/** The executor plan and slots a segment runs, as one hash: covered by its digest, so what runs is what was shown. */
+export function executable(seg: Pick<GoalSegment, "plan" | "slots">): string {
+  return sha256(canonical({ plan: seg.plan, slots: seg.slots }));
 }
 
 export function goalDigest(programHash: string, segmentDigests: readonly string[], warnings: readonly string[]): string {

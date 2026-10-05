@@ -83,6 +83,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -143,6 +147,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -199,6 +207,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -255,6 +267,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -383,6 +399,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -450,6 +470,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -523,6 +547,10 @@
                           },
                           "describe": {
                             "type": "string"
+                          },
+                          "exact": {
+                            "type": "boolean",
+                            "const": true
                           }
                         },
                         "required": [
@@ -622,6 +650,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -682,6 +714,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -738,6 +774,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -794,6 +834,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -922,6 +966,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -989,6 +1037,10 @@
                 },
                 "describe": {
                   "type": "string"
+                },
+                "exact": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [

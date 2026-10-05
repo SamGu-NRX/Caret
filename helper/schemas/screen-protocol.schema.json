@@ -8089,6 +8089,7 @@
                     "targetChanged",
                     "timeout",
                     "unexpectedEffect",
+                    "handedOff",
                     "windowGone",
                     "you",
                     "readerRestarted",

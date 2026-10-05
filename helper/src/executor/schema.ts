@@ -34,8 +34,14 @@ export const Target = z
     label: z.string().optional(),
     /** What the element is, in words. Shown to the user on a hand-off and to Jev when the locator is ambiguous. */
     describe: z.string(),
+    /**
+     * D2-06: only the element at `key`, and only while it still has `role` (and `label`, when given). Never another
+     * element by role or label: a goal plan's acceptance covers the element it previewed, not a look-alike.
+     */
+    exact: z.literal(true).optional(),
   })
-  .refine((t) => t.key !== undefined || t.label !== undefined || t.role !== undefined, { message: "a target needs key, label or role" });
+  .refine((t) => t.key !== undefined || t.label !== undefined || t.role !== undefined, { message: "a target needs key, label or role" })
+  .refine((t) => t.exact === undefined || (t.key !== undefined && t.role !== undefined), { message: "an exact target needs key and role" });
 export type Target = z.infer<typeof Target>;
 
 const InWindow = { window: WindowSel, target: Target };

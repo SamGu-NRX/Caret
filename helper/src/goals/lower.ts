@@ -18,12 +18,19 @@ import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { matchOption } from "../fill/controls.ts";
 import { misfit } from "../fill/kinds.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
-import { goalDigest, segmentDigest, type GoalDomain, type GoalInventory, type GoalPlan, type GoalSegment, type GoalStep, type SegmentReason, type TargetBinding, type ValueBinding } from "./plan.ts";
+import { executable, goalDigest, segmentDigest, type GoalDomain, type GoalInventory, type GoalPlan, type GoalSegment, type GoalStep, type SegmentReason, type TargetBinding, type ValueBinding } from "./plan.ts";
 
 /** Segments one goal may have. Assumed: the scenes need two or three; more is more acceptances than a user follows. */
 export const MAX_SEGMENTS = 4;
 
-export type GoalRefusal = "schema" | "unsupportedStep" | "stepAfterHandoff" | "wrongKind" | "notEmpty" | "tooManySegments" | "nothingToDo";
+export type GoalRefusal = "schema" | "unsupportedStep" | "stepAfterHandoff" | "wrongKind" | "notEmpty" | "tooManySegments" | "nothingToDo" | "replay";
+
+/** A press an earlier plan for the same goal made and verified (runs.ts StepReceipt). */
+export interface DonePress {
+  windowId: string | null;
+  key: string;
+  effect: string | null;
+}
 
 /** A plan code will not offer. `says` is the sentence the user reads; `detail` names refs for the log. */
 export class GoalError extends Error {
@@ -85,7 +92,7 @@ function lowerFill(t: TargetBinding, v: ValueBinding): Pick<GoalStep, "kind" | "
  * Lowers a sandbox plan against the inventory its snapshots came from. Throws GoalError with the first check that
  * fails. The result is not yet accepted: each segment runs only after an acceptance that names its digest.
  */
-export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan, inv: GoalInventory): GoalPlan {
+export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan, inv: GoalInventory, done: readonly DonePress[] = []): GoalPlan {
   if (!/^[0-9a-f]{64}$/.test(draft.programDigest)) throw new GoalError("schema", "the plan has no program behind it", draft.programDigest);
   const steps: GoalStep[] = [];
   const warnings: string[] = [];
@@ -120,6 +127,10 @@ export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan,
       lastPress = null;
       continue;
     }
+    // A press is not idempotent: a fresh plan for the same goal may not make one the goal already made (runs.ts receipts).
+    if (done.some((d) => t.domain.kind === "window" && d.windowId === t.domain.windowId && d.key === t.key && d.effect === verdict.capability.effect)) {
+      throw new GoalError("replay", `the plan would press ${named(t)} again, which Caret already did for this goal`, t.ref);
+    }
     const step: GoalStep = { ref: s.ref, index, kind: "press", says: verdict.capability.says(t.label), target: t, value: null, writes: null, effect: verdict.capability.effect, handoff: null };
     steps.push(step);
     lastPress = step;
@@ -146,7 +157,7 @@ function cut(programHash: string, steps: readonly GoalStep[], warnings: readonly
   return groups.map((g, index) => {
     const base = { index, domain: g.domain, reason: g.reason, steps: g.steps };
     const { plan, slots } = executorPlan(`segment-${index}`, base);
-    return { ...base, plan, slots, digest: segmentDigest(programHash, base, warnings) };
+    return { ...base, plan, slots, digest: segmentDigest(programHash, base, warnings, executable({ plan, slots })) };
   });
 }
 
@@ -173,13 +184,20 @@ function executorPlan(id: string, s: { domain: GoalDomain; steps: readonly GoalS
       return { says: slot(`s${i}`, x.says, `step ${i + 1}`), end: { kind: "calendarEvent", calendar: slot("calendar", d.calendar, "the calendar"), title: slot(`t${i}`, ev.title, `the title of event ${i + 1}`, x.value?.source?.windowId), start: ev.start, end: ev.end } };
     }
     if (sel === null) throw new GoalError("schema", "a window step outside a window segment", x.ref);
-    const target = { key: slot(`k${i}`, x.target.key, `the key of target ${i + 1}`), describe: slot(`l${i}`, x.target.label, `the name of target ${i + 1}`, d.kind === "window" ? d.windowId : undefined) };
+    // Exact: the element the preview named, with its role, and a button's own label; never a look-alike by label.
+    const target = {
+      key: slot(`k${i}`, x.target.key, `the key of target ${i + 1}`),
+      role: slot(`r${i}`, x.target.role, `the role of target ${i + 1}`),
+      describe: slot(`l${i}`, x.target.label, `the name of target ${i + 1}`, d.kind === "window" ? d.windowId : undefined),
+      exact: true as const,
+      ...(x.target.control === "button" ? { label: `{{l${i}}}` } : {}),
+    };
     const says = slot(`s${i}`, x.says, `step ${i + 1}`);
     if (x.kind === "write") {
       const value = slot(`v${i}`, x.writes ?? "", `value ${i + 1}`, x.value?.source?.windowId);
       return { says, end: { kind: "valueEquals", window: sel, target, value }, ...(x.value?.memory == null ? {} : { memory: x.value.memory }) };
     }
-    if (x.kind === "press") return { says, end: { kind: "fieldsRevealed", window: sel, target }, via: { kind: "press", target: { ...target, label: `{{l${i}}}` } } };
+    if (x.kind === "press") return { says, end: { kind: "fieldsRevealed", window: sel, target }, via: { kind: "press", target } };
     return { says, end: { kind: "handoff", window: sel, target, why: x.handoff ?? "unverifiable" } };
   });
   return {

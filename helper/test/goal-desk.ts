@@ -72,6 +72,8 @@ export class GoalDesk implements ReaderLink {
   readonly writes: { windowId: string; key: string; value: string }[] = [];
   /** Called after each act lands and before its answer goes back. */
   afterAct: ((v: ReaderVerb) => void) | null = null;
+  /** Keys whose value writes answer focusMoved and write nothing, as caret-screen does when a page moves focus away. */
+  readonly focusMovesOn = new Set<string>();
 
   constructor() {
     this.grants.now = () => this.at;
@@ -144,6 +146,7 @@ export class GoalDesk implements ReaderLink {
     const notSame = this.marks.check(verb);
     if (notSame !== null) return answer("notSameElement", notSame);
     if (verb.attribute !== "value") return answer("ok");
+    if (this.focusMovesOn.has(verb.key)) return answer("focusMoved", "focus is on another field of the window");
     if ((n.value ?? "") !== verb.expect) return answer("changed", `value is '${n.value ?? ""}'`);
     if (verb.value === "") delete n.value;
     else n.value = verb.value;

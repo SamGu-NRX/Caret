@@ -11,7 +11,7 @@ import type { MemoryValue } from "../planner/trace.ts";
 import { WRITER_MAX_OUTPUT_TOKENS } from "../writer/config.ts";
 import type { WriterPort } from "../writer/port.ts";
 import { buildInventory } from "./inventory.ts";
-import { GoalError, lowerGoal } from "./lower.ts";
+import { GoalError, lowerGoal, type DonePress } from "./lower.ts";
 import type { GoalPlan } from "./plan.ts";
 
 export interface GoalWriterUse {
@@ -36,6 +36,8 @@ export interface PlanGoalOptions {
   now: number;
   readerSession: number;
   pageDocument?: (windowId: string) => string | null;
+  /** Presses a stopped plan for the same goal already made: a fresh plan may not make them again. */
+  done?: readonly DonePress[];
   signal?: AbortSignal;
 }
 
@@ -60,5 +62,5 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
   const choose: ChooserPort = o.askJev === null ? async () => null : jevChooser(o.askJev, o.instruction);
   const ran = await runCodePlan(written.output.program, inv.snapshots, choose, { multiWindow: true, ...(o.signal === undefined ? {} : { signal: o.signal }) });
   if (!ran.ok) throw new GoalError("schema", "the plan program broke the rules a plan must keep", `${ran.kind}: ${ran.detail.slice(0, 200)}`);
-  return lowerGoal(o.goalId, o.instruction, ran.plan, inv.inventory);
+  return lowerGoal(o.goalId, o.instruction, ran.plan, inv.inventory, o.done ?? []);
 }
