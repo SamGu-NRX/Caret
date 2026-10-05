@@ -103,6 +103,9 @@ public final class OfferArbiter: @unchecked Sendable {
 
     private struct State {
         var current: Offer?
+        /// The current offer is on screen. One published with `shown: false` takes no key until
+        /// `reveal` says it was drawn.
+        var shown = true
         var ui = OfferUI()
         var statusLine: StatusLine?
         var nextStatusID: UInt64 = 1
@@ -139,7 +142,11 @@ public final class OfferArbiter: @unchecked Sendable {
     @discardableResult
     /// `compact`: the offer starts as its compact line (`OfferUI.compact`), decided before publishing
     /// so the tap never sees a pop-up's keys on a line that shows none of its rows.
-    public func publish(_ offer: Offer, compact: Bool = false) -> UInt64? {
+    /// `shown: false`: the offer is drawn after it is published, and drawing can fail, so it owns no
+    /// key until `reveal` (V1a check 4 review: a Tab between the publish and a failed draw would
+    /// have taken text nobody saw). Any key headed for its app meanwhile passes through and
+    /// dismisses it, as typing dismisses a shown one.
+    public func publish(_ offer: Offer, compact: Bool = false, shown: Bool = true) -> UInt64? {
         let (id, displaced): (UInt64?, Offer?) = state.withLock { s in
             guard s.insertingClaimID == nil, offer.target != s.consumedTarget,
                   s.current.map({ Self.mayReplace($0, ui: s.ui, with: offer) }) ?? true
@@ -154,6 +161,7 @@ public final class OfferArbiter: @unchecked Sendable {
             stamped.id = s.nextOfferID
             s.nextOfferID &+= 1
             s.current = stamped
+            s.shown = shown
             s.ui = OfferUI(initialFor: stamped)
             s.ui.compact = compact
             s.typedSinceOffer = ""
@@ -185,6 +193,18 @@ public final class OfferArbiter: @unchecked Sendable {
             s.ui.candidate = min(s.ui.candidate, max(count - 1, 0))
             if count < 2 { s.ui.open = false }
             return s.ui
+        }
+    }
+
+    /// The offer published with `shown: false` is on screen now and owns its keys. False when it is
+    /// no longer the current one (a key dismissed it, or a newer offer replaced it); the caller then
+    /// takes down what it drew.
+    @discardableResult
+    public func reveal(offerID: UInt64) -> Bool {
+        state.withLock { s in
+            guard s.current?.id == offerID else { return false }
+            s.shown = true
+            return true
         }
     }
 
@@ -310,6 +330,10 @@ public final class OfferArbiter: @unchecked Sendable {
             if offer.isExpired(at: now) {
                 Self.clearOffer(&s)
                 return .pass(.expired)
+            }
+            guard s.shown else {
+                Self.clearOffer(&s)
+                return .pass(.dismissed)
             }
 
             let surface = Self.surface(of: offer, ui: s.ui, typed: s.typedSinceOffer)

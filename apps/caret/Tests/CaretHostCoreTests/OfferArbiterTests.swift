@@ -2,6 +2,26 @@ import XCTest
 @testable import CaretHostCore
 
 final class OfferArbiterTests: XCTestCase {
+    /// Review of H7: an offer published before it is drawn owns no key; a key for its app passes
+    /// through and dismisses it, and a late `reveal` finds nothing.
+    func testAnOfferNotYetDrawnOwnsNoKey() {
+        let arbiter = OfferArbiter()
+        let target = TargetIdentity(pid: 77, bundleID: "b", windowID: "w", elementID: "e", elementRevision: "r")
+        let id = arbiter.publish(Offer(text: " later", target: target, fieldValue: "", caretUTF16: 0), shown: false)
+        XCTAssertNotNil(id)
+        XCTAssertEqual(arbiter.handleKeyDown(.tab(to: 77)), .pass(.dismissed))
+        XCTAssertNil(arbiter.snapshot().current)
+        XCTAssertFalse(arbiter.reveal(offerID: id!))
+    }
+
+    func testARevealedOfferOwnsTab() {
+        let arbiter = OfferArbiter()
+        let target = TargetIdentity(pid: 77, bundleID: "b", windowID: "w", elementID: "e", elementRevision: "r")
+        let id = arbiter.publish(Offer(text: " later", target: target, fieldValue: "", caretUTF16: 0), shown: false)!
+        XCTAssertTrue(arbiter.reveal(offerID: id))
+        guard case .consume = arbiter.handleKeyDown(.tab(to: 77)) else { return XCTFail("Tab takes a revealed offer") }
+    }
+
     private static let value = "I will send the "
 
     private func target(pid: Int32 = 4242, value: String = OfferArbiterTests.value) -> TargetIdentity {

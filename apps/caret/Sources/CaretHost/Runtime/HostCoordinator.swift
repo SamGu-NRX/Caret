@@ -225,7 +225,8 @@ final class HostCoordinator {
         recordPaintLatency(keyStamp)
     }
 
-    /// Publishes the offer, then draws it. False when either step refused.
+    /// Publishes the offer, then draws it, then lets it own its keys (`OfferArbiter.reveal`): a Tab
+    /// between the publish and a draw that fails takes nothing. False when any step refused.
     ///
     /// With `keyStamp`, the offer is withdrawn if any key-down arrived since that stamp: a key
     /// that landed before the publish saw no offer, so the tap could not dismiss it.
@@ -247,7 +248,7 @@ final class HostCoordinator {
             return false
         }
         let offer = Offer(text: text, target: field.identity, fieldValue: field.value, caretUTF16: field.selection.start)
-        guard let offerID = arbiter.publish(offer) else {
+        guard let offerID = arbiter.publish(offer, shown: false) else {
             status.increment("offer.refused")
             overlay.hide()
             return false
@@ -264,6 +265,12 @@ final class HostCoordinator {
             arbiter.invalidate(offerID: offerID)
             status.increment("offer.noPlacement")
             if let cause = overlay.lastFit?.cause { status.increment("offer.noPlacement.\(cause.rawValue)") }
+            return false
+        }
+        guard arbiter.reveal(offerID: offerID) else {
+            // A key reached the app between the publish and the draw, and dismissed it.
+            overlay.hide()
+            status.increment("discarded.keyBeforeDrawn")
             return false
         }
         if overlay.lastFit?.outcome == .overflowCapsule { status.increment("ghost.overflowCapsule") }

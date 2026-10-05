@@ -1,5 +1,4 @@
 import AppCompatibility
-import AppKit
 import ApplicationServices
 import AutocompleteCore
 import CaretHostCore
@@ -131,7 +130,9 @@ final class InsertionExecutor: @unchecked Sendable {
     /// Tap thread or debug socket. Only enqueues.
     func submitUndo(_ grant: UndoGrant) {
         let authorization = authority.grant()
-        queue.async { [self] in runUndo(grant, authorization) }
+        // On the tap thread the ⌘Z itself is already counted, so any later mark is the user's next input.
+        let mark = status.inputMark()
+        queue.async { [self] in runUndo(grant, authorization, since: mark) }
     }
 
     // MARK: - Insert
@@ -394,14 +395,14 @@ final class InsertionExecutor: @unchecked Sendable {
     /// Reverses exactly Caret's span as an edit (`AXSelectedText` over it set to ""), never by
     /// writing the whole value, which some apps take as a new document and lose their own undo
     /// history over (q1 bug 5).
-    private func runUndo(_ grant: UndoGrant, _ authorization: HostAuthority.Grant) {
+    private func runUndo(_ grant: UndoGrant, _ authorization: HostAuthority.Grant, since mark: HostStatus.InputMark) {
         func done(_ ok: Bool, _ error: String?) {
             status.update {
                 $0.lastUndo = DebugState.UndoInfo(grantID: grant.id, ok: ok, error: error, strategy: grant.rangeUndo == nil ? nil : grant.strategy.rawValue)
             }
             onUndone(UndoResult(grant: grant, ok: ok, error: error))
         }
-        if grant.rangeUndo != nil { return runRangeUndo(grant, authorization, done: done) }
+        if grant.rangeUndo != nil { return runRangeUndo(grant, authorization, since: mark, done: done) }
         let authority = self.authority
         guard authority.isLive(authorization) else { return done(false, "revoked") }
         guard let (_, element, processStart) = written.withLock({ list in list.last { $0.0 == grant.writeID } }) else {
@@ -510,7 +511,7 @@ final class InsertionExecutor: @unchecked Sendable {
     /// ⌘Z on a writing fix's toast: the undo `verify` built, through the same range steps, on the
     /// grant ⌘Z took. The field must still hold exactly what the fix left and the caret must be
     /// where the fix put it back; otherwise nothing is written and the toast says why.
-    private func runRangeUndo(_ grant: UndoGrant, _ authorization: HostAuthority.Grant, done: (Bool, String?) -> Void) {
+    private func runRangeUndo(_ grant: UndoGrant, _ authorization: HostAuthority.Grant, since mark: HostStatus.InputMark, done: (Bool, String?) -> Void) {
         guard let undo = grant.rangeUndo else { return done(false, "noUndo") }
         let authority = self.authority
         guard authority.isLive(authorization) else { return done(false, "revoked") }
@@ -523,7 +524,9 @@ final class InsertionExecutor: @unchecked Sendable {
                 && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
         }
         if grant.strategy == .nativeUndo {
-            let target = NativeUndoOnApp(pid: pid, element: element, stillTarget: stillTarget, live: { authority.isLive(authorization) })
+            let status = self.status
+            let target = NativeUndoOnApp(pid: pid, element: element, stillTarget: stillTarget, live: { authority.isLive(authorization) },
+                                         quiet: { status.inputMark() == mark })
             let outcome = NativeUndo.run(grant, on: target)
             return done(outcome == .reverted, outcome.error)
         }
@@ -616,13 +619,32 @@ final class InsertionExecutor: @unchecked Sendable {
         let element: AXUIElement
         let stillTarget: () -> Bool
         let live: () -> Bool
+        /// No key or click from the user since the toast's ⌘Z: a key typed before the posted ⌘Z
+        /// lands would be what it undoes, and a click after it is a selection not to overwrite.
+        let quiet: () -> Bool
 
-        func refusal() -> String? { stillTarget() ? nil : live() ? "targetNotAllowed" : "revoked" }
-        /// `NSRunningApplication.isActive` may be read off the main thread (NSRunningApplication.h:
-        /// its properties are returned atomically); this runs on the insertion queue.
-        func isFrontmost() -> Bool { NSRunningApplication(processIdentifier: pid)?.isActive == true }
+        func refusal() -> String? {
+            guard stillTarget() else { return live() ? "targetNotAllowed" : "revoked" }
+            return quiet() ? nil : "inputDuringUndo"
+        }
+
+        /// Accessibility's system-wide focused application, read live. Not
+        /// `NSRunningApplication.isActive`: its time-varying properties change only as the main run
+        /// loop runs (NSRunningApplication.h), and this runs on the insertion queue.
+        func isFrontmost() -> Bool {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value) == .success,
+                  let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
+            var focused: pid_t = 0
+            return AXUIElementGetPid(value as! AXUIElement, &focused) == .success && focused == pid
+        }
+
         func read() -> RangeEdit.Live? { FieldReader.read(element).map(InsertionExecutor.rangeLive) }
-        func postUndo() -> Bool { PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: stillTarget).undo() }
+
+        /// The synthesizer asks again immediately before the key-down: target, quiet and frontmost.
+        func postUndo() -> Bool {
+            PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: { refusal() == nil && isFrontmost() }).undo()
+        }
         func select(_ selection: UTF16Selection) {
             AXRead.setRange(kAXSelectedTextRangeAttribute, location: selection.start, length: selection.end - selection.start, on: element)
         }

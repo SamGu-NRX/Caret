@@ -210,6 +210,27 @@ final class NativeUndoTests: XCTestCase {
         XCTAssertEqual(app.posts, 0)
     }
 
+    /// Review of H7: a key typed after the toast's ⌘Z, before the posted one, would be what the
+    /// posted ⌘Z undoes. The executor reports it as `inputDuringUndo`; nothing is sent.
+    func testInputBeforeTheKeySendsNothing() throws {
+        let (grant, written) = try fix("We will recieve it. ", "recieve", "receive")
+        let app = app(written, caret: UTF16Text.length(written)) { _ in "" }
+        app.refusals = [nil, "inputDuringUndo"]
+        XCTAssertEqual(NativeUndo.run(grant, on: app), .refused("inputDuringUndo"))
+        XCTAssertEqual(app.posts, 0)
+    }
+
+    /// Review of H7: a click after the Undo landed is the user's selection; the caret is not moved.
+    func testAClickAfterTheUndoKeepsTheUsersSelection() throws {
+        let typed = "We will recieve it. "
+        let (grant, written) = try fix(typed, "recieve", "receive")
+        let app = app(written, caret: UTF16Text.length(written)) { _ in typed }
+        app.selectionAfterUndo = UTF16Selection(start: 8, end: 15)
+        app.refusals = [nil, nil, "inputDuringUndo"]
+        XCTAssertEqual(NativeUndo.run(grant, on: app), .reverted)
+        XCTAssertEqual(app.selects, [])
+    }
+
     func testARevokedGrantSendsNothing() throws {
         let (grant, written) = try fix("We will recieve it. ", "recieve", "receive")
         let app = app(written, caret: UTF16Text.length(written)) { _ in "" }

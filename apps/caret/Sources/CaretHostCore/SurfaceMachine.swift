@@ -33,6 +33,8 @@ public final class SurfaceMachine {
         public let readID: UInt64?
         /// How alternatives are drawn at the caret; inline for every other kind.
         public var presentation: CaretPresentation = .inline
+        /// The alternatives' capsule as last drawn, global top-left points.
+        public var capsule: CGRect?
     }
 
     /// What was last taken, for the debug state.
@@ -424,7 +426,7 @@ public final class SurfaceMachine {
         guard let offer = incoming.offer(for: field, createdAt: clock.now) else { return #"{"error":"nothing to show"}"# }
         if let reply = replaceInPlace(incoming, with: offer, caret: caret, field: field.frame ?? caret, readID: field.readID, presentation: presentation) {
             guard let shown else { return Self.notDrawnReply }
-            startWatch(.offer(shown.offerID), target: field.identity, anchors: anchors, requireFocus: true, field: field.frame)
+            startWatch(.offer(shown.offerID), target: field.identity, anchors: Self.watchAnchors(shown), requireFocus: true, field: field.frame)
             return reply
         }
         // An action line or pop-up needs a spot that covers none of the app's fields or labels: its
@@ -450,7 +452,9 @@ public final class SurfaceMachine {
         // Another offer takes the panel from a reoffered line as from any line: at once.
         endSwap(takeDown: !swapping, exit: 0)
         makeRoom(for: offer)
-        guard let offerID = arbiter.publish(offer, compact: compact) else {
+        // Alternatives can fail to draw, so they own no key until they are on screen (`reveal`).
+        let drawnLater = offer.kind == .ghost
+        guard let offerID = arbiter.publish(offer, compact: compact, shown: !drawnLater) else {
             if swapping { takeLineDown(exit: 0.10) }
             return #"{"error":"arbiter refused (an insertion is running)"}"#
         }
@@ -462,9 +466,15 @@ public final class SurfaceMachine {
         // A reoffered line's replacement is drawn over it where it stands, without an exit and entry.
         draw(ui: arbiter.snapshot().ui, entering: !swapping)
         // The renderer could not draw alternatives where the user can see them: already withdrawn.
-        guard shown?.offerID == offerID else { return Self.notDrawnReply }
+        guard let drawn = shown, drawn.offerID == offerID else { return Self.notDrawnReply }
+        if drawnLater, !arbiter.reveal(offerID: offerID) {
+            // A key reached the app between the publish and the draw and dismissed it.
+            clear(exit: 0)
+            count("surface.dismissedBeforeDrawn")
+            return #"{"error":"a key dismissed it before it was drawn"}"#
+        }
         if swapping { count("surface.reoffer.swapped") }
-        startWatch(.offer(offerID), target: field.identity, anchors: anchors, requireFocus: true, field: field.frame)
+        startWatch(.offer(offerID), target: field.identity, anchors: Self.watchAnchors(drawn), requireFocus: true, field: field.frame)
         count("surface.shown.\(offer.source.rawValue).\(offer.kind.name)")
         if case .ghost = offer.kind {
             count("surface.caret.\(presentation.rawValue)")
@@ -488,6 +498,17 @@ public final class SurfaceMachine {
         let ghostRect = CGRect(x: caret.maxX, y: caret.minY, width: widest, height: caret.height)
         let textAfter = field.selection.end < UTF16Text.length(field.value)
         return SurfaceGate.fitsInField(ghost: ghostRect, field: frame, textAfterCaret: textAfter) ? .inline : .capsule
+    }
+
+    /// The caret, and the corners of the alternatives' capsule when they are in one: a window that
+    /// comes over either takes the offer down (real ghost capsules are watched the same way).
+    static func watchAnchors(_ shown: Shown) -> [CGPoint] {
+        var anchors = [CGPoint(x: shown.caret.midX, y: shown.caret.midY)]
+        if let c = shown.capsule {
+            anchors += [CGPoint(x: c.minX + 1, y: c.minY + 1), CGPoint(x: c.maxX - 1, y: c.minY + 1),
+                        CGPoint(x: c.minX + 1, y: c.maxY - 1), CGPoint(x: c.maxX - 1, y: c.maxY - 1)]
+        }
+        return anchors
     }
 
     /// The reply to an offer the renderer did not draw, already withdrawn and logged (`withdrawUndrawn`).
@@ -689,11 +710,17 @@ public final class SurfaceMachine {
             let candidates = shown.offer.candidates
             lineText = candidates[min(ui.candidate, candidates.count - 1)]
         case .ghost:
-            let drawn = world.drawAlternatives(AlternativesDraw(
+            guard let drawn = world.drawAlternatives(AlternativesDraw(
                 offerID: shown.offerID, readID: shown.readID ?? 0, candidates: shown.offer.candidates, ui: ui, entering: entering,
                 quoted: shown.quoted, caret: shown.caret, field: shown.field, pid: shown.offer.target.pid, presentation: shown.presentation
-            ))
-            if !drawn { return withdrawUndrawn(shown) }
+            )) else { return withdrawUndrawn(shown) }
+            if drawn.capsule != shown.capsule {
+                self.shown?.capsule = drawn.capsule
+                // A redraw (another candidate on ↓) can move the capsule: watch where it is now.
+                if let watch, watch.watched == .offer(shown.offerID), let now = self.shown {
+                    startWatch(watch.watched, target: watch.target, anchors: Self.watchAnchors(now), requireFocus: watch.requireFocus, field: watch.field)
+                }
+            }
         case .action(let line):
             if ui.expanded, let variants = line.variants {
                 showOffer(.popup(variants, highlight: ui.highlight), text: variants.header?.title.text, figure: .needsYou, at: shown, entering: entering)

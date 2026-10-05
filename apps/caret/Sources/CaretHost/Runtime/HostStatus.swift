@@ -35,6 +35,7 @@ final class HostStatus: @unchecked Sendable {
     let startedAt = Date()
     private let fields = OSAllocatedUnfairLock(initialState: Fields())
     private let lastKey = OSAllocatedUnfairLock(initialState: KeyStamp(sequence: 0, uptimeNanos: 0))
+    private let clicks = OSAllocatedUnfairLock(initialState: UInt64(0))
 
     func update(_ body: (inout Fields) -> Void) {
         fields.withLock { body(&$0) }
@@ -58,6 +59,21 @@ final class HostStatus: @unchecked Sendable {
 
     func lastKeyDown() -> KeyStamp {
         lastKey.withLock { $0 }
+    }
+
+    /// Tap thread: one user mouse-down (Caret's own marked clicks never reach here).
+    func noteMouseDown() {
+        clicks.withLock { $0 &+= 1 }
+    }
+
+    /// The user's key-downs and mouse-downs so far: a later mark that differs means input arrived.
+    struct InputMark: Equatable {
+        var keys: UInt64
+        var clicks: UInt64
+    }
+
+    func inputMark() -> InputMark {
+        InputMark(keys: lastKeyDown().sequence, clicks: clicks.withLock { $0 })
     }
 }
 

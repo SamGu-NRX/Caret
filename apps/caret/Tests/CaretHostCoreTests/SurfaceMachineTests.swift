@@ -584,6 +584,34 @@ final class FullWindowAlternativesTests: XCTestCase {
         XCTAssertNil(rig.arbiter.snapshot().lastClaim)
     }
 
+    /// Review of H7: a Tab the tap decides while the capsule is still being drawn finds an offer
+    /// that owns no key yet; it goes to the app and dismisses the offer.
+    func testATabBeforeTheDrawFinishesGoesToTheApp() {
+        let rig = rig(caret: CGRect(x: 900, y: 300, width: 1, height: 16), value: String(repeating: "x", count: 120))
+        rig.screen.onDraw = { [unowned rig] _ in rig.pressLate(Fx.tab()) }
+        let reply = rig.machine.inject(.alternatives(pid: Fx.app, candidates: [" plain03"], quoted: false))
+        XCTAssertEqual(reply, #"{"error":"a key dismissed it before it was drawn"}"#)
+        rig.deliver()
+        XCTAssertNil(rig.arbiter.snapshot().lastClaim, "the Tab was the app's")
+        XCTAssertNil(rig.arbiter.snapshot().current)
+        XCTAssertNil(rig.machine.shown)
+    }
+
+    /// Review of H7: another app's window over the capsule, not the caret, takes the offer down, as
+    /// it does for a real ghost capsule.
+    func testAWindowOverTheCapsuleWithdrawsIt() {
+        let rig = rig(caret: CGRect(x: 900, y: 300, width: 1, height: 16), value: String(repeating: "x", count: 120))
+        let capsule = CGRect(x: 860, y: 321, width: 80, height: 24)
+        rig.screen.drawnCapsule = capsule
+        _ = rig.machine.inject(.alternatives(pid: Fx.app, candidates: [" plain03"], quoted: false))
+        XCTAssertEqual(rig.machine.shown?.capsule, capsule)
+        rig.screen.windows.insert(SurfaceGate.Window(pid: Fx.other, bounds: CGRect(x: 920, y: 330, width: 200, height: 100)), at: 0)
+        rig.machine.recheckVisibility()
+        XCTAssertNil(rig.machine.shown)
+        XCTAssertNil(rig.arbiter.snapshot().current)
+        XCTAssertTrue(rig.counts.contains("surface.withdrawn.covered"), "\(rig.counts)")
+    }
+
     func testAnAlternativeMidDocumentIsDrawnInACapsule() {
         let rig = rig(caret: CGRect(x: 300, y: 300, width: 1, height: 16), value: "Line one\nLine two\nLine three", selection: 8)
         let reply = rig.machine.inject(.alternatives(pid: Fx.app, candidates: [" again"], quoted: false))

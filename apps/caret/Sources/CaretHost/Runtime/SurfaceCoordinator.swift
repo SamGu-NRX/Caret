@@ -261,12 +261,13 @@ final class SurfaceCoordinator {
     /// In a capsule (`AlternativesDraw.presentation`), the text sits in KeyType's capsule off the
     /// caret's line, the underline under the capsule's text, the figure and count after its edge,
     /// and the list opens around the capsule rather than the field. True only when the candidate is
-    /// on screen; the machine withdraws the offer otherwise (V1a check 4).
-    fileprivate func drawAlternatives(_ draw: AlternativesDraw) -> Bool {
+    /// on screen, with the capsule's frame when it is in one; the machine withdraws the offer
+    /// otherwise (V1a check 4).
+    fileprivate func drawAlternatives(_ draw: AlternativesDraw) -> AlternativesDrawn? {
         let text = draw.currentText
         let capsule = draw.presentation == .capsule
         if draw.entering {
-            guard let read = lastRead, read.id == draw.readID, let snapshot = read.snapshot, let style = read.style, let font = read.font else { return false }
+            guard let read = lastRead, read.id == draw.readID, let snapshot = read.snapshot, let style = read.style, let font = read.font else { return nil }
             let viewport = lastVisible.flatMap { $0.field == read.frame ? $0.visible : nil }
             let usesKeyTypeGhost = ghost.show(text, at: snapshot, style: style, pid: draw.pid, capsule: capsule, viewport: { viewport }) != nil
             if !usesKeyTypeGhost {
@@ -275,7 +276,7 @@ final class SurfaceCoordinator {
                 // a derived caret. Nothing stands in for a capsule KeyType could not place.
                 guard !capsule, let cause = ghost.lastFit?.cause, cause == .noCaret || cause == .resolverRefused else {
                     status.increment("surface.ghost.notDrawn")
-                    return false
+                    return nil
                 }
                 drawOwnGhost(text, caret: draw.caret, font: font, color: style.textColor)
             }
@@ -286,17 +287,17 @@ final class SurfaceCoordinator {
             if let snapshot = current.snapshot {
                 guard ghost.show(text, at: snapshot, style: current.style, pid: draw.pid, capsule: capsule, viewport: { current.viewport }) != nil else {
                     status.increment("surface.ghost.notDrawn")
-                    return false
+                    return nil
                 }
             } else {
                 drawOwnGhost(text, caret: draw.caret, font: current.font, color: current.style.textColor)
             }
         } else {
-            return false
+            return nil
         }
         if capsule {
             guard var current = drawn,
-                  let c = ghost.lastFit?.capsule, c.count == 4 else { return false }
+                  let c = ghost.lastFit?.capsule, c.count == 4 else { return nil }
             current.capsule = CGRect(x: c[0], y: c[1], width: c[2], height: c[3])
             // The tag after the capsule stays inside the visible text area, else the field.
             current.area = current.viewport ?? draw.field
@@ -307,7 +308,7 @@ final class SurfaceCoordinator {
         guard candidates.count > 1 else {
             decor.exit(duration: 0)
             list.exit(duration: 0)
-            return true
+            return AlternativesDrawn(capsule: capsule ? drawn?.capsule : nil)
         }
         let font = drawn?.font ?? NSFont.systemFont(ofSize: 13)
         let width = ceil((text as NSString).size(withAttributes: [.font: font]).width)
@@ -338,7 +339,7 @@ final class SurfaceCoordinator {
         guard draw.quoted || layout.showsTag else {
             decor.exit(duration: 0)
             drawList(draw)
-            return true
+            return AlternativesDrawn(capsule: capsule ? drawn?.capsule : nil)
         }
         let decorView = HStack(alignment: .bottom, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
@@ -368,7 +369,7 @@ final class SurfaceCoordinator {
         if !decor.panel.isVisible || decor.isExiting { decor.panel.alphaValue = 1; decor.panel.orderFrontRegardless() }
 
         drawList(draw)
-        return true
+        return AlternativesDrawn(capsule: capsule ? drawn?.capsule : nil)
     }
 
     /// The open list goes where a pop-up would (`FieldPanelPlacement`): below the field, clear of
@@ -852,8 +853,8 @@ private final class World: SurfaceWorld {
     func panelIsClear(_ content: PanelContent, field: CGRect, caret: CGRect, pid: Int32) -> Bool {
         MainActor.assumeIsolated { owner?.panelIsClear(content, field: field, caret: caret, pid: pid) ?? false }
     }
-    func drawAlternatives(_ draw: AlternativesDraw) -> Bool {
-        MainActor.assumeIsolated { owner?.drawAlternatives(draw) ?? false }
+    func drawAlternatives(_ draw: AlternativesDraw) -> AlternativesDrawn? {
+        MainActor.assumeIsolated { owner?.drawAlternatives(draw) }
     }
     var character: FigureCharacter { MainActor.assumeIsolated { FigureSettings.shared.character } }
     var reduceMotion: Bool { MainActor.assumeIsolated { Motion.reduceMotion } }

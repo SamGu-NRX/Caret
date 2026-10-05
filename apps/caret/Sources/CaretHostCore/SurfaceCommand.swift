@@ -50,6 +50,16 @@ public struct AlternativesDraw: Equatable, Sendable {
     public var currentText: String { candidates[min(ui.candidate, candidates.count - 1)] }
 }
 
+/// What the renderer drew for alternatives: where their capsule is, when they are in one.
+public struct AlternativesDrawn: Equatable, Sendable {
+    /// Global top-left points; nil inline.
+    public var capsule: CGRect?
+
+    public init(capsule: CGRect?) {
+        self.capsule = capsule
+    }
+}
+
 public enum PanelContent: Equatable, Sendable {
     case line(LineContent)
     case popup(PopupSpec, highlight: Int?)

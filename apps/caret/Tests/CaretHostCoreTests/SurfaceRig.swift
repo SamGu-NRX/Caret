@@ -94,11 +94,14 @@ final class FakeScreen: SurfaceWorld {
     /// Whether the renderer puts alternatives on screen (`SurfaceWorld.drawAlternatives`): always,
     /// unless a test says it cannot.
     var drawsAlternatives = true
+    /// Where a capsule is drawn, for a test of its watch; nil inline or unasked.
+    var drawnCapsule: CGRect?
     /// Each draw, as the rig logs it beside the machine's commands.
     var onDraw: ((AlternativesDraw) -> Void)?
-    func drawAlternatives(_ draw: AlternativesDraw) -> Bool {
+    func drawAlternatives(_ draw: AlternativesDraw) -> AlternativesDrawn? {
         onDraw?(draw)
-        return drawsAlternatives
+        guard drawsAlternatives else { return nil }
+        return AlternativesDrawn(capsule: draw.presentation == .capsule ? drawnCapsule : nil)
     }
 
     /// The fixture app in front with `element` focused, its window over everything else.
