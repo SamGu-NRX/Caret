@@ -1,1 +1,0 @@
-D2-02/B27/B28: no routing = producers self-trigger; routed ones hold offers (await routing.idle). Router 1 flips near 0.5; diff runs per moment. Wait for a landed fixture page's waitForLoad. Scope words are allowlists: trust whole-form/section only for a whole grammar sentence.

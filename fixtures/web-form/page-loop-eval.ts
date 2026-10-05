@@ -6,7 +6,12 @@
 // walk's round trip less that time is the hop chain (content script, worker, bridge, XPC host, helper).
 //
 //   node fixtures/web-form/page-loop-eval.ts --sign-identity SHA1 --out DIR [--jev canned|live] [--spend-limit USD]
-//        [--pages id,id] [--w4-dir DIR] [--w4-key FILE] [--w4-note FILE]
+//        [--pages id,id] [--w4-dir DIR] [--w4-key FILE] [--w4-note FILE] [--path fill|goal]
+//
+// --path goal (P2): Ask's whole-form instruction from a host that runs goals, planned by the page planner (goals/
+// page-planner.ts): the preview, one acceptance, any reveal continuation (accepted too), and one undo per segment, which
+// must put every field back. Beside it, the disagreement report: each fill-gated write is also put to the goal value
+// gate's question (verifyWrites, goals/gates.ts jevGate), and each disagreement is scored against the answer key.
 //
 // Pages: the 14 forms of fixtures/realfill (B27's corpus), with their recorded notes and mails replayed into the helper
 // as the reader shows them; and W4's saved real pages (Greenhouse, Lever, Ashby, HubSpot; ~/.caret-run/evidence/browser/
@@ -40,6 +45,8 @@ import { PAGE_CHECKED, PROTOCOL_VERSION, Snapshot, type HelperMessage } from "..
 import type { WindowState } from "../../helper/src/model.ts";
 import { intentSnapshot } from "../../helper/src/planner/intent.ts";
 import { headsIntentMaker } from "../../helper/src/planner/intent-heads.ts";
+import { jevGate } from "../../helper/src/goals/gates.ts";
+import { SnippetLedger } from "../../helper/src/privacy.ts";
 import { loadAsks, loadCorpus, normLabel, type CorpusForm } from "../../helper/scripts/realfill-corpus.ts";
 import { CFT_BUILD, Cdp, HOST_NAME, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
 
@@ -64,10 +71,14 @@ const { values: args } = parseArgs({
     "w4-note": { type: "string", default: join(W4, "replay", "note.txt") },
     /** Writes every Jev question and answer to this NDJSON file (synthetic and public form text only). */
     "log-jev": { type: "string" },
+    /** fill: P1's Fill all (Command-1). goal: P2's Ask on the page, planned by the page planner. */
+    path: { type: "string", default: "fill" },
   },
 });
 if (args["sign-identity"] === undefined || args.out === undefined) throw new Error("--sign-identity and --out are required");
 if (args.jev !== "canned" && args.jev !== "live") throw new Error("--jev is canned or live");
+if (args.path !== "fill" && args.path !== "goal") throw new Error("--path is fill or goal");
+const GOAL = args.path === "goal";
 const OUT = args.out;
 const LIVE = args.jev === "live";
 const SPEND_LIMIT = Number(args["spend-limit"]);
@@ -261,6 +272,22 @@ interface Row {
   wrong: string[];
   written: number;
   error: string | null;
+  /** P2's goal path: what the preview offered, what one Tab wrote, the reveal, the undo, and the disagreement report. */
+  goal: {
+    previewMs: number;
+    steps: number;
+    left: number;
+    tabs: number;
+    eligible: number;
+    eligibleWritten: number;
+    /** From the last write's verified step to the reveal's preview, when the page revealed controls. */
+    revealMs: number | null;
+    restored: boolean;
+    notRestored: string[];
+    outcome: string;
+    disagreements: { field: string; value: string; verify: "dropped" | "kept"; key: "right" | "wrong" | "unscored" }[];
+    verifyRequests: number;
+  } | null;
 }
 
 async function main(): Promise<number> {
@@ -288,7 +315,7 @@ async function main(): Promise<number> {
   const warnings: string[] = [];
   const host = pageHost({ path: sockPath, secret, reader: noReader, apply: (m) => void helper.handleReader(m), warn: (l) => void warnings.push(l), onTiming: (t) => void timings.push({ ...t, page: page?.id ?? "", stage }) });
   const published: HelperMessage[] = [];
-  helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, pageDocument: (id) => host.registry.documentOf(id), calendar: null, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l) });
+  helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, pageDocument: (id) => host.registry.documentOf(id), calendar: null, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l), ...(GOAL ? { ask: { maker: "heads" as const } } : {}) });
   wirePageEngines({ host, helper, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l) });
   await host.server.listen();
   undo.push({ what: "helper", fn: async () => (await host.server.close(), helper.shutdown(), helper.memory.close(), store.close()) });
@@ -331,10 +358,96 @@ async function main(): Promise<number> {
   };
   const evaluate = async (expression: string): Promise<unknown> => ((await cdp.send("Runtime.evaluate", { expression, returnByValue: true }, sessionId)) as { result: { value?: unknown } }).result.value;
 
+  /** Whether the answer key allows what a field now holds; null for a field the key does not score. */
+  const scoreField = (label: string, now: string): boolean | null => {
+    const e = page?.key.find((k) => normLabel(k.label) === normLabel(label));
+    if (e === undefined || e.expected === "handoff") return null;
+    return e.expected === "checked" ? now === PAGE_CHECKED : e.expected !== "none" && e.expected !== "unchecked" && (now === e.expected || e.accept.includes(now));
+  };
+  /** P2: the Ask's goal on this page, from its preview to its undo (see the header). */
+  const goalPath = async (p: Page, row: Row, ready: number, w: WindowState, before: Map<string, string>): Promise<void> => {
+    stage = "ask";
+    const mark = published.length;
+    const a0 = performance.now();
+    const reply = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: `eval-${p.id}`, at: Date.now(), instruction: "fill out this form from my notes", windowId }, undefined, true, true);
+    const previewMs = ms(ready);
+    void a0;
+    if (reply.type !== "goalProgress" || reply.event !== "segment") {
+      row.error = `no preview: ${reply.type === "goalProgress" ? `${reply.event} ${"says" in reply ? reply.says : ""}` : reply.type === "askQuestion" ? `asked: ${reply.text}` : `${reply.type} ${"error" in reply && reply.error !== null ? JSON.stringify(reply.error).slice(0, 200) : ""}`}`;
+      row.pageMs = ms(ready);
+      return;
+    }
+    // The disagreement report: the goal value gate's question on every fill-gated write of the plan, scored by the key.
+    stage = "verify";
+    const plan = helper.goals.planOf(reply.goalId);
+    const gated = (plan?.segments ?? []).flatMap((s) => s.steps).filter((x) => x.gate === "fill" && x.value !== null);
+    const v0 = calls.length;
+    const dropped = gated.length === 0 ? new Map<string, string>() : await jevGate(plan?.instruction ?? "", gated.map((x) => ({ ref: x.ref, target: x.target, written: x.writes ?? x.value?.text ?? "", value: x.value as NonNullable<typeof x.value> })), askJev, new SnippetLedger(helper.model.windows.values()));
+    const disagreements = gated.flatMap((x) => {
+      const verdict = dropped.has(x.ref) ? ("dropped" as const) : ("kept" as const);
+      const node = w.nodes.get(x.target.key);
+      const right = scoreField(node?.label ?? x.target.own, x.writes ?? "");
+      // Only the writes verifyWrites would drop disagree with fill; each kept one agrees.
+      return verdict === "dropped" ? [{ field: x.target.label, value: x.writes ?? "", verify: verdict, key: right === null ? ("unscored" as const) : right ? ("right" as const) : ("wrong" as const) }] : [];
+    });
+    const verifyRequests = calls.length - v0;
+    // One Tab: the preview's acceptance. Then any segment the writes revealed, each its own Tab.
+    stage = "writes";
+    const segments: { goalId: string }[] = [{ goalId: reply.goalId }];
+    let tabs = 0;
+    let revealMs: number | null = null;
+    let outcome = "refused";
+    let next: typeof reply | undefined = reply;
+    while (next !== undefined && tabs < 4) {
+      tabs++;
+      const r = await helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: next.goalId, segment: next.segment, digest: next.digest, at: Date.now() });
+      const lastWrite = performance.now();
+      await helper.goals.idle();
+      outcome = r?.outcome ?? "refused";
+      const fin = published.slice(mark).filter((m) => m.type === "goalProgress" && m.goalId === next?.goalId && m.event === "finished").at(-1);
+      if (fin?.type === "goalProgress" && fin.event === "finished") outcome = fin.outcome;
+      const goalIds = new Set(segments.map((x) => x.goalId));
+      const more = published.slice(mark).find((m): m is typeof reply => m.type === "goalProgress" && m.event === "segment" && !goalIds.has(m.goalId));
+      if (more !== undefined && more.reason === "afterReveal") {
+        revealMs ??= ms(lastWrite);
+        segments.push({ goalId: more.goalId });
+      }
+      next = more;
+    }
+    row.pageMs = ms(ready);
+    stage = "final";
+    await host.link.run({ kind: "walk", pid, windowId });
+    const after = helper.model.windows.get(windowId) as WindowState;
+    let eligibleWritten = 0;
+    for (const n of after.nodes.values()) {
+      const was = before.get(n.key) ?? "";
+      const now = n.value ?? "";
+      if (n.editable !== true || now === was) continue;
+      row.written++;
+      const ok = scoreField(n.label ?? "", now);
+      if (ok === false) row.wrong.push(`${n.label ?? n.key}: '${now}'`);
+      if (ok === true) eligibleWritten++;
+    }
+    const eligible = p.key.filter((k) => k.expected !== "none" && k.expected !== "handoff" && k.expected !== "unchecked").length;
+    // One undo per segment, newest first: every field must hold what it held before the Ask.
+    stage = "undo";
+    const notRestored: string[] = [];
+    for (const sgt of [...segments].reverse()) {
+      if (!helper.executor.has(`${sgt.goalId}:s0`)) continue;
+      const u = await helper.executor.undo(`${sgt.goalId}:s0`);
+      notRestored.push(...u.notRestored.map((x) => x.reason));
+    }
+    await host.link.run({ kind: "walk", pid, windowId });
+    const undone = helper.model.windows.get(windowId) as WindowState;
+    const differ = [...undone.nodes.values()].filter((n) => n.editable === true && (n.value ?? "") !== (before.get(n.key) ?? ""));
+    for (const n of differ) notRestored.push(`${n.label ?? n.key} holds '${n.value ?? ""}'`);
+    row.goal = { previewMs, steps: reply.steps.length, left: reply.warnings.length, tabs, eligible, eligibleWritten, revealMs, restored: notRestored.length === 0, notRestored, outcome, disagreements, verifyRequests };
+  };
+
   const rows: Row[] = [];
   for (const p of pages) {
     page = p;
-    const row: Row = { id: p.id, kind: p.kind, controls: 0, walk: null, intent: null, fill: null, previewMs: null, run: null, finalWalk: null, pageMs: null, wrong: [], written: 0, error: null };
+    const row: Row = { id: p.id, kind: p.kind, controls: 0, walk: null, intent: null, fill: null, previewMs: null, run: null, finalWalk: null, pageMs: null, wrong: [], written: 0, error: null, goal: null };
     rows.push(row);
     try {
       // The desk: last page's sources and memory gone, this page's in place, the source focused last and left for the browser.
@@ -365,6 +478,11 @@ async function main(): Promise<number> {
       const before = new Map([...w.nodes.values()].map((n) => [n.key, n.value ?? ""]));
       row.controls = [...w.nodes.values()].filter((n) => n.editable === true).length;
 
+      if (GOAL) {
+        await goalPath(p, row, ready, w, before);
+        say(`${p.id}: goal ${row.goal?.outcome ?? "-"}, preview ${fmt(row.goal?.previewMs ?? null)} ms, ${row.goal?.steps ?? 0} steps, written ${row.goal?.eligibleWritten ?? 0}/${row.goal?.eligible ?? 0} eligible, tabs ${row.goal?.tabs ?? 0}, reveal ${fmt(row.goal?.revealMs ?? null)} ms, undo ${row.goal?.restored === true ? "restored" : `NOT restored ${row.goal?.notRestored.join("; ") ?? ""}`}, page ${fmt(row.pageMs)} ms; wrong ${row.wrong.length}${row.wrong.length > 0 ? ` (${row.wrong.join("; ")})` : ""}; disagreements ${row.goal?.disagreements.length ?? 0}${row.error === null ? "" : `; ${row.error}`}`);
+        continue;
+      }
       // Ask's intent: the heads maker's one request on the form as walked.
       stage = "intent";
       const memory = p.about.map((a, i) => ({ id: `about-${i + 1}`, label: a.label, text: a.value, whose: "user" as const }));
@@ -423,6 +541,7 @@ async function main(): Promise<number> {
   writeReport(rows, presses);
   const walkedAll = rows.every((r) => r.walk !== null);
   const wrong = rows.reduce((n, r) => n + r.wrong.length, 0);
+  if (GOAL && rows.some((r) => r.goal !== null && !r.goal.restored)) return 1;
   say(`pages ${rows.length}, walked ${rows.filter((r) => r.walk !== null).length}, wrong ${wrong}, presses ${presses}, POSTs ${posts}; Jev ${calls.length} requests, $${spent.toFixed(4)}`);
   return walkedAll && wrong === 0 && presses === 0 && posts === 0 ? 0 : 1;
 }
@@ -476,6 +595,35 @@ function writeReport(rows: readonly Row[], presses: number): void {
     "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ...rows.map((r) => `| ${r.id} | ${r.controls} | ${fmt(r.walk?.commandMs ?? null)} (${fmt(r.walk?.extensionMs ?? null)}) | ${fmt(r.intent?.ms ?? null)} (${r.intent?.route ?? "-"} ${r.intent?.scope ?? ""}) | ${fmt(r.fill?.ms ?? null)} (${fmt(r.fill?.jevMs ?? null)}, ${r.fill?.requests ?? "-"}) | ${r.fill?.proposed ?? "-"} / ${r.fill?.withheld ?? "-"} | ${fmt(r.previewMs)} | ${r.run === null ? "-" : `${r.run.outcome} ${fmt(r.run.ms)}`} | ${r.run?.writes ?? 0} | ${fmt(r.finalWalk?.commandMs ?? null)} | ${fmt(r.pageMs)} | ${r.wrong.length === 0 ? 0 : r.wrong.join("; ").replace(/\|/g, "/")} | ${(r.error ?? r.run?.detail ?? "").replace(/\|/g, "/").slice(0, 160)} |`),
   ];
+  if (GOAL) {
+    const g = rows.flatMap((r) => (r.goal === null ? [] : [{ r, g: r.goal }]));
+    const dis = g.flatMap(({ r, g: x }) => x.disagreements.map((d) => ({ page: r.id, ...d })));
+    md.length = 0;
+    md.push(
+      `# Page goals (P2): ${args.jev} Jev`,
+      "",
+      `${rows.length} pages. Ask: "fill out this form from my notes", heads maker, page planner. Jev: ${args.jev}${LIVE ? `, ${calls.length} requests, $${spent.toFixed(4)}` : ""}. Wrong ${rows.reduce((n, r) => n + r.wrong.length, 0)}, presses ${presses}, POSTs ${posts}.`,
+      "",
+      "| stage | n | p50 | p95 | max | budget | how measured |",
+      "|---|---|---|---|---|---|---|",
+      line("Walk on load (round trip)", nums((r) => r.walk?.commandMs), "≤ 100", ""),
+      line("Preview visible, Ask", nums((r) => r.goal?.previewMs), "≤ 2200", "ready to the goal's preview: walk, intent, fill, plan"),
+      line("Reveal preview after the last write", nums((r) => r.goal?.revealMs), "≤ 1500", "accept's end to the afterReveal preview"),
+      line("Page time", nums((r) => r.pageMs), "< 10000", "ready to the last segment's end, every Tab included"),
+      ...kinds.map((k) => line(`Write: ${k} (verb round trip)`, acts.filter((t) => kindOf(t) === k).map((t) => t.commandMs), target[k] as string, "")),
+      line("  re-walk after a write", rewalks.map((r) => r.commandMs), "(cut in P2)", "acts that still re-walk: combobox picks, failures"),
+      "",
+      `Disagreements, verifyWrites against proposeFill: ${dis.length} of ${g.reduce((n, x) => n + x.g.steps, 0)} fill-gated writes would be dropped by verifyWrites (${g.reduce((n, x) => n + x.g.verifyRequests, 0)} extra requests). Of those, wrong by the key: ${dis.filter((d) => d.key === "wrong").length}; right: ${dis.filter((d) => d.key === "right").length}; unscored: ${dis.filter((d) => d.key === "unscored").length}.`,
+      "",
+      "| page | field | value | verifyWrites | key |",
+      "|---|---|---|---|---|",
+      ...dis.map((d) => `| ${d.page} | ${d.field.replace(/\|/g, "/")} | ${d.value.replace(/\|/g, "/").slice(0, 60)} | ${d.verify} | ${d.key} |`),
+      "",
+      "| page | controls | preview | steps | left | tabs | written / eligible | reveal | outcome | undo | page | wrong | note |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+      ...rows.map((r) => `| ${r.id} | ${r.controls} | ${fmt(r.goal?.previewMs ?? null)} | ${r.goal?.steps ?? "-"} | ${r.goal?.left ?? "-"} | ${r.goal?.tabs ?? "-"} | ${r.goal === null ? "-" : `${r.goal.eligibleWritten} / ${r.goal.eligible}`} | ${fmt(r.goal?.revealMs ?? null)} | ${r.goal?.outcome ?? "-"} | ${r.goal === null ? "-" : r.goal.restored ? "restored" : r.goal.notRestored.join("; ").replace(/\|/g, "/").slice(0, 120)} | ${fmt(r.pageMs)} | ${r.wrong.length === 0 ? 0 : r.wrong.join("; ").replace(/\|/g, "/")} | ${(r.error ?? "").replace(/\|/g, "/").slice(0, 160)} |`),
+    );
+  }
   writeFileSync(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
   writeFileSync(join(OUT, "page-loop.json"), `${JSON.stringify({ jev: args.jev, cft: CFT_BUILD, spent, posts, presses, rows, timings, calls }, null, 1)}\n`);
   say(`wrote ${join(OUT, "page-loop.md")}`);

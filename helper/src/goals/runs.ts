@@ -198,6 +198,12 @@ export class GoalRuns {
     return r === undefined ? null : { state: r.state, cursor: structuredClone(r.cursor) };
   }
 
+  /** A copy of the plan a goal was offered with, for evaluations (P2's disagreement report); a copy is never offered. */
+  planOf(goalId: string): GoalPlan | null {
+    const r = this.runs.get(goalId);
+    return r === undefined ? null : structuredClone(r.plan);
+  }
+
   /** Offers a goal's first segment for acceptance, as the reply to `requestId` (or as a fresh plan replacing another). */
   propose(given: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[]; pressed: DonePress[]; owed: LeftItem[] } | null = null): GoalProgress {
     if (this.runs.has(given.goalId)) throw new Error(`goal ${given.goalId} already exists`);
