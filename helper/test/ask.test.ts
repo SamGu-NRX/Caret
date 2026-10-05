@@ -335,6 +335,17 @@ describe("the heads intent maker (P1)", () => {
     expect(read("submit it", { scope: "plan" }, {}, { scope: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "ask", open: ["fields"] });
   });
 
+  // P2: live, Jev chose the whole form for "fill out this form" on all 19 corpus and W4 pages, under the floor on 17.
+  it("settles the whole form under the floor only when Jev chose it and code reads the whole instruction as a whole-form request", () => {
+    const low = { scope: HEAD_FLOOR - 0.2 };
+    expect(read("fill out this form", { scope: "all", source: "any", whose: "user" }, {}, low)).toMatchObject({ route: "fill", scope: "all" });
+    // Jev's top choice is something else: still asked.
+    expect(read("fill out this form", { scope: "fields", source: "any" }, {}, low)).toMatchObject({ route: "ask", why: "whichFields" });
+    // Not a whole-form sentence by code's grammar: the floor stands.
+    expect(read("fill this out from my note", { scope: "all", source: "any" }, {}, low)).toMatchObject({ route: "ask", why: "whichFields" });
+    expect(read("just do my contact info up top", { scope: "all", source: "any" }, {}, low)).toMatchObject({ route: "ask", why: "whichFields" });
+  });
+
   it("lists the fields whose yes/no clears the field floor, and asks when none does", () => {
     const s = snapOf("the landlord part");
     const ref = (n: string) => refOf(s, n);

@@ -11,6 +11,7 @@
 // One request means no second wording agrees with the first, so planAsk checks this maker's scope as it checks the
 // writer's (ask.ts confirmScope: Jev, asked twice, confirms fields the instruction does not name and a whole form the
 // instruction does not state). Values the instruction spells out are tied to fields by code (tieLiterals), never by Jev.
+import { asksForWholeForm } from "./scope-words.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { ROUTE_CUTOFF, NOUL_FLOOR } from "./intent-makers.ts";
@@ -136,7 +137,12 @@ export function headsIntentMaker(askJev: AskJev): IntentMaker {
 /** The intent one answer gives, at the floors: an unsettled part is asked about (B29), never read wider. */
 export function readHeads(snap: IntentSnapshot, r: JevResult): AskIntent {
   const base: AskIntent = { route: "ask", why: "whichFields", scope: "all", section: "none", fields: [], sources: [], whose: "user", literals: [] };
-  const scope = settled(r, "scope");
+  // P2: the whole form is settled under the floor when Jev's top choice is the whole form and code's own grammar reads
+  // the whole instruction as a whole-form request (scope-words.ts WHOLE_FORM, B28's reviewed allowlist, which planAsk
+  // already trusts without a confirmation). Live P2 run: Jev chose "all" for "fill out this form" on all 19 corpus and
+  // W4 pages, at a margin of 0.46 to 0.78, under the floor on 17, and each of those asked "Which fields do you mean?"
+  // (evidence/screen/p2/goal-live-1). Anything else still needs the floor.
+  const scope = settled(r, "scope") ?? (r.answers.scope?.choice === "all" && asksForWholeForm(snap.instruction) ? "all" : null);
   if (scope === "refuse") {
     const why = settled(r, "why");
     return { ...base, route: "refuse", why: why !== null && why in WHY ? (why as AskIntent["why"]) : "nothingToFill", scope: "none" };
