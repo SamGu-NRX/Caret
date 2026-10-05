@@ -1,0 +1,1 @@
+W1/W2: open connectNative port keeps the MV3 worker alive (360 s, CfT 154); headless CfT registers with LaunchServices, so caret-screen --only-pids reads it. accept.ts: page acceptance; under a held heavy lock set CARET_HEAVY_LOCK_HELD=1 or its bridge build deadlocks.
