@@ -555,20 +555,25 @@ const CONTRACTIONS: readonly [RegExp, string][] = [
 /** Words a restatement may add or leave out: articles and "please". Pronouns, prepositions and "not" are content. */
 const FILLER = new Set(["a", "an", "the", "please"]);
 /**
- * Words that change what the rest of the instruction's sentence means: a negation or condition before the restated
- * words ("do not tell her I'm in", "if it works, say I'm in"), or a turn ("I'm out or in"). Restated words with one of
- * these before them in their sentence are left to Jev. An open list, on the fail-open side: a word missing here lets a
- * restatement skip Jev; the draft's code checks still run.
+ * Words that change what a clause of the instruction means: a negation, a condition or a turn ("do not send", "if it
+ * works", "in or out"). A sentence of the instruction with one of these in any other clause than the restated words'
+ * gives no restatement. An open list, on the fail-open side; FRAME below is the closed rule that does the work.
  */
-const TURNS = new Set(["not", "no", "never", "nor", "neither", "without", "unless", "if", "except", "only", "when", "whenever", "once", "until", "after", "before", "instead", "rather", "whether", "or", "but", "maybe", "might", "probably", "don", "dont"]);
+const TURNS = new Set(["not", "no", "never", "nor", "neither", "without", "unless", "if", "except", "only", "when", "whenever", "once", "until", "after", "before", "instead", "rather", "whether", "or", "but", "maybe", "might", "probably", "avoid", "stop", "refuse", "dont", "cant", "wont", "didnt", "doesnt", "isnt"]);
 
 /**
  * Words that open what the user asks Caret to say ("saying I'm in", "tell her I'll be there", "a reply that I paid").
  * Closed on purpose: restated words after anything else are left to Jev.
  */
-const SAYING = new Set(["say", "says", "saying", "tell", "tells", "telling", "reply", "replying", "respond", "responding", "answer", "answering", "write", "writing", "with", "that"]);
-/** Whom a saying word may name before what is said: "tell her I'm in", "tell Priya I'm in" (a capitalized word). */
+const SAYING = new Set(["say", "saying", "tell", "telling", "reply", "replying", "respond", "responding", "answer", "answering", "write", "writing", "with", "that"]);
+/** Whom a saying word may name before what is said: "tell her I'm in" (a name the instruction gives, too). */
 const ADDRESSEE = new Set(["her", "him", "them", "me", "us", "you", "everyone", "everybody", "all"]);
+/**
+ * The only words that may stand before restated words in their clause, besides names: asking for a message and whom
+ * it goes to ("draft a reply to Priya saying", "write her a short note that"). Closed on purpose: "avoid saying",
+ * "I deny that" and "never make this promise" are not a request to say what follows, so they go to Jev.
+ */
+const FRAME = new Set([...SAYING, ...ADDRESSEE, "draft", "compose", "send", "rsvp", "response", "message", "email", "mail", "note", "text", "short", "quick", "brief", "back", "to", "for", "confirmation"]);
 
 /** A text's content words in order: folded, contractions written out, filler dropped; `w` lower case, `cased` as written. */
 function contentWords(t: string): { w: string; cased: string }[] {
@@ -578,15 +583,63 @@ function contentWords(t: string): { w: string; cased: string }[] {
 }
 
 /**
- * Whether a draft sentence only restates the user's instruction (G2 lead decision 3): its content words, after a
- * greeting and a name the basis shows are set aside, are the last words of one of the instruction's sentences, in
- * the same order and with nothing between them; right before them stands a SAYING word, or one and then an addressee
- * (a pronoun, or a capitalized word); and no TURNS word stands before them in that sentence. Such a sentence says
- * what the user asked Caret to say, so Jev is not asked to confirm it; drafts.ts's fact checks still run.
+ * The instruction's sentences, each cut into clauses at commas and at "and", "then" and "also". Neither cut is made
+ * inside double quotes, so a quoted reply stays whole with what asks for it; with unbalanced quotes the whole
+ * instruction is one clause.
+ */
+function clausesOf(instruction: string): string[][] {
+  const t = folded(instruction).replace(/[“”]/gu, '"');
+  if ((t.match(/"/gu) ?? []).length % 2 !== 0) return [[t.replace(/"/gu, " ")]];
+  const sentences: string[][] = [];
+  let clause = "";
+  let clauses: string[] = [];
+  let quoted = false;
+  const endClause = (): void => {
+    if (clause.trim() !== "") clauses.push(clause);
+    clause = "";
+  };
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i] as string;
+    if (c === '"') {
+      quoted = !quoted;
+      clause += " ";
+      continue;
+    }
+    if (!quoted && /[.!?;\n]/u.test(c)) {
+      endClause();
+      if (clauses.length > 0) sentences.push(clauses);
+      clauses = [];
+      continue;
+    }
+    if (!quoted && c === ",") {
+      endClause();
+      continue;
+    }
+    const joiner = quoted ? null : /^\s(?:and|then|also)\s/iu.exec(t.slice(i));
+    if (joiner !== null) {
+      endClause();
+      i += joiner[0].length - 2;
+      continue;
+    }
+    clause += c;
+  }
+  endClause();
+  if (clauses.length > 0) sentences.push(clauses);
+  return sentences;
+}
+
+/**
+ * Whether a draft sentence only restates the user's instruction (G2 lead decision 3). After a greeting and a name the
+ * basis shows are set aside, its content words must be the last words of one clause of the instruction, in the same
+ * order with nothing between them. Before them in that clause stand only FRAME words and names the instruction gives
+ * (never its clause's first word), with a SAYING word, or one and an addressee, right before them. No other clause of
+ * that sentence holds a TURNS word. Such a sentence says what the user asked Caret to say, so Jev is not asked to
+ * confirm it; drafts.ts's fact checks still run.
  *
- * Word order and the end of the sentence are part of the rule because a set of the instruction's words can recombine
+ * Order, the clause's end and the closed FRAME are the rule because a set of the instruction's words can recombine
  * into a claim the user did not make ("Friday works" from "I can't do Friday but Monday works"), and B30's reviews
- * found every token allowlist of this kind failing open.
+ * found every token allowlist of this kind failing open. G2's review found suffixes after "Avoid saying", "I deny
+ * that" and a quoted example passing an earlier version that allowed any words before a saying word.
  */
 export function restates(sentence: string, instruction: string, basis: DraftBasis): boolean {
   let t = folded(sentence).trim();
@@ -601,15 +654,20 @@ export function restates(sentence: string, instruction: string, basis: DraftBasi
   if (tail !== null && vocative((tail[1] ?? "").trim())) t = t.slice(0, tail.index);
   const said = contentWords(t).map((x) => x.w);
   if (said.length === 0) return false;
-  for (const part of folded(instruction).replace(/["“”]/gu, " ").split(/[.!?;\n]+/u)) {
-    const words = contentWords(part);
-    const at = words.length - said.length;
-    if (at < 1 || said.some((w, i) => words[at + i]?.w !== w)) continue;
-    const before = words.slice(0, at);
-    if (before.some((x) => TURNS.has(x.w))) continue;
-    const last = before[at - 1] as { w: string; cased: string };
-    const addressee = ADDRESSEE.has(last.w) || /^\p{Lu}/u.test(last.cased);
-    if (SAYING.has(last.w) || (addressee && SAYING.has(before[at - 2]?.w ?? ""))) return true;
+  for (const clauses of clausesOf(instruction)) {
+    const words = clauses.map(contentWords);
+    for (const [k, clause] of words.entries()) {
+      const at = clause.length - said.length;
+      if (at < 1 || said.some((w, i) => clause[at + i]?.w !== w)) continue;
+      if (words.some((other, j) => j !== k && other.some((x) => TURNS.has(x.w)))) continue;
+      const before = clause.slice(0, at);
+      // A name: a capitalized word that is not the first of its clause ("Avoid saying ..." names no one).
+      const name = (x: { cased: string }, i: number): boolean => i > 0 && /^\p{Lu}/u.test(x.cased);
+      if (!before.every((x, i) => FRAME.has(x.w) || name(x, i))) continue;
+      const last = before[at - 1] as { w: string; cased: string };
+      const addressee = ADDRESSEE.has(last.w) || name(last, at - 1);
+      if (SAYING.has(last.w) || (addressee && SAYING.has(before[at - 2]?.w ?? ""))) return true;
+    }
   }
   return false;
 }

@@ -13,7 +13,7 @@ import type { WriterPort } from "../writer/port.ts";
 import { buildInventory } from "./inventory.ts";
 import { frozenBasis, GoalError, lowerGoal, type DonePress } from "./lower.ts";
 import { addsRecipient, confirmClaims, DraftRefused } from "./drafts.ts";
-import type { GoalPlan } from "./plan.ts";
+import type { GoalPlan, LeftItem } from "./plan.ts";
 
 export interface GoalWriterUse {
   model: string;
@@ -39,6 +39,8 @@ export interface PlanGoalOptions {
   pageDocument?: (windowId: string) => string | null;
   /** Presses a stopped plan for the same goal already made: a fresh plan may not make them again. */
   done?: readonly DonePress[];
+  /** Writes a stopped goal this one replaces meant and did not make (runs.ts Replan.owed). */
+  carried?: readonly LeftItem[];
   signal?: AbortSignal;
 }
 
@@ -64,7 +66,7 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
   const choose: ChooserPort = o.askJev === null ? async () => null : jevChooser(o.askJev, o.instruction);
   const ran = await runCodePlan(written.output.program, inv.snapshots, choose, { multiWindow: true, drafts: true, ...(o.signal === undefined ? {} : { signal: o.signal }) });
   if (!ran.ok) throw new GoalError("schema", "the plan program broke the rules a plan must keep", `${ran.kind}: ${ran.detail.slice(0, 200)}`);
-  const plan = await lowerGoal(o.goalId, o.instruction, ran.plan, inv.inventory, { done: o.done ?? [], writerModel: written.model, askJev: o.askJev, ledger: inv.ledger });
+  const plan = await lowerGoal(o.goalId, o.instruction, ran.plan, inv.inventory, { done: o.done ?? [], writerModel: written.model, askJev: o.askJev, ledger: inv.ledger, ...(o.carried === undefined ? {} : { carried: o.carried }) });
   // Code checked each draft's facts in lowering; what it says the user promises or turns down goes to Jev (B30).
   const drafts = plan.segments.flatMap((g) => g.steps.flatMap((x) => (x.value?.draft == null ? [] : [{ text: x.value.text, basis: frozenBasis(o.instruction, x.value, inv.inventory) }])));
   try {

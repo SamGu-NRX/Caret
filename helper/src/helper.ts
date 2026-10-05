@@ -87,7 +87,7 @@ import { planWithCode } from "./planner/codeplan.ts";
 import { GoalRuns } from "./goals/runs.ts";
 import { planGoal } from "./goals/propose.ts";
 import { GoalError, type DonePress } from "./goals/lower.ts";
-import type { GoalPlan } from "./goals/plan.ts";
+import type { GoalPlan, LeftItem } from "./goals/plan.ts";
 import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
 import { fillSays } from "./planner/says.ts";
@@ -500,7 +500,7 @@ export class Helper {
       bind: (taskId, session) => this.bindNew(taskId, session),
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
-      replan: (r) => this.replanGoal(r.goalId, r.instruction, r.pressed),
+      replan: (r) => this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed),
     });
     this.journal = opts.journal ?? new RecoveryJournal(opts.store.dir);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
@@ -1091,7 +1091,7 @@ export class Helper {
     return [...(user === null ? [] : [user]), ...rest].map((w) => w.window.windowId);
   }
 
-  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null): ReturnType<typeof planGoal> {
+  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null, carried: readonly LeftItem[] = []): ReturnType<typeof planGoal> {
     const writer = this.writer;
     if (writer === null) throw new GoalError("nothingToDo", "no plan writer is configured");
     const calendar = this.executorHasCalendar ? (this.opts.eventCalendar ?? "Caret") : null;
@@ -1108,14 +1108,15 @@ export class Helper {
       readerSession: this.readerSession,
       ...(this.opts.pageDocument === undefined ? {} : { pageDocument: this.opts.pageDocument }),
       done,
+      carried,
     });
   }
 
   /** A fresh plan for a stopped goal's instruction, from the screen as it is now; null when none can be offered. */
-  private async replanGoal(goalId: string, instruction: string, done: readonly DonePress[]): Promise<GoalPlan | null> {
+  private async replanGoal(goalId: string, instruction: string, done: readonly DonePress[], carried: readonly LeftItem[]): Promise<GoalPlan | null> {
     if (this.writer === null || this.mode !== "live" || this.gate.settings.paused) return null;
     try {
-      return await this.goalPlan(goalId, instruction, done);
+      return await this.goalPlan(goalId, instruction, done, null, carried);
     } catch (e) {
       if (!(e instanceof GoalError)) throw e;
       this.opts.warn?.(`goal ${goalId}: no fresh plan: ${e.message}`);

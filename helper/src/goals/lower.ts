@@ -162,6 +162,8 @@ export interface LowerOptions {
   askJev: AskJev | null;
   /** The ledger the inventory's texts went through: what a Jev request may carry. */
   ledger: SnippetLedger;
+  /** Writes a stopped goal this plan replaces meant and did not make (runs.ts): those this plan leaves out are left. */
+  carried?: readonly LeftItem[];
 }
 
 /**
@@ -199,7 +201,8 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   /** A dropped write is left to the user; in a message's recipient field, as its recipient (left.ts). */
   const dropAs = (t: TargetBinding, why: string): void => {
     const recipient = (inv.owed.get(whereOf(t)) ?? []).some((f) => f.key === t.key && f.why === "recipient");
-    left.push({ windowId: whereOf(t), key: t.key, label: t.label, why: recipient ? "recipient" : "dropped", says: recipient ? `You add the recipient in ${named(t)}: ${why}` : `Caret left ${named(t)} empty: ${why}` });
+    const says = recipient ? `You add the recipient in ${named(t)}: ${why}` : t.control === "calendar" ? `Caret left the event out of your '${t.label}' calendar: ${why}` : `Caret left ${named(t)} empty: ${why}`;
+    left.push({ windowId: whereOf(t), key: t.key, label: t.label, why: recipient ? "recipient" : "dropped", says });
   };
   /** Every target a fill named, dropped or not: a plan that fills one twice is refused either way. */
   const filled = new Set<string>();
@@ -225,17 +228,19 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       if (t.domain.kind === "window") writesIn.add(t.domain.windowId);
       if (v.draft !== null) draftCheck(t, v, frozenBasis(instruction, v, inv));
       const to = t.control === "calendar" ? false : recipientCheck(t, v, inv);
-      const gated = codeGate(t, v, instruction);
-      if (gated !== null) {
-        dropAs(t, gated);
-        continue;
-      }
       const lowered = lowerFill(t, v);
       if ("drop" in lowered) {
         dropAs(t, lowered.drop);
         continue;
       }
-      const gate = lowered.kind !== "write" ? null : v.draft !== null ? "draft" : "jev";
+      // The gates read what the control will hold (a select's option as matched, an event's title), not the source.
+      const written = lowered.kind === "calendar" ? (v.event?.title ?? v.text) : lowered.writes;
+      const gated = written === null ? null : codeGate(t, written, v.draft !== null ? "draft" : lowered.kind === "calendar" ? "event" : "copy", instruction);
+      if (gated !== null) {
+        dropAs(t, gated);
+        continue;
+      }
+      const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : "jev";
       steps.push({ ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered });
       lastPress = null;
       continue;
@@ -271,6 +276,11 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         continue;
       }
       recipientCheck(t, sender, inv);
+      const gated = codeGate(t, sender.text, "copy", instruction);
+      if (gated !== null) {
+        left.push({ windowId, key: f.key, label: f.label, why: "recipient", says: `You add the recipient in '${f.label}': ${gated}` });
+        continue;
+      }
       const at = steps.findIndex((x) => x.target.domain.kind === "window" && x.target.domain.windowId === windowId);
       const step: GoalStep = { ref: `to:${t.ref}`, index: 0, kind: "write", says: `${t.label}: ${sender.text}`, target: t, value: sender, writes: sender.text, effect: null, handoff: null, to: true, gate: "jev" };
       steps.splice(at < 0 ? steps.length : at, 0, step);
@@ -279,7 +289,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   // Jev's question for every copied value still in the plan (drafts are drafts.ts's), both wordings, fill's floor.
   let unconfirmed: Map<string, string>;
   try {
-    unconfirmed = await jevGate(instruction, steps.flatMap((x) => (x.kind === "write" && x.gate === "jev" && x.value !== null ? [{ ref: x.ref, target: x.target, value: x.value }] : [])), o.askJev, o.ledger);
+    unconfirmed = await jevGate(instruction, steps.flatMap((x) => (x.gate === "jev" && x.value !== null ? [{ ref: x.ref, target: x.target, written: x.writes ?? x.value.event?.title ?? x.value.text, value: x.value }] : [])), o.askJev, o.ledger);
   } catch (e) {
     if (e instanceof JevUnavailable) throw new GoalError("unchecked", "Caret couldn't check the plan's values with Jev just now", e.message);
     throw e;
@@ -297,6 +307,11 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       if (left.some((l) => l.windowId === windowId && l.key === f.key)) continue;
       left.push({ windowId, key: f.key, label: f.label, why: "required", says: `'${f.label}' is required, and this plan leaves it empty` });
     }
+  }
+  // What a stopped goal this one replaces meant to write: the preview names each one this plan does not write.
+  for (const c of o.carried ?? []) {
+    const writes = steps.some((x) => (x.kind === "write" || x.kind === "calendar") && whereOf(x.target) === c.windowId && x.target.key === c.key);
+    if (!writes && !left.some((l) => l.windowId === c.windowId && l.key === c.key)) left.push(c);
   }
   steps.forEach((x, i) => (x.index = i));
   warnings.push(...left.map((l) => `${l.says}.`));

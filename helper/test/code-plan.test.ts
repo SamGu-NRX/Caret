@@ -247,6 +247,24 @@ describe("lowering refuses, by name", () => {
   });
 });
 
+describe("G2 review finding 4: the gates read what a control will hold", () => {
+  const sel = tgt("t1", { control: "select", role: "AXPopUpButton", label: "Plan", options: ["sk-test-abcdefghijklmnopqrstuvwx", "Other"], domain: page, key: "f0/select:plan~0" });
+  const country = tgt("t2", { control: "select", role: "AXPopUpButton", label: "Country", options: ["Canada", "Mexico"], domain: page, key: "f0/select:country~0" });
+  const inv = inventory([sel, country, tgt("t3")], [val("v1", "SK-TEST-ABCDEFGHIJKLMNOPQRSTUVWX"), val("v2", "canada"), val("v3", "ORD-1")]);
+
+  it("drops an option that is a never-typed kind though its source text is not", async () => {
+    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t1", value: "v1" }, { ref: "b", kind: "fill", target: "t3", value: "v3" }]), inv, lowerOpts());
+    expect(g.segments.flatMap((x) => x.steps.map((y) => y.says))).toEqual(["Field t3: ORD-1"]);
+    expect(g.warnings).toEqual(["Caret left 'Plan' empty: Caret never types API keys or tokens; that is yours to enter."]);
+  });
+
+  it("asks Jev about the option written, with the value it came from", async () => {
+    const jev = standInJev();
+    await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t2", value: "v2" }]), inv, { askJev: jev, ledger: new SnippetLedger([]) });
+    expect(jev.asked[0]).toBe(`A form has the field 'Country'. Is this value the right one for it? "Canada" (written for "canada") The user asked: "x".`);
+  });
+});
+
 describe("the digest", () => {
   const step: GoalStep = { ref: "a", index: 0, kind: "write", says: "Field t1: ORD-1", target: tgt("t1"), value: val("v1", "ORD-1"), writes: "ORD-1", effect: null, handoff: null, to: false, gate: "jev" };
   const base: { index: number; domain: GoalDomain; reason: "start"; steps: GoalStep[] } = { index: 0, domain: win, reason: "start", steps: [step] };

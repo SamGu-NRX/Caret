@@ -43,23 +43,39 @@ export function numberFieldMisfit(value: string, label: string): string | null {
   return `'${clip(value)}' is ${k === "email" ? "an email address" : "a web link"}, and the field takes a number or code`;
 }
 
-/** Why code drops a write before asking Jev, or null. `instruction` is where a typed value's own label may stand. */
-export function codeGate(t: TargetBinding, v: ValueBinding, instruction: string): string | null {
+/** Labels a draft never goes in: a field for a name, a place, a title or anything fieldKinds reads as shaped. */
+const NOT_PROSE_FIELD = /\b(?:name|city|town|company|employer|organi[sz]ation|title|subject)\b/iu;
+
+/**
+ * Why code drops a write before asking Jev, or null. `written` is what the control will hold: a text field's text, a
+ * select's option label, a date, a draft, or an event's title. `as` says what kind of value it is.
+ *   - Every write: a field Caret never types, and a value that is one (by its shape, or by its label in the instruction).
+ *   - A copied value in a text field: misfit, and numberFieldMisfit.
+ *   - A draft: only a field that takes free words, never one that names a shape, a name or a number.
+ */
+export function codeGate(t: TargetBinding, written: string, as: "copy" | "draft" | "event", instruction: string): string | null {
   const field = labelKind(t.label);
   if (field !== null) return `Caret never types ${SENSITIVE_SAYS[field]}; that is yours to enter`;
-  const value = secretIn(v.text, instruction);
+  const value = secretIn(written, instruction);
   if (value !== null) return `Caret never types ${SENSITIVE_SAYS[value]}; that is yours to enter`;
-  // A drafted text's facts are checked by goals/drafts.ts; a calendar event by its resolver.
-  if (v.draft !== null || t.control === "calendar") return null;
-  if (t.control !== "text") return null;
-  return misfit(v.text, [t.label]) ?? numberFieldMisfit(v.text, t.label);
+  if (as === "draft") return fieldKinds([t.label]).size > 0 || NUMBER_FIELD.test(t.label.toLowerCase()) || NOT_PROSE_FIELD.test(t.label) ? "the field does not take words Caret writes" : null;
+  if (as === "event" || t.control !== "text") return null;
+  return misfit(written, [t.label]) ?? numberFieldMisfit(written, t.label);
 }
 
 export interface JevWrite {
   /** The step's ref. */
   ref: string;
   target: TargetBinding;
+  /** What the control will hold, and the value it came from: Jev is asked about the first, with the second as context. */
+  written: string;
   value: ValueBinding;
+}
+
+/** The value as Jev reads it: its display, or what is written with the display it came from when they differ. */
+function shown(w: JevWrite): string {
+  if (w.target.control === "calendar") return w.value.display;
+  return w.written === w.value.text ? w.value.display : `"${w.written}" (written for ${w.value.display})`;
 }
 
 /**
@@ -70,21 +86,24 @@ export async function jevGate(instruction: string, writes: readonly JevWrite[], 
   const out = new Map<string, string>();
   if (writes.length === 0) return out;
   if (askJev === null) {
-    for (const w of writes) out.set(w.ref, `Caret couldn't ask Jev whether '${clip(w.value.text)}' belongs there`);
+    for (const w of writes) out.set(w.ref, `Caret couldn't ask Jev whether '${clip(w.written)}' belongs there`);
     return out;
   }
   let dropped: Set<string>;
   try {
     dropped = await verifyWrites(
       instruction,
-      writes.map((w) => ({ key: w.ref, field: { name: w.target.label, label: w.target.label }, value: { display: w.value.display, window: w.value.source?.windowId ?? null, owner: w.value.owner } })),
+      writes.map((w) => {
+        const name = w.target.control === "calendar" ? `the ${w.target.label} calendar` : w.target.label;
+        return { key: w.ref, field: { name, label: name }, value: { display: shown(w), window: w.value.source?.windowId ?? null, owner: w.value.owner } };
+      }),
       askJev,
       ledger,
     );
   } catch (e) {
     throw new JevUnavailable(e instanceof Error ? e.message.slice(0, 200) : String(e));
   }
-  for (const w of writes) if (dropped.has(w.ref)) out.set(w.ref, `Jev didn't confirm '${clip(w.value.text)}' belongs there`);
+  for (const w of writes) if (dropped.has(w.ref)) out.set(w.ref, `Jev didn't confirm '${clip(w.written)}' belongs there`);
   return out;
 }
 

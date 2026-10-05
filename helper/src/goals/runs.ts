@@ -23,6 +23,9 @@ import { nodeText } from "../model.ts";
 import { PROTOCOL_VERSION, type GoalAccept, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
+import { formControls } from "../fill/controls.ts";
+import { fieldName } from "../planner/planner.ts";
+import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
 import { executable, segmentDigest, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem } from "./plan.ts";
 import type { DonePress } from "./lower.ts";
@@ -73,8 +76,9 @@ interface Run {
    */
   pressed: DonePress[];
   /**
-   * What the goal leaves undone (G2): its plan's left items and those of every goal it replaces, which a fresh plan
-   * does not wipe out. Checked again when the goal ends (leftNow).
+   * What the goal must account for before it can be done (G2), checked again when it ends (leftNow): its plan's left
+   * items; every field its windows' kind requires as frozen, filled or not, so a window that closes cannot erase one;
+   * and, from every goal it replaces, the same plus each write that goal planned and never made.
    */
   owed: LeftItem[];
   cursor: GoalCursor;
@@ -95,6 +99,8 @@ export interface Replan {
   completed: readonly StepReceipt[];
   /** Every press it dispatched, verified or not: the fresh plan may make none of them again. */
   pressed: readonly DonePress[];
+  /** Writes the stopped goal meant (dropped, or planned and never made): the fresh plan's preview names those it leaves. */
+  owed: readonly LeftItem[];
   why: GoalStopReason;
 }
 
@@ -174,7 +180,7 @@ export class GoalRuns {
   propose(given: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[]; pressed: DonePress[]; owed: LeftItem[] } | null = null): GoalProgress {
     if (this.runs.has(given.goalId)) throw new Error(`goal ${given.goalId} already exists`);
     // Only lowering's gates (G2, gates.ts) mark a write: a plan built any other way is a bug, never offered.
-    const unchecked = given.segments.flatMap((s) => s.steps).find((s) => s.kind === "write" && s.gate === null);
+    const unchecked = given.segments.flatMap((s) => s.steps).find((s) => (s.kind === "write" || s.kind === "calendar") && s.gate === null);
     if (unchecked !== undefined) throw new Error(`goal ${given.goalId}: step ${unchecked.ref} writes '${unchecked.target.label}' without passing the value gates`);
     // The run owns its own frozen copy: what is shown is what runs, whatever the caller does with its object later.
     const plan = structuredClone(given);
@@ -188,7 +194,7 @@ export class GoalRuns {
       replaces: replaces?.goalId ?? null,
       carried: replaces?.carried ?? [],
       pressed: replaces?.pressed ?? [],
-      owed: [...(replaces?.owed ?? []).filter((x) => !plan.left.some((y) => y.windowId === x.windowId && y.key === x.key)), ...plan.left],
+      owed: obligations(plan, replaces?.owed ?? []),
       cursor: { programHash: plan.programHash, planDigest: plan.digest, segment: 0, nextStep: 0, sourceRevisions: Object.fromEntries(plan.inventory.revisions), receipts: [], bindings },
       state: "awaiting",
       expires: this.deps.now() + ACCEPT_MS,
@@ -278,6 +284,8 @@ export class GoalRuns {
         if (s.kind === "write") {
           const now = n.value ?? "";
           if (now !== s.target.value && now !== s.writes) return { reason: "targetChanged", says: `'${s.target.label}' changed since Caret planned this` };
+          // The gates judged the value against this field's name (G2): a field that now reads as another is not that field.
+          if (nameNow(w, s) !== s.target.label) return { reason: "targetChanged", says: `'${s.target.label}' in '${d.title}' now reads as another field` };
         }
       }
     }
@@ -430,25 +438,28 @@ export class GoalRuns {
   }
 
   /**
-   * What the goal leaves undone as the screen reads now. A write code dropped stays left unless a later plan for the
-   * same goal wrote that field; a required field or a recipient is left while it reads empty, or when its window is
-   * gone (nothing can show it was filled). Every window the goal meant to write in is read again for fields its kind
-   * requires (left.ts), and a step Caret planned that has no receipt is left too.
+   * What the goal leaves undone as the screen reads now. A write code dropped, or one a stopped goal planned and never
+   * made, stays left unless a step of this goal (or one it replaces) wrote that field. A required field or a recipient
+   * is left while it reads empty, and when its window or node is gone, since nothing can show it is still filled. Every
+   * window the goal meant to write in is read again for fields its kind requires (left.ts), and a step Caret planned
+   * that has no receipt is left too.
    */
   private leftNow(run: Run): LeftItem[] {
     const receipts = [...run.carried, ...run.cursor.receipts].filter((r) => r.status !== "handoff");
-    const wrote = (windowId: string, key: string): boolean => receipts.some((r) => r.target.windowId === windowId && r.target.key === key);
+    const wrote = (windowId: string, key: string): boolean => receipts.some((r) => (r.target.windowId ?? "calendar") === windowId && r.target.key === key);
     const out: LeftItem[] = [];
     const add = (l: LeftItem): void => {
       if (!out.some((x) => x.windowId === l.windowId && x.key === l.key)) out.push(l);
     };
     for (const l of run.owed) {
-      if (l.why === "dropped") {
+      if (l.why === "dropped" || l.why === "planned") {
         if (!wrote(l.windowId, l.key)) add(l);
         continue;
       }
-      const n = this.deps.model.windows.get(l.windowId)?.nodes.get(l.key);
-      if (n === undefined || (n.value ?? "").trim() === "") add(l);
+      const w = this.deps.model.windows.get(l.windowId);
+      const n = w?.nodes.get(l.key);
+      if (w === undefined || n === undefined) add({ ...l, says: `'${l.label}' could not be checked: ${w === undefined ? "its window closed" : "it is gone from its window"}` });
+      else if (owedFields(w).some((f) => f.key === l.key && f.empty)) add(l);
     }
     const steps = run.plan.segments.flatMap((x) => x.steps);
     const windows = new Set([...run.owed.map((l) => l.windowId), ...steps.flatMap((x) => (x.kind === "write" && x.target.domain.kind === "window" ? [x.target.domain.windowId] : []))]);
@@ -462,7 +473,7 @@ export class GoalRuns {
     }
     for (const x of steps) {
       if (x.kind === "handoff" || run.cursor.receipts.some((r) => r.step === x.index && r.status !== "handoff")) continue;
-      add({ windowId: x.target.domain.kind === "window" ? x.target.domain.windowId : "calendar", key: x.target.key, label: x.target.label, why: "dropped", says: `Caret didn't confirm '${x.target.label}'` });
+      add({ windowId: whereOf(x), key: x.target.key, label: x.target.label, why: "planned", says: `Caret didn't confirm '${x.target.label}'` });
     }
     return out;
   }
@@ -524,14 +535,20 @@ export class GoalRuns {
     const replan = this.deps.replan;
     if (replan === undefined) return null;
     const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")];
+    // Every write this goal meant and has not made goes with it: the fresh plan may leave some out, and is not done then.
+    const unmade = run.plan.segments.flatMap((x) => x.steps).flatMap((x): LeftItem[] => {
+      if ((x.kind !== "write" && x.kind !== "calendar") || run.cursor.receipts.some((r) => r.step === x.index && r.status !== "handoff")) return [];
+      return [{ windowId: whereOf(x), key: x.target.key, label: x.target.label, why: "planned", says: `Caret's stopped plan meant to write ${x.target.control === "calendar" ? `the event in '${x.target.label}'` : `'${x.target.label}'`}, and has not` }];
+    });
+    const owed = [...run.owed, ...unmade.filter((u) => !run.owed.some((o) => o.windowId === u.windowId && o.key === u.key))];
     let plan: GoalPlan | null;
     try {
-      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], why });
+      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why });
     } catch {
       plan = null;
     }
     if (plan === null || this.runs.has(plan.goalId)) return null;
-    const msg = this.propose(plan, run.session, null, { goalId: run.plan.goalId, carried: completed, pressed: [...run.pressed], owed: run.owed });
+    const msg = this.propose(plan, run.session, null, { goalId: run.plan.goalId, carried: completed, pressed: [...run.pressed], owed });
     return msg.event === "segment" ? { ...msg, reason } : msg;
   }
 
@@ -609,6 +626,10 @@ export class GoalRuns {
     }
     for (const s of seg.steps) {
       if (run.cursor.receipts.some((r) => r.step === s.index)) continue;
+      if (s.kind === "write" && seg.domain.kind === "window") {
+        const w = this.deps.model.windows.get(seg.domain.windowId);
+        if (w !== undefined && w.nodes.has(s.target.key) && nameNow(w, s) !== s.target.label) return { reason: "targetChanged", says: `'${s.target.label}' in '${seg.domain.title}' now reads as another field` };
+      }
       const draftMoved = this.draftMoved(run, s);
       if (draftMoved !== null) return draftMoved;
       const src = s.value?.source;
@@ -645,6 +666,36 @@ export class GoalRuns {
 }
 
 const clip = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
+
+/** Where a step acts, as a left item names it: its window, or "calendar". */
+const whereOf = (x: GoalStep): string => (x.target.domain.kind === "window" ? x.target.domain.windowId : "calendar");
+
+/**
+ * A write target's name as inventory.ts names it now: a text field by planner.ts fieldName, a page control by its
+ * label in formControls (an unset one; a set control is caught by its value instead). Null when it cannot be read.
+ */
+function nameNow(w: WindowState, s: GoalStep): string | null {
+  const n = w.nodes.get(s.target.key);
+  if (n === undefined) return null;
+  if (s.target.control === "text") return fieldName(w, n);
+  return formControls(w).find((c) => c.node.key === n.key)?.label ?? s.target.label;
+}
+
+/**
+ * What a run must account for (G2): the plan's left items first (their sentences say most), then every field the
+ * windows it writes in owe as frozen (left.ts), empty or not, then what a goal it replaces still owed.
+ */
+function obligations(plan: GoalPlan, carried: readonly LeftItem[]): LeftItem[] {
+  const out: LeftItem[] = [];
+  const add = (l: LeftItem): void => {
+    if (!out.some((x) => x.windowId === l.windowId && x.key === l.key)) out.push(l);
+  };
+  for (const l of plan.left) add(l);
+  const touched = new Set([...plan.left.map((l) => l.windowId), ...plan.segments.flatMap((x) => x.steps).flatMap((x) => (x.kind === "write" && x.target.domain.kind === "window" ? [x.target.domain.windowId] : []))]);
+  for (const id of touched) for (const f of plan.inventory.owed.get(id) ?? []) add({ windowId: id, key: f.key, label: f.label, why: f.why, says: f.why === "recipient" ? `You add the recipient in '${f.label}'` : `'${f.label}' is required, and this plan leaves it empty` });
+  for (const l of carried) add(l);
+  return out;
+}
 
 function deepFreeze<T>(v: T): T {
   if (v !== null && typeof v === "object" && !Object.isFrozen(v)) {

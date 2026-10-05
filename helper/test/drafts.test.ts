@@ -234,6 +234,15 @@ describe("G2: which sentences only restate the instruction", () => {
     ["I'm in.", "tell Priya I'm in", true],
     ["Cancel the meeting.", "say we should cancel the meeting", false],
     ["I'm in.", "I'm in", false],
+    ["I'm in.", "copy her address into To and draft an RSVP saying I'm in. Do not send", true],
+    ["I'm in.", "draft an RSVP saying I'm in, and do not send it", false],
+    ["I'm in.", "say I'm in, if they pay", false],
+    // G2 review: what follows "avoid saying", "I deny that" or a quoted example is not asked for.
+    ["I'm in.", "Avoid saying I'm in", false],
+    ["I agree.", "Reply saying I deny that I agree", false],
+    ["I deny that I agree.", "Reply saying I deny that I agree", true],
+    ["I'll handle it.", 'Never make this promise: "Sure. Say I\'ll handle it."', false],
+    ["Sure, I'll handle it.", 'reply "Sure, I\'ll handle it"', true],
     ["Thanks!", "say thanks", false],
   ] as const)("%s for '%s': %s", (sentence, instruction, want) => {
     expect(restates(sentence, instruction, b)).toBe(want);

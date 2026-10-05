@@ -97,9 +97,10 @@ export interface GoalStep {
   /** A write into a To field (B30): its value must still be the answered message's sender right before it runs. */
   to: boolean;
   /**
-   * How a write's value passed fill's value gates (G2, goals/gates.ts): "jev" for a value Jev confirmed belongs in the
-   * field, "draft" for text Caret composed, which goals/drafts.ts checks instead. Null for every step that is not a
-   * write. GoalRuns.propose refuses a plan with a write that has none.
+   * How a write's value passed fill's value gates (G2, goals/gates.ts): "jev" for a value (or a calendar event) Jev
+   * confirmed belongs there, "draft" for text Caret composed, whose claims goals/drafts.ts checks instead of Jev's field
+   * question (lead decision 3). Null for presses and hand-offs. GoalRuns.propose refuses a write or calendar step
+   * that has none.
    */
   gate: "jev" | "draft" | null;
 }
@@ -113,7 +114,8 @@ export interface LeftItem {
   windowId: string;
   key: string;
   label: string;
-  why: "dropped" | "required" | "recipient";
+  /** "planned": a write a goal this one replaces meant and never made (runs.ts). */
+  why: "dropped" | "planned" | "required" | "recipient";
   says: string;
 }
 
