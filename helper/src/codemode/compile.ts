@@ -131,10 +131,15 @@ function breaks(n: AstNode, parent: AstNode | null): string | null {
     case "UnaryExpression":
       return UNARY.has(n.operator as string) ? null : `the ${String(n.operator)} operator is not allowed`;
     case "Identifier":
+      // The property name of `w.window` is this node too; see MemberExpression.
+      if (n.name === "window" && parent?.type === "MemberExpression" && parent.computed === false && parent.property === n) return null;
       return DENIED_NAMES.has(n.name as string) ? `${String(n.name)} is not available to a plan program` : null;
     case "MemberExpression": {
       const p = n.property as AstNode;
       const name = n.computed ? (p.type === "Literal" && typeof p.value === "string" ? p.value : null) : (p.name as string);
+      // A ReadWindow's own `window` ref (plan-prompt.ts PLAN_API) is a property, not the global, which is still denied as
+      // a name: B30's live goal programs read it for draft() and were refused, as one D2-06 program was.
+      if (name === "window" && !n.computed) return null;
       return name !== null && DENIED_NAMES.has(name) ? `.${name} is not available to a plan program` : null;
     }
     default:

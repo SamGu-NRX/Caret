@@ -74,6 +74,8 @@ const WEEKDAY_RE = "sun(?:day)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu
 const DAY = `\\d{1,2}(?:st|nd|rd|th)?|${WORDS}`;
 /** Words that make the number beside them an amount of money even with no currency ("the 500 quote"). */
 const MONEY_NOUN = "quote|price|cost|total|fee|fees|invoice|charge|budget|deposit|rate|bill|amount|balance|payment|refund|estimate|salary|rent";
+/** Count nouns: "total of 5 participants" is a count, not money. A number followed by one is never read as an amount. */
+const COUNT = "(?!\\s+(?:people|persons?|participants?|guests?|attendees?|members?|items?|units?|pieces?|seats?|tickets?|rooms?|nights?|days?|hours?|minutes?|weeks?|months?|years?|times?|pages?|copies|boxes|orders?|students?|kids?|children|adults?|employees?|users?|spots?|slots?)\\b)";
 /** Nouns whose lower-case Roman numeral is a number ("chapter xvi"). */
 const NUMBERED = "chapter|part|section|volume|vol\\.?|act|phase|stage|grade|level|book|round|step|unit|room|suite|floor|apt\\.?|apartment|appendix|article";
 
@@ -164,15 +166,15 @@ const RULES: readonly Rule[] = [
   { re: new RegExp(`${B}(\\d{1,2})\\/(\\d{1,2})(?:\\/(\\d{2,4}))?${E}`, "gu"), make: (m) => ({ kind: "date", text: m[0], weekday: null, month: Number(m[1]), day: Number(m[2]), year: m[3] === undefined ? null : Number(m[3].length === 2 ? `20${m[3]}` : m[3]), rel: null }) },
   // A weekday or month with what places it: "next Friday", "this coming October", "Friday after next", "early November".
   { re: new RegExp(`${B}((?:this\\s+)?(?:next|last|coming|this|early|late|mid|end of|beginning of|start of))[\\s-]+(${WEEKDAY_RE}|${MONTH_RE})${E}`, "giu"), make: dateWord },
-  { re: new RegExp(`${B}()(${WEEKDAY_RE}|${MONTH_RE}|week|month|weekend)\\s+(?:after|before)\\s+(?:next|last|that)${E}`, "giu"), make: (m) => ({ ...dateWord(m), rel: m[0].toLowerCase().replace(/\\s+/gu, " ") }) },
+  { re: new RegExp(`${B}()(${WEEKDAY_RE}|${MONTH_RE}|week|month|weekend)\\s+(?:after|before)\\s+(?:next|last|that)${E}`, "giu"), make: (m) => ({ ...dateWord(m), rel: m[0].toLowerCase().replace(/\s+/gu, " ") }) },
   // Money: a currency sign, code or word with an amount, and an amount beside a word such as "quote".
   { re: new RegExp(`([$€£¥])\\s?(${NUM})(?:\\s?(k|m|bn|thousand|million|billion)${E})?`, "giu"), make: (m) => money(m[0], m[2] ?? "", m[3], m[1]) },
   { re: new RegExp(`${B}(usd|eur|gbp|jpy|cad|aud)\\s?(${NUM})(?:\\s?(k|m|bn|thousand|million|billion)${E})?`, "giu"), make: (m) => money(m[0], m[2] ?? "", m[3], m[1]) },
   { re: new RegExp(`${B}(${NUM})\\s?(k|thousand|million|billion)?\\s?(dollars?|usd|bucks|euros?|eur|pounds?|gbp|yen|jpy|cad|aud)${E}`, "giu"), make: (m) => money(m[0], m[1] ?? "", m[2], m[3]) },
   { re: new RegExp(`${B}(${WORDS})\\s+(dollars?|bucks|euros?|pounds?)${E}`, "giu"), make: (m) => money(m[0], String(wordValue(m[1] ?? "")), undefined, m[2]) },
-  { re: new RegExp(`${B}(?:${MONEY_NOUN})\\s+(?:of|is|was|at|for|comes to|will be|would be)?\\s*(${NUM})${E}`, "giu"), make: (m) => money(m[0], m[1] ?? "", undefined, undefined) },
+  { re: new RegExp(`${B}(?:${MONEY_NOUN})\\s+(?:of|is|was|at|for|comes to|will be|would be)?\\s*(${NUM})${E}${COUNT}`, "giu"), make: (m) => money(m[0], m[1] ?? "", undefined, undefined) },
   { re: new RegExp(`${B}(${NUM})\\s+(?:${MONEY_NOUN})${E}`, "giu"), make: (m) => money(m[0], m[1] ?? "", undefined, undefined) },
-  { re: new RegExp(`${B}(?:${MONEY_NOUN})\\s+(?:of|is|was|at|for|comes to|will be|would be)?\\s*(${WORDS})${E}`, "giu"), make: (m) => money(m[0], String(wordValue(m[1] ?? "")), undefined, undefined) },
+  { re: new RegExp(`${B}(?:${MONEY_NOUN})\\s+(?:of|is|was|at|for|comes to|will be|would be)?\\s*(${WORDS})${E}${COUNT}`, "giu"), make: (m) => money(m[0], String(wordValue(m[1] ?? "")), undefined, undefined) },
   // Times, each read whole: "half past three", "quarter to 4", "3:30 pm", "three thirty", "4 o'clock", "at 4", noon.
   {
     re: new RegExp(`${B}(half|quarter)\\s+(past|after|to|before|till|til)\\s+(${H})(?:\\s?(a\\.?m\\.?|p\\.?m\\.?))?(?![\\p{L}\\p{N}])`, "giu"),
@@ -434,12 +436,14 @@ export function checkDraftText(text: string, basis: DraftBasis): Fact[] {
 
 // MARK: - fields
 
-/** A label as the field rules read it: lower case, parenthetical notes ("(optional)") and marks gone, separators as spaces. */
+/**
+ * A label as the field rules read it: lower case, marks and separators as spaces. Words in parentheses stay, so
+ * "Recipients (Bcc)" still says Bcc; "(optional)" and "(required)" are read as such by the rules below.
+ */
 const labelWords = (label: string): string =>
   folded(label)
     .toLowerCase()
-    .replace(/\([^)]*\)|\[[^\]]*\]/gu, " ")
-    .replace(/[*:✱∗_\-–—/.,]+/gu, " ")
+    .replace(/[()[\]*:✱∗_\-–—/.,]+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
 
@@ -456,7 +460,7 @@ export function recipientField(label: string): "to" | "copy" | null {
 }
 
 /** A subject line, which a goal never writes. */
-export const subjectField = (label: string): boolean => /^(?:(?:email|message|mail) )?subject(?: line)?$|^re$/u.test(labelWords(label));
+export const subjectField = (label: string): boolean => /^(?:(?:(?:email|message|mail) )?subject(?: line)?|re|title of (?:the )?(?:email|message|mail))(?: (?:optional|required))?$/u.test(labelWords(label));
 
 /** A message title with its "Re:", "Fwd:" and kin taken off, for matching a reply to the message it answers. */
 export const baseSubject = (title: string): string => {
@@ -483,13 +487,14 @@ export function messageHeader(text: string): { from: string[]; subject: string |
 
 /**
  * Whether `address` is the sender of the message the window titled `reply` answers: the reply's title is "Re: " and
- * the message's title or its header's subject, and the address is on the header's From line. Reply-To, Sender and a
+ * the message's title or its header's subject, and the address is on the header's From line. `message` is the
+ * window's static text alone (inventory.ts basisText), so a toolbar's buttons before the header do not hide it. Reply-To, Sender and a
  * subject or From line in the body do not count. A To field takes only this address, checked again before writing.
  */
-export function senderOf(reply: string, source: { title: string; text: string }, address: string): boolean {
+export function senderOf(reply: string, source: { title: string; message: string }, address: string): boolean {
   if (!/^\s*re\s*:/iu.test(folded(reply)) || !address.includes("@")) return false;
   const base = baseSubject(reply);
-  const header = messageHeader(source.text);
+  const header = messageHeader(source.message);
   if (base === "" || !(baseSubject(source.title) === base || (header.subject !== null && baseSubject(header.subject) === base))) return false;
   const want = address.trim().toLowerCase();
   return header.from.some((l) => (l.match(/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+/gu) ?? []).some((a) => a.toLowerCase() === want));

@@ -68,7 +68,7 @@ export interface GoalInventory {
   /** The window id behind each snapshot's window ref ("w2"), for a draft's `from` (B30). */
   windowRefs: ReadonlyMap<string, string>;
   /** Each frozen window's title and text, by window id: what a draft's facts are checked against. Never sent. */
-  texts: ReadonlyMap<string, { title: string; text: string }>;
+  texts: ReadonlyMap<string, { title: string; text: string; message: string }>;
 }
 
 export type GoalStepKind = "write" | "calendar" | "press" | "handoff";

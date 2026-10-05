@@ -263,7 +263,7 @@ describe("review 1 re-check", () => {
   const none = (instruction: string, windows: { title: string; text: string }[] = []): DraftBasis => ({ instruction, windows, memory: [] });
 
   it("binds a reply's To to the From of the message it answers, in the header only", () => {
-    const msg = (text: string, title = "Invoice") => ({ title, text });
+    const msg = (message: string, title = "Invoice") => ({ title, message });
     expect(senderOf("Re: Invoice", msg("From: Priya <priya@example.com>\nReply-To: Mallory <mallory@example.com>"), "priya@example.com")).toBe(true);
     expect(senderOf("Re: Invoice", msg("From: Priya <priya@example.com>\nReply-To: Mallory <mallory@example.com>"), "mallory@example.com")).toBe(false);
     expect(senderOf("Re: Invoice", msg("From: Mallory <mallory@example.com>\nHere is a sample:\nSubject: Invoice", "Unrelated"), "mallory@example.com")).toBe(false);
@@ -299,5 +299,22 @@ describe("review 1 re-check", () => {
   it("keeps a link's path case", () => {
     expect(why("Please see https://example.com/SECRET.", none("share the link", [{ title: "Note", text: "https://example.com/secret" }]))).toEqual(["newFact", "https://example.com/SECRET"]);
     expect(why("Please see https://EXAMPLE.com/secret.", none("share the link", [{ title: "Note", text: "https://example.com/secret" }]))).toBeNull();
+  });
+});
+
+// B30 third check: what the second fixes broke or let through.
+describe("third check", () => {
+  const none = (instruction: string, windows: { title: string; text: string }[] = []): DraftBasis => ({ instruction, windows, memory: [] });
+  it("keeps words in parentheses when reading a label", () => {
+    expect(["Recipients (Bcc)", "Send to (cc)"].map(recipientField)).toEqual(["copy", "copy"]);
+    expect(["Title of the message", "Title of the email", "Subject (required)"].map(subjectField)).toEqual([true, true, true]);
+    expect(["Title", "Job title"].map(subjectField)).toEqual([false, false]);
+  });
+  it("does not read a count beside a money word as money", () => {
+    expect(why("The price is 5.", none("describe the note", [{ title: "Note", text: "The total is five participants." }]))).toEqual(["newFact", "price is 5"]);
+    expect(why("The total is five participants.", none("describe the note", [{ title: "Note", text: "There are five participants." }]))).toBeNull();
+  });
+  it("reads a date phrase the same however it is spaced", () => {
+    expect(why("See you Friday after next at 3 PM.", none("confirm", [{ title: "Note", text: "Friday  after next at 3 PM" }]))).toBeNull();
   });
 });

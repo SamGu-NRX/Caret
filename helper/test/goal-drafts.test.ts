@@ -248,3 +248,17 @@ describe("review 1 re-check: To at acceptance", () => {
     }
   });
 });
+
+describe("third check: recipients", () => {
+  it("refuses Recipients (Bcc) and Title of the message, and lets a toolbar before the header stand", async () => {
+    for (const label of ["Recipients (Bcc)", "Title of the message"]) {
+      const w: DeskWindow = { ...replyWindow(), nodes: [textField(MAIL, "To"), textField(MAIL, label), textArea(MAIL, "Message"), button(MAIL, "Send")] };
+      const value = label.startsWith("Title") ? "ORD-2026-48213" : EMAIL;
+      const r = await scene([[{ fill: { window: "Re: Order", target: label, value } }]], { windows: [mailWindow(), w] }).request("reply to Priya");
+      expect(refusedSays(r), label).toMatch(/^Caret doesn't (add people|write subject lines)/);
+    }
+    const mail: DeskWindow = { ...mailWindow(), nodes: [button(MAIL, "Reply"), ...mailWindow().nodes] };
+    const g = await scene([[{ fill: { window: "Re: Order", target: "To", value: EMAIL } }]], { windows: [mail, replyWindow()] }).request("reply to Priya");
+    expect(g.event).toBe("segment");
+  });
+});

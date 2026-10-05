@@ -35,6 +35,12 @@ describe("compileProgram", () => {
     expect(detail(wrap(body))).toContain(expected);
   });
 
+  test("allows a ReadWindow's .window ref, never the window global or a computed window (B30)", () => {
+    expect(detail(wrap("const w = await caret.readWindow(); const r = w.window; return caret.plan({ basedOn: w.snapshot, steps: [] });"))).toBe("ok");
+    expect(detail(wrap("const x = window;"))).toContain("window is not available");
+    expect(detail(wrap("const w = await caret.readWindow(); const r = w['window'];"))).toContain(".window is not available");
+  });
+
   test("allows switch, which writers use to map a choice", () => {
     expect(detail(wrap("const k = 'a' as string; switch (k) { case 'a': break; default: break; } return caret.plan({ basedOn: 'x' as SnapshotRef, steps: [] });"))).toBe("ok");
   });

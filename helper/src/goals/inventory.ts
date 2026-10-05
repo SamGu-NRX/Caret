@@ -29,9 +29,17 @@ export function windowRevision(w: WindowState): string {
   return digest(JSON.stringify([w.window.title, ...[...w.nodes.values()].map((n) => [n.key, n.role, n.label ?? "", n.value ?? "", n.editable === true])]));
 }
 
-/** A window's text as a draft's basis (B30): its title and each node's text, one line each. Host-side only. */
-export function basisText(w: WindowState): { title: string; text: string } {
-  return { title: w.window.title, text: [...w.nodes.values()].map((n) => nodeText(n)).filter((t) => t !== "").join("\n") };
+/** Roles whose text is a message's own words, not a control's: what a message header is read from. */
+const STATIC_ROLES = new Set(["AXStaticText", "AXHeading"]);
+
+/**
+ * A window's text as a draft's basis (B30): its title and each node's text, one line each; and `message`, its static
+ * text alone, which a message's header is read from. Host-side only.
+ */
+export function basisText(w: WindowState): { title: string; text: string; message: string } {
+  const nodes = [...w.nodes.values()];
+  const lines = (xs: typeof nodes): string => xs.map((n) => nodeText(n)).filter((t) => t !== "").join("\n");
+  return { title: w.window.title, text: lines(nodes), message: lines(nodes.filter((n) => STATIC_ROLES.has(n.role) && n.editable !== true)) };
 }
 
 
@@ -77,7 +85,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   const revisions = new Map<string, string>();
   const documents = new Map<string, string>();
   const windowRefs = new Map<string, string>();
-  const texts = new Map<string, { title: string; text: string }>();
+  const texts = new Map<string, { title: string; text: string; message: string }>();
   const snapshots: PlanningSnapshot[] = [];
   let t = 0;
   let v = 0;
