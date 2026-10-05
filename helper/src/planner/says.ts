@@ -70,6 +70,8 @@ export const SAYS = {
   fillLabelTooLong: "This field's label is too long for Caret to ask about. Fill it yourself.",
   fillFailed: "Caret couldn't fill this form just now. Try again.",
   questionGone: "That question has expired. Ask again.",
+  /** L1: a goal needs a program writer, and none is configured until the browser loop replaces it. */
+  noPlanWriter: "Caret can't plan tasks like this yet. Do this one yourself for now.",
 } as const;
 
 /**

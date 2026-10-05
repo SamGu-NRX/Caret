@@ -2,21 +2,24 @@
 // Ask the way a goal-planning host sends them (planRequest from a host with goalPlans and askChoices), with the real
 // Helper, Executor and draft checks on the synthetic desk (test/goal-desk.ts). The "user" accepts every preview it is
 // shown. The oracle is each case's own expectations, read from the desk apart from the helper.
-//   CARET_ENV_FILE=… node scripts/goal-drafts-eval.ts --out DIR [--cases a.json,b.json] [--budget 0.15] [--space-ms 25000] [--maker writer|jev]
-// Writers: intents on writer/config.ts INTENT_ROUTE, goal programs on WRITER_ROUTE, both live on Groq; Jev live. Each
-// call's served model is recorded. No GUI, no input, no app.
+//   CARET_ENV_FILE=… node scripts/goal-drafts-eval.ts --out DIR [--cases a.json,b.json] [--budget 0.15] [--space-ms 25000]
+//        [--maker jev|writer --intent-model provider:model] [--goal-model provider:model]
+// L1: intents from Jev (writer/config.ts ASK_MAKER) unless --maker writer names a route; goal programs from the route
+// --goal-model names (writer/config.ts devWriterRoute), none by default. Jev live. Each call's served model is
+// recorded. No GUI, no input, no app.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type AppRef, type GoalProgress, type Node, type TypedValue } from "../src/protocol.ts";
-import { CANDIDATES, INTENT_ROUTE, WRITER_ROUTE } from "../src/writer/config.ts";
+import { ASK_MAKER, devWriterRoute } from "../src/writer/config.ts";
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
 import { button, draftRefusals as draftRefused, goalRefusals, goalScene, line, textArea, textField, type DeskWindow, type GoalScene } from "../test/goal-desk.ts";
 
-const { values: a } = parseArgs({ options: { out: { type: "string" }, cases: { type: "string", default: "fixtures/goals/b30-cases.json,fixtures/goals/b30-lead-cases.json" }, budget: { type: "string", default: "0.15" }, "space-ms": { type: "string", default: "25000" }, only: { type: "string" }, maker: { type: "string", default: "writer" }, "goal-model": { type: "string" } } });
-// How Ask makes its intent: the configured writer (INTENT_ROUTE), or Jev's staged questions when the writer's quota is spent.
+const { values: a } = parseArgs({ options: { out: { type: "string" }, cases: { type: "string", default: "fixtures/goals/b30-cases.json,fixtures/goals/b30-lead-cases.json" }, budget: { type: "string", default: "0.15" }, "space-ms": { type: "string", default: "25000" }, only: { type: "string" }, maker: { type: "string", default: ASK_MAKER }, "intent-model": { type: "string" }, "goal-model": { type: "string" } } });
+// How Ask makes its intent: Jev's staged questions, or a writer on the route --intent-model names.
 if (a.maker !== "writer" && a.maker !== "jev") throw new Error("--maker is writer or jev");
+if (a.maker === "writer" && a["intent-model"] === undefined) throw new Error("--maker writer needs --intent-model provider:model");
 if (a.out === undefined) throw new Error("usage: node scripts/goal-drafts-eval.ts --out DIR [--cases a.json,b.json] [--budget USD] [--space-ms MS] [--only id,id]");
 const OUT = a.out;
 mkdirSync(OUT, { recursive: true });
@@ -97,12 +100,10 @@ function spaced(w: WriterPort): WriterPort {
     },
   };
 }
-// The goal writer is the configured WRITER_ROUTE unless --goal-model names another candidate (writer/config.ts), as
-// when the configured model's daily tokens are spent; every row records the model that served it.
-const goalRoute = a["goal-model"] === undefined ? WRITER_ROUTE : CANDIDATES.find((r) => r.model === a["goal-model"]);
-if (goalRoute === undefined) throw new Error(`no writer route ${a["goal-model"]}; one of ${CANDIDATES.map((r) => r.model).join(", ")}`);
-const goalWriter = spaced(makeWriterPort(goalRoute));
-const intentWriter = spaced(makeWriterPort(INTENT_ROUTE));
+// The goal writer is the route --goal-model names; every row records the model that served it.
+if (a["goal-model"] === undefined) throw new Error("--goal-model provider:model is required");
+const goalWriter = spaced(makeWriterPort(devWriterRoute(a["goal-model"])));
+const intentWriter = a["intent-model"] === undefined ? null : spaced(makeWriterPort(devWriterRoute(a["intent-model"])));
 const jevLive = makeJevClient(() => loadJevKey());
 let jevSpent = 0;
 let jevCalls = 0;
@@ -151,7 +152,7 @@ for (const c of cases) {
   const before = spent;
   const { windows, ids } = deskWindows(c);
   const user = ids.get(c.user) as string;
-  const sc: GoalScene = goalScene({ scripts: [], windows, userWindow: user, writer: goalWriter, askJev, ask: a.maker === "jev" ? { maker: "jev" } : { maker: "writer", writer: intentWriter }, calendar: c.calendar });
+  const sc: GoalScene = goalScene({ scripts: [], windows, userWindow: user, writer: goalWriter, askJev, ask: a.maker === "jev" || intentWriter === null ? { maker: "jev" } : { maker: "writer", writer: intentWriter }, calendar: c.calendar });
   const reply = await sc.helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: c.id, at: sc.desk.at, instruction: c.instruction, windowId: user }, sc.session, true, true);
   let says: string | null = null;
   let kind = reply.type as string;

@@ -3,8 +3,10 @@
 // chosen maker, checked by code, then the scoped fill or the planner. Nothing runs: a proposed plan is scored,
 // never executed.
 //
-//   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker writer|jev]
-//        [--spend-limit USD] [--gap S] [--writer-model ID] [--no-writer]
+//   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker jev|writer]
+//        [--spend-limit USD] [--gap S] [--writer-model provider:model] [--plan-writer provider:model]
+// L1: the maker is writer/config.ts ASK_MAKER (Jev) and the plan route has no writer unless a flag names a route
+// (writer/config.ts devWriterRoute); --maker writer needs --writer-model.
 //
 // Each ask's expected values are the fields it asks to change. A plan is right when it writes every expected
 // text value and hands off every expected control value (a select's option, a radio, a box, a date or a time),
@@ -30,7 +32,7 @@ import type { AskIntent } from "../src/planner/intent.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { SAYS, SaidError } from "../src/planner/says.ts";
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
-import { CANDIDATES, INTENT_ROUTE, WRITER_ROUTE } from "../src/writer/config.ts";
+import { ASK_MAKER, devWriterRoute } from "../src/writer/config.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
 import { Snapshot } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
@@ -44,13 +46,16 @@ const { values: a } = parseArgs({
     "asks-file": { type: "string", default: "asks.json" },
     windows: { type: "string", default: join(here, "../fixtures/recorded/realfill-windows.ndjson") },
     asks: { type: "string" },
-    maker: { type: "string", default: "writer" },
+    maker: { type: "string", default: ASK_MAKER },
     "spend-limit": { type: "string", default: "0.10" },
     // Groq allows each candidate 30 requests and 8,000 tokens a minute (console.groq.com/docs/rate-limits, 2026-10-04).
     gap: { type: "string", default: "13" },
+    /** Kept so older run scripts still parse: the plan route has no writer unless --plan-writer names one. */
     "no-writer": { type: "boolean", default: false },
-    /** Another of writer/config.ts's candidates by model id; the report names the model used. */
+    /** The intent writer's route for --maker writer, "groq:<model>" or "gateway:<model>"; the report names it. */
     "writer-model": { type: "string" },
+    /** A writer for the plan route's programs, as the helper's --dev-writer; none by default. */
+    "plan-writer": { type: "string" },
     seed: { type: "string", default: "24" },
     /** Writes every Jev question and answer to this NDJSON file (synthetic corpus text only). */
     "log-jev": { type: "string" },
@@ -68,6 +73,8 @@ const GAP_MS = Number(a.gap) * 1000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let jevSpent = 0;
+/** The model ids Jev's replies named, for the report (L1: every number names its model). */
+const jevModels = new Set<string>();
 let writerSpent = 0;
 const live = makeJevClient(() => loadJevKey());
 let current = "";
@@ -75,15 +82,17 @@ const askJev: AskJev = async (req) => {
   if (jevSpent + writerSpent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   const r = await live(req);
   jevSpent += r.costUsd;
+  jevModels.add(r.model);
   if (a["log-jev"] !== undefined) {
     const qs = { ...req.questions, ...req.nouls };
     appendFileSync(a["log-jev"], JSON.stringify({ ask: current, questions: Object.fromEntries(Object.entries(qs).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])), answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
   }
   return r;
 };
-// Intents go to INTENT_ROUTE, or the --writer-model named; the plan route's programs to WRITER_ROUTE, as in the helper.
-const route = a["writer-model"] === undefined ? INTENT_ROUTE : CANDIDATES.find((r) => r.model === a["writer-model"]);
-if (route === undefined) throw new Error(`--writer-model ${a["writer-model"]} is not one of ${CANDIDATES.map((r) => r.model).join(", ")}`);
+// Intents go to the --writer-model named (only with --maker writer); the plan route's programs to --plan-writer's.
+if (a.maker === "writer" && a["writer-model"] === undefined) throw new Error("--maker writer needs --writer-model provider:model (no route is a default since L1)");
+const route = a["writer-model"] === undefined ? null : devWriterRoute(a["writer-model"]);
+const planRoute = a["plan-writer"] === undefined || a["no-writer"] === true ? null : devWriterRoute(a["plan-writer"]);
 let retries = 0;
 /** A writer, spaced to the provider's per-minute limit, with one wait-and-retry on 429 (counted; WriterPort itself never retries). */
 const spaced = (port: WriterPort): WriterPort => {
@@ -112,8 +121,8 @@ const spaced = (port: WriterPort): WriterPort => {
   },
   };
 };
-const writer = spaced(makeWriterPort(route));
-const planWriter = spaced(makeWriterPort(WRITER_ROUTE));
+const writer = route === null ? null : spaced(makeWriterPort(route));
+const planWriter = planRoute === null ? null : spaced(makeWriterPort(planRoute));
 
 type Verdict = "right" | "partial" | "wrong" | "refused" | "asked";
 interface Proposed {
@@ -155,7 +164,7 @@ for (const [i, ask] of asks.entries()) {
   const r = rng(Number(a.seed) * 1000 + i);
   const offerKey = `realfill-ask-${ask.id}`;
   current = ask.id;
-  const maker: IntentMaker = a.maker === "jev" ? jevIntentMaker(askJev, { rand: (n) => Math.floor(r() * n) }) : writerIntentMaker(writer, () => offerKey);
+  const maker: IntentMaker = a.maker === "jev" || writer === null ? jevIntentMaker(askJev, { rand: (n) => Math.floor(r() * n) }) : writerIntentMaker(writer, () => offerKey);
   let draft: AskDraft | null = null;
   let error: string | null = null;
   let says: string | null = null;
@@ -164,7 +173,7 @@ for (const [i, ask] of asks.entries()) {
   let use: MakerUse | null = null;
   let question: AskQuestionDraft | null = null;
   const run = (resume?: AskQuestionDraft["resume"]) =>
-    planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: a["no-writer"] === true ? null : planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n), ...(resume === undefined ? {} : { resume }) });
+    planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n), ...(resume === undefined ? {} : { resume }) });
   try {
     draft = await run();
     intent = draft.intent;
@@ -306,7 +315,7 @@ const mean = (xs: readonly number[]) => (xs.length === 0 ? 0 : Math.round(xs.red
 const md = [
   `# Ask scoreboard (B26): ${a["asks-file"]}, maker ${a.maker}`,
   "",
-  `Maker ${a.maker}${a.maker === "writer" ? ` (${route.model} on ${route.provider}${route === INTENT_ROUTE ? ", the configured intent route" : `, not the configured ${INTENT_ROUTE.model}`})` : ""}; plan route's writer ${a["no-writer"] === true ? "off" : WRITER_ROUTE.model}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
+  `Maker ${a.maker}${route !== null && a.maker === "writer" ? ` (${route.model} on ${route.provider})` : a.maker === "jev" ? ` (Jev ${jevModels.size === 0 ? "unanswered" : [...jevModels].join(", ")})` : ""}; plan route's writer ${planRoute === null ? "off" : `${planRoute.provider} ${planRoute.model}`}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
   `Maker tokens per intent (input + output, ${a.maker === "jev" ? "Jev input only" : "the writer's"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
   "",
   `All ${rows.length}: right ${n("right")}, partial ${n("partial")}, asked with choices ${n("asked")}, refused ${n("refused")}, **wrong ${n("wrong")}**.`,
@@ -330,5 +339,5 @@ function ok2(p: Proposed): boolean {
   return p.expected === p.value;
 }
 writeFileSync(join(OUT, "realfill-asks.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "realfill-asks.json"), JSON.stringify({ maker: a.maker, model: a.maker === "writer" ? route.model : "jev", jevSpent, writerSpent, retries, rows }, null, 1) + "\n");
+writeFileSync(join(OUT, "realfill-asks.json"), JSON.stringify({ maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, null, 1) + "\n");
 process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}\n`);

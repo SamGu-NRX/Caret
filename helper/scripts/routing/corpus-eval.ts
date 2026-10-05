@@ -26,7 +26,7 @@ import { loadJevKey, makeJevClient, type AskJev, type JevRequest } from "../../s
 import { PROTOCOL_VERSION, type AppRef, type Node, type Snapshot, type TypedValue, type ValueKind } from "../../src/protocol.ts";
 import type { Decision } from "../../src/routing/coordinator.ts";
 import { makeWriterPort } from "../../src/writer/port.ts";
-import { ASK_MAKER, INTENT_ROUTE, WRITER_ROUTE } from "../../src/writer/config.ts";
+import { ASK_MAKER, devWriterRoute } from "../../src/writer/config.ts";
 import { keyLabel } from "../../test/scene.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -44,10 +44,12 @@ const { values: a } = parseArgs({
     /** Seconds between Ask moments: Groq's gpt-oss-120b allows 8,000 tokens a minute and an intent takes about 2,000. */
     "ask-gap-s": { type: "string", default: "30" },
     /**
-     * The Ask intent maker: "config" is production's (writer/config.ts ASK_MAKER, Groq), "jev" is B25's Jev maker with no
-     * Groq call at all (the code-mode writer is off too), for when Groq's daily quota is spent or shared.
+     * The Ask intent maker: "config" is production's (writer/config.ts ASK_MAKER, Jev since L1), "jev" is B25's Jev maker.
+     * A writer maker needs --writer naming its route.
      */
     "ask-maker": { type: "string", default: "config" },
+    /** L1: the code-mode and intent writer's route, "groq:<model>" or "gateway:<model>"; none by default, as in the helper. */
+    writer: { type: "string" },
     /** The helper runs on the wall clock, so a decision's latency includes its router calls (route entry). */
     "real-clock": { type: "boolean", default: false },
   },
@@ -249,8 +251,8 @@ for (const m of moments) {
     now: a["real-clock"] ? Date.now : () => clock.at,
     routing: { ...(a["real-clock"] ? {} : { setTimer: clock.setTimer }), hostWrites: () => hostWrites, onDecision: (d) => decisions.push(d) },
     readerLink: { run: async () => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "x", at: clock.at, outcome: "ok", detail: null }) },
-    ask: ASK_MAKER === "jev" || a["ask-maker"] === "jev" ? { maker: "jev" } : { maker: "writer", writer: makeWriterPort(INTENT_ROUTE) },
-    writer: a["ask-maker"] === "jev" ? null : makeWriterPort(WRITER_ROUTE),
+    ask: ASK_MAKER === "jev" || a["ask-maker"] === "jev" ? { maker: "jev" } : { maker: "writer", writer: makeWriterPort(devWriterRoute(a.writer ?? "(no --writer)")) },
+    writer: a["ask-maker"] === "jev" || a.writer === undefined ? null : makeWriterPort(devWriterRoute(a.writer)),
     warn: () => undefined,
   });
   const settle = async (): Promise<void> => {

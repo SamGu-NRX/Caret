@@ -90,7 +90,7 @@ import { GoalError, type DonePress } from "./goals/lower.ts";
 import type { GoalPlan, LeftItem } from "./goals/plan.ts";
 import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
-import { fillSays } from "./planner/says.ts";
+import { fillSays, SAYS } from "./planner/says.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
@@ -1037,7 +1037,8 @@ export class Helper {
     let goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     const refuse = (says: string): GoalProgress => this.goals.refused(goalId, requestId, says);
-    if (this.writer === null) return refuse("No plan writer is configured, so Caret cannot plan this");
+    // L1: no program writer by default, and no other model stands in for one (writer/startup.ts).
+    if (this.writer === null) return refuse(SAYS.noPlanWriter);
     if (this.mode !== "live") return refuse("Caret is in shadow mode");
     if (this.gate.settings.paused) return refuse("Caret is paused");
     if (!this.readerConnected) return refuse("No screen reader is connected");

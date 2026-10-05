@@ -1,7 +1,9 @@
 // Measures plan writers on the ten-case corpus (test/codemode/writer-corpus.ts): latency, tokens, cost,
 // whether the program passes the sandbox, and whether the plan matches the expected steps.
 //
-//   CARET_ENV_FILE=/path/to/.env node scripts/writer-eval.ts --out DIR [--budget 0.45] [--models a,b]
+//   CARET_ENV_FILE=/path/to/.env node scripts/writer-eval.ts --out DIR --models provider:model[,provider:model] [--budget 0.45]
+//
+// L1: the routes are only those --models names (writer/config.ts devWriterRoute); none is a default.
 //
 // Keys are read at call time and never printed. Calls run one at a time, so latency is per request.
 // Groq's on-demand tier allows 8,000 tokens a minute for gpt-oss and 1,000 output tokens a minute for
@@ -15,7 +17,7 @@ import { parseArgs } from "node:util";
 import { runCodePlan } from "../src/codemode/sandbox.ts";
 import type { DraftPlan } from "../src/codemode/types.ts";
 import { ChatHttpError, listModels, type ChatRoute } from "../src/writer/chat.ts";
-import { CANDIDATES, GATEWAY_GPT_OSS_120B } from "../src/writer/config.ts";
+import { devWriterRoute, GATEWAY_GPT_OSS_120B } from "../src/writer/config.ts";
 import { readKey } from "../src/writer/env.ts";
 import { makeWriterPort } from "../src/writer/port.ts";
 import { WRITER_CORPUS, type WriterCase } from "../test/codemode/writer-corpus.ts";
@@ -31,7 +33,8 @@ const MAX_OUTPUT = 1000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let retries = 0;
 mkdirSync(outDir, { recursive: true });
-const routes = args.models === undefined ? CANDIDATES : CANDIDATES.filter((r) => args.models!.split(",").includes(r.model));
+if (args.models === undefined) throw new Error("--models provider:model[,...] is required: no writer route is a default (L1)");
+const routes = args.models.split(",").map(devWriterRoute);
 
 interface Call {
   model: string;
@@ -66,7 +69,8 @@ const log = (s: string) => process.stdout.write(`${s}\n`);
 
 // 1. What each provider lists today.
 const gatewayModels = await listModels(GATEWAY_GPT_OSS_120B, null);
-const groqModels = await listModels(CANDIDATES[0]!, readKey("GROQ_API_KEY"));
+const groqRoute = routes.find((r) => r.provider === "groq");
+const groqModels = groqRoute === undefined ? [] : await listModels(groqRoute, readKey("GROQ_API_KEY"));
 log(`gateway lists ${gatewayModels.length} models; groq lists ${groqModels.length}: ${groqModels.join(", ")}`);
 
 // 2. Whether the gateway serves completions for this key. A refusal costs nothing.
