@@ -1,7 +1,8 @@
 // The writers the helper starts with (L1). By default there is no program writer and Ask's intents come from Jev, so
 // no default path calls Groq or any other chat provider. A developer may name one route with --dev-writer; the helper
 // then says so on start, and a missing key stops the start rather than leaving that writer off or picking another.
-import { ASK_MAKER, devWriterRoute } from "./config.ts";
+import { ASK_MAKER, INTENT_ROUTE, WRITER_ROUTE } from "./config.ts";
+import { devWriterRoute } from "./routes.ts";
 import { readKey } from "./env.ts";
 import { makeWriterPort, type WriterPort } from "./port.ts";
 
@@ -18,9 +19,12 @@ export interface StartWriters {
  */
 export function writersOnStart(devWriter: string | undefined, say: (line: string) => void, env: NodeJS.ProcessEnv = process.env): StartWriters {
   if (devWriter === undefined) {
-    if (ASK_MAKER === "writer") throw new Error("writer/config.ts ASK_MAKER is \"writer\", which needs a route: start with --dev-writer provider:model");
-    say("writers: no program writer, so goals say they are not available; Ask's intents come from Jev (writer/config.ts)");
-    return { plan: null, ask: { maker: "jev" } };
+    // Configured routes are null since L1; a non-null one is explicit configuration, used as written.
+    if (ASK_MAKER === "writer" && INTENT_ROUTE === null) throw new Error("writer/config.ts ASK_MAKER is \"writer\" and INTENT_ROUTE is null: start with --dev-writer provider:model");
+    const plan = WRITER_ROUTE === null ? null : makeWriterPort(WRITER_ROUTE);
+    const ask = ASK_MAKER === "writer" && INTENT_ROUTE !== null ? { maker: "writer" as const, writer: makeWriterPort(INTENT_ROUTE) } : { maker: "jev" as const };
+    say(`writers: ${plan === null ? "no program writer, so goals say they are not available" : `program writer ${WRITER_ROUTE?.provider} ${WRITER_ROUTE?.model}`}; Ask's intents from ${ask.maker === "jev" ? "Jev" : `${INTENT_ROUTE?.provider} ${INTENT_ROUTE?.model}`} (writer/config.ts)`);
+    return { plan, ask };
   }
   const route = devWriterRoute(devWriter);
   try {

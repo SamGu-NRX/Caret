@@ -8,7 +8,7 @@ import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import * as z from "zod";
 import { chat, GatewayNeedsCard, type ChatRoute } from "../src/writer/chat.ts";
-import { GATEWAY_BASE_URL } from "../src/writer/config.ts";
+import { GATEWAY_BASE_URL } from "../src/writer/routes.ts";
 import { readKey } from "../src/writer/env.ts";
 
 const { values: a } = parseArgs({ options: { model: { type: "string" }, out: { type: "string" } } });

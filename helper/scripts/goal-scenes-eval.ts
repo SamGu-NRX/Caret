@@ -4,7 +4,7 @@
 // from the helper: each field's value, the calendar's events, the buttons pressed.
 //   node scripts/goal-scenes-eval.ts --out DIR                          canned writer (the gating run)
 //   CARET_ENV_FILE=… node scripts/goal-scenes-eval.ts --out DIR --writer provider:model [--budget 0.15] [--runs N] [--jev live]
-// L1: a live writer is only the route --writer names ("groq:<model>" or "gateway:<model>", writer/config.ts devWriterRoute).
+// L1: a live writer is only the route --writer names ("groq:<model>" or "gateway:<model>", writer/routes.ts devWriterRoute).
 // Reports, per scene and writer: plan offered (valid), refused for an unsupported route, segments and acceptances,
 // steps verified, fresh previews, the end, the oracle, false done, replayed mutations and sends; and the cost.
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { GoalProgress } from "../src/protocol.ts";
 import { YOURS_EFFECT } from "../src/goals/capabilities.ts";
-import { devWriterRoute } from "../src/writer/config.ts";
+import { devWriterRoute } from "../src/writer/routes.ts";
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
 import { loadJevKey, makeJevClient } from "../src/fill/jev.ts";
 import { areaKey, button, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, SUPPORT, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "../test/goal-desk.ts";

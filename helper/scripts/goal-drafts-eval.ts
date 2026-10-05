@@ -5,14 +5,15 @@
 //   CARET_ENV_FILE=… node scripts/goal-drafts-eval.ts --out DIR [--cases a.json,b.json] [--budget 0.15] [--space-ms 25000]
 //        [--maker jev|writer --intent-model provider:model] [--goal-model provider:model]
 // L1: intents from Jev (writer/config.ts ASK_MAKER) unless --maker writer names a route; goal programs from the route
-// --goal-model names (writer/config.ts devWriterRoute), none by default. Jev live. Each call's served model is
+// --goal-model names (writer/routes.ts devWriterRoute), none by default. Jev live. Each call's served model is
 // recorded. No GUI, no input, no app.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type AppRef, type GoalProgress, type Node, type TypedValue } from "../src/protocol.ts";
-import { ASK_MAKER, devWriterRoute } from "../src/writer/config.ts";
+import { ASK_MAKER } from "../src/writer/config.ts";
+import { devWriterRoute } from "../src/writer/routes.ts";
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
 import { button, draftRefusals as draftRefused, goalRefusals, goalScene, line, textArea, textField, type DeskWindow, type GoalScene } from "../test/goal-desk.ts";
 

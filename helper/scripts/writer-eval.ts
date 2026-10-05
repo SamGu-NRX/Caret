@@ -3,7 +3,7 @@
 //
 //   CARET_ENV_FILE=/path/to/.env node scripts/writer-eval.ts --out DIR --models provider:model[,provider:model] [--budget 0.45]
 //
-// L1: the routes are only those --models names (writer/config.ts devWriterRoute); none is a default.
+// L1: the routes are only those --models names (writer/routes.ts devWriterRoute); none is a default.
 //
 // Keys are read at call time and never printed. Calls run one at a time, so latency is per request.
 // Groq's on-demand tier allows 8,000 tokens a minute for gpt-oss and 1,000 output tokens a minute for
@@ -17,7 +17,8 @@ import { parseArgs } from "node:util";
 import { runCodePlan } from "../src/codemode/sandbox.ts";
 import type { DraftPlan } from "../src/codemode/types.ts";
 import { ChatHttpError, listModels, type ChatRoute } from "../src/writer/chat.ts";
-import { devWriterRoute, GATEWAY_GPT_OSS_120B } from "../src/writer/config.ts";
+import { GATEWAY_GPT_OSS_120B } from "../src/writer/config.ts";
+import { devWriterRoute } from "../src/writer/routes.ts";
 import { readKey } from "../src/writer/env.ts";
 import { makeWriterPort } from "../src/writer/port.ts";
 import { WRITER_CORPUS, type WriterCase } from "../test/codemode/writer-corpus.ts";

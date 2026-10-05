@@ -1,13 +1,11 @@
-// Writer routes. Sam, 2026-10-05 (L1): "As for Groq, I currently don't want to." So no route is configured by default:
-// the helper starts with no program writer (goals say they are not available, helper.ts offerGoal) and Ask's intents
-// come from Jev (ASK_MAKER). A route is used only when a developer names it (--dev-writer, writer/startup.ts), and then
-// only that route: there is no automatic fallback to another model or provider.
+// Writer routes and the configured pick. Changing the pick is explicit configuration and needs a fresh run
+// of scripts/writer-eval.ts (plan section 5); there is no automatic fallback to another route.
+// L1 (2026-10-05): Sam turned Groq off ("As for Groq, I currently don't want to."). No route is configured; a developer
+// names one with --dev-writer (writer/routes.ts devWriterRoute, writer/startup.ts).
 import type { ChatRoute } from "./chat.ts";
 
 const GROQ = "https://api.groq.com/openai/v1";
-/** Vercel AI Gateway's OpenAI-compatible endpoint. */
-export const GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1";
-const GATEWAY = GATEWAY_BASE_URL;
+const GATEWAY = "https://ai-gateway.vercel.sh/v1";
 /** Groq's model table, console.groq.com/docs/models.md, read 2026-10-04. */
 const GROQ_PRICES = "console.groq.com/docs/models.md, 2026-10-04";
 
@@ -39,48 +37,22 @@ export const GROQ_QWEN_3_8_27B: ChatRoute = {
 };
 
 /**
- * Vercel AI Gateway's OpenAI-compatible endpoint, by model id (L1 lead decision 4; off unless --dev-writer names one).
- * The free models are the three language models `scripts/gateway-probe.ts` found priced 0 on 2026-10-05; a
- * completion on this account then answered HTTP 403 "requires a valid credit card on file" even for them
- * (chat.ts GatewayNeedsCard; evidence/screen/l1/gateway-probe.txt), so none of these routes has been measured. gpt-oss-120b is pinned to Cerebras, the lowest p50 latency the gateway listed for it
- * on 2026-10-04 (157 ms, /v1/models/openai/gpt-oss-120b/endpoints); its routing fields are unverified.
+ * The same gpt-oss-120b through Vercel AI Gateway, pinned to Cerebras, the lowest p50 latency the gateway
+ * listed for it on 2026-10-04 (157 ms, /v1/models/openai/gpt-oss-120b/endpoints). Not measured: on
+ * 2026-10-04 the gateway answered every completion with HTTP 403 customer_verification_required ("requires
+ * a valid credit card on file"). The routing fields follow the gateway's providerOptions and are unverified.
  */
-const GATEWAY_MODELS: Readonly<Record<string, Pick<ChatRoute, "extraBody" | "pricing">>> = {
-  "inclusionai/ling-3.1-flash": { extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "ai-gateway.vercel.sh/v1/models, priced 0, 2026-10-05" } },
-  "inclusionai/ling-3.1-flash-free": { extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "ai-gateway.vercel.sh/v1/models, priced 0, 2026-10-05" } },
-  "poolside/laguna-s-2.1-free": { extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "ai-gateway.vercel.sh/v1/models, priced 0, 2026-10-05" } },
-  "openai/gpt-oss-120b": {
-    extraBody: { reasoning: { effort: "low" }, providerOptions: { gateway: { order: ["cerebras"], only: ["cerebras"] } } },
-    pricing: { inputUsdPerMTok: 0.35, outputUsdPerMTok: 0.75, source: "ai-gateway.vercel.sh/v1/models/openai/gpt-oss-120b/endpoints (cerebras), 2026-10-04" },
-  },
+export const GATEWAY_GPT_OSS_120B: ChatRoute = {
+  provider: "gateway",
+  baseUrl: GATEWAY,
+  keyName: "AI_GATEWAY_API_KEY",
+  model: "openai/gpt-oss-120b",
+  maxTokensParam: "max_tokens",
+  extraBody: { reasoning: { effort: "low" }, providerOptions: { gateway: { order: ["cerebras"], only: ["cerebras"] } } },
+  pricing: { inputUsdPerMTok: 0.35, outputUsdPerMTok: 0.75, source: "ai-gateway.vercel.sh/v1/models/openai/gpt-oss-120b/endpoints (cerebras), 2026-10-04" },
 };
-export const GATEWAY_MODEL_IDS: readonly string[] = Object.keys(GATEWAY_MODELS);
 
-/** The gateway route for one of GATEWAY_MODEL_IDS; any other id is an error that lists them. */
-export function gatewayRoute(model: string): ChatRoute {
-  const m = GATEWAY_MODELS[model];
-  if (m === undefined) throw new Error(`Vercel AI Gateway model '${model}' has no route here; known: ${GATEWAY_MODEL_IDS.join(", ")} (writer/config.ts GATEWAY_MODELS)`);
-  return { provider: "gateway", baseUrl: GATEWAY, keyName: "AI_GATEWAY_API_KEY", model, maxTokensParam: "max_tokens", ...m };
-}
-
-export const GATEWAY_GPT_OSS_120B: ChatRoute = gatewayRoute("openai/gpt-oss-120b");
-
-/** The Groq routes measured below. Used only when a developer names one (devWriterRoute). */
 export const CANDIDATES: readonly ChatRoute[] = [GROQ_GPT_OSS_120B, GROQ_GPT_OSS_20B, GROQ_QWEN_3_8_27B];
-
-/**
- * A developer's explicit writer route, "groq:<model>" or "gateway:<model>" (main.ts --dev-writer, the eval scripts'
- * writer flags). Anything else is an error that lists what may be named; nothing picks a route on its own.
- */
-export function devWriterRoute(spec: string): ChatRoute {
-  const cut = spec.indexOf(":");
-  const provider = cut < 0 ? "" : spec.slice(0, cut);
-  const model = cut < 0 ? "" : spec.slice(cut + 1);
-  if (provider === "gateway") return gatewayRoute(model);
-  const groq = provider === "groq" ? CANDIDATES.find((r) => r.model === model) : undefined;
-  if (groq !== undefined) return groq;
-  throw new Error(`writer '${spec}' is not a route: name one of ${[...CANDIDATES.map((r) => `groq:${r.model}`), ...GATEWAY_MODEL_IDS.map((m) => `gateway:${m}`)].join(", ")}`);
-}
 
 /*
  * Measured 2026-10-04 with scripts/writer-eval.ts on the ten synthetic cases in
@@ -99,7 +71,7 @@ export function devWriterRoute(spec: string): ChatRoute {
  * gpt-oss-20b 8/10; p50 756, p95 1222 ms. gpt-oss-120b 8/10, both misses a refused switch; p50 882,
  * p95 1928 ms. Spend over runs 1-3: $0.057.
  *
- * Pick until L1 (2026-10-05), when Groq went off by default: qwen3.8-27b. Best correctness in run 3, no reasoning tokens, and its misses fail safe: it left
+ * Pick: qwen3.8-27b. Best correctness in run 3, no reasoning tokens, and its misses fail safe: it left
  * out the Save press on "create the event" in both runs, and once passed a non-string to press, which the
  * sandbox refused. gpt-oss-20b pressed "Continue to payment" when only asked to fill the shipping
  * address in both runs. gpt-oss-120b once filled a date without calling choose, and once spent its
@@ -109,11 +81,13 @@ export function devWriterRoute(spec: string): ChatRoute {
  * Limits that matter for the product: Groq's on-demand tier allows qwen3.8-27b 1,000 output tokens a
  * minute (about five plans) and the gpt-oss models 8,000 tokens a minute (about five plans).
  */
+export const WRITER_ROUTE: ChatRoute | null = null; // L1: was GROQ_QWEN_3_8_27B, the pick above
+
 /** Longest qwen3.8 plan in runs 2 and 3 was 400 output tokens; 1,000 also stays under its per-minute limit. */
 export const WRITER_MAX_OUTPUT_TOKENS = 1000;
 
 /*
- * How an Ask's instruction becomes an intent (B25, planner/ask.ts): "writer" (a chat route's strict JSON) or "jev"
+ * How an Ask's instruction becomes an intent (B25, planner/ask.ts): "writer" (INTENT_ROUTE's strict JSON) or "jev"
  * (staged Choice and Noul, planner/intent-makers.ts). Measured with scripts/realfill-asks.ts on B24's twenty asks,
  * which these makers, their prompt and the scoped fill's rules were tuned on (evidence/screen/b25/asks-dev-*):
  * right / partial / refused / wrong of 20, the values proposed right, and the maker's tokens per intent (mean, max).
@@ -131,12 +105,12 @@ export const WRITER_MAX_OUTPUT_TOKENS = 1000;
  * (* a wrong fill the scoped fill made from a right intent, closed by a fill rule afterwards: fill.ts untied,
  * the source-any owner rule, whichOfTheirs.)
  *
- * Pick until L1 (see ASK_MAKER below): the writer on gpt-oss-120b. Right asks tie with Jev at a mean of 2 (3 and 1 against 2 and 2), and the
+ * Pick: the writer on gpt-oss-120b. Right asks tie with Jev at a mean of 2 (3 and 1 against 2 and 2), and the
  * writer proposes more than twice the right values: Jev's two stages rarely both clear their floors, so 14 to 16
  * of its 20 ended as "which fields?". The Noul floor stays at plan section 4's 0.95: on dev-1 it confirmed 7 of 14
  * wanted fields and 0 of 107 others; 0.5 confirmed 12 of 14, and 2 others.
  *
- * qwen3.8-27b, the plan writer until L1, was not measured on intents: on 2026-10-04 it had used 198,935 of
+ * qwen3.8-27b, the plan writer (WRITER_ROUTE), was not measured on intents: on 2026-10-04 it had used 198,935 of
  * Groq's 200,000 tokens a day before the third ask. Its two intents cost 1,286 and 1,815 tokens, so 50 asks a day
  * would fit its quota if Ask had it alone; the plan route and code mode share it. gpt-oss-120b has its own
  * 200,000 a day and 8,000 a minute (console.groq.com/docs/rate-limits, 2026-10-04): at about 1,950 tokens an
@@ -154,10 +128,14 @@ export const WRITER_MAX_OUTPUT_TOKENS = 1000;
  * hours later (code at 312cee5) ran out again within a few asks: 120b answered 2 of 20, qwen3.8 4 of 20.
  */
 /*
- * L1 (2026-10-05, lead decision 2): Jev makes Ask's intents, so no Ask calls Groq. B29 measured the Jev maker with
- * questions with choices (evidence/screen/b29 final3-*-jev, 9ecd492): B24's 20 asked 16, refused 4, wrong 0; held-out
- * asked 10, refused 10; held-out-2 asked 12, refused 8; right 0 and wrong 0 in all three before the user's pick.
- * L1_JEV_NUMBERS
+ * L1 (2026-10-05, lead decision 2): Jev makes Ask's intents, so no Ask calls Groq. Today's numbers, scripts/realfill-asks.ts
+ * --maker jev on Jev jev-1.13.0, plan-route writer off (evidence/screen/l1 asks-*-jev-1, code at 3e890b3), of 20 each:
+ * | set                | right | partial | asked (option recall) | refused | wrong | after the pick: right, partial, wrong | Jev $  |
+ * | B24 (tuned)        | 0     | 0       | 16 (10/16)            | 4       | 0     | 1, 4, 0                               | 0.0073 |
+ * | B25 held-out       | 0     | 0       | 10 (7/10)             | 10      | 0     | 0, 2, 0                               | 0.0037 |
+ * | B26 held-out-2     | 0     | 0       | 12 (8/12)             | 8       | 0     | 2, 3, 0                               | 0.0047 |
  */
 export const ASK_MAKER: "writer" | "jev" = "jev";
+/** The writer route for intents; a change is explicit configuration and a fresh scoreboard run, never a fallback. */
+export const INTENT_ROUTE: ChatRoute | null = null; // L1: was GROQ_GPT_OSS_120B
 

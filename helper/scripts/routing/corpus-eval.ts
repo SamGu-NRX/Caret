@@ -26,7 +26,8 @@ import { loadJevKey, makeJevClient, type AskJev, type JevRequest } from "../../s
 import { PROTOCOL_VERSION, type AppRef, type Node, type Snapshot, type TypedValue, type ValueKind } from "../../src/protocol.ts";
 import type { Decision } from "../../src/routing/coordinator.ts";
 import { makeWriterPort } from "../../src/writer/port.ts";
-import { ASK_MAKER, devWriterRoute } from "../../src/writer/config.ts";
+import { ASK_MAKER } from "../../src/writer/config.ts";
+import { devWriterRoute } from "../../src/writer/routes.ts";
 import { keyLabel } from "../../test/scene.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));

@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as config from "../src/writer/config.ts";
 import { writersOnStart } from "../src/writer/startup.ts";
+import { devWriterRoute, gatewayRoute } from "../src/writer/routes.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
 import { GatewayNeedsCard } from "../src/writer/chat.ts";
@@ -17,28 +18,33 @@ const src = (path: string): string => readFileSync(new URL(`../src/${path}`, imp
 afterEach(() => vi.unstubAllGlobals());
 
 describe("no Groq call on any default path", () => {
-  it("starts with no program writer and Jev for Ask, reading no key", () => {
+  it("starts with no program writer and Jev for Ask, and never reads GROQ_API_KEY", () => {
     const said: string[] = [];
-    // An environment with every key set: the default start must not use any of them.
-    const env = { GROQ_API_KEY: "gsk-not-real", AI_GATEWAY_API_KEY: "vck-not-real", TYPESAFE_API_KEY: "ts-not-real" };
+    // An environment with every key set that records each read: the default start reads none of them.
+    const read: string[] = [];
+    const keys: Record<string, string> = { GROQ_API_KEY: "gsk-not-real", AI_GATEWAY_API_KEY: "vck-not-real", TYPESAFE_API_KEY: "ts-not-real", CARET_ENV_FILE: "/nonexistent/.env" };
+    const env = new Proxy(keys, { get: (t, k) => (typeof k === "string" && read.push(k), t[k as string]) });
     const w = writersOnStart(undefined, (l) => void said.push(l), env);
     expect(w.plan).toBeNull();
     expect(w.ask).toEqual({ maker: "jev" });
+    expect(read).toEqual([]);
     expect(said.join("\n")).not.toMatch(/groq/i);
   });
 
   it("configures Jev as Ask's maker and keeps no default chat route", () => {
     expect(config.ASK_MAKER).toBe("jev");
-    expect(config).not.toHaveProperty("WRITER_ROUTE");
-    expect(config).not.toHaveProperty("INTENT_ROUTE");
+    expect(config.WRITER_ROUTE).toBeNull();
+    expect(config.INTENT_ROUTE).toBeNull();
   });
 
   it("the helper's start takes its writers from writersOnStart only", () => {
     const main = src("main.ts");
     expect(main).toContain("writersOnStart(");
-    expect(main).not.toMatch(/GROQ_|CANDIDATES|devWriterRoute|makeWriterPort/);
+    expect(main).not.toMatch(/GROQ_|CANDIDATES|devWriterRoute|makeWriterPort|WRITER_ROUTE|INTENT_ROUTE/);
     // Outside writer/, no source file names a Groq route or the helper's old defaults.
     for (const f of ["helper.ts", "planner/ask.ts", "planner/intent-makers.ts", "goals/propose.ts", "codemode/sandbox.ts"]) expect(src(f), f).not.toMatch(/GROQ_|api\.groq\.com|WRITER_ROUTE|INTENT_ROUTE/);
+    // The routes a developer may name live apart from writer/config.ts, and none of them is configured.
+    expect(src("writer/routes.ts")).not.toMatch(/export const \w+: ChatRoute =/);
   });
 
   it("uses a Groq route only when a developer names it, and says so", () => {
@@ -91,7 +97,7 @@ describe("Vercel AI Gateway route", () => {
 
   it("is chosen by model id, goes to the OpenAI-compatible endpoint and reads AI_GATEWAY_API_KEY", async () => {
     const seen: { url: string; body: Record<string, unknown>; auth: string }[] = [];
-    const route = config.devWriterRoute("gateway:inclusionai/ling-3.1-flash-free");
+    const route = devWriterRoute("gateway:inclusionai/ling-3.1-flash-free");
     expect(route).toMatchObject({ provider: "gateway", keyName: "AI_GATEWAY_API_KEY", model: "inclusionai/ling-3.1-flash-free" });
     const ok = { model: "inclusionai/ling-3.1-flash-free", choices: [{ message: { content: "```ts\nasync function main(caret) {}\n```" } }], usage: { prompt_tokens: 10, completion_tokens: 5 } };
     const w = await makeWriterPort(route, { key: () => KEY, fetchFn: fake(200, ok, seen) }).write(plan);
@@ -101,7 +107,7 @@ describe("Vercel AI Gateway route", () => {
   });
 
   it("surfaces a 403 'credit card on file' as its own error, even for a free model", async () => {
-    const err = await makeWriterPort(config.gatewayRoute("poolside/laguna-s-2.1-free"), { key: () => KEY, fetchFn: fake(403, card) }).write(plan).catch((e: unknown) => e);
+    const err = await makeWriterPort(gatewayRoute("poolside/laguna-s-2.1-free"), { key: () => KEY, fetchFn: fake(403, card) }).write(plan).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(GatewayNeedsCard);
     expect((err as Error).message).toBe("Vercel AI Gateway needs a card on file, even for free models");
     expect(err).toMatchObject({ provider: "gateway", status: 403 });
@@ -109,7 +115,7 @@ describe("Vercel AI Gateway route", () => {
   });
 
   it("leaves any other 403, and the same words from another provider, as the provider's own error", async () => {
-    const other = await makeWriterPort(config.gatewayRoute("poolside/laguna-s-2.1-free"), { key: () => KEY, fetchFn: fake(403, { error: { message: "model not allowed", type: "forbidden" } }) }).write(plan).catch((e: unknown) => e);
+    const other = await makeWriterPort(gatewayRoute("poolside/laguna-s-2.1-free"), { key: () => KEY, fetchFn: fake(403, { error: { message: "model not allowed", type: "forbidden" } }) }).write(plan).catch((e: unknown) => e);
     expect(other).not.toBeInstanceOf(GatewayNeedsCard);
     expect(String(other)).toContain("gateway HTTP 403 forbidden: model not allowed");
     const groq = await makeWriterPort(config.GROQ_QWEN_3_8_27B, { key: () => KEY, fetchFn: fake(403, card) }).write(plan).catch((e: unknown) => e);

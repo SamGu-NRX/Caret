@@ -32,7 +32,7 @@ import { newLaunchSecret, sendSecret } from "../src/launch.ts";
 const launchSecret = newLaunchSecret();
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
-import { devWriterRoute } from "../src/writer/config.ts";
+import { devWriterRoute } from "../src/writer/routes.ts";
 import type { ChatRoute } from "../src/writer/chat.ts";
 
 /** The configured writer, one call at least 15 s after the last (Groq allows qwen3.8 1,000 output tokens a minute). */
@@ -76,12 +76,12 @@ const { values: a } = parseArgs({
     cases: { type: "string" },
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "planner-eval.sock") },
     // B24: the code-mode writer for instructions the planner cannot ground, as the helper runs it with --dev-writer:
-    // "groq:<model>" or "gateway:<model>" (writer/config.ts devWriterRoute; L1: none by default). Calls are spaced
+    // "groq:<model>" or "gateway:<model>" (writer/routes.ts devWriterRoute; L1: none by default). Calls are spaced
     // 15 s apart for Groq's per-minute output limit.
     writer: { type: "string" },
     /**
      * B25: Ask as a scoped fill (planner/ask.ts), its intent made by "jev" or by the writer on this route
-     * ("provider:model", writer/config.ts devWriterRoute), as the helper runs it with HelperOptions.ask. Needs --jev live.
+     * ("provider:model", writer/routes.ts devWriterRoute), as the helper runs it with HelperOptions.ask. Needs --jev live.
      */
     ask: { type: "string" },
   },

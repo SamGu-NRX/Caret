@@ -6,7 +6,7 @@
 //   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker jev|writer]
 //        [--spend-limit USD] [--gap S] [--writer-model provider:model] [--plan-writer provider:model]
 // L1: the maker is writer/config.ts ASK_MAKER (Jev) and the plan route has no writer unless a flag names a route
-// (writer/config.ts devWriterRoute); --maker writer needs --writer-model.
+// (writer/routes.ts devWriterRoute); --maker writer needs --writer-model.
 //
 // Each ask's expected values are the fields it asks to change. A plan is right when it writes every expected
 // text value and hands off every expected control value (a select's option, a radio, a box, a date or a time),
@@ -32,7 +32,8 @@ import type { AskIntent } from "../src/planner/intent.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { SAYS, SaidError } from "../src/planner/says.ts";
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
-import { ASK_MAKER, devWriterRoute } from "../src/writer/config.ts";
+import { ASK_MAKER } from "../src/writer/config.ts";
+import { devWriterRoute } from "../src/writer/routes.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
 import { Snapshot } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
