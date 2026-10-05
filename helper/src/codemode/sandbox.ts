@@ -30,6 +30,11 @@ export interface RunOptions {
    * acceptance each (goals/lower.ts). Absent or false keeps D2-05's rule that every step targets the basedOn window.
    */
   multiWindow?: boolean;
+  /**
+   * B30: the program may write short texts with draft(), each a value ref its fills may name; goals/lower.ts checks
+   * them. Absent or false makes draft() a violation, as for every single-window plan.
+   */
+  drafts?: boolean;
 }
 
 const WORKER_URL = new URL("./worker.ts", import.meta.url);
@@ -82,7 +87,7 @@ export async function runProgramJs(js: string, programDigest: string, snapshots:
   if (active) return refuse("busy", "another planning run is live");
   active = true;
   try {
-    return await runWorker({ js, programDigest, snapshots: snaps, limits, multiWindow: opts.multiWindow === true }, choose, opts.signal);
+    return await runWorker({ js, programDigest, snapshots: snaps, limits, multiWindow: opts.multiWindow === true, drafts: opts.drafts === true }, choose, opts.signal);
   } finally {
     active = false;
   }

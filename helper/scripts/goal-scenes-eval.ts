@@ -3,7 +3,7 @@
 // GUI, no input. The "user" accepts every preview it is shown, and the oracle is the desk's own state, read apart
 // from the helper: each field's value, the calendar's events, the buttons pressed.
 //   node scripts/goal-scenes-eval.ts --out DIR                          canned writer (the gating run)
-//   CARET_ENV_FILE=… node scripts/goal-scenes-eval.ts --out DIR --writer live [--model M] [--budget 0.15] [--runs N]
+//   CARET_ENV_FILE=… node scripts/goal-scenes-eval.ts --out DIR --writer live [--model M] [--budget 0.15] [--runs N] [--jev live]
 // Reports, per scene and writer: plan offered (valid), refused for an unsupported route, segments and acceptances,
 // steps verified, fresh previews, the end, the oracle, false done, replayed mutations and sends; and the cost.
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -13,9 +13,12 @@ import type { GoalProgress } from "../src/protocol.ts";
 import { YOURS_EFFECT } from "../src/goals/capabilities.ts";
 import { CANDIDATES, WRITER_ROUTE } from "../src/writer/config.ts";
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
+import { loadJevKey, makeJevClient } from "../src/fill/jev.ts";
 import { areaKey, button, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, SUPPORT, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "../test/goal-desk.ts";
 
-const { values: a } = parseArgs({ options: { out: { type: "string" }, writer: { type: "string", default: "canned" }, model: { type: "string" }, budget: { type: "string", default: "0.15" }, runs: { type: "string", default: "1" }, "space-ms": { type: "string", default: "0" } } });
+const { values: a } = parseArgs({ options: { out: { type: "string" }, writer: { type: "string", default: "canned" }, model: { type: "string" }, budget: { type: "string", default: "0.15" }, runs: { type: "string", default: "1" }, "space-ms": { type: "string", default: "0" }, jev: { type: "string", default: "none" } } });
+// B30: a live writer may draft text, whose claims Jev checks; with no Jev every such draft is refused.
+const jevLive = a.jev === "live" ? makeJevClient(() => loadJevKey()) : null;
 if (a.out === undefined) throw new Error("usage: node scripts/goal-scenes-eval.ts --out DIR [--writer canned|live] [--model M] [--budget USD] [--runs N]");
 const OUT = a.out;
 mkdirSync(OUT, { recursive: true });
@@ -161,7 +164,7 @@ for (let run = 1; run <= runs; run++) {
       break;
     }
     const meter = { cost: 0, latency: [] as number[], model: live ? route.model : "canned", errors: [] as string[] };
-    const sc = goalScene({ scripts: structuredClone(s.canned), windows: s.windows(), userWindow: s.user, ...(live ? { writer: metered(makeWriterPort(route), meter) } : {}) });
+    const sc = goalScene({ scripts: structuredClone(s.canned), windows: s.windows(), userWindow: s.user, ...(live ? { writer: metered(makeWriterPort(route), meter) } : {}), ...(jevLive === null ? {} : { askJev: async (req) => { const r = await jevLive(req); meter.cost += r.costUsd; return r; } }) });
     s.during?.(sc);
     const first = await sc.request(s.instruction);
     let acceptances = 0;

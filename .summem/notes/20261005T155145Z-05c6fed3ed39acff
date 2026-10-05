@@ -1,0 +1,1 @@
+R2: Router 1 is skipped only for offers Helper.consentedCandidates builds on a held offer's own record (routing/consent.ts). Messages that write such records (skillAnswer, resume, skills/ save, watch role) count only from a host session.

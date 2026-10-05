@@ -5,7 +5,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Helper } from "../src/helper.ts";
+import { Helper, type HelperOptions } from "../src/helper.ts";
+import type { AskJev } from "../src/fill/jev.ts";
 import { Store } from "../src/store.ts";
 import { FakeCalendar } from "../src/executor/means.ts";
 import { PROTOCOL_VERSION, isCalendarVerb, type GoalAccept, type GoalProgress, type HelperMessage, type ActGrant, type ActRevoke, type AppRef, type CalendarGrant, type Node, type ReaderMessage, type ReaderVerb, type TypedValue, type VerbResult } from "../src/protocol.ts";
@@ -222,6 +223,8 @@ export function wizardWindow(reveal = true): DeskWindow {
 export type CannedStep =
   | { fill: { window: string; target: string; value: string } }
   | { press: { window: string; target: string; effect: string } }
+  /** B30: text the program drafts and fills into a target, naming as its basis the windows titled exactly `from` (or, as "value:<text>", a value). */
+  | { draft: { window: string; target: string; text: string; from: string[] } }
   | { ask: true };
 
 /**
@@ -246,6 +249,16 @@ export function cannedProgram(snapshots: readonly PlanningSnapshot[], steps: rea
   const made = steps.map((s, i) => {
     if ("fill" in s) return `  const s${i} = caret.fill(${JSON.stringify(target(s.fill.window, s.fill.target))} as TargetRef, ${JSON.stringify(value(s.fill.value))} as ValueRef);`;
     if ("press" in s) return `  const s${i} = caret.press(${JSON.stringify(target(s.press.window, s.press.target))} as TargetRef, ${JSON.stringify(s.press.effect)} as EffectRef);`;
+    if ("draft" in s) {
+      const from = s.draft.from.map((t) => {
+        if (t.startsWith("value:")) return value(t.slice("value:".length));
+        const w = snapshots.find((x) => x.title === t);
+        if (w === undefined) throw new Error(`no window titled '${t}'`);
+        return w.window;
+      });
+      return `  const d${i} = caret.draft(${JSON.stringify(s.draft.text)}, ${JSON.stringify(from)} as (WindowRef | ValueRef)[]);
+  const s${i} = caret.fill(${JSON.stringify(target(s.draft.window, s.draft.target))} as TargetRef, d${i});`;
+    }
     return `  const s${i} = caret.ask("q1" as QuestionRef);`;
   });
   return `async function main(caret: CaretPlanAPI): Promise<PlanRef> {\n${reads.join("\n")}\n${made.join("\n")}\n  return caret.plan({ basedOn: ${JSON.stringify(snapshots[0]?.snapshot ?? "s1")} as SnapshotRef, steps: [${steps.map((_, i) => `s${i}`).join(", ")}] });\n}`;
@@ -292,7 +305,20 @@ export interface GoalScene {
   close(): Promise<void>;
 }
 
-export function goalScene(o: { scripts: CannedStep[][]; windows: DeskWindow[]; pageDocument?: (windowId: string) => string | null; userWindow?: string; /** A real writer in place of the canned one (scripts/goal-scenes-eval.ts --writer live). */ writer?: WriterPort }): GoalScene {
+export function goalScene(o: {
+  scripts: CannedStep[][];
+  windows: DeskWindow[];
+  pageDocument?: (windowId: string) => string | null;
+  userWindow?: string;
+  /** A real writer in place of the canned one (scripts/goal-scenes-eval.ts --writer live). */
+  writer?: WriterPort;
+  /** Jev, for drafts' claim checks and Ask (B30); none by default. */
+  askJev?: AskJev;
+  /** How an Ask makes its intent (HelperOptions.ask); none by default. */
+  ask?: HelperOptions["ask"];
+  /** Whether the helper has a calendar to add events to; true by default. */
+  calendar?: boolean;
+}): GoalScene {
   const dir = mkdtempSync(join(tmpdir(), "caret-goal-"));
   const store = new Store(join(dir, "data"));
   const desk = new GoalDesk();
@@ -304,11 +330,12 @@ export function goalScene(o: { scripts: CannedStep[][]; windows: DeskWindow[]; p
   const helper = new Helper({
     warn: (l) => void warnings.push(l),
     store,
-    askJev: null,
+    askJev: o.askJev ?? null,
+    ...(o.ask === undefined ? {} : { ask: o.ask }),
     shadow: false,
     allowBackgroundFocus: false,
     readerLink: desk,
-    calendar,
+    ...(o.calendar === false ? {} : { calendar }),
     writer: o.writer ?? writer,
     now: () => desk.at,
     publish: (m) => {

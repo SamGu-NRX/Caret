@@ -62,12 +62,24 @@ export interface ChoiceRecord {
   chosen: string | null;
 }
 
+/**
+ * Text a goal program wrote for a field (B30), as a value ref `ref` its fill steps may name. `from` are the window and
+ * value refs the program names as the draft's basis. Nothing checks the text here: goals/drafts.ts does, in lowering.
+ */
+export interface ProgramDraft {
+  ref: string;
+  text: string;
+  from: string[];
+}
+
 /** What a program built. Not executable: a later stage validates it against the executor and shows it. */
 export interface DraftPlan {
   basedOn: string;
   window: string;
   steps: PlanStep[];
   choices: ChoiceRecord[];
+  /** Texts the program drafted (B30); always empty unless the run allowed drafts. */
+  drafts: ProgramDraft[];
   /** SHA-256 of the TypeScript source the writer produced. */
   programDigest: string;
 }
@@ -136,6 +148,7 @@ export const DoneMessage = z
               window: z.string(),
               steps: z.array(StepSchema),
               choices: z.array(z.object({ question: z.string(), offered: z.array(z.string()), chosen: z.string().nullable() }).strict()),
+              drafts: z.array(z.object({ ref: z.string(), text: z.string(), from: z.array(z.string()) }).strict()),
               programDigest: z.string(),
             })
             .strict(),
@@ -169,4 +182,6 @@ export interface WorkerInput {
   limits: SandboxLimits;
   /** Steps may target any snapshot the program read (sandbox.ts RunOptions.multiWindow). */
   multiWindow: boolean;
+  /** The program may call draft() (sandbox.ts RunOptions.drafts). */
+  drafts: boolean;
 }

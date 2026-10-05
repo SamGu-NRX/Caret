@@ -6,7 +6,7 @@ import { ScreenModel } from "../src/model.ts";
 import { proposeFill, type FillScope } from "../src/fill/fill.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { checkIntent, intentSnapshot, personSpans, type AskIntent, type IntentSnapshot } from "../src/planner/intent.ts";
-import { AskRefused, planAsk } from "../src/planner/ask.ts";
+import { AskAsks, AskRefused, planAsk, type AskDraft } from "../src/planner/ask.ts";
 import { asksForWholeForm } from "../src/planner/scope-words.ts";
 import { BY_WORD, REVIEWED } from "./b28-reviewed.ts";
 import type { IntentMaker } from "../src/planner/intent-makers.ts";
@@ -612,7 +612,7 @@ describe("a grounded whole-form scope (B28)", () => {
     const jev = jevBy(pickG, () => "user", confirm);
     return { jev, run: planAsk(instruction, m, { values: () => [] }, [], { askJev: jev.ask, maker: maker(scope), writer: null, offerKey: "b28", windowId: "gh", now: 2000 }) };
   };
-  const written = (d: Awaited<ReturnType<typeof planAsk>>): string[] => d.checked.writes.map((w) => w.node.key);
+  const written = (d: AskDraft): string[] => d.checked.writes.map((w) => w.node.key);
   const CONTACT = ["first name", "last name", "email", "phone"].map(GKEY);
 
   it("heldout2-04: a maker's 'whole form' for 'just do my contact info up top' never fills past the contact fields", async () => {
@@ -714,7 +714,7 @@ describe("a grounded whole-form scope (B28)", () => {
   it.each(REVIEWED)("never lets %j stand as a whole form or section when Jev confirms nothing (B28 reviews)", async (instruction, title) => {
     for (const [, groups] of LAYOUTS) {
       const e = await askG(instruction, greenhouse(groups, title), () => "no").run.catch((x: unknown) => x);
-      expect(e, `${instruction} wrote ${e instanceof AskRefused ? "" : written(e as Awaited<ReturnType<typeof planAsk>>).join(", ")}`).toBeInstanceOf(AskRefused);
+      expect(e, `${instruction} wrote ${e instanceof AskRefused ? "" : written(e as AskDraft).join(", ")}`).toBeInstanceOf(AskRefused);
     }
   });
 
@@ -749,9 +749,9 @@ describe("a grounded whole-form scope (B28)", () => {
   };
   const listOf = (...names: string[]) => (s: IntentSnapshot): Partial<AskIntent> => ({ scope: "list", fields: names.map((n) => refOf(s, n)) });
   const sectionNamed = (name: string) => (s: IntentSnapshot): Partial<AskIntent> => ({ scope: "section", section: s.sections.find((x) => x.name === name)?.ref ?? "missing" });
-  const refusal = async (run: Promise<Awaited<ReturnType<typeof planAsk>>>): Promise<AskRefused> => {
+  const refusal = async (run: Promise<AskDraft>): Promise<AskRefused> => {
     const e = await run.catch((x: unknown) => x);
-    expect(e, e instanceof AskRefused ? "" : `wrote ${written(e as Awaited<ReturnType<typeof planAsk>>).join(", ")}`).toBeInstanceOf(AskRefused);
+    expect(e, e instanceof AskRefused ? "" : `wrote ${written(e as AskDraft).join(", ")}`).toBeInstanceOf(AskRefused);
     return e as AskRefused;
   };
   const confirmed = (jev: { seen: JevRequest[] }): string[] =>
@@ -862,5 +862,68 @@ describe("a grounded whole-form scope (B28)", () => {
   it.each(["fill in the email, defer phone", "fill in the email, phone tomorrow"])("B28b re-check: %j voids name trust", async (instruction) => {
     const m = greenhouse({ "Contact information": ["Email", "Phone", "Graduation Date (MM/YYYY)"] }, undefined, ["Email", "Phone", "Graduation Date (MM/YYYY)"]);
     expect((await refusal(askWith(instruction, m, () => "no", listOf("Email", "Phone")).run)).message).toBe(SAYS.whichFields);
+  });
+});
+
+// B30: a host that runs goal plans gets Ask's plan route as a goal, through D2-06's path; the other routes are as they were.
+describe("planAsk for a goal-planning host", () => {
+  const goals = (maker_: IntentMaker, ask: AskJev = jevBy(() => null).ask) => ({ askJev: ask, maker: maker_, writer: null, offerKey: "g-1", windowId: "form", now: 2000, goals: true as const });
+
+  it("hands a plan intent to the goal path and plans nothing itself", async () => {
+    const j = jevBy(() => null);
+    const d = await planAsk("add the meeting to my calendar and draft a reply saying I'm in", desk(), memory, about, goals(maker({ route: "plan", scope: "none" }), j.ask));
+    expect(d).toMatchObject({ route: "goal", windowId: "form", intent: { route: "plan" } });
+    // The single-window planner and the code-mode writer are not a second path: nothing asked Jev.
+    expect(j.seen).toEqual([]);
+  });
+
+  it("keeps a fill intent a scoped fill", async () => {
+    const pick = (q: string): string | null => (q.includes("'Email'") ? "elena.vance@example.com" : null);
+    const d = await planAsk("my email please", desk(), memory, about, goals(maker((s) => ({ fields: [refOf(s, "Email")] })), jevBy(pick, () => "user").ask));
+    expect(d.route).toBe("fill");
+    expect("checked" in d && d.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[KEY("email"), "elena.vance@example.com"]]);
+  });
+
+  it("keeps a must-refuse intent a refusal with B26's sentence, a plan route included", async () => {
+    const pay = await planAsk("pay for it", desk(), memory, about, goals(maker({ route: "refuse", why: "payment" }))).catch((x: unknown) => x);
+    expect((pay as AskRefused).message).toBe(SAYS.payment);
+    // A plan that names a kind Caret never types is refused for it, as a refusal or a question is: no goal is planned.
+    const ssn = await planAsk("put my SSN in and submit it", desk(), memory, about, goals(maker({ route: "plan", scope: "none" }))).catch((x: unknown) => x);
+    expect(ssn).toBeInstanceOf(AskRefused);
+    expect((ssn as AskRefused).message).toBe("Caret doesn't type Social Security numbers. Type it yourself.");
+    // A plan that copies from a source no open window could be is said as such.
+    const away = await planAsk("add the meeting from my LinkedIn to my calendar", desk(), memory, about, goals(maker({ route: "plan", scope: "none" }))).catch((x: unknown) => x);
+    expect((away as AskRefused).message).toBe(SAYS.notOnScreen);
+  });
+
+  it("asks B29's question with choices for an unclear part", async () => {
+    const e = await planAsk("do the thing", desk(), memory, about, goals(maker({ route: "ask", why: "whichFields", scope: "none" }))).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(AskAsks);
+    expect((e as AskAsks).question.part).toBe("fields");
+  });
+});
+
+// B30: an Ask from a window with no field (the email the user reads) can only be about other windows.
+describe("planAsk from a window with no field, for a goal-planning host", () => {
+  const reading = (): ScreenModel => {
+    const m = desk();
+    m.apply(snap([text("mail/l0", "From: Priya Raman <priya@example.com>"), text("mail/l1", "Can you come Thursday?")], { at: 1100, windowId: "mail", title: "Thursday", app: { pid: 7003, bundleId: "dev.caret.mailfixture", name: "Mail" }, focused: true }));
+    return m;
+  };
+  const opts = (intent: Partial<AskIntent>, goals: boolean) => ({ askJev: jevBy(() => null).ask, maker: maker(intent), writer: null, offerKey: "g-2", windowId: "mail", now: 2000, goals });
+
+  it("reads an unsettled or fill intent as a plan, since nothing there can be filled", async () => {
+    for (const intent of [{ route: "ask" as const, why: "whichFields" as const, scope: "none" as const }, { route: "fill" as const, scope: "all" as const }]) {
+      expect(await planAsk("reply saying I'm in", reading(), memory, about, opts(intent, true))).toMatchObject({ route: "goal", windowId: "mail" });
+    }
+  });
+
+  it("still refuses what code refuses, and changes nothing for a host without goal plans", async () => {
+    const ssn = await planAsk("reply with my SSN", reading(), memory, about, opts({ route: "ask", why: "whichFields", scope: "none" }, true)).catch((x: unknown) => x);
+    expect((ssn as AskRefused).message).toBe("Caret doesn't type Social Security numbers. Type it yourself.");
+    const pay = await planAsk("pay her", reading(), memory, about, opts({ route: "refuse", why: "payment" }, true)).catch((x: unknown) => x);
+    expect((pay as AskRefused).message).toBe(SAYS.payment);
+    const old = await planAsk("reply saying I'm in", reading(), memory, about, opts({ route: "ask", why: "whichFields", scope: "none" }, false)).catch((x: unknown) => x);
+    expect(old).toBeInstanceOf(AskRefused);
   });
 });

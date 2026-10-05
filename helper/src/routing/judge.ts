@@ -35,7 +35,7 @@ export const ROUTER2_FLOOR = 0.75;
 /** Form labels Router 1 sees for the field the user is in, nearest first. Enough to tell a form; not measured. */
 const FORM_LABELS = 6;
 
-export type Refusal = "missing" | "forged" | "nonfinite" | "lowConfidence" | "failed";
+export type Refusal = "missing" | "forged" | "nonfinite" | "lowConfidence" | "failed" | "timeout";
 
 export type Read<T extends string> = { ok: true; choice: T; confidence: number } | { ok: false; why: Refusal; choice: string | null; confidence: number | null };
 
@@ -162,13 +162,17 @@ export function router2Request(model: ScreenModel, ctx: RoutingContext, reg: Reg
   return { request, options: reg.routes.map((r) => r.option) };
 }
 
-/** Sends one router request; a transport failure is a refusal, never retried. */
+/**
+ * Sends one router request; a transport failure is a refusal, never retried. The Jev client aborts a call after its own
+ * timeout (makeJevClient, 10 s) with a TimeoutError, which is told apart so the decision can say so.
+ */
 export async function sendRouter<T extends string>(askJev: AskJev, b: Built<T>, question: string, floor: number): Promise<{ read: Read<T>; result: JevResult | null }> {
   let result: JevResult;
   try {
     result = await askJev(b.request);
-  } catch {
-    return { read: { ok: false, why: "failed", choice: null, confidence: null }, result: null };
+  } catch (e) {
+    const why = e instanceof Error && e.name === "TimeoutError" ? "timeout" : "failed";
+    return { read: { ok: false, why, choice: null, confidence: null }, result: null };
   }
   return { read: readChoice(result, question, b.options, floor), result };
 }

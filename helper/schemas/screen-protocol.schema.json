@@ -7569,7 +7569,8 @@
                     "abstain",
                     "write",
                     "ask",
-                    "act"
+                    "act",
+                    "error"
                   ]
                 },
                 {
@@ -7587,6 +7588,17 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "failure": {
+              "type": "string",
+              "enum": [
+                "failed",
+                "timeout",
+                "missing",
+                "forged",
+                "nonfinite",
+                "stale"
               ]
             },
             "expires": {
@@ -8049,6 +8061,11 @@
                       "says": {
                         "type": "string",
                         "minLength": 1,
+                        "maxLength": 900
+                      },
+                      "drafted": {
+                        "type": "string",
+                        "minLength": 1,
                         "maxLength": 600
                       }
                     },
@@ -8157,7 +8174,7 @@
                 "says": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 600
+                  "maxLength": 900
                 }
               },
               "required": [

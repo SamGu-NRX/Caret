@@ -23,6 +23,7 @@ describe("the goal plan protocol lines", () => {
       "goalProgress:step", "goalProgress:step", "goalProgress:step", "goalProgress:finished", "goalAccept", "error",
       "goalRequest", "goalProgress:segment", "goalAccept", "goalProgress:step", "goalProgress:stopped", "goalProgress:segment",
       "goalRequest", "goalProgress:stopped",
+      "goalRequest", "goalProgress:segment", "goalAccept",
     ]);
     for (const [i, l] of lines.entries()) {
       const m = parsed[i] as { type: string };
@@ -38,6 +39,18 @@ describe("the goal plan protocol lines", () => {
     expect([stop?.freshPlan, fresh?.replaces]).toEqual([fresh?.goalId, stop?.goalId]);
     // A hand-off finish says the draft is ready and the press is the user's; it is never "done".
     expect(parsed.find((m) => m.event === "finished")).toMatchObject({ outcome: "handoff", says: "Ready: 3 done. 'Send' reads as outbound; you press it." });
+  });
+
+  it("marks text Caret composed as drafted, whole, beside what the step says (B30)", () => {
+    const steps = parsed.flatMap((m) => (m.event === "segment" ? (m.steps as { says: string; drafted?: string }[]) : []));
+    const drafted = steps.filter((x) => x.drafted !== undefined);
+    expect(drafted).toEqual([{ index: 1, kind: "write", says: "Message: Hi Priya, I'm in for Thursday, October 8 at 3:00 PM.", drafted: "Hi Priya, I'm in for Thursday, October 8 at 3:00 PM." }]);
+    // A copied value is never marked: "drafted" means Caret wrote the words.
+    expect(steps.filter((x) => x.drafted === undefined).some((x) => x.says.startsWith("Message: The desk lamp"))).toBe(true);
+    const preview = parsed.find((m) => m.goalId === "goal-4-r4" && m.event === "segment") as Record<string, unknown>;
+    const bad = (m: unknown): boolean => !AnyMessage.safeParse(m).success;
+    expect(bad({ ...preview, steps: [{ index: 1, kind: "write", says: "Message: x", drafted: "" }] })).toBe(true);
+    expect(bad({ ...preview, steps: [{ index: 1, kind: "write", says: "Message: x", drafted: "x".repeat(601) }] })).toBe(true);
   });
 
   it("refuses the shapes the contract rules out", () => {

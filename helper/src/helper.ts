@@ -66,7 +66,7 @@ import { RecoveryJournal, type JournalRecord } from "./executor/journal.ts";
 import { MemoryError, MemoryStore } from "./patterns/memory.ts";
 import { MemoryConflictError, MemoryDocumentError, type DocumentInfo } from "./memory/documents.ts";
 import type { DocId } from "./memory/parse.ts";
-import { PatternEngine } from "./patterns/engine.ts";
+import { PatternEngine, type HeldPatternOffer } from "./patterns/engine.ts";
 import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
@@ -102,10 +102,11 @@ import type { FileConfirm, FileConfirmReply, PlanErrorCode } from "./protocol.ts
 const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
-import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
+import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskGoal, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
 import type { AskFixed } from "./planner/intent.ts";
 import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
 import { ASK_ROUTES, type RouteCandidate } from "./routing/routes.ts";
+import { ConsentLedger, type Consent } from "./routing/consent.ts";
 import type { RoutingContext } from "./routing/context.ts";
 import { FILLABLE_ROLES, neverTypedNode } from "./fill/fill.ts";
 import { fieldKinds, valueKinds, words } from "./fill/kinds.ts";
@@ -385,6 +386,10 @@ export class Helper {
   private readonly taskDeps = new Map<string, { family: Family | null; routineId: string | null }>();
   /** Decides once per moment which producer, if any, makes an offer; null when producers trigger themselves. */
   readonly routing: RoutingCoordinator | null;
+  /** The window the user's own focus is in, from snapshots of the frontmost app (or of any app while that is unknown). */
+  private userFocus: string | null = null;
+  /** What the user consented to, from the helper's own records: what passes the routers with no question (R2). */
+  readonly consent: ConsentLedger;
   /** Host sessions whose hello declared ROUTING_CAPABILITY: they take route decisions, so write is legal while one is here. */
   private readonly routingHosts = new Set<string>();
 
@@ -602,6 +607,7 @@ export class Helper {
     });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
     const ro = opts.routing ?? null;
+    this.consent = new ConsentLedger({ memory: this.memory, task: (id) => this.tasks.get(id) });
     this.routing =
       ro === null || this.ask === null
         ? null
@@ -610,6 +616,7 @@ export class Helper {
             // Through the recording wrapper: a router's request carries screen text, so it is a "Read and prepare" use.
             askJev: this.ask,
             candidates: (ctx) => this.routeCandidates(ctx),
+            consented: (ctx) => this.consentedCandidates(ctx),
             // A connected host that takes route decisions, or an evaluation that says it plays one.
             hostWrites: () => [...this.routingHosts].some((h) => this.hosts.has(h)) || (ro.hostWrites?.() ?? false),
             wordsOn: () => this.gate.settings.roles.includes("words"),
@@ -620,7 +627,8 @@ export class Helper {
             ...(ro.setTimer === undefined ? {} : { setTimer: ro.setTimer }),
             count: (m, n) => opts.store.count(m, n ?? 1),
             onDecision: (d) => {
-              this.publishRouteDecision({ context: d.gen, windowId: d.windowId, key: d.key, textRevision: d.textRevision, outcome: d.outcome, route: d.outcome === "act" ? d.route : null });
+              // A consented offer, or a task offered beside a kept write session, is not the context's decision.
+              if (d.published) this.publishRouteDecision({ context: d.gen, windowId: d.windowId, key: d.key, textRevision: d.textRevision, outcome: d.outcome, route: d.outcome === "act" ? d.route : null, ...(d.failure === null ? {} : { failure: d.failure }) });
               ro.onDecision?.(d);
             },
             onWriteEnded: (w) => this.publishRouteDecision({ context: w.gen, windowId: w.windowId, key: w.key, textRevision: w.textRevision, outcome: null, route: null }),
@@ -773,7 +781,14 @@ export class Helper {
         this.audit?.onSnapshot(m);
         // The user left a window: the reader's leave walk of it, or focus arriving in another window.
         if (m.reason === "leave") this.left(m.window.windowId, m.at);
-        if (prevFocused !== null && moved) this.left(prevFocused, m.at);
+        // The user's own focus moved: a background app's request walk reports its own window focused, so a snapshot
+        // of an app known not to be frontmost moves nothing (a watch it started would be consent: routing/consent.ts).
+        const background = this.model.frontmostPid !== null && this.model.frontmostPid !== m.app.pid;
+        if (m.focused && !background && this.userFocus !== m.window.windowId) {
+          const was = this.userFocus;
+          this.userFocus = m.window.windowId;
+          if (was !== null) this.left(was, m.at);
+        }
         // Where the user is decides a write's permission: a run with no Tab whose next write is no longer where they are is revoked now (B22 review).
         if (moved) this.executor.recheck();
         // Another window changed while the user is in an empty field: a source may have arrived, so fill may be listed now.
@@ -869,9 +884,11 @@ export class Helper {
 
   /**
    * The host's settings message. It applies to the next decision of every producer; offers of families it
-   * no longer allows are withdrawn as `settings` now, and turning the watch role off ends every watch.
+   * no longer allows are withdrawn as `settings` now, and turning the watch role off ends every watch. `from`: the
+   * session that sent it. Only a host session's records the watch role as the user's consent (routing/consent.ts).
    */
-  handleSettings(m: Settings): void {
+  handleSettings(m: Settings, from?: string): void {
+    this.consent.settings(m.roles, from !== undefined && this.hosts.has(from));
     const off = this.gate.apply(m);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
     this.opts.store.count("settings.applied", 1);
@@ -940,7 +957,7 @@ export class Helper {
   }
 
   /** Sends a routeDecision; the server gives it only to hosts that declared ROUTING_CAPABILITY. */
-  private publishRouteDecision(d: Pick<RouteDecision, "context" | "windowId" | "key" | "textRevision" | "outcome" | "route">): void {
+  private publishRouteDecision(d: Pick<RouteDecision, "context" | "windowId" | "key" | "textRevision" | "outcome" | "route" | "failure">): void {
     const at = this.now();
     const msg = RouteDecision.safeParse({ type: "routeDecision", v: PROTOCOL_VERSION, at, ...d, expires: at + ROUTE_DECISION_HOLDS_MS });
     if (!msg.success) return this.opts.warn?.(`routing: a routeDecision failed the protocol check: ${msg.error.issues[0]?.message ?? "invalid"}`);
@@ -1034,19 +1051,27 @@ export class Helper {
    */
   async handleGoalRequest(m: GoalRequest, session?: string): Promise<GoalProgress> {
     this.opts.store.count("goal.request", 1);
-    let goalId = `goal-${++this.planSeq}-${m.requestId}`.slice(0, 200);
-    while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${m.requestId}`.slice(0, 200);
-    const refuse = (says: string): GoalProgress => this.goals.refused(goalId, m.requestId, says);
+    return this.offerGoal(m.requestId, m.instruction, session, null);
+  }
+
+  /**
+   * Plans `instruction` as a goal and offers its first segment to `session`, as the reply to `requestId`: a goalRequest's,
+   * or an Ask's whose intent route is plan (B30), which names the window the Ask was about so the goal reads it first.
+   */
+  private async offerGoal(requestId: string, instruction: string, session: string | undefined, first: string | null): Promise<GoalProgress> {
+    let goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
+    while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
+    const refuse = (says: string): GoalProgress => this.goals.refused(goalId, requestId, says);
     if (this.writer === null) return refuse("No plan writer is configured, so Caret cannot plan this");
     if (this.mode !== "live") return refuse("Caret is in shadow mode");
     if (this.gate.settings.paused) return refuse("Caret is paused");
     if (!this.readerConnected) return refuse("No screen reader is connected");
     const session0 = this.readerSession;
     try {
-      const plan = await this.goalPlan(goalId, m.instruction);
+      const plan = await this.goalPlan(goalId, instruction, [], first);
       if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
       this.opts.store.count("goal.proposed", 1);
-      return this.goals.propose(plan, session, m.requestId);
+      return this.goals.propose(plan, session, requestId);
     } catch (e) {
       if (!(e instanceof GoalError)) throw e;
       this.opts.store.count(`goal.refused_${e.code}`, 1);
@@ -1076,15 +1101,22 @@ export class Helper {
     return this.opts.calendar !== undefined && this.opts.calendar !== null;
   }
 
-  /** The windows a goal may act in: the user's own first, then the most recently used ones with a field or a button. */
-  private goalWindows(): string[] {
-    const user = this.model.userWindow();
+  /**
+   * The windows a goal may act in: `first` (the window an Ask was about) or else the user's own, then the most recently
+   * used ones with a field or a button.
+   */
+  private goalWindows(first: string | null = null): string[] {
     const usable = (w: { nodes: Map<string, { editable?: boolean; role: string }> }): boolean => [...w.nodes.values()].some((n) => n.editable === true || n.role === "AXButton");
+    const lead = (first === null ? undefined : this.model.windows.get(first)) ?? this.model.userWindow();
+    // A window with no field or button (the email the user is reading) is a source, not where the goal acts: listed
+    // first, its own values would be left out of the inventory (planner/codeplan.ts valueList reads other windows').
+    // B30's cases asked from the email, and no plan could copy its sender into the reply's To.
+    const user = lead !== null && lead !== undefined && usable(lead) ? lead : null;
     const rest = [...this.model.windows.values()].filter((w) => w !== user && usable(w)).sort((a, b) => b.lastFocusedAt - a.lastFocusedAt);
-    return [...(user === null || user === undefined ? [] : [user]), ...rest].map((w) => w.window.windowId);
+    return [...(user === null ? [] : [user]), ...rest].map((w) => w.window.windowId);
   }
 
-  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = []): ReturnType<typeof planGoal> {
+  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null): ReturnType<typeof planGoal> {
     const writer = this.writer;
     if (writer === null) throw new GoalError("nothingToDo", "no plan writer is configured");
     const calendar = this.executorHasCalendar ? (this.opts.eventCalendar ?? "Caret") : null;
@@ -1093,7 +1125,7 @@ export class Helper {
       instruction,
       writer,
       askJev: this.ask,
-      windows: this.goalWindows(),
+      windows: this.goalWindows(first),
       memory: this.plannerMemory(),
       calendar,
       clock: macClock(new Date(this.now())),
@@ -1123,7 +1155,8 @@ export class Helper {
    */
   async handlePlanRequest(m: PlanRequest): Promise<PlanProposal>;
   async handlePlanRequest(m: PlanRequest, from: string | undefined, canAsk: boolean): Promise<PlanProposal | AskQuestion>;
-  async handlePlanRequest(m: PlanRequest, from?: string, canAsk = false): Promise<PlanProposal | AskQuestion> {
+  async handlePlanRequest(m: PlanRequest, from: string | undefined, canAsk: boolean, canGoal: boolean): Promise<PlanProposal | AskQuestion | GoalProgress>;
+  async handlePlanRequest(m: PlanRequest, from?: string, canAsk = false, canGoal = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     this.opts.store.count("plan.request", 1);
     let windowId: string | null = null;
     try {
@@ -1132,7 +1165,7 @@ export class Helper {
       if (!(e instanceof PlannerError)) throw e;
       return this.planFailed(m.requestId, e.code, e.message, e instanceof SaidError ? e.message : saysFor(e.code));
     }
-    return this.planAndPropose(m.requestId, m.instruction, windowId, undefined, from, canAsk);
+    return this.planAndPropose(m.requestId, m.instruction, windowId, undefined, from, canAsk, canGoal);
   }
 
   /**
@@ -1140,7 +1173,7 @@ export class Helper {
    * yet answered or lapsed, and every pick one of its options (one for a single-choice question). The picks fix that
    * part, and the same Ask goes on from there: its reply is a proposal, a refusal, or the next question.
    */
-  async handleAskAnswer(m: AskAnswer, from?: string): Promise<PlanProposal | AskQuestion> {
+  async handleAskAnswer(m: AskAnswer, from?: string, canGoal = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     this.opts.store.count("plan.askAnswer", 1);
     const q = this.askQuestions.get(m.questionId);
     if (q === undefined || q.session !== from || q.expires <= this.now()) return this.planFailed(m.requestId, "questionGone", `no open question ${m.questionId} for this connection`);
@@ -1158,7 +1191,7 @@ export class Helper {
       if (c.fixes.person !== undefined) fixed.person = c.fixes.person;
     }
     const resume = { ...q.draft.resume, fixed };
-    return this.planAndPropose(m.requestId, resume.instruction, resume.windowId, resume, from, true);
+    return this.planAndPropose(m.requestId, resume.instruction, resume.windowId, resume, from, true, canGoal);
   }
 
   private planFailed(requestId: string, code: Parameters<typeof planError>[1], detail: string, says: string = saysFor(code)): PlanProposal {
@@ -1166,8 +1199,11 @@ export class Helper {
     return planError(requestId, code, detail, this.now(), says);
   }
 
-  /** Plans an Ask or a planner task and offers it; an Ask that asks a question returns it to a consumer that can answer. */
-  private async planAndPropose(requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean): Promise<PlanProposal | AskQuestion> {
+  /**
+   * Plans an Ask or a planner task and offers it; an Ask that asks a question returns it to a consumer that can answer,
+   * and an Ask whose route is plan, asked by a host that runs goal plans (`canGoal`), is offered as a goal (B30).
+   */
+  private async planAndPropose(requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
     const store = this.opts.store;
     // Every refusal carries the user's sentence (H5): a SaidError's own, or the one for its code.
     const fail = (code: Parameters<typeof planError>[1], detail: string, says?: string): PlanProposal => this.planFailed(requestId, code, detail, says);
@@ -1197,9 +1233,13 @@ export class Helper {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
         const maker = askConfig.maker === "jev" ? jevIntentMaker(ask) : writerIntentMaker(askConfig.writer, () => offerKey);
-        const d: AskDraft = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: ask, maker, writer: this.writer, offerKey, now: this.now(), ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...this.opts.plannerHooks });
+        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...this.opts.plannerHooks });
         store.count(`plan.ask_${d.route}`, 1);
-        this.countAskRoute(d.route);
+        this.countAskRoute(d.route === "goal" ? "plan" : d.route);
+        if (d.route === "goal") {
+          if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
+          return await this.offerGoal(requestId, instruction, from, d.windowId);
+        }
         draft = d;
       } catch (e) {
         if (!(e instanceof PlannerError)) throw e;
@@ -1432,11 +1472,30 @@ export class Helper {
     }
   }
 
-  /** The memory window's documents: list, read, or save from its editor (memoryDocumentRequest). To the asker only. */
-  handleMemoryDocument(m: MemoryDocumentRequest): MemoryDocumentReply {
+  /**
+   * Whether resuming this memory entry would bring back consent the router acts on (routing/consent.ts): a skill, or
+   * the routine a skill is made from. Unknown ids carry none; the store answers them with its own error.
+   */
+  resumeRestoresConsent(id: string | undefined): boolean {
+    if (id === undefined) return false;
+    try {
+      const kind = this.memory.get(id).kind;
+      return kind === "skill" || kind === "routine";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The memory window's documents: list, read, or save from its editor (memoryDocumentRequest). To the asker only.
+   * `fromHost`: the request came from a host session. A skill's document holds its status, which is the user's consent
+   * to the router passing its offers (routing/consent.ts), so only the host may save one.
+   */
+  handleMemoryDocument(m: MemoryDocumentRequest, fromHost: boolean): MemoryDocumentReply {
     const base = { type: "memoryDocumentReply", v: PROTOCOL_VERSION, requestId: m.requestId, folder: this.memory.folder } as const;
     const wire = (d: DocumentInfo): MemoryDocument => ({ doc: d.doc, file: d.file, path: d.path, revision: d.revision, bytes: d.bytes, diagnostics: d.diagnostics.map((x) => ({ line: x.line, field: x.field, severity: x.severity, message: x.message })) });
     const fail = (error: string, conflict: { revision: string | null } | null = null, documents: MemoryDocument[] = []): MemoryDocumentReply => ({ ...base, error, conflict, documents, text: null });
+    if (m.op === "save" && m.doc?.startsWith("skills/") === true && !fromHost) return fail("a skill's document is saved only from the host (host: true): its status is your consent to it");
     try {
       switch (m.op) {
         case "list":
@@ -1779,6 +1838,9 @@ export class Helper {
       }
       if (m.reason !== undefined && m.action !== "pause") throw new Error(`reason ${m.reason} goes only with pause, not ${m.action}`);
       if (this.pending.has(m.taskId) || this.tasks.get(m.taskId)?.kind === "watch") {
+        // A resumed watch can resolve into consent the router acts on (routing/consent.ts): only the host's resume is
+        // the user's. In-process callers pass no session.
+        if (m.action === "resume" && session !== undefined && !this.hosts.has(session)) throw new Error(`watch ${m.taskId}: only the host resumes a watch, since what it finds passes the router as your consent`);
         this.pending.control(m.taskId, m.action);
         return null;
       }
@@ -1839,6 +1901,8 @@ export class Helper {
   }
 
   shutdown(): void {
+    // First, so nothing a late reply or a producer's answer starts reaches the router after the stores close (R2).
+    this.routing?.stop();
     this.record(this.transfers.flush());
     this.patterns.shutdown();
     this.pending.shutdown();
@@ -2068,45 +2132,81 @@ export class Helper {
           drop: () => this.events.forgetHeard(l),
         });
       }
-      if (this.gate.holds("pending", now).length === 0) {
-        for (const h of this.openApp.heldOffers()) {
-          const watched = this.model.windows.get(h.windowId);
-          if (watched === undefined || h.windowId === w.window.windowId) continue;
-          const key = f.key;
-          out.push({
-            id: `openApp:${h.offerKey}`,
-            kind: "workflow",
-            workflow: "openApp",
-            says: `Open ${h.app}, whose window the user was waiting on now says "${h.status}"`,
-            plain: `Open ${h.app}, whose window the user was waiting on changed`,
-            quotes: [{ window: watched, kind: "candidate", texts: [h.status] }],
-            relevance: 0,
-            run: () => this.openApp.showHeld(h.offerKey, offerField(w, key)),
-          });
-        }
-      }
+      for (const { cand } of this.openAppCandidates(w, f.key, now)) out.push(cand);
     }
-    for (const h of this.patterns.heldOffers(w.window.windowId)) {
-      const from = h.from.join(" and ");
-      const plain = h.skill
-        ? `Run the user's saved skill "${h.says}" here`
-        : h.kind === "loopNext"
-          ? `Offer the next row of what the user is copying from ${from}`
-          : h.kind === "loopFinish"
-            ? `Finish the rest of what the user is copying from ${from} (${h.values} values)`
-            : `Fill ${h.values} fields from ${from} the way the user did before`;
-      out.push({
-        id: `pattern:${h.id}`,
+    for (const h of this.patterns.heldOffers(w.window.windowId)) out.push(this.patternCandidate(h));
+    return out;
+  }
+
+  /** "Open <app>" for each watch that resolved while the user was in another window, held for the field they are in now. */
+  private openAppCandidates(w: WindowState, key: string, now: number): { cand: RouteCandidate; watchId: string }[] {
+    if (this.gate.holds("pending", now).length > 0) return [];
+    return this.openApp.heldOffers().flatMap((h) => {
+      const watched = this.model.windows.get(h.windowId);
+      if (watched === undefined || h.windowId === w.window.windowId) return [];
+      const cand: RouteCandidate = {
+        id: `openApp:${h.offerKey}`,
         kind: "workflow",
-        workflow: h.skill ? "skill" : h.kind === "routine" ? "routine" : "loop",
-        says: plain,
-        plain,
-        quotes: [],
-        // A kept skill first, then the pattern that matched most often.
-        relevance: 10 + (h.skill ? 1000 : 0) + h.hits,
-        run: () => this.patterns.release(h.id),
-        drop: () => this.patterns.dropHeld(h.id),
-      });
+        workflow: "openApp",
+        says: `Open ${h.app}, whose window the user was waiting on now says "${h.status}"`,
+        plain: `Open ${h.app}, whose window the user was waiting on changed`,
+        quotes: [{ window: watched, kind: "candidate", texts: [h.status] }],
+        relevance: 0,
+        run: () => this.openApp.showHeld(h.offerKey, offerField(w, key)),
+      };
+      return [{ cand, watchId: h.watchId }];
+    });
+  }
+
+  /** A loop, routine or kept skill's offer the recognizers held for this window. */
+  private patternCandidate(h: HeldPatternOffer): RouteCandidate {
+    const from = h.from.join(" and ");
+    const plain = h.skill
+      ? `Run the user's saved skill "${h.says}" here`
+      : h.kind === "loopNext"
+        ? `Offer the next row of what the user is copying from ${from}`
+        : h.kind === "loopFinish"
+          ? `Finish the rest of what the user is copying from ${from} (${h.values} values)`
+          : `Fill ${h.values} fields from ${from} the way the user did before`;
+    return {
+      id: `pattern:${h.id}`,
+      kind: "workflow",
+      workflow: h.skill ? "skill" : h.kind === "routine" ? "routine" : "loop",
+      says: plain,
+      plain,
+      quotes: [],
+      // A kept skill first, then the pattern that matched most often.
+      relevance: 10 + (h.skill ? 1000 : 0) + h.hits,
+      run: () => this.patterns.release(h.id),
+      drop: () => this.patterns.dropHeld(h.id),
+    };
+  }
+
+  /**
+   * The offers the user already consented to, for the router to pass with no question (routing/consent.ts). This is
+   * the one place consent is decided: each candidate is built here around the held offer whose own record the ledger
+   * checks, so its `run` shows exactly the offer the record is about:
+   *   - "Open <app>" for a held open-app offer whose watch (the entry's own watchId) resolved, while a host sent the
+   *     watch role;
+   *   - a held pattern offer whose routine (the offer's own routineId) the user kept as a skill.
+   * Learned loops have no routine and are never here. The router lists the same offers in routeCandidates and routes
+   * whichever this does not pass.
+   */
+  private consentedCandidates(ctx: RoutingContext): { cand: RouteCandidate; consent: Consent }[] {
+    const out: { cand: RouteCandidate; consent: Consent }[] = [];
+    const w = this.model.windows.get(ctx.windowId);
+    if (w === undefined) return out;
+    const f = ctx.field;
+    const node = f === null ? undefined : w.nodes.get(f.key);
+    if (f !== null && node !== undefined && f.editable && !f.secure)
+      for (const { cand, watchId } of this.openAppCandidates(w, f.key, this.now())) {
+        const consent = this.consent.verify({ kind: "watch", watchId });
+        if (consent !== null) out.push({ cand, consent });
+      }
+    for (const h of this.patterns.heldOffers(w.window.windowId)) {
+      if (h.routineId === null) continue;
+      const consent = this.consent.verify({ kind: "skill", routineId: h.routineId });
+      if (consent !== null) out.push({ cand: this.patternCandidate(h), consent });
     }
     return out;
   }

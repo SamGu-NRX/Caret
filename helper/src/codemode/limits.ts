@@ -54,6 +54,15 @@ export interface SandboxLimits {
   callbackResultBytes: number;
   /** Longest waitFor timeout a step may ask for. */
   waitForMs: number;
+  /** Drafts one goal program may write (B30). */
+  drafts: number;
+  /**
+   * Longest draft text copied out of the guest. Past it the call is a violation; under it, lowering holds a draft to
+   * goals/drafts.ts DRAFT_MAX_CHARS and says so in the user's words.
+   */
+  draftCopyChars: number;
+  /** Refs one draft may name as its basis. */
+  draftBasis: number;
 }
 
 export const DEFAULT_LIMITS: SandboxLimits = Object.freeze({
@@ -77,4 +86,8 @@ export const DEFAULT_LIMITS: SandboxLimits = Object.freeze({
   // Not in the plan's table. The executor's own predicate waits are a few seconds; 10 s matches the
   // writer timeout and is an assumption.
   waitForMs: 10_000,
+  // Assumed, not measured: a goal writes one reply or description, two at most.
+  drafts: 2,
+  draftCopyChars: 2_000,
+  draftBasis: 8,
 });

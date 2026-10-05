@@ -29,6 +29,20 @@ export function windowRevision(w: WindowState): string {
   return digest(JSON.stringify([w.window.title, ...[...w.nodes.values()].map((n) => [n.key, n.role, n.label ?? "", n.value ?? "", n.editable === true])]));
 }
 
+/** Roles whose text is a message's own words, not a control's: what a message header is read from. */
+const STATIC_ROLES = new Set(["AXStaticText", "AXHeading"]);
+
+/**
+ * A window's text as a draft's basis (B30): its title and each node's text, one line each; and `message`, its static
+ * text alone, which a message's header is read from. Host-side only.
+ */
+export function basisText(w: WindowState): { title: string; text: string; message: string } {
+  const nodes = [...w.nodes.values()];
+  const lines = (xs: typeof nodes): string => xs.map((n) => nodeText(n)).filter((t) => t !== "").join("\n");
+  return { title: w.window.title, text: lines(nodes), message: lines(nodes.filter((n) => STATIC_ROLES.has(n.role) && n.editable !== true)) };
+}
+
+
 export interface InventoryOptions {
   instruction: string;
   /** Window ids the goal may act in, the one the writer reads first first. */
@@ -70,6 +84,8 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   const values = new Map<string, ValueBinding>();
   const revisions = new Map<string, string>();
   const documents = new Map<string, string>();
+  const windowRefs = new Map<string, string>();
+  const texts = new Map<string, { title: string; text: string; message: string }>();
   const snapshots: PlanningSnapshot[] = [];
   let t = 0;
   let v = 0;
@@ -84,12 +100,14 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
         ? { kind: "memory", entryId: x.memory, fileRevision: "", digest: digest(x.text) }
         : { kind: "span", snapshot, source: x.window?.window.windowId ?? "instruction", startUTF16: 0, endUTF16: x.text.length, digest: digest(x.text) };
     const source = x.window !== null && x.key !== null ? { windowId: x.window.window.windowId, key: x.key, revision: windowRevision(x.window) } : null;
-    return { ref, text: x.text, display: x.display, origin, source, memory: x.memory, event: null };
+    return { ref, text: x.text, display: x.display, origin, source, memory: x.memory, event: null, draft: null };
   };
 
   windows.forEach((w, i) => {
     const snapshot = `s${i + 1}`;
     revisions.set(w.window.windowId, windowRevision(w));
+    windowRefs.set(`w${i + 1}`, w.window.windowId);
+    texts.set(w.window.windowId, basisText(w));
     const doc = o.pageDocument?.(w.window.windowId) ?? null;
     if (doc !== null) documents.set(w.window.windowId, doc);
     const title = w.window.title.slice(0, 200);
@@ -139,6 +157,8 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     if (snapshots.length >= (o.calendar === null ? 4 : 3)) break;
     const snapshot = `s${snapshots.length + 1}`;
     revisions.set(sw.window.windowId, windowRevision(sw));
+    windowRefs.set(`w${snapshots.length + 1}`, sw.window.windowId);
+    texts.set(sw.window.windowId, basisText(sw));
     const snapValues: PlanningSnapshot["values"] = [];
     for (const x of listed.filter((y) => y.window === sw)) {
       const b = valueOf(x, snapshot);
@@ -158,7 +178,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     targets.set(ref, { ref, domain, key: "calendar", role: "calendar", label: o.calendar, control: "calendar", value: "", options: null });
     snapshots.push({ snapshot: `s${snapshots.length + 1}`, window: `w${snapshots.length + 1}`, revision: "calendar", title: `Calendar '${o.calendar}'`, targets: [{ ref, label: o.calendar, kind: "calendar", canFill: true, options: [], allowedPressEffects: [] }], values: [], questions: [] });
   }
-  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents }, ledger };
+  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts }, ledger };
 }
 
 /** Events code reads from a source window's sentences: a resolved time and a person, as an event card would offer. */
@@ -185,6 +205,7 @@ function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventCl
         source: { windowId: w.window.windowId, key: n.key, revision: windowRevision(w) },
         memory: null,
         event: { title: c.title, start: time.start, end: time.end, says: time.says, sentence },
+        draft: null,
       });
     }
   }

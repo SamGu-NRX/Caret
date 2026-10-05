@@ -6,6 +6,7 @@ import { PlanningSnapshotSchema } from "../../src/codemode/types.ts";
 import { listModels } from "../../src/writer/chat.ts";
 import { CANDIDATES, GATEWAY_GPT_OSS_120B, GROQ_GPT_OSS_120B, GROQ_QWEN_3_8_27B, WRITER_ROUTE } from "../../src/writer/config.ts";
 import { extractProgram, PLAN_API, planUserMessage } from "../../src/writer/plan-prompt.ts";
+import { GOAL_API } from "../../src/writer/goal-prompt.ts";
 import { makeWriterPort } from "../../src/writer/port.ts";
 import { CANNED_PROGRAM, FORM, MAIL } from "./fixtures.ts";
 import { WRITER_CORPUS } from "./writer-corpus.ts";
@@ -31,8 +32,10 @@ describe("plan prompt", () => {
   test("the API the writer reads names exactly the functions the sandbox exposes", () => {
     const worker = readFileSync(new URL("../../src/codemode/worker.ts", import.meta.url), "utf8");
     const exposed = [...worker.matchAll(/api\("(\w+)"/g)].map((m) => m[1]).sort();
-    const documented = [...PLAN_API.matchAll(/^\s+(\w+)\(/gm)].map((m) => m[1]).sort();
+    const documented = [...GOAL_API.matchAll(/^\s+(\w+)\(/gm)].map((m) => m[1]).sort();
     expect(documented).toEqual(exposed);
+    // A single-window plan's writer never reads draft(), which the worker refuses outside a goal (B30).
+    expect([...PLAN_API.matchAll(/^\s+(\w+)\(/gm)].map((m) => m[1]).sort()).toEqual(exposed.filter((x) => x !== "draft"));
   });
 
   test("the inventory carries labels and refs, not value origins", () => {

@@ -19,7 +19,11 @@ const lines = readFileSync(new URL("../fixtures/golden/routing.ndjson", import.m
 describe("the routing protocol lines", () => {
   it("parses every golden line and writes it back byte for byte", () => {
     const types = lines.map((l) => (JSON.parse(l) as { type: string }).type);
-    expect(types).toEqual(["hello", "routingContext", "routeDecision", "routingContext", "routeDecision", "routeDecision", "routingContext", "routeDecision", "routingContext", "routeDecision", "routeDecision"]);
+    expect(types).toEqual([
+      "hello", "routingContext", "routeDecision", "routingContext", "routeDecision", "routeDecision", "routingContext", "routeDecision", "routingContext", "routeDecision", "routeDecision",
+      // R2: a failed decision, a write session that a sentence end keeps (decided at once), and a stale context.
+      "routingContext", "routeDecision", "routingContext", "routeDecision", "routingContext", "routeDecision", "routingContext", "routeDecision", "routeDecision",
+    ]);
     for (const l of lines) {
       const m = JSON.parse(l) as { type: string };
       const schema = m.type === "hello" || m.type === "routingContext" ? ConsumerMessage : HelperMessage;
@@ -41,6 +45,14 @@ describe("the routing protocol lines", () => {
     expect(bad({ ...at("routingContext"), breakpoint: "word" })).toBe(true);
     expect(bad({ ...at("routingContext"), textRevision: "" })).toBe(true);
     expect(bad({ ...at("routingContext"), key: undefined })).toBe(true);
+    // R2 decision 1: a failed decision says why, and only a failed decision does.
+    const failed = at("routeDecision", 6);
+    expect(failed).toMatchObject({ outcome: "error", failure: "timeout" });
+    expect(bad({ ...failed, failure: undefined })).toBe(true);
+    expect(bad({ ...failed, failure: "lowConfidence" })).toBe(true);
+    expect(bad({ ...failed, route: "fillAll" })).toBe(true);
+    expect(bad({ ...write, failure: "failed" })).toBe(true);
+    expect(bad({ ...at("routeDecision", 1), failure: "stale" })).toBe(true);
   });
 });
 
@@ -122,16 +134,27 @@ describe("route decisions through the helper and the server", () => {
     expect(write).toMatchObject({ windowId: DOC, key: BODY, route: null });
     expect(write.expires).toBeGreaterThan(write.at);
 
-    // The host's own revision and a sentence end it saw before the reader's walk: the write ends, then a new decision.
+    // The host reports the field: its selection was unknown to the helper, so the write ends and is decided again.
     advance(2000);
-    host.send({ type: "routingContext", v: PROTOCOL_VERSION, at: clock, windowId: DOC, key: BODY, selection: "caret", composing: false, textRevision: "r31", breakpoint: "sentence" });
+    host.send({ type: "routingContext", v: PROTOCOL_VERSION, at: clock, windowId: DOC, key: BODY, selection: "caret", composing: false, textRevision: "r30", breakpoint: null });
     const deciding = await host.waitFor<RouteDecision>((m) => m.type === "routeDecision" && m.outcome === null);
-    expect(deciding).toMatchObject({ key: BODY, textRevision: write.textRevision });
+    // The end carries the host's own latest revision, which the host checks a decision against (review).
+    expect(deciding).toMatchObject({ key: BODY, textRevision: "r30" });
     expect(deciding.context).toBeGreaterThan(write.context);
     advance(2000);
     await settle();
     const next = await host.waitFor<RouteDecision>((m) => m.type === "routeDecision" && m.context === deciding.context && m.outcome !== null);
-    expect(next).toMatchObject({ outcome: "write", textRevision: "r31" });
+    expect(next).toMatchObject({ outcome: "write", textRevision: "r30" });
+    // A sentence end the host saw before the reader's walk keeps the session: write again for the new context, at
+    // once and with no router call, and no null decision first (R2 decision 3).
+    const before = decisions(host).length;
+    host.send({ type: "routingContext", v: PROTOCOL_VERSION, at: clock, windowId: DOC, key: BODY, selection: "caret", composing: false, textRevision: "r31", breakpoint: "sentence" });
+    const kept = await host.waitFor<RouteDecision>((m) => m.type === "routeDecision" && m.textRevision === "r31");
+    expect(kept).toMatchObject({ outcome: "write", key: BODY });
+    expect(kept.context).toBeGreaterThan(next.context);
+    expect(kept.at).toBe(clock);
+    expect(decisions(host).slice(before).map((d) => d.outcome)).toEqual(["write"]);
+    expect(helper.routing?.decisions.at(-1)).toMatchObject({ by: "session", calls: 0 });
     // Composing in an input method abstains at once, with no call.
     advance(2000);
     host.send({ type: "routingContext", v: PROTOCOL_VERSION, at: clock, windowId: DOC, key: BODY, selection: "caret", composing: true, textRevision: "r33", breakpoint: null });

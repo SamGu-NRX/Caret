@@ -1,0 +1,1 @@
+R2: scripts that replay typing must send a typed value (snapshot values) in the same snapshot as its text: a value that arrives after the sentence boundary opens no breakpoint, so the event card is never listed.

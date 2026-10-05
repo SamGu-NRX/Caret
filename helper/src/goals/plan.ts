@@ -46,6 +46,13 @@ export interface ValueBinding {
   memory: string | null;
   /** A calendar event code derived from `sentence` (event-card.ts), which its source must still show; null for every other value. */
   event: { title: string; start: string; end: string; says: string; sentence: string } | null;
+  /**
+   * Text the writer composed (B30, goals/drafts.ts): the windows, by id, and the memory entries its facts may come from
+   * beside the instruction. A value the program named as its basis stands for its source: a window's value adds that
+   * window, an instruction span adds nothing (the instruction is always in), a memory value adds its entry, which must
+   * still hold when the draft is written. Null for a value code read or derived.
+   */
+  draft: { windows: string[]; memory: { id: string; text: string }[] } | null;
 }
 
 /** Everything a program's refs may stand for, kept on the host side of the sandbox. */
@@ -58,6 +65,10 @@ export interface GoalInventory {
   revisions: ReadonlyMap<string, string>;
   /** Each page window's document generation when frozen (its frames' documents), by window id. */
   documents: ReadonlyMap<string, string>;
+  /** The window id behind each snapshot's window ref ("w2"), for a draft's `from` (B30). */
+  windowRefs: ReadonlyMap<string, string>;
+  /** Each frozen window's title and text, by window id: what a draft's facts are checked against. Never sent. */
+  texts: ReadonlyMap<string, { title: string; text: string; message: string }>;
 }
 
 export type GoalStepKind = "write" | "calendar" | "press" | "handoff";
@@ -78,6 +89,8 @@ export interface GoalStep {
   effect: string | null;
   /** For a hand-off: why it is the user's. */
   handoff: HandoffWhy | null;
+  /** A write into a To field (B30): its value must still be the answered message's sender right before it runs. */
+  to: boolean;
 }
 
 export type SegmentReason = "start" | "crossWindow" | "afterReveal";
@@ -140,7 +153,7 @@ export function segmentDigest(programHash: string, s: Omit<GoalSegment, "digest"
         kind: x.kind,
         says: x.says,
         target: { domain: x.target.domain, key: x.target.key, role: x.target.role, label: x.target.label, control: x.target.control, precondition: x.target.value },
-        value: x.value === null ? null : { text: x.value.text, origin: x.value.origin, source: x.value.source, memory: x.value.memory, event: x.value.event },
+        value: x.value === null ? null : { text: x.value.text, origin: x.value.origin, source: x.value.source, memory: x.value.memory, event: x.value.event, draft: x.value.draft },
         writes: x.writes,
         effect: x.effect,
         handoff: x.handoff,
