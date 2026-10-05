@@ -1524,6 +1524,75 @@
             "op"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "routingContext"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "windowId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            },
+            "selection": {
+              "type": "string",
+              "enum": [
+                "caret",
+                "range",
+                "none"
+              ]
+            },
+            "composing": {
+              "type": "boolean"
+            },
+            "textRevision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "breakpoint": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "sentence",
+                    "paragraph"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "at",
+            "windowId",
+            "key",
+            "selection",
+            "composing",
+            "textRevision",
+            "breakpoint"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -7184,6 +7253,97 @@
             "folder",
             "documents",
             "text"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "routeDecision"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "context": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "windowId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "key": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "textRevision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "outcome": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "abstain",
+                    "write",
+                    "ask",
+                    "act"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "route": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "expires": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "at",
+            "context",
+            "windowId",
+            "key",
+            "textRevision",
+            "outcome",
+            "route",
+            "expires"
           ],
           "additionalProperties": false
         }

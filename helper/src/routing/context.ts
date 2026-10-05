@@ -8,19 +8,20 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { sentences } from "../offers/event-card.ts";
 
-/** How the host says the user's selection stands. "unknown" until a host reports it (routingContext is not on the wire yet). */
+/** How the host says the user's selection stands (protocol routingContext). "unknown" until a host reports it for this field. */
 export type SelectionMode = "caret" | "range" | "none" | "unknown";
 
 /**
- * What only the host knows about the field the user is in: the selection and whether an input method is composing.
- * The helper takes it through RoutingCoordinator.hostEditing; until the host sends it, selection is "unknown" and
- * composing false.
+ * What only the host knows about the field the user is in (protocol routingContext): the selection, whether an input
+ * method is composing, and its own text revision. Until a host sends it for the field, selection is "unknown",
+ * composing false, and the text revision the helper's own digest.
  */
 export interface HostEditing {
   windowId: string;
   key: string;
   selection: Exclude<SelectionMode, "unknown">;
   composing: boolean;
+  textRevision?: string;
 }
 
 /** The field the user is in. */
@@ -54,6 +55,8 @@ export interface RoutingContext {
   /** Finished sentences and paragraphs in the field's text: the committed boundary. */
   sentences: number;
   paragraphs: number;
+  /** Sentence or paragraph ends the host reported (routingContext breakpoint), counted: the reader may not have walked them yet. */
+  hostBreaks: number;
   /** The candidate routes' ids, sorted and joined: a changed source or task changes it. */
   candidates: string;
   memoryRevision: number;
@@ -95,6 +98,7 @@ export interface ContextInputs {
   readerSession: number;
   memoryRevision: number;
   settingsRevision: number;
+  hostBreaks: number;
   candidates: readonly string[];
 }
 
@@ -139,10 +143,11 @@ export function contextNow(i: ContextInputs): RoutingContext | null {
     composing: host?.composing ?? false,
     sentences: b.sentences,
     paragraphs: b.paragraphs,
+    hostBreaks: i.hostBreaks,
     candidates: [...i.candidates].sort().join("\u0000"),
     memoryRevision: i.memoryRevision,
     settingsRevision: i.settingsRevision,
-    textRevision: digest(`${text}\u0000${host?.selection ?? "unknown"}`),
+    textRevision: host?.textRevision ?? digest(`${text}\u0000${host?.selection ?? "unknown"}`),
   };
 }
 
@@ -156,7 +161,7 @@ export function breakpoint(prev: RoutingContext | null, next: RoutingContext): B
   if ((prev.field?.key ?? null) !== (next.field?.key ?? null) || prev.field?.role !== next.field?.role || prev.field?.secure !== next.field?.secure || prev.incomplete !== next.incomplete) return "focus";
   if (prev.selection !== next.selection) return "selection";
   if (prev.composing !== next.composing) return "composing";
-  if (prev.sentences !== next.sentences || prev.paragraphs !== next.paragraphs) return "sentence";
+  if (prev.sentences !== next.sentences || prev.paragraphs !== next.paragraphs || prev.hostBreaks !== next.hostBreaks) return "sentence";
   if (prev.candidates !== next.candidates) return "candidates";
   if (prev.memoryRevision !== next.memoryRevision) return "memory";
   if (prev.settingsRevision !== next.settingsRevision) return "settings";

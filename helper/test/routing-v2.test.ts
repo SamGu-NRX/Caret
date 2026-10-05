@@ -365,7 +365,7 @@ describe("the routing coordinator", () => {
   });
 
   it("selection, settings, memory and candidates are breakpoints; the same text revision is not", () => {
-    const base = { model, focus: null, host: null, readerSession: 1, memoryRevision: 0, settingsRevision: 0, candidates: [] };
+    const base = { model, focus: null, host: null, readerSession: 1, memoryRevision: 0, settingsRevision: 0, hostBreaks: 0, candidates: [] };
     show("Hi. Then", 0);
     const a = contextNow(base);
     expect(a?.sentences).toBe(1);
@@ -374,6 +374,12 @@ describe("the routing coordinator", () => {
     expect(breakpoint(a, contextNow({ ...base, settingsRevision: 1 }) as NonNullable<typeof a>)).toBe("settings");
     expect(breakpoint(a, contextNow({ ...base, memoryRevision: 1 }) as NonNullable<typeof a>)).toBe("memory");
     expect(breakpoint(a, contextNow({ ...base, candidates: ["fillAll"] }) as NonNullable<typeof a>)).toBe("candidates");
+    // A sentence end the host saw before the reader walked it opens a decision too.
+    expect(breakpoint(a, contextNow({ ...base, hostBreaks: 1 }) as NonNullable<typeof a>)).toBe("sentence");
+    // The host's text revision is what decisions carry for its field, and changing it alone is ordinary typing.
+    const hosted = contextNow({ ...base, host: { windowId: NOTE, key: BODY(0), selection: "caret", composing: false, textRevision: "host-42" } });
+    expect(hosted?.textRevision).toBe("host-42");
+    expect(breakpoint(hosted, contextNow({ ...base, host: { windowId: NOTE, key: BODY(0), selection: "caret", composing: false, textRevision: "host-43" } }) as NonNullable<typeof a>)).toBeNull();
     expect(boundary("One. Two! Three")).toEqual({ sentences: 2, paragraphs: 0 });
     expect(boundary("One.\n\nTwo.\n")).toEqual({ sentences: 2, paragraphs: 2 });
   });

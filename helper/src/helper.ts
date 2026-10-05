@@ -31,6 +31,8 @@ import {
   type MemoryReply,
   type MemoryRequest,
   type Node,
+  type RoutingContext as RoutingContextMessage,
+  RouteDecision,
   type OfferAccept,
   type OfferControl,
   type OfferStop,
@@ -350,6 +352,8 @@ export class Helper {
   private readonly taskDeps = new Map<string, { family: Family | null; routineId: string | null }>();
   /** Decides once per moment which producer, if any, makes an offer; null when producers trigger themselves. */
   readonly routing: RoutingCoordinator | null;
+  /** Host sessions whose hello declared ROUTING_CAPABILITY: they take route decisions, so write is legal while one is here. */
+  private readonly routingHosts = new Set<string>();
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
@@ -561,7 +565,8 @@ export class Helper {
             // Through the recording wrapper: a router's request carries screen text, so it is a "Read and prepare" use.
             askJev: this.ask,
             candidates: (ctx) => this.routeCandidates(ctx),
-            hostWrites: ro.hostWrites ?? (() => false),
+            // A connected host that takes route decisions, or an evaluation that says it plays one.
+            hostWrites: () => [...this.routingHosts].some((h) => this.hosts.has(h)) || (ro.hostWrites?.() ?? false),
             wordsOn: () => this.gate.settings.roles.includes("words"),
             paused: () => this.gate.settings.paused,
             live: () => this.mode === "live",
@@ -569,7 +574,11 @@ export class Helper {
             now: this.now,
             ...(ro.setTimer === undefined ? {} : { setTimer: ro.setTimer }),
             count: (m, n) => opts.store.count(m, n ?? 1),
-            ...(ro.onDecision === undefined ? {} : { onDecision: ro.onDecision }),
+            onDecision: (d) => {
+              this.publishRouteDecision({ context: d.gen, windowId: d.windowId, key: d.key, textRevision: d.textRevision, outcome: d.outcome, route: d.outcome === "act" ? d.route : null });
+              ro.onDecision?.(d);
+            },
+            onWriteEnded: (w) => this.publishRouteDecision({ context: w.gen, windowId: w.windowId, key: w.key, textRevision: w.textRevision, outcome: null, route: null }),
             ...(opts.warn === undefined ? {} : { warn: opts.warn }),
           });
     this.recoverInterrupted();
@@ -837,9 +846,33 @@ export class Helper {
    * A host session connected: a consumer on the socket (HelperServer), or an in-process caller that plays
    * the host, such as an evaluation that answers offers itself. Runs with no Tab start only while one is.
    */
-  hostConnected(session: string): void {
+  hostConnected(session: string, routing = false): void {
     this.sessions.add(session);
     this.hosts.add(session);
+    if (routing) {
+      this.routingHosts.add(session);
+      // Write is legal from now: the moment is decided again with it.
+      this.routing?.settingsChanged();
+      this.routing?.observe();
+    }
+  }
+
+  /**
+   * The host's routingContext: the selection, input method and text revision of the field the user is in, and a
+   * sentence or paragraph end it saw. Only the field it names is affected (routing/context.ts).
+   */
+  handleRoutingContext(m: RoutingContextMessage): void {
+    if (this.routing === null) return;
+    this.routing.hostEditing({ windowId: m.windowId, key: m.key, selection: m.selection, composing: m.composing, textRevision: m.textRevision }, m.breakpoint !== null);
+    this.routing.observe();
+  }
+
+  /** Sends a routeDecision; the server gives it only to hosts that declared ROUTING_CAPABILITY. */
+  private publishRouteDecision(d: Pick<RouteDecision, "context" | "windowId" | "key" | "textRevision" | "outcome" | "route">): void {
+    const at = this.now();
+    const msg = RouteDecision.safeParse({ type: "routeDecision", v: PROTOCOL_VERSION, at, ...d, expires: at + ROUTE_DECISION_HOLDS_MS });
+    if (!msg.success) return this.opts.warn?.(`routing: a routeDecision failed the protocol check: ${msg.error.issues[0]?.message ?? "invalid"}`);
+    this.opts.publish(msg.data);
   }
 
   /**
@@ -857,6 +890,12 @@ export class Helper {
    */
   hostDisconnected(session: string): void {
     this.hosts.delete(session);
+    if (this.routingHosts.delete(session)) {
+      // What that host said about the field (selection, composing) no longer holds, and write is not legal without it.
+      this.routing?.hostEditing(null);
+      this.routing?.settingsChanged();
+      this.routing?.observe();
+    }
     if (!this.sessions.delete(session)) return;
     // The binding stays, naming a session that is gone, so authorize also refuses a task whose run has not begun.
     for (const [taskId, bound] of [...this.taskHosts]) {
@@ -2023,6 +2062,12 @@ export class Helper {
 
 /** A Jev request that declares the same text as the last recorded one within this long is the same use: a question's second ask. Assumed. */
 const READ_REPEAT_MS = 5000;
+/**
+ * How long a routeDecision holds at most. A decision ends at the next one; this is the backstop for a host that stops
+ * hearing from the helper (a crash, a lost socket), so its writing help does not run on an old decision for good.
+ * Assumed, not measured.
+ */
+const ROUTE_DECISION_HOLDS_MS = 30 * 60 * 1000;
 /** Offer keys kept to count each shown offer once; past this the set starts over. Assumed. */
 const SHOWN_KEYS = 500;
 

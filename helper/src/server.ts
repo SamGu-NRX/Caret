@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ConsumerMessage, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
+import { ConsumerMessage, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 import { planError } from "./planner/proposal.ts";
 
@@ -21,6 +21,8 @@ export class HelperServer {
   private readonly consumers = new Set<Socket>();
   /** Consumers whose hello named MEMORY_DOCUMENTS_CAPABILITY (M1). The others never see `noticed` or the new memory messages. */
   private readonly memoryDocuments = new Set<Socket>();
+  /** Host connections whose hello declared ROUTING_CAPABILITY: they get routeDecision and may send routingContext. */
+  private readonly routing = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -67,7 +69,7 @@ export class HelperServer {
   publish(m: HelperMessage): void {
     const line = JSON.stringify(m) + "\n";
     // Provenance is new in M1: a consumer that did not ask for it is not sent it.
-    for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : this.consumers) c.write(line);
+    for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : this.consumers) c.write(line);
   }
 
   async listen(): Promise<void> {
@@ -137,7 +139,10 @@ export class HelperServer {
             if (hello.data.capabilities?.includes(MEMORY_DOCUMENTS_CAPABILITY) === true) this.memoryDocuments.add(s);
             session = `consumer-${++this.sessions}`;
             // Only the host's hello says so; any other consumer binds its own work but never counts as the host (B23).
-            if (hello.data.host === true) this.helper().hostConnected(session);
+            // Routing is the host's: a decision tells its writing help when it may run, so only the host may take one.
+            const routing = hello.data.host === true && hello.data.capabilities?.includes(ROUTING_CAPABILITY) === true;
+            if (routing) this.routing.add(s);
+            if (hello.data.host === true) this.helper().hostConnected(session, routing);
             else this.helper().consumerConnected(session);
           } else {
             // The proof goes first, before any command or grant this connection could carry.
@@ -224,6 +229,10 @@ export class HelperServer {
             } catch (e) {
               this.reject(s, `memory request ${m.data.requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
             }
+          } else if (m.data.type === "routingContext") {
+            // Refused by name for a connection that is not a host that declared it takes route decisions.
+            if (!this.routing.has(s)) this.reject(s, `routingContext needs a host hello with "${ROUTING_CAPABILITY}" in its capabilities`);
+            else this.helper().handleRoutingContext(m.data);
           } else if (m.data.type === "memoryNotRight" || m.data.type === "memoryDocumentRequest") {
             // Refused by name, not half-handled, for a consumer that did not say it understands markdown memory.
             if (!this.memoryDocuments.has(s)) {
@@ -243,6 +252,7 @@ export class HelperServer {
     s.on("close", () => {
       this.consumers.delete(s);
       this.memoryDocuments.delete(s);
+      this.routing.delete(s);
       if (session !== null) this.helper().hostDisconnected(session);
       if (this.reader === s) {
         this.reader = null;

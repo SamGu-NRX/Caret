@@ -41,6 +41,9 @@ export type LocalReason = "paused" | "secure" | "deniedRole" | "incomplete" | "c
 export interface Decision {
   gen: number;
   at: number;
+  /** The window and field the context was about (key null when focus is on no field). */
+  windowId: string;
+  key: string | null;
   breakpoint: Breakpoint;
   /** The outcomes code made legal, abstain first. */
   legal: readonly Outcome[];
@@ -105,6 +108,11 @@ export interface RoutingDeps {
   setTimer?: (fn: () => void, ms: number) => () => void;
   count?: (metric: string, n?: number) => void;
   onDecision?: (d: Decision) => void;
+  /**
+   * A write decision stopped holding (a breakpoint, a new reader, no window): the host stops its writing help there.
+   * `gen` is the context now being decided, whose decision follows.
+   */
+  onWriteEnded?: (w: { gen: number; windowId: string; key: string; textRevision: string; why: string }) => void;
   warn?: (line: string) => void;
 }
 
@@ -142,7 +150,8 @@ export class RoutingCoordinator {
   private memoryRevision = 0;
   private settingsRevision = 0;
   private readonly asked = new Set<string>();
-  private writeSession: { gen: number; windowId: string; key: string; at: number } | null = null;
+  private writeSession: { gen: number; windowId: string; key: string; at: number; textRevision: string } | null = null;
+  private hostBreaks = 0;
   readonly decisions: Decision[] = [];
   readonly stats: RoutingStats = {
     contexts: 0,
@@ -178,9 +187,21 @@ export class RoutingCoordinator {
     this.focus = f;
   }
 
-  /** What the host reports about the field the user is in (selection, input method). */
-  hostEditing(h: HostEditing | null): void {
+  /**
+   * What the host reports about the field the user is in (selection, input method, its text revision). `breakpoint`:
+   * the host saw a sentence or paragraph end there, which opens a new decision even before the reader's walk shows it.
+   */
+  hostEditing(h: HostEditing | null, breakpoint = false): void {
     this.host = h;
+    if (breakpoint) this.hostBreaks++;
+  }
+
+  private endWrite(why: string): void {
+    const w = this.writeSession;
+    if (w === null) return;
+    this.writeSession = null;
+    this.deps.count?.(`route.write_closed_${why}`);
+    this.deps.onWriteEnded?.({ gen: this.gen, windowId: w.windowId, key: w.key, textRevision: w.textRevision, why });
   }
 
   /** A producer's candidates changed outside the user's own field (a conversation line, a held pattern offer, a watch). */
@@ -215,10 +236,7 @@ export class RoutingCoordinator {
     this.waiting = false;
     this.cancelTimer?.();
     this.cancelTimer = null;
-    if (this.writeSession !== null) {
-      this.deps.count?.(`route.write_closed_${why}`);
-      this.writeSession = null;
-    }
+    this.endWrite(why);
   }
 
   /** The write session open now, for the host's decision message and tests. */
@@ -242,7 +260,7 @@ export class RoutingCoordinator {
    */
   observe(): void {
     if (!this.deps.live()) return;
-    const inputs = { model: this.deps.model, focus: this.focus, host: this.host, readerSession: this.deps.readerSession(), memoryRevision: this.memoryRevision, settingsRevision: this.settingsRevision };
+    const inputs = { model: this.deps.model, focus: this.focus, host: this.host, readerSession: this.deps.readerSession(), memoryRevision: this.memoryRevision, settingsRevision: this.settingsRevision, hostBreaks: this.hostBreaks };
     const base = contextNow({ ...inputs, candidates: this.lastCandidates.map((c) => c.id) });
     if (base === null) {
       if (this.prev !== null || this.cur !== null) this.invalidate("none");
@@ -271,11 +289,8 @@ export class RoutingCoordinator {
       this.stats.replaced++;
       this.deps.count?.("route.replaced");
     }
-    if (this.writeSession !== null) {
-      this.deps.count?.(`route.write_closed_${bp}`);
-      this.writeSession = null;
-    }
     const gen = ++this.gen;
+    this.endWrite(bp);
     const reg = freeze(gen, candidates, this.asked);
     const legal: Outcome[] = ["abstain"];
     if (ctx.field?.prose === true && this.deps.hostWrites() && this.deps.wordsOn()) legal.push("write");
@@ -366,7 +381,7 @@ export class RoutingCoordinator {
         return this.finish(c, { outcome, by: "router1", local: null, refused: null, route: null, confidence, answered });
       case "write": {
         const f = c.ctx.field;
-        if (f !== null) this.writeSession = { gen: c.gen, windowId: c.ctx.windowId, key: f.key, at: this.deps.now() };
+        if (f !== null) this.writeSession = { gen: c.gen, windowId: c.ctx.windowId, key: f.key, at: this.deps.now(), textRevision: c.ctx.textRevision };
         return this.finish(c, { outcome, by: "router1", local: null, refused: null, route: null, confidence, answered });
       }
       case "ask": {
@@ -433,7 +448,7 @@ export class RoutingCoordinator {
   private finish(c: Current, d: Pick<Decision, "outcome" | "by" | "local" | "refused" | "route" | "confidence" | "answered">, chosen: RouteCandidate | null = null): void {
     c.decided = true;
     const now = this.deps.now();
-    const decision: Decision = { gen: c.gen, at: now, breakpoint: c.breakpoint, legal: c.legal, ...d, calls: c.calls, latencyMs: now - c.at, textRevision: c.ctx.textRevision };
+    const decision: Decision = { gen: c.gen, at: now, windowId: c.ctx.windowId, key: c.ctx.field?.key ?? null, breakpoint: c.breakpoint, legal: c.legal, ...d, calls: c.calls, latencyMs: now - c.at, textRevision: c.ctx.textRevision };
     keep(this.decisions, decision);
     const s = this.stats;
     bump(s.byOutcome, d.outcome);
