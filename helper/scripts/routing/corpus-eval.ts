@@ -332,7 +332,8 @@ for (const m of moments) {
       const detail = (reply as { error?: { detail?: string } | null }).error?.detail ?? "";
       note = kind === null ? `no intent; planner error ${err?.code ?? "?"}: ${detail.replace(/org_[A-Za-z0-9]+/g, "org_X").slice(0, 400)}` : err === null ? null : `error ${err.code}`;
     } else {
-      d = decisions.at(-1);
+      // The context's own decision: a consented offer or a task checked beside a kept write session is not one (R2).
+      d = decisions.filter((x) => x.published).at(-1);
       got = { outcome: d?.outcome ?? "none", route: routeOf(d) };
       by = d?.by ?? "none";
     }
