@@ -14,6 +14,7 @@ import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { FillProposal, PROTOCOL_VERSION, type MemoryEntry, type OfferPopup } from "../src/protocol.ts";
+import { SAYS } from "../src/planner/says.ts";
 import { MAIL_APP, field, focus, jevPickingText, snap, text, value } from "./builders.ts";
 import { LineClient, SocketReader, until } from "./socket-reader.ts";
 
@@ -445,8 +446,11 @@ describe("typed name and email over the socket, as the host sends them", () => {
     expect((await memory("forget-email", { op: "forget", id: emailId })).error).toBeNull();
     const before = host.received.length;
     await openForm("5150-13", ["Name", "Email"], 20_000);
-    // The fill ran and found nothing to offer: no window shows a value, and memory holds none.
-    await host.waitFor((m) => m.type === "error" && /no candidate values in any window other than 5150-13/.test(String(m.message)));
+    // The fill ran and found nothing to offer: no window shows a value, and memory holds none. The host reads a
+    // sentence with no window id (B27); the check's own text goes to the log.
+    const said = await host.waitFor<{ message: string }>((m) => m.type === "error");
+    expect(said.message).toBe(SAYS.fillNothing);
+    expect(said.message).not.toContain("5150-13");
     const after = host.received.slice(before).map((m) => (m as { type: string }).type);
     expect(after.filter((t) => t === "popup" || t === "fillProposal")).toEqual([]);
   });

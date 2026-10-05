@@ -67,6 +67,7 @@ import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from 
 import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planWithCode } from "./planner/codeplan.ts";
 import { planAsk } from "./planner/ask.ts";
+import { fillSays } from "./planner/says.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
@@ -1276,7 +1277,9 @@ export class Helper {
       return p;
     } catch (e) {
       store.count("fill.error", 1, now);
-      this.error(`fill: ${e instanceof FillError ? e.message : String(e)}`);
+      // The user reads a plain sentence (planner/says.ts); what the check found, with its window and field ids, is logged.
+      this.opts.warn?.(`fill: ${e instanceof FillError ? e.message : String(e)}`);
+      this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: fillSays(e instanceof FillError ? e.why : null) });
       return null;
     } finally {
       this.pendingFills.delete(focuses);

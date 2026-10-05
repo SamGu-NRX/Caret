@@ -7,6 +7,7 @@
 import type { PlanErrorCode } from "../protocol.ts";
 import { SENSITIVE_SAYS, type SensitiveKind } from "../memory/sensitive.ts";
 import { PlannerError, type HandoffWhy } from "./validate.ts";
+import type { FillErrorWhy } from "../fill/fill.ts";
 
 /** A PlannerError whose message is a sentence from this file, with what the check found kept apart. */
 export class SaidError extends PlannerError {
@@ -43,7 +44,33 @@ export const SAYS = {
   windowChanged: "The form changed while Caret worked on it. Ask again.",
   noPlan: "Caret couldn't make a plan for that.",
   onlyFills: "Caret only fills in fields. Pressing buttons and opening things is yours to do.",
+  fillNothing: "Caret found nothing on screen to fill this form with.",
+  fillLabelTooLong: "This field's label is too long for Caret to ask about. Fill it yourself.",
+  fillFailed: "Caret couldn't fill this form just now. Try again.",
 } as const;
+
+/**
+ * What the user reads when a fill on focus fails (B27): a sentence for each FillError reason, and for any other error
+ * (a network failure, a timeout). B26 found the helper's error still read "fill: no candidate values in any window
+ * other than 92930-…"; that text, ids and all, now goes only to the log.
+ */
+export function fillSays(why: FillErrorWhy | null): string {
+  switch (why) {
+    case "noWindow":
+      return SAYS.windowClosed;
+    case "noField":
+      return SAYS.notEditable;
+    case "instructionTooLong":
+      return SAYS.privacy;
+    case "labelTooLong":
+      return SAYS.fillLabelTooLong;
+    case "nothingToCopy":
+      return SAYS.fillNothing;
+    case "badAnswer":
+    case null:
+      return SAYS.fillFailed;
+  }
+}
 
 /** The sentence for an error code when no check gave a more specific one. */
 export function saysFor(code: PlanErrorCode): string {

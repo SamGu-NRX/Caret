@@ -94,7 +94,18 @@ export const FILL_CUTOFF = 0.75;
 export const MEMORY_CUTOFF = 0.3;
 export const WHOSE_CUTOFF = 0.5;
 
-export class FillError extends Error {}
+/**
+ * Why a fill could not be asked or read (B27). planner/says.ts turns each into the sentence the user reads (fillSays);
+ * the message keeps the window and field ids, for logs.
+ */
+export type FillErrorWhy = "noWindow" | "noField" | "instructionTooLong" | "labelTooLong" | "nothingToCopy" | "badAnswer";
+export class FillError extends Error {
+  readonly why: FillErrorWhy;
+  constructor(why: FillErrorWhy, message: string) {
+    super(message);
+    this.why = why;
+  }
+}
 
 /**
  * The kind of a field Caret never types (B25 lead decision 2), read from its label, nearest label and placeholder
@@ -110,8 +121,8 @@ export function neverTypedNode(w: WindowState, n: Node): SensitiveKind | null {
 /** The empty fillable fields of the trigger's window, nearest the trigger first. The trigger is always included. */
 export function formFields(w: WindowState, triggerKey: string, max = MAX_FIELDS): Node[] {
   const trigger = w.nodes.get(triggerKey);
-  if (trigger === undefined) throw new FillError(`field ${triggerKey} is not in window ${w.window.windowId}`);
-  if (trigger.editable !== true) throw new FillError(`field ${triggerKey} is not editable`);
+  if (trigger === undefined) throw new FillError("noField", `field ${triggerKey} is not in window ${w.window.windowId}`);
+  if (trigger.editable !== true) throw new FillError("noField", `field ${triggerKey} is not editable`);
   const fields = [...w.nodes.values()].filter(
     (n) => n.key === triggerKey || (n.editable === true && FILLABLE_ROLES.has(n.role) && (n.value ?? "") === "" && !n.states?.includes("secure") && neverTypedNode(w, n) === null),
   );
@@ -619,7 +630,7 @@ export async function proposeFill(
   const owners = opts.owner !== false && whose;
   const resolveCtx: ResolveContext = opts.resolve ?? { locale: Intl.DateTimeFormat().resolvedOptions().locale, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, referenceInstant: null };
   const w = model.windows.get(windowId);
-  if (w === undefined) throw new FillError(`unknown window ${windowId}`);
+  if (w === undefined) throw new FillError("noWindow", `unknown window ${windowId}`);
   const pageOwned = w.window.kind === PAGE_WINDOW_KIND;
   // Every piece of screen text the asks carry goes through one ledger, which holds each window to its
   // budget (privacy.ts): the form's title and each field's descriptor, nearest field first, then the
@@ -627,7 +638,7 @@ export async function proposeFill(
   const scope = opts.scope;
   const ledger = new SnippetLedger(model.windows.values(), scope?.consented === undefined ? {} : { consented: scope.consented });
   // An Ask's instruction is in every question; it may quote a window, which pays for what it quotes.
-  if (scope !== undefined && !ledger.plan([scope.instruction])) throw new FillError("the instruction quotes more of an open window than one question to Jev may carry");
+  if (scope !== undefined && !ledger.plan([scope.instruction])) throw new FillError("instructionTooLong", "the instruction quotes more of an open window than one question to Jev may carry");
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   type Field = {
     id: string;
@@ -659,7 +670,7 @@ export async function proposeFill(
     const label = c === null ? d.label : c.label;
     const texts = c === null ? [d.label, d.nearest, d.placeholder, d.section] : [c.label, label === null ? d.nearest : null, d.section, ...(c.options ?? [])];
     if (!ledger.take(w, "descriptor", texts)) {
-      if (n.key === triggerKey && scope === undefined) throw new FillError(`the descriptor of the focused field in window ${windowId} is longer than the window's share of a question`);
+      if (n.key === triggerKey && scope === undefined) throw new FillError("labelTooLong", `the descriptor of the focused field in window ${windowId} is longer than the window's share of a question`);
       continue;
     }
     const labelWords = c === null ? [d.label, d.nearest, d.placeholder] : [label, label === null ? d.nearest : null];
@@ -818,7 +829,7 @@ export async function proposeFill(
     if (lit === undefined || candidates.some((c) => c.text === lit)) continue;
     derived.set(f.id, [{ key: `${f.id}:said`, text: lit, describe: `"${lit}" (written in the user's instruction for this field)`, base: { from: "instruction", text: lit }, also: null }, ...(derived.get(f.id) ?? [])]);
   }
-  if (candidates.length === 0 && cut.length === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0)) throw new FillError(`no candidate values in any window other than ${windowId}`);
+  if (candidates.length === 0 && cut.length === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
 
   // A field whose label names no kind (kinds.ts) could want a value of any kind or plain text. It is not
   // asked when a cut took a value of any kind: a "When" field was asked after a cut took the dates, and
@@ -957,13 +968,13 @@ export async function proposeFill(
   const pickText = (p: Pick): string => (p.from === "window" ? p.c.text : p.from === "memory" ? p.a.value : p.text);
   const readAsk = (r: JevResult, f: Field, mapId: (id: string) => string | undefined): FillAsk => {
     const a = r.answers[f.id];
-    if (a === undefined) throw new FillError(`Jev returned no answer for ${f.id}`);
+    if (a === undefined) throw new FillError("badAnswer", `Jev returned no answer for ${f.id}`);
     if (a.choice === NONE) return { choice: NONE, confidence: a.confidence, value: null };
     const id = mapId(a.choice);
     const p = id === undefined ? undefined : byId.get(id);
     // A value from memory, or one code derived, is a choice only in the questions of the fields it was offered to.
     const offered = p === undefined ? false : p.from === "window" ? true : p.from === "memory" ? f.about.includes(p.a) : (derived.get(f.id) ?? []).some((d) => derivedIds.get(d.key) === id);
-    if (p === undefined || !offered) throw new FillError(`Jev chose ${a.choice}, which is not a candidate id for ${f.id}`);
+    if (p === undefined || !offered) throw new FillError("badAnswer", `Jev chose ${a.choice}, which is not a candidate id for ${f.id}`);
     return { choice: id as string, confidence: a.confidence, value: pickText(p) };
   };
 
@@ -1011,7 +1022,7 @@ export async function proposeFill(
     if (!whose || x1 === null || x2 === null) return true;
     const a1 = x1.answers[whoseId(f.id)];
     const a2 = x2.answers[whoseId(f.id)];
-    if (a1 === undefined || a2 === undefined) throw new FillError(`Jev returned no answer about whose details ${f.id} asks for`);
+    if (a1 === undefined || a2 === undefined) throw new FillError("badAnswer", `Jev returned no answer about whose details ${f.id} asks for`);
     return a1.choice === "user" && a2.choice === "user" && Math.min(a1.confidence, a2.confidence) >= whoseCutoff;
   };
   /**
