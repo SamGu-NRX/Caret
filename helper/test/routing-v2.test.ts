@@ -575,6 +575,36 @@ describe("the helper with routing on", () => {
     expect(h.routing?.decisions.at(-1)?.local).toBe("noCapability");
   });
 
+  it("counts no value the form already holds as fitting another of its empty fields (corpus m18)", async () => {
+    const NOTE_LINE = "m/statictext:portfolio~0";
+    const URL = "https://harperq.example.com";
+    const PORTFOLIO = "dev.caret.fixture/standard/textfield:portfolio~0";
+    const LINKEDIN = "dev.caret.fixture/standard/textfield:linkedin~0";
+    const COVER = "dev.caret.fixture/standard/textarea:cover~0";
+    const fillSays = async (portfolio: string, data: string): Promise<string | undefined> => {
+      memory.close();
+      memory = new MemoryStore(join(dir, data));
+      jev.requests.length = 0;
+      jev.router1 = () => ({ choice: "abstain", confidence: 0.9 });
+      const h = make(true);
+      void h.handleReader(snap([text(NOTE_LINE, `portfolio: ${URL}`)], { at: clock.at - 5000, windowId: SRC, app: MAIL_APP, title: "Application notes", focused: true, values: [value("url", URL, NOTE_LINE)] }));
+      const form = [
+        field(PORTFOLIO, portfolio, { label: "Portfolio or website", frame: [100, 40, 300, 24] }),
+        field(LINKEDIN, "", { label: "LinkedIn URL", frame: [100, 80, 300, 24] }),
+        field(COVER, "", { label: "Cover letter", role: "AXTextArea", frame: [100, 120, 300, 120] }),
+      ];
+      void h.handleReader(snap(form, { at: clock.at, windowId: FORM, title: "Apply", focused: true, focusedKey: COVER }));
+      await h.handleReader(focus(FORM, COVER, clock.at));
+      await settle(h);
+      expect(jev.routerCalls("outcome")).toHaveLength(1);
+      return (jev.routerCalls("outcome")[0]?.questions.outcome as { criteria: Record<string, string> }).criteria.act;
+    };
+    // The note's address is not in the form yet: it fits the empty LinkedIn URL by kind.
+    expect(await fillSays("https://elsewhere.example.org", "data-a")).toContain("values that fit 1 of its 2 empty fields are on screen in");
+    // The form already holds it in Portfolio, so nothing on screen fits what is left.
+    expect(await fillSays(URL, "data-b")).toContain("Fill this form's 2 empty fields, though no open window shows a value that clearly fits them");
+  });
+
   it("lists no event for a sentence its window's privacy budget will not carry", async () => {
     // A short conversation gives Jev less than half its text: the attend asks could not quote the sentence, so code
     // does not list a card it could never make.

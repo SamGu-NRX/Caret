@@ -2076,15 +2076,23 @@ const SHOWN_KEYS = 500;
  * typed value of a kind the field's label asks for (an email, a phone, a date), or a "Label: value" line whose label
  * shares a word with the field's, or an About entry fits the field's name. Evidence for the router's description of
  * the fill route, not the fill: fill's own generator and Jev's two asks decide every value.
+ *
+ * A value some field of the form already holds is no evidence for another of its empty fields. Without this, a form
+ * filled from a note still counted its one empty LinkedIn URL as fitting the portfolio address the note shows and the
+ * form already has, and Router 1 took the cover-letter box for a fill (D2-02 corpus m18).
  */
 function fillEvidence(model: ScreenModel, w: WindowState, fields: readonly Node[], about: readonly AboutValue[]): { fields: number; apps: string[]; told: number } {
+  const norm = (s: string): string => s.trim().replace(/\s+/g, " ").toLowerCase();
+  const held = new Set<string>();
+  for (const n of w.nodes.values()) if (n.editable === true && (n.value ?? "").trim() !== "" && !n.states?.includes("secure")) held.add(norm(n.value ?? ""));
   const kinds = new Map<ValueKind, Set<string>>();
   const lines: { words: Set<string>; app: string }[] = [];
   for (const o of model.windows.values()) {
     if (o.window.windowId === w.window.windowId) continue;
-    for (const v of o.values) for (const k of valueKinds(v)) (kinds.get(k) ?? kinds.set(k, new Set()).get(k))?.add(o.app.name);
-    for (const l of labelledLines(o)) lines.push({ words: new Set(words(l.label)), app: o.app.name });
+    for (const v of o.values) if (!held.has(norm(v.text))) for (const k of valueKinds(v)) (kinds.get(k) ?? kinds.set(k, new Set()).get(k))?.add(o.app.name);
+    for (const l of labelledLines(o)) if (!held.has(norm(l.value))) lines.push({ words: new Set(words(l.label)), app: o.app.name });
   }
+  const unheld = about.filter((a) => !held.has(norm(a.value)));
   const apps = new Set<string>();
   let fit = 0;
   let told = 0;
@@ -2096,7 +2104,7 @@ function fillEvidence(model: ScreenModel, w: WindowState, fields: readonly Node[
     const byKind = [...fieldKinds(lw)].flatMap((k) => [...(kinds.get(k) ?? [])]);
     const byLine = lines.filter((l) => [...own].some((t) => l.words.has(t))).map((l) => l.app);
     const name = d.label ?? d.nearest ?? d.placeholder;
-    const byAbout = about.some((a) => fieldAsksFor(a, name));
+    const byAbout = unheld.some((a) => fieldAsksFor(a, name));
     if (byKind.length + byLine.length === 0 && !byAbout) continue;
     fit++;
     if (byAbout) told++;

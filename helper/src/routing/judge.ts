@@ -21,7 +21,10 @@ import type { Outcome, Registry, RouteCandidate } from "./routes.ts";
  *   0.75 write was 100% precise with 40% recall and act 100% / 15%; at 0.5 write 64% / 70% and act 67% / 29%, with one
  *   act where writing help was expected (m18: a fill offered from a cover-letter box; its twin m19, the same field on a
  *   blank form, is labeled fill, and Jev gives both act 0.8 against write 0.13, so no rule on the field's role tells
- *   them apart). Every act is an offer behind Tab, and fill's own value gates still decide every value.
+ *   them apart). Every act is an offer behind Tab, and fill's own value gates still decide every value. m18's real
+ *   cause was fill's evidence counting a URL the form already held; with that fixed (helper.ts fillEvidence), m18's
+ *   act comes back at 0.32 and 0.42 in two live runs and abstains (m18-probe, corpus-run4), though a floor of 0.25
+ *   would still act on it.
  * - The real-day replay (day-replay.md, a counterfactual over the shadow store's hashes): useful fill offers kept rise
  *   from 1.2-1.4 an hour at 0.75 to 2.5-2.8 at 0.5, against 5.5 findable, with no offers where the entry was not on
  *   screen and at most $0.0020 of Jev an active hour (about 20 times less than producers alone).
