@@ -1,1 +1,0 @@
-D2-04: a box gets a tick by its label's kind (fill/controls.ts boxKind: only a question to the user may be written, a first-person statement never gets a value); consent word lists failed open in both reviews, so never widen the box rule by adding words alone.
