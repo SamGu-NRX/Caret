@@ -168,9 +168,11 @@ def run(app, out_dir):
     frame = message_frame(pid)
     sa.ax(pid, "focus", pid, sa.frame_arg(frame))
     time.sleep(0.4)
-    sa.ax(pid, "set-field", pid, sa.frame_arg(frame), SENTENCE)
+    r = sa.ax(pid, "set-field", pid, sa.frame_arg(frame), SENTENCE)
+    sa.check("the sentence is in the Message field", r.get("ok") and r.get("value") == SENTENCE, result=r)
     s = sa.wait_for(lambda: (lambda st: st if (st.get("offer") or {}).get("kind") == "action" else None)(sa.host()), 20, 0.1)
-    sa.check("the event line is drawn", bool(s), offers=helper_state().get("offers"))
+    results["modelAfterSentence"] = helper_state().get("model")
+    sa.check("the event line is drawn", bool(s), offers=helper_state().get("offers"), asked=helper_state().get("asked"))
     k = sa.key("down", pid)
     time.sleep(0.3)
     sf = sa.host().get("surface") or {}

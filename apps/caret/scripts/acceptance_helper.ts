@@ -104,6 +104,13 @@ const write = (): void => {
     progress, grants, offers, asked, errors,
     router: routed.usage(),
     decisions: (helper.routing?.decisions ?? []).map((d) => ({ at: d.at, key: d.key, outcome: d.outcome, by: d.by, local: d.local, breakpoint: d.breakpoint, confidence: d.confidence, latencyMs: d.latencyMs, textRevision: d.textRevision })),
+    // What the event generator reads (H8): the front app, the focused window and field, and each window's typed
+    // values. The run's fixture windows only, so synthetic text.
+    model: {
+      frontmostPid: helper.model.frontmostPid,
+      focusedWindowId: helper.model.focusedWindowId,
+      windows: [...helper.model.windows.values()].map((w) => ({ id: w.window.windowId, pid: w.app.pid, title: w.window.title, focusedKey: w.focusedKey, nodes: w.nodes.size, values: w.values.map((v) => ({ nodeKey: v.nodeKey, kind: v.kind, text: v.text })) })),
+    },
   }) + "\n");
 };
 const dump = setInterval(write, 200);
