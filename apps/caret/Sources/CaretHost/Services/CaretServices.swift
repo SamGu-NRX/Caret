@@ -72,14 +72,21 @@ public final class CaretServices {
     public let mode: Mode
     private let launcher: ServiceLauncher?
     private var bridge: PageBridgeVendor.Outcome = .off("not started")
-    private let extraBrowserRequirements: [String]
+    /// Browsers trusted beside `BridgeTrust.browserRequirements`.
+    let extraBrowserRequirements: [String]
     private let log: @Sendable (String) -> Void
     /// Called on main when anything the menu shows changes.
     public var onChange: (() -> Void)?
 
+    /// `extraBrowserRequirements` is kept only by the acceptance build (`CARET_ACCEPTANCE_HOST`, which adds Chrome for
+    /// Testing by cdhash for a run); the shipped build drops it, whoever passes it (H8 decision 2).
     public init(mode: Mode, extraBrowserRequirements: [String] = []) throws {
         self.mode = mode
+        #if CARET_ACCEPTANCE_HOST
         self.extraBrowserRequirements = extraBrowserRequirements
+        #else
+        self.extraBrowserRequirements = []
+        #endif
         let log: @Sendable (String) -> Void = { line in
             FileHandle.standardError.write(Data("[caret-host \(ISO8601DateFormatter().string(from: Date()))] \(line)\n".utf8))
         }

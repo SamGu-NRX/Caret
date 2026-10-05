@@ -210,8 +210,15 @@ case .exit(let why):
     FileHandle.standardError.write(Data("caret: \(why); this copy exits\n".utf8))
     exit(0)
 case .run(let mode):
+    // The acceptance build trusts the browsers its run named in full-UI mode too, so a VM run can drive the
+    // extension against a whole Caret (H8 decision 2). The shipped build has no such flag and passes none.
+    #if CARET_ACCEPTANCE_HOST
+    let extraBrowsers = acceptance.browserRequirements
+    #else
+    let extraBrowsers: [String] = []
+    #endif
     do {
-        services = try MainActor.assumeIsolated { try CaretServices(mode: mode) }
+        services = try MainActor.assumeIsolated { try CaretServices(mode: mode, extraBrowserRequirements: extraBrowsers) }
     } catch {
         FileHandle.standardError.write(Data("caret: \(error)\n".utf8))
         exit(1)

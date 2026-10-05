@@ -4,7 +4,8 @@
 // with the browser the acceptance runs use (xpc-bridge-host spec, "How to verify on the host"). The shipped build has
 // no way to add a browser at run time.
 //
-//   --acceptance-browser-requirement R   also accept a bridge whose parent satisfies R (repeatable)
+//   --acceptance-browser-requirement R   also accept a bridge whose parent satisfies R (repeatable), in every mode,
+//                                        the full UI included (H8)
 //   --acceptance-services-only           start the helper, the reader and the bridge service, but no tap, overlay,
 //                                        model or menu: launchd test runs on a shared Mac put nothing on screen
 //   --acceptance-relay-socket P --acceptance-secret-file F
