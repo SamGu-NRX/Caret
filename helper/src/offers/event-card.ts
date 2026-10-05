@@ -203,14 +203,21 @@ const CONNECTOR = /^\s*(?:-|–|to|until|till)\s*$/i;
  * The node's date and time spans in the sentence, as one text in sentence order. Text between two spans
  * is kept only when it is a range's connector ("3:00 to 4:00 PM"); anything else between them (a room
  * number) is left out, so it is never read as a time. Empty when there are none.
+ *
+ * The reader's values are found in the whole node, so a span from elsewhere in it can match inside this sentence too:
+ * "Thursday" from a heading above lands where "Thursday 3pm PT" starts (D2-02 corpus m06). The longest span at a place
+ * wins and any span overlapping one kept is dropped, so a shorter echo never hides the time.
  */
 export function spansIn(w: WindowState, key: string, sentence: string): string[] {
-  const found: { at: number; text: string }[] = [];
+  const all: { at: number; text: string }[] = [];
   for (const v of w.values) {
     if (v.nodeKey !== key || (v.kind !== "date" && v.kind !== "time")) continue;
     const at = sentence.indexOf(v.text);
-    if (at >= 0 && !found.some((f) => f.at === at)) found.push({ at, text: v.text });
+    if (at >= 0) all.push({ at, text: v.text });
   }
+  all.sort((a, b) => b.text.length - a.text.length || a.at - b.at);
+  const found: { at: number; text: string }[] = [];
+  for (const f of all) if (!found.some((k) => f.at < k.at + k.text.length && k.at < f.at + f.text.length)) found.push(f);
   if (found.length === 0) return [];
   found.sort((a, b) => a.at - b.at);
   let out = (found[0] as { text: string }).text;
