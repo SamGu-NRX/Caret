@@ -166,7 +166,12 @@ def run(app, out_dir):
              cal.get("access") == "notDetermined" and tool("prompt", "Caret") is None, calendar=cal)
     sa.check("before access the line names the default calendar", cal.get("line") == "Adding to your default calendar", calendar=cal)
 
-    # 2. The card names the destination.
+    # 2. The card names the destination. The guest's screen is 960 by 600 points, and the executor window
+    # fills most of its height: centred, every spot by the Message field covers one of its fields
+    # (noClearSpot in the first runs). At the screen's left edge the card fits to the field's right.
+    moved = sa.ax(pid, "move", pid, EXECUTOR, 0, 30)
+    sa.check("the fixture window moved to the screen's left edge", moved.get("ok"), moved=moved)
+    time.sleep(0.5)
     frame = message_frame(pid)
     sa.ax(pid, "focus", pid, sa.frame_arg(frame))
     time.sleep(0.4)
