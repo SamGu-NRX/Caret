@@ -523,7 +523,7 @@ export class MemoryStore {
       const r = this.stmt("SELECT * FROM memory WHERE id = ?").get(id) as Row | undefined;
       if (r === undefined || (r.kind !== "about" && r.kind !== "people" && r.kind !== "preference")) continue;
       const rec = this.record(r);
-      if (rec === null || rec.kind === "skill" || rec.status !== "noticed" || rec.noticed === null) continue;
+      if (rec === null || rec.kind === "skill" || rec.kind === "answer" || rec.status !== "noticed" || rec.noticed === null) continue;
       const label = rec.kind === "about" ? rec.fields.label : rec.kind === "people" ? rec.fields.alias : rec.fields.rule === "useInstead" ? rec.fields.field : rec.fields.rule === "format" ? "Phone format" : rec.fields.appName;
       out.push({ id, kind: rec.kind, label, noticed: rec.noticed });
     }

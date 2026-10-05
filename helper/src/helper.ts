@@ -3,6 +3,7 @@
 // grounded fill proposals. server.ts connects it to the socket; tests drive it directly.
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
+import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
 import { MEMORY_SNIPPETS, SnippetLedger, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
 import { RollingText } from "./rolling-text.ts";
@@ -15,6 +16,9 @@ import {
   HOST_OFFER_TYPES,
   HelperMessage,
   PROTOCOL_VERSION,
+  type AnswerSave,
+  type AnswerSaveReply,
+  type AnswerFields,
   type ActivityReply,
   type ActivityRequest,
   type FillAll,
@@ -112,6 +116,8 @@ import { FILLABLE_ROLES, neverTypedNode } from "./fill/fill.ts";
 import { fieldKinds, valueKinds, words } from "./fill/kinds.ts";
 import { labelledLines } from "./fill/candidates.ts";
 import { fieldAsksFor } from "./fill/about.ts";
+import { AnswerError, answerFor, answerNow, capture, OFFER_MIN_CHARS, OFFER_SAYS, putAnswer, savedAnswers, savedSays, type SavedAnswer } from "./memory/answers.ts";
+import { guardAnswer, pageText, type PageContext } from "./fill/answers.ts";
 import type { ValueKind } from "./protocol.ts";
 import { OFFER_WHEN, sentences, type EventCandidate, type SentenceSource } from "./offers/event-card.ts";
 import { nodeText } from "./model.ts";
@@ -191,6 +197,11 @@ export interface HelperOptions {
    * overtook stops as a reload. main.ts reads it from the page engines; absent, a reload stops a goal as a changed field.
    */
   pageDocument?: (windowId: string) => string | null;
+  /**
+   * S1: a page window's address (origin and path of its top frame) and its h1 and h2 headings, from the page engines.
+   * Saved answers record the address, and the organization guard reads both. Absent: neither is known.
+   */
+  pageContext?: (windowId: string) => PageContext | null;
   /** Fault-injection seam for the planner evaluation; see PlanTaskOptions.beforeCheck. Never set in normal use. */
   plannerHooks?: Pick<PlanTaskOptions, "beforeCheck">;
   /**
@@ -257,6 +268,14 @@ interface CaretFill {
 }
 
 const fieldId = (windowId: string, key: string): string => `${windowId}\u0000${key}`;
+/** How long an offer to save an answer can be taken (S1). Assumed: as long as a fill proposal is kept. */
+const ANSWER_OFFER_KEEP_MS = PROPOSAL_KEEP_MS;
+/** Values Caret's executor wrote into one field that capture remembers, newest last. Assumed: a form is written a few times at most. */
+const MAX_WRITES_KEPT = 8;
+/** Fields whose writes capture remembers, the most recently written kept. Assumed: far more than one sitting's forms. */
+const MAX_FIELDS_WRITTEN = 2000;
+/** Answer-writing tasks remembered for gating their activity records. Assumed: more than the activity list keeps. */
+const MAX_ANSWER_TASKS = 1000;
 
 /** Whether a transfer comes from this fill: the same field (checked by the caller), close in time, overlapping values, and an edit made before any undo. */
 function fillMatches(f: CaretFill, t: Transfer): boolean {
@@ -305,6 +324,22 @@ export class Helper {
   private readonly shown = new Set<string>();
   /** Host-reported inserts, by window and field. */
   private readonly caretFills = new Map<string, CaretFill>();
+  /**
+   * S1: values Caret's executor wrote into each field, by window and field, so capture never saves them as the user's
+   * words. A page write also shows as the field's entry "other"; this covers a write the content script did not see.
+   */
+  private readonly caretWrites = new Map<string, string[]>();
+  /** S1: host connections that declared SAVED_ANSWERS_CAPABILITY. With none, saved answers are neither matched nor offered. */
+  private answerHosts = 0;
+  /**
+   * S1: tasks that write a saved answer. Their progress and activity go only to hosts that show answers, since the
+   * executor's details quote what it writes; kept after a task ends, for the activity list, up to MAX_ANSWER_TASKS.
+   */
+  private readonly answerTasks = new Set<string>();
+  /** S1: the fields each running answer task writes an answer into, guarded again right before each write (memoryHolds). */
+  private readonly answerWrites = new Map<string, { answerId: string; windowId: string; key: string }[]>();
+  /** S1: offers to save an answer, by offer id, until the user's yes or ANSWER_OFFER_KEEP_MS. */
+  private readonly answerOffers = new Map<string, { at: number; windowId: string; key: string; fields: Omit<AnswerFields, "savedOn"> }>();
   private lastPrune = 0;
   /** Bumped on each reader hello; a fill whose Jev answer arrives in a later session is dropped. */
   private readerSession = 0;
@@ -471,7 +506,12 @@ export class Helper {
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
       // The in-progress skill marker rides on each saved run: the skill it counts for, if any.
       journal: {
-        save: (r) => this.journal.save({ ...r, skillId: this.patterns.skills.skillOf(r.taskId) }),
+        save: (r) => {
+          // S1: every value the executor is about to write, on any run (an offer's, a goal's, a plan's), so capture
+          // never saves Caret's words as the user's. The journal sees each write before the reader gets it.
+          if (r.pending?.kind === "write") this.noteWrite(r.pending.windowId, r.pending.key, r.pending.value);
+          this.journal.save({ ...r, skillId: this.patterns.skills.skillOf(r.taskId) });
+        },
         // A skill's run keeps its row until the skill has counted it (Skills.afterRun), which is after the run ends: a
         // crash in between would leave a failed run's skill on its own with nothing saying so (B23 review).
         drop: (id) => {
@@ -743,8 +783,11 @@ export class Helper {
           const prior = this.model.windows.get(m.window.windowId);
           this.preFocus = { windowId: m.window.windowId, values: new Map(prior === undefined ? [] : [...prior.nodes].map(([k, n]) => [k, n.value ?? ""])) };
         }
+        const leftField = m.window.kind === "page" ? (this.model.windows.get(m.window.windowId)?.focusedKey ?? null) : null;
         const changes = this.model.apply(m);
         if (changes.length > 0) for (const l of this.changeListeners) l(changes);
+        // S1: focus left a field on a page form: what the user typed there may be worth keeping as their answer.
+        if (leftField !== null && this.model.windows.get(m.window.windowId)?.focusedKey !== leftField) this.offerAnswerSave(m.window.windowId, leftField);
         // A dialog in a running goal segment's app, or a source of its values that changed, stops it (D2-06).
         this.goals.onChanges(changes);
         const w = this.model.windows.get(m.window.windowId);
@@ -1007,6 +1050,21 @@ export class Helper {
 
   /** Whether memory entry `ref` (an id, or "id#first" for a name's part) still gives exactly `value`. */
   private memoryHolds(ref: string, value: string): boolean {
+    // S1: a saved answer, checked right before it is written, after the executor's fresh read: still active, still exactly
+    // these words, and still passing the guards in every field a task writes it into (a page can lower a maxlength or
+    // change its title between the user's Tab and the write).
+    const files = this.memory.files;
+    if (files !== null && files.record(ref)?.kind === "answer") {
+      const now = this.answerText(ref);
+      if (now === null || now.fields.answer !== value) return false;
+      for (const t of [...this.answerWrites.values()].flat().filter((x) => x.answerId === ref)) {
+        const w = this.model.windows.get(t.windowId);
+        const node = w?.nodes.get(t.key);
+        if (w === undefined || node === undefined) return false;
+        if (guardAnswer(now, pageText(w, this.opts.pageContext?.(t.windowId) ?? { site: null, headings: [] }), node.maxLength) !== null) return false;
+      }
+      return true;
+    }
     const { id, part } = parseMemoryRef(ref);
     const text = this.memory.text(id);
     if (text === null || text === undefined) return false;
@@ -1536,9 +1594,10 @@ export class Helper {
     const kept = this.proposals.get(m.proposalId);
     if (kept === undefined) return this.refuseAccept(m.proposalId, "no such fill proposal, or it expired");
     if (this.executor.has(m.proposalId)) return this.refuseAccept(m.proposalId, "this proposal was already filled");
-    const p = writtenFields(kept.proposal, this.model.windows.get(kept.windowId));
+    // S1: Command-1 has no preview of its own, so a saved answer is never written from it; the field is the user's.
+    const p = writtenFields(kept.proposal, this.model.windows.get(kept.windowId), { answers: false });
     if (p.fields.length === 0) return this.refuseAccept(m.proposalId, "Caret writes none of this proposal's fields");
-    const stale = recheckFill(this.model, p, this.aboutNow);
+    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
     if (stale !== null) return this.refuseAccept(m.proposalId, `${stale}; nothing was written`);
     this.bindNew(m.proposalId, session);
     const { plan, slots } = fillPlan(this.model, p);
@@ -1644,6 +1703,127 @@ export class Helper {
     return aboutValues(this.memory.active("about"));
   }
 
+  /** S1: a saved answer as answers.md holds it now (read by content), or null when it is gone, paused or unreadable. */
+  private readonly answerText = (id: string): SavedAnswer | null => {
+    const files = this.memory.files;
+    if (files === null) return null;
+    const a = answerNow(files, id);
+    return a === null || a.status !== "active" ? null : a;
+  };
+
+  /** S1: whether a task writes a saved answer, so the server sends its progress and activity only to hosts that show answers. */
+  writesAnswer(taskId: string): boolean {
+    return this.answerTasks.has(taskId);
+  }
+
+  /** S1: the server reports how many connected hosts declared SAVED_ANSWERS_CAPABILITY. */
+  setAnswerHosts(n: number): void {
+    this.answerHosts = n;
+  }
+
+  /**
+   * S1: the user left a field on a page form. When what they typed there may be kept as their answer (memory/answers.ts
+   * capture) and is long enough to be worth asking, a host that shows answers is offered to save it. Nothing is saved
+   * here: the user's yes is answerSave. A refusal stays silent, since the user asked for nothing.
+   */
+  private offerAnswerSave(windowId: string, key: string): void {
+    const files = this.memory.files;
+    if (this.mode !== "live" || this.answerHosts === 0 || files === null) return;
+    const w = this.model.windows.get(windowId);
+    if (w === undefined) return;
+    const c = capture(w, key, { site: this.opts.pageContext?.(windowId)?.site ?? null, caretWrote: this.caretWrote(windowId, key) });
+    if (!c.ok) {
+      this.opts.store.count(`answers.capture_${c.why}`, 1);
+      return;
+    }
+    if (c.fields.answer.trim().length < OFFER_MIN_CHARS) return;
+    const was = answerFor(files, c.fields.question, c.fields.site);
+    if (was !== null && was.fields.answer === c.fields.answer) return;
+    const now = this.now();
+    for (const [id, o] of this.answerOffers) {
+      if (now - o.at > ANSWER_OFFER_KEEP_MS || (o.windowId === windowId && o.key === key)) this.answerOffers.delete(id);
+    }
+    const id = this.opts.newId?.() ?? randomUUID();
+    this.answerOffers.set(id, { at: now, windowId, key, fields: c.fields });
+    this.opts.store.count("answers.offer", 1);
+    this.publish({ type: "answerSaveOffer", v: PROTOCOL_VERSION, id, at: now, windowId, fieldKey: key, ...c.fields, replaces: was?.id ?? null, says: OFFER_SAYS });
+  }
+
+  /** S1: records a value Caret's executor is about to write into a field (from the journal's pending write). */
+  private noteWrite(windowId: string, key: string, value: string): void {
+    const id = fieldId(windowId, key);
+    const list = [...(this.caretWrites.get(id) ?? []), value].slice(-MAX_WRITES_KEPT);
+    // Moved to the end, so the oldest field is first when the map is trimmed.
+    this.caretWrites.delete(id);
+    this.caretWrites.set(id, list);
+    if (this.caretWrites.size > MAX_FIELDS_WRITTEN) this.caretWrites.delete(this.caretWrites.keys().next().value as string);
+  }
+
+  /** Every value Caret wrote into this field: its executor's writes and the host's inserts it was told of. */
+  private caretWrote(windowId: string, key: string): string[] {
+    const fill = this.caretFills.get(fieldId(windowId, key));
+    return [...(this.caretWrites.get(fieldId(windowId, key)) ?? []), ...(fill === undefined || fill.undoneAt !== null ? [] : [fill.value])];
+  }
+
+  /**
+   * S1: the user's yes to saving an answer, from an offer or as "remember this answer" on a field. The page is walked
+   * again first, so the field is judged as it is at the yes, not as the last snapshot showed it (review finding 5), by
+   * the same rules as the offer; an offer's text must be what the field still holds. The reply goes to the asker only
+   * and says why when nothing was saved.
+   */
+  async handleAnswerSave(m: AnswerSave): Promise<AnswerSaveReply> {
+    const refused = (why: AnswerSaveReply["why"] & string, says: string): AnswerSaveReply => {
+      this.opts.store.count(`answers.refused_${why}`, 1);
+      return { type: "answerSaveReply", v: PROTOCOL_VERSION, requestId: m.requestId, outcome: "refused", answerId: null, why, says };
+    };
+    const files = this.memory.files;
+    if (files === null) return refused("unavailable", "Caret's memory is still in its old encrypted store, so it can't save answers yet.");
+    if (this.mode !== "live") return refused("unavailable", "Caret is only watching right now, so it saves nothing.");
+    let windowId: string;
+    let key: string;
+    let offered: Omit<AnswerFields, "savedOn"> | null = null;
+    if (m.from.kind === "offer") {
+      const o = this.answerOffers.get(m.from.offerId);
+      if (o === undefined || this.now() - o.at > ANSWER_OFFER_KEEP_MS) return refused("noOffer", "That offer to save your answer has expired, so nothing was saved.");
+      ({ windowId, key } = o);
+      offered = o.fields;
+    } else ({ windowId, fieldKey: key } = m.from);
+    const before = this.model.windows.get(windowId);
+    if (before === undefined) return refused("changed", "That page is no longer open, so nothing was saved.");
+    const walked = await this.readerVerb({ kind: "walk", pid: before.app.pid, windowId }).catch(() => null);
+    if (walked === null || walked.outcome !== "ok") return refused("unavailable", "Caret couldn't read the page again, so nothing was saved.");
+    const w = this.model.windows.get(windowId);
+    if (w === undefined) return refused("changed", "That page is no longer open, so nothing was saved.");
+    // The model replaces a window's state on every snapshot it applies: the same state means the walk refreshed nothing
+    // here (a walk answered for another tab, say), and a cached field is not the user's yes (fix-check finding 2).
+    if (w === before) return refused("unavailable", "Caret couldn't read the page again, so nothing was saved.");
+    const c = capture(w, key, { site: this.opts.pageContext?.(windowId)?.site ?? null, caretWrote: this.caretWrote(windowId, key) });
+    if (!c.ok) return refused(c.why, c.says);
+    if (offered !== null && (offered.answer !== c.fields.answer || offered.question !== c.fields.question)) {
+      return refused("changed", "The text changed after Caret offered to save it, so nothing was saved. Leave the field again to save the new version.");
+    }
+    try {
+      const was = answerFor(files, c.fields.question, c.fields.site);
+      const id = putAnswer(files, { ...c.fields, savedOn: new Date(this.now()).toISOString() });
+      if (m.from.kind === "offer") this.answerOffers.delete(m.from.offerId);
+      this.opts.store.count("answers.saved", 1);
+      // An offer that showed the answer before this save no longer shows what answers.md holds.
+      this.withdrawMemoryOffers(id);
+      return { type: "answerSaveReply", v: PROTOCOL_VERSION, requestId: m.requestId, outcome: "saved", answerId: id, why: null, says: savedSays(c.fields.question, was !== null) };
+    } catch (e) {
+      if (e instanceof AnswerError) return refused(e.why, e.message);
+      throw e;
+    }
+  }
+
+  /** The active saved answers fill may offer now: only while a host that shows answers whole is connected (S1). */
+  private answersForFill(windowId: string): { answers: ReturnType<typeof savedAnswers>; page: PageContext } | null {
+    const files = this.memory.files;
+    if (this.answerHosts === 0 || files === null || this.model.windows.get(windowId)?.window.kind !== "page") return null;
+    const answers = savedAnswers(files).filter((a) => a.status === "active");
+    return answers.length === 0 ? null : { answers, page: this.opts.pageContext?.(windowId) ?? { site: null, headings: [] } };
+  }
+
   /** An About entry as aboutValues gives it now, or null when it is gone, paused, not typed or fits no field. */
   private readonly aboutNow = (id: string): AboutValue | null => {
     const a = this.memory.about(id);
@@ -1707,6 +1887,7 @@ export class Helper {
     // A task that can no longer act needs no host binding; an undo binds it again to the session asking.
     if (state !== "running" && state !== "paused") {
       this.taskHosts.delete(e.taskId);
+      this.answerWrites.delete(e.taskId);
       this.taskDeps.delete(e.taskId);
     }
     const cause: TaskCause | null = e.cause ?? (state === "running" ? null : state === "undone" ? "you" : "caret");
@@ -1925,8 +2106,10 @@ export class Helper {
     const focuses: { windowId: string; key: string }[] = [];
     this.pendingFills.add(focuses);
     try {
+      const saved = this.answersForFill(windowId);
       const asked = await proposeFill(this.model, ask, windowId, key, now, {
         about: this.aboutValues(),
+        ...(saved === null ? {} : saved),
         ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
         ...(this.opts.newId === undefined ? {} : { newId: this.opts.newId }),
       });
@@ -2214,6 +2397,11 @@ export class Helper {
       if (input === null || describeInput(w, input) !== f.descriptor) return false;
       const memory = f.memory ?? f.handoff?.memory ?? null;
       const value = f.value ?? f.handoff?.value ?? null;
+      // S1: a saved answer must still be exactly the words matched, under the same question.
+      if (f.answer !== undefined && memory !== null) {
+        const now = this.answerText(memory.id);
+        return now !== null && now.fields.answer === value && now.fields.question === memory.label;
+      }
       if (memory !== null) {
         const now = this.aboutNow(memory.id);
         return now !== null && memoryValue(now.value, memory.part) === value && now.label === memory.label;
@@ -2229,13 +2417,19 @@ export class Helper {
    * executor run under the proposal id. The pop-up is withdrawn either way.
    */
   private async acceptFill(p: GroundedProposal): Promise<AcceptResult> {
-    const stale = recheckFill(this.model, p, this.aboutNow);
+    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
     if (stale !== null) {
       this.withdrawFill(p.id, "stale");
       return { refused: `${stale}; nothing was written` };
     }
     const { plan, slots } = fillPlan(this.model, p);
     this.withdrawFill(p.id, "taken");
+    const answers = p.fields.flatMap((f) => (f.answer === undefined ? [] : [{ answerId: f.answer.id, windowId: p.windowId, key: f.key }]));
+    if (answers.length > 0) {
+      this.answerTasks.add(p.id);
+      if (this.answerTasks.size > MAX_ANSWER_TASKS) this.answerTasks.delete(this.answerTasks.values().next().value as string);
+      this.answerWrites.set(p.id, answers);
+    }
     // The destinations were empty just now; one the user fills before the run's first read stops it.
     return this.runFrom("fill", p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
   }
@@ -2249,7 +2443,7 @@ export class Helper {
     for (const [id, { p, form }] of this.fillPopups) {
       if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;
       const w = this.model.windows.get(p.windowId);
-      let changed = recheckFill(this.model, p, this.aboutNow) !== null;
+      let changed = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null) !== null;
       if (!changed && w !== undefined) {
         try {
           changed = `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form;
@@ -2279,7 +2473,7 @@ export class Helper {
    */
   private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[]): string | null {
     if (focuses.some((f) => !inFillForm(p, f.windowId, f.key))) return "focus left the form";
-    const stale = recheckFill(this.model, p, this.aboutNow);
+    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
     if (stale !== null) return stale;
     const w = this.model.windows.get(p.windowId);
     try {

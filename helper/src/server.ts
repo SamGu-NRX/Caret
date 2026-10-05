@@ -10,7 +10,8 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, SAVED_ANSWERS_CAPABILITY, type AnswerSaveReply, type MemoryDocumentReply } from "./protocol.ts";
+import { carriesAnswer, withoutAnswers } from "./offers/answer-gate.ts";
 import type { Helper } from "./helper.ts";
 import type { HostLocalModel } from "./writer/local-port.ts";
 import { planError } from "./planner/proposal.ts";
@@ -36,6 +37,12 @@ export class HelperServer {
   private localModelHost: Socket | null = null;
   /** The local model's requests waiting on that host; null when the helper was started without one. */
   private readonly localModel: HostLocalModel | null;
+  /**
+   * Host connections whose hello listed SAVED_ANSWERS_CAPABILITY (S1): the only ones sent a saved answer (a fill value
+   * from one, a pop-up that writes one, an offer to save one, answers.md in the memory window) and the only ones whose
+   * answerSave is the user's consent. A host that has not said it shows an answer whole never gets one to insert.
+   */
+  private readonly savedAnswers = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -92,6 +99,14 @@ export class HelperServer {
     const line = JSON.stringify(m) + "\n";
     // Provenance is new in M1: a consumer that did not ask for it is not sent it.
     // A goal's previews and progress quote values and name windows: only hosts that plan goals get them.
+    // A saved answer goes only to a host that shows it whole (S1); any other consumer gets a fill proposal without it.
+    if (carriesAnswer(m, (id) => this.helper().writesAnswer(id))) {
+      for (const c of this.savedAnswers) c.write(line);
+      if (m.type !== "fillProposal") return;
+      const stripped = JSON.stringify(withoutAnswers(m)) + "\n";
+      for (const c of this.consumers) if (!this.savedAnswers.has(c)) c.write(stripped);
+      return;
+    }
     for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : this.consumers) c.write(line);
   }
 
@@ -170,6 +185,10 @@ export class HelperServer {
             if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(LOCAL_MODEL_CAPABILITY) === true) this.localModelHost = s;
+            if (hello.data.host === true && hello.data.capabilities?.includes(SAVED_ANSWERS_CAPABILITY) === true) {
+              this.savedAnswers.add(s);
+              this.helper().setAnswerHosts(this.savedAnswers.size);
+            }
             if (hello.data.host === true) this.helper().hostConnected(session, routing);
             else this.helper().consumerConnected(session);
           } else {
@@ -246,6 +265,22 @@ export class HelperServer {
             else if (this.localModel?.reply(m.data) !== true) this.warn(`localTextReply ${m.data.id}: no request waits for it`);
           }
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
+          // S1: the user's yes to saving an answer. Only a host that shows answers whole speaks for the user here.
+          else if (m.data.type === "answerSave") {
+            if (!this.savedAnswers.has(s)) this.reject(s, `answerSave needs a host hello with "${SAVED_ANSWERS_CAPABILITY}" in its capabilities`);
+            else {
+              const requestId = m.data.requestId;
+              void this.helper()
+                .handleAnswerSave(m.data)
+                .catch((e: unknown): AnswerSaveReply => {
+                  this.warn(`answerSave ${requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
+                  return { type: "answerSaveReply", v: PROTOCOL_VERSION, requestId, outcome: "refused", answerId: null, why: "unavailable", says: "Caret couldn't save the answer; nothing was saved." };
+                })
+                .then((r) => {
+                  if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
+                });
+            }
+          }
           else if (m.data.type === "settings") this.helper().handleSettings(m.data, from);
           // The user's Keep makes a skill, which is consent the router acts on (routing/consent.ts): only the host,
           // which shows the question, may answer it.
@@ -293,7 +328,12 @@ export class HelperServer {
               });
           }
           // Records hold window titles and status lines, so a list goes to the asker only, as memory does.
-          else if (m.data.type === "activityRequest") s.write(JSON.stringify(this.helper().handleActivity(m.data)) + "\n");
+          else if (m.data.type === "activityRequest") {
+            // A task that writes a saved answer is listed only to a host that shows answers (S1): its records quote it.
+            const r = this.helper().handleActivity(m.data);
+            const hide = (id: string): boolean => !this.savedAnswers.has(s) && this.helper().writesAnswer(id);
+            s.write(JSON.stringify({ ...r, tasks: r.tasks.filter((t) => !hide(t.id)), events: r.events.filter((e) => !hide(e.task.id)) }) + "\n");
+          }
           else if (m.data.type === "memoryRequest") {
             // Resuming a paused skill brings back the consent it rests on; only the host's resume is the user's.
             if (m.data.op === "resume" && !this.hosts.has(s) && this.helper().resumeRestoresConsent(m.data.id)) {
@@ -316,8 +356,13 @@ export class HelperServer {
               this.reject(s, `${m.data.type} needs "${MEMORY_DOCUMENTS_CAPABILITY}" in the consumer's hello capabilities`);
               continue;
             }
+            // answers.md is new in S1: a host that did not ask for saved answers neither sees it listed nor reads it.
+            if (m.data.type === "memoryDocumentRequest" && m.data.doc === "answers" && !this.savedAnswers.has(s)) {
+              this.reject(s, `the answers document needs "${SAVED_ANSWERS_CAPABILITY}" in the consumer's hello capabilities`);
+              continue;
+            }
             try {
-              const reply = m.data.type === "memoryNotRight" ? this.helper().handleMemoryNotRight(m.data) : this.helper().handleMemoryDocument(m.data, this.hosts.has(s));
+              const reply = m.data.type === "memoryNotRight" ? this.helper().handleMemoryNotRight(m.data) : this.forAnswers(s, this.helper().handleMemoryDocument(m.data, this.hosts.has(s)));
               s.write(JSON.stringify(reply) + "\n");
             } catch (e) {
               this.reject(s, `${m.data.type} ${m.data.requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -338,6 +383,7 @@ export class HelperServer {
         this.localModelHost = null;
         this.localModel?.hostGone();
       }
+      if (this.savedAnswers.delete(s)) this.helper().setAnswerHosts(this.savedAnswers.size);
       if (session !== null) this.helper().hostDisconnected(session);
       if (this.reader === s) {
         this.reader = null;
@@ -364,6 +410,15 @@ export class HelperServer {
         return { ...rest, status: e.status === "noticed" ? "active" : e.status } as typeof e;
       }),
     };
+  }
+
+  /**
+   * A document reply as this consumer can read it: a host before S1 refuses any document id it does not know, which
+   * would lose it the whole list, so answers.md is left out for a consumer without SAVED_ANSWERS_CAPABILITY.
+   */
+  private forAnswers(s: Socket, r: MemoryDocumentReply): MemoryDocumentReply {
+    if (this.savedAnswers.has(s)) return r;
+    return { ...r, documents: r.documents.filter((d) => d.doc !== "answers") };
   }
 
   private reject(s: Socket, message: string): void {

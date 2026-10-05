@@ -35,6 +35,10 @@ export interface PageControl {
   pressed?: boolean;
   /** A text input whose inputmode is numeric or decimal (B29): undo compares its value as a number. */
   numeric?: true;
+  /** S1: a text input's or textarea's maxlength, when the page sets one. */
+  maxLength?: number;
+  /** S1: how a text input's or textarea's text was entered since it was last empty (content/entry.ts); absent when no edit was seen. */
+  entry?: "typed" | "pasted" | "other";
 }
 
 export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "notSameElement" | "excluded" | "unsupported" | "error" | "siteOff";

@@ -184,6 +184,9 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         // the executor never reaches their write.
         ...(VALUE_KINDS.has(c.kind) || box ? { editable: true as const } : {}),
         ...(states.length > 0 ? { states } : {}),
+        // S1: what saved answers need: the field's maxlength, and whether the user typed its text themselves.
+        ...(c.maxLength === undefined ? {} : { maxLength: c.maxLength }),
+        ...(c.entry === undefined ? {} : { entry: c.entry }),
       });
       // A native select's options, as the AXMenuItem children fill reads a select's options from (controls.ts), so a
       // hand-off for it can name one. Chrome's Accessibility shows only the selected one. An option whose value is
