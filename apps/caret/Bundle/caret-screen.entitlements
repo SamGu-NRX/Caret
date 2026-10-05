@@ -4,7 +4,7 @@
   The reader, Contents/Helpers/caret-screen (dev.caret.screen), under the hardened runtime (build-app.sh).
 
   Granted:
-  - com.apple.security.personal-information.calendars: H8. With --calendar-user the reader adds the events the user
+  - com.apple.security.personal-information.calendars: H8. With the flag calendar-user the reader adds the events the user
     accepts to their calendars through EventKit. It never asks for access; as Caret's child it has Caret's answer.
 
   Evidence: as for caret.entitlements, unmeasured on this Mac (SIP off); the VM run is the check.
