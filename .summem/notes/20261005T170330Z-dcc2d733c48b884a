@@ -1,1 +1,0 @@
-R3: RouteFollower sends no routingContext while the selection is a plain caret, so routing/context.ts treats the helper's 'unknown' selection as caret; comparing them ended every write session at the host's first sentence end.

@@ -1,0 +1,1 @@
+H10: Chrome shows Accessibility no web content and no focused element while a page field has focus (VM probe), so the host reads page focus and frames only from the helper's pageField (PageFocusSource).
