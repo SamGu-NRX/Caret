@@ -163,12 +163,18 @@ export function readHeads(snap: IntentSnapshot, r: JevResult): AskIntent {
   const fields = kind === "list" ? [...new Set([...listed.map((f) => f.ref), ...literals.map((l) => l.field)])] : [];
   if (kind === "list" && fields.length === 0) open.push("fields");
 
-  // Where from. Unsettled, it is every source, as an ambient fill reads them, unless the instruction names its own
-  // source or keeps Caret to some: then reading every window would widen what the user said (B25 review), so it asks.
+  // Where from. Unsettled, the instruction's own words decide. Naming no source, it is every source, as an ambient fill
+  // reads them. Naming windows, it is those windows as code resolved them (sources.ts), which checkIntent reads whatever
+  // a maker says: reading every window would widen what the user said (B25 review). Keeping Caret to some sources ("only
+  // what I typed"), or naming a window the request does not list, it asks.
   const source = settled(r, "source");
   const known = source !== null && (source === "any" || source === "memory" || source === "instruction" || snap.windows.some((w) => w.ref === source));
-  if (!known && (snap.named.length > 0 || restrictsSources(snap.instruction))) open.push("source");
-  const sources = known ? [source] : [];
+  let sources: string[] = known ? [source] : [];
+  if (!known && (snap.named.length > 0 || restrictsSources(snap.instruction))) {
+    const named = snap.named.map((n) => snap.windows.find((w) => w.windowId === n.windowId)?.ref);
+    if (restrictsSources(snap.instruction) || named.some((x) => x === undefined)) open.push("source");
+    else sources = named as string[];
+  }
 
   // Whose. Unsettled with a person named, or someone else unnamed, is a question; unsettled with no one named is the user.
   const whose = settled(r, "whose");

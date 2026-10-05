@@ -342,10 +342,13 @@ describe("the heads intent maker (P1)", () => {
     expect(read("the landlord part", { scope: "fields", source: "any" }, { [`n_${ref("Landlord name")}`]: 0.9 })).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"] });
   });
 
-  it("reads an unsettled source as every source, unless the instruction names or limits its own: then it asks", () => {
+  it("reads an unsettled source by the instruction's words: every source, the windows it names, or a question when it limits them", () => {
     const low = { source: HEAD_FLOOR - 0.01 };
     expect(read("fill this out", { scope: "all", source: "w2" }, {}, low)).toMatchObject({ route: "fill", sources: [] });
-    expect(read("fill this out from Rental notes", { scope: "all", source: "w1" }, {}, low)).toMatchObject({ route: "ask", why: "whichSource", open: ["source"] });
+    const s = snapOf("fill this out from my rental notes");
+    const notes = s.windows.find((w) => w.title === "Rental notes.txt");
+    expect(s.named.map((n) => n.windowId)).toEqual([notes?.windowId]);
+    expect(read("fill this out from my rental notes", { scope: "all", source: "w2" }, {}, low)).toMatchObject({ route: "fill", sources: [notes?.ref] });
     expect(read("fill this out, only use what I typed", { scope: "all", source: "w1" }, {}, low)).toMatchObject({ route: "ask", why: "whichSource", open: ["source"] });
   });
 

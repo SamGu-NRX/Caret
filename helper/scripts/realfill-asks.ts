@@ -3,7 +3,7 @@
 // chosen maker, checked by code, then the scoped fill or the planner. Nothing runs: a proposed plan is scored,
 // never executed.
 //
-//   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker writer|jev]
+//   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker writer|jev|heads]
 //        [--spend-limit USD] [--gap S] [--writer-model ID] [--no-writer]
 //
 // Each ask's expected values are the fields it asks to change. A plan is right when it writes every expected
@@ -19,6 +19,9 @@
 // for a source question (none when the source is memory); for a person question, the person whose name an expected
 // value holds, else the user. Then the user's pick is simulated (the right options), the Ask continues from it, up to
 // three questions deep, and the continued Ask is scored as any other.
+//
+// P1: --maker heads is Jev in one request (planner/intent-heads.ts). With jev or heads no Groq writer is made at all:
+// the plan route's writer is off, as --no-writer says, and the report counts each intent's Jev requests.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +29,7 @@ import { parseArgs } from "node:util";
 import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft, type AskQuestionDraft } from "../src/planner/ask.ts";
 import { jevIntentMaker, writerIntentMaker, type IntentMaker, type MakerUse } from "../src/planner/intent-makers.ts";
+import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import type { AskIntent } from "../src/planner/intent.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { SAYS, SaidError } from "../src/planner/says.ts";
@@ -57,7 +61,9 @@ const { values: a } = parseArgs({
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
-if (a.maker !== "writer" && a.maker !== "jev") throw new Error("--maker is writer or jev");
+if (a.maker !== "writer" && a.maker !== "jev" && a.maker !== "heads") throw new Error("--maker is writer, jev or heads");
+/** Only the writer maker talks to Groq (P1: no Groq for jev or heads). */
+const groq = a.maker === "writer";
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
 const corpus = loadCorpus(resolve(a.corpus));
@@ -112,8 +118,8 @@ const spaced = (port: WriterPort): WriterPort => {
   },
   };
 };
-const writer = spaced(makeWriterPort(route));
-const planWriter = spaced(makeWriterPort(WRITER_ROUTE));
+const writer = groq ? spaced(makeWriterPort(route)) : null;
+const planWriter = groq && a["no-writer"] !== true ? spaced(makeWriterPort(WRITER_ROUTE)) : null;
 
 type Verdict = "right" | "partial" | "wrong" | "refused" | "asked";
 interface Proposed {
@@ -155,7 +161,7 @@ for (const [i, ask] of asks.entries()) {
   const r = rng(Number(a.seed) * 1000 + i);
   const offerKey = `realfill-ask-${ask.id}`;
   current = ask.id;
-  const maker: IntentMaker = a.maker === "jev" ? jevIntentMaker(askJev, { rand: (n) => Math.floor(r() * n) }) : writerIntentMaker(writer, () => offerKey);
+  const maker: IntentMaker = a.maker === "jev" ? jevIntentMaker(askJev, { rand: (n) => Math.floor(r() * n) }) : a.maker === "heads" ? headsIntentMaker(askJev) : writerIntentMaker(writer as WriterPort, () => offerKey);
   let draft: AskDraft | null = null;
   let error: string | null = null;
   let says: string | null = null;
@@ -164,7 +170,7 @@ for (const [i, ask] of asks.entries()) {
   let use: MakerUse | null = null;
   let question: AskQuestionDraft | null = null;
   const run = (resume?: AskQuestionDraft["resume"]) =>
-    planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: a["no-writer"] === true ? null : planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n), ...(resume === undefined ? {} : { resume }) });
+    planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n), ...(resume === undefined ? {} : { resume }) });
   try {
     draft = await run();
     intent = draft.intent;
@@ -302,12 +308,16 @@ const recalled = asked.filter((r) => r.asked[0]?.recall === true);
 const cont = (v: Verdict) => asked.filter((r) => r.continued?.verdict === v).length;
 const named = refuseAsks.filter((r) => r.ask.reason !== undefined);
 const tokens = rows.flatMap((r) => (r.maker === null ? [] : [r.maker.inputTokens + r.maker.outputTokens]));
+const makerCalls = rows.flatMap((r) => (r.maker === null ? [] : [r.maker.calls]));
+const makerMs = rows.flatMap((r) => (r.maker === null ? [] : [r.maker.latencyMs])).sort((x, y) => x - y);
+const pct = (xs: readonly number[], p: number): number => (xs.length === 0 ? 0 : Math.round(xs[Math.min(xs.length - 1, Math.floor(p * xs.length))] as number));
 const mean = (xs: readonly number[]) => (xs.length === 0 ? 0 : Math.round(xs.reduce((s, x) => s + x, 0) / xs.length));
 const md = [
   `# Ask scoreboard (B26): ${a["asks-file"]}, maker ${a.maker}`,
   "",
-  `Maker ${a.maker}${a.maker === "writer" ? ` (${route.model} on ${route.provider}${route === INTENT_ROUTE ? ", the configured intent route" : `, not the configured ${INTENT_ROUTE.model}`})` : ""}; plan route's writer ${a["no-writer"] === true ? "off" : WRITER_ROUTE.model}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
-  `Maker tokens per intent (input + output, ${a.maker === "jev" ? "Jev input only" : "the writer's"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
+  `Maker ${a.maker}${a.maker === "writer" ? ` (${route.model} on ${route.provider}${route === INTENT_ROUTE ? ", the configured intent route" : `, not the configured ${INTENT_ROUTE.model}`})` : ""}; plan route's writer ${planWriter === null ? "off" : WRITER_ROUTE.model}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
+  `Maker tokens per intent (input + output, ${a.maker === "writer" ? "the writer's" : "Jev input only"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
+  `Maker requests per intent: ${[...new Set(makerCalls)].sort((x, y) => x - y).join(", ") || "none"} (${makerCalls.length} intents made); maker latency p50 ${pct(makerMs, 0.5)} ms, p95 ${pct(makerMs, 0.95)} ms.`,
   "",
   `All ${rows.length}: right ${n("right")}, partial ${n("partial")}, asked with choices ${n("asked")}, refused ${n("refused")}, **wrong ${n("wrong")}**.`,
   `Asked ${asked.length}: the right answer among the first question's options in ${recalled.length} (fields ${asked.filter((r) => r.asked[0]?.part === "fields").length}, source ${asked.filter((r) => r.asked[0]?.part === "source").length}, person ${asked.filter((r) => r.asked[0]?.part === "person").length}).`,
