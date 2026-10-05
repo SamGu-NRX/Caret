@@ -1,0 +1,1 @@
+U2: SwiftUI's off-screen stand-ins (ScrollingColumn) must take the height offered and clip, as a GeometryReader does; a fixed-size stack in a flexible frame pushed the knows window's footer out of renders.
