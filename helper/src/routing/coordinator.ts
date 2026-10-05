@@ -242,6 +242,10 @@ export class RoutingCoordinator {
   hostEditing(h: HostEditing | null, breakpoint = false): void {
     this.host = h;
     if (breakpoint) this.hostBreaks++;
+    // The host checks a decision about its field against the revision it last sent, so the session's end must carry
+    // that one even when the end comes from a reader restart, after the host's report is gone.
+    const w = this.writeSession;
+    if (w !== null && h?.textRevision !== undefined && h.windowId === w.windowId && h.key === w.key) w.textRevision = h.textRevision;
   }
 
   /**

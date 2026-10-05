@@ -248,6 +248,17 @@ describe("the routing coordinator", () => {
       expect(ended).toEqual([{ key: BODY(0), textRevision: "r58", why: "focus" }]);
     });
 
+    it("ends a session at a reader restart under the latest revision the host reported for its field (verification review)", async () => {
+      coord.hostEditing({ windowId: NOTE, key: BODY(0), selection: "caret", composing: false, textRevision: "r52" });
+      await writing();
+      // The host reports a newer revision with nothing else changed: the same context, no decision.
+      coord.hostEditing({ windowId: NOTE, key: BODY(0), selection: "caret", composing: false, textRevision: "r57" });
+      coord.observe();
+      expect(decisions).toEqual([]);
+      coord.readerRestarted();
+      expect(ended).toEqual([{ key: BODY(0), textRevision: "r57", why: "reader" }]);
+    });
+
     it("makes no call at a sentence end with no task, and a failed task check leaves the session and publishes nothing", async () => {
       await writing();
       clock.advance(ROUTER1_COOLDOWN_MS);

@@ -276,7 +276,7 @@ export class HelperServer {
           else if (m.data.type === "activityRequest") s.write(JSON.stringify(this.helper().handleActivity(m.data)) + "\n");
           else if (m.data.type === "memoryRequest") {
             // Resuming a paused skill brings back the consent it rests on; only the host's resume is the user's.
-            if (m.data.op === "resume" && !this.hosts.has(s)) {
+            if (m.data.op === "resume" && !this.hosts.has(s) && this.helper().resumeRestoresConsent(m.data.id)) {
               s.write(JSON.stringify({ type: "memoryReply", v: PROTOCOL_VERSION, requestId: m.data.requestId, error: "resume needs a host hello (host: true): a paused skill comes back only from you", entries: [] }) + "\n");
               continue;
             }
@@ -297,7 +297,7 @@ export class HelperServer {
               continue;
             }
             try {
-              const reply = m.data.type === "memoryNotRight" ? this.helper().handleMemoryNotRight(m.data) : this.helper().handleMemoryDocument(m.data);
+              const reply = m.data.type === "memoryNotRight" ? this.helper().handleMemoryNotRight(m.data) : this.helper().handleMemoryDocument(m.data, this.hosts.has(s));
               s.write(JSON.stringify(reply) + "\n");
             } catch (e) {
               this.reject(s, `${m.data.type} ${m.data.requestId} failed: ${e instanceof Error ? e.message : String(e)}`);

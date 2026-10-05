@@ -204,6 +204,38 @@ describe("A5's recordings with routing on, over the socket", () => {
     expect(helper.consent.verify({ kind: "skill", routineId })).not.toBeNull();
   });
 
+  it("lets any consumer resume what carries no consent, and only the host save a skill's document (verification review)", async () => {
+    reader = await SocketReader.connect(join(dir, "screen.sock"));
+    const other = await connect({ pid: 2, version: "memory-tool", capabilities: ["memoryDocuments"] });
+    other.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "a", op: "add", kind: "about", fields: { label: "Name", value: "Sam Rivera", source: "typed" } });
+    const added = await other.waitFor<{ entries: { id: string }[] }>((m) => m.type === "memoryReply" && m.requestId === "a");
+    const id = added.entries[0]?.id as string;
+    other.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "p", op: "pause", id });
+    await other.waitFor((m) => m.type === "memoryReply" && m.requestId === "p");
+    other.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "r", op: "resume", id });
+    expect(await other.waitFor((m) => m.type === "memoryReply" && m.requestId === "r")).toMatchObject({ error: null });
+
+    // A kept skill the user paused in its file: a non-host consumer saving it active does not bring its consent back.
+    const step = { shapeHash: "s", srcBundle: "a", srcApp: "A", srcWindowKind: "standard", srcTemplateHash: "t", srcPos: 0, part: "whole", dstBundle: "b", dstApp: "Tracker", dstWindowKind: "standard", dstTemplateHash: "u", dstPos: 0 };
+    const routineId = helper.memory.recordRoutine("sig", [step], 1)?.id as string;
+    const skill = helper.memory.addSkill(routineId, { name: "Copy tracking", trigger: "a Tracker window opens with Order empty", needed: 3, handsOff: null }, 2);
+    const doc = `skills/${skill.id}`;
+    const read = helper.memory.readDocument(doc as never);
+    const pausedText = read.text.replace(/Status: active/i, "Status: paused");
+    expect(pausedText).not.toBe(read.text);
+    helper.memory.saveDocument(doc as never, read.info.revision, pausedText);
+    helper.memory.takeOutsideChanges();
+    expect(helper.consent.verify({ kind: "skill", routineId })).toBeNull();
+    const now = helper.memory.readDocument(doc as never);
+    other.send({ type: "memoryDocumentRequest", v: PROTOCOL_VERSION, requestId: "s", op: "save", doc, baseRevision: now.info.revision, text: now.text.replace(/Status: paused/i, "Status: active") });
+    expect(await other.waitFor((m) => m.type === "memoryDocumentReply" && m.requestId === "s")).toMatchObject({ error: "a skill's document is saved only from the host (host: true): its status is your consent to it" });
+    expect(helper.consent.verify({ kind: "skill", routineId })).toBeNull();
+    const host = await connect({ pid: 1, version: "host-test", host: true, capabilities: ["memoryDocuments"] });
+    host.send({ type: "memoryDocumentRequest", v: PROTOCOL_VERSION, requestId: "h", op: "save", doc, baseRevision: now.info.revision, text: now.text.replace(/Status: paused/i, "Status: active") });
+    expect(await host.waitFor((m) => m.type === "memoryDocumentReply" && m.requestId === "h")).toMatchObject({ error: null });
+    expect(helper.consent.verify({ kind: "skill", routineId })).not.toBeNull();
+  });
+
   it("sends a learned loop's next row to Router 1, which may say no, whatever the host consented to", async () => {
     const host = await connect({ pid: 1, version: "host-test", host: true, capabilities: [ROUTING_CAPABILITY] });
     host.send(settings);

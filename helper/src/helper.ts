@@ -1400,11 +1400,30 @@ export class Helper {
     }
   }
 
-  /** The memory window's documents: list, read, or save from its editor (memoryDocumentRequest). To the asker only. */
-  handleMemoryDocument(m: MemoryDocumentRequest): MemoryDocumentReply {
+  /**
+   * Whether resuming this memory entry would bring back consent the router acts on (routing/consent.ts): a skill, or
+   * the routine a skill is made from. Unknown ids carry none; the store answers them with its own error.
+   */
+  resumeRestoresConsent(id: string | undefined): boolean {
+    if (id === undefined) return false;
+    try {
+      const kind = this.memory.get(id).kind;
+      return kind === "skill" || kind === "routine";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The memory window's documents: list, read, or save from its editor (memoryDocumentRequest). To the asker only.
+   * `fromHost`: the request came from a host session. A skill's document holds its status, which is the user's consent
+   * to the router passing its offers (routing/consent.ts), so only the host may save one.
+   */
+  handleMemoryDocument(m: MemoryDocumentRequest, fromHost: boolean): MemoryDocumentReply {
     const base = { type: "memoryDocumentReply", v: PROTOCOL_VERSION, requestId: m.requestId, folder: this.memory.folder } as const;
     const wire = (d: DocumentInfo): MemoryDocument => ({ doc: d.doc, file: d.file, path: d.path, revision: d.revision, bytes: d.bytes, diagnostics: d.diagnostics.map((x) => ({ line: x.line, field: x.field, severity: x.severity, message: x.message })) });
     const fail = (error: string, conflict: { revision: string | null } | null = null, documents: MemoryDocument[] = []): MemoryDocumentReply => ({ ...base, error, conflict, documents, text: null });
+    if (m.op === "save" && m.doc?.startsWith("skills/") === true && !fromHost) return fail("a skill's document is saved only from the host (host: true): its status is your consent to it");
     try {
       switch (m.op) {
         case "list":
