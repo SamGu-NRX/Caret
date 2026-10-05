@@ -18,7 +18,7 @@ import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
 import { SAYS, SaidError, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure } from "./says.ts";
 import { fieldWords } from "./sources.ts";
-import { namedSection, wholeFormPhrase } from "./scope-words.ts";
+import { namedSection, wholeFormPhrase, type NamesField } from "./scope-words.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { handoffWhy, PlannerError, validatePlan, type PlanContext } from "./validate.ts";
 
@@ -111,6 +111,8 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // never names the form's "Add a gift note" (B25 held-08).
   const words = fieldWords(instruction);
   const namesField = (f: IntentField): boolean => relevance(words, f.name) > 0 || namesShortLabel(words, f.name);
+  // The same reading of any part of the instruction (scope-words.ts NamesField).
+  const namesText = (t: string): boolean => snap.fields.some((f) => relevance(t, f.name) > 0 || namesShortLabel(t, f.name));
   // A writer's fill with an empty list, for an instruction whose field words name no field, is read as the whole form,
   // which Jev must then confirm (confirmScope): B25's writer gave "can you get this enrollment form done from what I
   // jotted down" an empty list, and the Ask refused it as a field the form does not have (held-07).
@@ -142,7 +144,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   let bySection = false;
   if (checked.route === "fill" && (inferredAll || listsAll || intent.scope === "all")) {
     try {
-      const n = sectionScope(instruction, checked, snap);
+      const n = sectionScope(instruction, checked, snap, namesText);
       if (n !== null) (checked = n), (bySection = true);
     } catch (e) {
       return refused(e);
@@ -155,7 +157,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // codeplan.ts confirmFields). Jev's own intents confirmed their fields already.
   if (checked.route === "fill" && o.maker.name === "writer" && !bySection) {
     try {
-      checked = await confirmScope(instruction, checked, inferredAll || listsAll ? "inferred" : intent.scope, intent.section, snap, askJev, namesField);
+      checked = await confirmScope(instruction, checked, inferredAll || listsAll ? "inferred" : intent.scope, intent.section, snap, askJev, namesField, namesText);
     } catch (e) {
       return refused(e);
     }
@@ -274,16 +276,17 @@ function narrowed(checked: FillChecked, keep: (f: IntentField) => boolean, none:
 
 /**
  * A whole-form fill narrowed to the section the instruction names by a section phrase (scope-words.ts), or null
- * when it uses none. Throws SAYS.whichFields when a phrase means no section of this form, or more than one, and
- * SAYS.nothingToDo when that section has no empty field Caret may type.
+ * when it uses none. Throws SAYS.whichFields when the instruction rules the part out or names a field besides it, or
+ * a phrase means no section of this form, or more than one; SAYS.nothingToDo when that section has no empty field
+ * Caret may type.
  */
-function sectionScope(instruction: string, checked: FillChecked, snap: IntentSnapshot): FillChecked | null {
-  const { phrases, section } = namedSection(instruction, snap.sections.map((s) => s.name), snap.fields[0]?.section ?? null);
+function sectionScope(instruction: string, checked: FillChecked, snap: IntentSnapshot, namesText: NamesField): FillChecked | null {
+  const { phrases, section, why } = namedSection(instruction, snap.sections.map((s) => s.name), snap.fields[0]?.section ?? null, namesText);
   if (phrases.length === 0) return null;
   const said = phrases.map((p) => `"${p}"`).join(" and ");
   if (section === null) {
     const has = snap.sections.length === 0 ? "the form has no sections" : `the form's sections are ${snap.sections.map((s) => `'${s.name}'`).join(", ")}`;
-    throw new SaidError("unsure", SAYS.whichFields, `the instruction names a part of the form by ${said}, and no one section of this form means that (${has})`);
+    throw new SaidError("unsure", SAYS.whichFields, `the instruction names a part of the form by ${said}, and ${why ?? "no one section means that"} (${has})`);
   }
   return narrowed(checked, (f) => f.section === section, () => new SaidError("nothingToDo", SAYS.nothingToDo, `${said} means the section '${section}', which has no empty field Caret may type`));
 }
@@ -303,6 +306,7 @@ async function confirmScope(
   snap: IntentSnapshot,
   askJev: AskJev,
   named: (f: IntentField) => boolean,
+  namesText: NamesField,
 ): Promise<FillChecked> {
   const words = fieldWords(instruction);
   // "Every field" stands on the writer's word only when the instruction asks for the whole form in words code reads
@@ -310,7 +314,7 @@ async function confirmScope(
   // do my contact info up top", and Graduation Date and LinkedIn were filled. A whole form code inferred from an
   // empty list, or from a list of every field, always needs Jev's yes.
   const whole =
-    scope === "inferred" ? true : scope === "all" ? wholeFormPhrase(instruction, snap.window.window.title) === null : scope === "section" ? relevance(words, snap.sections.find((x) => x.ref === section)?.name ?? "") === 0 : false;
+    scope === "inferred" ? true : scope === "all" ? wholeFormPhrase(instruction, snap.window.window.title, namesText) === null : scope === "section" ? relevance(words, snap.sections.find((x) => x.ref === section)?.name ?? "") === 0 : false;
   const unnamed = scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
   // When Jev does not confirm the whole form, the fields the instruction names are what is left, each confirmed by
   // Jev: "Fill only Email; do not change Phone" names Phone too.

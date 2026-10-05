@@ -354,10 +354,15 @@ export class PageEngineLink implements ReaderLink {
     while (this.marks.size > MAX_MARKS) this.marks.delete(this.marks.keys().next().value as string);
   }
 
-  /** Acts, then re-walks the tab so the model holds the result before the executor reads the answer. */
+  /**
+   * Acts, then re-walks the tab so the model holds the result before the executor reads the answer. A press after which
+   * the page left is answered at once, with no walk: the run stops on it, and a page on its way out may not answer a
+   * walk before the command times out (B28 review).
+   */
   private async act(verb: PageVerb, tabId: number): Promise<VerbResult> {
     const a = await this.session.command(verb, verb.kind === "pageChooseOption" || verb.kind === "pageAttachFile" ? SLOW_VERB_TIMEOUT_MS : undefined);
     const out = toVerbOutcome(a.result);
+    if (a.result.pageChanged !== undefined) return out;
     if (a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff") await this.session.command({ kind: "pageWalk", tabId });
     return out;
   }

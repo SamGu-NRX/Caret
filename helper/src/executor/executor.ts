@@ -1389,8 +1389,10 @@ export class Executor {
     const walked = await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
     if (walked.outcome !== "ok") return `cannot re-read the window: ${walked.outcome}`;
     if (task.undoStopped !== null) return task.undoStopped;
-    // A write the crash cut off whose field, read just now, still holds what it held before: it never landed.
-    if (e.unconfirmed === true && (this.deps.model.windows.get(e.windowId)?.nodes.get(e.key)?.value ?? "") === e.before) return UNTOUCHED;
+    // A write the crash cut off whose field, read just now, still holds what it held before: it never landed. A field
+    // that is gone says nothing either way (a Yes/No press whose page then left, B28 review), so it is not counted.
+    const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
+    if (e.unconfirmed === true && field !== undefined && (field.value ?? "") === e.before) return UNTOUCHED;
     const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id, sameAs: e.mark };
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {

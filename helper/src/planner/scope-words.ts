@@ -30,7 +30,8 @@ export const WHOLE_FORM_WORDS: readonly ScopePhrase[] = [
   { says: "everything", re: /\beverything\b/ },
   { says: "the whole form", re: /\bthe\s+whole\s+form\b/ },
   { says: "all of it", re: /\ball\s+of\s+it\b/ },
-  { says: "the rest", re: /\bthe\s+rest\b/ },
+  // "the rest of the address" is part of a field; "the rest of it" and "the rest of this form" are the form.
+  { says: "the rest", re: /\bthe\s+rest\b(?!\s+of\s+(?!(?:it|this|(?:the|this)\s+(?:form|application))\b))/ },
   { says: "what you can", re: /\bwhat(?:ever)?\s+you\s+can\b/ },
   { says: "this form", re: /\bthis\s+form\b/ },
   { says: "this application", re: /\bthis\s+application\b/ },
@@ -41,11 +42,16 @@ const FILL_OUT_THE = new RegExp(String.raw`\bfill\s+out\s+(?:the|this|my|our)\s+
 /** Nouns a user adds to a form's name that its title often leaves out ("the Northgate application"). */
 const FORM_NOUNS = new Set(["form", "application"]);
 
+/** Words that rule a part out: "leave the rest", "everything but the phone", "skip my contact info". */
+const NEGATES = /\b(?:except|not|never|leave|skip|without|but|dont)\b|n't\b/;
 /**
- * Words that narrow or negate what a whole-form phrase would ask: "just my email, leave the rest", "everything
- * but the phone". With one of them, the whole form is not taken from the words, and Jev's two asks decide.
+ * Words that narrow or negate what a whole-form phrase would ask: the negations, and "only". With one of them, the
+ * whole form is not taken from the words, and Jev's two asks decide.
  */
-const NARROWS = /\b(?:only|except|not|never|leave|skip|without|but)\b|n't\b/;
+const NARROWS = new RegExp(`${NEGATES.source}|\\bonly\\b`);
+
+/** Whether some text names a field of the form, as ask.ts reads field words (relevance, namesShortLabel). */
+export type NamesField = (text: string) => boolean;
 
 /** A section phrase, and which of the form's sections has its meaning. */
 export interface SectionPhrase extends ScopePhrase {
@@ -61,13 +67,19 @@ export const SECTION_WORDS: readonly SectionPhrase[] = [
   { says: "my details", re: /\bmy\s+details\b/, pick: (s) => s.filter((n) => /\b(?:details|personal|about\s+you)\b/i.test(n)) },
 ];
 
-/** The instruction's words that may set the scope: its source phrases blanked, its quoted values dropped, lower case. */
+/**
+ * The instruction's words that may set the scope: its source phrases blanked, its quoted values dropped, lower case.
+ * Curly single quotes are made straight first, so "Write ‘everything’ in Notes" loses its value like 'everything'.
+ */
 function scopeText(instruction: string): string {
   return fieldWords(instruction)
-    .replace(/"[^"]*"|“[^”]*”|(?<![\p{L}])'[^']*'(?![\p{L}])/gu, " ")
     .replace(/[’‘]/g, "'")
+    .replace(/"[^"]*"|“[^”]*”|(?<![\p{L}])'[^']*'(?![\p{L}])/gu, " ")
     .toLowerCase();
 }
+
+/** `s` with the first match of `re` blanked. */
+const without = (s: string, re: RegExp): string => s.replace(re, (m) => " ".repeat(m.length));
 
 const wordsOf = (s: string): string[] => s.toLowerCase().replace(/['’]s\b/g, "").match(/[\p{L}\p{N}]+/gu) ?? [];
 
@@ -80,26 +92,33 @@ export function namesTheForm(object: string, title: string): boolean {
 
 /**
  * The whole-form phrase the instruction uses, or null when it uses none, uses a word that narrows it (NARROWS),
- * or names a part of the form (SECTION_WORDS). `title` is the form window's title.
+ * names a part of the form (SECTION_WORDS), or names a field outside the phrase: "just fill my email on this form"
+ * and "put everything from my note in Notes" ask for one field (B28 review). `title` is the form window's title.
  */
-export function wholeFormPhrase(instruction: string, title: string): string | null {
+export function wholeFormPhrase(instruction: string, title: string, namesField: NamesField): string | null {
   const s = scopeText(instruction);
   if (NARROWS.test(s) || SECTION_WORDS.some((p) => p.re.test(s))) return null;
-  for (const p of WHOLE_FORM_WORDS) if (p.re.test(s)) return p.says;
-  const obj = FILL_OUT_THE.exec(s)?.[1];
-  return obj !== undefined && namesTheForm(obj, title) ? "fill out the <form name>" : null;
+  for (const p of WHOLE_FORM_WORDS) if (p.re.test(s)) return namesField(without(s, p.re)) ? null : p.says;
+  const m = FILL_OUT_THE.exec(s);
+  if (m?.[1] === undefined || !namesTheForm(m[1], title)) return null;
+  // The form's own name may share a word with a field ("the pizza order", "Pizza Size"); it does not name that field.
+  return namesField(without(s, FILL_OUT_THE)) ? null : "fill out the <form name>";
 }
 
 /**
  * The part of the form the instruction names by a section phrase. `phrases` is empty when it uses none. `section`
- * is the one section every phrase it uses means, or null when a phrase means no section of this form, or more than
- * one, or two phrases disagree: then Caret asks which fields.
+ * is the one section every phrase it uses means; it is null, with `why`, when the instruction rules the part out
+ * ("skip my contact info"), names a field besides it ("only my email in contact info"), or a phrase means no
+ * section of this form, or more than one, or two phrases disagree: then Caret asks which fields.
  */
-export function namedSection(instruction: string, sections: readonly string[], firstFieldSection: string | null): { phrases: string[]; section: string | null } {
+export function namedSection(instruction: string, sections: readonly string[], firstFieldSection: string | null, namesField: NamesField): { phrases: string[]; section: string | null; why: string | null } {
   const s = scopeText(instruction);
   const used = SECTION_WORDS.filter((p) => p.re.test(s));
-  if (used.length === 0) return { phrases: [], section: null };
+  const phrases = used.map((p) => p.says);
+  if (used.length === 0) return { phrases, section: null, why: null };
+  if (NEGATES.test(s)) return { phrases, section: null, why: "it also rules something out" };
+  if (namesField(used.reduce((t, p) => without(t, p.re), s))) return { phrases, section: null, why: "it names a field besides" };
   const picks = used.map((p) => p.pick(sections, firstFieldSection));
   const one = picks.every((x) => x.length === 1) && new Set(picks.map((x) => x[0])).size === 1 ? (picks[0]?.[0] ?? null) : null;
-  return { phrases: used.map((p) => p.says), section: one };
+  return { phrases, section: one, why: one === null ? "no one section of this form means that" : null };
 }

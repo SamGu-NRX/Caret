@@ -6,7 +6,8 @@
 <!-- B28: two Yes/No questions built like Ashby's (aria-pressed buttons with type=button) whose Yes handler marks the
      press and then leaves the page: one calls form.submit() on a form elsewhere on the page, the other sets location.
      Both land on /replica/landed, which counts the landing, so /submitted stays 0. A third calls requestSubmit() on a
-     single-page app's form whose handler cancels the navigation: the page stays, and only the submit event shows it. -->
+     single-page app's form whose handler cancels the navigation: the page stays, and only the submit event shows it. A
+     fourth does the same 100 ms after marking the press (B28 review). -->
 <style>
   body { font: 15px/1.4 system-ui, sans-serif; margin: 24px; max-width: 760px; }
   .entry { margin: 14px 0; }
@@ -24,6 +25,8 @@
   <div class="yesno" id="q-references" data-leave="location"><button type="button" aria-pressed="false" data-option="yes">Yes</button><button type="button" aria-pressed="false" data-option="no">No</button></div></div>
 <div class="entry"><label for="q-file">Shall we keep your application on file?</label>
   <div class="yesno" id="q-file" data-leave="requestSubmit"><button type="button" aria-pressed="false" data-option="yes">Yes</button><button type="button" aria-pressed="false" data-option="no">No</button></div></div>
+<div class="entry"><label for="q-later">Can we text you about interviews?</label>
+  <div class="yesno" id="q-later" data-leave="laterSubmit"><button type="button" aria-pressed="false" data-option="yes">Yes</button><button type="button" aria-pressed="false" data-option="no">No</button></div></div>
 <form id="leave-form" action="/replica/landed" method="get"><input type="hidden" name="via" value="submit"></form>
 <!-- A single-page app's form: its submit handler cancels the navigation, so only the submit event shows it was sent. -->
 <form id="spa-form" data-spa="true" action="/replica/landed" method="get"><input type="hidden" name="via" value="spa"></form>

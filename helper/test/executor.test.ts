@@ -109,6 +109,14 @@ describe("executor", () => {
     expect(helper.executor.ledger("t1")).toMatchObject([{ kind: "write", before: "", after: "Yes", unconfirmed: true }]);
     // The grant ended with the run.
     expect(app.grants.log.at(-1)).toMatchObject({ type: "actRevoke", taskId: "t1" });
+
+    // The page left, so the field is gone: undo cannot tell whether the press landed, and does not count it as never landed.
+    app.pageChangeAfterWrite = undefined;
+    app.nodes = app.nodes.filter((n) => n.key !== K("textfield:name~0"));
+    app.show();
+    await helper.executor.undo("t1");
+    const undone = progress("t1").at(-1);
+    expect(undone).toMatchObject({ phase: "undone", restored: 0, notRestored: 1 });
   });
 
   it("reads the window once more when the field is missing right after the insert, then hands it off if it is back unchanged", async () => {

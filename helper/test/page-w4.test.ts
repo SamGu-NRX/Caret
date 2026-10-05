@@ -153,6 +153,27 @@ describe("a Yes/No press after which the page left (B28)", () => {
     expect(toVerbOutcome({ ...changed, pageChanged: undefined }).pageChanged).toBeUndefined();
   });
 
+  it("answers the executor at once, with no walk of a page that is leaving (B28 review)", async () => {
+    const sent: HelperToEngine[] = [];
+    const session = new EngineSession({ engine: "eng1", browser, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m) => {
+      sent.push(m);
+      queueMicrotask(() => {
+        if (m.type !== "pageCommand") return;
+        // The first walk answers; the press answers that the page left; no later walk would be answered.
+        if (m.verb.kind === "pageWalk" && sent.filter((x) => x.type === "pageCommand").length === 1) {
+          session.receive(snapshot(m.id));
+          session.receive({ type: "pageResult", v: 1, id: m.id, at: 1, outcome: "ok", detail: null });
+        } else if (m.verb.kind === "pageChooseOption") session.receive({ ...changed, id: m.id });
+      });
+      return true;
+    }, 200);
+    const link = new PageEngineLink(session, () => undefined);
+    await link.run({ kind: "walk", pid: browser.pid, windowId: WIN });
+    const r = await link.run({ kind: "write", pid: browser.pid, windowId: WIN, key: "f0/pressgroup:e9", role: "AXGroup", attribute: "value", expect: "", value: "Yes", taskId: "t1" });
+    expect(r).toMatchObject({ outcome: "axError", pageChanged: ["navigated"] });
+    expect(sent.flatMap((m) => (m.type === "pageCommand" ? [m.verb.kind] : []))).toEqual(["pageWalk", "pageChooseOption"]);
+  });
+
   it("takes pageChanged only on a failed result with no readings", () => {
     expect(PageResult.safeParse(changed).success).toBe(true);
     expect(PageResult.safeParse({ ...changed, outcome: "ok" }).success).toBe(false);

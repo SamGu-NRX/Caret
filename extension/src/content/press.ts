@@ -9,8 +9,9 @@
 //   - the verb names the group's question (`question`, from the walk the plan was made on), and it is still the text
 //     around the group, and it is not a self-identification or consent question (walker.exclusionOf);
 //   - afterwards the page's own state says it took the answer: this button aria-pressed "true", every other "false";
-//   - and the page did not leave or submit (B28 lead decision 2): from just before the click until the answer, this
-//     frame fired no beforeunload, pagehide or submit (watchLeaving). The worker checks the frame's navigation as well.
+//   - and the page did not leave or submit (B28 lead decision 2): from the first pointer event until LEAVE_WATCH_MS
+//     after the press shows, this frame fired no beforeunload, pagehide or submit (watchLeaving). The worker checks
+//     the frame's navigation as well.
 // Only the named button is pressed, once, and its click's default action is cancelled (dom.ts pressToggle), so the
 // browser itself submits nothing from it. What the page's own click handler does is the page's: this exception, like
 // the combobox one, runs page script on the user's accepted plan (W4 review #1, a lead decision). A press that the
@@ -24,6 +25,12 @@ import { controlName, pressGroup, sendsNoForm, type PressGroup } from "./questio
 
 /** How long the page may take to show the press. Assumed: a toggle re-renders within the same second. */
 const PRESS_WAIT_MS = 1000;
+/**
+ * How long after the press shows as taken the frame is still watched for leaving or submitting (B28 review: a handler
+ * that marks the press, then submits 100 ms later). Assumed, not measured. A page that waits longer is not caught
+ * here; if it navigates, the next act's navigation check refuses it as stale.
+ */
+const LEAVE_WATCH_MS = 400;
 
 type ChooseVerb = Extract<ActVerb, { kind: "pageChooseOption" }>;
 
@@ -94,6 +101,7 @@ export async function pressOption(el: Element, verb: ChooseVerb, check: () => Ac
     if (clicked) {
       await until(() => (pressed(el) || leaving.seen().length > 0 ? true : null), PRESS_WAIT_MS);
       await settle();
+      if (leaving.seen().length === 0) await until(() => (leaving.seen().length > 0 ? true : null), LEAVE_WATCH_MS);
     }
   } finally {
     left = leaving.stop();

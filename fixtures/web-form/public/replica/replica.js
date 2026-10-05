@@ -38,6 +38,7 @@
         if (group.dataset.leave === "submit") document.getElementById("leave-form").submit();
         if (group.dataset.leave === "location") location.href = "/replica/landed?via=location";
         if (group.dataset.leave === "requestSubmit") document.getElementById("spa-form").requestSubmit();
+        if (group.dataset.leave === "laterSubmit") setTimeout(() => document.getElementById("spa-form").requestSubmit(), 100);
       });
     }
   }

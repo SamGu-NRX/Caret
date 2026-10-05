@@ -617,6 +617,20 @@ describe("a grounded whole-form scope (B28)", () => {
     expect(((await askG("put my details in", two).run.catch((x: unknown) => x)) as AskRefused).message).toBe(SAYS.whichFields);
   });
 
+  it("asks when the instruction rules the section out or names a field besides it (B28 review)", async () => {
+    const m = () => greenhouse({ "Contact information": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
+    for (const instruction of ["skip my contact info, do the rest", "only my email in contact info"]) {
+      const e = await askG(instruction, m()).run.catch((x: unknown) => x);
+      expect((e as AskRefused).message).toBe(SAYS.whichFields);
+    }
+  });
+
+  it("takes a whole-form word beside a named field to Jev, and narrows to the field when Jev says no to the whole form (B28 review)", async () => {
+    const { jev, run } = askG("just fill my email on this form", greenhouse(), (q) => (q.includes("'Email'") ? "yes" : "no"));
+    expect(written(await run)).toEqual([GKEY("email")]);
+    expect(jev.seen.filter((r) => "all" in r.questions).length).toBe(2);
+  });
+
   it("takes a section phrase over a whole-form word, and over Jev's yes to the whole form", async () => {
     const m = greenhouse({ "Contact information": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
     expect(written(await askG("fill in everything in my contact info", m).run)).toEqual(CONTACT);
@@ -653,7 +667,7 @@ describe("a grounded whole-form scope (B28)", () => {
     ["this application", "finish this application"],
     ["fill out the <form name>", "fill out the software engineer intern application"],
   ])("lets the whole form stand on '%s' without asking Jev (%s)", async (phrase, instruction) => {
-    expect(wholeFormPhrase(instruction, "Apply: Software Engineer Intern")).toBe(phrase);
+    expect(wholeFormPhrase(instruction, "Apply: Software Engineer Intern", () => false)).toBe(phrase);
     const { jev, run } = askG(instruction, greenhouse(), () => "no");
     expect(written(await run).length).toBe(6);
     expect(jev.seen.some((r) => "all" in r.questions)).toBe(false);
