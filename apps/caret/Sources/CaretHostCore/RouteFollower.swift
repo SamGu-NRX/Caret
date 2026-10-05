@@ -92,9 +92,13 @@ public final class RouteFollower {
     }
 
     /// The longest ambient help waits for a decision after a breakpoint before it shows as if the
-    /// router were not there. D2-02 measured route entry at p50 169 ms, p95 494 ms in the helper
-    /// (evidence/screen/d2-02, corpus-on-clock.md); the host's own measurement through the socket is
-    /// in evidence/host/h6 and sets this value.
+    /// router were not there. Started from D2-02's route entry in the helper, p50 169 ms and p95 494 ms
+    /// (evidence/screen/d2-02, corpus-on-clock.md), plus the socket hop. Measured through the host in
+    /// a scripted TextEdit session (evidence/host/h6, ghost-on-1, live Jev, n=4): decisions reached the
+    /// host 1978 to 6905 ms after the breakpoint, bound by Router 1's 2 s cooldown, so 3 of 4 sentence
+    /// ends fell back here; ghost text after a sentence end then took p50 693 ms against 232 ms with
+    /// routing off (ghost-off-6). A budget long enough to catch those decisions would hold ghost text
+    /// for seconds at every sentence, so this stays a cap on the wait, not a fit to the measurement.
     public static let decisionBudgetMs: Int64 = 600
     /// Contexts in a row whose decision missed the budget before the helper counts as not routing.
     /// A helper that never sent one misses once. Assumed, not measured: Router 1's two-second
@@ -142,9 +146,12 @@ public final class RouteFollower {
         var tentative = false
         /// The decision number the binding came from.
         var boundContext = 0
-        /// Newer decisions in a row that named this field's text under other ids. A reader that
-        /// restarted numbers windows anew, so a firm binding gives way after `contradictionsToRebind`.
+        /// Newer decisions in a row that named this field's text under one other pair of ids
+        /// (`contender`). A reader that restarted numbers windows anew, so a firm binding gives way
+        /// after `contradictionsToRebind` of them; any other evidence starts the count again.
         var contradictions = 0
+        var contender: Ids?
+        var contenderContext = 0
         var phase: Phase
         /// This deciding phase's miss was counted.
         var missed = false
@@ -171,8 +178,11 @@ public final class RouteFollower {
     public let entryLatency = LatencyRecorder(capacity: 200)
 
     private var field: Field?
-    /// The field the last read found gone, and when, in case it comes straight back (`blinkMs`).
-    private var blinked: (Field, Int64)?
+    /// The field the last read found gone, when, and how many decisions had arrived then, in case it
+    /// comes straight back (`blinkMs`).
+    private var blinked: (Field, Int64, Int)?
+    /// Decisions received on this connection, counted so a blink knows whether any came during it.
+    private var received = 0
     private struct Ids: Equatable { var windowId: String; var key: String }
     /// The helper's ids for fields the user left, newest last, and whether the binding was firm. A firm
     /// one binds its field again on return and never binds another; a tentative one keeps only a
@@ -212,7 +222,7 @@ public final class RouteFollower {
     /// sentence or paragraph the user just finished. Ordinary typing returns nil.
     public func observe(_ read: Read?, nowMs: Int64) -> RoutingContext? {
         guard let read else {
-            if let f = field { blinked = (f, nowMs) }
+            if let f = field { blinked = (f, nowMs, received) }
             leave()
             return nil
         }
@@ -221,8 +231,11 @@ public final class RouteFollower {
         let selection = Self.selectionMode(read.selection)
         // A read that found no field between two reads of the same one (an app busy for a moment) is
         // no focus change: the field comes back as it was, decision and all.
-        if field == nil, let (left, at) = blinked, left.target == target, nowMs - at <= Self.blinkMs {
+        var reconcile = false
+        if field == nil, let (left, at, seen) = blinked, left.target == target, nowMs - at <= Self.blinkMs {
             field = left
+            // Decisions that came while the read found no field were kept but not applied.
+            reconcile = received > seen
         }
         blinked = nil
         guard var f = field, f.target == target else {
@@ -255,6 +268,7 @@ public final class RouteFollower {
         f.composing = read.composing
         if !previous.utf16.elementsEqual(read.value.utf16) { remember(digest: Self.helperDigest(read.value), in: &f) }
         field = f
+        if reconcile, let follow = matchKept(nowMs: nowMs), breakpoint == nil { return follow }
         guard let breakpoint else { return nil }
         count(\.breakpoints, breakpoint)
         field?.phase = .deciding(sinceMs: nowMs)
@@ -268,6 +282,7 @@ public final class RouteFollower {
         guard enabled, linked else { return (drop(.off), nil) }
         // Any decision says the helper routes, whichever field it is about.
         proven = true
+        received += 1
         keep(d)
         return take(d, nowMs: nowMs)
     }
@@ -283,6 +298,7 @@ public final class RouteFollower {
                 f.tentative = false
             }
             f.contradictions = 0
+            f.contender = nil
             apply(d, to: &f, nowMs: nowMs)
             field = f
             return (.applied, nil)
@@ -290,13 +306,28 @@ public final class RouteFollower {
         // Another field's ids. A firm binding stays; the decision waits in `recent` for its field.
         // Only decisions that keep naming this field's text under the same new ids move it.
         if f.bound, d.context <= f.boundContext { return (drop(.otherField), nil) }
-        guard let tentative = binds(d, f) else { return (drop(.otherField), nil) }
+        guard let tentative = binds(d, f) else {
+            if f.contender != nil {
+                f.contender = nil
+                f.contradictions = 0
+                field = f
+            }
+            return (drop(.otherField), nil)
+        }
         if f.bound, !f.tentative {
-            f.contradictions += 1
+            let ids = Ids(windowId: d.windowId, key: d.key ?? "")
+            if f.contender == ids, d.context > f.contenderContext {
+                f.contradictions += 1
+            } else {
+                f.contender = ids
+                f.contradictions = 1
+            }
+            f.contenderContext = d.context
             field = f
             if f.contradictions < Self.contradictionsToRebind { return (drop(.otherField), nil) }
         }
         f.contradictions = 0
+        f.contender = nil
         f.windowId = d.windowId
         f.key = d.key
         f.sentRevision = nil

@@ -183,6 +183,37 @@ final class RouteFollowerTests: XCTestCase {
         XCTAssertEqual(f.gate(nowMs: t0 + 200 + RouteFollower.blinkMs + 2), .allow(.write))
     }
 
+    /// Verification review: a decision that came while the read found no field applies when the field
+    /// comes back, bound or not.
+    func testADecisionThatCameDuringABlinkAppliesWhenTheFieldComesBack() {
+        let f = written()
+        XCTAssertNil(f.observe(nil, nowMs: t0 + 100))
+        XCTAssertEqual(f.receive(decision(.abstain, context: 4, at: t0 + 110, revision: RouteFollower.helperDigest("Plans for the week")), nowMs: t0 + 111).0, .dropped(.noField))
+        XCTAssertNil(f.observe(read("Plans for the week"), nowMs: t0 + 150))
+        XCTAssertEqual(f.gate(nowMs: t0 + 151), .quiet(.abstain))
+
+        let g = RouteFollower(enabled: true)
+        g.linkChanged(up: true, routing: true, nowMs: t0)
+        _ = g.observe(read("Dear Sam"), nowMs: t0)
+        XCTAssertNil(g.observe(nil, nowMs: t0 + 50))
+        _ = g.receive(decision(.write, context: 2, at: t0 + 60, revision: RouteFollower.helperDigest("Dear Sam")), nowMs: t0 + 61)
+        XCTAssertNil(g.observe(read("Dear Sam"), nowMs: t0 + 90))
+        XCTAssertEqual(g.boundField?.key, bodyKey)
+        XCTAssertEqual(g.gate(nowMs: t0 + 91), .allow(.write))
+    }
+
+    /// Verification review: a firm binding moves only when two decisions in a row name its text under
+    /// the same other ids.
+    func testAFirmBindingMovesOnlyForTheSameNewIdsTwiceInARow() {
+        let f = written()
+        let text = RouteFollower.helperDigest("Plans for the week")
+        XCTAssertEqual(f.receive(decision(.abstain, context: 7, at: t0 + 500, windowId: "4242-8", revision: text), nowMs: t0 + 501).0, .dropped(.otherField))
+        XCTAssertEqual(f.receive(decision(.abstain, context: 8, at: t0 + 600, windowId: "4242-9", revision: text), nowMs: t0 + 601).0, .dropped(.otherField))
+        XCTAssertEqual(f.boundField?.windowId, doc, "two different contenders are no agreement")
+        XCTAssertEqual(f.receive(decision(.write, context: 9, at: t0 + 700, windowId: "4242-9", revision: text), nowMs: t0 + 701).0, .applied)
+        XCTAssertEqual(f.boundField?.windowId, "4242-9")
+    }
+
     /// Binding found a range selection the helper took as unknown: one context tells it.
     func testBindingAFieldWithARangeSelectedSendsOneContext() throws {
         let f = RouteFollower(enabled: true)
