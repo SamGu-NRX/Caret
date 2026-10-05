@@ -12,7 +12,9 @@ import { PLAN_API } from "./plan-prompt.ts";
 export const GOAL_API = PLAN_API.replace(
   "  /** Step: put a value into a fillable target. */",
   `  /** Step: put a value into a target whose canFill is true: a field, or the calendar. A target whose canFill is
-   * false is a button: press() it, never fill() it. \`target\` is a target's \`ref\` string, never the target object. */`,
+   * false is a button: press() it, never fill() it. Pass the \`ref\` strings, never the objects, and only refs a
+   * readWindow call you made listed. Example: const mail = await caret.readWindow("w2" as WindowRef);
+   * const order = mail.values.find((v) => v.display.startsWith('"ORD-')); if (order) caret.fill(field.ref, order.ref); */`,
 ).replace(
   "  /** Step: press a target, expecting one of its allowedPressEffects. */",
   `  /** Step: press a button, a target whose allowedPressEffects is not empty, naming one of those effects. A field

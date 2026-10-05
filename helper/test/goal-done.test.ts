@@ -67,6 +67,13 @@ describe("a reply's recipient", () => {
     expect(end?.event === "finished" && [end.outcome, end.left]).toEqual(["done", []]);
   });
 
+  it("is put to Jev as the sender of the message the reply answers, which code checked it is", async () => {
+    const jev = standInJev();
+    const sc = scene({ scripts: [[message]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: jev });
+    preview(await sc.request("draft a reply to Priya saying I'm in"));
+    expect(jev.asked.filter((q) => q.includes(`"${EMAIL}" (the sender of the message this reply answers: the From line of 'Order ORD-2026-48213 arrived damaged')`))).toHaveLength(2);
+  });
+
   it("is the user's to add when no sender can be found, and the goal ends handed off, never done", async () => {
     const sc = scene({ scripts: [[message]], windows: [replyWindow()], userWindow: "6161-2" });
     const g = preview(await sc.request("draft a reply saying I'm in"));

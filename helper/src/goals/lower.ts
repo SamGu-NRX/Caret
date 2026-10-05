@@ -302,7 +302,16 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   // Jev's question for every copied value still in the plan (drafts are drafts.ts's), both wordings, fill's floor.
   let unconfirmed: Map<string, string>;
   try {
-    unconfirmed = await jevGate(instruction, steps.flatMap((x) => (x.gate === "jev" && x.value !== null ? [{ ref: x.ref, target: x.target, written: x.writes ?? x.value.event?.title ?? x.value.text, value: x.value }] : [])), o.askJev, o.ledger);
+    unconfirmed = await jevGate(
+      instruction,
+      steps.flatMap((x) => {
+        if (x.gate !== "jev" || x.value === null) return [];
+        const answered = x.to && x.value.source !== null ? inv.texts.get(x.value.source.windowId)?.title : undefined;
+        return [{ ref: x.ref, target: x.target, written: x.writes ?? x.value.event?.title ?? x.value.text, value: x.value, ...(answered === undefined ? {} : { senderOf: answered }) }];
+      }),
+      o.askJev,
+      o.ledger,
+    );
   } catch (e) {
     if (e instanceof JevUnavailable) throw new GoalError("unchecked", "Caret couldn't check the plan's values with Jev just now", e.message);
     throw e;

@@ -76,11 +76,19 @@ export interface JevWrite {
   /** What the control will hold, and the value it came from: Jev is asked about the first, with the second as context. */
   written: string;
   value: ValueBinding;
+  /**
+   * For a To value code verified as the From address of the message the reply answers (lower.ts recipientCheck), that
+   * message's title: Jev reads the value as that sender. Live Jev confirmed B30 case b30-01's sender for To at 0.37
+   * from its plain display ("labelled 'From'") and at 0.93 and 0.96 when told it is the answered message's sender
+   * (evidence/screen/g2/jev-to-probe.txt, one probe; fill's floor is 0.75).
+   */
+  senderOf?: string;
 }
 
 /** The value as Jev reads it: its display, or what is written with the display it came from when they differ. */
 function shown(w: JevWrite): string {
   if (w.target.control === "calendar") return w.value.display;
+  if (w.senderOf !== undefined) return `"${w.written}" (the sender of the message this reply answers: the From line of '${w.senderOf}')`;
   return w.written === w.value.text ? w.value.display : `"${w.written}" (written for ${w.value.display})`;
 }
 

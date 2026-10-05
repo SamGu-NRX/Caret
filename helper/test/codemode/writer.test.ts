@@ -43,6 +43,8 @@ describe("plan prompt", () => {
     expect(GOAL_API).not.toContain("put a value into a fillable target");
     expect(GOAL_API).not.toContain("press a target, expecting one of its allowedPressEffects");
     expect(GOAL_API).toContain("A target whose canFill is\n   * false is a button: press() it, never fill() it.");
+    // G2 live (gpt-oss-20b, c103deb): one program passed a value object, another a value ref of a window it never read.
+    expect(GOAL_API).toContain("if (order) caret.fill(field.ref, order.ref);");
     expect(GOAL_API).toContain("A field\n   * has none and is never pressed.");
     expect(GOAL_SYSTEM).toContain("fill() takes only fields; press() takes only buttons.");
     expect(GOAL_SYSTEM).toContain("Never put a value into another target because the right one is missing.");
