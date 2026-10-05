@@ -168,7 +168,9 @@ try {
       if (answers.length > 0 && (t === undefined || at + latency <= t.at) && at + latency <= until) {
         at += latency;
         (answers.shift() as () => void)();
-        await coord.idle();
+        // Lets the reply be read. Not coord.idle(): a stale reply frees the slot for the next field's call, which starts at
+        // once (R3) and is answered only by this loop.
+        for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
         continue;
       }
       if (t === undefined) break;
