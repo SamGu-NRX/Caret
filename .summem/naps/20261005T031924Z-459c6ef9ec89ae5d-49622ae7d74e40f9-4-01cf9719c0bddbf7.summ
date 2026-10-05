@@ -1,1 +1,0 @@
-D2-02: Router 1 flips near its 0.5 floor between runs, so diff per moment before crediting a recall move. B27: failed fills reach users only via Helper.fillFailed. B28: wait for site.waitForLoad after navigation; accept.ts cannot run executor.run (use fake-app.ts).

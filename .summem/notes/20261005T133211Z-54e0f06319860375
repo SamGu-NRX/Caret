@@ -1,0 +1,1 @@
+H7b: only ReconcilingClipboard.check makes a ClipboardSnapshot; the executor arms it before KeyType's inserter, every posted key asks mayPost, and restored means a fresh read at the restore's own count matched type for type, byte for byte.
