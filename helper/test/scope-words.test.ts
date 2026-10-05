@@ -1,8 +1,8 @@
 // B28: the sentences code reads as asking for the whole form or for one section. Each has one right answer per
 // instruction, so the grammar is tested alone here, every sentence it makes; test/ask.test.ts runs it through planAsk.
 import { describe, expect, it } from "vitest";
-import { REVIEWED } from "./b28-reviewed.ts";
-import { asksForWholeForm, namedSection, normalizeInstruction, parseSentence, SECTION, SECTION_OBJECTS, SECTION_WORDS, WHOLE_FORM, type Slot } from "../src/planner/scope-words.ts";
+import { BY_WORD, REVIEWED } from "./b28-reviewed.ts";
+import { asksForWholeForm, EXCLUSION_WORDS, exclusionsIn, isContactField, namedSection, normalizeInstruction, parseSentence, SECTION, SECTION_OBJECTS, SECTION_WORDS, WHOLE_FORM, type FieldWords, type Slot } from "../src/planner/scope-words.ts";
 
 /** Every sentence a grammar makes, an optional slot skipped or filled. */
 function sentences(grammar: readonly Slot[]): string[] {
@@ -123,11 +123,11 @@ describe("the section grammar", () => {
   });
 
   it("maps 'contact info' to the one section named for contact, and asks when there is none or two", () => {
-    expect(namedSection("just do my contact info", SECTIONS, "Contact information")).toEqual({ phrases: ["contact info"], section: "Contact information", why: null });
+    expect(namedSection("just do my contact info", SECTIONS, "Contact information")).toMatchObject({ phrases: ["contact info"], section: "Contact information", why: null });
     expect(namedSection("do my contact details please", SECTIONS, null).section).toBeNull();
     expect(namedSection("please do my contact details", SECTIONS, null).section).toBe("Contact information");
     expect(namedSection("fill in my contact information", ["Contact", "Contact details"], "Contact").section).toBeNull();
-    expect(namedSection("just do my contact info up top", [], null)).toEqual({ phrases: ["contact info", "up top"], section: null, why: "no one section of this form means that" });
+    expect(namedSection("just do my contact info up top", [], null)).toMatchObject({ phrases: ["contact info", "up top"], section: null, why: "no one section of this form means that" });
   });
 
   it("maps a contact or details phrase only to a heading that is the user's own, word for word (B28 review 6)", () => {
@@ -139,7 +139,7 @@ describe("the section grammar", () => {
 
   it("maps 'up top' to the first field's section, and asks when the first field has none", () => {
     expect(namedSection("just fill in up top", SECTIONS, "Contact information").section).toBe("Contact information");
-    expect(namedSection("just fill in up top", SECTIONS, null)).toEqual({ phrases: ["up top"], section: null, why: "no one section of this form means that" });
+    expect(namedSection("just fill in up top", SECTIONS, null)).toMatchObject({ phrases: ["up top"], section: null, why: "no one section of this form means that" });
   });
 
   it("maps 'my details' to the one details section", () => {
@@ -160,14 +160,82 @@ describe("the section grammar", () => {
   });
 
   it("asks, rather than map, for a section phrase in any other sentence", () => {
-    expect(namedSection("skip my contact info, do the rest", SECTIONS, "Contact information")).toEqual({ phrases: ["contact info"], section: null, why: "it says more than which part of the form" });
+    expect(namedSection("skip my contact info, do the rest", SECTIONS, "Contact information")).toMatchObject({ phrases: ["contact info"], section: null, why: "it says more than which part of the form" });
     expect(namedSection("fill in everything in my contact info", SECTIONS, "Contact information").section).toBeNull();
     expect(namedSection("my contact info only", SECTIONS, "Contact information").section).toBeNull();
     expect(namedSection("do my contact info only", SECTIONS, "Contact information").section).toBe("Contact information");
   });
 
   it("reads no section phrase where there is none", () => {
-    expect(namedSection("emergency contact is ines", SECTIONS, null)).toEqual({ phrases: [], section: null, why: null });
+    expect(namedSection("emergency contact is ines", SECTIONS, null)).toMatchObject({ phrases: [], section: null, why: null });
     expect(namedSection("fill out the form", SECTIONS, null).phrases).toEqual([]);
+  });
+});
+
+// B28b lead decision 1: an exclusion word voids the trust naming gives. One right answer per string.
+describe("the exclusion words", () => {
+  it("open with the lead decision's twelve, in its order", () => {
+    expect(EXCLUSION_WORDS.slice(0, 12)).toEqual(["not", "n't", "except", "but", "without", "skip", "leave", "besides", "other than", "no", "don't", "instead"]);
+    expect(new Set(EXCLUSION_WORDS).size).toBe(EXCLUSION_WORDS.length);
+  });
+
+  it.each(BY_WORD)("finds %j in %j", (word, s) => {
+    expect(exclusionsIn(s)).toContain(word);
+  });
+
+  it.each(EXCLUSION_WORDS)("finds %j standing alone, in capitals and beside punctuation", (word) => {
+    for (const s of [`email ${word} phone`, `EMAIL ${word.toUpperCase()} PHONE`, `email,${word},phone`, `(${word})`]) {
+      // "n't" closes a word: it stands after a letter.
+      const t = word === "n't" ? s.replace("n't", "isn't").replace("N'T", "ISN'T") : s;
+      expect(exclusionsIn(t), t).toContain(word);
+    }
+  });
+
+  it("reads apostrophe look-alikes, accents and invisible characters before looking", () => {
+    for (const s of ["email, don’t do phone", "email, donʼt do phone", "email, don＇t do phone", "email and nót phone", "email and n\u200bot phone", "email\u200bnot phone", "email and n\u00adot phone", "ｅｍａｉｌ ｎｏｔ ｐｈｏｎｅ", "email  NOT\tphone"]) {
+      expect(exclusionsIn(s), JSON.stringify(s)).not.toEqual([]);
+    }
+  });
+
+  it("counts a letter outside a-z, and a sign that rules a word out", () => {
+    expect(exclusionsIn("email and nоt phone")).toContain("a letter outside a-z"); // a Cyrillic о
+    expect(exclusionsIn("email, -phone")).toContain("an exclusion sign");
+    expect(exclusionsIn("email ❌ phone")).toContain("an exclusion sign");
+    expect(exclusionsIn("fill in my e-mail")).toEqual([]);
+  });
+
+  it("finds none in words that only hold one", () => {
+    for (const s of ["fill out the form from my note", "fill in my notes", "do the button and the phone number", "fill in my contact info", "complete this form", "fill in what you can", "known phone", "notice", "butter", "skipper's email"]) {
+      expect(exclusionsIn(s), s).toEqual([]);
+    }
+  });
+
+  it("is in no sentence of either grammar, so a trusted whole form or section never holds one", () => {
+    const bad = [...sentences(WHOLE_FORM), ...sentences(SECTION)].filter((s) => exclusionsIn(s).length > 0);
+    expect(bad).toEqual([]);
+  });
+});
+
+// B28b lead decision 2: "contact info" trusts the contact fields of its section, read by fill's kinds and parts.
+describe("what a section phrase asks for by its meaning", () => {
+  const f = (label: string, typed = true): FieldWords => ({ labelWords: [label, null, null], name: label, typed });
+
+  it("reads name parts, email, phone, links and address parts as contact information", () => {
+    for (const l of ["First Name", "Last Name", "Full name", "Email", "E-mail address", "Phone", "Mobile", "Website", "Portfolio URL", "Street address", "City", "ZIP code", "State", "Apt / Suite", "Email or phone"]) expect(isContactField(f(l)), l).toBe(true);
+  });
+
+  it("reads anything else, a field fill knows no kind for, and a non-text control as not", () => {
+    for (const l of ["Graduation Date (MM/YYYY)", "LinkedIn Profile", "Date of birth", "School name", "Company name", "Job title", "Salary", "Notes", "Last day"]) expect(isContactField(f(l)), l).toBe(false);
+    expect(isContactField(f("Email", false))).toBe(false);
+  });
+
+  it("gives 'contact info' its contact fields, and 'up top' and 'my details' none", () => {
+    expect(namedSection("do my contact info", ["Contact information"], "Contact information").fits(f("Email"))).toBe(true);
+    expect(namedSection("do my contact info", ["Contact information"], "Contact information").fits(f("Graduation Date (MM/YYYY)"))).toBe(false);
+    expect(namedSection("do my contact info up top", ["Contact information"], "Contact information").fits(f("Phone"))).toBe(true);
+    expect(namedSection("just fill in up top", ["About you"], "About you").fits(f("Email"))).toBe(false);
+    expect(namedSection("fill in my details", ["Your details"], "Your details").fits(f("Email"))).toBe(false);
+    // No section: nothing fits.
+    expect(namedSection("do my contact info", ["Education"], "Education").fits(f("Email"))).toBe(false);
   });
 });

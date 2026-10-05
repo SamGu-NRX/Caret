@@ -8,7 +8,7 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { checkIntent, intentSnapshot, personSpans, type AskIntent, type IntentSnapshot } from "../src/planner/intent.ts";
 import { AskRefused, planAsk } from "../src/planner/ask.ts";
 import { asksForWholeForm } from "../src/planner/scope-words.ts";
-import { REVIEWED } from "./b28-reviewed.ts";
+import { BY_WORD, REVIEWED } from "./b28-reviewed.ts";
 import type { IntentMaker } from "../src/planner/intent-makers.ts";
 import { intentInput, jevIntentMaker, writerIntentMaker } from "../src/planner/intent-makers.ts";
 import { intentResponseFormat, IntentInputSchema } from "../src/writer/intent-prompt.ts";
@@ -719,4 +719,72 @@ describe("a grounded whole-form scope (B28)", () => {
       expect(((await no.run.catch((x: unknown) => x)) as AskRefused).message).toBe(SAYS.whichFields);
     },
   );
+
+  // B28b: two holes B28's probes found, where words that name a field or a section were trusted without Jev, and a
+  // section phrase trusted every field under its heading. Each test uses a Jev that confirms nothing unless told.
+  const askWith = (instruction: string, m: ScreenModel, confirm: (q: string) => "yes" | "no", x: (s: IntentSnapshot) => Partial<AskIntent>) => {
+    const jev = jevBy(pickG, () => "user", confirm);
+    return { jev, run: planAsk(instruction, m, { values: () => [] }, [], { askJev: jev.ask, maker: maker(x), writer: null, offerKey: "b28b", windowId: "gh", now: 2000 }) };
+  };
+  const listOf = (...names: string[]) => (s: IntentSnapshot): Partial<AskIntent> => ({ scope: "list", fields: names.map((n) => refOf(s, n)) });
+  const sectionNamed = (name: string) => (s: IntentSnapshot): Partial<AskIntent> => ({ scope: "section", section: s.sections.find((x) => x.name === name)?.ref ?? "missing" });
+  const refusal = async (run: Promise<Awaited<ReturnType<typeof planAsk>>>): Promise<AskRefused> => {
+    const e = await run.catch((x: unknown) => x);
+    expect(e, e instanceof AskRefused ? "" : `wrote ${written(e as Awaited<ReturnType<typeof planAsk>>).join(", ")}`).toBeInstanceOf(AskRefused);
+    return e as AskRefused;
+  };
+  const confirmed = (jev: { seen: JevRequest[] }): string[] =>
+    jev.seen.flatMap((r) => Object.values(r.questions).flatMap((q) => (("yes" in q.criteria) ? [/'([^']+)'/u.exec(String(q.instructions))?.[1] ?? "all"] : [])));
+  const CONTACT_SECTION = { "Contact information": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)"], Links: ["LinkedIn Profile"] };
+
+  it("B28b: a writer's list for 'fill out the email and not phone' is confirmed by Jev field by field, not trusted for naming them", async () => {
+    expect((await refusal(askWith("fill out the email and not phone", greenhouse(), () => "no", listOf("Email", "Phone")).run)).message).toBe(SAYS.whichFields);
+    const { jev, run } = askWith("fill out the email and not phone", greenhouse(), (q) => (q.includes("'Email'") ? "yes" : "no"), listOf("Email", "Phone"));
+    expect(written(await run)).toEqual([GKEY("email")]);
+    expect(new Set(confirmed(jev))).toEqual(new Set(["Email", "Phone"]));
+  });
+
+  it("B28b: a writer's section for 'do the contact section except phone' is confirmed by Jev field by field, not trusted for naming it", async () => {
+    expect((await refusal(askWith("do the contact section except phone", greenhouse(CONTACT_SECTION), () => "no", sectionNamed("Contact information")).run)).message).toBe(SAYS.whichFields);
+    const { run } = askWith("do the contact section except phone", greenhouse(CONTACT_SECTION), (q) => (q.includes("'Phone'") ? "no" : "yes"), sectionNamed("Contact information"));
+    expect(written(await run)).toEqual(["first name", "last name", "email"].map(GKEY));
+  });
+
+  // One sentence per exclusion word of the lead decision (b28-reviewed.ts); the writer lists the three fields the
+  // sentence names, all of which naming used to trust.
+  it.each(BY_WORD)("B28b: the exclusion word %j makes every named field Jev's to confirm: %j", async (_, instruction) => {
+    expect((await refusal(askWith(instruction, greenhouse(), () => "no", listOf("Email", "Phone", "LinkedIn Profile")).run)).message).toBe(SAYS.whichFields);
+  });
+
+  it("B28b: names still stand without Jev when the instruction has no exclusion word", async () => {
+    const { jev, run } = askWith("fill in the email and phone", greenhouse(), () => "no", listOf("Email", "Phone"));
+    expect(written(await run)).toEqual([GKEY("email"), GKEY("phone")]);
+    expect(jev.seen.some((r) => Object.values(r.questions).some((q) => "yes" in q.criteria))).toBe(false);
+  });
+
+  // B28b lead decision 2: "contact info" trusts only the contact fields of its section. The re-check of 8ca77f5 put
+  // Graduation Date and LinkedIn under a "Contact information" heading, and both were filled.
+  const GRAD_LAYOUT = { "About you": ["First Name", "Last Name"], "Contact information": ["Email", "Phone", "Graduation Date (MM/YYYY)", "LinkedIn Profile"] };
+  it("B28b: 'do my contact info' on a Contact information heading holding Graduation Date and LinkedIn fills only the contact fields without Jev", async () => {
+    const { jev, run } = askG("do my contact info", greenhouse(GRAD_LAYOUT), () => "no");
+    expect(written(await run)).toEqual([GKEY("email"), GKEY("phone")]);
+    expect(new Set(confirmed(jev))).toEqual(new Set(["Graduation Date (MM/YYYY)", "LinkedIn Profile"]));
+    // What Jev confirms joins them.
+    const yes = askG("do my contact info", greenhouse(GRAD_LAYOUT), (q) => (q.includes("'LinkedIn Profile'") ? "yes" : "no"));
+    expect(written(await yes.run)).toEqual([GKEY("email"), GKEY("phone"), GKEY("linkedin profile")]);
+  });
+
+  it("B28b: a contact section of only contact fields still fills without a question", async () => {
+    const { jev, run } = askG("just do my contact info up top", greenhouse(CONTACT_SECTION), () => "no");
+    expect(written(await run)).toEqual(CONTACT);
+    expect(confirmed(jev)).toEqual([]);
+  });
+
+  it("B28b: 'my details' and 'up top' have no kind of their own, so every field of their section is Jev's to confirm", async () => {
+    const details = greenhouse({ "Your details": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
+    expect((await refusal(askG("fill in my details", details, () => "no").run)).message).toBe(SAYS.whichFields);
+    const top = greenhouse({ "About you": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
+    expect((await refusal(askG("just fill in up top", top, () => "no").run)).message).toBe(SAYS.whichFields);
+    expect(written(await askG("just fill in up top", top, (q) => (q.includes("'Email'") ? "yes" : "no")).run)).toEqual([GKEY("email")]);
+  });
 });

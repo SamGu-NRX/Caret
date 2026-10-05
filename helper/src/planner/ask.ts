@@ -11,7 +11,7 @@ import type { FillField, FillProposal, Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
 import { FillError, memoryRefOf, proposeFill } from "../fill/fill.ts";
-import { fieldLabelText, sectionNode } from "../fill/descriptor.ts";
+import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
 import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, type PlanDraft, type PlannerMemory } from "./planner.ts";
@@ -19,7 +19,7 @@ import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
 import { SAYS, SaidError, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure } from "./says.ts";
 import { fieldWords } from "./sources.ts";
-import { asksForWholeForm, namedSection } from "./scope-words.ts";
+import { asksForWholeForm, exclusionsIn, namedSection } from "./scope-words.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { handoffWhy, PlannerError, validatePlan, type PlanContext } from "./validate.ts";
 
@@ -140,19 +140,29 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // A phrase that names a part of the form ("contact info", "up top") is never the whole form, whichever maker said
   // so: when the whole instruction is a section request (scope-words.ts SECTION) the fill narrows to the form's
   // section of that meaning, and otherwise Caret asks which fields (B28 lead decision 1; G1's heldout2-04 filled
-  // Graduation Date and LinkedIn for "just do my contact info up top").
+  // Graduation Date and LinkedIn for "just do my contact info up top"). Within the section, only the fields the
+  // phrase asks for by its meaning stand without Jev (B28b lead decision 2; a "Contact information" heading can hold
+  // a Graduation Date).
   let bySection = false;
   if (checked.route === "fill" && (inferredAll || listsAll || intent.scope === "all")) {
     try {
       const n = sectionScope(instruction, checked, snap);
-      if (n !== null) (checked = n), (bySection = true);
+      if (n !== null) {
+        bySection = true;
+        checked = n.checked;
+        if (n.unsure.length > 0) {
+          const yes = await jevConfirms(instruction, snap, askJev)(false, n.unsure);
+          checked = narrowed(checked, (f) => !n.unsure.includes(f) || yes(`f${n.unsure.indexOf(f) + 1}`), () => new SaidError("unsure", SAYS.whichFields, `Jev confirmed none of the fields under '${n.section}' that ${n.said} does not ask for by its meaning`));
+        }
+      }
     } catch (e) {
       return refused(e);
     }
   }
   // A writer's intent names fields by ref, which code checks against the snapshot, not against what the instruction
   // asks: a field the instruction does not name by its words, and "every field" when the whole instruction is not a
-  // whole-form request (scope-words.ts WHOLE_FORM), stand only when Jev, asked twice, agrees the
+  // whole-form request (scope-words.ts WHOLE_FORM), and every field when the instruction holds an exclusion word
+  // (B28b), stand only when Jev, asked twice, agrees the
   // instruction asks for them (B25 review; B28 lead decision 1; the rule the code-mode writer has had since B24,
   // codeplan.ts confirmFields). Jev's own intents confirmed their fields already.
   if (checked.route === "fill" && o.maker.name === "writer" && !bySection) {
@@ -276,12 +286,13 @@ function narrowed(checked: FillChecked, keep: (f: IntentField) => boolean, none:
 
 /**
  * A whole-form fill narrowed to the section the instruction names by a section phrase (scope-words.ts), or null
- * when it uses none. Throws SAYS.whichFields when the whole instruction is not a section request (scope-words.ts
+ * when it uses none. `unsure` are the section's fields the phrase does not ask for by its meaning, which stand only
+ * on Jev's yes. Throws SAYS.whichFields when the whole instruction is not a section request (scope-words.ts
  * SECTION), or a phrase means no section of this form, or more than one; SAYS.nothingToDo when that section has no
  * empty field Caret may type.
  */
-function sectionScope(instruction: string, checked: FillChecked, snap: IntentSnapshot): FillChecked | null {
-  const { phrases, section, why } = namedSection(instruction, snap.sections.map((s) => s.name), snap.fields[0]?.section ?? null);
+function sectionScope(instruction: string, checked: FillChecked, snap: IntentSnapshot): { checked: FillChecked; unsure: IntentField[]; section: string; said: string } | null {
+  const { phrases, section, why, fits } = namedSection(instruction, snap.sections.map((s) => s.name), snap.fields[0]?.section ?? null);
   if (phrases.length === 0) return null;
   const said = phrases.map((p) => `"${p}"`).join(" and ");
   if (section === null) {
@@ -299,14 +310,49 @@ function sectionScope(instruction: string, checked: FillChecked, snap: IntentSna
   if (heads.size !== 1 || heads.has(null)) throw new SaidError("unsure", SAYS.whichFields, `${said} means '${section}', and more than one part of the form is headed that`);
   const outer = sectionNode(w, [...heads.values()][0] as Node);
   if (outer !== null) throw new SaidError("unsure", SAYS.whichFields, `${said} means '${section}', which sits inside '${fieldLabelText(outer.label) ?? ""}' and may be someone else's`);
-  return narrowed(checked, (f) => f.section === section, () => new SaidError("nothingToDo", SAYS.nothingToDo, `${said} means the section '${section}', which has no empty field Caret may type`));
+  const inSection = narrowed(checked, (f) => f.section === section, () => new SaidError("nothingToDo", SAYS.nothingToDo, `${said} means the section '${section}', which has no empty field Caret may type`));
+  // A field is read by the label words fill reads for it (fill.ts proposeFill); one whose node is gone fits nothing.
+  const meant = (f: IntentField): boolean => {
+    const n = w.nodes.get(f.key);
+    if (n === undefined) return false;
+    const d = describeField(w, n);
+    return fits({ labelWords: [d.label, d.nearest, d.placeholder], name: f.name, typed: f.control === "text" || f.control === "combobox" });
+  };
+  return { checked: inSection, unsure: inSection.fields.filter((f) => !meant(f)), section, said };
+}
+
+/**
+ * Asks Jev, in both wordings in parallel, whether the instruction asks for the whole form (`all`) and for each of
+ * `fields` (ids f1, f2, ... in order). The answer holds for an id both wordings answer yes at PLAN_CUTOFF.
+ */
+function jevConfirms(instruction: string, snap: IntentSnapshot, askJev: AskJev): (all: boolean, fields: readonly IntentField[]) => Promise<(id: string) => boolean> {
+  const declared = snap.ledger.declared();
+  return async (all, fields) => {
+    const req = (wording: 0 | 1): JevRequest => {
+      const questions: JevRequest["questions"] = {};
+      if (all) questions.all = { type: "choice", instructions: CONFIRM_ALL[wording](instruction), criteria: { ...CONFIRM } };
+      fields.forEach((f, i) => {
+        questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](instruction, f.name), criteria: { ...CONFIRM } };
+      });
+      const sent = JSON.stringify([instruction, questions]);
+      return { state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
+    };
+    const [a, b] = await Promise.all([askJev(req(0)), askJev(req(1))]);
+    return (id) => {
+      const x = a.answers[id];
+      const y = b.answers[id];
+      return x?.choice === "yes" && y?.choice === "yes" && Math.min(x.confidence, y.confidence) >= PLAN_CUTOFF;
+    };
+  };
 }
 
 /**
  * The writer's fill scope with every field the instruction does not name by its words confirmed by Jev, both asks
  * answering yes at PLAN_CUTOFF; an "all" or section scope the instruction does not state is confirmed the same way.
  * An "all" stands without asking only when the whole instruction is a scope-words.ts WHOLE_FORM sentence. A whole
- * form Jev does not confirm narrows to the fields the instruction names that Jev then confirms.
+ * form Jev does not confirm narrows to the fields the instruction names that Jev then confirms. An instruction that
+ * holds an exclusion word (scope-words.ts EXCLUSION_WORDS) grants no trust by naming: every field in scope is
+ * confirmed, after the whole form when that is asked too.
  * Throws PlannerError when nothing in scope is left.
  */
 async function confirmScope(
@@ -324,38 +370,29 @@ async function confirmScope(
   // contact info up top", and Graduation Date and LinkedIn were filled. A whole form code inferred from an empty
   // list, or from a list of every field, always needs Jev's yes.
   const whole = scope === "inferred" ? true : scope === "all" ? !asksForWholeForm(instruction) : scope === "section" ? relevance(words, snap.sections.find((x) => x.ref === section)?.name ?? "") === 0 : false;
-  const unnamed = scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
+  // A field or section the instruction names stands on its words, unless the instruction rules something out: the
+  // writer listed Email and Phone for "fill out the email and not phone", and gave the whole section for "do the
+  // contact section except phone", and both were written without a question (B28b lead decision 1).
+  const excluding = exclusionsIn(instruction).length > 0;
+  const unsure = excluding ? checked.fields : scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
   // When Jev does not confirm the whole form, the fields the instruction names are what is left, each confirmed by
   // Jev: "Fill only Email; do not change Phone" names Phone too.
   const fallback = whole && scope !== "section" ? checked.fields.filter(named) : [];
-  if (!whole && unnamed.length === 0) return checked;
-  const declared = snap.ledger.declared();
-  /** Both wordings of the questions, asked in parallel; true for an id both answer yes at PLAN_CUTOFF. */
-  const confirm = async (all: boolean, fields: readonly IntentField[]): Promise<(id: string) => boolean> => {
-    const req = (wording: 0 | 1): JevRequest => {
-      const questions: JevRequest["questions"] = {};
-      if (all) questions.all = { type: "choice", instructions: CONFIRM_ALL[wording](instruction), criteria: { ...CONFIRM } };
-      fields.forEach((f, i) => {
-        questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](instruction, f.name), criteria: { ...CONFIRM } };
-      });
-      const sent = JSON.stringify([instruction, questions]);
-      return { state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
-    };
-    const [a, b] = await Promise.all([askJev(req(0)), askJev(req(1))]);
-    return (id) => {
-      const x = a.answers[id];
-      const y = b.answers[id];
-      return x?.choice === "yes" && y?.choice === "yes" && Math.min(x.confidence, y.confidence) >= PLAN_CUTOFF;
-    };
-  };
-  const yes = await confirm(whole, unnamed);
-  if (whole && !yes("all")) {
+  if (!whole && unsure.length === 0) return checked;
+  const confirm = jevConfirms(instruction, snap, askJev);
+  if (whole) {
     // The whole form is one question, asked alone (B26: asked field by field, Jev said no to eight of nine). Only
     // when it is not confirmed are the fields the instruction names asked about, in a second pair.
-    const notWhole = "Jev did not confirm the instruction asks for the whole form";
-    if (fallback.length === 0) throw new SaidError("unsure", SAYS.whichFields, `${notWhole}, and it names no field`);
-    const named2 = await confirm(false, fallback);
-    return narrowed(checked, (f) => fallback.includes(f) && named2(`f${fallback.indexOf(f) + 1}`), () => new SaidError("unsure", SAYS.whichFields, `${notWhole}, nor any field it names`));
+    const yes = await confirm(true, []);
+    if (!yes("all")) {
+      const notWhole = "Jev did not confirm the instruction asks for the whole form";
+      if (fallback.length === 0) throw new SaidError("unsure", SAYS.whichFields, `${notWhole}, and it names no field`);
+      const named2 = await confirm(false, fallback);
+      return narrowed(checked, (f) => fallback.includes(f) && named2(`f${fallback.indexOf(f) + 1}`), () => new SaidError("unsure", SAYS.whichFields, `${notWhole}, nor any field it names`));
+    }
+    if (unsure.length === 0) return checked;
   }
-  return narrowed(checked, (f) => !unnamed.includes(f) || yes(`f${unnamed.indexOf(f) + 1}`), () => new SaidError("unsure", SAYS.whichFields, "Jev confirmed none of the fields the instruction does not name"));
+  const yes = await confirm(false, unsure);
+  const none = excluding ? "Jev confirmed none of the fields in scope, and the instruction rules something out" : "Jev confirmed none of the fields the instruction does not name";
+  return narrowed(checked, (f) => !unsure.includes(f) || yes(`f${unsure.indexOf(f) + 1}`), () => new SaidError("unsure", SAYS.whichFields, none));
 }

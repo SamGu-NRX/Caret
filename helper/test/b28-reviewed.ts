@@ -1,7 +1,30 @@
-// Every instruction the five B28 reviews used to get past the scope words, with the form's title where the review set
-// one. None may be a whole form or a section that stands without Jev: test/scope-words.test.ts checks the grammar
+// Every instruction the B28 reviews and probes used to get past the scope words, with the form's title where the
+// review set one. None may be a whole form or a section that stands without Jev: test/scope-words.test.ts checks the grammar
 // alone, test/ask.test.ts checks planAsk with a Jev that confirms nothing.
+/**
+ * B28b: one sentence per exclusion word of the lead decision, holding that word and no other. Each names Email, Phone
+ * and LinkedIn, so a writer's list of them was trusted by naming before B28b (test/ask.test.ts).
+ */
+export const BY_WORD: readonly [string, string][] = [
+  ["not", "fill in the email and phone, not linkedin"],
+  ["n't", "fill in the email and phone, linkedin isn't needed"],
+  ["except", "fill in the email and phone except linkedin"],
+  ["but", "fill in the email and phone but linkedin is mine to do"],
+  ["without", "fill in the email and phone without linkedin"],
+  ["skip", "fill in the email and phone, skip linkedin"],
+  ["leave", "fill in the email and phone, leave linkedin"],
+  ["besides", "fill in the email and phone besides linkedin"],
+  ["other than", "fill in the email and phone other than linkedin"],
+  ["no", "fill in the email and phone, no linkedin"],
+  ["don't", "fill in the email and phone, don't do linkedin"],
+  ["instead", "fill in the email and phone instead of linkedin"],
+];
+
 export const REVIEWED: readonly [string, string?][] = [
+  // B28b probes: a writer's list or section the instruction names while ruling part of it out.
+  ["fill out the email and not phone"],
+  ["do the contact section except phone"],
+  ...BY_WORD.map(([, s]): [string] => [s]),
   // Review 5: quote characters the quote rule missed, a restriction inside the form's title, and a period before "in"
   // that let "in my email" be read as where to copy from.
   ["fill in ＂everything＂"],
