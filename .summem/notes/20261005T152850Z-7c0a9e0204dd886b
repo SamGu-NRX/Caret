@@ -1,0 +1,1 @@
+H7b: in the rig guest, cua-driver get_window_state raises macOS's 'CuaDriver ... bypass the system private window picker' alert (UserNotificationCenter, layer 8); it stays up and covers windows, so Caret holds offers as covered. Read AX values with a17-tool value.
