@@ -298,13 +298,24 @@ function personalField(label: string): boolean {
 const VERIFY = { yes: "Yes: this is the value this field asks for.", no: "No: it is another value, another person's, or not what this field asks for." } as const;
 
 /**
+ * One write Jev checks: the field by its name (taken through the ledger) and its label, and the value as the writer
+ * read it, with the window it came from (null for the instruction and memory) and whose it is when code knows. A
+ * code plan's Field and Value fit as they are; a goal's step (goals/gates.ts) passes the same parts.
+ */
+export interface WriteToVerify {
+  key: string;
+  field: { name: string; label: string };
+  value: { display: string; window: unknown; owner: "user" | "other" | null };
+}
+
+/**
  * The writes, by step ref, that Jev does not confirm: for a value from a window, asked twice with different
  * wordings, the two asks must agree at PLAN_CUTOFF that it is the value the field asks for. For a field that takes
  * a person's details, a write is also dropped when both asks agree the field wants one person's details and
  * the value is another's (fill.ts WHOSE_CRITERIA and OWNER_CRITERIA, at WHOSE_CUTOFF); a value from memory is
  * the user's, and one written in the instruction is the user's own choice.
  */
-async function verifyWrites(instruction: string, writes: readonly { key: string; field: Field; value: Value }[], askJev: AskJev, ledger: SnippetLedger): Promise<Set<string>> {
+export async function verifyWrites(instruction: string, writes: readonly WriteToVerify[], askJev: AskJev, ledger: SnippetLedger): Promise<Set<string>> {
   if (writes.length === 0) return new Set();
   const declared = ledger.declared();
   const req = (wording: 0 | 1): JevRequest => {

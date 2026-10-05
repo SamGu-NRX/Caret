@@ -8,6 +8,7 @@ import type * as z from "zod";
 import type { ValueOriginSchema } from "../codemode/types.ts";
 import type { Plan } from "../executor/schema.ts";
 import type { HandoffWhy } from "./capabilities.ts";
+import type { OwedField } from "./left.ts";
 
 export type ValueOrigin = z.infer<typeof ValueOriginSchema>;
 
@@ -53,6 +54,8 @@ export interface ValueBinding {
    * still hold when the draft is written. Null for a value code read or derived.
    */
   draft: { windows: string[]; memory: { id: string; text: string }[] } | null;
+  /** Whose details the value is when code knows (a memory entry's `whose`); null for a window's value, a draft or an event. */
+  owner: "user" | "other" | null;
 }
 
 /** Everything a program's refs may stand for, kept on the host side of the sandbox. */
@@ -69,6 +72,8 @@ export interface GoalInventory {
   windowRefs: ReadonlyMap<string, string>;
   /** Each frozen window's title and text, by window id: what a draft's facts are checked against. Never sent. */
   texts: ReadonlyMap<string, { title: string; text: string; message: string }>;
+  /** Each window the goal may act in, by id: the fields a goal writing there owes (left.ts), as they were frozen. */
+  owed: ReadonlyMap<string, readonly OwedField[]>;
 }
 
 export type GoalStepKind = "write" | "calendar" | "press" | "handoff";
@@ -91,6 +96,25 @@ export interface GoalStep {
   handoff: HandoffWhy | null;
   /** A write into a To field (B30): its value must still be the answered message's sender right before it runs. */
   to: boolean;
+  /**
+   * How a write's value passed fill's value gates (G2, goals/gates.ts): "jev" for a value Jev confirmed belongs in the
+   * field, "draft" for text Caret composed, which goals/drafts.ts checks instead. Null for every step that is not a
+   * write. GoalRuns.propose refuses a plan with a write that has none.
+   */
+  gate: "jev" | "draft" | null;
+}
+
+/**
+ * Something the goal leaves undone in a window it writes in (G2): a write code dropped (its value failed a gate), a
+ * field the form marks required, or a message's recipient. `says` is the sentence the preview shows. A goal whose
+ * windows still have one of these empty when it ends is not done.
+ */
+export interface LeftItem {
+  windowId: string;
+  key: string;
+  label: string;
+  why: "dropped" | "required" | "recipient";
+  says: string;
 }
 
 export type SegmentReason = "start" | "crossWindow" | "afterReveal";
@@ -115,6 +139,8 @@ export interface GoalPlan {
   segments: GoalSegment[];
   /** Things the user should know before accepting, shown with the first segment and covered by every digest. */
   warnings: string[];
+  /** What the goal leaves undone (each also said in `warnings`, so every digest covers it). */
+  left: LeftItem[];
   /** Over every segment's digest, in order. */
   digest: string;
   inventory: GoalInventory;

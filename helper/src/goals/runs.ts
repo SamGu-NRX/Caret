@@ -167,6 +167,9 @@ export class GoalRuns {
   /** Offers a goal's first segment for acceptance, as the reply to `requestId` (or as a fresh plan replacing another). */
   propose(given: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[]; pressed: DonePress[] } | null = null): GoalProgress {
     if (this.runs.has(given.goalId)) throw new Error(`goal ${given.goalId} already exists`);
+    // Only lowering's gates (G2, gates.ts) mark a write: a plan built any other way is a bug, never offered.
+    const unchecked = given.segments.flatMap((s) => s.steps).find((s) => s.kind === "write" && s.gate === null);
+    if (unchecked !== undefined) throw new Error(`goal ${given.goalId}: step ${unchecked.ref} writes '${unchecked.target.label}' without passing the value gates`);
     // The run owns its own frozen copy: what is shown is what runs, whatever the caller does with its object later.
     const plan = structuredClone(given);
     for (const seg of plan.segments) deepFreeze(seg);

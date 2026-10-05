@@ -283,6 +283,33 @@ export function cannedGoalWriter(scripts: CannedStep[][]): WriterPort & { reques
   };
 }
 
+// MARK: - a stand-in for Jev
+
+/**
+ * A stand-in for Jev, for desk runs that are not about Jev's judgment. Every choice question whose options include
+ * "yes" is answered `belongs(question)` (true by default) at `p`; a question about whose details a field or value is
+ * gets "unclear", which vetoes nothing; every yes/no question gets `noul`. `calls` counts requests, `claimCalls` those
+ * with yes/no questions (drafts.ts confirmClaims), `asked` keeps each choice question's instructions.
+ */
+export function standInJev(o: { p?: number; noul?: number; belongs?: (instructions: string) => boolean } = {}): AskJev & { calls: number; claimCalls: number; asked: string[] } {
+  const f = Object.assign(
+    async (req: Parameters<AskJev>[0]) => {
+      f.calls++;
+      if (Object.keys(req.nouls ?? {}).length > 0) f.claimCalls++;
+      const answers: Record<string, { choice: string; confidence: number }> = {};
+      for (const [id, q] of Object.entries(req.questions)) {
+        const text = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
+        f.asked.push(text);
+        if ("yes" in q.criteria) answers[id] = { choice: (o.belongs ?? (() => true))(text) ? "yes" : "no", confidence: o.p ?? 0.95 };
+        else answers[id] = { choice: "unclear" in q.criteria ? "unclear" : (Object.keys(q.criteria)[0] ?? ""), confidence: o.p ?? 0.95 };
+      }
+      return { model: "jev-stand-in", answers, nouls: Object.fromEntries(Object.keys(req.nouls ?? {}).map((id) => [id, o.noul ?? 0.99])), inputTokens: 10, latencyMs: 1, costUsd: 0 };
+    },
+    { calls: 0, claimCalls: 0, asked: [] as string[] },
+  );
+  return f;
+}
+
 // MARK: - a helper on the desk
 
 export interface GoalScene {

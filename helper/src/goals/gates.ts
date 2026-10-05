@@ -1,0 +1,91 @@
+// The value gates every goal write passes before its preview (G2), the same gates an Ask's written plan passes
+// (planner/codeplan.ts, planner/validate.ts):
+//   - a field or value of a kind Caret never types (memory/sensitive.ts: card and account numbers, passwords, codes,
+//     government IDs, API keys) is never written;
+//   - the value's kind fits the field (fill/kinds.ts misfit, and numberFieldMisfit below);
+//   - Jev confirms the value belongs in the field: Ask's question in both its wordings, both answers agreeing at
+//     PLAN_CUTOFF, which is fill's FILL_CUTOFF, with fill's owner veto for a field that takes a person's details.
+// A write that fails is dropped from the plan, and the preview says why in one sentence (lower.ts). Text Caret
+// composed is checked by goals/drafts.ts instead of Jev's field question; its never-typed check is here.
+//
+// D2-06 lowered goal writes with misfit alone, which leaves every ID field unchecked, and never asked Jev, so M2's live
+// qwen3.8 plan put the sender's email in Order number and the goal said "Done".
+import type { AskJev } from "../fill/jev.ts";
+import { fieldKinds, misfit, textKind } from "../fill/kinds.ts";
+import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
+import { verifyWrites } from "../planner/codeplan.ts";
+import { secretIn } from "../planner/trace.ts";
+import type { SnippetLedger } from "../privacy.ts";
+import type { TargetBinding, ValueBinding } from "./plan.ts";
+
+const clip = (s: string): string => {
+  const t = s.replace(/\s+/gu, " ").trim();
+  return t.length <= 60 ? t : `${t.slice(0, 59)}…`;
+};
+
+/**
+ * A label that asks for a number or code by name ("Order number", "Invoice no.", "Ticket #", "Confirmation code").
+ * misfit leaves ID words unchecked on purpose (B16 and B17 put links and order numbers in one "Reference" field), so
+ * "Reference" alone is not one of these.
+ */
+const NUMBER_FIELD = /\b(?:number|no|num|nr|code)\b|#/u;
+
+/**
+ * Why a value does not fit a field that names a number or code and no other shape code can check, or null: an email
+ * address or a web link is never a number or code. Written for M2's scene 1 ("Order number" took
+ * priya.raman@northwind.example), not measured on real forms.
+ */
+export function numberFieldMisfit(value: string, label: string): string | null {
+  // A label that also names a shape misfit checks ("Phone number", "Street number") is misfit's.
+  if (!NUMBER_FIELD.test(label.toLowerCase()) || ![...fieldKinds([label])].every((k) => k === "id")) return null;
+  const k = textKind(value);
+  if (k !== "email" && k !== "url") return null;
+  return `'${clip(value)}' is ${k === "email" ? "an email address" : "a web link"}, and the field takes a number or code`;
+}
+
+/** Why code drops a write before asking Jev, or null. `instruction` is where a typed value's own label may stand. */
+export function codeGate(t: TargetBinding, v: ValueBinding, instruction: string): string | null {
+  const field = labelKind(t.label);
+  if (field !== null) return `Caret never types ${SENSITIVE_SAYS[field]}; that is yours to enter`;
+  const value = secretIn(v.text, instruction);
+  if (value !== null) return `Caret never types ${SENSITIVE_SAYS[value]}; that is yours to enter`;
+  // A drafted text's facts are checked by goals/drafts.ts; a calendar event by its resolver.
+  if (v.draft !== null || t.control === "calendar") return null;
+  if (t.control !== "text") return null;
+  return misfit(v.text, [t.label]) ?? numberFieldMisfit(v.text, t.label);
+}
+
+export interface JevWrite {
+  /** The step's ref. */
+  ref: string;
+  target: TargetBinding;
+  value: ValueBinding;
+}
+
+/**
+ * The writes Jev does not confirm, by step ref, each with the sentence the preview shows. With no Jev, every write is
+ * unconfirmed. Throws JevUnavailable when the request fails: code does not guess on Jev's behalf.
+ */
+export async function jevGate(instruction: string, writes: readonly JevWrite[], askJev: AskJev | null, ledger: SnippetLedger): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (writes.length === 0) return out;
+  if (askJev === null) {
+    for (const w of writes) out.set(w.ref, `Caret couldn't ask Jev whether '${clip(w.value.text)}' belongs there`);
+    return out;
+  }
+  let dropped: Set<string>;
+  try {
+    dropped = await verifyWrites(
+      instruction,
+      writes.map((w) => ({ key: w.ref, field: { name: w.target.label, label: w.target.label }, value: { display: w.value.display, window: w.value.source?.windowId ?? null, owner: w.value.owner } })),
+      askJev,
+      ledger,
+    );
+  } catch (e) {
+    throw new JevUnavailable(e instanceof Error ? e.message.slice(0, 200) : String(e));
+  }
+  for (const w of writes) if (dropped.has(w.ref)) out.set(w.ref, `Jev didn't confirm '${clip(w.value.text)}' belongs there`);
+  return out;
+}
+
+export class JevUnavailable extends Error {}

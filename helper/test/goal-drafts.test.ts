@@ -8,23 +8,14 @@ import type { PlanningSnapshot } from "../src/codemode/types.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { YOURS_EFFECT } from "../src/goals/capabilities.ts";
 import { GoalProgress, PROTOCOL_VERSION } from "../src/protocol.ts";
-import { areaKey, button, fieldKey, goalScene, MAIL, mailWindow, replyWindow, textArea, textField, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { areaKey, button, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, textArea, textField, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
 
 const EMAIL = "priya.raman@northwind.example";
 const MESSAGE = areaKey(MAIL, "Message");
 const TO = fieldKey(MAIL, "To");
 
-/** Jev that answers every yes/no with `p`. */
-const jevYes = (p = 0.99): AskJev & { calls: number } => {
-  const f = Object.assign(
-    async (req: Parameters<AskJev>[0]) => {
-      f.calls++;
-      return { model: "jev-test", answers: {}, nouls: Object.fromEntries(Object.keys(req.nouls ?? {}).map((id) => [id, p])), inputTokens: 10, latencyMs: 1, costUsd: 0 };
-    },
-    { calls: 0 },
-  );
-  return f;
-};
+/** Jev that answers every yes/no with `p` and confirms every copied value (G2's value gate). */
+const jevYes = (p = 0.99): ReturnType<typeof standInJev> => standInJev({ noul: p });
 
 const scenes: GoalScene[] = [];
 afterEach(async () => {
@@ -104,7 +95,7 @@ describe("a goal that drafts a reply", () => {
   it("asks Jev about each claim, and is refused when Jev doubts one or is not there", async () => {
     const j = jevYes();
     await scene([REPLY], { askJev: j }).request("draft a reply to Priya saying I'm in");
-    expect(j.calls).toBe(2);
+    expect(j.claimCalls).toBe(2);
     const doubted = await scene([REPLY], { askJev: jevYes(0.5) }).request("draft a reply to Priya saying I'm in");
     expect(refusedSays(doubted)).toBe(`Caret couldn't confirm you asked to say "Hi Priya, I'm in for Thursday, October 8 at 3:00 PM."`);
     const alone = await scene([REPLY], { askJev: null }).request("draft a reply to Priya saying I'm in");

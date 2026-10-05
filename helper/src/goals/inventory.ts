@@ -15,6 +15,7 @@ import type { MemoryValue } from "../planner/trace.ts";
 import { SnippetLedger, WINDOW_CHARS } from "../privacy.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import { allowedEffects } from "./capabilities.ts";
+import { owedFields, type OwedField } from "./left.ts";
 import type { GoalControl, GoalDomain, GoalInventory, TargetBinding, ValueBinding, ValueOrigin } from "./plan.ts";
 
 /** Windows one goal may act in. With the calendar, that is the writer's four snapshots (PlanInputSchema). */
@@ -86,6 +87,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   const documents = new Map<string, string>();
   const windowRefs = new Map<string, string>();
   const texts = new Map<string, { title: string; text: string; message: string }>();
+  const owed = new Map<string, OwedField[]>();
   const snapshots: PlanningSnapshot[] = [];
   let t = 0;
   let v = 0;
@@ -100,7 +102,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
         ? { kind: "memory", entryId: x.memory, fileRevision: "", digest: digest(x.text) }
         : { kind: "span", snapshot, source: x.window?.window.windowId ?? "instruction", startUTF16: 0, endUTF16: x.text.length, digest: digest(x.text) };
     const source = x.window !== null && x.key !== null ? { windowId: x.window.window.windowId, key: x.key, revision: windowRevision(x.window) } : null;
-    return { ref, text: x.text, display: x.display, origin, source, memory: x.memory, event: null, draft: null };
+    return { ref, text: x.text, display: x.display, origin, source, memory: x.memory, event: null, draft: null, owner: x.owner };
   };
 
   windows.forEach((w, i) => {
@@ -108,6 +110,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     revisions.set(w.window.windowId, windowRevision(w));
     windowRefs.set(`w${i + 1}`, w.window.windowId);
     texts.set(w.window.windowId, basisText(w));
+    owed.set(w.window.windowId, owedFields(w));
     const doc = o.pageDocument?.(w.window.windowId) ?? null;
     if (doc !== null) documents.set(w.window.windowId, doc);
     const title = w.window.title.slice(0, 200);
@@ -178,7 +181,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     targets.set(ref, { ref, domain, key: "calendar", role: "calendar", label: o.calendar, control: "calendar", value: "", options: null });
     snapshots.push({ snapshot: `s${snapshots.length + 1}`, window: `w${snapshots.length + 1}`, revision: "calendar", title: `Calendar '${o.calendar}'`, targets: [{ ref, label: o.calendar, kind: "calendar", canFill: true, options: [], allowedPressEffects: [] }], values: [], questions: [] });
   }
-  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts }, ledger };
+  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed }, ledger };
 }
 
 /** Events code reads from a source window's sentences: a resolved time and a person, as an event card would offer. */
@@ -206,6 +209,7 @@ function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventCl
         memory: null,
         event: { title: c.title, start: time.start, end: time.end, says: time.says, sentence },
         draft: null,
+        owner: null,
       });
     }
   }
