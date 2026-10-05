@@ -1,1 +1,0 @@
-W3/B25: XPCHostLink sends nothing until a verified reply; MemoryStore(dir) uses <dir>/Memory and grants no authority; oxc needs   escaped. Push v2/* only to sam. Intents gpt-oss-120b, plans qwen3.8 (~1k out tok/min); space writer calls with a fresh AbortSignal.

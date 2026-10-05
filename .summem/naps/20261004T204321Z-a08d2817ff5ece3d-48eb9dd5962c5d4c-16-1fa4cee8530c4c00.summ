@@ -1,0 +1,1 @@
+W3-D2-02: push v2/* only to sam; XPCHostLink sends nothing before a verified reply; never-typed kinds only in memory/sensitive.ts; Ask sentences in planner/says.ts; intents gpt-oss-120b, plans qwen3.8; space Groq calls with a fresh AbortSignal; a 1-token probe hides a spent day.

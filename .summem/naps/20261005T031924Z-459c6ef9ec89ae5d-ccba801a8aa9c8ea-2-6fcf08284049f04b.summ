@@ -1,0 +1,1 @@
+D2-02/B27: Router 1 answers within ~0.05 of its 0.5 floor flip between live runs, so diff runs per moment before crediting a code change; a failed fill reaches the user only via Helper.fillFailed (says.ts fillSays), ids go to warn.
