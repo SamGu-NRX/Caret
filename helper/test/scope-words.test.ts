@@ -126,8 +126,15 @@ describe("the section grammar", () => {
     expect(namedSection("just do my contact info", SECTIONS, "Contact information")).toEqual({ phrases: ["contact info"], section: "Contact information", why: null });
     expect(namedSection("do my contact details please", SECTIONS, null).section).toBeNull();
     expect(namedSection("please do my contact details", SECTIONS, null).section).toBe("Contact information");
-    expect(namedSection("fill in my contact information", ["Contact", "Emergency contact"], "Contact").section).toBeNull();
+    expect(namedSection("fill in my contact information", ["Contact", "Contact details"], "Contact").section).toBeNull();
     expect(namedSection("just do my contact info up top", [], null)).toEqual({ phrases: ["contact info", "up top"], section: null, why: "no one section of this form means that" });
+  });
+
+  it("maps a contact or details phrase only to a heading that is the user's own, word for word (B28 review 6)", () => {
+    for (const h of ["Contact", "Contact info", "Contact Information", "contact details", "Your contact information", "My Contact Details"]) expect(namedSection("do my contact info", [h, "Education"], h).section).toBe(h);
+    for (const h of ["Emergency contact", "Emergency contact information", "Reference contact details", "Contact preferences", "Contact your manager"]) expect(namedSection("do my contact info", ["About you", h], "About you").section).toBeNull();
+    for (const h of ["Your details", "My details", "Details", "Personal details", "Personal information", "Personal info", "About you"]) expect(namedSection("fill in my details", [h, "Education"], h).section).toBe(h);
+    for (const h of ["Reference details", "Emergency contact details", "Spouse personal details", "Personal links", "Payment details"]) expect(namedSection("fill in my details", ["Education", h], "Education").section).toBeNull();
   });
 
   it("maps 'up top' to the first field's section, and asks when the first field has none", () => {
@@ -137,7 +144,7 @@ describe("the section grammar", () => {
 
   it("maps 'my details' to the one details section", () => {
     expect(namedSection("fill in my details", ["Your details", "Education"], "Your details").section).toBe("Your details");
-    expect(namedSection("fill in my details", ["Your details", "Personal links"], "Your details").section).toBeNull();
+    expect(namedSection("fill in my details", ["Your details", "Personal details"], "Your details").section).toBeNull();
     expect(namedSection("fill in my details", SECTIONS, "Contact information").section).toBeNull();
   });
 

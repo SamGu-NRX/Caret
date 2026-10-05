@@ -52,12 +52,21 @@ export interface SectionPhrase {
   pick(sections: readonly string[], firstFieldSection: string | null): string[];
 }
 
+/**
+ * The section headings that are the user's own contact information or details, as a whole heading after
+ * normalizeInstruction. A heading that only holds the word ("Emergency contact", "Reference details") is someone
+ * else's: the sixth B28 review had "fill in my contact info only" fill an Emergency contact section without a question.
+ */
+const CONTACT_HEADING = /^(?:(?:your|my) )?contact(?: info| information| details)?$/u;
+const DETAILS_HEADING = /^(?:(?:your|my) )?(?:personal )?details$|^personal info(?:rmation)?$|^about you$/u;
+const headings = (sections: readonly string[], re: RegExp): string[] => sections.filter((n) => re.test(normalizeInstruction(n)));
+
 /** Phrases that name a part of the form. None of them is a whole-form phrase. */
 export const SECTION_WORDS: readonly SectionPhrase[] = [
-  { says: "contact info", re: /\bcontact\s+(?:info|information|details)\b/u, pick: (s) => s.filter((n) => /\bcontact\b/iu.test(n)) },
+  { says: "contact info", re: /\bcontact\s+(?:info|information|details)\b/u, pick: (s) => headings(s, CONTACT_HEADING) },
   // "Up top" is the section the form starts with; a form whose first field sits under no heading has no such section.
   { says: "up top", re: /\bup\s+top\b/u, pick: (_, first) => (first === null ? [] : [first]) },
-  { says: "my details", re: /\bmy\s+details\b/u, pick: (s) => s.filter((n) => /\b(?:details|personal|about\s+you)\b/iu.test(n)) },
+  { says: "my details", re: /\bmy\s+details\b/u, pick: (s) => headings(s, DETAILS_HEADING) },
 ];
 
 const CONTACT_OBJECTS = ["my", "the"].flatMap((owner) => ["info", "information", "details"].map((noun) => `${owner} contact ${noun}`));

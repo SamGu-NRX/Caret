@@ -614,7 +614,7 @@ describe("a grounded whole-form scope (B28)", () => {
   it("maps 'my details' to a details section, and asks when two sections could be it", async () => {
     const m = greenhouse({ "Your details": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
     expect(written(await askG("fill in my details", m).run)).toEqual(CONTACT);
-    const two = greenhouse({ "Your details": ["First Name", "Last Name"], "Personal links": ["Email", "Phone", "Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
+    const two = greenhouse({ "Your details": ["First Name", "Last Name"], "Personal details": ["Email", "Phone", "Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
     expect(((await askG("fill in my details", two).run.catch((x: unknown) => x)) as AskRefused).message).toBe(SAYS.whichFields);
   });
 
@@ -630,6 +630,15 @@ describe("a grounded whole-form scope (B28)", () => {
     const { jev, run } = askG("just fill my email on this form", greenhouse(), (q) => (q.includes("'Email'") ? "yes" : "no"));
     expect(written(await run)).toEqual([GKEY("email")]);
     expect(jev.seen.filter((r) => "all" in r.questions).length).toBe(2);
+  });
+
+  it("never takes someone else's contact or details section for the user's (B28 review 6)", async () => {
+    const theirs = greenhouse({ "About you": ["First Name", "Last Name"], "Emergency contact": ["Email", "Phone"], Education: ["Graduation Date (MM/YYYY)"], Links: ["LinkedIn Profile"] });
+    const e = await askG("fill in my contact info only", theirs, () => "no").run.catch((x: unknown) => x);
+    expect((e as AskRefused).message).toBe(SAYS.whichFields);
+    const ref = greenhouse({ "Reference details": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
+    const r = await askG("fill in my details", ref, () => "no").run.catch((x: unknown) => x);
+    expect((r as AskRefused).message).toBe(SAYS.whichFields);
   });
 
   it("asks which fields for a section phrase in any sentence but a section request, even when Jev would say yes", async () => {
