@@ -260,6 +260,33 @@ def shot(name, pid, wid, panels=()):
     return os.path.join("shots", f"{name}.png")
 
 
+def covers(name, pid, wid):
+    """What lies above the case's TextEdit window where they overlap, front to back, each captured by
+    window number, and the host's own record of the last held ghost (H7b: V1b's check 7 held five
+    Tab offers as covered and nothing said by what). Needs A17_TOOL's screen-windows."""
+    tool = os.environ.get("A17_TOOL")
+    if not tool:
+        return {"error": "A17_TOOL is not set"}
+    out = subprocess.run([tool, "screen-windows"], capture_output=True, text=True)
+    try:
+        listing = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        return {"error": f"screen-windows: {out.stdout} {out.stderr}"}
+    with open(os.path.join(OUT, f"{name}-windows.json"), "w") as f:
+        json.dump(listing, f, indent=2)
+    te = bounds(pid, wid)
+    above = []
+    for w in listing.get("windows", []):
+        if w["number"] == wid:
+            break
+        b = w["frame"]
+        if te and b[0] < te[0] + te[2] and b[0] + b[2] > te[0] and b[1] < te[1] + te[3] and b[1] + b[3] > te[1]:
+            path = os.path.join("shots", f"{name}-above-{w['number']}.png")
+            shot_ok = subprocess.run(["screencapture", "-x", "-o", f"-l{w['number']}", os.path.join(OUT, path)]).returncode == 0
+            above.append(dict(w, shot=path if shot_ok else None))
+    return {"front": listing.get("front"), "above": above, "ghostHold": host().get("ghostHold"), "window": te}
+
+
 def counter(state, name):
     return (state.get("counters") or {}).get(name, 0)
 
@@ -453,7 +480,8 @@ def tab_case(name, before, expected, word, taken):
             break
         time.sleep(0.1)
     if not check(f"{name}: the recorded phrase is offered", offer and offer.get("text") == expected, offer=offer, expected=expected,
-                 front=front_app(), counters=ghost_counters(s), fit=(s.get("ghostFits") or [None])[-1]):
+                 front=front_app(), counters=ghost_counters(s), fit=(s.get("ghostFits") or [None])[-1],
+                 cover=None if offer else covers(name, pid, wid)):
         close(pid)
         return
     ensure_focus(pid, wid)

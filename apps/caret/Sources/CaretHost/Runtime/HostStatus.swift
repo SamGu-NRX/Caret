@@ -18,6 +18,8 @@ final class HostStatus: @unchecked Sendable {
         var counters: [String: UInt64] = [:]
         /// The ghost overlay's recent attempts, oldest first, at most `GhostFit.keptRecords`.
         var ghostFits: [GhostFit.Record] = []
+        /// The last ghost held for cover, with the covering window.
+        var ghostHold: DebugState.LineHidden?
         var writing: DebugState.WritingInfo?
         var pageSight: PageSight.DebugInfo?
     }

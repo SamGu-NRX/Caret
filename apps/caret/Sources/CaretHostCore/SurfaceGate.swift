@@ -38,13 +38,20 @@ public enum SurfaceGate {
         /// The owner runs as a background agent (no Dock icon: LSUIElement or background-only),
         /// as writing aids do. A regular app's palette over a field is never taken for a decoration.
         public var agent: Bool
+        /// The window server's number for it (`kCGWindowNumber`), so a held offer's record names the
+        /// exact window that covered it; 0 when unknown.
+        public var number: Int
+        /// The owning process's name as the window server lists it (`kCGWindowOwnerName`).
+        public var owner: String?
 
-        public init(pid: Int32, bounds: CGRect, layer: Int = 0, alpha: Double = 1, agent: Bool = false) {
+        public init(pid: Int32, bounds: CGRect, layer: Int = 0, alpha: Double = 1, agent: Bool = false, number: Int = 0, owner: String? = nil) {
             self.pid = pid
             self.bounds = bounds
             self.layer = layer
             self.alpha = alpha
             self.agent = agent
+            self.number = number
+            self.owner = owner
         }
     }
 
@@ -94,6 +101,19 @@ public enum SurfaceGate {
         let margins = [field.minX - bounds.minX, field.minY - bounds.minY, bounds.maxX - field.maxX, bounds.maxY - field.maxY]
         guard let low = margins.min(), let high = margins.max() else { return false }
         return low >= 0 && high <= ringMargin && high - low <= 1
+    }
+
+    /// The first of `anchors` that another app's window covers, and that window: what `check` held
+    /// as `covered`. Nil when no anchor is covered.
+    public static func cover(
+        targetPID: Int32, anchors: [CGPoint], windows: [Window], ownPID: Int32, displays: [CGRect] = [], field: CGRect? = nil
+    ) -> (anchor: CGPoint, window: Window)? {
+        for anchor in anchors {
+            if let top = topWindow(at: anchor, windows: windows, ownPID: ownPID, displays: displays, field: field), top.pid != targetPID {
+                return (anchor, top)
+            }
+        }
+        return nil
     }
 
     /// Nil when the surface may be drawn; otherwise why it is held.

@@ -652,13 +652,9 @@ public final class SurfaceMachine {
             targetPID: target.pid, frontmostPID: front, fieldIsFocused: focused, anchors: anchors,
             windows: stack.windows, ownPID: stack.ownPID, displays: stack.displays, field: field
         )
-        if let hold, hold == .covered, let anchor = anchors.first {
-            let top = SurfaceGate.topWindow(at: anchor, windows: stack.windows, ownPID: stack.ownPID, displays: stack.displays, field: field)
-            lastCovered = DebugState.LineHidden(
-                hold: hold.rawValue, coverPID: top?.pid, coverLayer: top?.layer, coverAgent: top?.agent,
-                coverBounds: top.map { [$0.bounds.minX, $0.bounds.minY, $0.bounds.width, $0.bounds.height].map(Double.init) },
-                focusedFrameRead: live != nil
-            )
+        if hold == .covered {
+            let cover = SurfaceGate.cover(targetPID: target.pid, anchors: anchors, windows: stack.windows, ownPID: stack.ownPID, displays: stack.displays, field: field)
+            lastCovered = .covered(by: cover?.window, at: cover?.anchor, focusedFrameRead: live != nil)
         }
         return hold
     }

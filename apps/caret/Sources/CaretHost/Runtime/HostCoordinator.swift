@@ -37,6 +37,8 @@ final class HostCoordinator {
     /// The key-down whose paint was last measured, so one keystroke yields at most one sample.
     private var measuredKeySequence: UInt64 = 0
     private let watch = VisibilityWatch()
+    /// The covering window last written to the log, so a cover that stays up is logged once.
+    private var loggedCoverNumber: Int?
 
     init(
         arbiter: OfferArbiter,
@@ -225,6 +227,16 @@ final class HostCoordinator {
         recordPaintLatency(keyStamp)
     }
 
+    /// Records which window held a ghost as covered, in the debug state, and logs it when the
+    /// covering window is a different one from the last logged (H7b: V1b's check 7 could not say what
+    /// held five Tab offers).
+    private func noteCover(_ hidden: DebugState.LineHidden) {
+        status.update { $0.ghostHold = hidden }
+        guard hidden.coverNumber != loggedCoverNumber else { return }
+        loggedCoverNumber = hidden.coverNumber
+        FileHandle.standardError.write(Data("caret: ghost text held: covered by \(hidden.summary)\n".utf8))
+    }
+
     /// Publishes the offer, then draws it, then lets it own its keys (`OfferArbiter.reveal`): a Tab
     /// between the publish and a draw that fails takes nothing. False when any step refused.
     ///
@@ -242,7 +254,7 @@ final class HostCoordinator {
         // Drawn only where the user is looking (SurfaceGate); otherwise held, which for ghost text
         // means dropped: the next keystroke generates again.
         let anchors = snapshot.caretRectAX.map { [CGPoint(x: $0.midX, y: $0.midY)] } ?? []
-        if let hold = Visibility.hold(for: field.identity, anchors: anchors) {
+        if let hold = Visibility.hold(for: field.identity, anchors: anchors, covered: noteCover) {
             status.increment("held.ghost.\(hold.rawValue)")
             overlay.hide()
             return false
@@ -284,7 +296,7 @@ final class HostCoordinator {
             watched += [CGPoint(x: c[0] + 1, y: c[1] + 1), CGPoint(x: c[0] + c[2] - 1, y: c[1] + 1),
                         CGPoint(x: c[0] + 1, y: c[1] + c[3] - 1), CGPoint(x: c[0] + c[2] - 1, y: c[1] + c[3] - 1)]
         }
-        watch.start(check: { Visibility.hold(for: target, anchors: watched) }, onLost: { [weak self] hold in
+        watch.start(check: { [weak self] in Visibility.hold(for: target, anchors: watched, covered: { self?.noteCover($0) }) }, onLost: { [weak self] hold in
             self?.status.increment("withdrawn.ghost.\(hold.rawValue)")
             self?.clearOffer()
         })

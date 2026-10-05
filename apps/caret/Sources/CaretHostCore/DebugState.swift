@@ -329,6 +329,12 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var coverAgent: Bool?
         public var coverBounds: [Double]?
         public var focusedFrameRead: Bool?
+        /// The covering window's number (`screencapture -l` takes it), its owner's name and bundle id.
+        public var coverNumber: Int?
+        public var coverOwner: String?
+        public var coverBundle: String?
+        /// The anchor point the gate found covered, global top-left points.
+        public var anchor: [Double]?
 
         public init(hold: String, coverPID: Int32? = nil, coverLayer: Int? = nil, coverAgent: Bool? = nil, coverBounds: [Double]? = nil, focusedFrameRead: Bool? = nil) {
             self.hold = hold
@@ -337,6 +343,30 @@ public struct DebugState: Codable, Equatable, Sendable {
             self.coverAgent = coverAgent
             self.coverBounds = coverBounds
             self.focusedFrameRead = focusedFrameRead
+        }
+
+        /// The record of `cover` over `anchor`; `bundle` is looked up by the caller, which can ask
+        /// the running applications.
+        public static func covered(by cover: SurfaceGate.Window?, at anchor: CGPoint?, bundle: String? = nil, focusedFrameRead: Bool? = nil) -> LineHidden {
+            var hidden = LineHidden(
+                hold: SurfaceGate.Hold.covered.rawValue, coverPID: cover?.pid, coverLayer: cover?.layer, coverAgent: cover?.agent,
+                coverBounds: cover.map { [$0.bounds.minX, $0.bounds.minY, $0.bounds.width, $0.bounds.height].map(Double.init) },
+                focusedFrameRead: focusedFrameRead
+            )
+            hidden.coverNumber = cover?.number
+            hidden.coverOwner = cover?.owner
+            hidden.coverBundle = bundle
+            hidden.anchor = anchor.map { [Double($0.x), Double($0.y)] }
+            return hidden
+        }
+
+        /// One line for the log: "window 412 of pid 355 (Setup Assistant, com.apple.SetupAssistant)
+        /// layer 0 at [x, y, w, h] over the anchor [x, y]".
+        public var summary: String {
+            let name = [coverOwner, coverBundle].compactMap { $0 }.joined(separator: ", ")
+            let bounds = coverBounds.map { "[" + $0.map { String(format: "%.0f", $0) }.joined(separator: ", ") + "]" } ?? "?"
+            let at = anchor.map { "[" + $0.map { String(format: "%.0f", $0) }.joined(separator: ", ") + "]" } ?? "?"
+            return "window \(coverNumber.map(String.init) ?? "?") of pid \(coverPID.map(String.init) ?? "?") (\(name.isEmpty ? "unknown owner" : name)) layer \(coverLayer.map(String.init) ?? "?") at \(bounds) over the anchor \(at)"
         }
     }
 
@@ -623,6 +653,9 @@ public struct DebugState: Codable, Equatable, Sendable {
     /// The ghost overlay's recent attempts to draw a completion, oldest first: how each fit, or
     /// why it was not drawn, with the room it had. Geometry only, never text.
     public var ghostFits: [GhostFit.Record]?
+    /// The last ghost text held because another window covered the caret: which window (H7b: V1b's
+    /// check 7 held five Tab offers as covered and nothing said by what).
+    public var ghostHold: LineHidden?
     /// Running apps that also take Tab for their own completions (`OtherTabOwners`). Q1 (A18): with
     /// Cotypist running, its Tab took one word per press while Caret's counters stayed at zero.
     public var otherTabOwners: [String]?

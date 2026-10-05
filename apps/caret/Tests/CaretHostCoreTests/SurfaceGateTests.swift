@@ -40,6 +40,33 @@ final class SurfaceGateTests: XCTestCase {
         XCTAssertNil(check(front: form, windows: windows))
     }
 
+    /// H7b: Caret's own panels (the slip, a toast, a capsule, a rim) lie over the ghost's rectangle
+    /// and its caret; they never cover Caret's own offer, and no cover is named.
+    func testCaretsPanelOverTheGhostsRectangleDoesNotCoverIt() {
+        let ghost = CGRect(x: 716, y: 150, width: 140, height: 20)
+        let panel = SurfaceGate.Window(pid: caret, bounds: ghost.insetBy(dx: -12, dy: -8), layer: 101, number: 77, owner: "Caret")
+        let windows = [panel, SurfaceGate.Window(pid: form, bounds: formWindow, number: 12, owner: "TextEdit")]
+        let anchors = [CGPoint(x: ghost.minX, y: ghost.midY), CGPoint(x: ghost.maxX - 1, y: ghost.midY)]
+        XCTAssertNil(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: anchors, windows: windows, ownPID: caret))
+        XCTAssertNil(SurfaceGate.cover(targetPID: form, anchors: anchors, windows: windows, ownPID: caret))
+    }
+
+    /// The window a held offer's record names is the one over the anchor that was covered, not the
+    /// first anchor's (a capsule's far corner can be the covered one).
+    func testTheCoverIsTheWindowOverTheCoveredAnchor() {
+        let palette = SurfaceGate.Window(pid: messages, bounds: CGRect(x: 900, y: 140, width: 200, height: 80), layer: 3, number: 412, owner: "Messages")
+        let windows = [palette, SurfaceGate.Window(pid: form, bounds: formWindow, number: 12, owner: "TextEdit")]
+        let anchors = [anchor, CGPoint(x: 950, y: 160)]
+        XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: anchors, windows: windows, ownPID: caret), .covered)
+        let cover = SurfaceGate.cover(targetPID: form, anchors: anchors, windows: windows, ownPID: caret)
+        XCTAssertEqual(cover?.anchor, CGPoint(x: 950, y: 160))
+        XCTAssertEqual(cover?.window, palette)
+        let hidden = DebugState.LineHidden.covered(by: cover?.window, at: cover?.anchor, bundle: "com.apple.MobileSMS")
+        XCTAssertEqual(hidden.hold, "covered")
+        XCTAssertEqual(hidden.coverNumber, 412)
+        XCTAssertEqual(hidden.summary, "window 412 of pid 300 (Messages, com.apple.MobileSMS) layer 3 at [900, 140, 200, 80] over the anchor [950, 160]")
+    }
+
     func testAFullScreenOverlayAboveTheNormalLayerIsIgnored() {
         let display = CGRect(x: 0, y: 0, width: 1512, height: 982)
         let windows = [SurfaceGate.Window(pid: messages, bounds: display, layer: 25),

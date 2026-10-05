@@ -944,6 +944,7 @@ public final class HostRuntime {
             state.authorityLastRevoke = info.lastReason
         }
         state.ghostFits = fields.ghostFits
+        state.ghostHold = fields.ghostHold
         state.writing = fields.writing
         state.pageSight = fields.pageSight
         return state

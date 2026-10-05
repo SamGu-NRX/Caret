@@ -9,7 +9,12 @@ enum Visibility {
     /// Nil when a surface for `target` may be drawn at `anchors` (global, top-left points).
     /// `requireFocus: false` is for a result toast, which reports on a field the form has already
     /// moved focus away from; it still needs the app in front and its anchor uncovered.
-    static func hold(for target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool = true) -> SurfaceGate.Hold? {
+    /// `covered`, when given, receives the window that covered an anchor whenever the answer is
+    /// `.covered`.
+    static func hold(
+        for target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool = true,
+        covered: ((DebugState.LineHidden) -> Void)? = nil
+    ) -> SurfaceGate.Hold? {
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         // Cheapest test first: no Accessibility read for an app that is not in front.
         guard front == target.pid else { return .appNotFront }
@@ -21,11 +26,19 @@ enum Visibility {
         // The app's focused element as it is now, which a writing aid's decoration rings
         // (`SurfaceGate.ringsField`); read for a toast too, whose field may no longer be focused.
         let fieldFrame = AXRead.focusedElement(pid: target.pid).flatMap(AXRead.frame(of:))
-        return SurfaceGate.check(
+        let stack = windows()
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let displays = NSScreen.screens.map { Screen.ax($0.frame) }
+        let hold = SurfaceGate.check(
             targetPID: target.pid, frontmostPID: front, fieldIsFocused: focused, anchors: anchors,
-            windows: windows(), ownPID: ProcessInfo.processInfo.processIdentifier,
-            displays: NSScreen.screens.map { Screen.ax($0.frame) }, field: fieldFrame
+            windows: stack, ownPID: ownPID, displays: displays, field: fieldFrame
         )
+        if hold == .covered, let covered {
+            let cover = SurfaceGate.cover(targetPID: target.pid, anchors: anchors, windows: stack, ownPID: ownPID, displays: displays, field: fieldFrame)
+            let bundle = cover.flatMap { NSRunningApplication(processIdentifier: $0.window.pid)?.bundleIdentifier }
+            covered(.covered(by: cover?.window, at: cover?.anchor, bundle: bundle, focusedFrameRead: fieldFrame != nil))
+        }
+        return hold
     }
 
     /// On-screen windows, front to back. Window-server only, so any thread may call it (the input
@@ -50,7 +63,9 @@ enum Visibility {
                 pid: pid, bounds: bounds, layer: layer,
                 alpha: info[kCGWindowAlpha as String] as? Double ?? 1,
                 // Asked only of elevated windows, the few a decoration can be.
-                agent: layer > 0 && isAgent(pid)
+                agent: layer > 0 && isAgent(pid),
+                number: info[kCGWindowNumber as String] as? Int ?? 0,
+                owner: info[kCGWindowOwnerName as String] as? String
             )
         }
     }

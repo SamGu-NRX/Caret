@@ -22,6 +22,8 @@
 //                                          esc, cmd1, cmd2, cmd3 (T2's writing acceptance)
 //   a17-tool windows <pid>                 the app's on-screen windows: number and frame (global,
 //                                          top-left points), for `screencapture -l`
+//   a17-tool screen-windows                every on-screen window, front to back: number, owner pid,
+//                                          name and bundle, layer, alpha and frame; and the front app
 //
 // Each prints one JSON object.
 import AppKit
@@ -209,6 +211,24 @@ case "windows":
         return ["number": number, "frame": [b["X"] ?? 0, b["Y"] ?? 0, b["Width"] ?? 0, b["Height"] ?? 0], "layer": w[kCGWindowLayer as String] as? Int ?? 0]
     }
     emit(["windows": mine])
+case "screen-windows":
+    // Every on-screen window, front to back, with its owner, so a held offer's cover can be named (H7b:
+    // V1b's check 7 held five Tab offers as covered and nothing said by what).
+    let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+    let all = list.compactMap { w -> [String: Any]? in
+        guard let number = w[kCGWindowNumber as String] as? Int, let owner = w[kCGWindowOwnerPID as String] as? Int,
+              let b = w[kCGWindowBounds as String] as? [String: Double] else { return nil }
+        let app = NSRunningApplication(processIdentifier: pid_t(owner))
+        let name: Any = (w[kCGWindowOwnerName as String] as? String) ?? NSNull()
+        let bundle: Any = app?.bundleIdentifier ?? NSNull()
+        let agent: Any = app.map { $0.activationPolicy != .regular } ?? NSNull()
+        return ["number": number, "pid": owner, "owner": name, "bundle": bundle, "agent": agent,
+                "layer": w[kCGWindowLayer as String] as? Int ?? 0, "alpha": w[kCGWindowAlpha as String] as? Double ?? 1,
+                "frame": [b["X"] ?? 0, b["Y"] ?? 0, b["Width"] ?? 0, b["Height"] ?? 0]]
+    }
+    let app = NSWorkspace.shared.frontmostApplication
+    let frontBundle: Any = app?.bundleIdentifier ?? NSNull()
+    emit(["front": ["pid": app?.processIdentifier ?? -1, "bundle": frontBundle], "windows": all])
 default:
     emit(["error": "unknown verb \(verb)"])
 }
