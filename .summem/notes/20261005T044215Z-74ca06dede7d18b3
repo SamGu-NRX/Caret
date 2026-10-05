@@ -1,1 +1,0 @@
-B28: after a fixture page navigates away, wait for site.waitForLoad of the landed page before the next site.command, or the command goes to the departing page's long poll and times out.

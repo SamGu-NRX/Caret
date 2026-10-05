@@ -1,0 +1,1 @@
+W3-B26: XPCHostLink sends nothing until a verified reply; MemoryStore grants no authority; push v2/* only to sam; never-typed kinds only in memory/sensitive.ts; sockets need SO_NOSIGPIPE; Jev confidence = top-two margin; Groq 8k tok/min, space calls with fresh AbortSignal.
