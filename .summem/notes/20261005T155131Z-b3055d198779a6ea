@@ -1,0 +1,1 @@
+R2: a recorded snapshot without the reader's focusedKey makes Router 1 read 'the cursor is not in a text field' and abstain; A5's offers-loop.ndjson lacked it until 831ab47, which is why H6 saw the loop abstain.

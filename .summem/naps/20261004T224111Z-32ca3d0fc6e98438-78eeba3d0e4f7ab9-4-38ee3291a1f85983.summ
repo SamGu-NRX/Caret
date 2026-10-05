@@ -1,0 +1,1 @@
+B26/D2-02: Ask sentences live in planner/says.ts; generator measurements pin setGeneratorClock; Jev 'confidence' is the top-two margin; Groq gpt-oss-120b allows 8k tokens/min, so Ask evals space calls 30 s.
