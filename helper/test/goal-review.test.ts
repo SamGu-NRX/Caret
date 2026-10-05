@@ -2,7 +2,7 @@
 // done with an effect missing, as a scene on the desk. Every name and number is invented.
 import { afterEach, describe, expect, it } from "vitest";
 import type { GoalProgress, Node } from "../src/protocol.ts";
-import { areaKey, button, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, SUPPORT, textArea, textField, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { areaKey, button, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, SUPPORT, textArea, textField, textKey, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
 
 const scenes: GoalScene[] = [];
 afterEach(async () => {
@@ -41,7 +41,7 @@ describe("finding 1: every write passes the gates, drafts, the code-filled To an
     const sc = scene({ scripts: [steps], windows: [mailWindow(), caseWindow(), detailsWindow()], userWindow: "7171-1" });
     const g = preview(await sc.request("file the case"));
     expect(g.steps.map((s) => s.says)).toEqual(["Description: The desk lamp arrived with a cracked base and does not switch on."]);
-    expect(g.warnings).toEqual(["Caret left 'Order number' empty: the field does not take words Caret writes."]);
+    expect(g.warnings).toEqual(["Caret left 'Order number' empty: Caret writes drafts only in a field for a message or a description."]);
   });
 
   it("checks the sender's kind before code puts it in a recipient field", async () => {
@@ -132,5 +132,56 @@ describe("finding 7: a field that reads as another after the preview", () => {
     const stop = sc.goals.filter((x) => x.event === "stopped").at(-1);
     expect(stop?.event === "stopped" && [stop.reason, stop.says]).toEqual(["targetChanged", "'Order number' in 'Support — New case' now reads as another field, so Caret stopped after 0 of 1 steps."]);
     expect(sc.desk.writes).toEqual([]);
+  });
+});
+
+// G2 re-check (theo-astra-reviewer ac171c02b28bce62d) of 69df243.
+describe("re-check: what the first fixes left open", () => {
+  it("ends partial when Jev confirms one of two events: each event is its own effect", async () => {
+    const mail: DeskWindow = {
+      ...mailWindow(),
+      nodes: [...mailWindow().nodes, { key: textKey(MAIL, 5), parent: null, role: "AXStaticText", label: "Can we also meet with Dana on Friday, October 9, 2026 from 1:00 PM to 1:30 PM PT?" }],
+      values: [...(mailWindow().values ?? []), { kind: "date", text: "Friday, October 9, 2026", nodeKey: textKey(MAIL, 5) }, { kind: "time", text: "1:00 PM to 1:30 PM PT", nodeKey: textKey(MAIL, 5) }],
+    };
+    const steps: CannedStep[] = [
+      { fill: { window: "Calendar", target: "Caret", value: "Meet Priya" } },
+      { fill: { window: "Calendar", target: "Caret", value: "Meet Dana" } },
+    ];
+    const sc = scene({ scripts: [steps], windows: [mail, replyWindow()], userWindow: "6161-2", askJev: standInJev({ belongs: (q) => !q.includes("Meet Dana") }) });
+    const g = preview(await sc.request("add both meetings to my calendar"));
+    expect(g.steps.map((s) => s.says)).toEqual([expect.stringMatching(/^Add 'Meet Priya' to your Caret calendar/)]);
+    const end = await runAll(sc);
+    expect(end?.event === "finished" && [end.outcome, end.left]).toEqual(["partial", ["Caret left the event out of your 'Caret' calendar: Jev didn't confirm 'Meet Dana' belongs there"]]);
+  });
+
+  it("owes a required page control, which arrives editable", async () => {
+    const country: Node = { key: `${SUPPORT.bundleId}/standard/popupbutton:country~0`, parent: null, role: "AXPopUpButton", label: "Country *", value: "Select…", editable: true };
+    const form: DeskWindow = { windowId: "7171-7", app: SUPPORT, title: "Support — Shipping", nodes: [textField(SUPPORT, "Order number"), country, button(SUPPORT, "Save")] };
+    const sc = scene({ scripts: [[{ fill: { window: "Shipping", target: "Order number", value: ORDER } }]], windows: [mailWindow(), form], userWindow: "7171-7" });
+    const g = preview(await sc.request("put the order number in"));
+    expect(g.warnings).toEqual(["'Country' is required, and this plan leaves it empty."]);
+  });
+
+  it("stops before writing a page control whose label is gone", async () => {
+    const web: Node = { key: "page:e1:3/webarea~0", parent: null, role: "AXWebArea", label: "Shipping" };
+    const pop: Node = { key: "page:e1:3/select:country~0", parent: web.key, role: "AXPopUpButton", label: "Country", editable: true };
+    const items: Node[] = ["Canada", "Mexico"].map((l) => ({ key: `${pop.key}/item:${l}`, parent: pop.key, role: "AXMenuItem", label: l }));
+    const app = { pid: 5151, bundleId: "com.google.Chrome", name: "Chrome" };
+    const page: DeskWindow = { windowId: "5151-1", app, title: "Shipping", kind: "page", nodes: [web, pop, ...items] };
+    const sc = scene({ scripts: [[{ fill: { window: "Shipping", target: "Country", value: "Canada" } }]], windows: [page], userWindow: "5151-1" });
+    const g = preview(await sc.request('put "Canada" in Country'));
+    const n = page.nodes.find((x) => x.key === pop.key) as Node;
+    delete n.label;
+    sc.desk.show(sc.desk.windows.get("5151-1") as DeskWindow);
+    await sc.accept(g.goalId);
+    const stop = sc.goals.filter((x) => x.event === "stopped").at(-1);
+    expect(stop?.event === "stopped" && [stop.reason, stop.says]).toEqual(["targetChanged", "'Country' in 'Shipping' now reads as another field, so Caret stopped after 0 of 1 steps."]);
+  });
+
+  it("lets a draft into a description area whatever else its label says", async () => {
+    const ticket: DeskWindow = { windowId: "7171-10", app: SUPPORT, title: "Support — Ticket", nodes: [textArea(SUPPORT, "Ticket Description"), button(SUPPORT, "Save")] };
+    const sc = scene({ scripts: [[{ draft: { window: "Ticket", target: "Ticket Description", text: "The lamp is broken.", from: [] } }]], windows: [ticket], userWindow: "7171-10" });
+    const g = preview(await sc.request("describe the problem: the lamp is broken"));
+    expect(g.steps.map((s) => s.says)).toEqual(["Ticket Description: The lamp is broken."]);
   });
 });

@@ -28,7 +28,7 @@ import { fieldName } from "../planner/planner.ts";
 import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
 import { executable, segmentDigest, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem } from "./plan.ts";
-import type { DonePress } from "./lower.ts";
+import { effectKey, type DonePress } from "./lower.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
 export const ACCEPT_MS = 120_000;
@@ -285,7 +285,7 @@ export class GoalRuns {
           const now = n.value ?? "";
           if (now !== s.target.value && now !== s.writes) return { reason: "targetChanged", says: `'${s.target.label}' changed since Caret planned this` };
           // The gates judged the value against this field's name (G2): a field that now reads as another is not that field.
-          if (nameNow(w, s) !== s.target.label) return { reason: "targetChanged", says: `'${s.target.label}' in '${d.title}' now reads as another field` };
+          if (!sameField(w, s)) return { reason: "targetChanged", says: `'${s.target.label}' in '${d.title}' now reads as another field` };
         }
       }
     }
@@ -388,7 +388,7 @@ export class GoalRuns {
     const w = windowId === null ? undefined : this.deps.model.windows.get(windowId);
     const before = windowId === null ? "calendar" : (run.plan.inventory.revisions.get(windowId) ?? "");
     const after = windowId === null ? "calendar" : w === undefined ? "gone" : windowRevision(w);
-    run.cursor.receipts.push({ goalId: run.plan.goalId, segment: seg.index, step: s.index, stepRef: s.ref, status, target: { windowId, key: s.target.key }, effect: s.effect, before, after, at: this.deps.now() });
+    run.cursor.receipts.push({ goalId: run.plan.goalId, segment: seg.index, step: s.index, stepRef: s.ref, status, target: { windowId, key: effectKey(s.target, s.value) }, effect: s.effect, before, after, at: this.deps.now() });
     if (status !== "handoff") run.cursor.nextStep = s.index + 1;
     const total = run.plan.segments.reduce((n, x) => n + x.steps.length, 0);
     this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "step", segment: seg.index, taskId: run.task?.id ?? "", step: s.index, steps: total, phase: status === "verified" ? "verified" : status === "alreadyTrue" ? "skipped" : "handoff", says: s.says });
@@ -473,7 +473,7 @@ export class GoalRuns {
     }
     for (const x of steps) {
       if (x.kind === "handoff" || run.cursor.receipts.some((r) => r.step === x.index && r.status !== "handoff")) continue;
-      add({ windowId: whereOf(x), key: x.target.key, label: x.target.label, why: "planned", says: `Caret didn't confirm '${x.target.label}'` });
+      add({ windowId: whereOf(x), key: effectKey(x.target, x.value), label: x.target.label, why: "planned", says: `Caret didn't confirm '${x.target.label}'` });
     }
     return out;
   }
@@ -538,7 +538,7 @@ export class GoalRuns {
     // Every write this goal meant and has not made goes with it: the fresh plan may leave some out, and is not done then.
     const unmade = run.plan.segments.flatMap((x) => x.steps).flatMap((x): LeftItem[] => {
       if ((x.kind !== "write" && x.kind !== "calendar") || run.cursor.receipts.some((r) => r.step === x.index && r.status !== "handoff")) return [];
-      return [{ windowId: whereOf(x), key: x.target.key, label: x.target.label, why: "planned", says: `Caret's stopped plan meant to write ${x.target.control === "calendar" ? `the event in '${x.target.label}'` : `'${x.target.label}'`}, and has not` }];
+      return [{ windowId: whereOf(x), key: effectKey(x.target, x.value), label: x.target.label, why: "planned", says: `Caret's stopped plan meant to write ${x.target.control === "calendar" ? `the event in '${x.target.label}'` : `'${x.target.label}'`}, and has not` }];
     });
     const owed = [...run.owed, ...unmade.filter((u) => !run.owed.some((o) => o.windowId === u.windowId && o.key === u.key))];
     let plan: GoalPlan | null;
@@ -628,7 +628,7 @@ export class GoalRuns {
       if (run.cursor.receipts.some((r) => r.step === s.index)) continue;
       if (s.kind === "write" && seg.domain.kind === "window") {
         const w = this.deps.model.windows.get(seg.domain.windowId);
-        if (w !== undefined && w.nodes.has(s.target.key) && nameNow(w, s) !== s.target.label) return { reason: "targetChanged", says: `'${s.target.label}' in '${seg.domain.title}' now reads as another field` };
+        if (w !== undefined && w.nodes.has(s.target.key) && !sameField(w, s)) return { reason: "targetChanged", says: `'${s.target.label}' in '${seg.domain.title}' now reads as another field` };
       }
       const draftMoved = this.draftMoved(run, s);
       if (draftMoved !== null) return draftMoved;
@@ -671,14 +671,16 @@ const clip = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0
 const whereOf = (x: GoalStep): string => (x.target.domain.kind === "window" ? x.target.domain.windowId : "calendar");
 
 /**
- * A write target's name as inventory.ts names it now: a text field by planner.ts fieldName, a page control by its
- * label in formControls (an unset one; a set control is caught by its value instead). Null when it cannot be read.
+ * Whether a write's field still reads as the field the gates judged (G2), as inventory.ts named it: a text field by
+ * planner.ts fieldName, a page control by its label among formControls' unset controls. A field already holding the
+ * step's value needs no name (the executor finds it already true); one whose name cannot be read is not the same.
  */
-function nameNow(w: WindowState, s: GoalStep): string | null {
+function sameField(w: WindowState, s: GoalStep): boolean {
   const n = w.nodes.get(s.target.key);
-  if (n === undefined) return null;
-  if (s.target.control === "text") return fieldName(w, n);
-  return formControls(w).find((c) => c.node.key === n.key)?.label ?? s.target.label;
+  if (n === undefined) return false;
+  if (s.writes !== null && (n.value ?? "") === s.writes) return true;
+  if (s.target.control === "text") return fieldName(w, n) === s.target.label;
+  return formControls(w).find((c) => c.node.key === n.key)?.label === s.target.label;
 }
 
 /**

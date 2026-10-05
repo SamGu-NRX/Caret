@@ -90,8 +90,7 @@ function recipientCheck(t: TargetBinding, v: ValueBinding, inv: GoalInventory): 
 }
 
 /** A drafted value's own checks (goals/drafts.ts), against the field it goes in and its frozen basis. */
-function draftCheck(t: TargetBinding, v: ValueBinding, basis: DraftBasis): void {
-  if (t.control !== "text") throw new GoalError("draft", `Caret writes drafts only in a text field, and ${named(t)} is not one`, `${t.ref} <- ${v.ref}`);
+function draftCheck(v: ValueBinding, basis: DraftBasis): void {
   try {
     checkDraftText(v.text, basis);
   } catch (e) {
@@ -145,13 +144,21 @@ function lowerFill(t: TargetBinding, v: ValueBinding): Pick<GoalStep, "kind" | "
   }
 }
 
-const clip = (s: string): string => {
+const clip = (s: string, n = 60): string => {
   const t = s.replace(/\s+/gu, " ").trim();
-  return t.length <= 60 ? t : `${t.slice(0, 59)}…`;
+  return t.length <= n ? t : `${t.slice(0, n - 1)}…`;
 };
 
 /** Where a target is, for a left item: its window, or "calendar". */
 const whereOf = (t: TargetBinding): string => (t.domain.kind === "window" ? t.domain.windowId : "calendar");
+
+/**
+ * What a write's effect is known by, to match a left item with the step or receipt that makes it: a field's key, or for
+ * the calendar the event itself (calendar, title, start, end), since every event shares the calendar's one target.
+ */
+export function effectKey(t: Pick<TargetBinding, "control" | "key" | "label">, v: Pick<ValueBinding, "event"> | null): string {
+  return t.control === "calendar" && v?.event != null ? `event:${t.label}|${v.event.title}|${v.event.start}|${v.event.end}` : t.key;
+}
 
 export interface LowerOptions {
   /** Presses an earlier plan for the same goal made (runs.ts): a fresh plan may not make them again. */
@@ -198,11 +205,11 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   let steps: GoalStep[] = [];
   const warnings: string[] = [];
   const left: LeftItem[] = [];
-  /** A dropped write is left to the user; in a message's recipient field, as its recipient (left.ts). */
-  const dropAs = (t: TargetBinding, why: string): void => {
+  /** A dropped write is left to the user; in a message's recipient field, as its recipient (left.ts). An event is named by itself. */
+  const dropAs = (t: TargetBinding, why: string, v?: ValueBinding | null): void => {
     const recipient = (inv.owed.get(whereOf(t)) ?? []).some((f) => f.key === t.key && f.why === "recipient");
     const says = recipient ? `You add the recipient in ${named(t)}: ${why}` : t.control === "calendar" ? `Caret left the event out of your '${t.label}' calendar: ${why}` : `Caret left ${named(t)} empty: ${why}`;
-    left.push({ windowId: whereOf(t), key: t.key, label: t.label, why: recipient ? "recipient" : "dropped", says });
+    left.push({ windowId: whereOf(t), key: effectKey(t, v ?? null), label: t.label, why: recipient ? "recipient" : "dropped", says });
   };
   /** Every target a fill named, dropped or not: a plan that fills one twice is refused either way. */
   const filled = new Set<string>();
@@ -226,18 +233,24 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       if (filled.has(t.ref) && t.control !== "calendar") throw new GoalError("schema", `the plan fills ${named(t)} twice`, t.ref);
       filled.add(t.ref);
       if (t.domain.kind === "window") writesIn.add(t.domain.windowId);
-      if (v.draft !== null) draftCheck(t, v, frozenBasis(instruction, v, inv));
+      // A draft is words for a message or description field (gates.ts): anywhere else it is dropped, as a value of the
+      // wrong kind is, before its facts are read.
+      if (v.draft !== null && t.control !== "text") {
+        dropAs(t, "Caret writes drafts only in a field for a message or a description", v);
+        continue;
+      }
+      if (v.draft !== null) draftCheck(v, frozenBasis(instruction, v, inv));
       const to = t.control === "calendar" ? false : recipientCheck(t, v, inv);
       const lowered = lowerFill(t, v);
       if ("drop" in lowered) {
-        dropAs(t, lowered.drop);
+        dropAs(t, lowered.drop, v);
         continue;
       }
       // The gates read what the control will hold (a select's option as matched, an event's title), not the source.
       const written = lowered.kind === "calendar" ? (v.event?.title ?? v.text) : lowered.writes;
-      const gated = written === null ? null : codeGate(t, written, v.draft !== null ? "draft" : lowered.kind === "calendar" ? "event" : "copy", instruction);
+      const gated = written === null ? null : codeGate(t, written, v.text, v.draft !== null ? "draft" : lowered.kind === "calendar" ? "event" : "copy", instruction);
       if (gated !== null) {
-        dropAs(t, gated);
+        dropAs(t, gated, v);
         continue;
       }
       const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : "jev";
@@ -276,7 +289,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         continue;
       }
       recipientCheck(t, sender, inv);
-      const gated = codeGate(t, sender.text, "copy", instruction);
+      const gated = codeGate(t, sender.text, sender.text, "copy", instruction);
       if (gated !== null) {
         left.push({ windowId, key: f.key, label: f.label, why: "recipient", says: `You add the recipient in '${f.label}': ${gated}` });
         continue;
@@ -297,7 +310,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   steps = steps.filter((x) => {
     const why = unconfirmed.get(x.ref);
     if (why === undefined) return true;
-    dropAs(x.target, why);
+    dropAs(x.target, why, x.value);
     return false;
   });
   // What the forms the plan writes in still require after its writes (left.ts).
@@ -310,15 +323,16 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   }
   // What a stopped goal this one replaces meant to write: the preview names each one this plan does not write.
   for (const c of o.carried ?? []) {
-    const writes = steps.some((x) => (x.kind === "write" || x.kind === "calendar") && whereOf(x.target) === c.windowId && x.target.key === c.key);
+    const writes = steps.some((x) => (x.kind === "write" || x.kind === "calendar") && whereOf(x.target) === c.windowId && effectKey(x.target, x.value) === c.key);
     if (!writes && !left.some((l) => l.windowId === c.windowId && l.key === c.key)) left.push(c);
   }
   steps.forEach((x, i) => (x.index = i));
   warnings.push(...left.map((l) => `${l.says}.`));
   const acting = steps.filter((x) => x.kind !== "handoff");
   if (acting.length === 0) {
-    const dropped = left.find((l) => l.why !== "required");
-    if (dropped !== undefined) throw new GoalError("nothingToDo", dropped.says);
+    // Every write was dropped: the refusal says why for each, in the preview's words.
+    const dropped = left.filter((l) => l.why !== "required").map((l) => l.says);
+    if (dropped.length > 0) throw new GoalError("nothingToDo", clip(dropped.join("; "), 590));
     // A plan that only hands the user a send, submit, pay or delete is said as an Ask says it (B26 lead decision 3).
     const press = steps.find((x) => x.kind === "handoff" && x.handoff !== null && x.handoff !== "unverifiable" && x.handoff !== "system");
     throw new GoalError("nothingToDo", press?.handoff == null ? "the plan leaves every step to you, so there is nothing for Caret to do" : saysPress(press.handoff, press.target.label));

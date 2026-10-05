@@ -59,7 +59,8 @@ export function owedFields(w: WindowState): OwedField[] {
   for (const n of nodes) {
     if (n.states?.includes("disabled")) continue;
     const unset = UNSET[n.role];
-    if (unset !== undefined && n.editable !== true && marked(n)) {
+    // A page's controls arrive editable (engines/page-link.ts), so a control is read by its role, editable or not.
+    if (unset !== undefined && marked(n)) {
       out.push({ key: n.key, label: fieldLabelText(n.label) ?? fieldLabelText(n.placeholder) ?? n.role, why: "required", empty: unset(n) });
       continue;
     }

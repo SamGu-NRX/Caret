@@ -574,6 +574,14 @@ const ADDRESSEE = new Set(["her", "him", "them", "me", "us", "you", "everyone", 
  * "I deny that" and "never make this promise" are not a request to say what follows, so they go to Jev.
  */
 const FRAME = new Set([...SAYING, ...ADDRESSEE, "draft", "compose", "send", "rsvp", "response", "message", "email", "mail", "note", "text", "short", "quick", "brief", "back", "to", "for", "confirmation"]);
+/**
+ * Words another clause of the restated words' sentence may open with: a request for another step of the goal ("copy
+ * her address into To and draft ..."). Closed on purpose: a clause that opens any other way ("provided you refund me",
+ * "assuming it works") may qualify what is said, so the sentence goes to Jev.
+ */
+const STEP_VERBS = new Set(["copy", "add", "put", "fill", "paste", "enter", "type", "insert", "use", "take", "draft", "write", "compose", "reply", "answer", "respond", "tell", "say", "address", "schedule", "create", "book", "set", "leave", "open"]);
+/** Words that make a request conditional wherever they stand in the instruction: none of its sentences restates then. */
+const CONDITIONS = new Set(["if", "unless", "provided", "providing", "assuming", "only", "when", "whenever", "once", "until", "otherwise", "except", "suppose", "supposing", "whether"]);
 
 /** A text's content words in order: folded, contractions written out, filler dropped; `w` lower case, `cased` as written. */
 function contentWords(t: string): { w: string; cased: string }[] {
@@ -654,15 +662,20 @@ export function restates(sentence: string, instruction: string, basis: DraftBasi
   if (tail !== null && vocative((tail[1] ?? "").trim())) t = t.slice(0, tail.index);
   const said = contentWords(t).map((x) => x.w);
   if (said.length === 0) return false;
-  for (const clauses of clausesOf(instruction)) {
+  const sentences = clausesOf(instruction);
+  if (sentences.some((clauses) => clauses.some((c) => contentWords(c).some((x) => CONDITIONS.has(x.w))))) return false;
+  for (const clauses of sentences) {
     const words = clauses.map(contentWords);
     for (const [k, clause] of words.entries()) {
       const at = clause.length - said.length;
       if (at < 1 || said.some((w, i) => clause[at + i]?.w !== w)) continue;
-      if (words.some((other, j) => j !== k && other.some((x) => TURNS.has(x.w)))) continue;
+      // Every other clause of the sentence asks for another step and turns nothing.
+      if (words.some((other, j) => j !== k && (!STEP_VERBS.has(other[0]?.w ?? "") || other.some((x) => TURNS.has(x.w))))) continue;
       const before = clause.slice(0, at);
-      // A name: a capitalized word that is not the first of its clause ("Avoid saying ..." names no one).
-      const name = (x: { cased: string }, i: number): boolean => i > 0 && /^\p{Lu}/u.test(x.cased);
+      if (before.some((x) => TURNS.has(x.w))) continue;
+      // A name: a capitalized word, not all capitals, that is not the first of its clause ("Avoid saying ..." and
+      // "NOT saying ..." name no one).
+      const name = (x: { cased: string }, i: number): boolean => i > 0 && /^\p{Lu}\p{Ll}/u.test(x.cased);
       if (!before.every((x, i) => FRAME.has(x.w) || name(x, i))) continue;
       const last = before[at - 1] as { w: string; cased: string };
       const addressee = ADDRESSEE.has(last.w) || name(last, at - 1);

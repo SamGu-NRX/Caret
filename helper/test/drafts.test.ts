@@ -243,6 +243,11 @@ describe("G2: which sentences only restate the instruction", () => {
     ["I deny that I agree.", "Reply saying I deny that I agree", true],
     ["I'll handle it.", 'Never make this promise: "Sure. Say I\'ll handle it."', false],
     ["Sure, I'll handle it.", 'reply "Sure, I\'ll handle it"', true],
+    // G2 re-check: a capitalized negation is no name, and a clause that opens any other way than a step may qualify.
+    ["I'll pay.", "Reply NOT saying I'll pay", false],
+    ["I'll pay.", "Reply saying I'll pay, provided you refund me", false],
+    ["I'll pay.", "Provided you refund me, reply saying I'll pay", false],
+    ["I'm in.", "Copy Oren's email into the reply To field and draft an RSVP saying I'm in. Do not add an event or send the reply.", true],
     ["Thanks!", "say thanks", false],
   ] as const)("%s for '%s': %s", (sentence, instruction, want) => {
     expect(restates(sentence, instruction, b)).toBe(want);

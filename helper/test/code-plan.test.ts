@@ -258,6 +258,14 @@ describe("G2 review finding 4: the gates read what a control will hold", () => {
     expect(g.warnings).toEqual(["Caret left 'Plan' empty: Caret never types API keys or tokens; that is yours to enter."]);
   });
 
+  it("drops an option whose source the instruction labels a password, though the option itself reads as plain", async () => {
+    const plan = tgt("t4", { control: "select", role: "AXPopUpButton", label: "Plan", options: ["HUNTER2", "Other"], domain: page, key: "f0/select:plan2~0" });
+    const own = inventory([plan, tgt("t3")], [val("v1", "hunter2", { source: null }), val("v3", "ORD-1")]);
+    const instruction = 'Put my password "hunter2" in Plan and the order number in Field t3';
+    const g = await lowerGoal("g", instruction, draft([{ ref: "a", kind: "fill", target: "t4", value: "v1" }, { ref: "b", kind: "fill", target: "t3", value: "v3" }]), own, lowerOpts());
+    expect(g.warnings).toEqual(["Caret left 'Plan' empty: Caret never types passwords; that is yours to enter."]);
+  });
+
   it("asks Jev about the option written, with the value it came from", async () => {
     const jev = standInJev();
     await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t2", value: "v2" }]), inv, { askJev: jev, ledger: new SnippetLedger([]) });

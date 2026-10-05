@@ -43,8 +43,12 @@ export function numberFieldMisfit(value: string, label: string): string | null {
   return `'${clip(value)}' is ${k === "email" ? "an email address" : "a web link"}, and the field takes a number or code`;
 }
 
-/** Labels a draft never goes in: a field for a name, a place, a title or anything fieldKinds reads as shaped. */
-const NOT_PROSE_FIELD = /\b(?:name|city|town|company|employer|organi[sz]ation|title|subject)\b/iu;
+/**
+ * Label words of a single-line field that takes free words. A draft goes in a text area, or in a text field whose
+ * label has one of these; a field named by its kind ("Order number", "Email") never takes one. Written for common
+ * form labels, not measured: a field missing here only loses the draft (dropped, and said in the preview).
+ */
+const PROSE_FIELD = /\b(?:message|body|description|describe|details|note|notes|comment|comments|reply|response|explanation|explain|problem|issue|reason|feedback|summary|question|questions|instructions|information|info|about|text)\b/iu;
 
 /**
  * Why code drops a write before asking Jev, or null. `written` is what the control will hold: a text field's text, a
@@ -53,12 +57,14 @@ const NOT_PROSE_FIELD = /\b(?:name|city|town|company|employer|organi[sz]ation|ti
  *   - A copied value in a text field: misfit, and numberFieldMisfit.
  *   - A draft: only a field that takes free words, never one that names a shape, a name or a number.
  */
-export function codeGate(t: TargetBinding, written: string, as: "copy" | "draft" | "event", instruction: string): string | null {
+export function codeGate(t: TargetBinding, written: string, source: string, as: "copy" | "draft" | "event", instruction: string): string | null {
   const field = labelKind(t.label);
   if (field !== null) return `Caret never types ${SENSITIVE_SAYS[field]}; that is yours to enter`;
-  const value = secretIn(written, instruction);
+  // Both what is written and what it came from: a select's option can differ from its source in case, and either
+  // may be the one the instruction labels ("my password hunter2" written as the option HUNTER2).
+  const value = secretIn(written, instruction) ?? secretIn(source, instruction);
   if (value !== null) return `Caret never types ${SENSITIVE_SAYS[value]}; that is yours to enter`;
-  if (as === "draft") return fieldKinds([t.label]).size > 0 || NUMBER_FIELD.test(t.label.toLowerCase()) || NOT_PROSE_FIELD.test(t.label) ? "the field does not take words Caret writes" : null;
+  if (as === "draft") return t.control === "text" && (t.role === "AXTextArea" || PROSE_FIELD.test(t.label)) ? null : "Caret writes drafts only in a field for a message or a description";
   if (as === "event" || t.control !== "text") return null;
   return misfit(written, [t.label]) ?? numberFieldMisfit(written, t.label);
 }
