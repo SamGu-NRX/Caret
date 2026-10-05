@@ -1641,11 +1641,31 @@ export class Helper {
     const p = m.fieldKey === undefined ? all : { ...all, fields: all.fields.filter((f) => f.key === m.fieldKey) };
     if (p.fields.length === 0) return this.refuseAccept(taskId, m.fieldKey === undefined ? "Caret writes none of this proposal's fields" : `Caret writes no field ${m.fieldKey} of this proposal`);
     const stale = recheckFill(this.model, p, this.aboutNow);
-    if (stale !== null) return this.refuseAccept(taskId, `${stale}; nothing was written`);
+    if (stale !== null) {
+      this.whyGone(p);
+      return this.refuseAccept(taskId, `${stale}; nothing was written`);
+    }
     this.bindNew(taskId, session);
     const { plan, slots } = fillPlan(this.model, p);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
     return this.runFrom("fill", taskId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+  }
+
+  /**
+   * H10 diagnosis: for a fill refused because a source is gone, logs whether each source window is still in the model
+   * and which of its node keys hold text: keys and counts only, never a value or a title.
+   */
+  private whyGone(p: { fields: readonly { source: { windowId: string; nodeKey: string } | null }[] }): void {
+    for (const id of new Set(p.fields.flatMap((f) => (f.source === null ? [] : [f.source.windowId])))) {
+      const w = this.model.windows.get(id);
+      const wanted = [...new Set(p.fields.flatMap((f) => (f.source?.windowId === id ? [f.source.nodeKey] : [])))];
+      if (w === undefined) {
+        this.opts.warn?.(`fill recheck: source window ${id} is not in the model (${this.model.windows.size} windows)`);
+        continue;
+      }
+      const texty = [...w.nodes.values()].filter((n) => (n.value ?? "") !== "").map((n) => n.key).slice(0, 8);
+      this.opts.warn?.(`fill recheck: source window ${id} has ${w.nodes.size} nodes, updated ${this.now() - w.updatedAt} ms ago; wanted ${wanted.join(", ")} (${wanted.map((k) => (w.nodes.has(k) ? "present" : "missing")).join(", ")}); nodes with text: ${texty.join(", ")}`);
+    }
   }
 
   /** Esc on running work: a stop for the task the offer started. */
@@ -2337,6 +2357,7 @@ export class Helper {
   private async acceptFill(p: GroundedProposal): Promise<AcceptResult> {
     const stale = recheckFill(this.model, p, this.aboutNow);
     if (stale !== null) {
+      this.whyGone(p);
       this.withdrawFill(p.id, "stale");
       return { refused: `${stale}; nothing was written` };
     }
@@ -2374,6 +2395,10 @@ export class Helper {
    */
   private onFillFocus(m: Focus): void {
     if (!m.editable || m.key === null || !(m.frontmost || this.opts.allowBackgroundFocus)) return;
+    // H10: Accessibility's view of a browser a page engine covers says nothing about where the user is in the page: the
+    // page engine's focus does (page windows). In the VM runs (evidence/host/h10/vm/runs) a page's Fill all pop-up was
+    // withdrawn as expired 0.3 s after it was offered, with no page focus between, once in each of two runs.
+    if (!isPageWindow(m.windowId) && this.opts.pageCovers?.(m.app.pid) === true) return;
     for (const focuses of this.pendingFills) focuses.push({ windowId: m.windowId, key: m.key });
     for (const [id, { p }] of this.fillPopups) if (!inFillForm(p, m.windowId, m.key)) this.withdrawFill(id, "expired");
   }

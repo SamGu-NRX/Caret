@@ -226,7 +226,7 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     page = new FakePage();
     published = [];
     host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), warn: () => {} });
-    helper = new Helper({ store, askJev: jevPickingText(byLabel, 0.95), shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => void published.push(m), warn: () => {} });
+    helper = new Helper({ store, askJev: jevPickingText(byLabel, 0.95), shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, calendar: null, publish: (m) => void published.push(m), warn: () => {} });
     wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
     host.registry.add(page.session);
     page.session.receive(hello);
@@ -448,6 +448,17 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     expect(await helper.handleFillAll({ type: "fillAll", v: PROTOCOL_VERSION, proposalId: "nope", at: Date.now() })).toBeNull();
     const refusals = published.filter((m): m is TaskProgress => m.type === "taskProgress" && m.stopReason === "refused").map((m) => [m.taskId, m.detail]);
     expect(refusals).toEqual([[p.id, "this proposal was already filled"], ["nope", "no such fill proposal, or it expired"]]);
+  });
+
+  it("keeps a page's pop-up when Accessibility's view of the browser reports an editable focus (H10)", async () => {
+    const { popup } = await offer();
+    await helper.handleReader(snap([node("tb/address", "AXTextField", { label: "Address and search bar", editable: true })], { at: Date.now(), windowId: "4100-1", title: TITLE, app: chrome, number: 35, focused: true }));
+    await helper.handleReader(focus("4100-1", "tb/address", Date.now(), { app: chrome }));
+    expect(published.filter((m) => m.type === "offerWithdrawn").map((m) => (m as { id: string }).id)).not.toContain(popup.offerKey);
+    // An editable field of another app still ends it, as before.
+    await helper.handleReader(snap([field("te/other", "", {})], { at: Date.now(), windowId: "other", title: "Other", focused: true }));
+    await helper.handleReader(focus("other", "te/other", Date.now()));
+    expect(published.filter((m) => m.type === "offerWithdrawn").map((m) => (m as { id: string }).id)).toContain(popup.offerKey);
   });
 
   it("writes only the field a host's Tab names, as that field's own task, once, and undoes it alone (H10)", async () => {
