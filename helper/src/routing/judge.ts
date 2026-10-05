@@ -58,7 +58,7 @@ const OUTCOME_SAYS: Record<Outcome, string> = {
 };
 /**
  * Router 1's task question, about the one candidate whose producer checked evidence in code (routes.ts `evidence`). It is
- * asked on its own, beside the outcome question, because the task is offered next to whatever else the moment gets. The
+ * asked on its own, after the outcome question, because the task is offered next to whatever else the moment gets. The
  * task, its sentence and what code found go in the request's state as `offer`; the producer's rule for when to offer it
  * goes in the instructions; the options are short.
  *
@@ -98,8 +98,11 @@ interface Taken {
 /** A router's request could not be built within the privacy budgets: the field the user is in did not fit. */
 export class PrivacyRefusal extends Error {}
 
-/** The moment as both routers describe it. Throws PrivacyRefusal when the focused field's own descriptor does not fit. */
-function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly RouteCandidate[]): Taken {
+/**
+ * The moment as both routers describe it. Throws PrivacyRefusal when the focused field's own descriptor does not fit.
+ * `form`: the other fields' labels, which the task question leaves out so its sentence fits the window's budget first.
+ */
+function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly RouteCandidate[], form = true): Taken {
   const w = model.windows.get(ctx.windowId);
   if (w === undefined) throw new PrivacyRefusal(`window ${ctx.windowId} left the model`);
   const ledger = new SnippetLedger(model.windows.values());
@@ -117,7 +120,7 @@ function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly 
     const d = describeField(w, node);
     if (!ledger.take(w, "descriptor", [d.label, d.nearest, d.placeholder, d.section])) throw new PrivacyRefusal("the focused field's descriptor does not fit its window's budget");
     state.field = { describe: d.text, empty: ctx.field.empty, finishedSentences: ctx.sentences };
-    const labels = formLabels(w, ctx.field.key, ledger);
+    const labels = form ? formLabels(w, ctx.field.key, ledger) : null;
     if (labels !== null) state.form = labels;
   }
   const says = new Map<string, string>();
@@ -156,42 +159,61 @@ export interface Built<T extends string> {
 }
 
 /**
- * Router 1's request: the outcome question over the outcomes legal now, and the task question when the registry has a
- * task. Act is an option of the outcome question only for the other routes; when nothing but abstain is left there, only
- * the task question is asked. `options` is empty when the outcome question is not asked.
+ * Router 1's requests: the outcome question over the outcomes legal now, and the task question when the registry has a
+ * task. Act is an option of the outcome question only for the other routes; `outcome` is null when nothing but abstain
+ * is left there. The task question is its own request, sent after the outcome's: its state carries the offer, and in one
+ * request with the outcome question that state moved the outcome's answers (corpus m34, a hypothetical dinner, went from
+ * write 0.75 to 0.32, under the floor; m26 from 0.61 to 0.31: evidence/screen/r3/corpus, router-requests.ndjson).
+ *
+ * The task question is not asked when its sentence does not fit the window's budget (`taskPrivacy`): with only code's
+ * facts Router 1 cannot tell a cancelled call from a planned one (corpus m28, "We cancelled the call with Rafael",
+ * answered act 0.44 on the facts alone in a Mail window: evidence/screen/r3/corpus-split).
  */
-export interface Built1 extends Built<Outcome> {
-  task: RouteCandidate | null;
+export interface Built1 {
+  outcome: Built<Outcome> | null;
+  task: { cand: RouteCandidate; built: Built<TaskChoice> } | null;
+  taskPrivacy: boolean;
 }
 
 export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: readonly Outcome[], reg: Registry): Built1 {
   const acts = reg.routes.flatMap((r) => (r.candidate === null ? [] : [r.candidate]));
   const asking = legal.includes("ask") && reg.question !== null ? [reg.question] : [];
-  const task = legal.includes("act") && reg.task?.evidence !== undefined ? reg.task : null;
-  const t = describe(model, ctx, [...acts, ...asking, ...(task === null ? [] : [task])]);
   const options = legal.filter((o) => o !== "act" || acts.length > 0);
-  const questions: JevRequest["questions"] = {};
+  let outcome: Built<Outcome> | null = null;
   if (options.length > 1) {
+    const t = describe(model, ctx, [...acts, ...asking]);
     const criteria: Record<string, string> = {};
     for (const o of options) {
       if (o === "act") criteria.act = `${OUTCOME_SAYS.act} ${acts.map((c) => t.says.get(c.id)).join("; or ")}.`;
       else if (o === "ask") criteria.ask = `${OUTCOME_SAYS.ask} ${reg.question?.question?.says ?? ""}; then: ${t.says.get(reg.question?.id ?? "") ?? ""}.`;
       else criteria[o] = OUTCOME_SAYS[o];
     }
-    questions.outcome = {
-      type: "choice",
-      instructions: "Which one describes the user's moment? When a task fits what they are doing, it comes before writing help.",
-      criteria,
+    const request: JevRequest = {
+      state: t.state,
+      questions: {
+        outcome: {
+          type: "choice",
+          instructions: "Which one describes the user's moment? When a task fits what they are doing, it comes before writing help.",
+          criteria,
+        },
+      },
+      ...t.ledger.declared(),
+      retry429: false,
     };
+    outcome = { request, options };
   }
-  const state = { ...t.state };
-  const ev = task?.evidence;
-  if (task !== null && ev !== undefined) {
-    state.offer = t.quoted.has(task.id) ? { task: ev.task, sentence: ev.sentence, found: ev.found } : { task: ev.task, found: ev.plain };
-    questions.task = { type: "choice", instructions: taskInstructions(ev.offerWhen), criteria: { abstain: TASK_QUESTION.abstain, act: TASK_QUESTION.act } };
-  }
-  const request: JevRequest = { state, questions, ...t.ledger.declared(), retry429: false };
-  return { request, options: options.length > 1 ? options : [], task };
+  const cand = legal.includes("act") ? reg.task : null;
+  const ev = cand?.evidence;
+  if (cand === null || cand === undefined || ev === undefined) return { outcome, task: null, taskPrivacy: false };
+  const t = describe(model, ctx, [cand], false);
+  if (!t.quoted.has(cand.id)) return { outcome, task: null, taskPrivacy: true };
+  const request: JevRequest = {
+    state: { ...t.state, offer: { task: ev.task, sentence: ev.sentence, found: ev.found } },
+    questions: { task: { type: "choice", instructions: taskInstructions(ev.offerWhen), criteria: { abstain: TASK_QUESTION.abstain, act: TASK_QUESTION.act } } },
+    ...t.ledger.declared(),
+    retry429: false,
+  };
+  return { outcome, task: { cand, built: { request, options: TASK_OPTIONS } }, taskPrivacy: false };
 }
 
 /** Router 2: one Choice over the registry's routes, after Router 1 chose act. */
@@ -207,26 +229,6 @@ export function router2Request(model: ScreenModel, ctx: RoutingContext, reg: Reg
     retry429: false,
   };
   return { request, options: reg.routes.map((r) => r.option) };
-}
-
-/** Router 1's answers: each question's read, null for a question not asked. A failed call fails every question asked. */
-export interface Read1 {
-  outcome: Read<Outcome> | null;
-  task: Read<TaskChoice> | null;
-}
-
-export async function sendRouter1(askJev: AskJev, b: Built1, floor: number): Promise<Read1> {
-  let result: JevResult;
-  try {
-    result = await askJev(b.request);
-  } catch (e) {
-    const failed: Read<never> = { ok: false, why: e instanceof Error && e.name === "TimeoutError" ? "timeout" : "failed", choice: null, confidence: null };
-    return { outcome: b.options.length > 0 ? failed : null, task: b.task === null ? null : failed };
-  }
-  return {
-    outcome: b.options.length > 0 ? readChoice(result, "outcome", b.options, floor) : null,
-    task: b.task === null ? null : readChoice(result, "task", TASK_OPTIONS, floor),
-  };
 }
 
 /**

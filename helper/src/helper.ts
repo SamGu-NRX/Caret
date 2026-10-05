@@ -2473,7 +2473,6 @@ function eventEvidence(c: EventCandidate, source: SentenceSource, where: string)
     task: "Add an event to the user's calendar",
     sentence: c.sentence,
     found: `Code found in it the person "${c.person}" and the time ${when}; ${where}.`,
-    plain: `Code found in it a person and the time ${when}; ${where}.`,
     offerWhen: OFFER_WHEN[source],
   };
 }

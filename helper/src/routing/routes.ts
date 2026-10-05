@@ -35,11 +35,13 @@ export interface Quoted {
 export interface TaskEvidence {
   /** What doing it would be, with no screen text: "Add an event to the user's calendar". */
   task: string;
-  /** The sentence it rests on, screen text taken through the candidate's `quotes`. */
+  /**
+   * The sentence it rests on, screen text taken through the candidate's `quotes`. Router 1 is not asked about the task
+   * without it: the producer's rule (`offerWhen`) is about what the sentence says.
+   */
   sentence: string;
-  /** What the producer's code found in the sentence, in code's words; `plain` says it without screen text. */
+  /** What the producer's code found in the sentence, in code's words. */
   found: string;
-  plain: string;
   /** When the user wants it offered and when not, the producer's own rule. */
   offerWhen: string;
 }

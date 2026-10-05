@@ -5,15 +5,16 @@
 // Per context (context.ts), in order:
 //   1. Local rules, no model call: paused, secure field, denied role or window, incomplete snapshot, input-method
 //      composition, nothing legal to do, or a request the privacy budgets refuse.
-//   2. Router 1: one Jev request with the outcome question, a Choice over the outcomes legal now, and the task question
-//      when a producer listed a task with evidence its code checked (judge.ts TASK_QUESTION). At most one request in
-//      flight. In one field, Router 1 starts at most once per ROUTER1_COOLDOWN_MS after an answer was used there; a
+//   2. Router 1: the outcome question, a Choice over the outcomes legal now, and after it, in its own request, the task
+//      question when a producer listed a task with evidence its code checked (judge.ts TASK_QUESTION). At most one
+//      request in flight. In one field, Router 1 starts at most once per ROUTER1_COOLDOWN_MS after an answer was used there; a
 //      field no answer has decided yet starts at once (brief R3: the cooldown limits repeats, not entering a field). A
 //      context that changes meanwhile replaces the one waiting (it is not queued), and a reply for a context that is no
 //      longer current is dropped. No retry. A low-confidence answer abstains; a call that failed or timed out, an answer
 //      that cannot be read (missing, forged, nonfinite) and a stale reply decide `error` (R2 lead decision 1), so the host
-//      can tell "the router said no" from "the router did not answer" and fall back. A task the task question chose is
-//      the decision when the outcome is abstain; otherwise it is offered beside the outcome, logged and not published.
+//      can tell "the router said no" from "the router did not answer" and fall back. The outcome is published without
+//      waiting for the task question; a task it chose is offered beside the outcome, logged and not published. When the
+//      task question is the only one (nothing but abstain left for the outcome), its answer is the decision.
 //   3. Router 2, only after the outcome question chose act: one Choice over the registry frozen for the same context,
 //      skipped when it lists one real route.
 // Two things never wait for a router (R2 lead decisions 2 and 3):
@@ -34,7 +35,7 @@ import type { ScreenModel } from "../model.ts";
 import type { RouteFailure } from "../protocol.ts";
 import { breakpoint, contextNow, sentenceOnly, type Breakpoint, type FocusSeen, type HostEditing, type RoutingContext } from "./context.ts";
 import type { Consent } from "./consent.ts";
-import { PrivacyRefusal, ROUTER1_FLOOR, ROUTER2_FLOOR, router1Request, router2Request, sendRouter, sendRouter1, type Read, type Refusal, type TaskChoice } from "./judge.ts";
+import { PrivacyRefusal, ROUTER1_FLOOR, ROUTER2_FLOOR, router1Request, router2Request, sendRouter, type Built, type Built1, type Read, type Refusal, type TaskChoice } from "./judge.ts";
 import { freeze, realRoutes, type Outcome, type Registry, type Route, type RouteCandidate } from "./routes.ts";
 
 /**
@@ -590,7 +591,7 @@ export class RoutingCoordinator {
   }
 
   private async decide(c: Current): Promise<void> {
-    let built;
+    let built: Built1;
     try {
       built = router1Request(this.deps.model, c.ctx, c.legal, c.reg);
     } catch (e) {
@@ -598,64 +599,90 @@ export class RoutingCoordinator {
       return this.finish(c, { outcome: "abstain", by: "local", local: "privacy", refused: null, route: null, confidence: null, answered: null });
     }
     const task = built.task;
-    if (built.options.length === 0 && task === null) throw new Error(`routing: context ${c.gen} has nothing to ask Router 1 (legal ${c.legal.join(", ")})`);
+    if (built.taskPrivacy) this.deps.count?.("route.task_privacy");
+    if (built.outcome === null && task === null) {
+      if (built.taskPrivacy) return this.finish(c, { outcome: "abstain", by: "local", local: "privacy", refused: null, route: null, confidence: null, answered: null });
+      throw new Error(`routing: context ${c.gen} has nothing to ask Router 1 (legal ${c.legal.join(", ")})`);
+    }
     // A task is put to Router 1 once per write session: the session's next context does not ask it again.
-    if (task !== null && c.beside) this.writeSession?.asked.add(task.id);
-    c.calls++;
-    this.stats.router1Calls++;
-    this.deps.count?.("route.router1_call");
+    if (task !== null && c.beside) this.writeSession?.asked.add(task.cand.id);
+    if (built.outcome !== null) {
+      const t0 = this.deps.now();
+      const o = await this.ask1(c, built.outcome, "outcome");
+      if (o === null || this.stale(c, "router1", o)) return;
+      this.lastAnswer = { field: fieldOf(c.ctx), at: t0 };
+      if (!o.ok && o.why !== "lowConfidence") return this.refused(c, 1, o);
+      // The task's held offer waits for its own question, whatever the outcome.
+      if (task !== null) c.taken.push(task.cand);
+      if (o.ok) await this.outcome(c, o.choice, o.confidence);
+      else this.refused(c, 1, o);
+      // A context that moved on meanwhile lists its own offers, unless a write session carries this task into it.
+      if (task === null || this.stoppedAt !== null || (c.gen !== this.gen && this.carried(c, task.cand.id) === null)) return;
+    }
+    if (task === null) return;
     const t0 = this.deps.now();
-    const r1 = await sendRouter1(this.deps.askJev, built, ROUTER1_FLOOR);
-    if (this.stoppedAt !== null) return;
-    keep(this.stats.callMs, this.deps.now() - t0);
-    const o = r1.outcome;
-    const t = r1.task;
+    const t = await this.ask1(c, task.built, "task");
+    if (t === null) return;
     if (c.gen !== this.gen) {
       // A task checked beside a kept write session is about its sentence: while the session goes on and the context now
       // lists the same task, the answer is still about the moment (the host's report of a sentence end the reader walked
       // first opens the next context; R2's latency session dropped every such answer).
-      const carried = o === null && t !== null && task !== null ? this.carried(c, task.id) : null;
-      if (carried === null) return void this.stale(c, "router1", (o ?? t) as Read<string>);
+      const carried = this.carried(c, task.cand.id);
+      if (carried === null) {
+        if (!c.decided) return void this.stale(c, "router1", t);
+        // The outcome went out already; only the task's answer is late. The context now lists its own offers.
+        this.stats.staleDrops++;
+        this.deps.count?.("route.stale_drop");
+        return;
+      }
       this.lastAnswer = { field: fieldOf(c.ctx), at: t0 };
-      return this.taskAlone(c, t as Read<TaskChoice>, carried, false);
+      if (!c.decided) return this.taskAlone(c, t, carried, false);
+      if (t.ok && t.choice === "act") this.aside(c, carried, t.confidence);
+      return;
     }
-    this.lastAnswer = { field: fieldOf(c.ctx), at: t0 };
-    if (o === null) return this.taskAlone(c, t as Read<TaskChoice>, task as RouteCandidate, true);
-    if (!o.ok && o.why !== "lowConfidence") return this.refused(c, 1, o);
-    if (t !== null && !t.ok && t.why !== "lowConfidence") {
+    if (built.outcome === null) this.lastAnswer = { field: fieldOf(c.ctx), at: t0 };
+    if (!c.decided) return this.taskAlone(c, t, task.cand, true);
+    // The outcome is out: a chosen task is offered beside it, and one not chosen is let go.
+    if (t.ok && t.choice === "act") return this.aside(c, task.cand, t.confidence);
+    if (!t.ok) {
       bump(this.stats.refused, `router1_task_${t.why}`);
       this.deps.count?.(`route.refused1_task_${t.why}`);
     }
-    const taskAct = task !== null && t !== null && t.ok && t.choice === "act" ? { cand: task, confidence: t.confidence } : null;
-    // A weak outcome answer abstains, and an abstain gives the moment to the task when one was chosen.
-    if (taskAct !== null && (!o.ok || o.choice === "abstain")) return this.takeTask(c, taskAct.cand, taskAct.confidence, true);
-    if (!o.ok) return this.refused(c, 1, o);
-    if (taskAct !== null) c.taken.push(taskAct.cand);
-    const outcome = o.choice;
-    const confidence = o.confidence;
+    task.cand.drop?.();
+  }
+
+  /** One Router 1 request; null when routing stopped while it was out. */
+  private async ask1<T extends string>(c: Current, b: Built<T>, question: string): Promise<Read<T> | null> {
+    c.calls++;
+    this.stats.router1Calls++;
+    this.deps.count?.("route.router1_call");
+    const t0 = this.deps.now();
+    const r = await sendRouter(this.deps.askJev, b, question, ROUTER1_FLOOR);
+    if (this.stoppedAt !== null) return null;
+    keep(this.stats.callMs, this.deps.now() - t0);
+    return r.read;
+  }
+
+  /** The outcome question's answer, taken. */
+  private async outcome(c: Current, outcome: Outcome, confidence: number): Promise<void> {
     const answered = outcome;
     switch (outcome) {
       case "abstain":
         return this.finish(c, { outcome, by: "router1", local: null, refused: null, route: null, confidence, answered });
       case "write": {
         const f = c.ctx.field;
-        if (f !== null) this.writeSession = { id: ++this.sessions, gen: c.gen, windowId: c.ctx.windowId, key: f.key, at: this.deps.now(), textRevision: c.ctx.textRevision, asked: new Set(task === null ? [] : [task.id]) };
-        this.finish(c, { outcome, by: "router1", local: null, refused: null, route: null, confidence, answered });
-        break;
+        if (f !== null) this.writeSession = { id: ++this.sessions, gen: c.gen, windowId: c.ctx.windowId, key: f.key, at: this.deps.now(), textRevision: c.ctx.textRevision, asked: new Set(c.reg.task === null ? [] : [c.reg.task.id]) };
+        return this.finish(c, { outcome, by: "router1", local: null, refused: null, route: null, confidence, answered });
       }
       case "ask": {
         const q = c.reg.question as RouteCandidate;
         this.remember(q.id);
         this.finish(c, { outcome, by: "router1", local: null, refused: null, route: q.id, confidence, answered }, q);
-        this.run(q);
-        break;
+        return this.run(q);
       }
       case "act":
-        // Offered before Router 2 is asked, while the context it was chosen in is still the current one.
-        if (taskAct !== null) this.aside(c, taskAct.cand, taskAct.confidence);
         return this.route2(c, confidence);
     }
-    if (taskAct !== null) this.aside(c, taskAct.cand, taskAct.confidence);
   }
 
   /**

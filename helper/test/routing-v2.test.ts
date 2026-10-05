@@ -339,7 +339,6 @@ describe("the routing coordinator", () => {
           task: "Add an event to the user's calendar",
           sentence: "Lunch with Priya tomorrow at noon.",
           found: 'Code found in it the person "Priya" and the time Tue Oct 6, 12:00 to 1:00 PM; the user typed it in this field.',
-          plain: "Code found in it a person and the time Tue Oct 6, 12:00 to 1:00 PM; the user typed it in this field.",
           offerWhen: "Offer it when the user is arranging something they will attend.",
         },
       });
@@ -355,22 +354,31 @@ describe("the routing coordinator", () => {
       jev.requests.length = 0;
     };
 
-    it("asks it beside the outcome in the same call, so writing help and the task can both be chosen", async () => {
+    it("asks it after the outcome, in its own request, so writing help and the task can both be chosen", async () => {
       const ev = checked();
       cands = [ev];
+      jev.holding = true;
       jev.router1 = () => ({ choice: "write", confidence: 0.9 });
       jev.task = () => ({ choice: "act", confidence: 0.8 });
       show("Dear Dana. Lunch with Priya tomorrow at noon. ");
+      jev.release();
+      await flush();
+      // The outcome is out before the task question is answered: the host never waits on the task.
+      expect(decisions.map((d) => [d.outcome, d.by, d.published])).toEqual([["write", "router1", true]]);
+      expect(jev.routerCalls()).toHaveLength(2);
+      jev.release();
       await coord.idle();
-      expect(jev.routerCalls()).toHaveLength(1);
-      const r = jev.routerCalls()[0] as JevRequest;
-      const q = r.questions as Record<string, { instructions: string; criteria: Record<string, string> }>;
-      // The outcome question no longer offers the checked task; the task question is about it alone: the task, its
-      // sentence and code's facts in the state, and the producer's rule for when to offer it in the instructions.
-      expect(Object.keys(q.outcome?.criteria ?? {})).toEqual(["abstain", "write"]);
-      expect(Object.keys(q.task?.criteria ?? {})).toEqual(["abstain", "act"]);
-      expect((r.state as Record<string, unknown>).offer).toEqual({ task: "Add an event to the user's calendar", sentence: "Lunch with Priya tomorrow at noon.", found: 'Code found in it the person "Priya" and the time Tue Oct 6, 12:00 to 1:00 PM; the user typed it in this field.' });
-      expect(q.task?.instructions).toContain("Offer it when the user is arranging something they will attend.");
+      const [first, second] = jev.routerCalls() as [JevRequest, JevRequest];
+      // The outcome question no longer offers the checked task, and its state does not carry it; the task question is
+      // about it alone: the task, its sentence and code's facts in the state, the producer's rule in the instructions.
+      expect(Object.keys(first.questions)).toEqual(["outcome"]);
+      expect(Object.keys((first.questions.outcome as { criteria: Record<string, string> }).criteria)).toEqual(["abstain", "write"]);
+      expect((first.state as Record<string, unknown>).offer).toBeUndefined();
+      expect(Object.keys(second.questions)).toEqual(["task"]);
+      const q = second.questions.task as { instructions: string; criteria: Record<string, string> };
+      expect(Object.keys(q.criteria)).toEqual(["abstain", "act"]);
+      expect((second.state as Record<string, unknown>).offer).toEqual({ task: "Add an event to the user's calendar", sentence: "Lunch with Priya tomorrow at noon.", found: 'Code found in it the person "Priya" and the time Tue Oct 6, 12:00 to 1:00 PM; the user typed it in this field.' });
+      expect(q.instructions).toContain("Offer it when the user is arranging something they will attend.");
       expect(decisions.map((d) => [d.outcome, d.by, d.published, d.route])).toEqual([
         ["write", "router1", true, null],
         ["act", "router1", false, "workflow:event"],
@@ -378,6 +386,16 @@ describe("the routing coordinator", () => {
       expect(ev.ran).toBe(1);
       expect(ev.dropped).toBe(0);
       expect(coord.writing).toEqual({ windowId: NOTE, key: BODY(0) });
+      // A task not chosen beside the outcome is let go once its own answer is in.
+      const other = checked("event:2");
+      cands = [other];
+      jev.holding = false;
+      jev.task = () => ({ choice: "abstain", confidence: 0.9 });
+      clock.advance(ROUTER1_COOLDOWN_MS);
+      show("", 1);
+      await coord.idle();
+      expect([other.ran, other.dropped]).toEqual([0, 1]);
+      expect(decisions.at(-1)).toMatchObject({ key: BODY(1), outcome: "write", published: true });
     });
 
     it("decides act on the task alone when nothing else is legal, and a weak task answer offers nothing", async () => {
@@ -451,7 +469,7 @@ describe("the routing coordinator", () => {
       expect(coord.stats.staleDrops).toBe(1);
     });
 
-    it("leaves the sentence and the person out of the task question when their window's budget will not take them", async () => {
+    it("does not ask about a task whose sentence its window's budget will not take", async () => {
       hostWrites = false;
       // A conversation gives Jev less than half its text: its one line cannot be quoted whole.
       const chat: AppRef = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
@@ -461,14 +479,26 @@ describe("the routing coordinator", () => {
       if (w === undefined) throw new Error("the chat window is not in the model");
       const ev = checked();
       ev.quotes = [{ window: w, kind: "candidate", texts: [line, "Dana"] }];
-      ev.evidence = { task: "Add an event to the user's calendar", sentence: line, found: 'Code found in it the person "Dana" and the time Fri 3:00 PM; it is a new line in a Messages conversation.', plain: "Code found in it a person and the time Fri 3:00 PM; it is a new line in a Messages conversation.", offerWhen: "Offer it." };
+      ev.evidence = { task: "Add an event to the user's calendar", sentence: line, found: 'Code found in it the person "Dana" and the time Fri 3:00 PM; it is a new line in a Messages conversation.', offerWhen: "Offer it." };
       cands = [ev];
       show("Notes so far. ");
       await coord.idle();
-      const r = jev.routerCalls()[0] as JevRequest;
-      expect((r.state as Record<string, unknown>).offer).toEqual({ task: "Add an event to the user's calendar", found: "Code found in it a person and the time Fri 3:00 PM; it is a new line in a Messages conversation." });
-      expect(JSON.stringify(r.state)).not.toContain("Dana");
-      expect(r.snippets.some((x) => x.text === line || x.text === "Dana")).toBe(false);
+      // With only code's facts Router 1 could not apply the producer's rule, so nothing is asked.
+      expect(jev.routerCalls()).toHaveLength(0);
+      expect(decisions.at(-1)).toMatchObject({ outcome: "abstain", by: "local", local: "privacy" });
+      expect([ev.ran, ev.dropped]).toEqual([0, 1]);
+      // Beside writing, the outcome is asked as before and the task is let go.
+      hostWrites = true;
+      const again = checked("event:9");
+      again.quotes = ev.quotes;
+      again.evidence = ev.evidence;
+      cands = [again];
+      jev.router1 = () => ({ choice: "write", confidence: 0.9 });
+      clock.advance(ROUTER1_COOLDOWN_MS);
+      show("", 1);
+      await coord.idle();
+      expect(jev.routerCalls().map((r) => Object.keys(r.questions))).toEqual([["outcome"]]);
+      expect([again.ran, again.dropped]).toEqual([0, 1]);
     });
 
     it("lets a forged task answer fail the decision when the task was the only question", async () => {
