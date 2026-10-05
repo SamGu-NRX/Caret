@@ -188,8 +188,10 @@ describe("Ask asks where to copy from, with the windows that hold such values (B
     expect(JSON.stringify(j.seen)).not.toContain("(512) 555-0193");
   });
 
+  // "without using Draft.txt" also reads as keeping Caret to its own words (sources.ts RESTRICTS), which asks no source
+  // question at all (review 1); "not from" only rules the window out.
   it("never lists a window the instruction rules out", async () => {
-    const e = await fail(planAsk("put in the landlord's phone, without using Draft.txt", desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ route: "ask", why: "whichSource", fields: [s.fields.find((f) => f.name === "Landlord phone")?.ref ?? "?"], sources: [] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
+    const e = await fail(planAsk("put in the landlord's phone, not from Draft.txt", desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ route: "ask", why: "whichSource", fields: [s.fields.find((f) => f.name === "Landlord phone")?.ref ?? "?"], sources: [] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
     expect(labels(questionOf(e))).toEqual(["Rental notes.txt", "memory"]);
   });
 
@@ -204,6 +206,45 @@ describe("Ask asks where to copy from, with the windows that hold such values (B
     const sent = JSON.stringify(j.seen);
     expect(sent).not.toContain("Rental notes");
     expect(sent).not.toContain("Dana Whitfield");
+  });
+});
+
+describe("review 1: a picked source is the only source (B29)", () => {
+  const sourceAsk = (instruction: string) => planAsk(instruction, desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ route: "ask", why: "whichSource", fields: [s.fields.find((f) => f.name === "Landlord phone")?.ref ?? "?"], sources: [] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 });
+
+  it("reads only the picked window, even when the instruction named another", async () => {
+    const instruction = "put the landlord phone in from Rental notes.txt";
+    const q = questionOf(await fail(sourceAsk(instruction))) as Q;
+    const draft = q.options.find((c) => c.option.kind === "window" && c.option.title === "Draft.txt")?.option.id as string;
+    const j = jevBy((s) => (s.includes("'Landlord phone'") ? "(512) 555-0193" : null));
+    const r = await answer(q, [draft], { ask: j.ask, instruction }).catch((x: unknown) => x);
+    expect(JSON.stringify(j.seen)).not.toContain("(512) 555-0193");
+    if (!(r instanceof AskRefused)) expect((r as { checked: { writes: { value: string }[] } }).checked.writes.map((w) => w.value)).not.toContain("(512) 555-0193");
+  });
+
+  it("asks no source question when the instruction keeps Caret to its own words", async () => {
+    const e = await fail(sourceAsk("put the landlord phone in, only using what I typed"));
+    expect(questionOf(e)).toBeUndefined();
+  });
+});
+
+describe("review 1: a question about a form that changed is refused (B29)", () => {
+  const instruction = "do the landlord bit";
+  const ask = () => planAsk(instruction, desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker({ route: "ask", why: "whichFields", scope: "none" }), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 });
+  const changedForm = (edit: (ns: Node[]) => Node[], title = "Apply"): ScreenModel => {
+    const m = desk();
+    m.apply(snap(edit(page()), { at: 1100, windowId: "form", title, app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true }));
+    return m;
+  };
+  const pick = (m: ScreenModel) => async () => answer(questionOf(await fail(ask())) as Q, ["o2"], { model: m, ask: jevBy((s) => (s.includes("phone") ? "(512) 555-0193" : null)).ask, instruction });
+
+  it.each([
+    ["the picked field was relabelled", changedForm((ns) => ns.map((n) => (n.key === KEY("landlord phone") ? { ...n, label: "Recovery phone" } : n)))],
+    ["the picked field was filled", changedForm((ns) => ns.map((n) => (n.key === KEY("landlord phone") ? { ...n, value: "(415) 555-0100" } : n)))],
+    ["the form's title changed", changedForm((ns) => ns, "Apply: step 2")],
+  ])("%s", async (_, m) => {
+    const e = await fail((await pick(m))());
+    expect(e.message).toBe(SAYS.windowChanged);
   });
 });
 
@@ -239,6 +280,9 @@ describe("what stays a refusal (B29)", () => {
     ["my ssn is 555-01-2345, put it in", /^Caret doesn't type Social Security numbers/],
     ["ok go ahead and pay for it", null],
     ["submit it for me", null],
+    // Review 1: says.ts reads these as sending; the question guard did not.
+    ["email it to Gary", null],
+    ["mail it to Gary", null],
   ])("%s is refused with no question", async (instruction, says) => {
     const e = await fail(planAsk(instruction, desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker({ route: "ask", why: "whichFields", scope: "none" }), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
     expect(questionOf(e)).toBeUndefined();

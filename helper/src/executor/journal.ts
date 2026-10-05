@@ -74,6 +74,11 @@ export const JournalRecord = z.object({
   skillId: z.string().min(1).nullable(),
   /** The first window the plan bound, for the activity row. */
   window: z.object({ app: AppRef, windowId: z.string(), title: z.string(), frame: Frame.nullable() }).nullable(),
+  /**
+   * Every write entry's `after` is the value Caret meant to write (B29). A row without it was saved before B29, when a
+   * native write could keep its read-back, the user's keystroke included; recovery then refuses the undo of its writes.
+   */
+  afterIntended: z.literal(true).optional(),
 });
 export type JournalRecord = z.infer<typeof JournalRecord>;
 

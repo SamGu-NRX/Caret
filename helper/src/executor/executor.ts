@@ -1123,6 +1123,7 @@ export class Executor {
       ledger,
       pending,
       window: bound === undefined ? null : { app: bound.app, windowId: bound.window.windowId, title: bound.window.title, frame: bound.window.frame },
+      afterIntended: true,
     });
     task.journaled = true;
   }
@@ -1141,7 +1142,9 @@ export class Executor {
    */
   recover(r: JournalRecord): void {
     if (this.tasks.has(r.taskId)) throw new PlanError(`task ${r.taskId} already exists`);
-    const ledger: LedgerEntry[] = [...r.ledger];
+    // A row saved before B29 may hold a native write's read-back as `after` (review 1): its undo is refused, as for
+    // any write that may include the user's input. A write whose answer was lost always kept the value it was writing.
+    const ledger: LedgerEntry[] = r.ledger.map((e) => (r.afterIntended === true || e.kind !== "write" || e.unconfirmed === true ? e : { ...e, mayIncludeInput: true }));
     const p = r.pending;
     if (p?.kind === "write") ledger.push({ kind: "write", step: p.step, pid: p.pid, windowId: p.windowId, key: p.key, role: p.role, before: p.before, after: p.value, mark: p.mark, unconfirmed: true });
     else if (p?.kind === "press") ledger.push({ kind: "press", step: p.step, label: p.label, windowId: p.windowId });
@@ -1602,15 +1605,37 @@ const UNTOUCHED = Symbol("untouched");
  * Whether field `n`, read as `held`, holds the value Caret wrote (B29: anything else may be the user's typing). Exactly,
  * except in a page's number field (PAGE_SUBROLE.number), where both are compared as plain decimal numbers, since a page
  * may show "1" as "1.00". Never in a text field, and never across grouping separators, signs of locale or units.
+ * The comparison is exact on the digits (canonicalDecimal), not through Number(): review 1 found 9007199254740992 equal
+ * to 9007199254740993, 1e309 to 2e309 and 1e-999 to 0 that way, so undo restored over the user's number.
  */
 export function sameValue(n: Node, held: string, wrote: string): boolean {
   if (held === wrote) return true;
-  if (n.subrole !== PAGE_SUBROLE.number || !PLAIN_NUMBER.test(held) || !PLAIN_NUMBER.test(wrote)) return false;
-  return Number(held) === Number(wrote);
+  if (n.subrole !== PAGE_SUBROLE.number) return false;
+  const a = canonicalDecimal(held);
+  return a !== null && a === canonicalDecimal(wrote);
 }
 
 /** A decimal number as an input of type number holds one: optional sign, digits with at most one point, optional exponent. */
-const PLAIN_NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+const PLAIN_NUMBER = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d{1,6}))?$/;
+
+/**
+ * One spelling per number: "-123e-2" for -1.23, "0" for any zero. Digits keep every place, so two spellings match only
+ * when they are the same number exactly. Null for anything PLAIN_NUMBER does not take, or one with no digit.
+ */
+export function canonicalDecimal(s: string): string | null {
+  const m = PLAIN_NUMBER.exec(s);
+  if (m === null) return null;
+  const whole = m[2] ?? "";
+  const frac = m[3] ?? "";
+  if (whole === "" && frac === "") return null;
+  let digits = (whole + frac).replace(/^0+/, "");
+  if (digits === "") return "0";
+  let exp = Number(m[4] ?? "0") - frac.length;
+  const trailing = /0+$/.exec(digits)?.[0].length ?? 0;
+  digits = digits.slice(0, digits.length - trailing);
+  exp += trailing;
+  return `${m[1] === "-" ? "-" : ""}${digits}e${exp}`;
+}
 
 /** Why the reader refused a restore, in words for the activity row. */
 function undoRefused(e: Extract<LedgerEntry, { kind: "write" }>, r: VerbResult): string {

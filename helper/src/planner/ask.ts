@@ -63,6 +63,12 @@ export interface AskResume {
   maker: MakerUse;
   makerName: IntentMaker["name"];
   fixed: AskFixed;
+  /**
+   * The form as the question saw it: its title, and each field's name, section and whether it held text. A field the
+   * continued Ask acts on must read the same, and the title must too, or the Ask refuses (B29 review 1: a field
+   * relabelled "Recovery email" and filled after the question was written over).
+   */
+  seen: { title: string; fields: Record<string, { name: string; section: string | null; filled: boolean }> };
 }
 
 /** One question an Ask asks (B29): its part, text and options, the form it is about, and what continues it. */
@@ -125,6 +131,17 @@ const refsOf = (snap: IntentSnapshot): SnapRefs => ({
 const changed = (what: string): never => {
   throw new SaidError("unknownWindow", SAYS.windowChanged, `since Caret asked, ${what}`);
 };
+
+/** Refuses a continued Ask when the form, or a field it would act on, no longer reads as the question saw it. */
+function checkSeen(r: AskResume, snap: IntentSnapshot): void {
+  if (snap.window.window.title !== r.seen.title) changed("the form's title changed");
+  const keys = [...(r.fixed.fields ?? []), ...r.intent.fields.map((x) => r.refs.fields[x]), ...r.intent.literals.map((l) => r.refs.fields[l.field])];
+  for (const key of new Set(keys)) {
+    const was = key === undefined ? undefined : r.seen.fields[key];
+    const now = snap.fields.find((f) => f.key === key);
+    if (was === undefined || now === undefined || now.name !== was.name || now.section !== was.section || now.filled !== was.filled) changed(`the field '${was?.name ?? key ?? "?"}' changed`);
+  }
+}
 
 /** An intent read against a later snapshot of the same form: each ref by what it stood for. */
 function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot): AskIntent {
@@ -243,6 +260,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   try {
     snap = intentSnapshot(instruction, model, w, memory.values());
     // A continued Ask reads the maker's intent against the form as it is now, and asks the maker nothing.
+    if (resume !== undefined) checkSeen(resume, snap);
     made = resume === undefined ? await o.maker.make(snap) : { intent: remapIntent(resume.intent, resume.refs, snap), use: resume.maker };
     intent = applyFixed(made.intent, fixed, snap);
   } catch (e) {
@@ -258,7 +276,16 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     return {
       ...r.choices,
       window: { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title },
-      resume: { instruction, windowId: w.window.windowId, intent: made.intent, refs: refsOf(snap), maker: use, makerName, fixed },
+      resume: {
+        instruction,
+        windowId: w.window.windowId,
+        intent: made.intent,
+        refs: refsOf(snap),
+        maker: use,
+        makerName,
+        fixed,
+        seen: { title: w.window.title, fields: Object.fromEntries(snap.fields.map((f) => [f.key, { name: f.name, section: f.section, filled: f.filled }])) },
+      },
     };
   };
   const refused = (e: unknown): never => {

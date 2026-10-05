@@ -555,6 +555,36 @@ describe("executor", () => {
     again.journal.close();
   });
 
+  // B29 review 1: a row saved before B29 may hold a native write's read-back as `after`, the user's keystroke included.
+  it("refuses to undo a recovered write from a row saved before B29, and still undoes one saved since", async () => {
+    const p = plan([write(K("textfield:name~0"), "Dana")]);
+    expect(await helper.executor.run("t-old", p, {})).toMatchObject({ outcome: "done" });
+    const [entry] = helper.executor.ledger("t-old");
+    if (entry?.kind !== "write") throw new Error("no write entry");
+    // The user typed "s" as Caret wrote; the old code kept the read-back "Danas" as the write's result.
+    app.setValue(K("textfield:name~0"), "Danas");
+    const journal = new RecoveryJournal(join(dir, "data"));
+    const row = { startedAt: 1, savedAt: Date.now(), plan: p, unprompted: false, granted: true, readerId: null, next: 1, pending: null, skillId: null, window: null };
+    journal.save({ ...row, taskId: "legacy", ledger: [{ ...entry, after: "Danas" }] });
+    journal.close();
+    const again = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, calendar });
+    app.helper = again;
+    app.show();
+    const u = await again.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "legacy", action: "undo" });
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Danas");
+    expect(u).toMatchObject({ restored: 0, notRestored: [{ step: 0, reason: expect.stringMatching(/may hold your typing/) }] });
+    again.journal.close();
+    // A row this executor saves says its `after` is what Caret meant to write, and its undo goes through.
+    app.setValue(K("textfield:name~0"), "Dana");
+    app.helper = helper;
+    app.show();
+    // The row is dropped once the run ends, so its saves are read as they happen.
+    const saved: unknown[] = [];
+    (helper.executor as unknown as { deps: { journal?: { save: (r: unknown) => void; drop: () => void } } }).deps.journal = { save: (r) => saved.push(r), drop: () => {} };
+    expect(await helper.executor.run("t-new", plan([write(K("textfield:email~0"), "d@example.com")]), {})).toMatchObject({ outcome: "done" });
+    expect(saved.at(-1)).toMatchObject({ afterIntended: true });
+  });
+
   // B23 second review: a recovered row an undo could not finish stayed for every start, even once its reader was gone,
   // and a calendar undo refused for want of Calendar access settled its entry for good.
   it("keeps a recovered calendar run's row while Calendar access is missing, and drops it once a reader launched since connects", async () => {
@@ -1070,6 +1100,17 @@ describe("sameValue: undo identity (B29)", () => {
     ["0x10", "16", false],
     ["Infinity", "1e999", false],
     ["$1", "1", false],
+    // Review 1: Number() made these equal.
+    ["9007199254740993", "9007199254740992", false],
+    ["2e309", "1e309", false],
+    ["1e-999", "0", false],
+    ["0.10000000000000001", "0.1", false],
+    ["1e2", "1E+2", true],
+    ["+5", "5.0", true],
+    ["0.0", "-0", true],
+    ["", "", true],
+    [".", "0", false],
+    ["1e1234567", "1", false],
   ] as const)("in a number field, %j against %j is %s", (held, wrote, same) => {
     expect(sameValue(num, held, wrote)).toBe(same);
   });

@@ -256,8 +256,8 @@ function stop(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: readon
  * someone's details by a pronoun with no one named, or only fields Caret never types.
  *
  * `fixed` holds the user's picks (B29), already applied to `intent` by the caller for its fields and source. A picked
- * person settles whose details go in, the pronoun rule included; a picked window is consented to as a window the
- * instruction names is, and is the only window read besides those the instruction names.
+ * person settles whose details go in, the pronoun rule included. A picked source is the only source read: a picked
+ * window is consented to as a window the instruction names is, and no other window is read, named or not.
  */
 export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskFixed = {}): CheckedIntent {
   const bad = (what: string): never => {
@@ -331,6 +331,13 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
     if (named.length === 0) (any = true), (memory = true);
   }
   if (!any) for (const id of named) windows.add(id);
+  // A picked source is the only one (B29 review 1): the windows the instruction named are not read beside it.
+  if (fixed.source !== undefined) {
+    any = false;
+    windows.clear();
+    if (fixed.source.kind === "window") windows.add(fixed.source.windowId);
+    memory = fixed.source.kind === "memory";
+  }
   if (snap.excluded.length > 0) {
     // Every source but those: the listed windows, less the excluded. A window past the snapshot's list is not read.
     if (any) for (const x of snap.windows) windows.add(x.windowId);
@@ -356,7 +363,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
     instruction: snap.instruction,
     person,
     literals,
-    consented: new Set([...named, ...(fixed.source?.kind === "window" ? [fixed.source.windowId] : [])]),
+    consented: fixed.source === undefined ? new Set(named) : new Set(fixed.source.kind === "window" ? [fixed.source.windowId] : []),
     first: [...new Set(snap.named.flatMap((n) => n.names))],
   };
   // The fill engine's trigger: the focused field when it is in scope, else the first field in scope.

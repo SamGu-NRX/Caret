@@ -20,8 +20,8 @@ import { fieldKinds, fieldTerms, NAME_TERM, overlap } from "../fill/kinds.ts";
 import { mentionedKind } from "../memory/sensitive.ts";
 import { namesShortLabel, relevance } from "./planner.ts";
 import { normalizeInstruction, SECTION_WORDS } from "./scope-words.ts";
-import { fieldWords } from "./sources.ts";
-import { ASKS, type AskPart } from "./says.ts";
+import { fieldWords, restrictsSources } from "./sources.ts";
+import { ASKS, asksPress, type AskPart } from "./says.ts";
 import type { AskFixed, IntentField, IntentSnapshot } from "./intent.ts";
 
 /** One option as the host shows it, and what picking it fixes. */
@@ -38,14 +38,11 @@ export interface Choices {
 }
 
 /**
- * Words that ask Caret to press, send or pay. An instruction holding one is never asked about with choices: a pick of
- * fields would answer a request Caret refuses (B26's sentences stand). Written from saysPressAsked's words, not measured.
+ * Whether an instruction must be refused rather than asked about: it names a kind Caret never types, or a press
+ * (says.ts asksPress). A pick of fields would answer a request Caret refuses, so B26's sentences stand.
  */
-const PRESS_WORDS = /\b(?:submit|send|reply|delete|remove|scrap|discard|trash|pay|purchase|buy|checkout|check out|place the order|press|click|hit)\b/iu;
-
-/** Whether an instruction must be refused rather than asked about: it names a kind Caret never types, or a press. */
 export function mustRefuse(instruction: string): boolean {
-  return mentionedKind(instruction) !== null || PRESS_WORDS.test(instruction);
+  return mentionedKind(instruction) !== null || asksPress(instruction);
 }
 
 /** Why no question can be asked, for the refusal's detail; null when `choices` holds one. */
@@ -124,6 +121,8 @@ function fieldChoices(snap: IntentSnapshot): ChoicesResult {
  * line whose label shares a term with one of them. Most recently used first, as the snapshot lists windows.
  */
 function sourceChoices(snap: IntentSnapshot, model: ScreenModel, scoped: readonly IntentField[], now: number): ChoicesResult {
+  // "Only use what I typed": no window or memory may be offered (B29 review 1).
+  if (restrictsSources(snap.instruction)) return no("the instruction keeps Caret to its own words");
   const wanted = scoped.map((f) => fieldTerms(labelWords(snap, f)));
   const kinds = new Set(scoped.flatMap((f) => [...fieldKinds(labelWords(snap, f))]));
   const excluded = new Set(snap.excluded);
