@@ -24,9 +24,23 @@ final class EventKitCalendars: CalendarDirectory, CalendarAccessAsking {
 
     var access: CalendarAccess { CalendarAccess.effective(status: status, answered: answered) }
 
+    /// When the class status says notDetermined, whether a store sees calendars, checked at most once a second:
+    /// the status can say notDetermined after a grant (`EventKitBackend.hasFullAccess`, VM run 5). A store asks
+    /// nothing; only `requestAccess` puts the prompt up.
+    private var probe: (at: Date, store: EKEventStore, sees: Bool)?
+
+    private func storeSeesCalendars() -> Bool {
+        if let probe, Date().timeIntervalSince(probe.at) < 1 { return probe.sees }
+        let s = probe?.store ?? EKEventStore()
+        if probe?.sees == false { s.reset() }
+        let sees = !s.calendars(for: .event).isEmpty
+        probe = (Date(), s, sees)
+        return sees
+    }
+
     private var status: CalendarAccess {
         switch EKEventStore.authorizationStatus(for: .event) {
-        case .notDetermined: return .notDetermined
+        case .notDetermined: return storeSeesCalendars() ? .fullAccess : .notDetermined
         case .restricted: return .restricted
         case .denied: return .denied
         case .fullAccess: return .fullAccess

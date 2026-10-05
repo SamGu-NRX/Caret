@@ -11,8 +11,10 @@ the event sentence) on the bundle's own Node; CaretFixture.app with the executor
 caret-screen with --calendar-user, reading Caret's settings file as the shipped app's reader does; and
 Caret itself, attached to that helper, started by launchd (launchctl bootstrap) so that Calendar's
 prompt is Caret's own: a process started from this script would be judged by this script's
-responsible process. The reader here is started by the script, so the job grants its responsible
-process Calendar beforehand; Caret is granted nothing, and asks.
+responsible process. The reader here is started by the script, before anything is granted, as the
+shipped reader starts at launch before Caret first asks; its responsible process (the job's bash and
+python) is granted Calendar while Caret's prompt is up, before Allow, so the reader must see a grant
+that came after it started. Caret is granted nothing, and asks.
 
 Keys go through the debug socket's `key` hook (the event tap's own decision code, no event posted).
 The one press outside Caret is on macOS's prompt, by Accessibility. Captures are by window number.
@@ -44,6 +46,7 @@ HELPER_SOCK = os.path.join(SOCKS, "helper.sock")
 sa.HOST_SOCK = os.path.join(SOCKS, "host.sock")
 STATE = os.path.join(SOCKS, "helper-state.json")
 TOOL = None
+SEED = None
 
 
 def helper_state():
@@ -198,6 +201,10 @@ def run(app, out_dir):
     for i, n in enumerate((prompt or {}).get("windows", [])):
         results["steps"].append({"step": "prompt", "shot": window_shot(out_dir, f"2-prompt-{i}", n)})
     results["prompt"] = prompt
+    # The reader's own grant lands now, after it started (its responsible process is this job, not Caret).
+    seeded = subprocess.run([SEED, "grant", "kTCCServiceCalendar", reader, "/bin/bash", sys.executable, TOOL], capture_output=True, text=True)
+    results["seeded"] = {"rc": seeded.returncode, "rows": seeded.stdout.strip().splitlines()[-4:], "err": seeded.stderr.strip()[-300:]}
+    sa.check("the reader's responsible process is granted Calendar after the reader started", seeded.returncode == 0, seeded=results["seeded"])
 
     # 4. Allow; the event goes to the default calendar.
     pressed = tool("allow", "Caret")
@@ -252,8 +259,11 @@ def main():
     p.add_argument("--app", required=True)
     p.add_argument("--tool", required=True)
     p.add_argument("--out", required=True)
+    p.add_argument("--seed", required=True, help="seed-user-tcc.sh, run while the prompt is up")
     a = p.parse_args()
+    global SEED
     TOOL = a.tool
+    SEED = a.seed
     results = {}
     lease = fixture_app.GuiLease()
     dog = fixture_app.Watchdog(lambda t: any(x - 0.2 <= t <= y for x, y in sa.SYNTHETIC), sa.front_pid, sa.NAMES)

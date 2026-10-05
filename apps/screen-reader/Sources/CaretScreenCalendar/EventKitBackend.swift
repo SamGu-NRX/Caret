@@ -1,5 +1,5 @@
-// The real calendar store behind CalendarAdapter. It reads the authorization status, and creates an
-// EKEventStore only once full access is already granted: it never calls a request method, so it can
+// The real calendar store behind CalendarAdapter. It reads the authorization status, and, while that says
+// notDetermined, whether a store sees calendars (`hasFullAccess`): it never calls a request method, so it can
 // never put a system prompt on the screen (in the shipped app Caret asks, when the user first accepts an
 // event card, and this process inherits Caret's answer). The adapter decides what may be written; this
 // file only translates its calls to EventKit, and refuses a write outside its scope as a second check:
@@ -35,8 +35,22 @@ public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
         }
     }
 
+    /// Full access, without asking. The class status is not enough on its own: in the rig guest (evidence/host/h8,
+    /// VM run 5), a process that was running when access was granted read the status as notDetermined, then
+    /// fullAccess, then notDetermined again, while a new store in that process read the calendars throughout. The
+    /// shipped reader starts at launch, before Caret first asks, so while the status says notDetermined a store is
+    /// asked: one that sees calendars means access. Making a store and listing its calendars prompts for nothing;
+    /// only the request methods do, and this file calls none.
     public func hasFullAccess() -> Bool {
-        EKEventStore.authorizationStatus(for: .event) == .fullAccess
+        switch EKEventStore.authorizationStatus(for: .event) {
+        case .fullAccess: return true
+        case .notDetermined:
+            let s = storeObj ?? EKEventStore()
+            guard !s.calendars(for: .event).isEmpty else { return false }
+            storeObj = s
+            return true
+        default: return false
+        }
     }
 
     private func store() throws -> EKEventStore {

@@ -131,15 +131,13 @@ final class SurfaceCoordinator {
     // MARK: - Events in, forwarded to the machine
 
     /// macOS's Calendar prompt takes the foreground, and closing it left the app the user accepted the
-    /// card in inactive (VM run 4: the fixture's title greyed after Allow), so the working and done lines,
-    /// which show only over the app in front, never came back and ⌘Z went unclaimed. The app is given the
-    /// front again, only when what holds it now is the prompt's own process or Caret: an app the user
-    /// switched to meanwhile keeps it.
+    /// card in inactive (VM runs 4 and 5: the fixture's title greyed after Allow, Setup Assistant in front
+    /// in run 5), so the working and done lines, which show only over the app in front, never came back
+    /// and ⌘Z went unclaimed. The answer comes only when the user clicks one of the prompt's buttons, so
+    /// that click is the last thing they did: the app they accepted the card in gets the front back.
     static func giveBackFront(before: NSRunningApplication?, after: NSRunningApplication?) {
-        guard let before, !before.isTerminated, before.processIdentifier != after?.processIdentifier else { return }
-        let promptOwners: Set<String> = ["com.apple.UserNotificationCenter"]
-        let mine = after?.processIdentifier == ProcessInfo.processInfo.processIdentifier
-        guard after == nil || mine || promptOwners.contains(after?.bundleIdentifier ?? "") else { return }
+        guard let before, !before.isTerminated, before.processIdentifier != after?.processIdentifier,
+              before.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
         _ = before.activate(options: [])
     }
 
