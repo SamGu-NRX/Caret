@@ -9,8 +9,8 @@ import SwiftUI
 /// - The value sits in the empty field itself, in the field's font at Ghost opacity.
 /// - The source is named once, in a slip right-aligned 6 pt above the field: the figure looking
 ///   down at the field, the source app's glyph, "from Mail, Invoice 2041" and `Tab Fill`.
-///   `LinePlacement` picks above, below or a compact slip, whichever covers nothing. ⌘1 All is not
-///   shown: the host cannot yet write fields other than the focused one (`FillOrigin.fillAll`).
+///   `LinePlacement` picks above, below or a compact slip, whichever covers nothing. `⌘1 Fill all`
+///   follows when the helper fills the form in one run (`FillOrigin.fillAll`, D2-04).
 /// - After Tab the field flashes the Carrot wash for 400 ms and the same slip, in place, becomes
 ///   the result with ⌘Z Undo. The next field's slip is the same panel, moved there over 140 ms.
 /// - One slip at a time: while a result lives, the next field's slip waits or replaces it
@@ -39,6 +39,7 @@ final class FillOverlay {
     private struct Deferred {
         let caption: String
         let sourceApp: String?
+        let fillAll: Bool
         let field: CGRect
         let pid: pid_t
     }
@@ -91,23 +92,24 @@ final class FillOverlay {
     /// Draws the value in the field and names its source. `outcome` is `FillMachine`'s decision
     /// about a toast still up (`FillLineRule`): wait behind it, replace it, or nothing in the way.
     func showOffer(
-        value: String, fieldFrame: CGRect, style: OverlayTextStyle, caption: String, sourceApp: String? = nil, pid: pid_t,
+        value: String, fieldFrame: CGRect, style: OverlayTextStyle, caption: String, sourceApp: String? = nil, fillAll: Bool = false, pid: pid_t,
         outcome: FillLineRule.Outcome, hasPlaceholder: Bool = false
     ) {
         drawGhost(value: value, fieldFrame: fieldFrame, style: style, masksPlaceholder: hasPlaceholder)
         switch outcome {
         case .deferLine:
-            deferred = Deferred(caption: caption, sourceApp: sourceApp, field: fieldFrame, pid: pid)
+            deferred = Deferred(caption: caption, sourceApp: sourceApp, fillAll: fillAll, field: fieldFrame, pid: pid)
         case .replaceToast, .showLine:
             // A result still up gives its panel to the next field's slip, which moves there.
-            showLine(caption: caption, sourceApp: sourceApp, field: fieldFrame, pid: pid)
+            showLine(caption: caption, sourceApp: sourceApp, fillAll: fillAll, field: fieldFrame, pid: pid)
         }
         onChange?()
     }
 
     /// The source slip's content.
-    static func offerContent(caption: String, sourceApp: String?) -> LineContent {
-        LineContent(figure: .offering, app: sourceApp, text: caption, emphasis: .secondary, hints: [Hint(key: "Tab", label: "Fill")])
+    static func offerContent(caption: String, sourceApp: String?, fillAll: Bool = false) -> LineContent {
+        let hints = [Hint(key: "Tab", label: "Fill")] + (fillAll ? [Hint(key: "⌘1", label: "Fill all")] : [])
+        return LineContent(figure: .offering, app: sourceApp, text: caption, emphasis: .secondary, hints: hints)
     }
 
     /// The figure in the fill slip looks down at the field it would fill.
@@ -154,9 +156,9 @@ final class FillOverlay {
         return 0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent > 0.5
     }
 
-    private func showLine(caption: String, sourceApp: String?, field: CGRect, pid: pid_t) {
+    private func showLine(caption: String, sourceApp: String?, fillAll: Bool = false, field: CGRect, pid: pid_t) {
         deferred = nil
-        let content = Self.offerContent(caption: caption, sourceApp: sourceApp)
+        let content = Self.offerContent(caption: caption, sourceApp: sourceApp, fillAll: fillAll)
         if var current = line, current.role == .offer, current.field == field, current.source == caption {
             current.panel.text = caption + " Tab Fill"
             line = current
@@ -289,7 +291,7 @@ final class FillOverlay {
     /// rather than the result fading while a new slip enters.
     func hideToast(byTyping: Bool) {
         if let waiting = deferred, ghost.isVisible, line?.role == .toast {
-            showLine(caption: waiting.caption, sourceApp: waiting.sourceApp, field: waiting.field, pid: waiting.pid)
+            showLine(caption: waiting.caption, sourceApp: waiting.sourceApp, fillAll: waiting.fillAll, field: waiting.field, pid: waiting.pid)
         } else {
             endToast(exit: byTyping ? Motion.Duration.typed : Motion.Duration.toastExit)
         }

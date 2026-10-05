@@ -17,6 +17,7 @@ final class MemoryController {
         @Published var tab: MemoryView.Tab = .memory
         /// "Not on this site" (H5): the Sites tab.
         @Published var sites = SitesPage.State()
+        @Published var routing = true
     }
 
     let book: MemoryBook
@@ -54,8 +55,12 @@ final class MemoryController {
         files.onSaved = { [weak self] in self?.book.requestList() }
         // The sites list lives in the settings file, which the runtime sends to the helper on change.
         model.sites.off = SettingsStore.shared.settings.sitesOff
+        model.routing = SettingsStore.shared.settings.routing
         SettingsStore.shared.observe { [weak self] settings in
-            MainActor.assumeIsolated { self?.model.sites.off = settings.sitesOff }
+            MainActor.assumeIsolated {
+                self?.model.sites.off = settings.sitesOff
+                self?.model.routing = settings.routing
+            }
         }
     }
 
@@ -206,6 +211,7 @@ final class MemoryController {
             model.sites.problem = nil
         case .siteOff(let origin): turnSiteOff(origin)
         case .siteOn(let origin): turnSiteOn(origin)
+        case .routing(let on): SettingsStore.shared.update(source: .menu) { $0.routing = on }
         }
     }
 
@@ -367,6 +373,6 @@ private struct MemoryRoot: View {
     var send: (MemoryAction) -> Void
 
     var body: some View {
-        MemoryView(state: model.state, files: model.files, tab: model.tab, character: figure.character, sites: model.sites, editorApp: editorApp(), send: send)
+        MemoryView(state: model.state, files: model.files, tab: model.tab, character: figure.character, sites: model.sites, routing: model.routing, editorApp: editorApp(), send: send)
     }
 }

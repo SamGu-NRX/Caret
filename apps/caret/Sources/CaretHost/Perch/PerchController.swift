@@ -226,7 +226,8 @@ final class PerchController {
     /// Return, Tab, Esc and ⌘Z while the desk is key, before the field editor sees them. ⌘Z undoes an
     /// ended run that wrote. Return plans what the field holds; Tab takes a plan; Esc first closes an
     /// open "Not right", then stops a run, puts away a card or an answer, then empties the field,
-    /// then closes the desk. True when the key was used.
+    /// then closes the desk. While an Ask's question shows (B29), Up and Down move between its
+    /// choices, Space selects one of several, and Tab answers. True when the key was used.
     private func listKey(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         // ⌘Z on a run that wrote undoes it (q1 bug 8); otherwise the field editor's own undo.
@@ -237,6 +238,16 @@ final class PerchController {
         if let editor = list.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
         let editing = list.panel.firstResponder is NSTextView
         let correcting = askModel.notRight?.phase == .correcting
+        if case .question = ask.phase, editing {
+            switch Int64(event.keyCode) {
+            case KeyStroke.downKeyCode: return ask.move(1)
+            case KeyStroke.upKeyCode: return ask.move(-1)
+            case KeyStroke.spaceKeyCode: return ask.toggle()
+            // Return would plan the instruction again over the question; the question wants Tab.
+            case KeyStroke.returnKeyCode, 76: return true
+            default: break
+            }
+        }
         switch Int64(event.keyCode) {
         case KeyStroke.returnKeyCode, 76:
             // The "Not right" field's Return is its own (Save).
@@ -560,7 +571,7 @@ final class PerchController {
         // it, and a half-typed request stays for the next opening.
         switch ask.phase {
         case .running, .idle: break
-        case .asking, .proposed, .failed, .ended: ask.escape()
+        case .asking, .proposed, .question, .failed, .ended: ask.escape()
         }
         donePages = 1
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }

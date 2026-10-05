@@ -26,6 +26,48 @@ final class FillMachineTests: XCTestCase {
         return rig
     }
 
+    /// D2-04: a proposal Caret writes two fields of shows ⌘1, and ⌘1 asks the helper to fill the
+    /// form in one run: nothing is typed into this field, and the slip goes.
+    func testCommandOneOnAFieldsFillSendsFillAllForTheProposal() {
+        let rig = shown()
+        XCTAssertEqual(rig.draws.last?.fillAll, true, "two fields with a value and a source")
+        rig.press(KeyStroke(keyCode: 18, command: true, targetPID: Fx.app))
+        XCTAssertEqual(rig.takeLog(), ["fillAll fill-1", "hide offer"])
+        XCTAssertNil(rig.inserting, "⌘1 types nothing into the field")
+        XCTAssertNil(rig.machine.shownOfferID)
+        XCTAssertEqual(rig.counts.last, "fill.fillAll")
+    }
+
+    /// A field already taken by Tab leaves the form part filled: the helper would refuse a Fill all
+    /// of the proposal, so the next field's slip offers Tab alone (H6 review).
+    func testAProposalPartlyTakenByTabNoLongerOffersFillAll() {
+        let rig = toastUp()
+        rig.world.focus(.phone)
+        rig.machine.fieldChanged(pid: Fx.app, at: 5)
+        XCTAssertEqual(rig.draws.last?.value, FillFx.phone)
+        XCTAssertEqual(rig.draws.last?.fillAll, false)
+    }
+
+    /// One field to write is what Tab already does: no ⌘1, and ⌘1 keeps the app's meaning.
+    func testAProposalWithOneWritableFieldLeavesCommandOneToTheApp() {
+        let rig = FillRig()
+        rig.world.front(.email)
+        rig.propose(FillFx.proposal(phone: nil))
+        XCTAssertEqual(rig.draws.last?.fillAll, false)
+        rig.press(KeyStroke(keyCode: 18, command: true, targetPID: Fx.app))
+        XCTAssertFalse(rig.takeLog().contains { $0.hasPrefix("fillAll") })
+    }
+
+    /// The helper's count (fill-popup.ts writtenFields): text with a value and where it came from, and
+    /// a control whose hand-off says Caret writes it; a control left to the user does not count.
+    func testFillAllCountsTheFieldsTheHelperWrites() throws {
+        let lines = try String(contentsOf: RoutingTests.fixture.deletingLastPathComponent().appendingPathComponent("fill-all.ndjson"), encoding: .utf8)
+            .split(separator: "\n").map { Data($0.utf8) }
+        guard case .fillProposal(let p) = try HelperInbound.decode(lines[1]) else { return XCTFail("line 2 is the proposal") }
+        XCTAssertEqual(FillSelection.fillAllWrites(p), 5, "fill-all.ndjson's run writes 5")
+        XCTAssertEqual(p.fields.filter { $0.handoff?.writes == true }.count, FillSelection.fillAllWrites(p) - p.fields.filter { $0.control == .text && $0.value != nil }.count)
+    }
+
     func testAProposalForTheFocusedEmptyFieldIsShownAndHeldByTheArbiter() {
         let rig = shown()
         XCTAssertEqual(rig.arbiter.snapshot().current?.id, rig.machine.shownOfferID)

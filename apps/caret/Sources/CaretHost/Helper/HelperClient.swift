@@ -33,6 +33,8 @@ final class HelperClient: @unchecked Sendable {
     private struct Link {
         var fd: Int32 = -1
         var settings: HostSettings?
+        /// This connection's hello named `routing` (H6).
+        var routing = false
     }
     private let connection = OSAllocatedUnfairLock(initialState: Link())
     private let running = OSAllocatedUnfairLock(initialState: false)
@@ -41,18 +43,31 @@ final class HelperClient: @unchecked Sendable {
     /// Ended by every stop, take over or pause this client is asked to send, delivered or not, and
     /// by the connection closing (S1 audit #2): no host write authorized before then goes ahead.
     let authority: HostAuthority?
+    /// Whether the next hello names `routing`: the user's "Caret decides when to help". Read on the
+    /// client thread at each connect; a change takes effect at the next one (`reconnect`).
+    private let wantsRouting: @Sendable () -> Bool
 
     init(
         path: String = HelperClient.defaultPath,
         onMessage: @escaping @Sendable (HelperInbound) -> Void,
         onLink: @escaping @Sendable (Bool) -> Void = { _ in },
-        authority: HostAuthority? = nil
+        authority: HostAuthority? = nil,
+        wantsRouting: @escaping @Sendable () -> Bool = { false }
     ) {
         self.path = path
         self.onMessage = onMessage
         self.onLink = onLink
         self.authority = authority
+        self.wantsRouting = wantsRouting
     }
+
+    /// When this client last sent work the helper runs for this session (offerAccept, fillAll): until its
+    /// activity record arrives, only this says the session owns a run that closing it would revoke.
+    private let lastAccept = OSAllocatedUnfairLock<Date?>(initialState: nil)
+    var lastAcceptAt: Date? { lastAccept.withLock { $0 } }
+
+    /// The connection is up and its hello named `routing`, so the helper sends it route decisions.
+    var declaresRouting: Bool { connection.withLock { $0.fd >= 0 && $0.routing } }
 
     func start() {
         let alreadyRunning = running.withLock { r -> Bool in
@@ -96,7 +111,10 @@ final class HelperClient: @unchecked Sendable {
     @discardableResult
     func send(_ accept: OfferAccept) -> Bool {
         let sent = sendLine(try? NDJSON.line(accept))
-        if sent { stats.withLock { $0.accepts &+= 1 } }
+        if sent {
+            stats.withLock { $0.accepts &+= 1 }
+            lastAccept.withLock { $0 = Date() }
+        }
         return sent
     }
 
@@ -155,6 +173,33 @@ final class HelperClient: @unchecked Sendable {
     @discardableResult
     func send(_ request: HelperMemory.Request) -> Bool {
         sendLine(try? request.line())
+    }
+
+    /// H6: what the host sees in the field the user is in. Dropped when the helper is not connected,
+    /// or when this connection's hello did not name `routing` (the helper would refuse it by name).
+    @discardableResult
+    func send(_ context: RoutingContext) -> Bool {
+        guard connection.withLock({ $0.routing }) else { return false }
+        let sent = sendLine(try? NDJSON.line(context))
+        if sent { stats.withLock { $0.routingContexts &+= 1 } }
+        return sent
+    }
+
+    /// D2-04: ⌘1 on a field's fill, for the whole form. True when written.
+    @discardableResult
+    func send(_ fillAll: FillAllRequest) -> Bool {
+        let sent = sendLine(try? NDJSON.line(fillAll))
+        if sent {
+            stats.withLock { $0.accepts &+= 1 }
+            lastAccept.withLock { $0 = Date() }
+        }
+        return sent
+    }
+
+    /// B29: the user's pick for an Ask's question; the reply comes back to this connection only.
+    @discardableResult
+    func send(_ answer: AskAnswer) -> Bool {
+        sendLine(try? NDJSON.line(answer))
     }
 
     /// H5: the file the user took for a plan's attach step; answered with `fileConfirmReply` to this connection.
@@ -254,7 +299,8 @@ final class HelperClient: @unchecked Sendable {
             close(fd)
             return nil
         }
-        let hello = HostHello.make(pid: Int(getpid()))
+        let routing = wantsRouting()
+        let hello = HostHello.make(pid: Int(getpid()), routing: routing)
         guard let line = try? NDJSON.line(hello), Self.writeAll(fd, line) else {
             close(fd)
             return nil
@@ -263,6 +309,7 @@ final class HelperClient: @unchecked Sendable {
         // decision, which may be the first thing it says to this connection.
         let settingsSent = connection.withLock { link -> Bool? in
             link.fd = fd
+            link.routing = routing
             guard var settings = link.settings else { return nil }
             settings.gate.at = Int64((Date().timeIntervalSince1970 * 1000).rounded())
             link.settings = settings
@@ -324,8 +371,8 @@ final class HelperClient: @unchecked Sendable {
                 if e.message.hasPrefix("invalid consumer message") { s.resultsRejected &+= 1 }
                 // The helper's error text names windows and reasons, never screen text.
                 s.lastError = String(e.message.prefix(200))
-            // H6 acts on route decisions; until then they are counted with the skipped types.
-            case .routeDecision: s.skipped[RouteDecision.type, default: 0] &+= 1
+            case .routeDecision: s.routeDecisions &+= 1
+            case .askQuestion: s.planProposals &+= 1
             case .pageEngine: s.pageEngine &+= 1
             case .fileConfirmReply: s.fileConfirmReplies &+= 1
             case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1

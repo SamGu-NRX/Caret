@@ -138,6 +138,8 @@ final class FillRig {
     private(set) var inserting: Claim?
     /// Called on `toastSlotTaken`, as `HostRuntime` calls `SurfaceCoordinator.toastChanged`.
     var onToastSlotTaken: (() -> Void)?
+    /// Every offer drawn, for what the log line leaves out (`fillAll`).
+    var draws: [FillDraw] = []
 
     init(arbiter: OfferArbiter = OfferArbiter(), clock: ManualClock = ManualClock()) {
         self.arbiter = arbiter
@@ -154,9 +156,12 @@ final class FillRig {
         case .count(let name): counts.append(name)
         case .watchApp(let pid): log.append("watch \(pid)")
         case .unwatchApp(let pid): log.append("unwatch \(pid)")
-        case .drawOffer(let d): log.append("offer \(d.value) \(d.caption) \(d.line)")
+        case .drawOffer(let d):
+            draws.append(d)
+            log.append("offer \(d.value) \(d.caption) \(d.line)")
         case .hideOffer(let byTyping): log.append("hide offer\(byTyping ? " typing" : "")")
         case .markWorking: log.append("working")
+        case .fillAll(let id): log.append("fillAll \(id)")
         case .drawToast(let d): log.append("toast \(d.kind.rawValue) \([d.lead, d.text].compactMap { $0 }.joined(separator: " "))\(d.keycap.map { " \($0.key)" } ?? "")")
         case .hideToast(let byTyping): log.append("hide toast\(byTyping ? " typing" : "")")
         case .hideAll: log.append("hide all")

@@ -29,9 +29,12 @@ final class MemoryDocumentsTests: XCTestCase {
 
     // MARK: - What the host sends
 
+    /// M1's golden hello names memoryDocuments alone; the host's names it among the others (`RoutingTests`).
     func testTheHostsHelloNamesTheCapability() throws {
-        let golden = try object(Self.line(0))
-        XCTAssertEqual(try object(NDJSON.line(HostHello.make(pid: golden["pid"] as! Int))), golden)
+        let golden = try XCTUnwrap(object(Self.line(0)).mutableCopy() as? NSMutableDictionary)
+        XCTAssertEqual(golden["capabilities"] as? [String], [MemoryDocs.capability])
+        golden["capabilities"] = HostHello.capabilities(routing: false)
+        XCTAssertEqual(try object(NDJSON.line(HostHello.make(pid: golden["pid"] as! Int, routing: false))), golden)
     }
 
     /// The people add: a person the user names, the same `memoryRequest add` as onboarding's About.

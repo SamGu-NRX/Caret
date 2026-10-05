@@ -96,6 +96,9 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// "Not on this site" (H5): web origins the user turned Caret off for in What Caret knows, sorted,
     /// each once. The helper's page engines read and act in no frame at these origins.
     public var sitesOff: [String] = []
+    /// H6, What Caret knows: "Caret decides when to help" (true) or "Always suggest as I type"
+    /// (false, how Caret worked before the router). On by default (brief H6).
+    public var routing = true
 
     public init() {}
 
@@ -107,7 +110,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         sitesOff = set.sorted()
     }
 
-    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff }
+    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing }
 
     /// Strict: a file written by a newer host, or a role or level this host does not know, is an
     /// error the caller reports, not a guess.
@@ -133,6 +136,8 @@ public struct CaretSettings: Codable, Equatable, Sendable {
             throw DecodingError.dataCorruptedError(forKey: .sitesOff, in: c, debugDescription: "\(bad) is not a web origin")
         }
         sitesOff = Array(Set(sites)).sorted()
+        // Absent from a file written before H6: the default, as for a new user.
+        routing = try c.decodeIfPresent(Bool.self, forKey: .routing) ?? true
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -146,6 +151,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         try c.encode(onboarded, forKey: .onboarded)
         try c.encode(memory, forKey: .memory)
         try c.encode(sitesOff, forKey: .sitesOff)
+        try c.encode(routing, forKey: .routing)
     }
 
     public var gate: GatePolicy { GatePolicy(self) }

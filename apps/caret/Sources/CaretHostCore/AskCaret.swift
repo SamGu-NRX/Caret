@@ -24,6 +24,8 @@ public final class AskCaret {
         case control(TaskControl)
         /// Tab on a plan that attaches a file: the file the card proposed, for that run (H5).
         case confirmFile(FileConfirm)
+        /// Tab on a question: the user's pick (B29).
+        case answer(AskAnswer)
     }
 
     /// A run's writes that ⌘Z may undo, for the arbiter's toast in the app it acted in.
@@ -127,12 +129,36 @@ public final class AskCaret {
         case asking(requestId: String)
         /// A plan to take with Tab or dismiss with Esc.
         case proposed(Card)
+        /// B29: the helper asks which of its choices the user means. Tab answers with the highlighted
+        /// choice, or with the ones Space selected; Esc dismisses it.
+        case question(Question)
         /// No plan, and why in a sentence (`AskCopy.planError`).
         case failed(String)
         /// Tab took the plan; the helper is running it.
         case running(Card)
         /// The run ended: the steps as they ended and the line that says how.
         case ended(Card, WorkLine)
+    }
+
+    /// An Ask's question as the desk shows it: the helper's question, the row the arrows moved to, and
+    /// the rows Space selected (a fields question only).
+    public struct Question: Equatable, Sendable {
+        public var ask: AskQuestion
+        public var highlight: Int
+        public var selected: Set<String>
+
+        public init(ask: AskQuestion, highlight: Int = 0, selected: Set<String> = []) {
+            self.ask = ask
+            self.highlight = highlight
+            self.selected = selected
+        }
+
+        /// What Tab sends: the selected rows in the question's order, else the highlighted one.
+        public var picks: [String] {
+            let chosen = ask.options.map(\.id).filter(selected.contains)
+            if !chosen.isEmpty { return chosen }
+            return ask.options.indices.contains(highlight) ? [ask.options[highlight].id] : []
+        }
     }
 
     /// No answer to a planRequest in this long ends the wait. Assumed: B16's live planner passes
@@ -207,7 +233,7 @@ public final class AskCaret {
         }
         self.text = text
         switch phase {
-        case .asking, .proposed, .failed, .ended: settle(.idle)
+        case .asking, .proposed, .question, .failed, .ended: settle(.idle)
         case .idle, .running: onChange()
         }
     }
@@ -242,6 +268,7 @@ public final class AskCaret {
     /// helper's yes. Tab while that answer is on its way takes the key and does nothing more.
     @discardableResult
     public func tab() -> Bool {
+        if case .question(let q) = phase { return answer(q) }
         guard case .proposed(let card) = phase else { return false }
         if confirming != nil { return true }
         if let file = card.attach?.file {
@@ -295,6 +322,52 @@ public final class AskCaret {
         return true
     }
 
+    /// Up or Down on a question moves the highlight, wrapping. False when no question shows.
+    @discardableResult
+    public func move(_ step: Int) -> Bool {
+        guard case .question(var q) = phase else { return false }
+        let n = q.ask.options.count
+        q.highlight = ((q.highlight + step) % n + n) % n
+        settle(.question(q))
+        return true
+    }
+
+    /// Space on a question: selects or clears the highlighted row of a fields question. A question
+    /// that takes one answer has nothing to select, and Space does nothing there. True while a
+    /// question shows, so the space is not typed into the instruction.
+    @discardableResult
+    public func toggle() -> Bool {
+        guard case .question(var q) = phase else { return false }
+        guard q.ask.pick == .many, q.ask.options.indices.contains(q.highlight) else { return true }
+        let id = q.ask.options[q.highlight].id
+        if q.selected.remove(id) == nil { q.selected.insert(id) }
+        settle(.question(q))
+        return true
+    }
+
+    /// Sends the question's picks; the reply comes under a new request id, as a plan or another question.
+    private func answer(_ q: Question) -> Bool {
+        let picks = q.picks
+        guard !picks.isEmpty else { return true }
+        guard q.ask.expires > nowMs else {
+            settle(.failed(AskCopy.planError(PlanProposal.Failure(code: .questionGone, detail: "the question expired"))))
+            return true
+        }
+        requests += 1
+        let id = "ask-\(requests)"
+        guard send(.answer(AskAnswer(requestId: id, at: nowMs, questionId: q.ask.questionId, picks: picks))) else {
+            settle(.failed(AskCopy.helperDown))
+            return true
+        }
+        settle(.asking(requestId: id))
+        waitTimer?.cancel()
+        waitTimer = clock.schedule(after: Self.answerWait, repeats: false) { [weak self] in
+            guard let self, case .asking(let pending) = self.phase, pending == id else { return }
+            self.settle(.failed(AskCopy.noAnswer))
+        }
+        return true
+    }
+
     /// Esc: stop a run, or put away whatever the field shows. False when there is nothing to put
     /// away, so the caller closes the list.
     @discardableResult
@@ -325,8 +398,8 @@ public final class AskCaret {
             text = ""
             settle(.idle)
             return true
-        case .asking, .proposed:
-            // The instruction stays to edit: the plan, or the wait for one, is what goes.
+        case .asking, .proposed, .question:
+            // The instruction stays to edit: the plan, the question, or the wait for one, is what goes.
             settle(.idle)
             return true
         case .idle:
@@ -349,6 +422,8 @@ public final class AskCaret {
         case .asking: settle(.failed(AskCopy.helperDown))
         // Its offer went with the helper: Tab could only send a key nobody holds.
         case .proposed: settle(.failed(AskCopy.planGone))
+        // The helper keeps a question for the connection that was asked it (B29).
+        case .question: settle(.failed(AskCopy.planGone))
         // A run in flight, or one whose stop has not been answered: losing the connection says
         // nothing about how far the helper got, so the card does not guess.
         case .running(let card): settle(.ended(card, AskCopy.lostTouch))
@@ -388,6 +463,19 @@ public final class AskCaret {
     public func withdrawn(_ message: OfferWithdrawn) {
         guard case .proposed(let card) = phase, card.offerKey == message.id else { return }
         settle(.failed(AskCopy.withdrawn(message.reason)))
+    }
+
+    /// B29: the helper asks one thing before it can plan. Only the answer to this field's own
+    /// request, while it waits; the question lapses at its `expires`.
+    public func receive(_ question: AskQuestion) {
+        guard case .asking(let id) = phase, question.requestId == id else { return }
+        settle(.question(Question(ask: question)))
+        let qid = question.questionId
+        let wait = max(0, Double(question.expires - nowMs) / 1000)
+        waitTimer = clock.schedule(after: wait, repeats: false) { [weak self] in
+            guard let self, case .question(let q) = self.phase, q.ask.questionId == qid else { return }
+            self.settle(.failed(AskCopy.planError(PlanProposal.Failure(code: .questionGone, detail: "the question expired"))))
+        }
     }
 
     /// The answer to a request this field sent. Any other answer, or one that comes after the
@@ -435,7 +523,7 @@ public final class AskCaret {
         var card: Card
         switch phase {
         case .running(let c), .ended(let c, _): card = c
-        case .idle, .asking, .proposed, .failed: return
+        case .idle, .asking, .proposed, .question, .failed: return
         }
         if progress.steps > 0 { steps = progress.steps }
         let index = progress.step.flatMap { Self.cardIndex(ofPlanStep: $0, in: card) }
@@ -581,7 +669,11 @@ public final class AskCaret {
     }
 
     private func settle(_ next: Phase) {
-        if case .asking = next {} else {
+        switch (phase, next) {
+        // A question keeps its expiry while the arrows and Space move within it.
+        case (.question(let a), .question(let b)) where a.ask.questionId == b.ask.questionId: break
+        case (_, .asking): break
+        default:
             waitTimer?.cancel()
             waitTimer = nil
         }
@@ -591,7 +683,7 @@ public final class AskCaret {
         confirming = nil
         switch next {
         case .running, .ended: break
-        case .idle, .asking, .proposed, .failed: tracking = nil
+        case .idle, .asking, .proposed, .question, .failed: tracking = nil
         }
         var shown = next
         var offer: UndoOffer?
@@ -626,6 +718,10 @@ public final class AskCaret {
         /// The failure sentence, or the ending line.
         public var line: String?
         public var linked: Bool
+        /// B29: the question showing, its highlighted row and the rows Space selected.
+        public var question: AskQuestion?
+        public var highlight: Int?
+        public var selected: [String]?
     }
 
     public var debugInfo: DebugInfo {
@@ -634,6 +730,9 @@ public final class AskCaret {
         case .idle: break
         case .asking(let id): info.phase = "asking"; info.requestId = id
         case .proposed(let card): info.phase = "proposed"; info.card = card
+        case .question(let q):
+            info.phase = "question"; info.question = q.ask; info.highlight = q.highlight
+            info.selected = q.ask.options.map(\.id).filter(q.selected.contains)
         case .failed(let sentence): info.phase = "failed"; info.line = sentence
         case .running(let card): info.phase = "running"; info.card = card
         case .ended(let card, let line): info.phase = "ended"; info.card = card; info.line = line.text
@@ -645,6 +744,33 @@ public final class AskCaret {
 /// The words of the ask field and its card. First person: the card is Caret's answer to what the
 /// user asked it, as the brief's example reads ("I couldn't find the order number on screen").
 public enum AskCopy {
+    /// B29: one choice of a question, as its row reads: the main words, and the quieter words after
+    /// them when there are any.
+    public static func option(_ o: AskQuestion.Option) -> (title: String, detail: String?) {
+        switch o {
+        case .field(_, let label, let section): return (label, section)
+        case .window(_, let app, let title):
+            let t = title.trimmingCharacters(in: .whitespaces)
+            return (app, t.isEmpty || t == app ? nil : t)
+        // The helper's own words for a value from memory (helper/src/fill/about.ts ABOUT_SAYS).
+        case .memory: return ("What you told Caret", nil)
+        case .you: return ("You", "your own details")
+        case .person(_, let name): return (name, nil)
+        }
+    }
+
+    /// What Tab does on a question: answer with the highlighted row, or fill the fields Space selected.
+    public static func answerLabel(_ q: AskCaret.Question) -> String {
+        q.selected.isEmpty ? "Choose" : "Fill \(q.selected.count)"
+    }
+
+    /// What VoiceOver says the field does while a question shows.
+    public static func questionHint(_ pick: AskQuestion.Pick) -> String {
+        pick == .many
+            ? "Up and Down move between the choices. Space selects one. Tab answers. Escape dismisses."
+            : "Up and Down move between the choices. Tab answers. Escape dismisses."
+    }
+
     public static let placeholder = "Ask Caret to do something"
     public static let planning = "Planning"
     public static let helperDown = "My helper isn't running, so I can't plan that."
@@ -829,6 +955,8 @@ public enum AskCopy {
         case .jevFailed: return "I couldn't reach the model I plan with. Try again in a moment."
         case .privacy: return "Planning that would send too much of a window off this Mac, so I didn't."
         case .internal: return "Something went wrong while I planned, so nothing will run."
+        // B29: says.ts's sentence, for a helper that sends none.
+        case .questionGone: return "That question has expired. Ask again."
         }
     }
 

@@ -39,6 +39,19 @@ final class CaretSettingsTests: XCTestCase {
         }
     }
 
+    /// H6: "Caret decides when to help" starts on, a file from before H6 reads with it on, and
+    /// "Always suggest as I type" is kept as chosen.
+    func testRoutingStartsOnAndAnOlderFileReadsWithItOn() throws {
+        XCTAssertTrue(CaretSettings().routing)
+        let before = #"{"version":2,"roles":["fill"],"level":"quiet","character":"seed","paused":false,"onboarded":true,"memory":[]}"#
+        XCTAssertTrue(try JSONDecoder().decode(CaretSettings.self, from: Data(before.utf8)).routing)
+        var s = CaretSettings()
+        s.routing = false
+        let data = try JSONEncoder().encode(s)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains(#""routing":false"#))
+        XCTAssertFalse(try JSONDecoder().decode(CaretSettings.self, from: data).routing)
+    }
+
     /// A version 1 file predates the calendar role: it had no way to turn it off, so it reads with
     /// the role on, as a new setup starts, and saves as version 2. Every other choice is kept.
     func testAVersionOneFileGainsTheCalendarRoleAndSavesAsVersionTwo() throws {

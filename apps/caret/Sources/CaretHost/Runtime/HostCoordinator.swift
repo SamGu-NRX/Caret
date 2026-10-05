@@ -10,6 +10,10 @@ import QuartzCore
 /// The invariant it keeps: ghost text is on screen exactly when the arbiter holds an offer for the
 /// field state the text was drawn against. Every path that hides the overlay also invalidates the
 /// offer, and an offer is published before its text is drawn.
+///
+/// H6: the helper's router decides when ghost text may show (`RouteLink`). Generation still starts on
+/// every read; a finished suggestion is drawn when the gate allows, held (unpublished, so Tab passes)
+/// while a decision is awaited, and dropped when the decision is to stay quiet.
 @MainActor
 final class HostCoordinator {
     private let arbiter: OfferArbiter
@@ -23,6 +27,20 @@ final class HostCoordinator {
     var onFocus: ((TargetIdentity?) -> Void)?
     /// The settings allow ghost text: not paused, and the words role on (`HostGate`).
     var wordsAllowed: () -> Bool = { true }
+    /// The router's answer for ambient help (H6); nil draws as before the router.
+    var route: RouteLink?
+
+    /// A finished suggestion waiting for the router's decision, drawn when it allows or dropped.
+    private struct Held {
+        var suggestion: GhostSuggestion
+        var snapshot: FocusedFieldSnapshot
+        var element: AXUIElement
+        var field: FieldState
+        var keyStamp: HostStatus.KeyStamp
+        var finishedText: Bool
+        var contextKey: String?
+    }
+    private var held: Held?
 
     /// The suggestion the visible ghost text derives from.
     private var anchor: GhostSuggestion?
@@ -59,9 +77,12 @@ final class HostCoordinator {
               let field = FieldReader.read(element) else {
             status.update { $0.focus = nil }
             onFocus?(nil)
+            route?.observe(nil)
             return reset()
         }
         onFocus?(field.identity)
+        // Every read, a selection or an app Caret skips included: the router hears of each breakpoint.
+        route?.observe(field)
         let context = snapshot.context
         status.update {
             $0.focus = DebugState.Focus(
@@ -97,15 +118,16 @@ final class HostCoordinator {
         cancelGeneration()
 
         // The field changed. Keep whatever of the current suggestion still lies ahead of the caret
-        // (the user typed its head), re-bound to the new field state; otherwise drop it.
+        // (the user typed its head), re-bound to the new field state; otherwise drop it. Only while
+        // the router allows ghost text: a breakpoint just ended the decision it was drawn under.
         if let anchor,
            let remaining = SuggestionAnchor.remaining(anchorText: anchor.text, anchor: anchor.context, live: context),
-           !remaining.isEmpty {
+           !remaining.isEmpty, route?.gate().allows ?? true {
             present(remaining, snapshot: snapshot, element: element, field: field)
         } else {
             clearOffer()
         }
-        startGeneration(snapshot: snapshot, element: element, field: field)
+        startGeneration(snapshot: snapshot, element: element, field: field, finishedText: route?.lastReadFinishedText ?? false)
     }
 
     /// A newer offer from another producer replaced the engine's: its ghost text goes.
@@ -164,7 +186,7 @@ final class HostCoordinator {
 
     // MARK: - Generation
 
-    private func startGeneration(snapshot: FocusedFieldSnapshot, element: AXUIElement, field: FieldState) {
+    private func startGeneration(snapshot: FocusedFieldSnapshot, element: AXUIElement, field: FieldState, finishedText: Bool) {
         generationSerial &+= 1
         let serial = generationSerial
         let keyStamp = status.lastKeyDown()
@@ -184,7 +206,7 @@ final class HostCoordinator {
             }
             await gate.value
             guard let self, !Task.isCancelled, serial == self.generationSerial else { return }
-            self.finishGeneration(outcome, snapshot: snapshot, element: element, field: field, keyStamp: keyStamp)
+            self.finishGeneration(outcome, snapshot: snapshot, element: element, field: field, keyStamp: keyStamp, finishedText: finishedText)
         }
         generation = task
         inFlight[serial] = task
@@ -205,7 +227,8 @@ final class HostCoordinator {
         snapshot: FocusedFieldSnapshot,
         element: AXUIElement,
         field: FieldState,
-        keyStamp: HostStatus.KeyStamp
+        keyStamp: HostStatus.KeyStamp,
+        finishedText: Bool
     ) {
         guard case .suggestion(let suggestion) = outcome else {
             if case .suppressed(let reason) = outcome { status.increment("suppressed.\(reason)") }
@@ -216,13 +239,54 @@ final class HostCoordinator {
         guard status.lastKeyDown().sequence == keyStamp.sequence else {
             return status.increment("discarded.keyAfterSnapshot")
         }
+        let held = Held(suggestion: suggestion, snapshot: snapshot, element: element, field: field, keyStamp: keyStamp,
+                        finishedText: finishedText, contextKey: lastContextKey)
+        switch route?.gate() ?? .allow(.off) {
+        case .allow:
+            draw(held)
+        case .wait:
+            // Unpublished while it waits: Tab passes to the app (`RouteFollower`).
+            self.held = held
+            status.increment("routing.ghostHeld")
+        case .quiet(let why):
+            status.increment("routing.ghostQuiet.\(why.rawValue)")
+            clearOffer()
+        }
+    }
+
+    /// The router's answer changed: a held suggestion is drawn if it still fits the field, or dropped.
+    /// A decision that ends ambient help (abstain, ask, act, or a breakpoint the helper saw) also
+    /// takes down ghost text already drawn under the fallback or an ended write session.
+    func routeChanged() {
+        let gate = route?.gate() ?? .allow(.off)
+        if !gate.allows, anchor != nil || overlay.shownText != nil {
+            status.increment("routing.ghostWithdrawn")
+            clearOffer()
+        }
+        guard let held else { return }
+        switch gate {
+        case .wait:
+            return
+        case .quiet(let why):
+            self.held = nil
+            status.increment("routing.ghostQuiet.\(why.rawValue)")
+        case .allow:
+            self.held = nil
+            guard held.contextKey == lastContextKey, status.lastKeyDown().sequence == held.keyStamp.sequence else {
+                return status.increment("discarded.heldMoved")
+            }
+            draw(held)
+        }
+    }
+
+    private func draw(_ held: Held) {
         guard let fresh = FieldReader.readFocused(),
-              fresh.identity == field.identity, fresh.selection == field.selection else {
+              fresh.identity == held.field.identity, fresh.selection == held.field.selection else {
             return status.increment("discarded.fieldMoved")
         }
-        anchor = suggestion
-        guard present(suggestion.text, snapshot: snapshot, element: element, field: fresh, keyStamp: keyStamp) else { return }
-        recordPaintLatency(keyStamp)
+        anchor = held.suggestion
+        guard present(held.suggestion.text, snapshot: held.snapshot, element: held.element, field: fresh, keyStamp: held.keyStamp) else { return }
+        recordPaintLatency(held.keyStamp, finishedText: held.finishedText)
     }
 
     /// Publishes the offer, then draws it, then lets it own its keys (`OfferArbiter.reveal`): a Tab
@@ -305,7 +369,7 @@ final class HostCoordinator {
         }
     }
 
-    private func recordPaintLatency(_ keyStamp: HostStatus.KeyStamp) {
+    private func recordPaintLatency(_ keyStamp: HostStatus.KeyStamp, finishedText: Bool) {
         // Commit the window server transaction so the stamp is taken after the paint request has
         // left this process; the compositor shows it on its next frame.
         CATransaction.flush()
@@ -315,11 +379,13 @@ final class HostCoordinator {
         guard elapsed < 2_000 else { return }
         measuredKeySequence = keyStamp.sequence
         status.latency.record(elapsed)
+        if finishedText { status.breakpointLatency.record(elapsed) }
     }
 
     // MARK: - Teardown helpers
 
     private func cancelGeneration() {
+        held = nil
         generation?.cancel()
         generation = nil
         generationSerial &+= 1
