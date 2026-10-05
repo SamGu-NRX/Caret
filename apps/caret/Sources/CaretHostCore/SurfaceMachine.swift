@@ -82,6 +82,8 @@ public final class SurfaceMachine {
         var figureLeft = false
         /// A skill started it with no Tab (B19 `taskProgress.unprompted`); `name` is the skill's.
         var unprompted = false
+        /// The helper's event card (H8): its run adds an event, which the task's ledger removes by id.
+        var eventCard = false
         var name: String?
         /// The field and caret the line was first drawn at, global top-left points: a result that
         /// grows (a question under it) is placed again around them.

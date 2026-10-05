@@ -28,6 +28,7 @@ extension SurfaceMachine {
             offerKey: offerKey, app: app, pid: pid, statusID: statusID, startedAt: now,
             source: claim.offer.source, target: claim.offer.target, fill: fill
         )
+        work?.eventCard = claim.offer.kind.actionLine?.eventCard == true
         // The figure looks away (160 ms), then leaves; under Reduce Motion it is simply gone.
         work?.figureLeft = world.reduceMotion
         renderWorking()
@@ -138,6 +139,12 @@ extension SurfaceMachine {
             // have nothing to undo.
             if work.fill == nil, work.source == .helper, (work.written ?? 0) > 0 {
                 return showUndoToast(work, WorkLines.done(app: work.app, undo: true), kind: "surface.toast.action")
+            }
+            // An event card's run adds an event, not a field, so `written` stays 0; its ledger still holds
+            // the event, which undo removes by its id (B16). H8's VM run found ⌘Z unclaimed after every add.
+            // A run that found the event already there added nothing, and its undo then removes nothing.
+            if work.eventCard, work.source == .helper {
+                return showUndoToast(work, WorkLines.done(app: work.app, undo: true), kind: "surface.toast.event")
             }
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .result, offerKey: work.offerKey))
             showResult(WorkLines.done(app: work.app), lifetime: 5)
