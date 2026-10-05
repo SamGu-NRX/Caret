@@ -160,6 +160,23 @@ final class CalendarPermissionFlowTests: XCTestCase {
         ]))
     }
 
+    /// VM run 6: the prompt takes the front. The working line stays while macOS asks, and once it has
+    /// answered and the app is in front, the done line holds ⌘Z.
+    func testThePromptTakingTheFrontDoesNotTakeTheLineDownForGood() throws {
+        let calendars = FakeCalendars()
+        play(rig(calendars), Transition("the prompt in front while macOS asks", [
+            .screen { $0.front() },
+            .offer(try eventOffer()),
+            .press(Fx.tab()),
+            .screen { $0.behind() }, .activated, .wait(1),
+            .expect(.custom("the line is not taken down while macOS asks", { !$0.counts.contains { $0.hasPrefix("surface.lineHidden") } })),
+            .screen { $0.front() }, .calendarAnswered,
+            .sent(["accept event-1 add"]),
+            .taskLine(Fx.progress("event-1", .done, steps: 1)),
+            .expect(.undoOwned(true)),
+        ]))
+    }
+
     /// The debug state names the shown card's destination, as the card does.
     func testTheShownCardsDestinationIsInTheDebugState() throws {
         let offer = HelperOffer.action(EventCardCopy.destined(try EventCardCopyTests.offer(), line: "Adding to Work"))

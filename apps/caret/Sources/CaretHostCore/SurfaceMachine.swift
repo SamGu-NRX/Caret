@@ -954,9 +954,17 @@ public final class SurfaceMachine {
         guard !headless else { return unsent ? failUnsent() : publish() }
         // The working line and its result follow the same rule as the offer: the app in front and
         // the line's anchor uncovered. Focus may move; the line reports on work, not on a field.
-        startWatch(.line, target: claim.offer.target, anchors: [CGPoint(x: shown.caret.midX, y: shown.caret.midY)], requireFocus: false, field: shown.field)
+        // H8: macOS's Calendar prompt takes the front, which would take the line down for good (VM run 6:
+        // the done line and its ⌘Z never came back). Its watch starts when macOS answers.
+        if !asks { watchLine() }
         if unsent { return failUnsent() }
         publish()
+    }
+
+    /// The working line, watched as an offer is: hidden while its app is not in front or its anchor is covered.
+    func watchLine() {
+        guard let work, let anchor = work.anchor else { return }
+        startWatch(.line, target: work.target, anchors: [CGPoint(x: anchor.caret.midX, y: anchor.caret.midY)], requireFocus: false, field: anchor.field)
     }
 
     /// macOS answered the Calendar prompt `askCalendarAccess` raised, either way: a refusal still sends
@@ -967,6 +975,7 @@ public final class SurfaceMachine {
         calendarHeld = nil
         var accept = held
         accept.at = nowMs
+        if !headless { watchLine() }
         guard sendToHelper(.accept(accept)) else { return failUnsent() }
         publish()
     }
