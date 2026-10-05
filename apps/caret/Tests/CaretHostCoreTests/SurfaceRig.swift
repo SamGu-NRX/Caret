@@ -91,6 +91,16 @@ final class FakeScreen: SurfaceWorld {
         return clearPanel(content)
     }
 
+    /// Whether the renderer puts alternatives on screen (`SurfaceWorld.drawAlternatives`): always,
+    /// unless a test says it cannot.
+    var drawsAlternatives = true
+    /// Each draw, as the rig logs it beside the machine's commands.
+    var onDraw: ((AlternativesDraw) -> Void)?
+    func drawAlternatives(_ draw: AlternativesDraw) -> Bool {
+        onDraw?(draw)
+        return drawsAlternatives
+    }
+
     /// The fixture app in front with `element` focused, its window over everything else.
     func front(_ element: Fx.Element = .email, window: WindowIdentity? = Fx.formWindow) {
         frontmostPID = Fx.app
@@ -228,6 +238,10 @@ final class SurfaceRig {
         self.clock = clock
         machine = SurfaceMachine(arbiter: arbiter, world: screen, clock: clock, headless: headless)
         machine.output = { [unowned self] command in self.record(command) }
+        screen.onDraw = { [unowned self] d in
+            let marks = (d.ui.open ? " open" : "") + (d.quoted ? " quoted" : "") + (d.presentation == .capsule ? " capsule" : "")
+            self.log.append("alternatives \(d.entering ? "enter" : "redraw") \(d.currentText)\(marks)")
+        }
         machine.sendToHelper = { [unowned self] message in
             self.onSend?(message)
             switch message {
@@ -247,8 +261,6 @@ final class SurfaceRig {
         case .publish: return
         case .count(let name): counts.append(name)
         case .log(let line): logged.append(line)
-        case .drawAlternatives(let d):
-            log.append("alternatives \(d.entering ? "enter" : "redraw") \(d.currentText)\(d.ui.open ? " open" : "")\(d.quoted ? " quoted" : "")")
         case .typedThrough(_, _, let remainder, _): log.append("typed rest \(remainder)")
         case .clearCaret: log.append("clear caret")
         case .showPanel(let content, let text, let placement):

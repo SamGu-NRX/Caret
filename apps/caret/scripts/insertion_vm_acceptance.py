@@ -14,6 +14,13 @@ general pasteboard; see a17-tool.swift). TextEdit and Caret are started here, by
                refusal rule) but writes by AX instead, and the pasteboard is untouched.
       race and plain start from restorable contents (`seed text`), refused from `seed rich`.
       changeCount and contents (types and SHA-256 per type) are logged before and after every run.
+      Every run starts in a new document (⌘N), so one run's text never decides where the next
+      one's offer goes (V1a appended every run to one document; once its line was full, each offer
+      was withdrawn before Tab and the rest of the runs inserted nothing). Odd runs put text after
+      the caret first (typed, then ↑ to the start), so the offer is drawn in a capsule; even runs
+      start empty, so it is inline. Each row records the injection's reply, the presentation the
+      host drew, the claim id and the stage that failed (setup, shown, claim, insert, clipboard),
+      so a placement failure cannot pass for a clipboard failure.
 
   insertion_vm_acceptance.py undo <out_dir>
       q1 bug 5: type with real keys, Tab an offer into TextEdit, then press ⌘Z twice with real keys.
@@ -116,14 +123,27 @@ def last_insertion():
 
 
 def tab_in(pid, text):
-    """An offer of `text` at TextEdit's caret, taken with Tab through the tap's own decision."""
+    """An offer of `text` at TextEdit's caret, taken with Tab through the tap's own decision. Also
+    returns what the host drew: its surface state right after the injection."""
     before = last_insertion().get("claimID", 0)
     tool("activate", pid)
     reply = host("inject " + json.dumps({"kind": "alternatives", "pid": pid, "candidates": [text]}, separators=(",", ":")))
+    surface = host("state").get("surface") or {}
     time.sleep(0.4)
     k = host(f"key tab {pid}")
     ins = wait_for(lambda: (lambda i: i if i.get("claimID", 0) > before else None)(last_insertion()), 6)
-    return reply, k, ins or {}
+    return reply, surface, k, ins or {}
+
+
+def fresh_document(pid, after):
+    """A new document; with `after`, that text typed and the caret moved back to its start, so the
+    offer has text after the caret. Returns the value and selection it starts from."""
+    tool("activate", pid)
+    tool("newdoc", pid)
+    if after:
+        tool("type", pid, after)
+        tool("key", pid, "up")
+    return tool("value", pid)
 
 
 def items(dump):
@@ -137,21 +157,34 @@ def clipboard(out_dir, runs):
     results = {"race": 0, "plain": 0, "empty": 0, "refused": 0}
     plan = [("race", i) for i in range(runs)] + [("plain", i) for i in range(runs)] + [("empty", i) for i in range(2)] \
         + [("refused", i) for i in range(2)]
-    for kind, i in plan:
+    presentations = {"inline": 0, "capsule": 0}
+    for n, (kind, i) in enumerate(plan):
         text = f" {kind}{i:02d}"
+        tail = " after" if n % 2 else ""
+        start = fresh_document(pid, tail)
+        want_capsule = bool(tail)
+        # TextEdit may correct what was typed, so the run expects the text the document holds.
+        held = start.get("value") or ""
+        set_up = start.get("selection") == [0, 0] and (bool(held.strip()) if tail else held == "")
         before = tool("seed", {"empty": "empty", "refused": "rich"}.get(kind, "text"))
         watcher = None
         if kind == "race":
             watcher = subprocess.Popen([TOOL, "copy-when", str(pid), f"user copy {i:02d}", "6"], stdout=subprocess.PIPE, text=True)
-        reply, k, ins = tab_in(pid, text)
+        reply, surface, k, ins = tab_in(pid, text)
         copied = json.loads(watcher.communicate(timeout=10)[0]) if watcher else None
         time.sleep(0.8)
         after = tool("dump")
         field = tool("value", pid).get("value") or ""
-        row = {"run": f"{kind}{i:02d}", "before": before, "after": after, "insertion": ins, "copy": copied, "fieldEndsWith": field.endswith(text)}
+        presentation = reply.get("presentation")
+        if presentation in presentations:
+            presentations[presentation] += 1
+        row = {"run": f"{kind}{i:02d}", "start": start, "reply": reply, "presentation": presentation, "capsule": surface.get("capsule"),
+               "capsuleSide": surface.get("capsuleSide"), "tab": k, "claimID": ins.get("claimID"), "before": before, "after": after,
+               "insertion": ins, "copy": copied, "field": field == text + held}
         ledger.write(json.dumps(row) + "\n")
         ledger.flush()
-        inserted = ins.get("ok") is True and ins.get("method") == "pastePid" and field.endswith(text)
+        shown = reply.get("ok") is True and presentation == ("capsule" if want_capsule else "inline")
+        inserted = ins.get("ok") is True and ins.get("method") == "pastePid" and field == text + held
         if kind == "race":
             ok = inserted and copied and copied.get("copied") and ins.get("clipboard") == "skippedUserCopied" \
                 and after.get("plain") == f"user copy {i:02d}" and after.get("changeCount") == copied["after"]["changeCount"]
@@ -162,13 +195,20 @@ def clipboard(out_dir, runs):
             ok = inserted and ins.get("clipboard") == "restored" and after.get("items") == [] \
                 and after.get("changeCount") == before.get("changeCount") + 2
         else:
-            ok = ins.get("ok") is True and ins.get("method") == "axSelectedText" and field.endswith(text) \
+            ok = ins.get("ok") is True and ins.get("method") == "axSelectedText" and field == text + held \
                 and ins.get("clipboard") is None and items(after) == items(before) \
                 and after.get("changeCount") == before.get("changeCount")
+        ok = ok and set_up and shown
+        # The first stage that went wrong, so a run that never showed its offer is not read as a
+        # clipboard failure.
+        stage = ("setup" if not set_up else "shown" if not shown else "claim" if not ins
+                 else "insert" if ins.get("ok") is not True or field != text + held else "clipboard" if not ok else None)
         results[kind] += 1 if ok else 0
-        check(f"{kind} {i:02d}", ok, clipboard=ins.get("clipboard"), method=ins.get("method"), error=ins.get("error"),
+        check(f"{kind} {i:02d}", ok, stage=stage, presentation=presentation, reply=reply, claimID=ins.get("claimID"),
+              clipboard=ins.get("clipboard"), method=ins.get("method"), error=ins.get("error"),
               before=before.get("changeCount"), after=after.get("changeCount"), copied=(copied or {}).get("afterMarkerMs"))
     log("summary", json.dumps(results))
+    log("presentations", json.dumps(presentations))
     return results
 
 
@@ -181,7 +221,7 @@ def undo(out_dir):
         check(f"{route}: the route is set", set_route.get("ok") is True, reply=set_route, table=host("state").get("writeMethods"))
         typed = tool("type", pid, "alpha beta ").get("value")
         title_typed = tool("undo-title", pid)
-        reply, k, ins = tab_in(pid, "GAMMA")
+        reply, _, k, ins = tab_in(pid, "GAMMA")
         v1 = tool("value", pid).get("value")
         title_after = tool("undo-title", pid)
         u1 = tool("cmdz", pid).get("value")

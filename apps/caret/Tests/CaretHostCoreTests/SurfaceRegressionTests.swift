@@ -164,9 +164,14 @@ final class SurfaceRegressionTests: XCTestCase {
             .screen { $0.behind() },
             .offer(Fx.fillPopup()),
             .expect(.held(.appNotFront)),
-            .screen { $0.front() },
-            .offer(Fx.alternatives(key: "offer-7", candidates: [String(repeating: "w", count: 40)])),
-            .expect(.held(nil)),
+            // An action line with no clear spot for its panel or its compact line is withdrawn at
+            // once, never retried (H7: a too-wide alternative, R8's old example, now draws a capsule).
+            .screen {
+                $0.front()
+                $0.clearPanel = { _ in false }
+            },
+            .offer(Fx.action(key: "offer-7")),
+            .expect(.held(nil)), .expect(.counted("surface.unshown.noClearSpot")),
             .wait(2),
             .expect(.shown(nil)), .did([]),
         ]))

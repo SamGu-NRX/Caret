@@ -447,10 +447,27 @@ final class SurfaceMachineTests: XCTestCase {
                 .sent([]), .expect(.shown(nil)), .did(["clear caret"]),
                 .expect(.custom("the claim names the top candidate") { $0.machine.lastAccepted?.candidate == 0 }),
             ]),
-            Transition("a candidate wider than the field is held without retry", [
+            // V1a check 4: the room after the caret decides inline or capsule, never whether the
+            // offer exists.
+            Transition("a candidate wider than the room after the caret is drawn in a capsule, and Tab takes it", [
                 .screen { $0.front() },
                 .offer(Fx.alternatives(candidates: [String(repeating: "w", count: 40)])),
-                .expect(.held(nil)), .expect(.shown(nil)), .expect(.counted("surface.held.wouldOverlapText")),
+                .expect(.held(nil)), .expect(.shown("offer-4.0")), .expect(.tabTakes(true)),
+                .did(["alternatives enter \(String(repeating: "w", count: 40)) quoted capsule"]),
+                .press(Fx.tab()),
+                .expect(.shown(nil)), .did(["clear caret"]),
+                .expect(.custom("the claim names the candidate") { $0.machine.lastAccepted?.candidate == 0 }),
+            ]),
+            Transition("with text after the caret, alternatives are drawn in a capsule", [
+                .screen {
+                    $0.front()
+                    var field = Fx.field(.email, value: "Dana  Diaz")
+                    field.selection = .caret(5)
+                    $0.focused[Fx.app] = field
+                },
+                .offer(Fx.alternatives()),
+                .expect(.shown("offer-4.0")), .expect(.tabTakes(true)),
+                .did(["alternatives enter Cara Diaz quoted capsule"]),
             ]),
             Transition("in a field holding text, a caret estimated flush with its bottom edge still shows them", [
                 .screen {
@@ -490,5 +507,87 @@ final class SurfaceMachineTests: XCTestCase {
                 .press(Fx.down()), .expect(.line("Cal Duarte")),
             ]),
         ])
+    }
+}
+
+/// V1a check 4, as the clipboard run met it: one injected alternative for a TextEdit document that
+/// fills its window, with the caret near the end of a full line. Eleven of these were withdrawn as
+/// `wouldOverlapText` and nothing was inserted.
+final class FullWindowAlternativesTests: XCTestCase {
+    private let window = SurfaceGate.Window(pid: Fx.app, bounds: CGRect(x: 0, y: 30, width: 960, height: 480))
+    private let document = CGRect(x: 0, y: 62, width: 943, height: 520)
+
+    private func rig(caret: CGRect, value: String, selection: Int? = nil) -> SurfaceRig {
+        let rig = SurfaceRig()
+        rig.screen.front()
+        var field = Fx.field(.email, value: value)
+        field.frame = document
+        if let selection { field.selection = .caret(selection) }
+        rig.screen.focused[Fx.app] = field
+        rig.screen.windows = [window, Fx.otherWindow]
+        rig.screen.caretOverride[Fx.app] = .at(caret)
+        return rig
+    }
+
+    func testAnAlternativePastTheLinesEndIsDrawnInACapsuleAndTabTakesIt() {
+        let rig = rig(caret: CGRect(x: 900, y: 300, width: 1, height: 16), value: String(repeating: "x", count: 120))
+        let reply = rig.machine.inject(.alternatives(pid: Fx.app, candidates: [" plain03"], quoted: false))
+        XCTAssertTrue(reply.contains(#""ok":true"#), reply)
+        XCTAssertEqual(rig.takeLog(), ["alternatives enter  plain03 capsule"])
+        XCTAssertNil(rig.machine.lastUnshown)
+        rig.press(Fx.tab())
+        XCTAssertEqual(rig.arbiter.snapshot().lastClaim?.candidate, 0, "Tab claimed the capsule's text")
+    }
+
+    func testTheReplyAndTheDebugStateNameThePresentation() {
+        let rig = rig(caret: CGRect(x: 900, y: 300, width: 1, height: 16), value: String(repeating: "x", count: 120))
+        let reply = rig.machine.inject(.alternatives(pid: Fx.app, candidates: [" plain03"], quoted: false))
+        XCTAssertTrue(reply.contains(#""presentation":"capsule""#), reply)
+        XCTAssertEqual(rig.machine.debugInfo().caretPresentation, "capsule")
+        XCTAssertTrue(rig.counts.contains("surface.caret.capsule"))
+    }
+
+    func testAnAlternativeThatFitsAtTheEndOfTheDocumentStaysInline() {
+        let rig = rig(caret: CGRect(x: 300, y: 300, width: 1, height: 16), value: "Line one")
+        let reply = rig.machine.inject(.alternatives(pid: Fx.app, candidates: [" again"], quoted: false))
+        XCTAssertTrue(reply.contains(#""presentation":"inline""#), reply)
+        XCTAssertEqual(rig.takeLog(), ["alternatives enter  again"])
+    }
+
+    /// Only a visible offer owns Tab: alternatives the renderer could not draw are withdrawn at
+    /// once, logged as unshown, and Tab goes to the app.
+    func testAlternativesTheRendererCouldNotDrawAreWithdrawnAndTabStaysTheApps() {
+        let rig = rig(caret: CGRect(x: 900, y: 300, width: 1, height: 16), value: String(repeating: "x", count: 120))
+        rig.screen.drawsAlternatives = false
+        let reply = rig.machine.inject(.alternatives(pid: Fx.app, candidates: [" plain03"], quoted: false))
+        XCTAssertEqual(reply, SurfaceMachine.notDrawnReply)
+        XCTAssertNil(rig.arbiter.snapshot().current, "nothing for Tab to take")
+        XCTAssertEqual(rig.takeLog(), ["alternatives enter  plain03 capsule", "clear caret"])
+        XCTAssertEqual(rig.machine.lastUnshown?.reason, "notDrawn")
+        XCTAssertTrue(rig.logged.contains { $0.contains("withdrawn unshown: notDrawn") }, "\(rig.logged)")
+        XCTAssertFalse(rig.machine.isWatching)
+        rig.press(Fx.tab())
+        XCTAssertNil(rig.arbiter.snapshot().lastClaim, "Tab passed to the app")
+    }
+
+    /// A redraw after ↓ that cannot be drawn takes the offer down too, rather than leave an
+    /// invisible candidate on Tab.
+    func testARedrawThatCannotBeDrawnWithdrawsTheOffer() {
+        let rig = rig(caret: CGRect(x: 900, y: 300, width: 1, height: 16), value: String(repeating: "x", count: 120))
+        _ = rig.machine.inject(.alternatives(pid: Fx.app, candidates: [" plain03", " plain04"], quoted: false))
+        rig.takeLog()
+        rig.screen.drawsAlternatives = false
+        rig.press(Fx.down())
+        XCTAssertEqual(rig.takeLog(), ["alternatives redraw  plain04 open capsule", "clear caret"])
+        XCTAssertNil(rig.arbiter.snapshot().current)
+        rig.press(Fx.tab())
+        XCTAssertNil(rig.arbiter.snapshot().lastClaim)
+    }
+
+    func testAnAlternativeMidDocumentIsDrawnInACapsule() {
+        let rig = rig(caret: CGRect(x: 300, y: 300, width: 1, height: 16), value: "Line one\nLine two\nLine three", selection: 8)
+        let reply = rig.machine.inject(.alternatives(pid: Fx.app, candidates: [" again"], quoted: false))
+        XCTAssertTrue(reply.contains(#""ok":true"#), reply)
+        XCTAssertEqual(rig.takeLog(), ["alternatives enter  again capsule"])
     }
 }

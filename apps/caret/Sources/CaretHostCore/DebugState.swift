@@ -354,6 +354,12 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var ghost: String?
         /// The ghost text's own panel, when Caret drew it (KeyType's renderer had no placement).
         public var ghostPanel: Panel?
+        /// How the shown alternatives are drawn at the caret: `inline` or `capsule`.
+        public var caretPresentation: String?
+        /// The capsule's frame, global top-left points [x, y, width, height], when they are in one.
+        public var capsule: [Double]?
+        /// The capsule lies `below` or `above` the caret's line.
+        public var capsuleSide: String?
         public var panel: Panel?
         /// How the panel was placed around its field (`FieldPanelPlacement`).
         public var panelPlacement: PanelPlacementInfo?

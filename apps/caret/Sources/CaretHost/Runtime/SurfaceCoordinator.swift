@@ -35,6 +35,12 @@ final class SurfaceCoordinator {
         let snapshot: FocusedFieldSnapshot?
         let style: OverlayTextStyle
         let font: NSFont
+        /// The field's visible text area when it was read, for the capsule's placement on redraws.
+        let viewport: CGRect?
+        /// The capsule as last laid out, global top-left points; nil inline.
+        var capsule: CGRect?
+        /// The area the capsule was kept in, for the tag after it.
+        var area: CGRect?
     }
 
     private let machine: SurfaceMachine
@@ -219,7 +225,6 @@ final class SurfaceCoordinator {
 
     private func perform(_ command: SurfaceCommand) {
         switch command {
-        case .drawAlternatives(let draw): drawAlternatives(draw)
         case .typedThrough(let offerID, let typed, let remainder, let caret): typedThrough(offerID: offerID, typed: typed, remainder: remainder, caret: caret)
         case .clearCaret: clearCaret()
         case .showPanel(let content, let text, let placement):
@@ -252,46 +257,88 @@ final class SurfaceCoordinator {
     /// closed; once open, the current one in place, the figure and "2 of 4" after it, and the
     /// numbered list below. Every change here comes from a key, so none of it animates except the
     /// underline drawing in once with the offer.
-    private func drawAlternatives(_ draw: AlternativesDraw) {
+    ///
+    /// In a capsule (`AlternativesDraw.presentation`), the text sits in KeyType's capsule off the
+    /// caret's line, the underline under the capsule's text, the figure and count after its edge,
+    /// and the list opens around the capsule rather than the field. True only when the candidate is
+    /// on screen; the machine withdraws the offer otherwise (V1a check 4).
+    fileprivate func drawAlternatives(_ draw: AlternativesDraw) -> Bool {
         let text = draw.currentText
+        let capsule = draw.presentation == .capsule
         if draw.entering {
-            guard let read = lastRead, read.id == draw.readID, let snapshot = read.snapshot, let style = read.style, let font = read.font else { return }
-            let usesKeyTypeGhost = ghost.show(text, at: snapshot, style: style, pid: draw.pid) != nil
-            if !usesKeyTypeGhost { drawOwnGhost(text, caret: draw.caret, font: font, color: style.textColor) }
+            guard let read = lastRead, read.id == draw.readID, let snapshot = read.snapshot, let style = read.style, let font = read.font else { return false }
+            let viewport = lastVisible.flatMap { $0.field == read.frame ? $0.visible : nil }
+            let usesKeyTypeGhost = ghost.show(text, at: snapshot, style: style, pid: draw.pid, capsule: capsule, viewport: { viewport }) != nil
+            if !usesKeyTypeGhost {
+                // Caret's own ghost stands in only for inline text KeyType had no caret for (an empty
+                // AppKit field reports none): the machine measured that text against the field from
+                // a derived caret. Nothing stands in for a capsule KeyType could not place.
+                guard !capsule, let cause = ghost.lastFit?.cause, cause == .noCaret || cause == .resolverRefused else {
+                    status.increment("surface.ghost.notDrawn")
+                    return false
+                }
+                drawOwnGhost(text, caret: draw.caret, font: font, color: style.textColor)
+            }
             executor?.remember(offerID: draw.offerID, context: snapshot.context)
             status.increment(usesKeyTypeGhost ? "surface.ghost.keytype" : "surface.ghost.own")
-            drawn = Drawn(offerID: draw.offerID, snapshot: usesKeyTypeGhost ? snapshot : nil, style: style, font: font)
-        } else if let drawn, drawn.offerID == draw.offerID {
-            if let snapshot = drawn.snapshot {
-                ghost.show(text, at: snapshot, style: drawn.style, pid: draw.pid)
+            drawn = Drawn(offerID: draw.offerID, snapshot: usesKeyTypeGhost ? snapshot : nil, style: style, font: font, viewport: viewport)
+        } else if let current = drawn, current.offerID == draw.offerID {
+            if let snapshot = current.snapshot {
+                guard ghost.show(text, at: snapshot, style: current.style, pid: draw.pid, capsule: capsule, viewport: { current.viewport }) != nil else {
+                    status.increment("surface.ghost.notDrawn")
+                    return false
+                }
             } else {
-                drawOwnGhost(text, caret: draw.caret, font: drawn.font, color: drawn.style.textColor)
+                drawOwnGhost(text, caret: draw.caret, font: current.font, color: current.style.textColor)
             }
+        } else {
+            return false
+        }
+        if capsule {
+            guard var current = drawn,
+                  let c = ghost.lastFit?.capsule, c.count == 4 else { return false }
+            current.capsule = CGRect(x: c[0], y: c[1], width: c[2], height: c[3])
+            // The tag after the capsule stays inside the visible text area, else the field.
+            current.area = current.viewport ?? draw.field
+            drawn = current
         }
         let candidates = draw.candidates
         let ui = draw.ui
         guard candidates.count > 1 else {
             decor.exit(duration: 0)
             list.exit(duration: 0)
-            return
+            return true
         }
-        let caret = draw.caret
         let font = drawn?.font ?? NSFont.systemFont(ofSize: 13)
         let width = ceil((text as NSString).size(withAttributes: [.font: font]).width)
-        let layout = AlternativesLayout(
-            caret: caret, field: draw.field, textWidth: width, fontSize: font.pointSize,
-            tagWidth: NSHostingView(rootView: AlternativesTag(current: ui.candidate, count: candidates.count, character: character,
-                                                               figureSize: Tokens.FigureSize.inText(caretHeight: caret.height), animated: false)).fittingSize.width,
-            open: ui.open
-        )
+        let tagWidth = { (caretHeight: CGFloat) in
+            NSHostingView(rootView: AlternativesTag(current: ui.candidate, count: candidates.count, character: self.character,
+                                                    figureSize: Tokens.FigureSize.inText(caretHeight: caretHeight), animated: false)).fittingSize.width
+        }
+        let layout: AlternativesLayout
+        let caret: CGRect
+        if capsule, let frame = drawn?.capsule {
+            // The capsule may show a shortened text; the underline spans what it shows.
+            let shownWidth = min(width, frame.width - GhostFit.capsuleHorizontalPadding * 2 - 2)
+            let placed = AlternativesLayout.capsule(
+                frame, area: drawn?.area ?? frame, padding: GhostFit.capsuleHorizontalPadding, verticalPadding: GhostFit.capsuleVerticalPadding,
+                textWidth: shownWidth, fontSize: font.pointSize, tagWidth: tagWidth(frame.height - GhostFit.capsuleVerticalPadding * 2), open: ui.open
+            )
+            layout = placed.layout
+            caret = placed.caret
+        } else {
+            caret = draw.caret
+            layout = AlternativesLayout(caret: caret, field: draw.field, textWidth: width, fontSize: font.pointSize,
+                                        tagWidth: tagWidth(caret.height), open: ui.open)
+        }
         let tag = AlternativesTag(current: ui.candidate, count: candidates.count, character: character, figureSize: layout.figureSize)
         // Collapsed, one mark at most: the faint value, underlined only when it is quoted from a
         // source. The figure and the ticks come with the down arrow, and only where they fit on
-        // the caret's line after the text: they never wrap to a line of their own.
+        // the caret's line after the text (or after the capsule): they never wrap to a line of their own.
         guard draw.quoted || layout.showsTag else {
             decor.exit(duration: 0)
             drawList(draw)
-            return
+            return true
         }
         let decorView = HStack(alignment: .bottom, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
@@ -312,14 +359,16 @@ final class SurfaceCoordinator {
         // The decor's top left sits on the caret's top left: the underline lands at the baseline
         // plus 2 pt (baseline estimated at 0.78 of the caret height).
         // The marks stand on the host's document, not on glass: they take the field's theme, read
-        // from its text color, so a dark Caret over a white page still draws marks for white.
-        decor.panel.appearance = drawn?.style.textColor.map { NSAppearance(named: FillOverlay.isLight($0) ? .darkAqua : .aqua) } ?? nil
+        // from its text color, so a dark Caret over a white page still draws marks for white. In a
+        // capsule they stand on KeyType's capsule, which follows the system's appearance.
+        decor.panel.appearance = capsule ? nil : drawn?.style.textColor.map { NSAppearance(named: FillOverlay.isLight($0) ? .darkAqua : .aqua) } ?? nil
         decor.pin(HostedPanel.Anchor(corner: .topLeft, point: NSPoint(x: caret.maxX, y: Screen.cocoa(caret).maxY)))
         decor.setContent(decorView)
         decor.text = ui.open ? "\(ui.candidate + 1) of \(candidates.count)" : "underline"
         if !decor.panel.isVisible || decor.isExiting { decor.panel.alphaValue = 1; decor.panel.orderFrontRegardless() }
 
         drawList(draw)
+        return true
     }
 
     /// The open list goes where a pop-up would (`FieldPanelPlacement`): below the field, clear of
@@ -332,9 +381,11 @@ final class SurfaceCoordinator {
         let view = AlternativesListView(candidates: candidates, current: draw.ui.candidate, font: drawn?.font ?? .systemFont(ofSize: 13))
         if !list.isVisible || listSpot == nil {
             let probe = ObstacleProbe.Session(pid: draw.pid, until: DispatchTime.now().uptimeNanoseconds + Self.probeBudget)
+            // A capsule is what the list belongs to: it opens around the capsule, not the whole field.
+            let anchor = draw.presentation == .capsule ? drawn?.capsule ?? draw.field : draw.field
             let choice = FieldPanelPlacement.choose(
-                field: draw.field, caret: draw.caret, size: list.measure(view), narrow: nil,
-                bounds: Screen.axVisibleFrame(around: draw.field), obstacles: { probe.under([$0]) }
+                field: anchor, caret: draw.presentation == .capsule ? anchor : draw.caret, size: list.measure(view), narrow: nil,
+                bounds: Screen.axVisibleFrame(around: anchor), obstacles: { probe.under([$0]) }
             )
             listSpot = choice
             status.increment("surface.list.\(choice.spot.rawValue)")
@@ -738,6 +789,10 @@ final class SurfaceCoordinator {
         var info = machine.debugInfo()
         info.ghost = ghost.shownText ?? (ownGhost.isVisible ? ownGhost.text : nil)
         info.ghostPanel = ownGhost.debugInfo()
+        if info.caretPresentation == CaretPresentation.capsule.rawValue, let c = drawn?.capsule {
+            info.capsule = [c.minX, c.minY, c.width, c.height].map(Double.init)
+            info.capsuleSide = ghost.lastFit?.capsuleSide
+        }
         info.panel = panel.debugInfo()
         if info.panel != nil, let placed {
             info.panelPlacement = DebugState.PanelPlacementInfo(
@@ -796,6 +851,9 @@ private final class World: SurfaceWorld {
     func appName(pid: Int32) -> String? { NSRunningApplication(processIdentifier: pid)?.localizedName }
     func panelIsClear(_ content: PanelContent, field: CGRect, caret: CGRect, pid: Int32) -> Bool {
         MainActor.assumeIsolated { owner?.panelIsClear(content, field: field, caret: caret, pid: pid) ?? false }
+    }
+    func drawAlternatives(_ draw: AlternativesDraw) -> Bool {
+        MainActor.assumeIsolated { owner?.drawAlternatives(draw) ?? false }
     }
     var character: FigureCharacter { MainActor.assumeIsolated { FigureSettings.shared.character } }
     var reduceMotion: Bool { MainActor.assumeIsolated { Motion.reduceMotion } }

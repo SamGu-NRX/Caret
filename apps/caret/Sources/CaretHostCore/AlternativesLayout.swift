@@ -45,6 +45,27 @@ public struct AlternativesLayout: Equatable, Sendable {
         underlineTop = caret.height * 0.78 + Self.belowBaseline - Self.underlineHeight / 2
     }
 
+    /// The marks for an alternative drawn in a capsule (`CaretLinePlacement`), and the caret they
+    /// hang from: a one-point caret at the start of the capsule's text, as tall as its line, so the
+    /// decor is pinned at its top right exactly as for ghost text on the caret's line. The underline
+    /// runs under the capsule's text; the figure and the ticks stand after the capsule's trailing
+    /// edge, and only where they fit inside `area` (the capsule's own area).
+    ///
+    /// `padding` and `verticalPadding` are the capsule's (KeyType's `CapsuleCompletionView`: 10 and 4).
+    /// KeyType adds 2 pt to the measured text width and centers the text, so it starts 1 pt after
+    /// the padding.
+    public static func capsule(
+        _ capsule: CGRect, area: CGRect, padding: CGFloat, verticalPadding: CGFloat, textWidth: CGFloat, fontSize: CGFloat,
+        tagWidth: CGFloat, open: Bool
+    ) -> (layout: AlternativesLayout, caret: CGRect) {
+        let caret = CGRect(x: capsule.minX + padding, y: capsule.minY + verticalPadding, width: 1, height: max(1, capsule.height - verticalPadding * 2))
+        var layout = AlternativesLayout(caret: caret, field: capsule, textWidth: textWidth, fontSize: fontSize, tagWidth: 0, open: false)
+        layout.showsTag = open && capsule.maxX + layout.tagGap + tagWidth <= area.maxX - Self.edge
+        // With the tag, the span reaches the capsule's edge so the tag's gap is measured from there.
+        layout.textSpan = layout.showsTag ? capsule.maxX - caret.maxX : layout.underlineWidth
+        return (layout, caret)
+    }
+
     /// The tag's frame for a tag `width` wide and `height` tall, global top-left, or nil when it is
     /// not drawn.
     public func tagFrame(caret: CGRect, width: CGFloat, height: CGFloat) -> CGRect? {

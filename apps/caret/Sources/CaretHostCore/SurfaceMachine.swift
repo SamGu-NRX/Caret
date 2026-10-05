@@ -31,6 +31,8 @@ public final class SurfaceMachine {
         public let quoted: Bool
         /// The field read it was drawn from; nil on a headless host, which reads nothing.
         public let readID: UInt64?
+        /// How alternatives are drawn at the caret; inline for every other kind.
+        public var presentation: CaretPresentation = .inline
     }
 
     /// What was last taken, for the debug state.
@@ -418,23 +420,11 @@ public final class SurfaceMachine {
         }
         let anchors = [CGPoint(x: caret.midX, y: caret.midY)]
         if let held = gate(field.identity, anchors: anchors, requireFocus: true) { return hold(incoming, held) }
-        let candidates = incoming.candidates
-        if !candidates.isEmpty, let frame = field.frame {
-            // Ghost text stays inside the field, clear of the app's own text: the widest candidate
-            // must fit after the caret with nothing after it. The caret's own height, not 3 pt
-            // more for the underline: in a single-line field that holds text, KeyType estimates
-            // the caret flush with the field's bottom edge (AXCaretGeometryResolver, single-line
-            // branch), and A10's filled-field run held every alternative as wouldOverlapText.
-            let widest = candidates.map { world.textWidth($0, readID: field.readID) }.max() ?? 0
-            let ghostRect = CGRect(x: caret.maxX, y: caret.minY, width: widest, height: caret.height)
-            let textAfter = field.selection.end < UTF16Text.length(field.value)
-            if !SurfaceGate.fitsInField(ghost: ghostRect, field: frame, textAfterCaret: textAfter) {
-                return unshown(incoming, .wouldOverlapText, since: clock.now)
-            }
-        }
+        let presentation = Self.presentation(incoming.candidates, field: field, caret: caret, width: { self.world.textWidth($0, readID: field.readID) })
         guard let offer = incoming.offer(for: field, createdAt: clock.now) else { return #"{"error":"nothing to show"}"# }
-        if let reply = replaceInPlace(incoming, with: offer, caret: caret, field: field.frame ?? caret, readID: field.readID) {
-            startWatch(.offer(shown!.offerID), target: field.identity, anchors: anchors, requireFocus: true, field: field.frame)
+        if let reply = replaceInPlace(incoming, with: offer, caret: caret, field: field.frame ?? caret, readID: field.readID, presentation: presentation) {
+            guard let shown else { return Self.notDrawnReply }
+            startWatch(.offer(shown.offerID), target: field.identity, anchors: anchors, requireFocus: true, field: field.frame)
             return reply
         }
         // An action line or pop-up needs a spot that covers none of the app's fields or labels: its
@@ -467,15 +457,41 @@ public final class SurfaceMachine {
         let stamped = arbiter.snapshot().current.flatMap { $0.id == offerID ? $0 : nil } ?? offer
         shown = Shown(
             offerID: offerID, offer: stamped, offerKey: incoming.offerKey, caret: caret, field: field.frame ?? caret,
-            quoted: incoming.quoted, readID: field.readID
+            quoted: incoming.quoted, readID: field.readID, presentation: presentation
         )
         // A reoffered line's replacement is drawn over it where it stands, without an exit and entry.
         draw(ui: arbiter.snapshot().ui, entering: !swapping)
+        // The renderer could not draw alternatives where the user can see them: already withdrawn.
+        guard shown?.offerID == offerID else { return Self.notDrawnReply }
         if swapping { count("surface.reoffer.swapped") }
         startWatch(.offer(offerID), target: field.identity, anchors: anchors, requireFocus: true, field: field.frame)
         count("surface.shown.\(offer.source.rawValue).\(offer.kind.name)")
+        if case .ghost = offer.kind {
+            count("surface.caret.\(presentation.rawValue)")
+            return #"{"ok":true,"offerId":\#(offerID),"presentation":"\#(presentation.rawValue)"}"#
+        }
         return #"{"ok":true,"offerId":\#(offerID)}"#
     }
+
+    /// Inline when the widest candidate fits after the caret inside the field with nothing after
+    /// the caret (`SurfaceGate.fitsInField`); otherwise a capsule off the caret's line. This only
+    /// chooses how alternatives are drawn: before V1a check 4 an offer that did not fit inline was
+    /// withdrawn, and in a document that filled its window that was most of them.
+    ///
+    /// The caret's own height, not 3 pt more for the underline: in a single-line field that holds
+    /// text, KeyType estimates the caret flush with the field's bottom edge
+    /// (AXCaretGeometryResolver, single-line branch), and A10's filled-field run would otherwise
+    /// put every alternative in a capsule.
+    static func presentation(_ candidates: [String], field: FocusedField, caret: CGRect, width: (String) -> CGFloat) -> CaretPresentation {
+        guard !candidates.isEmpty, let frame = field.frame else { return .inline }
+        let widest = candidates.map(width).max() ?? 0
+        let ghostRect = CGRect(x: caret.maxX, y: caret.minY, width: widest, height: caret.height)
+        let textAfter = field.selection.end < UTF16Text.length(field.value)
+        return SurfaceGate.fitsInField(ghost: ghostRect, field: frame, textAfterCaret: textAfter) ? .inline : .capsule
+    }
+
+    /// The reply to an offer the renderer did not draw, already withdrawn and logged (`withdrawUndrawn`).
+    static let notDrawnReply = #"{"held":"notDrawn","unshown":true}"#
 
     /// The headless path: the offer is bound to the field the helper names and published, and
     /// nothing is read or drawn.
@@ -509,7 +525,8 @@ public final class SurfaceMachine {
     /// changed spelling or ref. The ghost text is redrawn where it stands, with no exit and entry,
     /// and the user keeps their place in the list (`OfferArbiter.replace`). Nil when it cannot be
     /// replaced in place; the caller shows it as a new offer.
-    func replaceInPlace(_ incoming: SurfaceIncoming, with offer: Offer, caret: CGRect, field: CGRect, readID: UInt64?) -> String? {
+    func replaceInPlace(_ incoming: SurfaceIncoming, with offer: Offer, caret: CGRect, field: CGRect, readID: UInt64?,
+                        presentation: CaretPresentation = .inline) -> String? {
         guard let shown, shown.offer.source == .helper, let key = incoming.helperKey, shown.offerKey == key,
               case .ghost = offer.kind, case .ghost = shown.offer.kind,
               let ui = arbiter.replace(offerID: shown.offerID, with: offer) else { return nil }
@@ -517,7 +534,7 @@ public final class SurfaceMachine {
         let stamped = arbiter.snapshot().current.flatMap { $0.id == shown.offerID ? $0 : nil } ?? offer
         self.shown = Shown(
             offerID: shown.offerID, offer: stamped, offerKey: key, caret: caret, field: field,
-            quoted: incoming.quoted, readID: readID ?? shown.readID
+            quoted: incoming.quoted, readID: readID ?? shown.readID, presentation: headless ? .inline : presentation
         )
         replacedInPlace = true
         draw(ui: ui, entering: false)
@@ -672,10 +689,11 @@ public final class SurfaceMachine {
             let candidates = shown.offer.candidates
             lineText = candidates[min(ui.candidate, candidates.count - 1)]
         case .ghost:
-            emit(.drawAlternatives(AlternativesDraw(
+            let drawn = world.drawAlternatives(AlternativesDraw(
                 offerID: shown.offerID, readID: shown.readID ?? 0, candidates: shown.offer.candidates, ui: ui, entering: entering,
-                quoted: shown.quoted, caret: shown.caret, field: shown.field, pid: shown.offer.target.pid
-            )))
+                quoted: shown.quoted, caret: shown.caret, field: shown.field, pid: shown.offer.target.pid, presentation: shown.presentation
+            ))
+            if !drawn { return withdrawUndrawn(shown) }
         case .action(let line):
             if ui.expanded, let variants = line.variants {
                 showOffer(.popup(variants, highlight: ui.highlight), text: variants.header?.title.text, figure: .needsYou, at: shown, entering: entering)
@@ -695,6 +713,18 @@ public final class SurfaceMachine {
         case .fill, .writing:
             break
         }
+        publish()
+    }
+
+    /// Alternatives the renderer could not put on screen: withdrawn at once, so Tab, the arrows and
+    /// Esc stay the app's, and logged as an unshown offer.
+    func withdrawUndrawn(_ shown: Shown) {
+        arbiter.invalidate(offerID: shown.offerID)
+        clear(exit: 0)
+        count("surface.held.\(SurfaceGate.Hold.notDrawn.rawValue)")
+        count("surface.unshown.\(SurfaceGate.Hold.notDrawn.rawValue)")
+        lastUnshown = DebugState.Unshown(offerKey: shown.offerKey, kind: shown.offer.kind.name, reason: SurfaceGate.Hold.notDrawn.rawValue, heldMs: 0)
+        emit(.log("\(shown.offer.kind.name) \(shown.offerKey ?? "(injected)") \(shown.presentation.rawValue) withdrawn unshown: \(SurfaceGate.Hold.notDrawn.rawValue)"))
         publish()
     }
 
@@ -967,6 +997,7 @@ public final class SurfaceMachine {
             info.source = shown.offer.source.rawValue
             info.candidates = shown.offer.candidates.count > 1 || shown.offer.kind == .ghost ? shown.offer.candidates : nil
             info.ui = snapshot.current?.id == shown.offerID ? snapshot.ui : nil
+            if case .ghost = shown.offer.kind { info.caretPresentation = shown.presentation.rawValue }
         }
         info.figure = figure?.rawValue
         info.character = world.character.rawValue

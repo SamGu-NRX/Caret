@@ -19,8 +19,10 @@ public enum SurfaceGate {
         case covered
         /// No window of the field's app is under the anchor point (off screen, minimized).
         case notOnScreen
-        /// The surface would leave the field and overlap the app's own text.
-        case wouldOverlapText
+        /// The renderer could not draw the offer where the user can see it (no room for its capsule on
+        /// either side of the caret's line, or KeyType declined it). An offer nobody can see owns no
+        /// key, so it is withdrawn.
+        case notDrawn
         /// Neither the offer's panel nor its compact line has a spot around the field that covers
         /// none of the app's own fields or labels (brief A13: never cover a label).
         case noClearSpot
@@ -114,9 +116,10 @@ public enum SurfaceGate {
         return nil
     }
 
-    /// Ghost text drawn by Caret at the caret must stay inside the field's text area, so it never
-    /// overlaps text after the caret or a neighbor's label (`SURFACES.md` section 1: anything below
-    /// or after the caret means no inline ghost).
+    /// Whether ghost text can be drawn inline: inside the field's text area after the caret, with
+    /// nothing after the caret (`SURFACES.md` section 1: anything below or after the caret means no
+    /// inline ghost). It chooses the presentation only; an offer that does not fit inline is drawn
+    /// in a capsule off the caret's line (`CaretLinePlacement`, V1a check 4).
     public static func fitsInField(ghost: CGRect, field: CGRect, textAfterCaret: Bool) -> Bool {
         !textAfterCaret && field.insetBy(dx: 1, dy: 0).contains(ghost.insetBy(dx: 0.5, dy: 0.5))
     }

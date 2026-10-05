@@ -10,7 +10,7 @@ import Foundation
 public enum GhostFit {
     /// What happens to a completion that does not fit on the caret's line.
     public enum OverflowRule: String, Codable, Sendable {
-        /// Draw it in the capsule under the caret (the default).
+        /// Draw it in the capsule off the caret's line (the default; `CaretLinePlacement`).
         case capsule
         /// Draw nothing, as KeyType does. Kept to measure the before row on the same build
         /// (`--ghost-overflow drop`).
@@ -30,11 +30,10 @@ public enum GhostFit {
         case mirrorOverflow
         /// KeyType's window was asked to draw and stayed hidden.
         case windowDeclined
-        /// The capsule would hang below the bottom of the caret's display.
-        case capsuleOffScreen
-        /// The capsule would reach past the focused window's frame (A18, bug 6: Q1's capsule drew
-        /// past TextEdit's right edge, over other apps).
-        case capsuleOutsideWindow
+        /// Neither below nor above the caret's line has room for the capsule inside the visible text
+        /// area, the window and the display (`CaretLinePlacement`). A18, bug 6: Q1's capsule drew past
+        /// TextEdit's right edge, over other apps; the capsule never leaves the window.
+        case capsuleNoRoom
         /// Another app's window lies over part of where the capsule would go.
         case capsuleCovered
         /// The focused window's frame could not be read, so nothing says the capsule stays in it.
@@ -83,6 +82,10 @@ public enum GhostFit {
         /// Where the capsule was laid out, global top-left points [x, y, width, height], when the
         /// focused window's frame was known (`GhostOverlay.keepCapsuleInWindow`).
         public var capsule: [Double]?
+        /// The capsule lies `below` or `above` the caret's line.
+        public var capsuleSide: String?
+        /// The capsule shows a shortened text with an ellipsis; Tab still takes the whole one.
+        public var truncated: Bool?
 
         public init(outcome: Outcome, cause: Cause?, textWidth: Double, room: Double?, fieldHeight: Double?, caretQuality: String?) {
             self.outcome = outcome
@@ -128,13 +131,6 @@ public enum GhostFit {
             if approximate, h > fallback * 1.4 { return max(8, min(32, fallback)) }
         }
         return max(8, min(48, h))
-    }
-
-    /// Nil when the capsule at `frame` lies within `window` (to 1 pt); otherwise why not. Any
-    /// rectangle space, as long as both are in the same one.
-    public static func capsuleCause(frame: CGRect, window: CGRect?) -> Cause? {
-        guard let window else { return nil }
-        return window.insetBy(dx: -1, dy: -1).contains(frame) ? nil : .capsuleOutsideWindow
     }
 
     /// The last records kept in the debug state, enough for one acceptance run's 54 keys.

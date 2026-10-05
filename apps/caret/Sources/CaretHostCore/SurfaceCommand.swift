@@ -5,9 +5,6 @@ import Foundation
 /// What `SurfaceMachine` tells the drawing layer to do. Each is a plain value; CaretHost's
 /// `SurfaceCoordinator` carries them out on screen, and tests read them.
 public enum SurfaceCommand: Equatable, Sendable {
-    /// Ghost text with alternatives at the caret: the current candidate, its underline and tag, and
-    /// the list once open (`SURFACES.md` section 2).
-    case drawAlternatives(AlternativesDraw)
     /// The user typed the head of the top candidate: draw the rest after what they typed. The
     /// underline and the list go, because the other candidates no longer fit.
     case typedThrough(offerID: UInt64, typed: String, remainder: String, caret: CGRect)
@@ -46,6 +43,9 @@ public struct AlternativesDraw: Equatable, Sendable {
     public var caret: CGRect
     public var field: CGRect
     public var pid: Int32
+    /// Inline after the caret, or in a capsule off its line: decided once per offer from the widest
+    /// candidate (`SurfaceGate.fitsInField`), so the arrows never move it.
+    public var presentation: CaretPresentation
 
     public var currentText: String { candidates[min(ui.candidate, candidates.count - 1)] }
 }

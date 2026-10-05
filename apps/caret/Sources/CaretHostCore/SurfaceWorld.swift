@@ -95,6 +95,11 @@ public protocol SurfaceWorld: AnyObject {
     /// that covers none of the app's own elements (`FieldPanelPlacement`, hit-tested by the host).
     /// Asked before an action line or pop-up is published, and again for its compact line.
     func panelIsClear(_ content: PanelContent, field: CGRect, caret: CGRect, pid: Int32) -> Bool
+    /// Draws ghost text with alternatives at the caret (`SURFACES.md` section 2): the current
+    /// candidate inline or in its capsule, its underline and tag, and the list once open. True only
+    /// when the candidate is on screen where the user can see it; the machine withdraws an offer
+    /// that was not drawn, because only a visible offer may own Tab (V1a check 4).
+    func drawAlternatives(_ draw: AlternativesDraw) -> Bool
     var character: FigureCharacter { get }
     var reduceMotion: Bool { get }
 }
