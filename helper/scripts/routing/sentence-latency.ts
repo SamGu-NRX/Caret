@@ -1,15 +1,21 @@
 // How long the host's writing help waits on routing at a sentence end (brief R2, "Sentence-end latency"), in a scripted
 // session over the real socket. A host connects with routing, the reader shows a notes document, and the session types
-// sentences into its body. At each sentence end the host sends routingContext (breakpoint "sentence", a new text
-// revision), as H6's RouteFollower does, then the reader's walk follows. The host's ghost text waits for the first
-// routeDecision naming that revision, at most RouteFollower.decisionBudgetMs (600 ms), after which it shows anyway; with
-// routing off it never waits (gate .off). Measured: time from the host's routingContext to that decision.
+// sentences into its body. The host follows H6's RouteFollower (v2/routing): on focus it sends nothing and waits for the
+// first routeDecision naming the field, which binds it; while the selection is a plain caret it sends no context after
+// binding, so its first routingContext comes at the first sentence end. At each sentence end it sends routingContext
+// (breakpoint "sentence", a new text revision), then the reader's walk follows. The host's ghost text waits for the
+// first routeDecision naming that revision, at most RouteFollower.decisionBudgetMs (600 ms), after which it shows
+// anyway; with routing off it never waits (gate .off). Measured: time from the host's routingContext to that decision,
+// and from the reader's focus to the field's first decision.
 //
 // Router questions go to live Jev (spend capped); others are stubs. Some sentences name a person and a time, so the
-// event card is a task beside the writing. The ghost model itself is the host's and is not run here.
+// event card is a task beside the writing; the event card's own attend asks answer yes, so a card is shown exactly when
+// the router chose it. The ghost model itself is the host's and is not run here.
 //
-//   node scripts/routing/sentence-latency.ts --out DIR [--mode on|off] [--key-ms 60] [--spend-cap 0.005] [--label x]
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+//   node scripts/routing/sentence-latency.ts --out DIR [--mode on|off] [--key-ms 60] [--spend-cap 0.005] [--label x] [--dump]
+//
+// --dump writes every router request and its answer to router-requests[-label].ndjson in --out (the script's own text).
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -32,6 +38,7 @@ const { values: a } = parseArgs({
     "spend-cap": { type: "string", default: "0.005" },
     label: { type: "string", default: "" },
     "env-file": { type: "string", default: "/Users/samgu/Programming Projects/Caret/.env" },
+    dump: { type: "boolean", default: false },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
@@ -62,13 +69,14 @@ process.env.CARET_ENV_FILE = a["env-file"];
 const live = makeJevClient(() => loadJevKey());
 let routerCalls = 0;
 let spend = 0;
-const isRouter = (r: JevRequest): boolean => "outcome" in r.questions || "route" in r.questions;
+const isRouter = (r: JevRequest): boolean => "outcome" in r.questions || "task" in r.questions || "route" in r.questions;
 const askJev: AskJev = async (req) => {
   if (isRouter(req)) {
     if (spend >= CAP) throw new Error("spend cap");
     routerCalls++;
     const r = await live(req);
     spend += r.costUsd;
+    if (a.dump) appendFileSync(join(a.out as string, `router-requests${a.label === "" ? "" : `-${a.label}`}.ndjson`), `${JSON.stringify({ at: performance.now(), state: req.state, questions: req.questions, answers: r.answers })}\n`);
     return r;
   }
   // The event card's own questions: attend yes. Anything else: the first option.
@@ -110,25 +118,28 @@ const reader = await LineClient.connect(sock);
 reader.send({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "r2-latency-reader" });
 await sleep(100);
 
-/** routeDecision arrival times by text revision (performance.now()), first one only. */
+/** routeDecision arrival times by text revision (performance.now()), first one only; and the first naming the body. */
 const arrived = new Map<string, { at: number; outcome: string | null }>();
+let bound: { at: number; outcome: string | null } | null = null;
+/** Calendar offers, by arrival time. */
+const calendar: number[] = [];
 host.onMessage = (m) => {
-  const d = m as { type: string; textRevision?: string; outcome?: string | null };
+  const d = m as { type: string; textRevision?: string; outcome?: string | null; windowId?: string; key?: string | null; app?: string };
   if (d.type === "routeDecision" && d.textRevision !== undefined && !arrived.has(d.textRevision)) arrived.set(d.textRevision, { at: performance.now(), outcome: d.outcome ?? null });
+  if (d.type === "routeDecision" && bound === null && d.windowId === WIN && d.key === BODY && d.outcome !== null) bound = { at: performance.now(), outcome: d.outcome ?? null };
+  if (d.type === "action" && d.app === "Calendar") calendar.push(performance.now());
 };
 
 void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: Date.now(), from: null, to: NOTES });
 let text = "Hi Dana, ";
+const t0 = performance.now();
 reader.send(snapshot(text, [], Date.now()));
 reader.send({ type: "focus", v: PROTOCOL_VERSION, at: Date.now(), app: NOTES, windowId: WIN, key: BODY, role: "AXTextArea", editable: true, empty: false, frontmost: true });
 let rev = 0;
 const revision = (): string => `r${++rev}`;
-const first = revision();
-const t0 = performance.now();
-host.send({ type: "routingContext", v: PROTOCOL_VERSION, at: Date.now(), windowId: WIN, key: BODY, selection: "caret", composing: false, textRevision: first, breakpoint: null });
-for (let i = 0; i < 300 && !arrived.has(first); i++) await sleep(20);
-const focusDecision = arrived.get(first);
-const rows: { sentence: number; event: boolean; arrivalMs: number | null; waitMs: number; outcome: string | null }[] = [];
+for (let i = 0; ON && i < 300 && bound === null; i++) await sleep(20);
+const focusDecision = bound as { at: number; outcome: string | null } | null;
+const rows: { sentence: number; event: boolean; arrivalMs: number | null; waitMs: number; outcome: string | null; calendarMs: number | null }[] = [];
 /** The reader's typed values, as its detector would report them in the same walk as the text that holds them. */
 const valuesIn = (t: string): TypedValue[] => SENTENCES.flatMap((s) => (s.when !== undefined && t.includes(s.when) ? [{ kind: "date" as const, text: s.when, nodeKey: BODY }] : []));
 for (const [i, s] of SENTENCES.entries()) {
@@ -146,9 +157,17 @@ for (const [i, s] of SENTENCES.entries()) {
   for (let k = 0; k < 150 && !arrived.has(r); k++) await sleep(10);
   const got = arrived.get(r);
   const arrivalMs = got === undefined ? null : got.at - sent;
-  rows.push({ sentence: i + 1, event: s.when !== undefined, arrivalMs: arrivalMs === null ? null : Number(arrivalMs.toFixed(2)), waitMs: ON ? Number(Math.min(arrivalMs ?? BUDGET_MS, BUDGET_MS).toFixed(2)) : 0, outcome: got?.outcome ?? null });
+  const before = calendar.length;
+  rows.push({ sentence: i + 1, event: s.when !== undefined, arrivalMs: arrivalMs === null ? null : Number(arrivalMs.toFixed(2)), waitMs: ON ? Number(Math.min(arrivalMs ?? BUDGET_MS, BUDGET_MS).toFixed(2)) : 0, outcome: got?.outcome ?? null, calendarMs: null });
+  const row = rows.at(-1) as (typeof rows)[number];
+  // A Calendar offer for this sentence arrives before the next sentence is typed, or not at all.
+  void (async () => {
+    for (let k = 0; k < 400 && calendar.length === before; k++) await sleep(10);
+    if (calendar.length > before) row.calendarMs = Number(((calendar[before] as number) - sent).toFixed(1));
+  })();
   await sleep(KEY_MS * 3);
 }
+await sleep(4000);
 await helper.routing?.idle();
 await helper.routedSettled;
 const q = (xs: number[], p: number): number | null => {
@@ -158,13 +177,13 @@ const q = (xs: number[], p: number): number | null => {
 };
 const waits = rows.map((r) => r.waitMs);
 const arrivals = rows.flatMap((r) => (r.arrivalMs === null ? [] : [r.arrivalMs]));
-const decisions = (helper.routing?.decisions ?? []).map((d) => ({ breakpoint: d.breakpoint, outcome: d.outcome, by: d.by, published: d.published, route: d.route, latencyMs: d.latencyMs, calls: d.calls }));
+const decisions = (helper.routing?.decisions ?? []).map((d) => ({ breakpoint: d.breakpoint, outcome: d.outcome, by: d.by, published: d.published, route: d.route, latencyMs: d.latencyMs, calls: d.calls, confidence: d.confidence, answered: d.answered }));
 const summary = {
   label: a.label,
   mode: a.mode,
   keyMs: KEY_MS,
   sentences: rows.length,
-  focusDecision: focusDecision === undefined ? null : { ms: Number((focusDecision.at - t0).toFixed(1)), outcome: focusDecision.outcome },
+  focusDecision: focusDecision === null ? null : { ms: Number((focusDecision.at - t0).toFixed(1)), outcome: focusDecision.outcome },
   waitP50: q(waits, 0.5),
   waitP95: q(waits, 0.95),
   arrivalP50: q(arrivals, 0.5),
@@ -175,7 +194,8 @@ const summary = {
   routerCalls,
   spendUsd: Number(spend.toFixed(6)),
   stats: helper.routing === null ? null : { ...helper.routing.stats, callMs: undefined, entryMs: undefined },
-  calendarOffers: host.received.filter((m) => (m as { type: string; app?: string }).type === "action" && (m as { app?: string }).app === "Calendar").length,
+  calendarOffers: calendar.length,
+  eventCards: rows.filter((r) => r.event).map((r) => ({ sentence: r.sentence, calendarMs: r.calendarMs })),
 };
 writeFileSync(join(a.out, `latency-${a.mode}${a.label === "" ? "" : `-${a.label}`}.json`), JSON.stringify({ ...summary, rows, decisions }, null, 2) + "\n");
 console.log(JSON.stringify(summary));
