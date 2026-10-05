@@ -1365,9 +1365,11 @@ export async function proposeFill(
     // A text field's value is `value`, which Caret writes. Any other control's is a hand-off, which a Fill all writes
     // when the page engine owns the window and controlValue allows it (D2-04: FillHandoff.writes); the user sets the rest.
     // A control's value read from a "Label: value" line names that label (FillHandoff.context), so a recheck can ask the
-    // source for the same line, not just the same word: "yes" is in many lines (D2-04 review).
+    // source for the same line, not just the same word: "yes" is in many lines (D2-04 review). A part code derived from
+    // one such line ("United States" from "Location: Oakland, California, United States") names it too (P2: without it,
+    // the recheck wanted a line equal to the part and refused W4's Greenhouse fills whole); one joined from two lines does not.
     const line = p === undefined ? null : windowOf(p);
-    const context = line !== null && line.labelled === true && line.context !== null && p?.from === "window" ? line.context : null;
+    const context = line !== null && line.labelled === true && line.context !== null && (p?.from === "window" || (p?.from === "derived" && p.base.from === "window" && p.also === null)) ? line.context : null;
     const handoff: FillHandoff | null =
       f.control === "text" || p === undefined || got === null
         ? null

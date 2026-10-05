@@ -11,6 +11,7 @@ import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
 import { labelledLines } from "../fill/candidates.ts";
+import { splitAddress, splitPlace } from "../fill/derive.ts";
 import { describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
@@ -35,6 +36,8 @@ export interface YourField {
   key: string;
   /** The value as the pop-up says it, and where it came from; null when Caret has none. */
   value: { display: string; ref: PopupRef } | null;
+  /** P2: why a field Caret meant to write is the user's after all (it failed its recheck, recheckFields); absent otherwise. */
+  why?: string;
 }
 
 /** The fields of a proposal Caret writes, each with a value and where it came from, and the form's fields it leaves to the user. */
@@ -144,11 +147,9 @@ function yoursBlock(model: ScreenModel, windowId: string, yours: readonly YourFi
   const rows = shown.map((y, i) => {
     const name = fieldLabel(model, windowId, y.key);
     const field = nodeRef(windowId, y.key);
-    return {
-      label: i === 0 ? "You set" : "",
-      value: y.value === null ? { text: name, ref: { rule: "fieldLabel", derived: [field] } } : { text: `${name}: ${y.value.display}`, ref: { rule: "handoff", derived: [field, y.value.ref] } },
-      secondary: true as const,
-    };
+    // A field dropped by its recheck says why, in place of the value Caret no longer stands behind (P2).
+    const value = y.why !== undefined ? { text: `${name}: ${y.why}`, ref: { rule: "fieldLabel", derived: [field] } } : y.value === null ? { text: name, ref: { rule: "fieldLabel", derived: [field] } } : { text: `${name}: ${y.value.display}`, ref: { rule: "handoff", derived: [field, y.value.ref] } };
+    return { label: i === 0 ? "You set" : "", value, secondary: true as const };
   });
   const more = yours.length - shown.length;
   if (more > 0) rows.push({ label: "", value: { text: `and ${more} more`, ref: { rule: "count", derived: yours.slice(MAX_FILL_ROWS).map((y) => nodeRef(windowId, y.key)) } }, secondary: true });
@@ -204,58 +205,118 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
 }
 
 /**
+ * Whether a part code derives from a line is exactly `span` (P2): a place's city, state or country (derive.ts
+ * splitPlace), or an address's street, unit, city, state or ZIP (splitAddress), read from the whole line or from what
+ * follows its "Label:". The derivation fill made is made again, so a line that no longer says the place is not enough
+ * however much of it is left ("United States" in "Location: Oakland, California, United States (in the Bay Area)").
+ */
+function derivesSpan(line: string, span: string): boolean {
+  const t = line.trim();
+  const after = /^[^:\n]{1,40}:\s*(.+)$/u.exec(t)?.[1];
+  for (const x of after === undefined ? [t] : [t, after]) {
+    const place = splitPlace(x);
+    if (place !== null && (place.city === span || place.state === span || place.country === span)) return true;
+    const address = splitAddress(x);
+    if (address !== null && Object.values(address).includes(span)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a source window still shows a fill value the way fill read it: `span` is the source text the value was read
+ * from, `context` the label of its "Label: value" line (FillHandoff.context), `control` what it was read for. Shared by
+ * recheckFill and a page goal's precheck (P2, goals/runs.ts), so both hold a value to one rule.
+ *   - From a "Label: value" line: that very line must still hold the span; a box's line must still say exactly it.
+ *     "Valid driving license: no" beside "Needs renewal: yes" still shows "yes", but no longer says it (D2-04 review).
+ *   - A control's value from an unlabelled line: a line that is the span, the same typed value, or (P2) a line whose
+ *     place or address still derives the span (derivesSpan). "I have a valid driving license? No." holds the old span
+ *     "No" but says otherwise, and is still refused: a span inside a longer line passes only by that same derivation.
+ *   - A text field's value: the node's text holds the span, or one of its typed values is it.
+ */
+export function sourceHolds(sw: WindowState, nodeKey: string, span: string, context: string | null, control: string): boolean {
+  const src = sw.nodes.get(nodeKey);
+  if (src === undefined) return false;
+  const typed = sw.values.some((v) => v.nodeKey === nodeKey && v.text === span);
+  if (context !== null) {
+    const box = control === "checkbox";
+    return labelledLines(sw).some((l) => l.node.key === nodeKey && l.label === context && (box ? l.value === span : l.value.includes(span)));
+  }
+  if (control !== "text") return typed || nodeText(src).split(/\r?\n/).some((l) => l.trim() === span.trim() || derivesSpan(l, span));
+  return nodeText(src).includes(span) || typed;
+}
+
+/** Why one field of a proposal can no longer be filled as shown: `log` names keys for the log, `says` is the user's sentence. */
+type FieldStale = { log: string; says: string };
+
+function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, about: AboutNow, answer: AnswerNow, page: PageContext | null): FieldStale | null {
+  const node = w.nodes.get(f.key);
+  if (node === undefined) return { log: `the field ${f.key} is gone`, says: "the field is gone" };
+  const input = emptyInput(w, f.key);
+  if (input === null) return { log: `the field ${f.key} is no longer empty`, says: "it's no longer empty" };
+  if (describeInput(w, input) !== f.descriptor) return { log: `the field ${f.key} now reads differently`, says: "it reads differently now" };
+  if (f.source === null && f.answer !== undefined) {
+    // S1: the answer as answers.md holds it now must still be the text shown, word for word, for the same question, and
+    // still pass the guards on the page as it is now: its organization, and a maxlength the page may have lowered.
+    const now = answer(f.memory.id);
+    if (now === null || now.fields.answer !== f.value || now.fields.question !== f.memory.label) {
+      const said = `your saved answer to "${f.memory.label}" changed`;
+      return { log: said, says: said };
+    }
+    const held = guardAnswer(now, pageText(w, page ?? { site: null, headings: [] }), node.maxLength);
+    return held === null ? null : { log: held.says, says: held.says };
+  }
+  if (f.source === null) {
+    // The label decided which fields the entry was offered to (about.ts), so a renamed entry ends the offer too.
+    const now = about(f.memory.id);
+    if (now === null || memoryValue(now.value, f.memory.part) !== f.span || now.label !== f.memory.label) {
+      const said = `what you told Caret as ${f.memory.label} changed`;
+      return { log: said, says: said };
+    }
+    return null;
+  }
+  const sw = model.windows.get(f.source.windowId);
+  const key = f.source.nodeKey;
+  if (sw === undefined || sw.nodes.get(key) === undefined) return { log: `the source ${key} is gone`, says: "where Caret read its value is gone" };
+  return sourceHolds(sw, key, f.span, f.context, f.control) ? null : { log: `the source ${key} changed`, says: "where Caret read its value changed" };
+}
+
+/**
  * Why the fill can no longer be done as shown, or null. Every destination must still be there, empty (no text, no
  * box ticked, no option picked) and described as it was when Jev was asked, and every source must still show what
- * the value was read from: a fill value is a span, so the source node's text must contain it, or one of its typed
- * values must be it. A value from memory must still be what that entry holds: forgetting, pausing or editing it ends
- * the offer.
+ * the value was read from (sourceHolds). A value from memory must still be what that entry holds: forgetting, pausing
+ * or editing it ends the offer. The first field that fails says why; recheckFields drops each one instead.
  */
 export function recheckFill(model: ScreenModel, p: GroundedProposal, about: AboutNow, answer: AnswerNow = () => null, page: PageContext | null = null): string | null {
   const w = model.windows.get(p.windowId);
   if (w === undefined) return "the form's window closed";
   for (const f of p.fields) {
-    const node = w.nodes.get(f.key);
-    if (node === undefined) return `the field ${f.key} is gone`;
-    const input = emptyInput(w, f.key);
-    if (input === null) return `the field ${f.key} is no longer empty`;
-    if (describeInput(w, input) !== f.descriptor) return `the field ${f.key} now reads differently`;
-    if (f.source === null && f.answer !== undefined) {
-      // S1: the answer as answers.md holds it now must still be the text shown, word for word, for the same question, and
-      // still pass the guards on the page as it is now: its organization, and a maxlength the page may have lowered.
-      const now = answer(f.memory.id);
-      if (now === null || now.fields.answer !== f.value || now.fields.question !== f.memory.label) return `your saved answer to "${f.memory.label}" changed`;
-      const held = guardAnswer(now, pageText(w, page ?? { site: null, headings: [] }), node.maxLength);
-      if (held !== null) return held.says;
-      continue;
-    }
-    if (f.source === null) {
-      // The label decided which fields the entry was offered to (about.ts), so a renamed entry ends the offer too.
-      const now = about(f.memory.id);
-      if (now === null || memoryValue(now.value, f.memory.part) !== f.span || now.label !== f.memory.label) return `what you told Caret as ${f.memory.label} changed`;
-      continue;
-    }
-    const sw = model.windows.get(f.source.windowId);
-    const src = sw?.nodes.get(f.source.nodeKey);
-    if (sw === undefined || src === undefined) return `the source ${f.source.nodeKey} is gone`;
-    // A control's value read from a "Label: value" line needs that very line: "Valid driving license: no" beside "Needs
-    // renewal: yes" still shows "yes", but no longer says it (D2-04 review). A box's line must still say exactly the yes
-    // it said; any other control's line must still hold the span ("Start date: Tuesday, October 20, 2026" holds the
-    // date "October 20, 2026"; second review). A control's value from an unlabelled line needs a line that is the span,
-    // or the same typed value: "I have a valid driving license? No." holds the old span but says otherwise.
-    const key = f.source.nodeKey;
-    const typed = sw.values.some((v) => v.nodeKey === key && v.text === f.span);
-    if (f.context !== null) {
-      const box = f.control === "checkbox";
-      if (!labelledLines(sw).some((l) => l.node.key === key && l.label === f.context && (box ? l.value === f.span : l.value.includes(f.span)))) return `the source ${key} changed`;
-      continue;
-    }
-    if (f.control !== "text") {
-      if (!typed && !nodeText(src).split(/\r?\n/).some((l) => l.trim() === f.span.trim())) return `the source ${key} changed`;
-      continue;
-    }
-    if (!nodeText(src).includes(f.span) && !typed) return `the source ${key} changed`;
+    const stale = recheckField(model, w, f, about, answer, page);
+    if (stale !== null) return stale.log;
   }
   return null;
+}
+
+/**
+ * P2: the proposal with each field that fails recheckFill's checks moved to the user's, with why, so one bad field no
+ * longer cancels the whole fill (P1: on W4's saved Greenhouse pages one Country value refused every field). `stale`
+ * only when the form's window closed. `dropped` lists each field left out, with the log's words.
+ */
+export function recheckFields(model: ScreenModel, p: GroundedProposal, about: AboutNow, answer: AnswerNow = () => null, page: PageContext | null = null): { proposal: GroundedProposal; dropped: { key: string; log: string }[] } | { stale: string } {
+  const w = model.windows.get(p.windowId);
+  if (w === undefined) return { stale: "the form's window closed" };
+  const fields: GroundedField[] = [];
+  const yours: YourField[] = [...p.yours];
+  const dropped: { key: string; log: string }[] = [];
+  for (const f of p.fields) {
+    const stale = recheckField(model, w, f, about, answer, page);
+    if (stale === null) {
+      fields.push(f);
+      continue;
+    }
+    dropped.push({ key: f.key, log: stale.log });
+    yours.unshift({ key: f.key, value: null, why: stale.says });
+  }
+  return { proposal: { ...p, fields, yours }, dropped };
 }
 
 /**

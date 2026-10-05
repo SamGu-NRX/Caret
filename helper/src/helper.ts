@@ -75,7 +75,7 @@ import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
-import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFill, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
+import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFields, recheckFill, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
 import { aboutValues, type AboutValue } from "./fill/about.ts";
 import type { PopupSpecT } from "./popup.ts";
 import { describeField } from "./fill/descriptor.ts";
@@ -1595,10 +1595,11 @@ export class Helper {
     if (kept === undefined) return this.refuseAccept(m.proposalId, "no such fill proposal, or it expired");
     if (this.executor.has(m.proposalId)) return this.refuseAccept(m.proposalId, "this proposal was already filled");
     // S1: Command-1 has no preview of its own, so a saved answer is never written from it; the field is the user's.
-    const p = writtenFields(kept.proposal, this.model.windows.get(kept.windowId), { answers: false });
-    if (p.fields.length === 0) return this.refuseAccept(m.proposalId, "Caret writes none of this proposal's fields");
-    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
-    if (stale !== null) return this.refuseAccept(m.proposalId, `${stale}; nothing was written`);
+    const all = writtenFields(kept.proposal, this.model.windows.get(kept.windowId), { answers: false });
+    if (all.fields.length === 0) return this.refuseAccept(m.proposalId, "Caret writes none of this proposal's fields");
+    const checked = this.recheckKept(all);
+    if ("refused" in checked) return this.refuseAccept(m.proposalId, checked.refused);
+    const p = checked.p;
     this.bindNew(m.proposalId, session);
     const { plan, slots } = fillPlan(this.model, p);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
@@ -2134,12 +2135,15 @@ export class Helper {
       // always gets one.
       // The pop-up runs the fields Caret writes: text, and in a page the engine owns, the controls it writes (D2-04).
       // What it leaves to the user, the pop-up lists.
-      const written = writtenFields(p, this.model.windows.get(p.windowId));
+      const grounded = writtenFields(p, this.model.windows.get(p.windowId));
       if (!explicit && fillPopupEligible(p)) {
-        if (this.fillOverBeforeShown(written, formKey, focuses) !== null) {
+        const over = this.fillOverBeforeShown(grounded, formKey, focuses);
+        if ("stale" in over) {
           store.count("fill.popup_stale", 1, now);
           return p;
         }
+        // P2: a field that failed its recheck is listed as the user's, with why, and the rest is offered.
+        const written = over.p;
         store.count("fill.popup", 1, now);
         if (this.publish(buildFillPopup(this.model, written), () => this.acceptFill(written))) {
           this.fillPopups.set(written.id, { p: written, form: formKey });
@@ -2416,12 +2420,13 @@ export class Helper {
    * "Fill all": every destination still empty and every source still showing its value, then one
    * executor run under the proposal id. The pop-up is withdrawn either way.
    */
-  private async acceptFill(p: GroundedProposal): Promise<AcceptResult> {
-    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
-    if (stale !== null) {
-      this.withdrawFill(p.id, "stale");
-      return { refused: `${stale}; nothing was written` };
+  private async acceptFill(shown: GroundedProposal): Promise<AcceptResult> {
+    const checked = this.recheckKept(shown);
+    if ("refused" in checked) {
+      this.withdrawFill(shown.id, "stale");
+      return checked;
     }
+    const p = checked.p;
     const { plan, slots } = fillPlan(this.model, p);
     this.withdrawFill(p.id, "taken");
     const answers = p.fields.flatMap((f) => (f.answer === undefined ? [] : [{ answerId: f.answer.id, windowId: p.windowId, key: f.key }]));
@@ -2432,6 +2437,22 @@ export class Helper {
     }
     // The destinations were empty just now; one the user fills before the run's first read stops it.
     return this.runFrom("fill", p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+  }
+
+  /**
+   * P2: a proposal about to run, less each field that fails its recheck (offers/fill-popup.ts recheckFields), so one bad
+   * field no longer cancels the rest; refused when the form's window closed or no field is left. A field left out stays
+   * empty for the user, and the log names why.
+   */
+  private recheckKept(p: GroundedProposal): { p: GroundedProposal } | { refused: string } {
+    const r = recheckFields(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    if ("stale" in r) return { refused: `${r.stale}; nothing was written` };
+    if (r.proposal.fields.length === 0) return { refused: `${r.dropped[0]?.log ?? "no field is left to fill"}; nothing was written` };
+    if (r.dropped.length > 0) {
+      this.opts.store.count("fill.recheck_dropped", r.dropped.length);
+      this.opts.warn?.(`fill ${p.id}: left out ${r.dropped.map((d) => d.log).join("; ")}`);
+    }
+    return { p: r.proposal };
   }
 
   /**
@@ -2471,17 +2492,20 @@ export class Helper {
    * the form while Jev answered, a source stopped showing its value, or the form's fields changed. The
    * events that would have ended it came before it existed.
    */
-  private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[]): string | null {
-    if (focuses.some((f) => !inFillForm(p, f.windowId, f.key))) return "focus left the form";
-    const stale = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
-    if (stale !== null) return stale;
+  private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[]): { stale: string } | { p: GroundedProposal } {
+    if (focuses.some((f) => !inFillForm(p, f.windowId, f.key))) return { stale: "focus left the form" };
+    // P2: a field whose recheck fails is the user's, with why; the pop-up still needs two fields Caret writes (fillPopupEligible).
+    const r = recheckFields(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    if ("stale" in r) return r;
+    if (r.proposal.fields.length < 2) return { stale: r.dropped[0]?.log ?? "fewer than two fields are left to fill" };
+    if (r.dropped.length > 0) this.opts.store.count("fill.recheck_dropped", r.dropped.length);
     const w = this.model.windows.get(p.windowId);
     try {
-      if (w === undefined || `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form) return "the form changed";
+      if (w === undefined || `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form) return { stale: "the form changed" };
     } catch {
-      return "the form changed";
+      return { stale: "the form changed" };
     }
-    return null;
+    return { p: r.proposal };
   }
 
   private withdrawFill(id: string, reason: "taken" | "stale" | "expired" | "settings"): void {
