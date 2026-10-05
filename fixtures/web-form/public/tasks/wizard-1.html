@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" data-oracle-page="wizard-1">
+<head>
+<meta charset="utf-8">
+<title>Apply: Field Robotics Technician (step 1 of 3)</title>
+<link rel="stylesheet" href="/tasks/tasks.css">
+</head>
+<body>
+<!-- F1 wizard, page 1: contact details. Country is a react-select; State is a native select whose options follow
+     Country and which shows only for a country that has regions. Next goes to page 2; only the harness presses it.
+     Every name and value is invented. -->
+<h1>Field Robotics Technician</h1>
+<p class="step">Step 1 of 3: Contact details</p>
+<form id="step1" onsubmit="return false">
+  <div class="row"><label for="first_name">First name</label><input id="first_name" name="first_name" autocomplete="given-name" data-oracle="first_name" data-oracle-kind="text"></div>
+  <div class="row"><label for="last_name">Last name</label><input id="last_name" name="last_name" autocomplete="family-name" data-oracle="last_name" data-oracle-kind="text"></div>
+  <div class="row"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="email" data-oracle="email" data-oracle-kind="text"></div>
+  <div class="row"><label for="phone">Phone</label><input id="phone" name="phone" type="tel" autocomplete="tel" data-oracle="phone" data-oracle-kind="text"></div>
+  <div class="row"><label id="country-label" for="country">Country</label>
+    <div id="country-box" data-react-select="countries" data-input-id="country" data-labelledby="country-label" data-prefix="rs" data-oracle="country" data-oracle-kind="react-select"></div></div>
+  <div class="row" id="region-row" hidden><label id="state-label" for="state">State</label>
+    <select id="state" name="state" data-oracle="state" data-oracle-kind="select"><option value="">Select...</option></select></div>
+  <div class="actions"><button type="button" data-next-href="/tasks/wizard/2" data-oracle-press="next">Next</button></div>
+</form>
+<script src="/tasks/options.js"></script>
+<script src="/tasks/pages.js"></script>
+<script src="/tasks/tasks.bundle.js"></script>
+<script>
+  // State follows Country: its options are the country's regions, its label says State or Province, and it hides for
+  // a country with none. Changing Country empties State, as such forms do.
+  document.getElementById("country-box").addEventListener("task-select", (e) => {
+    const regions = TASK_OPTIONS.regions[e.detail.value];
+    const state = document.getElementById("state");
+    TaskPage.fillSelect(state, regions ?? []);
+    state.value = "";
+    document.getElementById("state-label").textContent = e.detail.value === "Canada" ? "Province" : "State";
+    TaskPage.reveal("region-row", regions !== undefined);
+  });
+  TaskPage.reveal("region-row", false);
+</script>
+<script src="/tasks/probe.js"></script>
+</body>
+</html>
