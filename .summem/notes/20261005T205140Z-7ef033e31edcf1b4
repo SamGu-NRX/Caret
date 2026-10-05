@@ -1,0 +1,1 @@
+P1: helper/test/setup/no-groq.ts (vitest setupFiles) fails any test file that reads process.env.GROQ_API_KEY, even if the throw is caught; pass explicit env objects to readKey/writersOnStart in tests.

@@ -1,0 +1,1 @@
+B28b/D2-04/B29: exclusion words drop name trust; boxes tick only for a question label; controls never ride FillField.value; ledger 'after' is intended, differing read-back = mayIncludeInput; number undo compares numerically; RESTRICTS matches 'without using X'.
