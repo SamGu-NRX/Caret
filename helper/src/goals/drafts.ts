@@ -537,6 +537,83 @@ export function noClaim(s: string, basis: DraftBasis): boolean {
   return NAME_ONLY.test(rest) && !STARTERS.has(first) && nameIn(basis, wordsOf(rest));
 }
 
+// MARK: - restatements
+
+/** Contractions written out, so "I'm" is "i am" and "can't" holds "not" on both sides. */
+const CONTRACTIONS: readonly [RegExp, string][] = [
+  [/\bwon't\b/gu, "will not"],
+  [/\bshan't\b/gu, "shall not"],
+  [/\bcan't\b|\bcannot\b/gu, "can not"],
+  [/n't\b/gu, " not"],
+  [/'m\b/gu, " am"],
+  [/'re\b/gu, " are"],
+  [/'ll\b/gu, " will"],
+  [/'ve\b/gu, " have"],
+  [/'d\b/gu, " would"],
+  [/'s\b/gu, ""],
+];
+/** Words a restatement may add or leave out: articles and "please". Pronouns, prepositions and "not" are content. */
+const FILLER = new Set(["a", "an", "the", "please"]);
+/**
+ * Words that change what the rest of the instruction's sentence means: a negation or condition before the restated
+ * words ("do not tell her I'm in", "if it works, say I'm in"), or a turn ("I'm out or in"). Restated words with one of
+ * these before them in their sentence are left to Jev. An open list, on the fail-open side: a word missing here lets a
+ * restatement skip Jev; the draft's code checks still run.
+ */
+const TURNS = new Set(["not", "no", "never", "nor", "neither", "without", "unless", "if", "except", "only", "when", "whenever", "once", "until", "after", "before", "instead", "rather", "whether", "or", "but", "maybe", "might", "probably", "don", "dont"]);
+
+/**
+ * Words that open what the user asks Caret to say ("saying I'm in", "tell her I'll be there", "a reply that I paid").
+ * Closed on purpose: restated words after anything else are left to Jev.
+ */
+const SAYING = new Set(["say", "says", "saying", "tell", "tells", "telling", "reply", "replying", "respond", "responding", "answer", "answering", "write", "writing", "with", "that"]);
+/** Whom a saying word may name before what is said: "tell her I'm in", "tell Priya I'm in" (a capitalized word). */
+const ADDRESSEE = new Set(["her", "him", "them", "me", "us", "you", "everyone", "everybody", "all"]);
+
+/** A text's content words in order: folded, contractions written out, filler dropped; `w` lower case, `cased` as written. */
+function contentWords(t: string): { w: string; cased: string }[] {
+  let s = folded(t).replace(/[’‘]/gu, "'");
+  for (const [re, to] of CONTRACTIONS) s = s.replace(new RegExp(re.source, "giu"), to);
+  return (s.match(/[\p{L}\p{N}]+(?:[-'][\p{L}\p{N}]+)*/gu) ?? []).map((x) => ({ w: x.toLowerCase(), cased: x })).filter((x) => !FILLER.has(x.w));
+}
+
+/**
+ * Whether a draft sentence only restates the user's instruction (G2 lead decision 3): its content words, after a
+ * greeting and a name the basis shows are set aside, are the last words of one of the instruction's sentences, in
+ * the same order and with nothing between them; right before them stands a SAYING word, or one and then an addressee
+ * (a pronoun, or a capitalized word); and no TURNS word stands before them in that sentence. Such a sentence says
+ * what the user asked Caret to say, so Jev is not asked to confirm it; drafts.ts's fact checks still run.
+ *
+ * Word order and the end of the sentence are part of the rule because a set of the instruction's words can recombine
+ * into a claim the user did not make ("Friday works" from "I can't do Friday but Monday works"), and B30's reviews
+ * found every token allowlist of this kind failing open.
+ */
+export function restates(sentence: string, instruction: string, basis: DraftBasis): boolean {
+  let t = folded(sentence).trim();
+  const opener = OPENER.exec(t);
+  if (opener !== null) t = t.slice(opener[0].length);
+  // A name the basis shows, as the person addressed: "Priya, I'm in." and "I'm in, Priya!"
+  const vocative = (name: string): boolean => NAME_ONLY.test(name) && !STARTERS.has((name.split(" ")[0] ?? "").toLowerCase()) && nameIn(basis, wordsOf(name));
+  t = t.replace(/^[\s,.!]+/u, "");
+  const lead = /^([^,]+),\s*/u.exec(t);
+  if (lead !== null && vocative((lead[1] ?? "").trim())) t = t.slice(lead[0].length);
+  const tail = /,\s*([^,]+?)[\s.!?]*$/u.exec(t);
+  if (tail !== null && vocative((tail[1] ?? "").trim())) t = t.slice(0, tail.index);
+  const said = contentWords(t).map((x) => x.w);
+  if (said.length === 0) return false;
+  for (const part of folded(instruction).replace(/["“”]/gu, " ").split(/[.!?;\n]+/u)) {
+    const words = contentWords(part);
+    const at = words.length - said.length;
+    if (at < 1 || said.some((w, i) => words[at + i]?.w !== w)) continue;
+    const before = words.slice(0, at);
+    if (before.some((x) => TURNS.has(x.w))) continue;
+    const last = before[at - 1] as { w: string; cased: string };
+    const addressee = ADDRESSEE.has(last.w) || /^\p{Lu}/u.test(last.cased);
+    if (SAYING.has(last.w) || (addressee && SAYING.has(before[at - 2]?.w ?? ""))) return true;
+  }
+  return false;
+}
+
 const CONFIRM_WORDS = [
   (instr: string, s: string): string => `The user asked: "${instr}". Caret drafted this sentence for the user to send: "${s}". Does the sentence say only what the user asked to say, with no promise, commitment, refusal, apology, date or condition the user did not ask for?`,
   (instr: string, s: string): string => `Sentence Caret drafted: "${s}". The user's request: "${instr}". Is every promise, commitment, refusal, date and condition in this sentence one the user asked for?`,
@@ -549,7 +626,7 @@ const CONFIRM_WORDS = [
  * declarations; a request carries those its text holds.
  */
 export async function confirmClaims(instruction: string, drafts: readonly { text: string; basis: DraftBasis }[], askJev: AskJev | null, snippets: readonly Snippet[]): Promise<{ calls: number; costUsd: number }> {
-  const claims = [...new Set(drafts.flatMap((d) => sentencesOf(d.text).filter((s) => !noClaim(s, d.basis))))];
+  const claims = [...new Set(drafts.flatMap((d) => sentencesOf(d.text).filter((s) => !noClaim(s, d.basis) && !restates(s, instruction, d.basis))))];
   if (claims.length === 0) return { calls: 0, costUsd: 0 };
   if (askJev === null) throw new DraftRefused("unchecked", `Caret can't check the draft's sentence ${q(claims[0] as string)} right now`, claims[0] as string);
   const req = (wording: 0 | 1): JevRequest => {

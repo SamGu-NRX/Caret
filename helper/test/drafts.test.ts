@@ -3,7 +3,7 @@
 // Every name, address and number is invented.
 import { describe, expect, it } from "vitest";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { addsRecipient, senderOf, checkDraftText, confirmClaims, covers, DraftRefused, factsIn, noClaim, recipientField, sentencesOf, subjectField, type DraftBasis } from "../src/goals/drafts.ts";
+import { addsRecipient, senderOf, checkDraftText, confirmClaims, covers, DraftRefused, factsIn, noClaim, recipientField, restates, sentencesOf, subjectField, type DraftBasis } from "../src/goals/drafts.ts";
 
 const MAIL = {
   title: "Order ORD-2026-48213 arrived damaged",
@@ -185,7 +185,8 @@ describe("the claims Jev checks", () => {
 
   it("asks both wordings about each claim and passes only what both confirm at the floor", async () => {
     const j = jev(() => 0.97);
-    await expect(confirmClaims("draft a reply saying I'm in", [d("Hi Priya, I'm in! See you then.")], j.ask, [])).resolves.toMatchObject({ calls: 2 });
+    // An instruction neither sentence restates (G2: a restatement is not asked about).
+    await expect(confirmClaims("draft a reply that accepts", [d("Hi Priya, I'm in! See you then.")], j.ask, [])).resolves.toMatchObject({ calls: 2 });
     expect(j.seen.map((r) => Object.keys(r.nouls ?? {}))).toEqual([["c1", "c2"], ["c1", "c2"]]);
   });
 
@@ -196,16 +197,46 @@ describe("the claims Jev checks", () => {
   });
 
   it("refuses on doubt when there is no Jev or Jev fails, and asks nothing for a draft with no claim", async () => {
-    await expect(confirmClaims("say I'm in", [d("I'm in.")], null, [])).rejects.toMatchObject({ why: "unchecked" });
-    await expect(confirmClaims("say I'm in", [d("I'm in.")], async () => { throw new Error("HTTP 500"); }, [])).rejects.toMatchObject({ why: "unchecked" });
+    await expect(confirmClaims("say yes", [d("I'm in.")], null, [])).rejects.toMatchObject({ why: "unchecked" });
+    await expect(confirmClaims("say yes", [d("I'm in.")], async () => { throw new Error("HTTP 500"); }, [])).rejects.toMatchObject({ why: "unchecked" });
+    // G2: a sentence that only restates the instruction has nothing to confirm either.
+    await expect(confirmClaims("say I'm in", [d("I'm in.")], null, [])).resolves.toEqual({ calls: 0, costUsd: 0 });
     await expect(confirmClaims("say thanks", [d("Thanks, Priya!")], null, [])).resolves.toEqual({ calls: 0, costUsd: 0 });
   });
 
   it("carries only the declared snippets its text holds, charged to their windows", async () => {
     const j = jev(() => 0.99);
-    await confirmClaims("say I'm in", [d("Priya Raman, I'm in.")], j.ask, [{ windowId: "m1", kind: "candidate", text: "Priya Raman" }, { windowId: "m2", kind: "candidate", text: "Dana Whitfield" }]);
+    await confirmClaims("accept for me", [d("Priya Raman, I'm in.")], j.ask, [{ windowId: "m1", kind: "candidate", text: "Priya Raman" }, { windowId: "m2", kind: "candidate", text: "Dana Whitfield" }]);
     expect(j.seen[0]?.snippets.map((x) => x.text)).toEqual(["Priya Raman"]);
     expect(j.seen[0]?.charged).toEqual({ m1: 11 });
+  });
+});
+
+describe("G2: which sentences only restate the instruction", () => {
+  const b = basis("reply to Priya Raman");
+  it.each([
+    ["I'm in.", "draft a reply saying I'm in", true],
+    ["I am in.", "draft a reply saying I'm in", true],
+    ["Hi Priya, I'm in for the workshop!", "draft an RSVP saying I'm in for the workshop", true],
+    ["I'm in, Priya Raman.", "reply to Priya saying I'm in", true],
+    ["I'll be there at 4.", "copy her address and tell her I'll be there at 4", true],
+    ["I can't make it.", "tell her I can't make it. Do not send", true],
+    ["I'm in.", 'reply "I\'m in"', true],
+    ["The workshop.", "draft an RSVP saying I'm in for the workshop", false],
+    ["I'm in.", "draft an RSVP saying I'm in for the workshop", false],
+    ["Friday works.", "tell her I can't do Friday but Monday works", false],
+    ["I can make it.", "tell her I can't make it", false],
+    ["I'm in.", "do not say I'm in", false],
+    ["I'm in.", "if the time works, say I'm in", false],
+    ["I'm in.", "say I'm out or in", false],
+    ["You're in.", "draft a reply saying I'm in", false],
+    ["Hi Dana, I'm in.", "draft a reply saying I'm in", false],
+    ["I'm in.", "tell Priya I'm in", true],
+    ["Cancel the meeting.", "say we should cancel the meeting", false],
+    ["I'm in.", "I'm in", false],
+    ["Thanks!", "say thanks", false],
+  ] as const)("%s for '%s': %s", (sentence, instruction, want) => {
+    expect(restates(sentence, instruction, b)).toBe(want);
   });
 });
 
