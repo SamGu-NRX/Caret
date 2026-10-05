@@ -1910,6 +1910,19 @@ export const PageEngineState = z.object({
 export type PageEngineState = z.infer<typeof PageEngineState>;
 
 /**
+ * H10: how a focused page field draws its text, so the host draws a fill value where the user's typing would go:
+ * `inset` from the field's left edge to its text (padding and border), `fontSize`, whether a placeholder shows now, and
+ * `dark`, light text on a dark field. In CSS pixels on a page snapshot, in screen points on pageField.
+ */
+export const FieldLook = z.object({
+  inset: z.number().nonnegative(),
+  fontSize: z.number().nonnegative(),
+  placeholder: z.boolean(),
+  dark: z.boolean(),
+});
+export type FieldLook = z.infer<typeof FieldLook>;
+
+/**
  * H10: the field the user is in on a page, for the host, which cannot read it: Chrome shows Accessibility no web
  * content and no focused element while a page field has focus (evidence/host/h10/probe). Sent after each walk of the
  * tab the user is in (engines/page-focus.ts): when focus moves in it, when another tab or browser window comes to the
@@ -1931,6 +1944,8 @@ export const PageField = z.object({
   editable: z.boolean(),
   empty: z.boolean(),
   frame: Frame.nullable(),
+  /** How the field draws its text, in screen points; absent when the walk did not say, or the field is in a child frame. */
+  look: FieldLook.optional(),
 });
 export type PageField = z.infer<typeof PageField>;
 
@@ -2205,7 +2220,15 @@ export const PageSnapshot = z.object({
   frames: z.array(PageFrame).min(1),
   missing: z.array(z.object({ frameId: z.number().int().nonnegative(), reason: z.string() })),
   /** The focused control and its text and selection, when one has focus. */
-  focused: z.object({ frameId: z.number().int().nonnegative(), id: z.string().min(1), selection: z.tuple([z.number().int(), z.number().int()]).nullable() }).nullable(),
+  focused: z
+    .object({
+      frameId: z.number().int().nonnegative(),
+      id: z.string().min(1),
+      selection: z.tuple([z.number().int(), z.number().int()]).nullable(),
+      /** H10: how the field draws its text, in CSS pixels (FieldLook); absent from a worker before H10. */
+      look: FieldLook.optional(),
+    })
+    .nullable(),
   /**
    * H10: where the tab's viewport is on screen, from the top frame. `window`: the browser window's outer frame as the
    * page reads it (screenX, screenY, outerWidth, outerHeight), in screen points, top-left origin. `viewport`: the top

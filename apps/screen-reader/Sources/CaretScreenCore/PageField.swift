@@ -16,13 +16,26 @@ public struct PageField: Codable, Equatable, Sendable {
     public var editable: Bool
     public var empty: Bool
     public var frame: Frame?
+    /// How the field draws its text, in screen points (protocol.ts FieldLook); nil when the page did not say.
+    public var look: Look?
 
-    public init(at: Int64, app: AppRef, windowId: String, title: String, key: String?, role: String, editable: Bool, empty: Bool, frame: Frame?) {
-        self.at = at; self.app = app; self.windowId = windowId; self.title = title; self.key = key
-        self.role = role; self.editable = editable; self.empty = empty; self.frame = frame
+    /// The text's inset from the field's left edge, its font size, whether a placeholder shows, and light text.
+    public struct Look: Codable, Equatable, Sendable {
+        public var inset: Double
+        public var fontSize: Double
+        public var placeholder: Bool
+        public var dark: Bool
+        public init(inset: Double, fontSize: Double, placeholder: Bool, dark: Bool) {
+            self.inset = inset; self.fontSize = fontSize; self.placeholder = placeholder; self.dark = dark
+        }
     }
 
-    enum CodingKeys: String, CodingKey { case at, app, windowId, title, key, role, editable, empty, frame }
+    public init(at: Int64, app: AppRef, windowId: String, title: String, key: String?, role: String, editable: Bool, empty: Bool, frame: Frame?, look: Look? = nil) {
+        self.at = at; self.app = app; self.windowId = windowId; self.title = title; self.key = key
+        self.role = role; self.editable = editable; self.empty = empty; self.frame = frame; self.look = look
+    }
+
+    enum CodingKeys: String, CodingKey { case at, app, windowId, title, key, role, editable, empty, frame, look }
 
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
@@ -32,6 +45,8 @@ public struct PageField: Codable, Equatable, Sendable {
         key = try c.decodeNullable(String.self, forKey: .key)
         role = try c.decode(String.self, forKey: .role); editable = try c.decode(Bool.self, forKey: .editable)
         empty = try c.decode(Bool.self, forKey: .empty); frame = try c.decodeNullable(Frame.self, forKey: .frame)
+        look = try c.decodeIfPresent(Look.self, forKey: .look)
+        if let look, look.inset < 0 || look.fontSize < 0 { throw ProtocolError("pageField's look has no negative sizes") }
         guard at >= 0 else { throw ProtocolError("at is milliseconds since the epoch, never negative") }
         guard !windowId.isEmpty else { throw ProtocolError("pageField names its window") }
         if key?.isEmpty == true { throw ProtocolError("pageField's key is null or at least 1 character") }
@@ -43,5 +58,6 @@ public struct PageField: Codable, Equatable, Sendable {
         try c.encode(at, forKey: .at); try c.encode(app, forKey: .app); try c.encode(windowId, forKey: .windowId)
         try c.encode(title, forKey: .title); try c.encode(key, forKey: .key); try c.encode(role, forKey: .role)
         try c.encode(editable, forKey: .editable); try c.encode(empty, forKey: .empty); try c.encode(frame, forKey: .frame)
+        try c.encodeIfPresent(look, forKey: .look)
     }
 }

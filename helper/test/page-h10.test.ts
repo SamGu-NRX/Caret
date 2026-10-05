@@ -38,7 +38,7 @@ function snapshot(id: string, o: { view?: PageSnapshot["view"]; focused?: string
     type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply: Synthetic Role",
     frames: o.child === true ? [top, child] : [top],
     missing: [],
-    focused: o.focused === null ? null : { frameId: 0, id: o.focused ?? "e1", selection: [0, 0] },
+    focused: o.focused === null ? null : { frameId: 0, id: o.focused ?? "e1", selection: [0, 0], look: { inset: 13, fontSize: 16, placeholder: true, dark: false } },
     ...(o.view === undefined ? { view: VIEW } : { view: o.view }),
   };
 }
@@ -126,7 +126,7 @@ describe("the page field the user is in, for the host", () => {
     helper.handleReader({ type: "appSwitch", v: 1, at: 2, from: null, to: chrome });
     session.receive({ type: "pageFocus", v: 1, at: 3, tabId: 7, frameId: 0 });
     await settle();
-    expect(fields(published)).toEqual([{ type: "pageField", v: 1, at: 1000, app: chrome, windowId: W, title: "Apply: Synthetic Role", key: KEY(email), role: "AXTextField", editable: true, empty: true, frame: [136, 213, 300, 24] }]);
+    expect(fields(published)).toEqual([{ type: "pageField", v: 1, at: 1000, app: chrome, windowId: W, title: "Apply: Synthetic Role", key: KEY(email), role: "AXTextField", editable: true, empty: true, frame: [136, 213, 300, 24], look: { inset: 13, fontSize: 16, placeholder: true, dark: false } }]);
     expect(fields(published).every((m) => HelperMessage.safeParse(m).success)).toBe(true);
     expect(focus).toHaveLength(1);
     // A scroll: the same field, 30 points higher, and no second focus for the helper.

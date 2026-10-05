@@ -65,7 +65,7 @@ export class PageFocus {
   }
 
   /** The host's record of the field the user is in on this tab: `key` null for none. */
-  private tell(session: EngineSession, windowId: string, title: string, at: number, n: { key: string; role: string; editable: boolean; empty: boolean; frame: PageField["frame"] } | null): void {
+  private tell(session: EngineSession, windowId: string, title: string, at: number, n: { key: string; role: string; editable: boolean; empty: boolean; frame: PageField["frame"]; look?: PageField["look"] } | null): void {
     this.opts.publish?.({
       type: "pageField",
       v: PROTOCOL_VERSION,
@@ -78,6 +78,7 @@ export class PageFocus {
       editable: n?.editable ?? false,
       empty: n?.empty ?? true,
       frame: n?.frame ?? null,
+      ...(n?.look === undefined ? {} : { look: n.look }),
     });
   }
 
@@ -100,7 +101,12 @@ export class PageFocus {
       this.lastFocus.delete(pid);
       return this.tell(session, windowId, a.snapshot.title, a.snapshot.at, null);
     }
-    this.tell(session, windowId, w.window.title, a.snapshot.at, { key: n.key, role: n.role, editable: n.editable === true, empty: (n.value ?? "") === "", frame: n.frame ?? null });
+    // The field's look in screen points: the page's CSS pixels times its zoom, for a field of the top frame, which alone has
+    // a screen frame (page-link screenRect).
+    const f = a.snapshot.focused;
+    const view = a.snapshot.view ?? null;
+    const look = f?.look !== undefined && f.frameId === 0 && view !== null && n.frame !== undefined ? { inset: f.look.inset * view.zoom, fontSize: f.look.fontSize * view.zoom, placeholder: f.look.placeholder, dark: f.look.dark } : undefined;
+    this.tell(session, windowId, w.window.title, a.snapshot.at, { key: n.key, role: n.role, editable: n.editable === true, empty: (n.value ?? "") === "", frame: n.frame ?? null, ...(look === undefined ? {} : { look }) });
     const said = `${windowId} ${n.key}`;
     if (this.lastFocus.get(pid) === said) return;
     this.lastFocus.set(pid, said);

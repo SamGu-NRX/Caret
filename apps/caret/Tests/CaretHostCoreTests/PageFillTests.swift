@@ -51,6 +51,8 @@ final class PageFillTests: XCTestCase {
         let f = try Self.field()
         XCTAssertEqual(f.key, Self.first)
         XCTAssertEqual(f.frame, Frame(x: 136, y: 213, width: 300, height: 24))
+        XCTAssertEqual(f.look, PageField.Look(inset: 13, fontSize: 16, placeholder: true, dark: false))
+        XCTAssertNil(try Self.field(7).look)
         XCTAssertEqual(try JSONSerialization.jsonObject(with: try JSONEncoder().encode(f)) as? NSDictionary, try JSONSerialization.jsonObject(with: lines[1]) as? NSDictionary)
         XCTAssertNil(try Self.field(7).key)
         let request = try JSONDecoder().decode(FillAllRequest.self, from: lines[2])

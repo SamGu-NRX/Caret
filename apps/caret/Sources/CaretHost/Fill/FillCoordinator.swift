@@ -107,6 +107,17 @@ final class FillCoordinator {
         case .watchApp(let pid): watcher.watch(pid)
         case .unwatchApp(let pid): watcher.unwatch(pid)
         case .drawOffer(let draw):
+            // H10: a page field has no element to probe; the page says how it draws its text, so the value sits where
+            // the user's own typing would, in its size, over any placeholder.
+            if let page = PageFocusSource.current(pid: draw.pid), page.rect == draw.field, let look = page.look {
+                overlay.showOffer(
+                    value: draw.value, fieldFrame: draw.field,
+                    style: OverlayTextStyle(font: .systemFont(ofSize: look.fontSize >= 8 ? look.fontSize : NSFont.systemFontSize), textColor: look.dark ? .white : .black),
+                    caption: draw.caption, sourceApp: draw.sourceApp, fillAll: draw.fillAll, pid: draw.pid, outcome: draw.line,
+                    hasPlaceholder: look.placeholder, textInset: min(max(look.inset, 0), draw.field.width / 3)
+                )
+                return
+            }
             let element = world.element(readID: draw.readID)
             overlay.showOffer(
                 value: draw.value, fieldFrame: draw.field,

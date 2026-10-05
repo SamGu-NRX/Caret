@@ -93,9 +93,9 @@ final class FillOverlay {
     /// about a toast still up (`FillLineRule`): wait behind it, replace it, or nothing in the way.
     func showOffer(
         value: String, fieldFrame: CGRect, style: OverlayTextStyle, caption: String, sourceApp: String? = nil, fillAll: Bool = false, pid: pid_t,
-        outcome: FillLineRule.Outcome, hasPlaceholder: Bool = false
+        outcome: FillLineRule.Outcome, hasPlaceholder: Bool = false, textInset: CGFloat = FillOverlay.fieldTextInset
     ) {
-        drawGhost(value: value, fieldFrame: fieldFrame, style: style, masksPlaceholder: hasPlaceholder)
+        drawGhost(value: value, fieldFrame: fieldFrame, style: style, masksPlaceholder: hasPlaceholder, inset: textInset)
         switch outcome {
         case .deferLine:
             deferred = Deferred(caption: caption, sourceApp: sourceApp, fillAll: fillAll, field: fieldFrame, pid: pid)
@@ -120,7 +120,11 @@ final class FillOverlay {
     /// "(555) 555-5555"). The ghost then sits on the system text background, which hides the
     /// placeholder; an AppKit field's background is that color. Untested on fields drawn with
     /// another background.
-    private func drawGhost(value: String, fieldFrame: CGRect, style: OverlayTextStyle, masksPlaceholder: Bool) {
+    /// NSTextField's bezel and cell padding put the first glyph about 4 pt in; the field's own
+    /// inset is not exposed through Accessibility. A page field says its own (`PageField.Look`).
+    static let fieldTextInset: CGFloat = 4
+
+    private func drawGhost(value: String, fieldFrame: CGRect, style: OverlayTextStyle, masksPlaceholder: Bool, inset: CGFloat) {
         let frame = Screen.cocoa(fieldFrame)
         let font = style.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
         // The field's theme, not Caret's: an app can run light while the system runs dark. Read
@@ -132,10 +136,7 @@ final class FillOverlay {
             mask = NSColor.textBackgroundColor.usingColorSpace(.sRGB) ?? mask
         }
         ghostLabel.attributedStringValue = NSAttributedString(string: value, attributes: [.font: font, .foregroundColor: ink])
-        // NSTextField's bezel and cell padding put the first glyph about 4 pt in; the field's own
-        // inset is not exposed through Accessibility.
         let textHeight = ceil(font.ascender - font.descender + font.leading)
-        let inset: CGFloat = 4
         ghost.setFrame(frame.insetBy(dx: inset, dy: 0), display: false)
         ghostLabel.frame = NSRect(x: 0, y: (frame.height - textHeight) / 2, width: frame.width - inset * 2, height: textHeight)
         ghostLabel.drawsBackground = masksPlaceholder

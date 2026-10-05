@@ -8654,6 +8654,32 @@
                   "type": "null"
                 }
               ]
+            },
+            "look": {
+              "type": "object",
+              "properties": {
+                "inset": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "fontSize": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "placeholder": {
+                  "type": "boolean"
+                },
+                "dark": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "inset",
+                "fontSize",
+                "placeholder",
+                "dark"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [

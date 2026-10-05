@@ -8,7 +8,7 @@
 // W3 adds a third, only while the worker has armed this frame because a grant covers it: the user pressed a pointer
 // or a key here. Only events the browser marks trusted count, so neither the page's script nor Caret's own synthetic
 // events (the combobox handler's presses) can raise it; nothing about the element or the key travels.
-import type { FocusMoved, FrameReport, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
+import type { FieldLook, FocusMoved, FrameReport, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
 import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
@@ -40,6 +40,17 @@ function contentBox(f: HTMLIFrameElement): [number, number] {
   return [f.clientWidth - px(cs.paddingLeft) - px(cs.paddingRight), f.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom)];
 }
 
+/** The focused field's text geometry (FieldLook): where its text starts, its size, a placeholder showing, light text. */
+function lookOf(el: Element): FieldLook {
+  const cs = getComputedStyle(el);
+  const px = (v: string): number => Number.parseFloat(v) || 0;
+  const t = el as HTMLInputElement;
+  const placeholder = typeof t.placeholder === "string" && t.placeholder !== "" && typeof t.value === "string" && t.value === "";
+  const rgb = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(cs.color);
+  const light = rgb !== null && 0.2126 * Number(rgb[1]) + 0.7152 * Number(rgb[2]) + 0.0722 * Number(rgb[3]) > 140;
+  return { inset: px(cs.paddingLeft) + px(cs.borderLeftWidth), fontSize: px(cs.fontSize), placeholder, dark: light };
+}
+
 function walk(reg: Registry): FrameReport {
   const href = location.href;
   const nav = navigationEntry();
@@ -56,7 +67,7 @@ function walk(reg: Registry): FrameReport {
       } catch {
         selection = null;
       }
-      focused = { id: c.id, selection };
+      focused = { id: c.id, selection, look: lookOf(active) };
     }
   }
   const r = (el: Element): [number, number, number, number] => {

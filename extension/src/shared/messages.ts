@@ -108,6 +108,18 @@ export type ActVerb =
 
 export type PageVerb = { kind: "pageWalk"; tabId: number | null } | ActVerb;
 
+/**
+ * H10: how the focused field draws its text, so the host can draw a fill value where the user's own typing would go:
+ * the text's left inset (padding and border, CSS pixels), its font size (CSS pixels), whether a placeholder shows now,
+ * and whether its text is light (a dark field). No text of the page travels.
+ */
+export interface FieldLook {
+  inset: number;
+  fontSize: number;
+  placeholder: boolean;
+  dark: boolean;
+}
+
 /** What one frame's content script reports for a walk; the worker adds frame ids, document and navGen. */
 export interface FrameReport {
   origin: string;
@@ -126,7 +138,7 @@ export interface FrameReport {
   screen: [number, number, number, number];
   excluded: Partial<Record<PageExclusion, number>>;
   truncated: boolean;
-  focused: { id: string; selection: [number, number] | null } | null;
+  focused: { id: string; selection: [number, number] | null; look?: FieldLook } | null;
   hasFocus: boolean;
 }
 
