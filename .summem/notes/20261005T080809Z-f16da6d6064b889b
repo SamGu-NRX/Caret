@@ -1,1 +1,0 @@
-D2-04: a control's value never goes on the wire as FillField.value (zod and the host decoder refuse it on any control but text); a Fill all writes the controls whose FillHandoff.writes is true, through writtenFields.

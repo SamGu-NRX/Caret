@@ -1,1 +1,0 @@
-D2-02/B27: routing absent keeps producers self-triggering; routed producers hold offers (await routing.idle(), routedSettled); Router 1 answers near its 0.5 floor flip between runs; score B17/B18 memsets with b27 copies; failed fills reach users only via Helper.fillFailed.
