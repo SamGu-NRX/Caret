@@ -3,7 +3,7 @@
 // Every name, address and number is invented.
 import { describe, expect, it } from "vitest";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { addsRecipient, senderOf, checkDraftText, confirmClaims, covers, DraftRefused, factsIn, noClaim, recipientField, restates, sentencesOf, subjectField, type DraftBasis } from "../src/goals/drafts.ts";
+import { addsRecipient, senderOf, checkDraftText, confirmClaims, covers, DraftRefused, eventsAsked, factsIn, noClaim, recipientField, restates, sentencesOf, subjectField, type DraftBasis } from "../src/goals/drafts.ts";
 
 const MAIL = {
   title: "Order ORD-2026-48213 arrived damaged",
@@ -212,6 +212,23 @@ describe("the claims Jev checks", () => {
   });
 });
 
+describe("G2: how many calendar events an instruction asks for", () => {
+  it.each([
+    ["add this meeting to my calendar and draft a reply to Priya saying I'm in", 1],
+    ["Schedule the meeting and draft a reply saying I'm in.", 1],
+    ["Add this meeting to my calendar after lunch and draft a reply saying I'm in.", 1],
+    ["Add the Map review to the Caret calendar at the time in Leda's message.", 1],
+    ["Add the Priya meeting and the Morgan meeting to my calendar", 2],
+    ["add both meetings to my calendar", 2],
+    ["Read my calendar and draft a reply saying I'm in.", 0],
+    ["Copy Oren's email into the reply To field and draft an RSVP saying I'm in. Do not add an event or send the reply.", 0],
+    ["draft a reply saying I'm in. Do not put it on my calendar.", 0],
+    ["If she confirms, add it to my calendar", 0],
+  ] as const)("%s: %i", (instruction, n) => {
+    expect(eventsAsked(instruction)).toBe(n);
+  });
+});
+
 describe("G2: which sentences only restate the instruction", () => {
   const b = basis("reply to Priya Raman");
   it.each([
@@ -248,6 +265,10 @@ describe("G2: which sentences only restate the instruction", () => {
     ["I'll pay.", "Reply saying I'll pay, provided you refund me", false],
     ["I'll pay.", "Provided you refund me, reply saying I'll pay", false],
     ["I'm in.", "Copy Oren's email into the reply To field and draft an RSVP saying I'm in. Do not add an event or send the reply.", true],
+    // G2 third check: a quoted reply is restated whole or not at all, and a later sentence's condition holds too.
+    ["I'll pay.", 'Draft a reply saying "Tell her I\'ll pay."', false],
+    ["Tell her I'll pay.", 'Draft a reply saying "Tell her I\'ll pay."', true],
+    ["I'll pay.", "Draft a reply saying I'll pay. Do this after she confirms.", false],
     ["Thanks!", "say thanks", false],
   ] as const)("%s for '%s': %s", (sentence, instruction, want) => {
     expect(restates(sentence, instruction, b)).toBe(want);

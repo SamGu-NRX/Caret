@@ -456,9 +456,11 @@ export class GoalRuns {
         if (!wrote(l.windowId, l.key)) add(l);
         continue;
       }
-      // An event the instruction asked for: any event this goal (or one it replaces) added answers it.
+      // Events the instruction asked for: as many distinct events as it asked must have been added, by this goal or one
+      // it replaces (all from the same instruction).
       if (l.why === "asked") {
-        if (!receipts.some((r) => r.target.windowId === null)) add(l);
+        const added = new Set(receipts.filter((r) => r.target.windowId === null).map((r) => r.target.key)).size;
+        if (added < (l.count ?? 1)) add(l);
         continue;
       }
       const w = this.deps.model.windows.get(l.windowId);
@@ -676,14 +678,17 @@ const clip = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0
 const whereOf = (x: GoalStep): string => (x.target.domain.kind === "window" ? x.target.domain.windowId : "calendar");
 
 /**
- * Whether a write's field still reads as the field the gates judged (G2), as inventory.ts named it: a text field by
- * planner.ts fieldName, a page control by its label among formControls' unset controls. A field already holding the
- * step's value needs no name (the executor finds it already true); one whose name cannot be read is not the same.
+ * Whether a write's field still reads as the field the gates judged (G2), as inventory.ts named it: the same
+ * placeholder, and a text field's planner.ts fieldName or a page control's label among formControls' unset controls.
+ * A field already holding the step's value needs no name (the executor finds it already true); one whose name cannot
+ * be read is not the same. A name read from the nearest text moves with the layout, so a moved field can stop a goal
+ * that a fresh plan then offers again: a false stop, never a write.
  */
 function sameField(w: WindowState, s: GoalStep): boolean {
   const n = w.nodes.get(s.target.key);
   if (n === undefined) return false;
   if (s.writes !== null && (n.value ?? "") === s.writes) return true;
+  if ((n.placeholder ?? null) !== s.target.placeholder) return false;
   if (s.target.control === "text") return fieldName(w, n) === s.target.label;
   return formControls(w).find((c) => c.node.key === n.key)?.label === s.target.label;
 }

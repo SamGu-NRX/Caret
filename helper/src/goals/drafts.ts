@@ -581,7 +581,7 @@ const FRAME = new Set([...SAYING, ...ADDRESSEE, "draft", "compose", "send", "rsv
  */
 const STEP_VERBS = new Set(["copy", "add", "put", "fill", "paste", "enter", "type", "insert", "use", "take", "draft", "write", "compose", "reply", "answer", "respond", "tell", "say", "address", "schedule", "create", "book", "set", "leave", "open"]);
 /** Words that make a request conditional wherever they stand in the instruction: none of its sentences restates then. */
-const CONDITIONS = new Set(["if", "unless", "provided", "providing", "assuming", "only", "when", "whenever", "once", "until", "otherwise", "except", "suppose", "supposing", "whether"]);
+const CONDITIONS = new Set(["if", "unless", "provided", "providing", "assuming", "only", "when", "whenever", "once", "until", "otherwise", "except", "suppose", "supposing", "whether", "after", "before", "later"]);
 
 /** A text's content words in order: folded, contractions written out, filler dropped; `w` lower case, `cased` as written. */
 function contentWords(t: string): { w: string; cased: string }[] {
@@ -662,6 +662,13 @@ export function restates(sentence: string, instruction: string, basis: DraftBasi
   if (tail !== null && vocative((tail[1] ?? "").trim())) t = t.slice(0, tail.index);
   const said = contentWords(t).map((x) => x.w);
   if (said.length === 0) return false;
+  // Inside quotes the user wrote the reply itself: only the whole quote is a restatement of it. Its own first words
+  // are what is asked to be said ('saying "Tell her I'll pay"' asks to say all of that, not "I'll pay").
+  for (const q of folded(instruction).replace(/[“”]/gu, '"').match(/"[^"]*"/gu) ?? []) {
+    const quoted = contentWords(q).map((x) => x.w);
+    const inside = quoted.some((_, i) => said.every((w, j) => quoted[i + j] === w));
+    if (inside && quoted.length !== said.length) return false;
+  }
   const sentences = clausesOf(instruction);
   if (sentences.some((clauses) => clauses.some((c) => contentWords(c).some((x) => CONDITIONS.has(x.w))))) return false;
   for (const clauses of sentences) {
@@ -685,18 +692,38 @@ export function restates(sentence: string, instruction: string, basis: DraftBasi
   return false;
 }
 
+/** Verbs that put something on a calendar. */
+const EVENT_VERBS = new Set(["add", "put", "schedule", "book", "create", "set", "block", "save", "make", "note"]);
+/** Words for what such a verb puts there: each singular one an event, a plural or "both" at least two. */
+const EVENT_ONE = new Set(["meeting", "event", "appointment", "call", "session", "invite", "invitation"]);
+const EVENT_MANY = new Set(["meetings", "events", "appointments", "calls", "sessions", "invites", "invitations", "both"]);
+/** Negations that cancel a clause's request ("do not put it on my calendar"). */
+const NEGATIONS = new Set(["not", "no", "never", "nor", "neither", "without", "dont", "avoid", "stop", "refuse", "skip"]);
+/** Conditions that make a sentence's request wait on something; "after" and "before" may only say when an event is. */
+const EVENT_CONDITIONS = new Set([...CONDITIONS].filter((w) => w !== "after" && w !== "before" && w !== "later"));
+
 /**
- * Whether the instruction asks for a calendar event (G2): a clause that names the calendar and holds no negation or
- * condition, in a sentence with no condition ("add this meeting to my calendar"; not "do not put it on my calendar",
- * not "if she confirms, add it to my calendar"). A goal whose plan adds none is not done (lower.ts). Read by the same
- * clauses and word lists as restates(); an unlisted negation makes a goal partial, never done.
+ * How many calendar events the instruction asks for, at least (G2); 0 when it asks for none. A sentence asks when a
+ * clause of it holds a verb that puts something on a calendar, its clauses without a negation are read together
+ * ("add the Priya meeting and the Morgan meeting to my calendar"), and it has no condition. It asks for as many
+ * events as it names singly, at least two for a plural or "both", and one when it names only the calendar. A goal
+ * whose plan adds fewer is not done (lower.ts, runs.ts). Word lists, not measured: a request they miss leaves the goal
+ * as it was before G2, and one they misread makes it partial, never done.
  */
-export function asksForEvent(instruction: string): boolean {
-  return clausesOf(instruction).some((clauses) => {
+export function eventsAsked(instruction: string): number {
+  let n = 0;
+  for (const clauses of clausesOf(instruction)) {
     const words = clauses.map(contentWords);
-    if (words.some((c) => c.some((x) => CONDITIONS.has(x.w)))) return false;
-    return words.some((c) => c.some((x) => x.w === "calendar") && !c.some((x) => TURNS.has(x.w)));
-  });
+    if (words.some((c) => c.some((x) => EVENT_CONDITIONS.has(x.w)))) continue;
+    const positive = words.filter((c) => !c.some((x) => NEGATIONS.has(x.w)));
+    if (!positive.some((c) => c.some((x) => EVENT_VERBS.has(x.w)))) continue;
+    const all = positive.flat();
+    const one = all.filter((x) => EVENT_ONE.has(x.w)).length;
+    const many = all.some((x) => EVENT_MANY.has(x.w)) ? 2 : 0;
+    const calendar = all.some((x) => x.w === "calendar") ? 1 : 0;
+    n += Math.max(one, many, calendar);
+  }
+  return n;
 }
 
 const CONFIRM_WORDS = [

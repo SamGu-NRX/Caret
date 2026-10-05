@@ -185,3 +185,27 @@ describe("re-check: what the first fixes left open", () => {
     expect(g.steps.map((s) => s.says)).toEqual(["Ticket Description: The lamp is broken."]);
   });
 });
+
+// G2 third check (theo-astra-reviewer a99108fd0c1816674) of 69df243..f144cfc.
+describe("third check", () => {
+  it("ends partial when the plan adds one of the two events the instruction asks for", async () => {
+    const sc = scene({ scripts: [[{ fill: { window: "Calendar", target: "Caret", value: "Meet Priya" } }]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2" });
+    const g = preview(await sc.request("add both meetings to my calendar"));
+    expect(g.warnings).toEqual(["You asked for 2 calendar events, and this plan adds 1 to your 'Caret' calendar."]);
+    const end = await runAll(sc);
+    expect(end?.event === "finished" && [end.outcome, end.left]).toEqual(["partial", ["You asked for 2 calendar events, and this plan adds 1 to your 'Caret' calendar"]]);
+  });
+
+  it("stops before writing when a field's placeholder changed under the same label", async () => {
+    const email: Node = { ...textField(SUPPORT, "Email"), placeholder: "Personal email" };
+    const form: DeskWindow = { windowId: "7171-11", app: SUPPORT, title: "Support — Contact", nodes: [email, button(SUPPORT, "Save")] };
+    const sc = scene({ scripts: [[{ fill: { window: "Contact", target: "Email", value: EMAIL } }]], windows: [mailWindow(), form], userWindow: "7171-11" });
+    const g = preview(await sc.request("put Priya's email in the contact form"));
+    (form.nodes[0] as Node).placeholder = "Work email";
+    sc.desk.show(sc.desk.windows.get("7171-11") as DeskWindow);
+    await sc.accept(g.goalId);
+    const stop = sc.goals.filter((x) => x.event === "stopped").at(-1);
+    expect(stop?.event === "stopped" && stop.reason).toBe("targetChanged");
+    expect(sc.desk.writes).toEqual([]);
+  });
+});

@@ -23,7 +23,7 @@ import type { AskJev } from "../fill/jev.ts";
 import { matchOption } from "../fill/controls.ts";
 import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
-import { asksForEvent, checkDraftText, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
+import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { codeGate, jevGate, JevUnavailable } from "./gates.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
@@ -330,10 +330,16 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       left.push({ windowId, key: f.key, label: f.label, why: "required", says: `'${f.label}' is required, and this plan leaves it empty` });
     }
   }
-  // An event the instruction asks for and no step adds: the goal cannot be done without it.
-  if (asksForEvent(instruction) && !steps.some((x) => x.kind === "calendar") && !left.some((l) => l.windowId === "calendar")) {
+  // Events the instruction asks for that no step adds: the goal cannot be done without them (runs.ts counts receipts).
+  const asked = eventsAsked(instruction);
+  const adds = steps.filter((x) => x.kind === "calendar").length;
+  // An event a gate dropped is already left, and said; the rest the plan has no step for at all.
+  const droppedEvents = left.filter((l) => l.windowId === "calendar").length;
+  if (asked > adds + droppedEvents) {
     const cal = [...inv.targets.values()].find((t) => t.control === "calendar");
-    left.push({ windowId: "calendar", key: "calendar", label: cal?.label ?? "calendar", why: "asked", says: cal === undefined ? "You asked for a calendar event, and Caret has no calendar to add it to" : `You asked for a calendar event, and this plan adds none to your '${cal.label}' calendar` });
+    const what = asked === 1 ? "a calendar event" : `${asked} calendar events`;
+    const says = cal === undefined ? `You asked for ${what}, and Caret has no calendar to add ${asked === 1 ? "it" : "them"} to` : `You asked for ${what}, and this plan adds ${adds === 0 ? "none" : adds} to your '${cal.label}' calendar`;
+    left.push({ windowId: "calendar", key: "calendar:asked", label: cal?.label ?? "calendar", why: "asked", count: asked, says });
   }
   // What a stopped goal this one replaces meant to write: the preview names each one this plan does not write.
   for (const c of o.carried ?? []) {

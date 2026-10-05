@@ -44,9 +44,11 @@ export function numberFieldMisfit(value: string, label: string): string | null {
 }
 
 /**
- * Label words of a single-line field that takes free words. A draft goes in a text area, or in a text field whose
- * label has one of these; a field named by its kind ("Order number", "Email") never takes one. Written for common
- * form labels, not measured: a field missing here only loses the draft (dropped, and said in the preview).
+ * Label words of a single-line field that takes free words. A draft goes in a text area whose own label names no shape
+ * (an email, a link, a phone, a date, a time, an amount, an address), or in a text field whose own label has one of
+ * these words and names no kind, number or name at all. The field's own label decides, never its section ("Contact
+ * information" over Email). Written for common form labels, not measured: a field missed here only loses the draft
+ * (dropped, and said in the preview).
  */
 const PROSE_FIELD = /\b(?:message|body|description|describe|details|note|notes|comment|comments|reply|response|explanation|explain|problem|issue|reason|feedback|summary|question|questions|instructions|information|info|about|text)\b/iu;
 
@@ -64,7 +66,11 @@ export function codeGate(t: TargetBinding, written: string, source: string, as: 
   // may be the one the instruction labels ("my password hunter2" written as the option HUNTER2).
   const value = secretIn(written, instruction) ?? secretIn(source, instruction);
   if (value !== null) return `Caret never types ${SENSITIVE_SAYS[value]}; that is yours to enter`;
-  if (as === "draft") return t.control === "text" && (t.role === "AXTextArea" || PROSE_FIELD.test(t.label)) ? null : "Caret writes drafts only in a field for a message or a description";
+  if (as === "draft") {
+    const kinds = fieldKinds([t.own]);
+    const prose = t.role === "AXTextArea" ? ![...kinds].some((k) => k !== "id") : PROSE_FIELD.test(t.own) && kinds.size === 0 && !NUMBER_FIELD.test(t.own.toLowerCase()) && !/\bname\b/iu.test(t.own);
+    return t.control === "text" && prose ? null : "Caret writes drafts only in a field for a message or a description";
+  }
   if (as === "event" || t.control !== "text") return null;
   return misfit(written, [t.label]) ?? numberFieldMisfit(written, t.label);
 }

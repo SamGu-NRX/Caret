@@ -33,6 +33,12 @@ export interface TargetBinding {
   value: string;
   /** The choices a select, combobox or radio group showed; null when code could not see them. */
   options: string[] | null;
+  /**
+   * The field's own label, without the section `label` may start with (planner.ts fieldName), and its placeholder, as
+   * frozen (G2): what a draft's field is judged by (gates.ts), and what must still read the same before a write (runs.ts).
+   */
+  own: string;
+  placeholder: string | null;
 }
 
 /** What a value ref stood for: its exact text and where it came from. */
@@ -116,9 +122,11 @@ export interface LeftItem {
   label: string;
   /**
    * "planned": a write a goal this one replaces meant and never made (runs.ts). "asked": an effect the instruction asks
-   * for that the plan has no step for (a calendar event, drafts.ts asksForEvent).
+   * for that the plan has no step for (calendar events, drafts.ts eventsAsked).
    */
   why: "dropped" | "planned" | "asked" | "required" | "recipient";
+  /** For "asked": how many distinct events the goal must add before it can be done. */
+  count?: number;
   says: string;
 }
 

@@ -2099,7 +2099,13 @@ async function main(): Promise<number> {
         const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
         // G2: a goal asks Jev whether each value belongs in its field (goals/gates.ts, Ask's question). Canned Jev says
         // yes only to the D2-06 page scenes' own pairs, and no to every other value.
-        if ("yes" in q.criteria && "no" in q.criteria) return [k, { choice: GOAL_BELONGS.some(([field, value]) => ins.includes(`'${field}'`) && ins.includes(`"${value}"`)) ? "yes" : "no", confidence: 0.95 }];
+        if ("yes" in q.criteria && "no" in q.criteria) {
+          // The field and the value the question is about, read from either wording of Ask's question (codeplan.ts
+          // verifyWrites), never from the instruction it quotes.
+          const field = /(?:has the field|Field:) '([^']+)'/u.exec(ins)?.[1];
+          const value = /(?:right one for it\? |^Value: )"([^"]*)"/u.exec(ins)?.[1];
+          return [k, { choice: GOAL_BELONGS.some(([f, v]) => f === field && v === value) ? "yes" : "no", confidence: 0.95 }];
+        }
         const want = mixed ? MIXED_PICKS[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] : undefined;
         const pick = Object.entries(q.criteria).find(([, t]) => (want === undefined ? t?.includes('"robin@example.test"') : t?.startsWith(`"${want}"`)))?.[0];
         return [k, pick === undefined ? { choice: "none", confidence: 0.9 } : { choice: pick, confidence: 0.95 }];

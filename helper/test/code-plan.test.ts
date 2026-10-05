@@ -164,7 +164,7 @@ describe("lowering", () => {
 
 const win = { kind: "window" as const, windowId: "w-a", pid: 10, bundleId: "dev.caret.a", appName: "A", title: "Form A", number: null, windowKind: "standard", page: false };
 const page = { ...win, windowId: "page:e1:3", bundleId: "com.google.Chrome", appName: "Chrome", title: "Apply", windowKind: "page", page: true };
-const tgt = (ref: string, over: Partial<TargetBinding> = {}): TargetBinding => ({ ref, domain: win, key: `k-${ref}`, role: "AXTextField", label: `Field ${ref}`, control: "text", value: "", options: null, ...over });
+const tgt = (ref: string, over: Partial<TargetBinding> = {}): TargetBinding => ({ ref, domain: win, key: `k-${ref}`, role: "AXTextField", label: `Field ${ref}`, own: over.label ?? `Field ${ref}`, placeholder: null, control: "text", value: "", options: null, ...over });
 const val = (ref: string, text: string, over: Partial<ValueBinding> = {}): ValueBinding => ({ ref, text, display: `"${text}"`, origin: { kind: "span", snapshot: "s1", source: "w-src", startUTF16: 0, endUTF16: text.length, digest: "d" }, source: { windowId: "w-src", key: "src", revision: "r" }, memory: null, event: null, draft: null, owner: null, ...over });
 
 function inventory(targets: TargetBinding[], values: ValueBinding[]): GoalInventory {
@@ -244,6 +244,29 @@ describe("lowering refuses, by name", () => {
     const many = Array.from({ length: MAX_SEGMENTS + 1 }, (_, i) => tgt(`m${i}`, { domain: { ...win, windowId: `w-${i}` } }));
     const big = inventory(many, [val("v1", "ORD-1")]);
     expect(await refusal(() => lowerGoal("g", "x", draft(many.map((t, i) => ({ ref: `s${i}`, kind: "fill" as const, target: t.ref, value: "v1" }))), big, lowerOpts()))).toBe("tooManySegments");
+  });
+});
+
+describe("G2 third check: a draft's field is judged by its own label", () => {
+  const withDraft = (target: string): DraftPlan => ({ ...draft([{ ref: "a", kind: "fill", target, value: "d1" }, { ref: "b", kind: "fill", target: "t9", value: "v1" }]), drafts: [{ ref: "d1", text: "I'm in.", from: [] }] });
+  const inv = inventory(
+    [
+      tgt("t1", { label: "Contact information Email", own: "Email" }),
+      tgt("t2", { label: "Order details Order number", own: "Order number" }),
+      tgt("t3", { label: "Order details Notes", own: "Notes" }),
+      tgt("t4", { label: "Ticket Description", role: "AXTextArea" }),
+      tgt("t9", { domain: { ...win, windowId: "w-b" } }),
+    ],
+    [val("v1", "ORD-1")],
+  );
+  it.each([
+    ["t1", false],
+    ["t2", false],
+    ["t3", true],
+    ["t4", true],
+  ] as const)("%s takes the draft: %s", async (target, takes) => {
+    const g = await lowerGoal("g", "draft a reply saying I'm in", withDraft(target), inv, lowerOpts());
+    expect(g.segments.some((x) => x.steps.some((y) => y.target.ref === target))).toBe(takes);
   });
 });
 
