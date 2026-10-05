@@ -206,6 +206,11 @@ public final class SurfaceMachine {
     /// H8: an accepted event card's `offerAccept`, waiting for macOS to answer the Calendar prompt
     /// (`askCalendarAccess`). Sent once it answers; `endWork` drops it, so it never outlives its work.
     var calendarHeld: OfferAccept?
+    /// Which scheduled line watch is current: each work started, and each answer, makes a new one, so a
+    /// late watch never lands on later work that reused the offer key (a new helper counts from 1 again).
+    var calendarWatchToken = 0
+    /// An event card's done line that holds ⌘Z: its task and app, so the undo's answer is said as an event's.
+    var eventUndo: (task: String, app: String)?
     /// An offer held by `SurfaceGate`, retried until it may be drawn, it is withdrawn, or 30 s pass.
     var pending: Pending?
     var pendingTimer: SurfaceTimer?
@@ -333,6 +338,7 @@ public final class SurfaceMachine {
     /// doing will send no `taskProgress`, so its working line ends now; the activity list starts
     /// again with the next helper.
     public func helperGone() {
+        calendarWatchToken &+= 1
         // An answer can no longer reach the helper, and a new one will ask again.
         dropQuestion("surface.skill.helperGone")
         asked.removeAll()
@@ -986,8 +992,10 @@ public final class SurfaceMachine {
             // line or the done line that may have replaced it by then.
             let target = work.target
             let key = work.offerKey
+            calendarWatchToken &+= 1
+            let token = calendarWatchToken
             _ = clock.schedule(after: Self.calendarFrontGrace, repeats: false) { [weak self] in
-                guard let self, self.work?.offerKey == key || self.result?.taskID == key else { return }
+                guard let self, self.calendarWatchToken == token, self.work?.offerKey == key || self.result?.taskID == key else { return }
                 self.startWatch(.line, target: target, anchors: [CGPoint(x: anchor.caret.midX, y: anchor.caret.midY)], requireFocus: false, field: anchor.field)
             }
         }

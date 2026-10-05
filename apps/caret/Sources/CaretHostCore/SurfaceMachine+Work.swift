@@ -29,6 +29,8 @@ extension SurfaceMachine {
             source: claim.offer.source, target: claim.offer.target, fill: fill
         )
         work?.eventCard = claim.offer.kind.actionLine?.eventCard == true
+        // A watch the Calendar prompt's answer scheduled is for the work before this one.
+        calendarWatchToken &+= 1
         // The figure looks away (160 ms), then leaves; under Reduce Motion it is simply gone.
         work?.figureLeft = world.reduceMotion
         renderWorking()
@@ -142,8 +144,9 @@ extension SurfaceMachine {
             }
             // An event card's run adds an event, not a field, so `written` stays 0; its ledger still holds
             // the event, which undo removes by its id (B16). H8's VM run found ⌘Z unclaimed after every add.
-            // A run that found the event already there added nothing, and its undo then removes nothing.
-            if work.eventCard, work.source == .helper {
+            // A run that found the event already there verified no step it acted on, so it gets no ⌘Z.
+            if work.eventCard, work.source == .helper, work.verified > 0 {
+                eventUndo = (work.offerKey, work.app)
                 return showUndoToast(work, WorkLines.done(app: work.app, undo: true), kind: "surface.toast.event")
             }
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .result, offerKey: work.offerKey))
@@ -220,8 +223,11 @@ extension SurfaceMachine {
 
     func finishUndo(_ progress: TaskProgress) {
         undoing = nil
+        let event = eventUndo?.task == progress.taskId ? eventUndo : nil
+        eventUndo = nil
         guard shown == nil, work == nil else { return publish() }
-        let line = WorkLines.undone(OfferLifecycle.undoCount(progress))
+        let undoCount = OfferLifecycle.undoCount(progress)
+        let line = event.map { WorkLines.undoneEvent(undoCount, app: $0.app) } ?? WorkLines.undone(undoCount)
         let partial = line.content.figure == .error
         toastInfo = DebugState.Toast(kind: partial ? "error" : "undone", caption: line.text, grantID: nil)
         count("surface.undo.\(partial ? "partial" : "done")")

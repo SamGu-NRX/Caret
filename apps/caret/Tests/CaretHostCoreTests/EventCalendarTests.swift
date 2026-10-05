@@ -173,12 +173,52 @@ final class CalendarPermissionFlowTests: XCTestCase {
             // VM run 7: the answer comes before the app is back in front.
             .calendarAnswered,
             .sent(["accept event-1 add"]),
+            .taskLine(Fx.progress("event-1", .verified, step: 0, steps: 1)),
             .taskLine(Fx.progress("event-1", .done, steps: 1)),
             .wait(0.6),
             .screen { $0.front() }, .activated,
-            .wait(2),
-            .expect(.custom("still not taken down", { !$0.counts.contains { $0.hasPrefix("surface.lineHidden") } })),
+            .wait(1),
+            .expect(.custom("still not taken down, and watched again", { !$0.counts.contains { $0.hasPrefix("surface.lineHidden") } && $0.machine.isWatching })),
             .expect(.undoOwned(true)),
+            .expect(.toast("Added to Calendar")),
+            // Watched: the app going behind takes the done line and its ⌘Z down.
+            .screen { $0.behind() }, .activated,
+            .expect(.undoOwned(false)),
+        ]))
+    }
+
+    /// ⌘Z on an event card's done line takes the event back out, and says so as an event (review 2: it
+    /// said "Cleared 1 field").
+    func testUndoingAnAddedEventSaysItWasTakenBackOut() throws {
+        let calendars = FakeCalendars()
+        calendars.access = .fullAccess
+        play(rig(calendars), Transition("event added, then ⌘Z", [
+            .screen { $0.front() },
+            .offer(try eventOffer()),
+            .press(Fx.tab()),
+            .sent(["accept event-1 add"]),
+            .taskLine(Fx.progress("event-1", .verified, step: 0, steps: 1)),
+            .taskLine(Fx.progress("event-1", .done, steps: 1)),
+            .expect(.undoOwned(true)),
+            .press(Fx.cmdZ()),
+            .sent(["accept event-1 add", "undo event-1"]),
+            .taskLine(Fx.progress("event-1", .undone, restored: 1, notRestored: 0, steps: 1)),
+            .expect(.line("Taken back out of Calendar")),
+            .expect(.toast("Taken back out of Calendar")),
+        ]))
+    }
+
+    /// A run that found the event already there verified nothing it did: no ⌘Z (review 2).
+    func testAnEventAlreadyThereGetsNoUndo() throws {
+        let calendars = FakeCalendars()
+        calendars.access = .fullAccess
+        play(rig(calendars), Transition("already there", [
+            .screen { $0.front() },
+            .offer(try eventOffer()),
+            .press(Fx.tab()),
+            .taskLine(Fx.progress("event-1", .skipped, step: 0, steps: 1)),
+            .taskLine(Fx.progress("event-1", .done, steps: 1)),
+            .expect(.undoOwned(false)),
         ]))
     }
 

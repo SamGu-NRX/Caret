@@ -389,6 +389,24 @@ public enum WorkLines {
     public static let stopUnreached = WorkLine(LineContent(figure: .error, text: Captions.stopUnreached, emphasis: .plain), text: Captions.stopUnreached)
 
     /// The undo's answer: what it cleared, or that some fields were left because they changed.
+    /// An event card's undo (H8): the event taken back out by its id, in DIRECTION.md's words; or left,
+    /// when it changed after Caret added it or was already gone.
+    public static func undoneEvent(_ count: OfferLifecycle.UndoCount?, app: String) -> WorkLine {
+        let caption: String
+        let figure: FigureState
+        if let count, count.notRestored > 0 {
+            caption = "The event changed after Caret added it, so it stays in \(app)."
+            figure = .error
+        } else if let count, count.restored == 0 {
+            caption = "Nothing to take back out of \(app)."
+            figure = .still
+        } else {
+            caption = "Taken back out of \(app)"
+            figure = .still
+        }
+        return WorkLine(LineContent(figure: figure, text: caption, emphasis: .plain), text: caption)
+    }
+
     public static func undone(_ count: OfferLifecycle.UndoCount?) -> WorkLine {
         if let count, count.notRestored > 0 {
             let caption = Captions.undoPartial(notRestored: count.notRestored)

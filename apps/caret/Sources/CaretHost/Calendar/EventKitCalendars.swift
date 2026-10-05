@@ -22,7 +22,13 @@ final class EventKitCalendars: CalendarDirectory, CalendarAccessAsking {
     /// Calendars or the default changed (`EKEventStoreChanged`), or access did. Main thread.
     var onChange: (() -> Void)?
 
-    var access: CalendarAccess { CalendarAccess.effective(status: status, answered: answered) }
+    /// The request's answer stands only until the status (or a store) says anything but notDetermined: after
+    /// that it is the status's, so a later reset of Calendar access in System Settings is asked about again.
+    var access: CalendarAccess {
+        let now = status
+        if now != .notDetermined { answered = nil }
+        return CalendarAccess.effective(status: now, answered: answered)
+    }
 
     /// When the class status says notDetermined, whether a store sees calendars, checked at most once a second:
     /// the status can say notDetermined after a grant (`EventKitBackend.hasFullAccess`, VM run 5). A store asks
