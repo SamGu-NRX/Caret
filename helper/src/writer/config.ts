@@ -138,15 +138,17 @@ export const WRITER_MAX_OUTPUT_TOKENS = 1000;
 /*
  * P1 (plans/fast-browser.md, "Intent as one request with heads"): "heads" is Jev in one request (planner/intent-heads.ts),
  * the default since it beat the staged Jev maker above on all three sets. scripts/realfill-asks.ts --maker heads, Jev only,
- * plan-route writer off, code at 8ad9303 (evidence/screen/p1 asks-b24-heads-2, asks-heldout-heads, asks-heldout2-heads):
+ * plan-route writer off, code at 582e458 (evidence/screen/p1 asks-b24-heads-final, asks-heldout-heads-final,
+ * asks-heldout2-heads-final):
  * | set                | right | partial | asked (option recall) | refused | wrong | after the pick: right, partial, wrong | Jev $  |
- * | B24 (tuned)        | 1     | 2       | 10 (5/10)             | 7       | 0     | 1, 2, 0                               | 0.0084 |
- * | B25 held-out       | 0     | 1       | 9 (6/9)               | 10      | 0     | 0, 2, 0                               | 0.0049 |
- * | B26 held-out-2     | 0     | 2       | 9 (5/9)               | 9       | 0     | 2, 1, 0                               | 0.0051 |
- * One Jev request per intent in all 60 (the staged maker sends two to four); its latency p50 134 ms, p95 under 270 ms.
- * Asks that end in a fill, at once or after the pick: 14 of 60 against the staged maker's 12, with 28 questions against 38.
- * B24's asked plus refused is 17 against the Groq writer's 14 (evidence/screen/b29/final3-b24-120b): the scope head's
- * margin stayed under its 0.75 floor on five asks and two field answers came in at 0.90 and 0.92, under 0.95. Not tuned.
+ * | B24 (tuned)        | 1     | 2       | 9 (5/9)               | 8       | 0     | 1, 2, 0                               | 0.0081 |
+ * | B25 held-out       | 0     | 1       | 9 (6/9)               | 10      | 0     | 0, 1, 0                               | 0.0049 |
+ * | B26 held-out-2     | 0     | 2       | 9 (5/9)               | 9       | 0     | 1, 2, 0                               | 0.0051 |
+ * One Jev request per intent in all 60 (the staged maker sends two to four); its latency p50 148 to 207 ms, p95 under
+ * 375 ms. Asks that end in a fill, at once or after the pick: 13 of 60 against the staged maker's 12, with 27 questions
+ * against 38. B24's asked plus refused is 17 against the Groq writer's 14 (evidence/screen/b29/final3-b24-120b): the
+ * scope head's margin stayed under its 0.75 floor on six asks, and on five more the best field answer was 0.69 to 0.93,
+ * under 0.95 (two of those five must be refused anyway). Not tuned to close it.
  */
 export const ASK_MAKER: "writer" | "jev" | "heads" = "heads";
 /** The writer route for intents; a change is explicit configuration and a fresh scoreboard run, never a fallback. */
