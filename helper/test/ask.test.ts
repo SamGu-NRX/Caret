@@ -889,3 +889,28 @@ describe("planAsk for a goal-planning host", () => {
     expect((e as AskAsks).question.part).toBe("fields");
   });
 });
+
+// B30: an Ask from a window with no field (the email the user reads) can only be about other windows.
+describe("planAsk from a window with no field, for a goal-planning host", () => {
+  const reading = (): ScreenModel => {
+    const m = desk();
+    m.apply(snap([text("mail/l0", "From: Priya Raman <priya@example.com>"), text("mail/l1", "Can you come Thursday?")], { at: 1100, windowId: "mail", title: "Thursday", app: { pid: 7003, bundleId: "dev.caret.mailfixture", name: "Mail" }, focused: true }));
+    return m;
+  };
+  const opts = (intent: Partial<AskIntent>, goals: boolean) => ({ askJev: jevBy(() => null).ask, maker: maker(intent), writer: null, offerKey: "g-2", windowId: "mail", now: 2000, goals });
+
+  it("reads an unsettled or fill intent as a plan, since nothing there can be filled", async () => {
+    for (const intent of [{ route: "ask" as const, why: "whichFields" as const, scope: "none" as const }, { route: "fill" as const, scope: "all" as const }]) {
+      expect(await planAsk("reply saying I'm in", reading(), memory, about, opts(intent, true))).toMatchObject({ route: "goal", windowId: "mail" });
+    }
+  });
+
+  it("still refuses what code refuses, and changes nothing for a host without goal plans", async () => {
+    const ssn = await planAsk("reply with my SSN", reading(), memory, about, opts({ route: "ask", why: "whichFields", scope: "none" }, true)).catch((x: unknown) => x);
+    expect((ssn as AskRefused).message).toBe("Caret doesn't type Social Security numbers. Type it yourself.");
+    const pay = await planAsk("pay her", reading(), memory, about, opts({ route: "refuse", why: "payment" }, true)).catch((x: unknown) => x);
+    expect((pay as AskRefused).message).toBe(SAYS.payment);
+    const old = await planAsk("reply saying I'm in", reading(), memory, about, opts({ route: "ask", why: "whichFields", scope: "none" }, false)).catch((x: unknown) => x);
+    expect(old).toBeInstanceOf(AskRefused);
+  });
+});

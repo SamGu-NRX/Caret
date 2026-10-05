@@ -7,8 +7,10 @@ import { PLAN_API } from "./plan-prompt.ts";
 export const GOAL_API = PLAN_API.replace(
   "  /** Orders every step you created into the plan.",
   `  /** A value: words you write for the user, for a field the goal asks you to write in (a reply, a message, a
-   * description). At most 600 characters of plain sentences. \`from\` lists the windows (and values) whose facts it uses.
-   * Fill it into that field with fill(). At most 2. */
+   * description). At most 600 characters of plain sentences. \`from\` lists refs, never readWindow results: the
+   * \`window\` of each window whose facts it uses, and any value ref it uses. Fill it into that field with fill().
+   * Example: const mail = await caret.readWindow("w2" as WindowRef); const d = caret.draft("Thanks, I'm in.", [mail.window]);
+   * At most 2. */
   draft(text: string, from: readonly (WindowRef | ValueRef)[]): ValueRef;
   /** Orders every step you created into the plan.`,
 );

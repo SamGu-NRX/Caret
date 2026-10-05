@@ -308,6 +308,11 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     // A continued Ask reads the maker's intent against the form as it is now, and asks the maker nothing.
     made = resume === undefined ? await o.maker.make(snap) : { intent: remapIntent(resume.intent, resume.refs, snap, fixed.fields !== undefined), use: resume.maker };
     intent = applyFixed(made.intent, fixed, snap);
+    // A window with no field at all (the email the user is reading) has nothing to fill or to ask which fields of, so
+    // for a host that runs goals an Ask from it is about other windows: a fill or an unsettled intent is a plan, which
+    // checkIntent still refuses for a kind Caret never types or a source no window could be (B30: the Jev maker left
+    // four of B30's live asks from an email unsettled, and each was told "Which fields do you mean?").
+    if (o.goals === true && resume === undefined && snap.fields.length === 0 && (intent.route === "fill" || intent.route === "ask")) intent = { ...intent, route: "plan", why: "none", scope: "none", fields: [], literals: [] };
   } catch (e) {
     if (e instanceof PlannerError) throw new AskRefused(e, null, null);
     throw e;
