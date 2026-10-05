@@ -883,6 +883,27 @@ describe("a grounded whole-form scope (B28)", () => {
     expect((await refusal(askWith(instruction, greenhouse(), () => "no", listOf("Email", "Phone", "LinkedIn Profile")).run)).message).toBe(SAYS.whichFields);
   });
 
+  // P2 (P1's review): a word two fields share names neither. "Personal email" counted as named by "fill Work email" and
+  // was written without Jev's confirmation.
+  it("P2: 'fill Work email' names only Work email; Personal email stands only on Jev's yes", async () => {
+    // A third field, so the list is not every field (which would be read as the whole form).
+    const m = greenhouse(null, "Apply: Software Engineer Intern", ["Work email", "Personal email", "Phone"]);
+    const both = (q: string): string | null => (/email'/iu.test(q) ? "jordan.reyes@example.org" : null);
+    const jev = jevBy(both, () => "user", () => "no");
+    const d = await planAsk("fill Work email", m, { values: () => [] }, [], { askJev: jev.ask, maker: maker(listOf("Work email", "Personal email")), writer: null, offerKey: "p2-names", windowId: "gh", now: 2000 });
+    expect(written(d)).toEqual([GKEY("work email")]);
+    expect(confirmed(jev)).toEqual(["Personal email", "Personal email"]);
+  });
+
+  it("P2: a field whose every word another field shares is named by all of them, unless the longer field is named too", async () => {
+    const m = greenhouse(null, "Apply: Software Engineer Intern", ["Email", "Work email", "Phone"]);
+    const both = (q: string): string | null => (/email'/iu.test(q) ? "jordan.reyes@example.org" : null);
+    const one = jevBy(both, () => "user", () => "no");
+    expect(written(await planAsk("fill my email", m, { values: () => [] }, [], { askJev: one.ask, maker: maker(listOf("Email", "Work email")), writer: null, offerKey: "p2-a", windowId: "gh", now: 2000 }))).toEqual([GKEY("email")]);
+    const two = jevBy(both, () => "user", () => "no");
+    expect(written(await planAsk("fill my work email", m, { values: () => [] }, [], { askJev: two.ask, maker: maker(listOf("Email", "Work email")), writer: null, offerKey: "p2-b", windowId: "gh", now: 2000 }))).toEqual([GKEY("work email")]);
+  });
+
   it("B28b: names still stand without Jev when the instruction has no exclusion word", async () => {
     const { jev, run } = askWith("fill in the email and phone", greenhouse(), () => "no", listOf("Email", "Phone"));
     expect(written(await run)).toEqual([GKEY("email"), GKEY("phone")]);

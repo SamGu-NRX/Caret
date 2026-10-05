@@ -295,7 +295,8 @@ export function outrankedFields(instruction: string, fields: readonly Field[]): 
 
 /** Words that say what to do rather than where; they do not make a field or button relevant. */
 const COMMON = new Set(["the", "and", "for", "from", "into", "with", "this", "that", "set", "put", "write", "fill", "copy", "use", "make", "add", "enter", "type", "change", "her", "his", "their", "our", "your", "its"]);
-const wordsOf = (s: string): string[] => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x.length >= 3 && !COMMON.has(x));
+/** The words relevance() compares: lower case, three letters or more, not a common word. */
+export const wordsOf = (s: string): string[] => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x.length >= 3 && !COMMON.has(x));
 
 /**
  * The requests with only the snippets their questions carry. A value that fits none of the asked fields is

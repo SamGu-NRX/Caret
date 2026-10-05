@@ -19,7 +19,7 @@ import { FillError, memoryRefOf, proposeFill } from "../fill/fill.ts";
 import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
-import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, type PlanDraft, type PlannerMemory } from "./planner.ts";
+import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, wordsOf, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
 import { SAYS, SaidError, Unclear, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure, type AskPart } from "./says.ts";
@@ -353,7 +353,21 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // The words that may name fields are the instruction without its source phrases (sources.ts): "from my note"
   // never names the form's "Add a gift note" (B25 held-08).
   const words = fieldWords(instruction);
-  const namesField = (f: IntentField): boolean => relevance(words, f.name) > 0 || namesShortLabel(words, f.name);
+  // A field is named by the words that tell it from the form's other fields, not by words it shares with them (P1
+  // review): "fill Work email" names Work email, and Personal email is not named by "email". A field whose every word
+  // another field shares is named by all of them, unless a field with more words is named the same way ("work email"
+  // names Work email, not Email too).
+  const said = new Set(wordsOf(words));
+  const nameWords = new Map(snap.fields.map((f) => [f.key, new Set(wordsOf(f.name))]));
+  const namesField = (f: IntentField): boolean => {
+    if (namesShortLabel(words, f.name)) return true;
+    const own = nameWords.get(f.key) ?? new Set(wordsOf(f.name));
+    const others = snap.fields.filter((g) => g.key !== f.key).map((g) => nameWords.get(g.key) ?? new Set<string>());
+    const distinct = [...own].filter((x) => !others.some((o) => o.has(x)));
+    if (distinct.length > 0) return distinct.some((x) => said.has(x));
+    if (own.size === 0 || ![...own].every((x) => said.has(x))) return false;
+    return !others.some((o) => o.size > own.size && [...own].every((x) => o.has(x)) && [...o].every((x) => said.has(x)));
+  };
   // A writer's fill with an empty list, for an instruction whose field words name no field, is read as the whole form,
   // which Jev must then confirm (confirmScope): B25's writer gave "can you get this enrollment form done from what I
   // jotted down" an empty list, and the Ask refused it as a field the form does not have (held-07).
