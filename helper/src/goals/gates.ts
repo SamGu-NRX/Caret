@@ -10,18 +10,45 @@
 //
 // D2-06 lowered goal writes with misfit alone, which leaves every ID field unchecked, and never asked Jev, so M2's live
 // qwen3.8 plan put the sender's email in Order number and the goal said "Done".
+//
+// G3 (lead decision 1): a value the helper derived itself, with nothing left to choose, skips Jev's value question and
+// keeps the code checks (see markDerived). G2's live probes had Jev under the 0.75 floor on exactly these values.
 import type { AskJev } from "../fill/jev.ts";
 import { fieldKinds, misfit, textKind } from "../fill/kinds.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { verifyWrites } from "../planner/codeplan.ts";
 import { secretIn } from "../planner/trace.ts";
 import type { SnippetLedger } from "../privacy.ts";
-import type { TargetBinding, ValueBinding } from "./plan.ts";
+import type { GoalStep, TargetBinding, ValueBinding } from "./plan.ts";
 
 const clip = (s: string): string => {
   const t = s.replace(/\s+/gu, " ").trim();
   return t.length <= 60 ? t : `${t.slice(0, 59)}…`;
 };
+
+/**
+ * Objects the helper's own code built as derived values (G3): an event value inventory.ts eventsIn made from a
+ * sentence's person and resolved time, and the To step lower.ts adds with the answered message's sender. Membership is
+ * by object identity, so nothing that crosses the sandbox (a program's steps, drafts and refs are plain data, checked
+ * by codemode/types.ts DoneMessage) and nothing copied (structuredClone, JSON) can carry the mark. A field such as
+ * `origin.kind === "derived"` or a step ref would be data a value of the same shape could repeat.
+ *
+ * Evidence for the exemption: live Jev with fill's question confirmed b30-01's verified sender in To at 0.37 and the
+ * D2-06 scene 2 event under the floor (evidence/screen/g2 jev-to-probe.txt, jev-scenes-probe.txt), though code had
+ * already settled both values; lead decision 1 of G3.
+ */
+const derived = new WeakSet<object>();
+
+/** Marks an object the helper built as a derived value, and returns it. Only helper code calls this. */
+export function markDerived<T extends ValueBinding | GoalStep>(x: T): T {
+  derived.add(x);
+  return x;
+}
+
+/** Whether the helper itself built this value or step as derived (markDerived); a copy never is. */
+export function isDerived(x: ValueBinding | GoalStep): boolean {
+  return derived.has(x);
+}
 
 /**
  * A label that asks for a number or code by name ("Order number", "Invoice no.", "Ticket #", "Confirmation code").

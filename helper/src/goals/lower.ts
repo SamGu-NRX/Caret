@@ -8,8 +8,9 @@
 //   press with a capability    -> the capability's verifier end state, reached by that press (capabilities.ts)
 //   any other press            -> handoff: the user presses it, and the goal ends there
 // A write whose value fails fill's value gates (G2, gates.ts: a kind Caret never types, a kind that does not fit the
-// field, a value Jev does not confirm belongs there) is dropped, and the preview says why. A reply's To is filled
-// with the answered message's sender when the program left it out, or left to the user (left.ts). What the goal
+// field, a value Jev does not confirm belongs there) is dropped, and the preview says why. Jev is not asked about a
+// value the helper derived with nothing to choose (G3: the To below, an event inventory.ts built). A reply's To is
+// filled with the answered message's sender when the program left it out, or left to the user (left.ts). What the goal
 // leaves undone is listed in the plan, so it can never end as done (runs.ts).
 // Everything else is refused here with a reason the user can read, before anything is shown as acceptable: a
 // question (ask), a wait not tied to the press before it, a fill of a box or a native control, a field that already
@@ -24,7 +25,7 @@ import { matchOption } from "../fill/controls.ts";
 import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
-import { codeGate, jevGate, JevUnavailable } from "./gates.ts";
+import { codeGate, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
 import { saysPress } from "../planner/says.ts";
@@ -253,8 +254,11 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         dropAs(t, gated, v);
         continue;
       }
-      const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : "jev";
-      steps.push({ ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered });
+      // An event the helper derived (inventory.ts eventsIn) has nothing left to choose but which calendar, which the
+      // writer named and the user sees: it skips Jev's value question (G3). Any other value is the writer's pick.
+      const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : lowered.kind === "calendar" && isDerived(v) ? "derived" : "jev";
+      const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered };
+      steps.push(gate === "derived" ? markDerived(step) : step);
       lastPress = null;
       continue;
     }
@@ -278,7 +282,9 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     lastPress = step;
   }
   // A reply's recipient (G2, B30): the program does not write To (goal-prompt.ts), so code puts the answered message's
-  // sender there, through the same gates as any other write; a recipient it cannot find is the user's to add.
+  // sender there, through the never-typed and kind checks; a recipient it cannot find is the user's to add. Code chose
+  // the value (recipientCheck, and runs.ts checks it again right before the write), so it skips Jev's value question
+  // (G3). A To the program wrote itself, the same address included, is the writer's pick and goes to Jev.
   for (const windowId of writesIn) {
     for (const f of inv.owed.get(windowId) ?? []) {
       if (f.why !== "recipient" || !f.empty || steps.some((x) => x.kind === "write" && x.target.domain.kind === "window" && x.target.domain.windowId === windowId && x.target.key === f.key)) continue;
@@ -295,11 +301,12 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         continue;
       }
       const at = steps.findIndex((x) => x.target.domain.kind === "window" && x.target.domain.windowId === windowId);
-      const step: GoalStep = { ref: `to:${t.ref}`, index: 0, kind: "write", says: `${t.label}: ${sender.text}`, target: t, value: sender, writes: sender.text, effect: null, handoff: null, to: true, gate: "jev" };
+      const step = markDerived<GoalStep>({ ref: `to:${t.ref}`, index: 0, kind: "write", says: `${t.label}: ${sender.text}`, target: t, value: sender, writes: sender.text, effect: null, handoff: null, to: true, gate: "derived" });
       steps.splice(at < 0 ? steps.length : at, 0, step);
     }
   }
-  // Jev's question for every copied value still in the plan (drafts are drafts.ts's), both wordings, fill's floor.
+  // Jev's question for every copied value still in the plan (drafts are drafts.ts's, derived values code's), both
+  // wordings, fill's floor.
   let unconfirmed: Map<string, string>;
   try {
     unconfirmed = await jevGate(

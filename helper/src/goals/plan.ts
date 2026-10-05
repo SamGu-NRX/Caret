@@ -105,10 +105,12 @@ export interface GoalStep {
   /**
    * How a write's value passed fill's value gates (G2, goals/gates.ts): "jev" for a value (or a calendar event) Jev
    * confirmed belongs there, "draft" for text Caret composed, whose claims goals/drafts.ts checks instead of Jev's field
-   * question (lead decision 3). Null for presses and hand-offs. GoalRuns.propose refuses a write or calendar step
-   * that has none.
+   * question (lead decision 3), "derived" for a value the helper built with nothing to choose (G3: the To lowering adds
+   * with the answered message's sender, an event inventory.ts derived), which passed the code checks without Jev. Null
+   * for presses and hand-offs. GoalRuns.propose refuses a write or calendar step that has none, and a "derived" step
+   * gates.ts did not mark (isDerived).
    */
-  gate: "jev" | "draft" | null;
+  gate: "jev" | "draft" | "derived" | null;
 }
 
 /**
