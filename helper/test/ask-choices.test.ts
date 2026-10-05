@@ -357,6 +357,33 @@ describe("second re-check: what a continued Ask compares, and when (B29)", () =>
     expect(e.message).toBe(SAYS.windowChanged);
   });
 
+  it("refuses when a radio option was disabled (third check: child states)", async () => {
+    const G = `${P}/group:country~0`;
+    const radios = (disabled: boolean): Node[] => [
+      node(G, "AXGroup", { parent: W, subrole: "AXFieldset", label: "Country" }),
+      node(`${G}/radiobutton:canada~0`, "AXRadioButton", { parent: G, label: "Canada", frame: [100, 400, 20, 20], ...(disabled ? { states: ["disabled" as const] } : {}) }),
+      node(`${G}/radiobutton:mexico~0`, "AXRadioButton", { parent: G, label: "Mexico", frame: [100, 430, 20, 20] }),
+      node(`${G}/radiobutton:peru~0`, "AXRadioButton", { parent: G, label: "Peru", frame: [100, 460, 20, 20] }),
+    ];
+    const instruction = "set the country";
+    const m = desk({ extra: radios(false) });
+    m.apply(snap([field("te/country", "Country notes\nCountry: Canada", { role: "AXTextArea" })], { at: 1050, windowId: "cnote", title: "Country note.txt", app: TE(7004), focused: true }));
+    formSnap(m, (ns) => ns, radios(false), 1060);
+    const q = await sourceQ(instruction, (x) => ({ route: "ask", why: "whichSource", fields: [ref(x, "Country")], sources: [] }), m);
+    const cnote = q.options.find((c) => c.option.kind === "window" && c.option.title === "Country note.txt")?.option.id as string;
+    expect(cnote).toBeDefined();
+    // Disabled while Jev answers: after the check before the fill, before the one after it.
+    const j = jevBy(() => "Canada");
+    let once = false;
+    const changing: AskJev = async (req) => {
+      if (!once) ((once = true), formSnap(m, (ns) => ns, radios(true)));
+      return j.ask(req);
+    };
+    const e = await fail(answer(q, [cnote], { model: m, ask: changing, instruction }));
+    expect(once).toBe(true);
+    expect(e.message).toBe(SAYS.windowChanged);
+  });
+
   it("goes on when a field the user did not pick is gone", async () => {
     const instruction = "fill the landlord name and phone";
     const m = desk();

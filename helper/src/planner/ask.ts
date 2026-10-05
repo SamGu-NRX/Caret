@@ -135,16 +135,16 @@ const changed = (what: string): never => {
 
 /**
  * What a field is, as a continued Ask compares it: what fill reads of it (its name, section, label, nearest text and
- * placeholder, control, role and subrole), its exact value, and each child's role, label and value (a select's options,
- * a radio group's buttons). Second re-check: a placeholder, an option's value and a changed value all got past a
+ * placeholder, control, role and subrole), its exact value and states, and each child's role, label, value and states (a
+ * select's options, a radio group's buttons; a disabled radio option is one fill skips, third check). Second re-check: a placeholder, an option's value and a changed value all got past a
  * fingerprint of name, section and "holds text".
  */
 function fieldSeen(w: WindowState, f: IntentField): string {
   const n = w.nodes.get(f.key);
   if (n === undefined) return "gone";
   const d = describeField(w, n);
-  const children = [...w.nodes.values()].filter((c) => c.parent === f.key).map((c) => [c.role, c.label ?? null, c.value ?? null]);
-  return JSON.stringify([f.name, f.section, d.label, d.nearest, d.placeholder, f.control, n.role, n.subrole ?? null, n.value ?? "", children]);
+  const children = [...w.nodes.values()].filter((c) => c.parent === f.key).map((c) => [c.role, c.label ?? null, c.value ?? null, c.states ?? []]);
+  return JSON.stringify([f.name, f.section, d.label, d.nearest, d.placeholder, f.control, n.role, n.subrole ?? null, n.value ?? "", n.states ?? [], children]);
 }
 
 /** What a question records of the form; a later question of the same Ask keeps the first one's record of each field. */
