@@ -133,6 +133,12 @@ public enum PageInline {
         }
     }
 
+    /// Whether native ghost text (Accessibility) leaves a field to the page's inline text: a field in a web area of a
+    /// browser whose page engine reports the field the user is in. Chrome ignores Accessibility writes there.
+    public static func nativeYields(inWebArea: Bool, pageFieldReported: Bool) -> Bool {
+        inWebArea && pageFieldReported
+    }
+
     /// Text that follows the caret on its own line, where inline text would cover it.
     public static func midLine(_ after: String) -> Bool {
         after.prefix { !$0.isNewline }.contains { !$0.isWhitespace }

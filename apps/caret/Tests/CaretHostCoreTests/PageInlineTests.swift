@@ -442,6 +442,14 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(r.inserts.count, 1)
     }
 
+    /// The test Mac (runs/20261006T170055Z-81931): with Chrome's web content shown to Accessibility, native ghost text
+    /// offered in a page field, took Tab, and Chrome ignored its write. A web field the page engine reports is the page's.
+    func testNativeGhostTextLeavesAReportedPageFieldToThePage() {
+        XCTAssertTrue(PageInline.nativeYields(inWebArea: true, pageFieldReported: true))
+        XCTAssertFalse(PageInline.nativeYields(inWebArea: true, pageFieldReported: false), "no page engine: Accessibility is all there is")
+        XCTAssertFalse(PageInline.nativeYields(inWebArea: false, pageFieldReported: true), "the browser's own fields (the address bar) stay native")
+    }
+
     final class Composing: @unchecked Sendable {
         private let lock = NSLock()
         private var value = false

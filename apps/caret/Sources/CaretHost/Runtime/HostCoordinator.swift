@@ -102,6 +102,14 @@ final class HostCoordinator {
             status.increment("suppressed.contextMismatch")
             return reset()
         }
+        // H13: a web page field the page engine reports is the page's inline text's (PageInlineCoordinator). Chrome
+        // shows its web content to Accessibility only once an assistive app turned that on, and then ignores an
+        // Accessibility write: on the test Mac (runs/20261006T170055Z-81931, undo-input-paste) a native offer there
+        // took Tab and its insert came back writeIgnored, so nothing went in.
+        if PageInline.nativeYields(inWebArea: PageFocusSource.inWebArea(element), pageFieldReported: PageFocusSource.book.field(pid: field.identity.pid) != nil) {
+            status.increment("suppressed.pageField")
+            return reset()
+        }
 
         let key = Self.contextKey(context, field: field.identity)
         if key == lastContextKey {
