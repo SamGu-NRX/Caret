@@ -94,8 +94,16 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
     ask = async (req) => {
       // The log holds request text, so it takes what the cache takes: fixture text only.
       checkFixture(req, o.fixture);
-      const r = await inner(req);
       const body = { state: req.state, model: JEV_MODEL, questions: { ...req.questions, ...req.nouls } };
+      const t0 = performance.now();
+      let r: Awaited<ReturnType<AskJev>>;
+      try {
+        r = await inner(req);
+      } catch (e) {
+        // A failed request is logged with its error, which the eval's report shows only as the user's sentence.
+        appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, error: e instanceof Error ? `${e.name}: ${e.message}` : String(e), afterMs: performance.now() - t0 })}\n`, { mode: 0o600 });
+        throw e;
+      }
       appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, sharedChars: JSON.stringify(wireBody(req, JEV_MODEL, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })}\n`, { mode: 0o600 });
       return r;
     };
