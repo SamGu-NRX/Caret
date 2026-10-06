@@ -24,6 +24,12 @@ export interface CommandAnswer {
 
 /** Sessions wait this long for an answer. Assumed, not measured: the reader's own verbs wait 5 s. */
 export const COMMAND_TIMEOUT_MS = 5000;
+/**
+ * C1: how long after Caret's own act ends a focus report from its tab is taken as the act's. The content script sends
+ * one report 150 ms after the first focus change of a burst (extension content.ts FOCUS_EVERY_MS), and the hop to the
+ * helper adds tens of milliseconds; 400 ms covers both with room. Assumed, not measured.
+ */
+export const ACT_FOCUS_TAIL_MS = 400;
 
 export class EngineSession {
   readonly info: EngineInfo;
@@ -36,6 +42,8 @@ export class EngineSession {
   private readonly pending = new Map<string, { resolve: (a: CommandAnswer) => void; snapshot: PageSnapshot | null; timer: NodeJS.Timeout }>();
   private readonly pongs = new Map<string, (p: PagePong | null) => void>();
   private readonly helloWaiters: ((h: PageHello | null) => void)[] = [];
+  /** C1: Caret's own acts per tab: how many are in flight, and when the last one ended (actedRecently). */
+  private readonly acts = new Map<number, { inFlight: number; endedAt: number }>();
   /** Called with every snapshot the engine sends, after `tabs` holds it. */
   onSnapshot: ((s: PageSnapshot, session: EngineSession) => void) | null = null;
   /** Called when focus moved in the tab the user is in (engines/page-focus.ts). */
@@ -55,7 +63,13 @@ export class EngineSession {
 
   command(verb: PageVerb, timeoutMs = this.timeoutMs): Promise<CommandAnswer> {
     const id = randomUUID();
-    return new Promise((resolve) => {
+    const act = verb.kind === "pageWalk" ? null : verb.tabId;
+    if (act !== null) {
+      const a = this.acts.get(act) ?? { inFlight: 0, endedAt: 0 };
+      a.inFlight++;
+      this.acts.set(act, a);
+    }
+    const settled = new Promise<CommandAnswer>((resolve) => {
       if (this.closed) return resolve({ result: this.failed(id, "the engine is gone"), snapshot: null });
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -68,6 +82,25 @@ export class EngineSession {
         resolve({ result: this.failed(id, "the engine's connection is closed"), snapshot: null });
       }
     });
+    if (act === null) return settled;
+    return settled.then((answer) => {
+      const a = this.acts.get(act);
+      if (a !== undefined) {
+        a.inFlight--;
+        a.endedAt = Date.now();
+      }
+      return answer;
+    });
+  }
+
+  /**
+   * C1: whether a focus change in this tab is Caret's own: one of its acts there is in flight, or ended within
+   * ACT_FOCUS_TAIL_MS. Writing a field, picking an option or ticking a box focuses the control, and the content script
+   * reports that focus as it reports the user's; a Fill all asked on it spent Jev calls on a form Caret was filling.
+   */
+  actedRecently(tabId: number, now = Date.now()): boolean {
+    const a = this.acts.get(tabId);
+    return a !== undefined && (a.inFlight > 0 || now - a.endedAt <= ACT_FOCUS_TAIL_MS);
   }
 
   grant(g: ScopedActGrant): boolean {
