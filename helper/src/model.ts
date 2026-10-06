@@ -64,7 +64,15 @@ export class ScreenModel {
     let nodes: Map<string, Node>;
     let values: TypedValue[];
 
-    if (snap.root === null || prior === undefined) {
+    const unreached = prior === undefined ? null : cutWalkUnreached(prior, snap);
+    if (unreached !== null) {
+      nodes = new Map(snap.nodes.map((n) => [n.key, n]));
+      for (const k of unreached) {
+        const n = prior?.nodes.get(k);
+        if (n !== undefined) nodes.set(k, n);
+      }
+      values = snap.values.concat((prior?.values ?? []).filter((v) => unreached.has(v.nodeKey)));
+    } else if (snap.root === null || prior === undefined) {
       nodes = new Map(snap.nodes.map((n) => [n.key, n]));
       values = snap.values;
       if (prior === undefined) {
@@ -97,6 +105,7 @@ export class ScreenModel {
       const replaced = subtreeKeys(prior.nodes, snap.root);
       if (!replaced.has(prior.focusedKey)) focusedKey = prior.focusedKey;
     }
+    if (unreached !== null && focusedKey === null && prior !== undefined && prior.focusedKey !== null && unreached.has(prior.focusedKey)) focusedKey = prior.focusedKey;
     const state: WindowState = {
       app: snap.app,
       window: snap.window,
@@ -177,6 +186,25 @@ export class ScreenModel {
     this.frontmostPid = null;
     this.focusHistory.length = 0;
   }
+}
+
+/**
+ * The prior nodes a full walk cut short never reached, or null when `snap` replaces the window whole.
+ *
+ * The reader walks depth first and stops at its deadline or node budget (Walker.swift), then sends what it read as a
+ * full snapshot (root null) with stats.truncated. Replacing the window with that dropped every node after the cut:
+ * H10's TextEdit note lost its text area until the next background walk 30 s later, and a fill whose source was that
+ * text was refused as "source gone". The walk reached every prior node up to the last one it sent again, in document
+ * order; a prior node before that point and missing now is gone, and one after it is kept until a complete walk.
+ * A page is replaced whole: its walk is cut per frame, not at one point in document order, and after navigation the
+ * old document's fields must not survive into the new one.
+ */
+function cutWalkUnreached(prior: WindowState, snap: Snapshot): Set<string> | null {
+  if (snap.root !== null || !snap.stats.truncated || snap.window.kind === "page") return null;
+  const sent = new Set(snap.nodes.map((n) => n.key));
+  const order = [...prior.nodes.keys()];
+  const last = order.findLastIndex((k) => sent.has(k));
+  return new Set(order.slice(last + 1).filter((k) => !sent.has(k)));
 }
 
 function subtreeKeys(nodes: Map<string, Node>, root: string): Set<string> {
