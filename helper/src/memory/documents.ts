@@ -4,7 +4,8 @@
 // database (patterns/memory.ts), and nothing read here can change them.
 //
 // Files live in one folder (by default ~/Library/Application Support/Caret/Memory, set by main.ts):
-//   about-me.md, people.md, preferences.md, skills/<id>.md
+//   about-me.md, people.md, preferences.md, answers.md, files.md, skills/<id>.md
+// files.md (P3 saved files) is read and written by the helper only: the memory window lists ROOT_DOCS, which omit it.
 // The folder is 0700 and files 0600. That keeps other users out, not other software running as this user,
 // and the files are plaintext to editors, Spotlight and backups: the reason sensitive.ts refuses secrets.
 //
@@ -64,6 +65,7 @@ import {
   recordDigest,
   recordSecret,
   removeRecord,
+  HELPER_DOCS,
   ROOT_DOCS,
   type Diagnostic,
   type DocId,
@@ -211,7 +213,7 @@ export class MemoryDocumentStore {
    * (every one with `verify`). Differences from what Caret last read or wrote are recorded as external changes.
    */
   refresh(scope: RecordKind | "all", verify = false): boolean {
-    const docs: DocId[] = scope === "all" ? [...ROOT_DOCS, ...this.skillDocs()] : scope === "skill" ? this.skillDocs() : [docFor({ id: "x", kind: scope })];
+    const docs: DocId[] = scope === "all" ? [...ROOT_DOCS, ...HELPER_DOCS, ...this.skillDocs()] : scope === "skill" ? this.skillDocs() : [docFor({ id: "x", kind: scope })];
     return this.sync(docs, verify);
   }
 
