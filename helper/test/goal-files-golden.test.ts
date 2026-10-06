@@ -3,7 +3,8 @@
 // the file the user chose (confirmedFile), the run's receipts and partial end, the offer to keep the file and the
 // user's yes (and a refused one), the carried goal's preview of the next page (reason nextPage), the same preview with
 // a saved file in its attach row, and its acceptance with and without that file. Cut from a page-rig run with a fixed
-// clock (test/page-rig.ts); the paths are synthetic.
+// clock (test/page-rig.ts); the paths are synthetic. The saved-row preview is the carried preview with its attach row
+// as a matched saved file shows it, under a digest of its own (a digest covers a row's file); its acceptances name it.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { AnyMessage, ConsumerMessage, GoalAccept, GoalProgress, HelperMessage } from "../src/protocol.ts";
@@ -47,6 +48,9 @@ describe("the goal-files protocol lines (P3)", () => {
     expect([next.reason, next.replaces, next.requestId]).toEqual(["nextPage", first.goalId, null]);
     expect(segment(21).steps.at(-1)?.file).toEqual({ source: "saved", savedId: "file-5e6f7a8b", path: "/private/tmp/caret-fixture/Robin Vale Cover Letter.pdf", name: "Robin Vale Cover Letter.pdf", edited: 1790100000000 });
     expect(GoalAccept.parse(at(23)).confirmedFile).toBeUndefined();
+    // Two previews that differ in a row's file are two plans: their digests differ, and each acceptance names its own.
+    expect(segment(21).digest).not.toBe(next.digest);
+    expect([at(22).digest, at(23).digest]).toEqual([segment(21).digest, segment(21).digest]);
   });
 
   it("refuses the shapes the contract rules out", () => {

@@ -6,7 +6,7 @@
 // review #6). Nothing here takes a path from memory, a plan or a page: `read` has no path parameter.
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, type Stats } from "node:fs";
-import { basename, extname, isAbsolute } from "node:path";
+import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import { GRANT_MAX_MS, MAX_ATTACH_BYTES } from "../protocol.ts";
 
 /** Content types for the files job forms take; anything else goes as application/octet-stream. */
@@ -102,7 +102,9 @@ export class ConfirmedFiles {
     if (!isAbsolute(path)) return { refused: "the confirmed file has no absolute path" };
     // P3 (lead decision): a path that is itself a symlink is refused, not followed. The preview names the link ("Resume.pdf,
     // edited Tue"), and the bytes would come from whatever file it points at, which the user never saw named. W2 had
-    // followed one. A directory link above the file (macOS's /var, /tmp) is resolved below as before.
+    // followed one. Only the directory is resolved (macOS's /var and /tmp are links); the file itself is opened with
+    // O_NOFOLLOW (readWhole), so a link put at the path after this check is refused at the open, not followed (P3 review:
+    // resolving the whole path after an lstat let a link swapped in between them through). The lstat only words the refusal.
     try {
       if (lstatSync(path).isSymbolicLink()) return { refused: "the confirmed path is a link to another file" };
     } catch {
@@ -110,8 +112,7 @@ export class ConfirmedFiles {
     }
     let real: string;
     try {
-      // The file the user saw, with any directory alias resolved now; read() then refuses a symlink put in its place later.
-      real = realpathSync(path);
+      real = join(realpathSync(dirname(path)), basename(path));
     } catch {
       return { refused: "the confirmed file cannot be read" };
     }

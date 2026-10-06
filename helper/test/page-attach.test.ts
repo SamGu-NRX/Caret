@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GRANT_MAX_MS, type HelperMessage, type PageControl } from "../src/protocol.ts";
-import { c, mixedControls } from "./fake-page.ts";
+import { c, chrome, mixedControls, WIN } from "./fake-page.ts";
 import { closeRigs, goalMessages, presses, rig, type Finished, type Rig, type Segment } from "./page-rig.ts";
 
 afterEach(closeRigs);
@@ -151,5 +151,39 @@ describe("what never attaches (P3)", () => {
     // Its preview has no attach step, so any step it names is not one.
     expect(await r.accept(s, { confirmedFile: { step: s.steps.length - 1, path: resume() } })).toBeNull();
     expect(attachVerbs(r)).toBe(0);
+  });
+});
+
+describe("the P3 review's attach findings", () => {
+  it("an attach-only preview accepted with no file runs nothing and still waits for one", async () => {
+    const files = (): PageControl[] => [c("r1", "file", "Resume"), c("r3", "button", "Submit application")];
+    const r = await rig({ goalFiles: true, controls: mixedControls });
+    // The carried goal plans a page of file controls alone (an Ask needs a field to ask about).
+    const s = (await r.ask("fill out this form from my note")) as Segment;
+    await r.accept(s);
+    await settle(r);
+    await r.next(files, "Apply: documents", "/docs");
+    await settle(r);
+    const docs = goalMessages(r).filter((m): m is Segment => m.event === "segment").at(-1) as Segment;
+    expect(docs.steps.map((x) => x.kind)).toEqual(["attach"]);
+    expect(await r.accept(docs)).toBeNull();
+    expect(errors(r).at(-1)).toMatch(/only attaches files: choose one/);
+    // The preview still waits: with a file, the same Tab runs it.
+    await r.accept(docs, { confirmedFile: { step: 0, path: resume() } });
+    await settle(r);
+    expect(r.page.files.get("r1")?.name).toBe("Robin Vale Resume.pdf");
+  });
+
+  it("a file control relabelled to another question before Tab is not the row the user gave the file", async () => {
+    const r = await rig({ goalFiles: true });
+    const s = (await r.ask("fill out this form from my note")) as Segment;
+    const step = s.steps.find((x) => x.kind === "attach")?.index as number;
+    // The page renames its upload field before the user presses Tab.
+    r.page.controls = r.page.controls.map((x) => (x.id === "e13" ? { ...x, name: "Photo ID" } : x));
+    await r.host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN });
+    await r.accept(s, { confirmedFile: { step, path: resume() } });
+    await settle(r);
+    expect(attachVerbs(r)).toBe(0);
+    expect(goalMessages(r).some((m) => m.event === "stopped" && m.reason === "targetChanged")).toBe(true);
   });
 });

@@ -993,6 +993,13 @@ async function main(): Promise<number> {
   };
   const runWizard = async (fs: FixtureSite, drop: boolean): Promise<number> => {
     const oracle = fs.tasks.oracle;
+    // Diagnostics: the worker's focus reports (the content script's ready report among them) and the page walks.
+    let focusReports = 0;
+    const onFocus = session.onFocus;
+    session.onFocus = (m, x) => {
+      focusReports++;
+      onFocus?.(m, x);
+    };
     readTaskFields = async () => {
       const v = await evaluate(TASK_FIELDS_JS);
       if (!Array.isArray(v)) throw new Error(`reading the task page's fields gave ${JSON.stringify(v)?.slice(0, 200)}`);
@@ -1052,8 +1059,9 @@ async function main(): Promise<number> {
         } else {
           // Pages 2 and 3: nothing but the page load. The content script's ready report walks the tab; the carried goal plans it.
           stage = "carry";
+          const f0 = focusReports;
           seg = await nextSegment(mark, ready);
-          if (seg === null) row.note = "no nextPage preview within 5 s of the load";
+          if (seg === null) row.note = `no nextPage preview within 5 s of the load (${focusReports - f0} focus reports from the worker since; document ${host.registry.documentOf(windowId) ?? "?"})`;
         }
         row.previewMs = seg === null ? null : ms(ready);
         if (seg === null) {
@@ -1071,6 +1079,8 @@ async function main(): Promise<number> {
         row.outcome = fin?.outcome ?? "not finished";
         if (fin !== null && fin.left.length > 0) row.note = `left: ${fin.left.join(" / ").slice(0, 300)}`;
         goalId = seg.goalId;
+        const plan = helper.goals.planOf(seg.goalId);
+        row.note = `${row.note === "" ? "" : `${row.note}; `}scope ${plan?.page?.kind ?? "?"}, carrying ${helper.goals.carrying(windowId, null)}`;
         await settleOracle(name);
         const sc = oracle.score(name, expected);
         row.right = sc.right.length;

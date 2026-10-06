@@ -109,8 +109,10 @@ export class HelperServer {
       for (const c of this.consumers) if (!this.savedAnswers.has(c)) c.write(stripped);
       return;
     }
-    // P3: an offer to keep a file names the file, and only a host that shows attach rows may answer it.
-    for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : m.type === "fileSaveOffer" ? this.goalFiles : this.consumers) c.write(line);
+    // P3: an offer to keep a file names the file, and only a host that shows attach rows may answer it; a preview with an
+    // attach row goes only to such hosts too (a host without the capability could not show the row, nor decode it).
+    const files = m.type === "fileSaveOffer" || (m.type === "goalProgress" && m.event === "segment" && m.steps.some((x) => x.kind === "attach"));
+    for (const c of files ? this.goalFiles : m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : this.consumers) c.write(line);
   }
 
   async listen(): Promise<void> {

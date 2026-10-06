@@ -39,10 +39,11 @@ describe("a reader walk cut short (H10)", () => {
     expect(changes.filter((c) => c.kind === "removed")).toEqual([]);
   });
 
-  it("drops a node the walk passed without seeing, and takes the new text of what it reached", () => {
+  it("takes the new text of what it reached, and keeps what it did not send until a complete walk", () => {
     const m = new ScreenModel();
     m.apply(full(1000));
-    // The walk reached the text area (so it passed the bold button, which is gone) and was cut before the status line.
+    // The walk read the text area and was cut before the status line; the bold button it did not send may be gone or
+    // not, and a cut walk cannot tell, so it stays.
     const changes = m.apply(
       cut(
         [node("toolbar", "AXToolbar"), node("scroll", "AXScrollArea"), field("scroll/text", "Order ORD-7731 ships Monday", { parent: "scroll", role: "AXTextArea" })],
@@ -50,9 +51,22 @@ describe("a reader walk cut short (H10)", () => {
       ),
     );
     const w = m.windows.get(W);
-    expect([...(w?.nodes.keys() ?? [])]).toEqual(["toolbar", "scroll", "scroll/text", "status"]);
+    expect([...(w?.nodes.keys() ?? [])]).toEqual(["toolbar", "toolbar/bold", "scroll", "scroll/text", "status"]);
     expect(w?.nodes.get("scroll/text")?.value).toBe("Order ORD-7731 ships Monday");
-    expect(changes.map((c) => `${c.kind}:${c.key}`).sort()).toEqual(["removed:toolbar/bold", "value:scroll/text"]);
+    expect(changes.map((c) => `${c.kind}:${c.key}`)).toEqual(["value:scroll/text"]);
+    // The next complete walk drops it.
+    m.apply(snap([node("toolbar", "AXToolbar"), node("scroll", "AXScrollArea"), field("scroll/text", "Order ORD-7731 ships Monday", { parent: "scroll", role: "AXTextArea" })], { at: 3000, windowId: W, title: "Note", focused: true }));
+    expect(m.windows.get(W)?.nodes.has("toolbar/bold")).toBe(false);
+  });
+
+  it("keeps the text area when a node from after it moved ahead of the cut (P3 review)", () => {
+    const m = new ScreenModel();
+    m.apply(full(1000));
+    // The status line now comes first, and the deadline hit right after it.
+    m.apply(cut([text("status", "Saved")], 2000));
+    const w = m.windows.get(W);
+    expect(w?.nodes.get("scroll/text")?.value).toBe("Order ORD-7731 ships Friday");
+    expect(w?.nodes.size).toBe(5);
   });
 
   it("keeps the whole window when the cut walk reached nothing it knew", () => {

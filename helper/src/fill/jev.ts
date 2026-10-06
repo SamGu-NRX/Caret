@@ -170,11 +170,20 @@ export function makeJevClient(key: () => string, timeoutMs = 10_000): AskJev {
         continue;
       }
       if (!res.ok) {
-        // The body is the service's own text; the key is cut out in case it is ever echoed back.
-        const detail = (await res.text()).slice(0, 300).split(key()).join("[redacted]");
-        throw new JevHttpError(res.status, detail);
+        // The body is the service's own text; the key is cut out in case it is ever echoed back. A body that cannot be read
+        // still leaves the status, which says how the request failed (P3 review).
+        const body = await res.text().catch(() => "(the body could not be read)");
+        throw new JevHttpError(res.status, body.slice(0, 300).split(key()).join("[redacted]"));
       }
-      const parsed = JevResponse.parse(await res.json());
+      let json: unknown;
+      try {
+        json = await res.json();
+      } catch (e) {
+        // The answer stopped arriving (a dropped connection, the timeout) or was not JSON (P3 review).
+        if (e instanceof SyntaxError) throw new JevHttpError(res.status, "the answer was not JSON");
+        throw new JevNetworkError(`Jev's answer did not arrive whole: ${e instanceof Error ? e.message : String(e)}`, e);
+      }
+      const parsed = JevResponse.parse(json);
       const answers: JevResult["answers"] = {};
       const nouls: Record<string, number> = {};
       for (const [k, a] of Object.entries(parsed.answers)) {

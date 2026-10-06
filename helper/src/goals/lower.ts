@@ -501,7 +501,8 @@ function executorPlan(id: string, s: { domain: GoalDomain; steps: readonly GoalS
       role: slot(`r${i}`, x.target.role, `the role of target ${i + 1}`),
       describe: slot(`l${i}`, x.target.label, `the name of target ${i + 1}`, d.kind === "window" ? d.windowId : undefined),
       exact: true as const,
-      ...(x.target.control === "button" ? { label: `{{l${i}}}` } : {}),
+      // A button's own label, and (P3) a file control's: the executor finds the element only while it still reads so.
+      ...(x.target.control === "button" || (x.target.control === "file" && x.target.label !== "") ? { label: `{{l${i}}}` } : {}),
     };
     const says = slot(`s${i}`, x.says, `step ${i + 1}`);
     if (x.kind === "write") {

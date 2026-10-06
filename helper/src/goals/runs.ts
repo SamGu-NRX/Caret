@@ -219,6 +219,8 @@ export class GoalRuns {
   /** Every task id a goal ever ran: none of them is resumed or run by any other path (owns). */
   private readonly ever = new Set<string>();
   private replans = 0;
+  /** P3: host sessions that left (hostGone): a fresh plan that finishes planning after its host left is not offered. Never reused. */
+  private readonly goneHosts = new Set<string>();
   /** P3: finished page goals waiting for the user's Next, by page window id (one per window: the latest finished). */
   private readonly carries = new Map<string, Carry>();
   /** P3: the document of each page window a carry is planning or planned for, so the ambient offer stays out of its way. */
@@ -330,6 +332,8 @@ export class GoalRuns {
     // user can choose another. Attach rows given no file are dropped from the run below and left to the user.
     const cf = m.confirmedFile;
     const attachStep = cf === undefined ? undefined : seg.steps.find((s) => s.index === cf.step);
+    // A segment of attach rows alone runs nothing without a file: the preview waits for one (P3 review).
+    if (cf === undefined && seg.steps.every((s) => s.kind === "attach")) return { refused: "this preview only attaches files: choose one, then accept again; nothing ran" };
     if (cf !== undefined) {
       if (attachStep === undefined || attachStep.kind !== "attach" || attachStep.target.domain.kind !== "window") return { refused: `step ${cf.step + 1} of segment ${m.segment + 1} is not an attach step; nothing runs` };
       if (this.deps.confirmFile === undefined) return { refused: "this helper attaches no files; nothing runs" };
@@ -389,8 +393,9 @@ export class GoalRuns {
       if (w.window.title !== d.title) return { reason: "targetChanged", says: `'${d.title}' is now titled '${w.window.title}'` };
       for (const s of seg.steps) {
         const n = w.nodes.get(s.target.key);
-        // A button is the control its label names (the boundary checks the label again right before the press).
-        if (n === undefined || n.role !== s.target.role || (s.target.control === "button" && (n.label ?? "").trim() !== s.target.label)) {
+        // A button is the control its label names (the boundary checks the label again right before the press), and so is
+        // a file control (P3 review: a page that relabels it to another upload question is not the row the user saw).
+        if (n === undefined || n.role !== s.target.role || ((s.target.control === "button" || s.target.control === "file") && (n.label ?? "").trim() !== s.target.label)) {
           return { reason: "targetChanged", says: `'${s.target.label}' in '${d.title}' is gone or was replaced` };
         }
         if (s.kind === "write") {
@@ -658,9 +663,10 @@ export class GoalRuns {
    * that window's next page: the ambient offer on load (helper.ts) leaves such a page to it.
    */
   carrying(windowId: string, document: string | null): boolean {
+    if (document !== null && this.carried.get(windowId) === document) return true;
     const c = this.carries.get(windowId);
-    if (c !== undefined && c.until >= this.deps.now()) return true;
-    return document !== null && this.carried.get(windowId) === document;
+    // A carry waiting on this very document waits for the page after it: this one is not the carry's.
+    return c !== undefined && c.until >= this.deps.now() && (document === null || c.document !== document);
   }
 
   /**
@@ -670,7 +676,10 @@ export class GoalRuns {
    * document still waiting for its Tab stops: it could only be refused now.
    */
   private carryOn(c: Carry, windowId: string, document: string): void {
-    this.carries.delete(windowId);
+    // The carry goes on waiting for the page after this one, under the same instruction and scope, until a carried goal
+    // finishes (keepCarry then replaces it with what that goal did and left): a page Caret found nothing for, or whose
+    // preview the user did not take, does not end it (P3 eval: wizard-2 had nothing to fill, and wizard-3 then got none).
+    this.carries.set(windowId, { ...c, document, until: this.deps.now() + CARRY_MS });
     this.carried.set(windowId, document);
     if (this.carried.size > 64) this.carried.delete(this.carried.keys().next().value as string);
     for (const run of this.runs.values()) {
@@ -686,7 +695,13 @@ export class GoalRuns {
         } catch {
           plan = null;
         }
-        if (plan === null || this.runs.has(plan.goalId)) return;
+        // Planning took Jev's time: the host may have gone, or the user may already be on yet another page (P3 review).
+        const current = this.carried.get(windowId) === document && this.deps.pageDocument?.(windowId) === document;
+        if (plan === null || !current || this.gone(c.session) || this.runs.has(plan.goalId)) {
+          // A page the carry has no plan for is the ambient offer's again (helper.ts pageWalked): P3 review.
+          if (this.carried.get(windowId) === document) this.carried.delete(windowId);
+          return;
+        }
         const msg = this.propose(plan, c.session, null, { goalId: c.goalId, carried: c.completed, pressed: [], owed: c.owed });
         this.deps.publish(msg.event === "segment" ? { ...msg, reason: "nextPage" } : msg);
       })(),
@@ -811,7 +826,10 @@ export class GoalRuns {
     } catch {
       plan = null;
     }
-    if (plan === null || this.runs.has(plan.goalId)) return null;
+    if (plan === null || this.runs.has(plan.goalId) || this.gone(run.session)) return null;
+    // A reveal's fresh plan is for the document the writes revealed it on: one the user has left by now is not offered.
+    const page = run.plan.page;
+    if (reason === "afterReveal" && page !== undefined && this.deps.pageDocument?.(page.windowId) !== run.plan.inventory.documents.get(page.windowId)) return null;
     const msg = this.propose(plan, run.session, null, { goalId: run.plan.goalId, carried: completed, pressed: [...run.pressed], owed });
     return msg.event === "segment" ? { ...msg, reason } : msg;
   }
@@ -927,6 +945,13 @@ export class GoalRuns {
   hostGone(session: string): void {
     for (const run of this.runs.values()) if (run.session === session && run.state === "awaiting") this.stop(run, "hostGone", null, SAYS.hostGone);
     for (const [windowId, c] of [...this.carries]) if (c.session === session) this.carries.delete(windowId);
+    this.goneHosts.add(session);
+    if (this.goneHosts.size > 256) this.goneHosts.delete(this.goneHosts.keys().next().value as string);
+  }
+
+  /** Whether the host session a goal was offered to has left. In process (no session) it never does. */
+  private gone(session: string | undefined): boolean {
+    return session !== undefined && this.goneHosts.has(session);
   }
 
   /** A new reader numbers windows from scratch: no preview of the old session can run. */

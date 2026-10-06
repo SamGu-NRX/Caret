@@ -70,6 +70,19 @@ describe("the Jev client's typed failures", () => {
     expect((slow as Error).message).toContain("within 50 ms");
   });
 
+  it("keeps the status when the error body cannot be read, and says a broken answer is a network failure (P3 review)", async () => {
+    const broken = (status: number): Response => new Response(new ReadableStream({ start: (c) => c.error(new TypeError("terminated")) }), { status });
+    vi.stubGlobal("fetch", vi.fn(async () => broken(402)));
+    const billing = await makeJevClient(() => "k")(REQ).catch((x: unknown) => x);
+    expect(jevFailureKind(billing)).toBe("billing");
+    vi.stubGlobal("fetch", vi.fn(async () => broken(200)));
+    const cut = await makeJevClient(() => "k")(REQ).catch((x: unknown) => x);
+    expect(jevFailureKind(cut)).toBe("network");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>oops</html>", { status: 200 })));
+    const html = await makeJevClient(() => "k")(REQ).catch((x: unknown) => x);
+    expect(jevFailureKind(html)).toBe("service");
+  });
+
   it("finds the kind through a wrapper's cause, and none in an error that is not the client's", () => {
     expect(jevFailureKind(new Error("wrapped", { cause: new JevHttpError(402, "x") }))).toBe("billing");
     expect(jevFailureKind(new Error("Jev HTTP 402: looks like one but is not"))).toBeNull();
