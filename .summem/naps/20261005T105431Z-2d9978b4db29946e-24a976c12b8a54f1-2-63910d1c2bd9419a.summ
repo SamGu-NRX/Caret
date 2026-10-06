@@ -1,1 +1,0 @@
-D2-06/B30: GoalRuns.blocked (inside Helper.authorize) must return null once a segment ends, or undo is refused. A goal host's Ask with route plan comes back as AskGoal (planAsk goals:true) for helper.offerGoal; other consumers keep planTask/planWithCode.
