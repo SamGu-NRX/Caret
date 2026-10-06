@@ -51,8 +51,22 @@ export interface Corpus {
 
 /** Why a must-refuse ask is refused, so the scoreboard can check the sentence the user reads (planner/says.ts, B26). */
 export const REFUSE_REASONS = ["neverTyped", "payment", "submit", "send", "whichPerson", "noSuchField", "notOnScreen"] as const;
+/**
+ * A1: an ask whose right outcome is a question rather than a fill names the part asked about in `ask` ("the right
+ * question with its right option", brief A1); `expected` then holds what the fill gives after the right pick.
+ * `kind` is the set's own label for the ask (B31: namedFields, section, wholeForm, person, inlineValue, mustRefuse).
+ */
 const Ask = z
-  .object({ id: z.string(), form: z.string(), instruction: z.string().min(1), expected: z.union([z.literal("refuse"), z.record(z.string(), z.string())]), reason: z.enum(REFUSE_REASONS).optional() })
+  .object({
+    id: z.string(),
+    form: z.string(),
+    instruction: z.string().min(1),
+    expected: z.union([z.literal("refuse"), z.record(z.string(), z.string())]),
+    reason: z.enum(REFUSE_REASONS).optional(),
+    ask: z.enum(["fields", "source", "person"]).optional(),
+    kind: z.string().optional(),
+    note: z.string().optional(),
+  })
   .strict();
 export type CorpusAsk = z.infer<typeof Ask>;
 
