@@ -2,7 +2,10 @@
 // below with --engine gateway:convaiinnovations/laya-free, the J1 replay cache in its own directory, and the slow layer
 // (engines/decide/slow.ts) pacing and guarding every request; the loop and its rules are in slow-eval-core.ts.
 //
-//   node scripts/slow-eval.ts [--dir DIR] [--only id,id] [--pace-ms MS]
+//   node scripts/slow-eval.ts [--dir DIR] [--only id,id] [--pace-ms MS] [--engine NAME] [--spend-limit USD]
+//
+// --engine is any harness engine but canned (default Laya); a paid one (jev) needs --spend-limit, passed to each eval,
+// and stays under J1's daily cap (CARET_JEV_DAILY_CAP). Give each engine its own --dir.
 //
 // DIR (~/.caret-run/evidence/screen/r1) holds:
 //   status.json          the run's state, rewritten at every step: phase, current set and pass, each set's counts
@@ -19,6 +22,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { engineName } from "../src/engines/decide/port.ts";
 import { DEFAULT_PACE_MS, DISK_FLOOR_GIB, HOLD_FILE, REAL_CLOCK, runStop, type SlowEvent } from "../src/engines/decide/slow.ts";
 import { newStatus, passCounts, Runner, type EvalSet, type Held, type PassHandle, type RunnerStatus, type SetStatus } from "./slow-eval-core.ts";
 import { cell, eligibleByPage, percentile, reportFile, scoreDir, type SetScore } from "./slow-eval-score.ts";
@@ -39,8 +43,16 @@ const { values: args } = parseArgs({
     dir: { type: "string", default: join(EVIDENCE, "r1") },
     only: { type: "string" },
     "pace-ms": { type: "string", default: String(DEFAULT_PACE_MS) },
+    engine: { type: "string", default: LAYA },
+    "spend-limit": { type: "string" },
   },
 });
+const ENGINE = engineName(args.engine as string);
+if (ENGINE === "canned") throw new Error("--engine canned needs no slow runner: its answers come from the key");
+const PAID = ENGINE !== LAYA;
+if (PAID && args["spend-limit"] === undefined) throw new Error(`--engine ${ENGINE} costs money: give --spend-limit USD, the most each eval run may spend`);
+/** Each eval's own spend limit, for a paid engine. */
+const SPEND = PAID ? ["--spend-limit", args["spend-limit"] as string] : [];
 const DIR = args.dir as string;
 const CACHE = join(DIR, "cache");
 const PACE_MS = Number(args["pace-ms"]);
@@ -64,7 +76,7 @@ const asks = (id: string, title: string, file: string, jev: string): SetDef => (
   browser: false,
   timeoutMs: 180 * MIN,
   cwd: HELPER,
-  argv: (out) => ["scripts/realfill-asks.ts", "--out", out, "--asks-file", file, "--maker", "heads", "--engine", LAYA, "--log-jev", join(out, "jev.ndjson")],
+  argv: (out) => ["scripts/realfill-asks.ts", "--out", out, "--asks-file", file, "--maker", "heads", "--engine", ENGINE, "--log-jev", join(out, "jev.ndjson"), ...SPEND],
   refs: { jev: [[`P1 ${jev}`, join(EVIDENCE, "p1", jev)]] },
 });
 const page = (id: string, title: string, kind: "tasks" | "corpus" | "fill" | "wizard", extra: string[], refs: SetDef["refs"], drop = false): SetDef => ({
@@ -75,7 +87,7 @@ const page = (id: string, title: string, kind: "tasks" | "corpus" | "fill" | "wi
   // The heavy lease's TTL is 60 min (with-heavy.sh --ttl 60).
   timeoutMs: 55 * MIN,
   cwd: ROOT,
-  argv: (out) => ["fixtures/web-form/page-loop-eval.ts", "--sign-identity", SIGN_ID, "--engine", LAYA, "--out", out, "--log-jev", join(out, "jev.ndjson"), ...extra],
+  argv: (out) => ["fixtures/web-form/page-loop-eval.ts", "--sign-identity", SIGN_ID, "--engine", ENGINE, "--out", out, "--log-jev", join(out, "jev.ndjson"), ...SPEND, ...extra],
   refs,
   drop,
 });
@@ -98,7 +110,7 @@ const ALL: SetDef[] = [
     browser: true,
     timeoutMs: 55 * MIN,
     cwd: ROOT,
-    argv: (out) => ["fixtures/web-form/tab-source-journey.ts", "--sign-identity", SIGN_ID, "--engine", LAYA, "--out", out],
+    argv: (out) => ["fixtures/web-form/tab-source-journey.ts", "--sign-identity", SIGN_ID, "--engine", ENGINE, "--out", out, ...SPEND],
     refs: { canned: [c2("journey-c2b")] },
   },
   page("corpus-goal", "Corpus + W4 goal (Ask on the page)", "corpus", ["--path", "goal"], { canned: [j1("corpus-goal-canned"), c2("corpus-goal-c2c")], jev: [["P2 goal-live-3 (live Jev)", join(EVIDENCE, "p2", "goal-live-3")]] }),
@@ -254,13 +266,13 @@ function writeResults(status: RunnerStatus): void {
     return `| ${set.title} | ${ours} | ${traffic} | ${refCell(set.refs.canned, set)} | ${refCell(set.refs.jev, set)} |`;
   });
   const md = [
-    "# Slow Laya evals (R1)",
+    `# Slow evals on ${ENGINE} (R1)`,
     "",
-    `Engine ${LAYA} (free, provider boundless), J1's replay cache in ${CACHE.replace(homedir(), "~")}, at most one request per ${PACE_MS / 1000} s. Code: v2/evals (e7dd882 + R1's runner). Updated ${new Date().toISOString()}; runner ${status.state}${status.stopReason === undefined ? "" : ` (${status.stopReason})`}, ${status.phase}.`,
+    `Engine ${ENGINE}${PAID ? `, at most $${args["spend-limit"]} per eval run` : " (free, provider boundless)"}, J1's replay cache in ${CACHE.replace(homedir(), "~")}, at most one request per ${PACE_MS / 1000} s. Code: v2/evals (e7dd882 + R1's runner). Updated ${new Date().toISOString()}; runner ${status.state}${status.stopReason === undefined ? "" : ` (${status.stopReason})`}, ${status.phase}.`,
     "",
     "A Laya row is the set's last pass, whose every answer replayed from the cache (UNSETTLED when it still sent requests). Fields: right / eligible, wrong, left = eligible fields Caret left alone. Asks: right of 20, wrong includes an Ask continued after a pick. Requests are those sent to Laya over all passes; wait = pacing + backoff; latency is Laya's time to the response headers. References are scored by the same code (helper/scripts/slow-eval-score.ts). Canned runs answer from the key, so they measure the loop, not a model: J1's ran this branch's fill code, C2's and F2's later v2/screen code.",
     "",
-    "| Set | Laya (this run) | Laya requests | Canned | Jev, last live run |",
+    "| Set | This run | Requests sent | Canned | Jev, last live run |",
     "| --- | --- | --- | --- | --- |",
     ...rows,
     "",

@@ -7,7 +7,7 @@
 // - spaces requests at least `paceMs` apart, measured from the last request any slow runner on this Mac sent (a shared
 //   file), so a new pass or a second process does not burst;
 // - sends with the client's own 429 retry off, so the runner's backoff (30 s doubling to 10 min) is the only one;
-// - ends the pass on a 429 or a transient failure, and stops the run on any cost above 0, a refused gateway answer, an
+// - ends the pass on a 429 or a transient failure, and stops the run on any cost above 0 (free models), a refused gateway answer, an
 //   auth or billing failure, or the daily cap. Ending a pass never answers the eval: the request stays unanswered and
 //   the process is terminated, so the eval cannot score a limit as an abstention. The runner waits, then reruns the set,
 //   whose answered requests replay from the cache, so the request that met the limit is the next one sent;
@@ -45,6 +45,8 @@ export const REAL_CLOCK: SlowClock = { now: () => Date.now(), sleep: (ms) => new
 
 export interface SlowOptions {
   clock: SlowClock;
+  /** A free model (Laya): any cost above 0 stops the run. A paid engine (Jev) is held to J1's daily cap instead. */
+  freeOnly: boolean;
   paceMs: number;
   /** When the last request any slow runner sent left (epoch ms), shared between processes. */
   pace: { read(): number | null; write(at: number): void };
@@ -161,7 +163,7 @@ export function slowAsk(inner: AskJev, o: SlowOptions): AskJev {
           throw e;
       }
     }
-    if (!(Number.isFinite(r.costUsd) && r.costUsd === 0)) {
+    if (!Number.isFinite(r.costUsd) || (o.freeOnly && r.costUsd !== 0)) {
       end("cost", `an answer cost $${r.costUsd}; free Laya must cost 0`);
       return never();
     }

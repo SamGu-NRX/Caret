@@ -109,6 +109,7 @@ function slowFromEnv(engine: DecideEngine, env: NodeJS.ProcessEnv, cacheDir: str
   const where = { holdFile: env.CARET_SLOW_EVAL_HOLD ?? HOLD_FILE, diskPath: homedir(), floorGiB: Number(env.CARET_SLOW_EVAL_DISK_GIB ?? DISK_FLOOR_GIB) };
   return slowAsk(engine.ask, {
     clock: REAL_CLOCK,
+    freeOnly: engine.model === LAYA_FREE_MODEL,
     paceMs,
     pace: filePace(env.CARET_SLOW_EVAL_PACE_FILE ?? PACE_FILE),
     failures: fileFailures(join(cacheDir, "failures")),

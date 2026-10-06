@@ -1,1 +1,0 @@
-L1: Cotypist's Gemma E2B is a base model, so local draft prompts are few-shot documents (writer/local-draft.ts); caret-local-model refuses a request with no grammar. localTextRequest.deadlineMs is epoch ms, not a duration.

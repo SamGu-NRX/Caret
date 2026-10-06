@@ -52,6 +52,7 @@ function layer(inner: AskJev, over: Partial<SlowOptions> = {}): Layer {
   let shared: number | null = null;
   const ask = slowAsk(inner, {
     clock,
+    freeOnly: true,
     paceMs: 3000,
     pace: { read: () => shared, write: (at) => void (shared = at) },
     failures: { get: (k) => failures.get(k), put: (k, e) => void failures.set(k, e) },
@@ -89,7 +90,7 @@ describe("slow layer: pacing", () => {
     const l0 = fakeClock();
     let shared: number | null = l0.now() - 1000;
     const sent: number[] = [];
-    const ask = slowAsk(async (r) => (sent.push(l0.now()), answer(qOf(r))), { clock: l0, paceMs: 3000, pace: { read: () => shared, write: (at) => void (shared = at) }, failures: { get: () => undefined, put: () => {} }, keyOf: qOf, stopCheck: () => null, log: () => {}, endPass: () => {} });
+    const ask = slowAsk(async (r) => (sent.push(l0.now()), answer(qOf(r))), { clock: l0, freeOnly: true, paceMs: 3000, pace: { read: () => shared, write: (at) => void (shared = at) }, failures: { get: () => undefined, put: () => {} }, keyOf: qOf, stopCheck: () => null, log: () => {}, endPass: () => {} });
     const t0 = l0.now();
     await ask(req("a"));
     expect(sent[0]! - t0).toBe(2000);
@@ -140,6 +141,12 @@ describe("slow layer: stops", () => {
       expect(l.ends).toEqual([reason]);
     });
   }
+
+  it("lets a paid engine's cost through: Jev is held to the daily cap, not to 0", async () => {
+    const l = layer(async () => answer("a", 0.0001), { freeOnly: false });
+    expect((await settled(l.ask(req("a")))).value?.costUsd).toBe(0.0001);
+    expect(l.ends).toEqual([]);
+  });
 
   it("stops on HOLD or low disk before sending", async () => {
     for (const reason of ["hold", "disk"] as const) {

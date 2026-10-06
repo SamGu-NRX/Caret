@@ -1,0 +1,1 @@
+Hosts before v2/answers throw on an unknown memoryDocument id, losing the memory list (answers.md only to savedAnswers hosts). P1: test/setup/no-groq.ts fails any test file reading process.env.GROQ_API_KEY; pass explicit env objects in tests.
