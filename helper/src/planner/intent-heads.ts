@@ -12,7 +12,8 @@
 // writer's (ask.ts confirmScope: Jev, asked twice, confirms fields the instruction does not name and a whole form the
 // instruction does not state). Values the instruction spells out are tied to fields by code (tieLiterals), never by Jev.
 import { asksForWholeForm } from "./scope-words.ts";
-import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
+import { JevHttpError, jevFailureSays, type AskJev, type JevRequest, type JevResult } from "../fill/jev.ts";
+import { SAYS, SaidError } from "./says.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { ROUTE_CUTOFF, NOUL_FLOOR } from "./intent-makers.ts";
 import type { AskIntent, IntentField, IntentSnapshot } from "./intent.ts";
@@ -126,6 +127,8 @@ export function headsIntentMaker(askJev: AskJev): IntentMaker {
       try {
         r = await askJev(headsRequest(snap));
       } catch (e) {
+        // H11: a 402 is the account's credits, said as such; any other failure keeps the planner's own words.
+        if (e instanceof JevHttpError && e.status === 402) throw new SaidError("jevFailed", jevFailureSays(e, SAYS.unreachable), `the Jev request failed: ${e.message.slice(0, 200)}`);
         throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
       }
       const use: MakerUse = { maker: "heads", model: r.model, calls: 1, inputTokens: r.inputTokens, outputTokens: 0, costUsd: r.costUsd, latencyMs: r.latencyMs };

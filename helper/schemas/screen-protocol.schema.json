@@ -8131,6 +8131,123 @@
                     "minLength": 1,
                     "maxLength": 600
                   }
+                },
+                "page": {
+                  "type": "object",
+                  "properties": {
+                    "windowId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "anchor": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "prefixItems": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            }
+                          ],
+                          "items": false,
+                          "minItems": 4,
+                          "maxItems": 4
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "viewport": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "prefixItems": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            }
+                          ],
+                          "items": false,
+                          "minItems": 4,
+                          "maxItems": 4
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "from": {
+                      "type": "string",
+                      "maxLength": 300
+                    },
+                    "rows": {
+                      "maxItems": 24,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "step": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "label": {
+                            "type": "string",
+                            "maxLength": 300
+                          },
+                          "value": {
+                            "type": "string",
+                            "maxLength": 900
+                          },
+                          "picked": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "step",
+                          "label",
+                          "value",
+                          "picked"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "attach": {
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      }
+                    }
+                  },
+                  "required": [
+                    "windowId",
+                    "anchor",
+                    "viewport",
+                    "from",
+                    "rows",
+                    "attach"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
