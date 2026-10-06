@@ -1,0 +1,1 @@
+R1: helper/scripts/slow-eval.sh runs all eval sets on Laya in the background; a 429 ends the pass and the set reruns from the replay cache. Other Laya users queue on lockf -k ~/.caret-run/locks/laya.lock; rejected requests replay from cache/failures.
