@@ -148,7 +148,8 @@ function lowerFill(t: TargetBinding, v: ValueBinding, gated: boolean): Pick<Goal
     case "time": {
       if (!page) return { kind: "handoff", says: `Caret leaves setting ${named(t)} to you`, writes: null, handoff: "unverifiable" };
       // A date input takes YYYY-MM-DD, a date-and-time one YYYY-MM-DDTHH:MM (P2: fill's readDateTime), a time one HH:MM.
-      const shape = t.control === "time" ? /^\d{2}:\d{2}$/ : /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?$/;
+      // C2: a month input YYYY-MM, only as fill's own pick, which read the input's format (fill.ts controlValue).
+      const shape = t.control === "time" ? /^\d{2}:\d{2}$/ : gated ? /^\d{4}-\d{2}(?:-\d{2}(?:T\d{2}:\d{2})?)?$/ : /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?$/;
       if (v.origin.kind !== "derived" || !shape.test(v.text)) return { drop: `the field takes a ${t.control} the value resolver read, and '${clip(v.text)}' is not one` };
       if (t.value !== "" && t.value !== v.text) throw new GoalError("notEmpty", `${named(t)} already holds a ${t.control}, so Caret will not change it`, t.ref);
       return { kind: "write", says: `${t.label}: ${v.text}`, writes: v.text, handoff: null };

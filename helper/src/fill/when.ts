@@ -6,6 +6,7 @@
 import { Temporal } from "@js-temporal/polyfill";
 import { ValueResolver, type ResolveContext } from "../values/resolve.ts";
 import { sayDate, sayMoment } from "../values/date-time.ts";
+import { monthYear } from "./derive.ts";
 
 const resolver = new ValueResolver();
 
@@ -21,7 +22,18 @@ export function readDate(text: string, ctx: ResolveContext): { value: string; di
   return { value: day.toString(), display: sayDate(day) };
 }
 
-const MERIDIEM = /\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*([ap])\.?\s*m\b\.?/giu;
+const MONTH_SAYS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/**
+ * C2 (lead decision 1): the one month and year a span names (derive.ts monthYear), as an HTML month input holds it
+ * (YYYY-MM) with how the host says it ("August 2022"); null when it names none or could name two.
+ */
+export function readMonth(text: string): { value: string; display: string } | null {
+  const m = monthYear(text);
+  return m === null ? null : { value: `${m.year}-${String(m.month).padStart(2, "0")}`, display: `${MONTH_SAYS[m.month - 1]} ${m.year}` };
+}
+
+const MERIDIEM =/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*([ap])\.?\s*m\b\.?/giu;
 const H24 = /(?<![\d:])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])(?!\s*[ap]\.?\s*m\b)/giu;
 
 /** The one clock time a span names, as HH:MM (24-hour) with how the host says it; null when it names none, several, or no am/pm for an hour under 13. */

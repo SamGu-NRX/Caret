@@ -18,8 +18,8 @@ import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
-import { asksCountry, datePart, fieldPart, joinName, namePart, partFits, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { clockTime, readClock, readDate, readDateTime } from "./when.ts";
+import { asksCountry, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 import type { SavedAnswer } from "../memory/answers.ts";
@@ -644,6 +644,17 @@ function partOf(part: FillPart, text: string): string | null {
   if (part === "state") return splitAddress(text)?.state ?? splitPlace(text)?.state ?? null;
   if (part === "country") return splitPlace(text)?.country ?? null;
   return null;
+}
+/**
+ * C2 (lead decision 1): the option of a month or year menu that the month and year the user wrote name ("Aug '22",
+ * "08/2022", or a month's name alone for a month menu), when its options are not named as written: "August" or "08"
+ * for "Aug '22", "2022" for "Aug '22". Null when none does, or more than one.
+ */
+function dateOption(part: "month" | "year", options: readonly string[], text: string): string | null {
+  const my = monthYear(text);
+  if (part === "year") return my === null ? null : matchOption(options, String(my.year));
+  const month = my?.month ?? monthIndex(text);
+  return month === null ? null : monthOption(options, month);
 }
 /** Label words that say only a field's kind, so they cannot tie one of a person's phones or emails to the field. */
 const KIND_ONLY_WORDS: ReadonlySet<string> = new Set(["phone", "telephone", "tel", "mobile", "cell", "number", "email", "mail", "address", "contact"]);
@@ -1289,7 +1300,8 @@ export async function proposeFill(
    * - a box: the span states the fact the box asks (controls.ts statesFact) or lists the box's label among others
    *   (namedInList). A box the user speaks in gets no value (boxKind). Written only for a box that asks the user a fact,
    *   from the yes of a "Label: yes" line in the window the user just left, and never an ARIA switch;
-   * - a date, time or date and time: read by the value resolver in that format (when.ts); a month or week is the user's.
+   * - a date, time or date and time: read by the value resolver in that format (when.ts); a month by the month and year
+   *   the user wrote (C2, when.ts readMonth); a week is the user's.
    * A control whose label, nearest label or section reads as consent, certification or a sign-up gets no value at all.
    * A Yes/No question built from toggle buttons (W4) is never written: its press cannot be undone with the rest.
    */
@@ -1309,7 +1321,7 @@ export async function proposeFill(
         // is exactly (partOf).
         const whole = matchOption(options, text);
         const piece = whole === null && f.part !== null ? partOf(f.part, text) : null;
-        const exact = whole ?? (piece === null ? null : matchOption(options, piece));
+        const exact = whole ?? (piece === null ? null : matchOption(options, piece)) ?? (f.part === "month" || f.part === "year" ? dateOption(f.part, options, text) : null);
         if (exact !== null) return { value: exact, display: exact, writes: page && !press };
         const o = optionInText(options, text);
         return o === null ? { why: "ambiguous" } : { value: o, display: o, writes: false };
@@ -1334,6 +1346,11 @@ export async function proposeFill(
       }
       case "date": {
         const format = f.form?.format ?? "date";
+        // C2 (lead decision 1): a month input takes the month and year the user wrote, converted to its own format.
+        if (format === "month") {
+          const m = readMonth(text);
+          return m === null ? { why: "ambiguous" } : { ...m, writes: page };
+        }
         if (format === "datetime") {
           const dt = readDateTime(text, resolveCtx);
           return dt === null ? { why: "ambiguous" } : { ...dt, writes: page };

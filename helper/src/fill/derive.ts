@@ -187,6 +187,66 @@ export function splitDate(text: string): { month: string | null; year: string } 
   return { month: MONTH_NAME.exec(t)?.[1] ?? null, year };
 }
 
+const MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"] as const;
+
+/** C2: the month (1 to 12) a month's name or its abbreviation names ("Aug", "Sept.", "August"), compared without case; null for anything else. */
+export function monthIndex(word: string): number | null {
+  const w = word.trim().toLowerCase().replace(/\.$/u, "");
+  const i = MONTH_NAMES.findIndex((m) => m === w || (m.startsWith(w) && (w.length === 3 || w === "sept")));
+  return i < 0 ? null : i + 1;
+}
+
+const MONTH_WORD = String.raw`(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?`;
+const NAMED_MONTH_YEAR = new RegExp(`^${MONTH_WORD},?\\s+((?:1[89]|2\\d)\\d{2})$`, "iu");
+const NAMED_MONTH_SHORT_YEAR = new RegExp(`^${MONTH_WORD}\\s+['’](\\d{2})$`, "iu");
+const NUMBER_MONTH_YEAR = /^(0?[1-9]|1[0-2])\s*\/\s*((?:1[89]|2\d)\d{2})$/u;
+const ISO_MONTH = /^((?:1[89]|2\d)\d{2})-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\d|3[01]))?$/u;
+
+/**
+ * C2 (lead decision 1): the one month and year a span names as the user wrote it: "August 2022", "Aug. 2022", "Aug
+ * '22", "08/2022", "2022-08", or a whole date that names its month ("October 18, 2026", "2026-11-01"). Read only
+ * from the whole span, so "Started in August 2022" or "August 2022 to May 2023" is null. A year after an apostrophe
+ * reads as 2000 to 2039 for '00 to '39 and 1970 to 1999 for '70 to '99; '40 to '69 could be either century and is
+ * null. Null too for a season, a bare year, and "08/22" (a month and a day, or a month and a year).
+ */
+export function monthYear(text: string): { month: number; year: number } | null {
+  const t = text.trim().replace(/\s+/gu, " ");
+  const named = NAMED_MONTH_YEAR.exec(t);
+  if (named !== null) {
+    const month = monthIndex(named[1] as string);
+    return month === null ? null : { month, year: Number(named[2]) };
+  }
+  const short = NAMED_MONTH_SHORT_YEAR.exec(t);
+  if (short !== null) {
+    const month = monthIndex(short[1] as string);
+    const yy = Number(short[2]);
+    const year = yy <= 39 ? 2000 + yy : yy >= 70 ? 1900 + yy : null;
+    return month === null || year === null ? null : { month, year };
+  }
+  const num = NUMBER_MONTH_YEAR.exec(t);
+  if (num !== null) return { month: Number(num[1]), year: Number(num[2]) };
+  const iso = ISO_MONTH.exec(t);
+  if (iso !== null) return { month: Number(iso[2]), year: Number(iso[1]) };
+  // A whole date with its month named, as splitDate reads one ("October 18, 2026").
+  const d = splitDate(t);
+  const month = d?.month === null || d?.month === undefined ? null : monthIndex(d.month);
+  return d === null || month === null ? null : { month, year: Number(d.year) };
+}
+
+/**
+ * C2: the one option of a month menu that names month `month` (1 to 12): its name or three-letter abbreviation, with
+ * or without a period, or its number with or without a leading zero. Null when none does, or more than one ("Aug" and
+ * "August" both listed).
+ */
+export function monthOption(options: readonly string[], month: number): string | null {
+  const hits = options.filter((o) => {
+    const t = o.trim();
+    if (/^\d{1,2}$/u.test(t)) return Number(t) === month;
+    return monthIndex(t) === month;
+  });
+  return hits.length === 1 ? (hits[0] as string) : null;
+}
+
 /** Whether a field asks for a country ("Country", "Country of residence"), not a country code. Written for common form labels, not measured. */
 export function asksCountry(label: string | null): boolean {
   if (label === null) return false;
