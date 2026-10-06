@@ -41,8 +41,9 @@ export interface HarnessEngine {
  * probabilities pass callers' floors that Jev's would not; "1,1" runs it raw, for fitting.
  */
 export const CALIBRATIONS: Readonly<Record<string, Calibration>> = {
-  // B24 read raw (T 1, 1) gave no wrong value (runs/b24-qwen3-4b-T1: 1 right, 4 partial, 4 asked, 11 refused), so the
-  // smallest temperature that keeps B24 at 0 wrong is 1. Held-out results: evidence/screen/j1 bake-off.
+  // B24 read raw (T 1, 1) gave no wrong value (runs/b24-qwen3-4b-v2: 1 right, 4 partial), so the smallest temperature
+  // that keeps B24 at 0 wrong is 1. Held out, it is not usable: B25 3 wrong, F1's blind tasks 1, the corpus 2
+  // (evidence/screen/j1/bakeoff.md). Kept so the bake-off reruns as it ran.
   "qwen3-4b-instruct-2507-q4km": { choiceT: 1, noulT: 1 },
 };
 
