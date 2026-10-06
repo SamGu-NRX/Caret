@@ -724,6 +724,9 @@ export function lineGives(raw: string, span: string): boolean {
  * line that shows another typed value of its kind, the clause around it; null otherwise, or when the span carries its
  * line's label (the label says what it is).
  */
+/** How many wrapped lines a sentence is read on for a warning (lineFact). Assumed: a sentence rarely wraps more. */
+const WRAPPED_LINES = 3;
+
 export function lineFact(w: WindowState, node: Node, text: string, labelled: boolean): { clause: string; required: boolean } | null {
   const t = nodeText(node);
   const at = t.indexOf(text);
@@ -732,6 +735,22 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
   const line = bareLine(raw);
   const pos = line.indexOf(text);
   if (pos < 0) return null;
+  // A sentence a line break cut, its next line going on in lowercase ("Phone: 555-0101" then "and must not be used ..."),
+  // is read on to its end for a warning (C1 review).
+  // At most WRAPPED_LINES more lines, read one at a time: a node can be a whole log.
+  let joined = line;
+  let end = t.indexOf("\n", at);
+  for (let k = 0; end >= 0 && k < WRAPPED_LINES && !/[.!?;:]$/u.test(joined); k++) {
+    const nl = t.indexOf("\n", end + 1);
+    const next = t.slice(end + 1, nl < 0 ? t.length : nl);
+    if (!/^\s*\p{Ll}/u.test(next)) break;
+    joined = `${joined} ${bareLine(next)}`;
+    end = nl;
+  }
+  if (joined !== line) {
+    const sentence = sentenceAround(joined, pos, text);
+    if (WARNS.test(sentence.replace(text, " "))) return { clause: sentence, required: true };
+  }
   // A sentence that warns ("Don't give out 555-0112, ...", "Phone: 555-0101; do not use this old number.") goes whole with
   // the span on it, or not the span: the warning may be about it, and a clause cut at a semicolon or to a length lost it
   // (C1 review). Only the span's own sentence: a whole line sent for "old" in the next sentence ("Their old chart had

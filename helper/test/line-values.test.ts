@@ -174,3 +174,10 @@ describe("line values are shared", () => {
     expect(lineValues("Phone: 555-0199")[0]?.text).toBe("555-0199");
   });
 });
+
+describe("a lowercase abbreviation or a quote", () => {
+  it("ends no warning sentence", () => {
+    const a = 'Phone: 555-0101 is vs. "old" and must not be used because the records require review before any contact.';
+    expect(sentenceAround(a, a.indexOf("555-0101"), "555-0101")).toBe(a);
+  });
+});

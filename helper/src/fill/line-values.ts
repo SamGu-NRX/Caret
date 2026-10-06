@@ -236,12 +236,13 @@ export function clauseAround(line: string, at: number, text: string): string | n
 }
 
 /**
- * Where a sentence ends: ". ", "! " or "? " after a lowercase word or a number and before a capital, a quote or a
- * bracket. A period after a capital or a single letter ("U.S.", "B.S.", "Corp.", "Dr. Lee", "e.g.") ends nothing, so a
+ * Where a sentence ends: ". ", "! " or "? " after a lowercase word or a number and before a capital letter. A period
+ * after a capital, a single letter or a lowercase abbreviation ("U.S.", "B.S.", "Corp.", "Dr. Lee", "e.g.", "vs.") ends
+ * nothing, nor one before a quote or a bracket, so a
  * sentence is read too long rather than too short and its warning stays in (C1 review). "I live in Denver. Then" reads as
  * one sentence; that costs budget, never a warning.
  */
-const SENTENCE_END = /(?<=(?:\b\p{Ll}[\p{Ll}'’-]+|\d|["'”’)\]]))[.!?]\s+(?=[\p{Lu}"'“‘(\[])/gu;
+const SENTENCE_END = /(?<=(?:\b\p{Ll}[\p{Ll}'’-]+|\d|["'”’)\]]))(?<!\b(?:vs|etc|approx|incl|est|dept|misc|viz|cf|ca|al|ie|eg))[.!?]\s+(?=\p{Lu})/gu;
 
 /**
  * The sentence of a line that holds a value at `at`, uncut: from the end of the sentence before (". ", "! ", "? ") to the

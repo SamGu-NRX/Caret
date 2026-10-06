@@ -248,3 +248,13 @@ describe("a warned value that does not fit", () => {
     expect([...cutKinds(m, r.cut, r.candidates)]).toContain("phone");
   });
 });
+
+describe("a warning sentence a line break cut", () => {
+  it("goes with the value on the line before it", () => {
+    const m = new ScreenModel();
+    m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: "Contact\nPhone: 555-0101\nand must not be used because the records require review before any contact is attempted\nEmail: jo@example.org", editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
+    m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));
+    const c = collectCandidates(m, FORM, { now: 3000 }).candidates.find((x) => x.text === "555-0101");
+    expect(c === undefined || (c.line ?? "").includes("must not be used")).toBe(true);
+  });
+});
