@@ -1,0 +1,1 @@
+L1: test Mac canned page task with no model: start the host with --helper-socket at a dead path (Tab is unsent, not refused), then drive receipts with test hook 'pagetask feed <goalProgress>'; pageTask.rows gives row frames for a pointer.

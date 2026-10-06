@@ -1,0 +1,1 @@
+L1: @AccessibilityFocusState on a row view blanks the row in ImageRenderer renders; apply VoiceOver focus only in the live panel (RowVoiceFocus, lookTracksVoiceOver).
