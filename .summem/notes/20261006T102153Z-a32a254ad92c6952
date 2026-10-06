@@ -1,0 +1,1 @@
+Fill joins compare selectedFormInputs after TabSource.readFor: capped formFields can match scopes with different ranked controls. Preserve the caller reader/document/trigger identity across waits.

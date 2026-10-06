@@ -41,7 +41,10 @@ describe("explicit fills meeting work in flight", () => {
       return pick(req);
     } });
     await helper.handleReader(snap([text("mail/sig", VALUE)], { at: Date.now() - 1000, windowId: "6160-1", app: MAIL_APP }));
-    await helper.handleReader(snap([field(EMAIL, "", { label: "Email" })], { at: Date.now(), windowId: FORM, focused: true }));
+    await helper.handleReader(snap([
+      field(EMAIL, "", { label: "Email" }),
+      field("dev.caret.fixture/standard/textfield:email~1", "", { label: "Email" }),
+    ], { at: Date.now(), windowId: FORM, focused: true }));
   });
 
   afterEach(() => {
@@ -63,7 +66,9 @@ describe("explicit fills meeting work in flight", () => {
     const [loaded, joined] = await Promise.all([loading, explicit]);
     expect(joined).not.toBeNull();
     expect(joined).toEqual(loaded);
-    expect(joined?.fields[0]?.value).toBe(VALUE);
+    expect(joined?.fields.map((f) => f.value)).toEqual([VALUE, VALUE]);
+    expect(sent.filter((m) => m.type === "popup")).toEqual([]);
+    expect(helper.offers.size).toBe(0);
     // Two value rounds plus two owner rounds, once for the shared fill.
     expect(calls).toBe(4);
     expect(sent.filter((m) => m.type === "fillProposal")).toEqual([joined]);

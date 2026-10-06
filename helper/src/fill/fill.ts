@@ -156,6 +156,15 @@ export function formAsksFor(w: WindowState, triggerKey: string, about: readonly 
   });
 }
 
+/** The default scope, shared with the helper so joining a fill uses its controls and source-word ranking too. */
+export function selectedFormInputs(model: ScreenModel, windowId: string, triggerKey: string, opts: { controls?: boolean; exclude?: ReadonlySet<string> } = {}): FormInput[] {
+  const w = model.windows.get(windowId);
+  if (w === undefined) throw new FillError("noWindow", `unknown window ${windowId}`);
+  const sourceWords = (): ReadonlySet<string> =>
+    new Set([...model.windows.values()].filter((x) => x.window.windowId !== windowId && opts.exclude?.has(x.window.windowId) !== true).flatMap((x) => [...x.nodes.values()].flatMap((n) => words(nodeText(n)))));
+  return formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords);
+}
+
 /** The descriptor a question carries for a form input; the helper compares it again before showing a proposal. */
 export function describeInput(w: WindowState, x: FormInput): string {
   const d = describeField(w, x.node);
@@ -751,9 +760,6 @@ export async function proposeFill(
     personal: boolean;
   };
   const fields: Field[] = [];
-  // The words of the windows fill reads, for formInputs to keep the inputs a long form's cap would cut by what they show.
-  const sourceWords = (): ReadonlySet<string> =>
-    new Set([...model.windows.values()].filter((x) => x.window.windowId !== windowId && opts.exclude?.has(x.window.windowId) !== true).flatMap((x) => [...x.nodes.values()].flatMap((n) => words(nodeText(n)))));
   // `only` takes, in its order, the fields a fill on focus would ask about (fix-check: an empty, typeable text field or an
   // empty control, no control with `controls` off), each read as what it is: a part's first field may be a menu, which
   // formInputs would read as text, since it keeps its trigger whatever it is.
@@ -770,7 +776,7 @@ export async function proposeFill(
       return c === undefined ? [] : [{ node: c.node, control: c.control, form: c }];
     });
   };
-  const inputs = scope !== undefined ? scopedInputs(w, scope.fields) : opts.only !== undefined ? onlyInputs(opts.only) : formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords);
+  const inputs = scope !== undefined ? scopedInputs(w, scope.fields) : opts.only !== undefined ? onlyInputs(opts.only) : selectedFormInputs(model, windowId, triggerKey, opts);
   const formHasCity = inputs.some((x) => x.control === "text" && fieldPart(describeField(w, x.node).label, false) === "city");
   for (const x of inputs) {
     const n = x.node;
