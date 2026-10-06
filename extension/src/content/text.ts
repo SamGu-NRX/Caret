@@ -57,22 +57,14 @@ function skipped(el: Element, cs: CSSStyleDeclaration): boolean {
   if (cs.display === "contents") return false;
   if (Number.parseFloat(cs.opacity) === 0) return true;
   if (clipsToNothing(cs, ...clipBox(el))) return true;
+  // The body's overflow is the viewport's (CSS propagates it), so it hides nothing of its own.
+  if (el === el.ownerDocument.body) return false;
   const r = el.getBoundingClientRect();
   const clips = (v: string): boolean => v === "hidden" || v === "clip";
   return (clips(cs.overflowX) || clips(cs.overflowY)) && (r.width <= 1 || r.height <= 1);
 }
 
 type Box = { x0: number; y0: number; x1: number; y1: number };
-
-/** Whether an ancestor of `el` hides it whole: aria-hidden or inert, not rendered, transparent, or clipped to nothing. */
-function hiddenAbove(el: Element): boolean {
-  for (let p = composedParent(el); p !== null; p = composedParent(p)) {
-    if (p.getAttribute("aria-hidden") === "true" || p.hasAttribute("inert") || (p instanceof HTMLElement && p.hidden)) return true;
-    const cs = getComputedStyle(p);
-    if (cs.display === "none" || cs.contentVisibility === "hidden" || Number.parseFloat(cs.opacity) === 0 || clipsToNothing(cs, ...clipBox(p))) return true;
-  }
-  return false;
-}
 
 /**
  * Where a person can see or scroll to, in viewport coordinates, for what is inside the document at large: the whole
@@ -85,6 +77,7 @@ function documentReach(): Box {
 
 /** `reach` as `el` leaves it for its descendants: on an axis it scrolls, the area it scrolls over. */
 function reachIn(el: Element, cs: CSSStyleDeclaration, reach: Box): Box {
+  if (el === el.ownerDocument.body) return reach;
   const scrolls = (v: string): boolean => v === "auto" || v === "scroll" || v === "overlay";
   if (!scrolls(cs.overflowX) && !scrolls(cs.overflowY)) return reach;
   const r = el.getBoundingClientRect();
@@ -98,25 +91,32 @@ function reachIn(el: Element, cs: CSSStyleDeclaration, reach: Box): Box {
   };
 }
 
+const outside = (r: DOMRect, b: Box): boolean => r.right <= b.x0 || r.left >= b.x1 || r.bottom <= b.y0 || r.top >= b.y1;
+
 /**
- * What `el`'s ancestors leave of the viewport for it: the clip of those that cut off their overflow, lifted by any that
- * scroll inside them, and the reachable area of the nearest that scroll. Folded from the outermost ancestor in, as the
- * traversal folds them, so an inner scroller lifts an outer clip and not the other way round.
+ * What `el`'s ancestors make of it, folded from the outermost in, exactly as the traversal folds them: hidden when an
+ * ancestor would have been skipped (skipped(): not rendered, transparent, aria-hidden, a control or editable region,
+ * a 1 px overflow box) or lies wholly outside what its own ancestors leave visible or reachable; else the clip and the
+ * reachable area `el` starts with. So a main region gets the same rules from above as any element gets in the walk
+ * (P4 review: a main under a hidden or tiny wrapper, or in an off-screen scroller).
  */
-function above(el: Element): { clip: Box | null; reach: Box } {
+function ancestry(el: Element): { hidden: true } | { hidden: false; clip: Box | null; reach: Box } {
   const chain: Element[] = [];
   for (let p = composedParent(el); p !== null && p !== document.documentElement; p = composedParent(p)) chain.unshift(p);
   let clip: Box | null = null;
   let reach = documentReach();
   for (const p of chain) {
     const cs = getComputedStyle(p);
+    if (skipped(p, cs)) return { hidden: true };
+    if (cs.display !== "contents") {
+      const r = p.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0 && ((clip !== null && outside(r, clip)) || outside(r, reach))) return { hidden: true };
+    }
     clip = clipBy(p, cs, clip);
     reach = reachIn(p, cs, reach);
   }
-  return { clip, reach };
+  return { hidden: false, clip, reach };
 }
-
-const outside = (r: DOMRect, b: Box): boolean => r.right <= b.x0 || r.left >= b.x1 || r.bottom <= b.y0 || r.top >= b.y1;
 
 /**
  * `clip` as `el` leaves it for its descendants, on each axis: narrowed to its box where it cuts off its overflow, and
@@ -124,6 +124,8 @@ const outside = (r: DOMRect, b: Box): boolean => r.right <= b.x0 || r.left >= b.
  * shows is judged when it is visited). The walker's visible() reads a scroller the same way.
  */
 function clipBy(el: Element, cs: CSSStyleDeclaration, clip: Box | null): Box | null {
+  // The body's overflow is the viewport's (CSS propagates it): what it holds is bounded by what the document scrolls over.
+  if (el === el.ownerDocument.body) return clip;
   const cuts = (v: string): boolean => v === "hidden" || v === "clip";
   const scrolls = (v: string): boolean => v === "auto" || v === "scroll" || v === "overlay";
   if (!cuts(cs.overflowX) && !cuts(cs.overflowY) && (clip === null || (!scrolls(cs.overflowX) && !scrolls(cs.overflowY)))) return clip;
@@ -214,7 +216,7 @@ function selectedPart(node: Text, ranges: readonly Range[]): string | null {
 
 /** The region a person reads on this page: the first rendered main or [role=main] nothing above hides, else body. */
 export function mainRegion(doc: Document = document): Element | null {
-  for (const el of doc.querySelectorAll("main, [role=main]")) if (el.checkVisibility() && !hiddenAbove(el)) return el;
+  for (const el of doc.querySelectorAll("main, [role=main]")) if (el.checkVisibility() && !ancestry(el).hidden) return el;
   return doc.body;
 }
 
@@ -225,7 +227,7 @@ export function mainRegion(doc: Document = document): Element | null {
 export function readMainText(doc: Document = document, max = TAB_TEXT_BYTES): FrameText & { cut: boolean } {
   const main = mainRegion(doc);
   const body = doc.body;
-  if (main === null || body === null || hiddenAbove(main)) return { selection: [], blocks: [], cut: false };
+  if (main === null || body === null || ancestry(main).hidden) return { selection: [], blocks: [], cut: false };
   const ranges = selectionRanges(doc);
   // The selection may lie outside the main region (a sidebar); then the whole body is walked, main text still only from main.
   const root = ranges.some((r) => !main.contains(r.commonAncestorContainer)) ? body : main;
@@ -282,7 +284,8 @@ export function readMainText(doc: Document = document, max = TAB_TEXT_BYTES): Fr
     if (layout === "block") each((p) => p.end());
     else if (layout === "inlineBox") each((p) => p.space());
   };
-  const start = above(root);
+  const start = ancestry(root);
+  if (start.hidden) return { selection: [], blocks: [], cut: false };
   visit(root, root === main, false, true, start.clip, start.reach);
   blocks.end();
   selected.end();

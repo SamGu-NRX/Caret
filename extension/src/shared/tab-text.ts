@@ -22,8 +22,9 @@ export function utf8Bytes(s: string): number {
 }
 
 /**
- * The longest start of `s` within `max` UTF-8 bytes that ends at a line break, else at a space, else at a code point.
- * Used only when a single paragraph is longer than the whole cap; every other cut is between paragraphs.
+ * The longest start of `s` within `max` UTF-8 bytes that ends at a line break, or "" when no line break falls within
+ * it. Used only when a single paragraph is longer than the whole cap (a plain-text message in one block): its lines are
+ * then its paragraphs. A paragraph is never cut inside a line.
  */
 export function cutParagraph(s: string, max: number): string {
   if (utf8Bytes(s) <= max) return s;
@@ -40,9 +41,7 @@ export function cutParagraph(s: string, max: number): string {
   if (end > 0 && end < s.length && /[\uD800-\uDBFF]/.test(s.charAt(end - 1))) end--;
   const prefix = s.slice(0, end);
   const line = prefix.lastIndexOf("\n");
-  if (line > 0) return prefix.slice(0, line);
-  const space = prefix.lastIndexOf(" ");
-  return space > 0 ? prefix.slice(0, space) : prefix;
+  return line > 0 ? prefix.slice(0, line) : "";
 }
 
 /**

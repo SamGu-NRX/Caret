@@ -5,8 +5,8 @@ import { describe, expect, it } from "vitest";
 import { LEFT_TAB_MS, LeftTab, deniedOrigin, type FrameMark } from "../src/worker/left-tab.ts";
 import { TAB_TEXT_BYTES, capFrame, capParagraphs, cutParagraph, joinFrames, utf8Bytes } from "../src/shared/tab-text.ts";
 
-/** No frame of the tab being left has moved: every generation is 1. */
-const gen: ReadonlyMap<number, number> = new Map();
+/** The worker knows no frames of a tab (it never saw one commit). */
+const none = (): FrameMark[] => [];
 const marks = (top: [string, number], ...children: [number, string, number][]): FrameMark[] => [
   { frameId: 0, documentId: top[0], navGen: top[1] },
   ...children.map(([frameId, documentId, navGen]) => ({ frameId, documentId, navGen })),
@@ -15,10 +15,9 @@ const marks = (top: [string, number], ...children: [number, string, number][]): 
 /** The user in tab 1 (the mail), then in tab 2 (the form), at t=1000. */
 function leftMail(): LeftTab {
   const t = new LeftTab();
-  t.moved({ tabId: 1, windowId: 9 }, 0, gen);
-  const rec = t.moved({ tabId: 2, windowId: 9 }, 1000, gen);
+  t.moved({ tabId: 1, windowId: 9 }, 0, none);
+  const rec = t.moved({ tabId: 2, windowId: 9 }, 1000, (tabId) => (tabId === 1 ? marks(["docA", 1], [5, "docF", 1]) : []));
   if (rec === null) throw new Error("moving from tab 1 to tab 2 left no record");
-  t.noted(rec, marks(["docA", 1], [5, "docF", 1]));
   return t;
 }
 
@@ -32,37 +31,34 @@ describe("the tab the user just left (rule 1)", () => {
     expect(t.check(2, 2000, marks(["docB", 1]))).toMatchObject({ ok: false });
     expect(t.check(7, 2000, marks(["docC", 1]))).toMatchObject({ ok: false, why: "it is not the tab you just left" });
     // Tab 1, then 2, then 3: only 2 is the tab just left.
-    const rec = t.moved({ tabId: 3, windowId: 9 }, 3000, gen);
-    if (rec !== null) t.noted(rec, marks(["docB", 1]));
+    t.moved({ tabId: 3, windowId: 9 }, 3000, () => marks(["docB", 1]));
     expect(t.check(1, 3500, marks(["docA", 1]))).toMatchObject({ ok: false, why: "it is not the tab you just left" });
     expect(t.check(2, 3500, marks(["docB", 1]))).toMatchObject({ ok: true });
   });
 
   it("stops being the tab left once the user comes back to it", () => {
     const t = leftMail();
-    t.moved({ tabId: 1, windowId: 9 }, 1500, gen);
+    t.moved({ tabId: 1, windowId: 9 }, 1500, none);
     expect(t.check(1, 1600, marks(["docA", 1]))).toMatchObject({ ok: false });
   });
 
   it("is not read while the user is in it again after another app, which leaves no other tab behind", () => {
     const t = new LeftTab();
-    t.moved({ tabId: 1, windowId: 9 }, 0, gen);
-    const rec = t.moved(null, 1000, gen);
+    t.moved({ tabId: 1, windowId: 9 }, 0, none);
+    const rec = t.moved(null, 1000, () => marks(["docA", 1]));
     if (rec === null) throw new Error("losing focus left no record");
-    t.noted(rec, marks(["docA", 1]));
-    t.moved({ tabId: 1, windowId: 9 }, 1200, gen);
+    t.moved({ tabId: 1, windowId: 9 }, 1200, none);
     expect(t.check(1, 1300, marks(["docA", 1]))).toMatchObject({ ok: false });
   });
 
   it("is still the tab left when the browser loses focus to another app, and after it comes back to another tab", () => {
     const t = new LeftTab();
-    t.moved({ tabId: 1, windowId: 9 }, 0, gen);
-    const rec = t.moved(null, 1000, gen);
+    t.moved({ tabId: 1, windowId: 9 }, 0, none);
+    const rec = t.moved(null, 1000, () => marks(["docA", 1]));
     if (rec === null) throw new Error("losing focus left no record");
-    t.noted(rec, marks(["docA", 1]));
     expect(t.check(1, 1200, marks(["docA", 1]))).toMatchObject({ ok: true });
     // The worker does not know what the user did in the other app; the helper checks that the window they just left is this tab.
-    t.moved({ tabId: 2, windowId: 9 }, 1300, gen);
+    t.moved({ tabId: 2, windowId: 9 }, 1300, none);
     expect(t.check(1, 1400, marks(["docA", 1]))).toMatchObject({ ok: true });
   });
 });
@@ -92,34 +88,18 @@ describe("recent and unchanged (rule 2)", () => {
     expect(t.check(1, 2000, marks(["docA", 1]))).toMatchObject({ ok: false, why: "it is not the tab you just left" });
   });
 
-  it("is not read when its top frame moved between leaving and the worker noting its frames", () => {
+  it("is not read when the worker did not know its top document when the user left it (P4 review)", () => {
     const t = new LeftTab();
-    t.moved({ tabId: 1, windowId: 9 }, 0, gen);
-    const rec = t.moved({ tabId: 2, windowId: 9 }, 1000, new Map([[0, 4]]));
-    if (rec === null) throw new Error("no record");
-    // Generation 4 when the user left; the frames, read a moment later, show 5.
-    t.noted(rec, marks(["docA", 5]));
-    expect(t.check(1, 1100, marks(["docA", 5]))).toMatchObject({ ok: false });
+    t.moved({ tabId: 1, windowId: 9 }, 0, none);
+    t.moved({ tabId: 2, windowId: 9 }, 1000, none);
+    expect(t.check(1, 1100, marks(["docA", 1]))).toEqual({ ok: false, why: "Caret did not know the tab's document when you left it" });
   });
 
-  it("never takes a child frame that navigated after the user left as the document they left (P4 review)", () => {
+  it("reads only frames the worker knew when the user left: one that navigated since, or appeared since, is not read (P4 review)", () => {
     const t = new LeftTab();
-    t.moved({ tabId: 1, windowId: 9 }, 0, gen);
-    // When the user left, frame 5 was at generation 1; by the time its document was read it had navigated (generation 2).
-    const rec = t.moved({ tabId: 2, windowId: 9 }, 1000, new Map([[0, 1], [5, 1]]));
-    if (rec === null) throw new Error("no record");
-    t.noted(rec, marks(["docA", 1], [5, "docAfter", 2]));
-    expect(t.check(1, 1100, marks(["docA", 1], [5, "docAfter", 2]))).toEqual({ ok: true, frames: marks(["docA", 1]) });
-  });
-
-  it("is not read before its frames are noted, and a late note for an older record is ignored", () => {
-    const t = new LeftTab();
-    t.moved({ tabId: 1, windowId: 9 }, 0, gen);
-    const first = t.moved({ tabId: 2, windowId: 9 }, 1000, gen);
-    expect(t.check(1, 1001, marks(["docA", 1]))).toMatchObject({ ok: false });
-    t.moved({ tabId: 3, windowId: 9 }, 1100, gen);
-    if (first !== null) t.noted(first, marks(["docA", 1]));
-    expect(t.check(1, 1200, marks(["docA", 1]))).toMatchObject({ ok: false, why: "it is not the tab you just left" });
+    t.moved({ tabId: 1, windowId: 9 }, 0, none);
+    t.moved({ tabId: 2, windowId: 9 }, 1000, () => marks(["docA", 1], [5, "docF", 1]));
+    expect(t.check(1, 1100, marks(["docA", 1], [5, "docAfter", 2], [6, "docNew", 1]))).toEqual({ ok: true, frames: marks(["docA", 1]) });
   });
 });
 
@@ -150,16 +130,15 @@ describe("the 16 KB cap (rule 4)", () => {
     expect(capParagraphs([wide, "x".repeat(7_000)]).kept).toEqual([wide]);
   });
 
-  it("cuts a single paragraph longer than the cap at a line break, else a space, never inside a surrogate pair", () => {
+  it("cuts a single paragraph longer than the cap only at a line break", () => {
     const lines = Array.from({ length: 2000 }, (_, i) => `line ${i} of the message`).join("\n");
     const head = cutParagraph(lines, TAB_TEXT_BYTES);
     expect(utf8Bytes(head)).toBeLessThanOrEqual(TAB_TEXT_BYTES);
     expect(lines.startsWith(`${head}\n`)).toBe(true);
-    const words = "word ".repeat(5000);
-    const w = cutParagraph(words, 100);
-    expect(w.endsWith("word")).toBe(true);
-    const emoji = "😀".repeat(10);
-    expect(cutParagraph(emoji, 9)).toBe("😀😀");
+    // Never inside a line: a single line longer than the cap is left out whole.
+    expect(cutParagraph("word ".repeat(5000), 100)).toBe("");
+    expect(cutParagraph("😀".repeat(10), 9)).toBe("");
+    expect(capParagraphs(["x".repeat(TAB_TEXT_BYTES + 1)])).toEqual({ kept: [], cut: true });
   });
 
   it("is applied once over every frame of the tab", () => {

@@ -69,14 +69,19 @@ function selfOf(): FrameSelfAnswer {
   return { origin: self.origin, viewport: [window.innerWidth, window.innerHeight], iframes: visibleIframes() };
 }
 
-/** P4: this frame's visible text, read once on the worker's message for the tab the user just left (content/text.ts). */
-function textOf(): FrameTextAnswer {
+/**
+ * P4: this frame's visible text, read once on the worker's message for the tab the user just left (content/text.ts).
+ * None after `until`, or while this frame's own viewport is a pixel or less: its iframe was hidden since the worker
+ * judged it visible.
+ */
+function textOf(until: number): FrameTextAnswer {
+  if (Date.now() > until || window.innerWidth <= 1 || window.innerHeight <= 1) return { selection: [], blocks: [], cut: false, docsText: null };
   const path = location.protocol === "about:" ? location.href : location.pathname;
   const t = readFrameText(self.origin, path, window.self === window.top);
   return { selection: t.selection, blocks: t.blocks, cut: t.cut, docsText: t.docsText };
 }
 
-function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
+function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): FrameReport {
   const t0 = performance.now();
   const href = location.href;
   const nav = navigationEntry();
@@ -97,7 +102,7 @@ function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
       } catch {
         selection = null;
       }
-      focused = { id: c.id, selection, text: fieldText(active) };
+      focused = { id: c.id, selection, text: caretText ? fieldText(active) : null };
     }
   }
   const docs = window.self === window.top ? docsKind(self.origin, location.pathname) : null;
@@ -123,7 +128,7 @@ function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
 function isToContent(m: unknown): m is ToContent {
   if (typeof m !== "object" || m === null) return false;
   const x = m as Record<string, unknown>;
-  return x.caret === 1 && (x.op === "walk" || x.op === "frame" || x.op === "text" || x.op === "viewport" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number" && typeof x.guardUntil === "number"));
+  return x.caret === 1 && (x.op === "walk" || x.op === "frame" || (x.op === "text" && typeof x.until === "number") || x.op === "viewport" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number" && typeof x.guardUntil === "number"));
 }
 
 if (globalThis.__caretContent === undefined) {
@@ -167,7 +172,7 @@ if (globalThis.__caretContent === undefined) {
     // Only this extension's worker: a content script's own message would carry a tab, and nothing else can reach here.
     if (sender.id !== chrome.runtime.id || sender.tab !== undefined || !isToContent(m)) return false;
     if (m.op === "walk") {
-      reply(walk(reg, entries));
+      reply(walk(reg, entries, m.caretText !== false));
       return false;
     }
     if (m.op === "frame") {
@@ -175,7 +180,7 @@ if (globalThis.__caretContent === undefined) {
       return false;
     }
     if (m.op === "text") {
-      reply(textOf());
+      reply(textOf(m.until));
       return false;
     }
     if (m.op === "viewport") {

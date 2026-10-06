@@ -40,6 +40,8 @@ const PAGES: Record<string, string> = {
 </main>
 <footer>FOOTER-only</footer>`,
   "/hidden-main": `<!doctype html><title>Hidden main</title><div aria-hidden="true"><main><p>PRIVATE-main</p></main></div><p>Body text</p>`,
+  "/tiny-main": `<!doctype html><title>Tiny</title><div style="width:1px;height:1px;overflow:hidden"><main style="width:600px"><p>TINY-main</p></main></div><p>Outside</p>`,
+  "/offscreen-scroller": `<!doctype html><title>Off</title><div style="position:absolute;left:-10000px;top:0;width:300px;height:200px;overflow:auto"><main><p>OFF-main</p></main></div><p>Outside</p>`,
   "/clip": `<!doctype html><title>Clip</title><main>
 <div style="width:200px;height:40px;overflow:hidden;position:relative"><p style="margin:0">Visible line</p><p style="position:absolute;left:300px;top:0;margin:0">CLIPPED-out</p></div>
 <div style="height:60px;overflow:auto"><p style="margin-top:300px">SCROLL-reachable</p></div></main>`,
@@ -134,6 +136,12 @@ describe("what a read takes from the page (rule 4)", () => {
     const a = await open("/hidden-main");
     assert.deepEqual((await a.evaluate<Read>("__p4.readMainText()")).blocks, ["Body text"]);
     await a.close();
+    // Second review: a main inside a 1 px overflow wrapper, or inside a scroller placed off screen.
+    for (const path of ["/tiny-main", "/offscreen-scroller"]) {
+      const t = await open(path);
+      assert.deepEqual((await t.evaluate<Read>("__p4.readMainText()")).blocks, ["Outside"], path);
+      await t.close();
+    }
     const b = await open("/clip");
     const clip = (await b.evaluate<Read>("__p4.readMainText()")).blocks.join("\n");
     assert.ok(clip.includes("Visible line") && clip.includes("SCROLL-reachable"), clip);

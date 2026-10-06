@@ -158,11 +158,15 @@ export interface FrameReport {
  * ends (W3). An act arms its document too, until `guardUntil` (its grant's end), so no act runs unarmed.
  */
 export type ToContent =
-  | { caret: 1; op: "walk" }
+  /** `caretText: false` (P4): a frame on a site on the deny list reports no text around the caret. */
+  | { caret: 1; op: "walk"; caretText?: false }
   /** P4: about the frame itself, no text (FrameSelfAnswer), so the worker knows it is visible before it asks for text. */
   | { caret: 1; op: "frame" }
-  /** P4: the frame's visible text, once, for the tab the user just left (content/text.ts). Answered with FrameTextAnswer. */
-  | { caret: 1; op: "text" }
+  /**
+   * P4: the frame's visible text, once, for the tab the user just left (content/text.ts). Answered with FrameTextAnswer;
+   * nothing after `until` (epoch ms), or from a frame whose own viewport is a pixel or less (its iframe was hidden).
+   */
+  | { caret: 1; op: "text"; until: number }
   /** The frame's viewport only, [innerWidth, innerHeight]: asked of a captcha frame, which is never walked (W4). */
   | { caret: 1; op: "viewport" }
   | { caret: 1; op: "act"; verb: ActVerb; deadline: number; guardUntil: number }
