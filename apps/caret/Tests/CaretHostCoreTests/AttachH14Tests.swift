@@ -335,6 +335,35 @@ final class AttachH14Tests: XCTestCase {
         XCTAssertEqual(info.lastAcceptFileName, "Robin Vale Resume.pdf")
     }
 
+    /// Fix-check (H14 astra 2, P2): a click on a saved file republishes the preview while its old offer is still the
+    /// arbiter's. With the runtime's displacement callback wired, the task must survive and Tab send the file.
+    func testAClickOnASavedFileKeepsTheTaskWhenTheOfferIsRepublished() throws {
+        let r = Rig()
+        r.arbiter.onDisplaced = { [unowned r] offer in r.machine.displaced(offer) }
+        r.machine.start(try Self.savedPreview())
+        XCTAssertTrue(r.machine.status.ownsTab)
+        r.machine.attachRequested(step: 1)
+        XCTAssertEqual(r.machine.status.stage, "preview")
+        XCTAssertTrue(r.machine.status.ownsTab)
+        XCTAssertEqual(try attachLine(r, step: 1).attach?.state, .confirmed)
+        r.tab()
+        XCTAssertEqual(r.accepts.first?.confirmedFile, GoalAccept.ConfirmedFile(step: 1, path: Self.resume.path))
+    }
+
+    /// Fix-check (H14 astra 2, P3): an ending that drops an open chooser says so, so the open panel closes even while the
+    /// task panel is hidden behind it.
+    func testAnEndingWhileTheChooserIsUpLetsItGo() throws {
+        let r = Rig()
+        r.machine.canChooseFiles = true
+        r.machine.start(try Self.preview())
+        cmd(r, 2)
+        r.machine.appActivated(pid: 999)
+        let before = r.commands.count
+        r.machine.linkChanged(up: false)
+        XCTAssertNil(r.machine.choosing)
+        XCTAssertTrue(r.commands[before...].contains(.count("pageTask.chooserDropped")))
+    }
+
     func testWithoutAChooserNoOpenPanelIsAskedFor() throws {
         let r = Rig()
         r.machine.start(try Self.preview())

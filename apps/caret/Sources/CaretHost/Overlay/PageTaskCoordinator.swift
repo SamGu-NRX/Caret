@@ -28,7 +28,10 @@ final class PageTaskCoordinator {
         machine.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
         // H14: only a host on screen can show an open panel, so only it may name goalFiles.
         machine.canChooseFiles = drawsOnScreen
-        model.onAttach = { [weak self] step in self?.machine.attachRequested(step: step) }
+        model.onAttach = { [weak self] step in
+            self?.status.increment("pageTask.click")
+            self?.machine.attachRequested(step: step)
+        }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in

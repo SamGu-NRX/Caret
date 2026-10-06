@@ -136,6 +136,8 @@ final class HostedPanel {
     /// The monitors are up only while the panel shows and takes clicks (prep-for-prod H14-5).
     private var wantsPointer: Bool { clickableContent && panel.isVisible && !isExiting }
     private var pointerMonitors: [Any] = []
+    /// Mouse moves the monitors have seen, for the debug socket.
+    private var pointerMoves = 0
 
     /// `material: false` for decoration drawn straight over the app (the underline, the figure and
     /// ticks after an alternative, Caret's own ghost text), which has no glass, shadow or margin.
@@ -262,10 +264,16 @@ final class HostedPanel {
         }
         let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
         if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
-            MainActor.assumeIsolated { self?.pointerMoved() }
+            MainActor.assumeIsolated {
+                self?.pointerMoves &+= 1
+                self?.pointerMoved()
+            }
         }) { pointerMonitors.append(global) }
         if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
-            MainActor.assumeIsolated { self?.pointerMoved() }
+            MainActor.assumeIsolated {
+                self?.pointerMoves &+= 1
+                self?.pointerMoved()
+            }
             return event
         }) { pointerMonitors.append(local) }
         pointerMoved()
@@ -389,7 +397,10 @@ final class HostedPanel {
             windowNumber: panel.windowNumber,
             frame: [f.minX, primaryHeight - f.maxY, f.width, f.height].map { Double($0) },
             isKey: panel.isKeyWindow,
-            text: isExiting ? "(exiting) " + text : text
+            text: isExiting ? "(exiting) " + text : text,
+            takesClicks: clickableContent ? !panel.ignoresMouseEvents : nil,
+            pointerMonitors: clickableContent ? pointerMonitors.count : nil,
+            pointerMoves: clickableContent ? pointerMoves : nil
         )
     }
 }

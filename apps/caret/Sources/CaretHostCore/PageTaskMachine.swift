@@ -121,6 +121,14 @@ public final class PageTaskMachine {
     private var behindChooser = false
     /// H14: the last acceptance Tab sent, for the debug socket.
     public private(set) var lastAccept: GoalAccept?
+    /// Lets go of the open panel, if one is up, and says so: the screen closes it even while the task panel is hidden
+    /// behind it (fix-check H14 astra 2, P3).
+    private func dropChooser() {
+        guard pendingChoice != nil else { return }
+        pendingChoice = nil
+        output(.count("pageTask.chooserDropped"))
+    }
+
     /// Whether open panel `token` is the one this task waits on.
     public func isCurrentChooser(_ token: UInt64) -> Bool { pendingChoice?.token == token }
 
@@ -193,7 +201,7 @@ public final class PageTaskMachine {
         case .continued, .nextPage:
             task = t
             // Another preview: a chooser opened for the one before answers for nothing.
-            pendingChoice = nil
+            dropChooser()
             output(.count(result == .nextPage ? "pageTask.nextPage" : "pageTask.continued"))
             endResult()
             // A task at rest comes back as the panel first came: its panel had left.
@@ -261,7 +269,7 @@ public final class PageTaskMachine {
         switch t.tab(nowMs: nowMs) {
         case .accept(let accept):
             // Tab went out: a chooser still open answers for nothing.
-            pendingChoice = nil
+            dropChooser()
             lastAccept = accept
             task = t
             lastHeld = nil
@@ -479,6 +487,12 @@ public final class PageTaskMachine {
 
     private func publish() {
         guard let t = task, case .preview = t.stage, !hidden, let pid = t.pid else { return }
+        // Our own offer, still the arbiter's (a click changed the preview, which took no key): let go of it first, so the
+        // new one does not displace it and the displacement does not put this task away (fix-check H14 astra 2, P2).
+        if let old = offerID {
+            offerID = nil
+            arbiter.invalidate(offerID: old)
+        }
         let g = t.current
         let remaining = Double(g.expires - nowMs) / 1000
         // H14: the first attach rows' keys (⌘2, ⌘3) are the preview's too, so they reach `claimed` like Tab.
@@ -521,7 +535,7 @@ public final class PageTaskMachine {
     /// The task ended: its working line goes, a toast holds ⌘Z when something was written, and the panel
     /// leaves after its time.
     private func ended() {
-        pendingChoice = nil
+        dropChooser()
         guard let t = task else { return }
         cancel("stoppable")
         cancel("expire")
@@ -583,7 +597,7 @@ public final class PageTaskMachine {
 
     /// Ends everything this task holds in the arbiter and forgets it.
     private func clear(hide: Bool, motion: PageTaskMotion = .none) {
-        pendingChoice = nil
+        dropChooser()
         for (_, timer) in timers { timer.cancel() }
         timers = [:]
         if let id = offerID { arbiter.invalidate(offerID: id) }

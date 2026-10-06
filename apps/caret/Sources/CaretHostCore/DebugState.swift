@@ -288,12 +288,20 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var frame: [Double]
         public var isKey: Bool
         public var text: String?
+        /// H14, a panel whose content takes clicks (`HostedPanel.clickableContent`): whether it takes them now (the
+        /// pointer is over its content), how many pointer monitors run, and how many mouse moves they have seen.
+        public var takesClicks: Bool?
+        public var pointerMonitors: Int?
+        public var pointerMoves: Int?
 
-        public init(windowNumber: Int, frame: [Double], isKey: Bool, text: String?) {
+        public init(windowNumber: Int, frame: [Double], isKey: Bool, text: String?, takesClicks: Bool? = nil, pointerMonitors: Int? = nil, pointerMoves: Int? = nil) {
             self.windowNumber = windowNumber
             self.frame = frame
             self.isKey = isKey
             self.text = text
+            self.takesClicks = takesClicks
+            self.pointerMonitors = pointerMonitors
+            self.pointerMoves = pointerMoves
         }
     }
 
