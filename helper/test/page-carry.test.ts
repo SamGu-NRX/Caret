@@ -188,3 +188,19 @@ describe("the P3 review's carry findings", () => {
     expect(segments(r).some((m) => m.reason === "nextPage")).toBe(false);
   });
 });
+
+describe("the P3 fix-check's carry finding", () => {
+  it("gives the page back to the ambient offer when its carried preview expires untaken", async () => {
+    let offset = 0;
+    const r = await rig({ now: () => Date.now() + offset });
+    await fillFirst(r);
+    await r.next(page2, "Apply: step 2", "/two");
+    await settle(r);
+    expect((segments(r).at(-1) as Segment).reason).toBe("nextPage");
+    const doc = r.host.registry.documentOf(WIN);
+    expect(r.helper.goals.carrying(WIN, doc)).toBe(true);
+    offset = 121_000;
+    r.helper.tick();
+    expect(r.helper.goals.carrying(WIN, doc)).toBe(false);
+  });
+});

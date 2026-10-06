@@ -802,6 +802,10 @@ export class GoalRuns {
   private stop(run: Run, reason: GoalStopReason, step: number | null, says: string): void {
     if (run.state === "stopped") return;
     run.state = "stopped";
+    // P3 fix-check: a carried preview that ends untaken (expired, its host gone) gives its page back to the ambient offer.
+    const page = run.plan.page;
+    const doc = page === undefined ? undefined : run.plan.inventory.documents.get(page.windowId);
+    if (page !== undefined && doc !== undefined && this.carried.get(page.windowId) === doc) this.carried.delete(page.windowId);
     this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "stopped", segment: run.cursor.segment, step, reason, says: `${says.charAt(0).toUpperCase()}${says.slice(1)}.`, freshPlan: null });
   }
 
