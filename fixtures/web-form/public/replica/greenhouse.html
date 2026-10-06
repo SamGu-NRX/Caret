@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Replica: Greenhouse application</title>
+<!-- W4: the structure of Greenhouse's job-boards application form (saved read-only on 2026-10-04): the resume field is a
+     role=group labelled "Resume/CV*" whose file input and its label are visually hidden beside an Attach button. Every
+     name and value here is invented; the page's script is the fixture's own (replica.js), not Greenhouse's. -->
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 24px; max-width: 760px; }
+  .visually-hidden { border: 0; clip: rect(0 0 0 0); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; white-space: nowrap; }
+  .field-wrapper { margin: 12px 0; }
+  .btn { width: 300px; height: 42px; display: block; margin: 4px 0; }
+</style>
+</head>
+<body>
+<h1>Replica: Greenhouse application</h1>
+<form id="application-form">
+  <div class="field-wrapper"><label for="first_name">First Name</label> <input id="first_name" name="job_application[first_name]" type="text"></div>
+  <div class="field-wrapper">
+    <div role="group" aria-labelledby="upload-label-resume" aria-required="true" class="file-upload">
+      <div id="upload-label-resume" class="label upload-label">Resume/CV<span class="required">*</span></div>
+      <div class="file-upload__wrapper">
+        <div class="button-container">
+          <div class="secondary-button"><div><button type="button" class="btn" data-opens="resume">Attach</button><label class="visually-hidden" for="resume">Attach</label><input id="resume" class="visually-hidden" type="file" accept=".pdf,.doc,.docx,.txt,.rtf"></div></div>
+          <div class="secondary-button"><button type="button" class="btn">Dropbox</button></div>
+          <div class="secondary-button"><button type="button" class="btn">Google Drive</button></div>
+          <div class="secondary-button"><div><button type="button" class="btn">Enter manually</button><label class="visually-hidden" for="resume_text">Enter manually</label></div></div>
+          <p class="file-upload__filetypes">Accepted file types: pdf, doc, docx, txt, rtf</p>
+        </div>
+        <div class="file-upload__filename" id="resume-filename"></div>
+      </div>
+    </div>
+  </div>
+  <div class="field-wrapper">
+    <div role="group" aria-labelledby="upload-label-cover_letter" aria-required="false" class="file-upload">
+      <div id="upload-label-cover_letter" class="label upload-label">Cover Letter</div>
+      <div class="file-upload__wrapper">
+        <div class="button-container">
+          <div class="secondary-button"><div><button type="button" class="btn" data-opens="cover_letter">Attach</button><label class="visually-hidden" for="cover_letter">Attach</label><input id="cover_letter" class="visually-hidden" type="file" accept=".pdf"></div></div>
+        </div>
+        <div class="file-upload__filename" id="cover_letter-filename"></div>
+      </div>
+    </div>
+  </div>
+  <!-- A hidden file input whose only neighbour is a button that says nothing about files: never taken for an attach target. -->
+  <div class="field-wrapper"><div><button type="button" class="btn">Subscribe to updates</button><input id="decoy-file" class="visually-hidden" type="file"></div></div>
+  <!-- A hidden file input beside one button that says Upload, but no label of the input says so: nearness and wording
+       alone do not make it the button's (W4 review #2). -->
+  <div class="field-wrapper"><div><button type="button" class="btn">Upload photo</button><input id="decoy-upload" class="visually-hidden" type="file"></div></div>
+  <div class="field-wrapper"><button type="submit">Submit application</button></div>
+</form>
+<script src="/fixture.js"></script>
+<script src="/replica/replica.js"></script>
+</body>
+</html>

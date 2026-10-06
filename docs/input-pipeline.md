@@ -64,6 +64,8 @@ The context frame includes the current application/window, focused text and sele
 | Inline text preview | Commit the displayed completion or correction | No action cards, so pass through |
 | Action hoverable | Pass through unless a primary action explicitly displays a Tab hint | Choose the corresponding visible action |
 | Workflow preview | Only activate the exact visible primary effect when that preview owns Tab | Choose visible alternatives if provided |
+| Page task panel (H11) | Accept the newest previewed segment once, under its digest; while it shows, no other offer in that browser takes Tab | Pass through |
+| Offer to save an answer (H11) | Pass through: people move between fields with Tab, and Tab must never save their words | Command–1 saves |
 
 Only one Caret view owns Tab at a time. Showing action cards dismisses an inline offer. Shortcut interception must be scoped to a visible, current offer and must consume the event exactly once. A global observer alone cannot implement key suppression.
 

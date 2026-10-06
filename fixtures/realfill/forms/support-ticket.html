@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Submit a request - Tallyhook Help Center</title>
+<style>
+body{font-family:-apple-system,Helvetica,Arial,sans-serif;margin:0;color:#2f3941;background:#f8f9f9}
+.top{background:#17494d;color:#fff;padding:14px 24px;font-weight:600} main{max-width:640px;margin:24px auto;padding:0 16px}
+h1{font-size:24px;font-weight:500} .crumb{font-size:13px;color:#68737d}
+label,legend{display:block;font-size:14px;font-weight:600;margin:16px 0 5px} .req{color:#cc3340}
+.desc{font-size:12px;color:#68737d;margin:0 0 5px;font-weight:400}
+input[type=text],input[type=email],input[type=url],select,textarea{width:100%;padding:9px;font-size:14px;box-sizing:border-box;border:1px solid #c2c8cc;border-radius:4px;background:#fff}
+fieldset{border:0;padding:0;margin:0} fieldset label{font-weight:400;margin:6px 0}
+.check{margin:12px 0;font-size:14px} .check label{display:inline;font-weight:400}
+button{margin-top:20px;padding:10px 20px;font-size:14px;background:#17494d;color:#fff;border:0;border-radius:4px}
+</style></head><body>
+<!-- Invented help-center request form (B24 corpus). Submit is inert. -->
+<div class="top">Tallyhook Help Center</div>
+<main>
+<div class="crumb">Tallyhook Help Center &rsaquo; Submit a request</div>
+<h1>Submit a request</h1>
+<form onsubmit="event.preventDefault()">
+<label for="name">Your name <span class="req">*</span></label><input type="text" id="name" autocomplete="off">
+<label for="email">Email address <span class="req">*</span></label><input type="email" id="email" autocomplete="off">
+<label for="ws">Workspace URL</label>
+<p class="desc">Looks like https://yourteam.tallyhook.example.com</p>
+<input type="url" id="ws" autocomplete="off">
+<label for="area">Product area <span class="req">*</span></label>
+<select id="area"><option value="">-- Choose one --</option><option>Billing</option><option>Integrations</option><option>Mobile app</option><option>Reports</option><option>Account and login</option></select>
+<fieldset><legend>Priority <span class="req">*</span></legend>
+<label><input type="radio" name="prio" value="low"> Low: general question</label>
+<label><input type="radio" name="prio" value="normal"> Normal: something isn't working</label>
+<label><input type="radio" name="prio" value="urgent"> Urgent: my team can't work</label>
+</fieldset>
+<label for="subject">Subject <span class="req">*</span></label><input type="text" id="subject" autocomplete="off">
+<label for="body">Description <span class="req">*</span></label>
+<p class="desc">Please enter the details of your request. A member of our support staff will respond as soon as possible.</p>
+<textarea id="body" rows="6"></textarea>
+<label for="files">Attachments (optional)</label><input type="file" id="files" multiple>
+<div class="check"><input type="checkbox" id="access"> <label for="access">Allow a support agent to access my workspace while this request is open</label></div>
+<button type="submit">Submit</button>
+</form>
+</main>
+</body></html>

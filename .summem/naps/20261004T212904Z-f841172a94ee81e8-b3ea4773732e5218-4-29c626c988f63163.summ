@@ -1,0 +1,1 @@
+T2: NativeChecker uses US/GB/CA witnesses (en_AU accepts 'seperate'); NSSpellChecker may autocorrect to guess 2. H4: build-app.sh holds build.lock (CARET_NO_LOCK=1 under lockf); SIP is off here; Caret.app starts its own services unless a socket is named; tests pass --home.
