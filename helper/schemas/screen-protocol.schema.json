@@ -9765,6 +9765,76 @@
           "additionalProperties": false
         }
       ]
+    },
+    "PageFieldText": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "text": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "before": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "after": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "selection": {
+                  "type": "string",
+                  "maxLength": 2000
+                }
+              },
+              "required": [
+                "before",
+                "after",
+                "selection"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ownSuggestions": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "gmail",
+                "google-docs"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "docsText": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "on",
+                "off"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "text",
+        "ownSuggestions",
+        "docsText"
+      ],
+      "additionalProperties": false
     }
   }
 }

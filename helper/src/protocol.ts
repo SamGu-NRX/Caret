@@ -2169,6 +2169,11 @@ export const PAGE_SUBROLE = {
   number: "CaretNumberInput",
   switch: "AXSwitch",
   pressGroup: "CaretPressGroup",
+  /**
+   * P4 rule 6: text Caret read on demand from the tab the user just left, as static text of that tab's window. Such a
+   * node exists only in the view fill reads (ScreenModel.withNodes, engines/tab-source.ts), never in the model.
+   */
+  readOnDemand: "CaretReadOnDemand",
 } as const;
 
 /**
@@ -2250,6 +2255,52 @@ export const PageFrame = z.object({
 });
 export type PageFrame = z.infer<typeof PageFrame>;
 
+/** P4 item 7: characters of a field's text the walk reports before its caret, after it, and selected. */
+export const FIELD_BEFORE_MAX = 2000;
+export const FIELD_AFTER_MAX = 500;
+export const FIELD_SELECTION_MAX = 2000;
+
+/**
+ * P4 item 7: the text around the caret of the field the user is typing in (extension content/field-text.ts), for the
+ * host's inline text, which had no context in any web page. Only for a control the walk kept, so never for a password,
+ * card, one-time-code or hidden field, a self-identification question, or a frame on a site Caret is off for. Kept
+ * only in the tab's latest snapshot in memory; never logged or stored.
+ */
+export const PageFocusText = z.object({
+  before: z.string().max(FIELD_BEFORE_MAX),
+  after: z.string().max(FIELD_AFTER_MAX),
+  selection: z.string().max(FIELD_SELECTION_MAX),
+});
+export type PageFocusText = z.infer<typeof PageFocusText>;
+
+/**
+ * P4 items 6 and 7: a Google Docs or Sheets editor, whose text is drawn on a canvas. `text`: whether its text for
+ * assistive technology is there ("off" until the user turns on screen reader and braille support); `field`: the text
+ * around the caret there while the user types in it. From the tab's top frame only.
+ */
+export const PageDocs = z.object({
+  kind: z.enum(["document", "spreadsheet"]),
+  text: z.enum(["on", "off"]),
+  field: PageFocusText.nullable(),
+});
+export type PageDocs = z.infer<typeof PageDocs>;
+
+/**
+ * P4 items 7 and 9: what the host's pageField says about the field the user is typing in on a page, beside the field's
+ * key and frame (H10's PageField, on v2/host: spread this shape into it). `text`: the text around its caret
+ * (PageFocusText), null when no field has focus, the control holds no text the user types, or its caret is not exposed.
+ * `ownSuggestions`: the page offers its own inline suggestions there ("gmail": Gmail's compose body; "google-docs": a
+ * Google Doc), decided by origin and path (engines/field-text.ts); the host decides what to do about it. `docsText`: in
+ * a Google Docs or Sheets editor, whether its text for assistive technology is there, so the host can tell the user how
+ * to turn it on ("off"); null elsewhere. Never logged or stored; the host's debug state redacts `text`.
+ */
+export const PageFieldText = z.object({
+  text: PageFocusText.nullable(),
+  ownSuggestions: z.enum(["gmail", "google-docs"]).nullable(),
+  docsText: z.enum(["on", "off"]).nullable(),
+});
+export type PageFieldText = z.infer<typeof PageFieldText>;
+
 /**
  * One tab, composed by the worker from every frame that answered. `id` names the pageWalk it answers; the
  * pageResult for that command follows it. `missing` lists frames that did not answer, with why.
@@ -2273,8 +2324,12 @@ export const PageSnapshot = z.object({
   title: z.string(),
   frames: z.array(PageFrame).min(1),
   missing: z.array(z.object({ frameId: z.number().int().nonnegative(), reason: z.string() })),
-  /** The focused control and its text and selection, when one has focus. */
-  focused: z.object({ frameId: z.number().int().nonnegative(), id: z.string().min(1), selection: z.tuple([z.number().int(), z.number().int()]).nullable() }).nullable(),
+  /** The focused control and its text and selection, when one has focus. `text` (P4 item 7): absent from an extension before P4. */
+  focused: z
+    .object({ frameId: z.number().int().nonnegative(), id: z.string().min(1), selection: z.tuple([z.number().int(), z.number().int()]).nullable(), text: PageFocusText.nullable().optional() })
+    .nullable(),
+  /** P4 items 6 and 7: present only for a Google Docs or Sheets editor tab. */
+  docs: PageDocs.optional(),
   /**
    * P1: the walk's time in the extension, from the worker's receipt of the command to the snapshot it sends (its frames
    * walked in parallel), in ms; absent from an extension built before P1.
@@ -2348,6 +2403,12 @@ const PageTarget = {
  */
 export const PageVerb = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pageWalk"), tabId: z.number().int().nonnegative().nullable() }),
+  /**
+   * P4 item 8: `text` at the caret of the focused field `id` names, by document.execCommand("insertText"), so the page's
+   * own Undo takes it back. Only while that very element (no strong-key rebind) still has focus, holds no selection and
+   * reads exactly `expect` before its caret (PageFocusText.before); read back afterwards.
+   */
+  z.object({ kind: z.literal("pageInsertText"), ...PageTarget, expect: z.string().max(FIELD_BEFORE_MAX), text: z.string().min(1).max(FIELD_BEFORE_MAX) }),
   z.object({ kind: z.literal("pageWrite"), ...PageTarget, expect: z.string(), value: z.string() }),
   z.object({ kind: z.literal("pagePress"), ...PageTarget }),
   z.object({ kind: z.literal("pageSelect"), ...PageTarget, expect: z.string(), value: z.string() }),
@@ -2447,6 +2508,36 @@ export type PageAttached = z.infer<typeof PageAttached>;
 export const PageChanges = z.array(z.enum(["navigated", "navigationStarted", "documentGone", "beforeunload", "pagehide", "submit"])).min(1).max(6);
 export type PageChanges = z.infer<typeof PageChanges>;
 
+/** P4 rule 4: the most text one read of a tab carries, in UTF-8 bytes, all frames together (extension shared/tab-text.ts). */
+export const TAB_TEXT_BYTES = 16 * 1024;
+/**
+ * P4 rule 2: how long after the user leaves a tab its text may be read, and the longest any read is kept. Two minutes,
+ * the window fill already treats as recent. The extension's worker holds the same bound (worker/left-tab.ts LEFT_TAB_MS).
+ */
+export const LEFT_TAB_MS = 120_000;
+const utf8 = new TextEncoder();
+
+/**
+ * P4: the visible text of the tab the user just left, as one pageReadText found it: paragraphs of what the user had
+ * selected there, then of the page's main region, top frame first, at most TAB_TEXT_BYTES in all (checked again here).
+ * `leftAt`: when the user left the tab, by the worker's clock. `frames`: each frame read, with its origin. `docsText`:
+ * for a Google Docs or Sheets editor, whether its text for assistive technology was there; null on other pages. The
+ * helper holds it in memory for one fill only (engines/tab-source.ts), and never logs or stores it.
+ */
+export const PageTabText = z
+  .object({
+    tabId: z.number().int().nonnegative(),
+    leftAt: ms,
+    title: z.string(),
+    frames: z.array(z.object({ frameId: z.number().int().nonnegative(), origin: z.string().min(1) })).min(1),
+    selection: z.array(z.string().min(1)),
+    blocks: z.array(z.string().min(1)),
+    cut: z.boolean(),
+    docsText: z.enum(["on", "off"]).nullable(),
+  })
+  .refine((t) => [...t.selection, ...t.blocks].reduce((n, p) => n + utf8.encode(p).length + 1, 0) <= TAB_TEXT_BYTES + 1, { message: `more than ${TAB_TEXT_BYTES} bytes of text`, path: ["blocks"] });
+export type PageTabText = z.infer<typeof PageTabText>;
+
 export const PageResult = z
   .object({
     type: z.literal("pageResult"),
@@ -2468,9 +2559,12 @@ export const PageResult = z
     attached: PageAttached.optional(),
     /** A Yes/No press after which the page navigated or submitted (B28): with outcome failed and no readings. */
     pageChanged: PageChanges.optional(),
+    /** P4: pageReadText only, with outcome ok. */
+    text: PageTabText.optional(),
   })
   .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] })
-  .refine((r) => r.pageChanged === undefined || (r.outcome === "failed" && r.readings === undefined), { message: "pageChanged comes with outcome failed and no readings", path: ["pageChanged"] });
+  .refine((r) => r.pageChanged === undefined || (r.outcome === "failed" && r.readings === undefined), { message: "pageChanged comes with outcome failed and no readings", path: ["pageChanged"] })
+  .refine((r) => r.text === undefined || r.outcome === "ok", { message: "text comes with outcome ok", path: ["text"] });
 export type PageResult = z.infer<typeof PageResult>;
 
 /** The worker's first message once the bridge says the engine is ready. One per worker instance and connection. */
@@ -2573,11 +2667,21 @@ export type PageSitesOff = z.infer<typeof PageSitesOff>;
 export const PageInput = z.object({ type: z.literal("pageInput"), v: z.literal(PROTOCOL_VERSION), at: ms, tabId: z.number().int().nonnegative(), frameId: z.number().int().nonnegative(), kind: z.enum(["key", "mouse"]) });
 export type PageInput = z.infer<typeof PageInput>;
 
+/**
+ * P4: the visible text of `tabId`, once, for a fill that needs its source. The worker reads only the tab the user just
+ * left, within LEFT_TAB_MS and unchanged since, on no excluded site (rules 1 to 5; extension worker/left-tab.ts), and
+ * answers with a pageResult of the same id carrying `text`, or notAllowed, stale or siteOff and why. Nothing is acted
+ * on. Its own message, not a PageVerb, whose every verb but the walk names an element; only engines/tab-source.ts
+ * sends it, and the engine must not answer after `expires`.
+ */
+export const PageReadText = z.object({ type: z.literal("pageReadText"), v: z.literal(PROTOCOL_VERSION), id: z.string().min(1), expires: ms, tabId: z.number().int().nonnegative() });
+export type PageReadText = z.infer<typeof PageReadText>;
+
 /** What the extension sends the helper after the handshake. */
 export const EngineMessage = z.discriminatedUnion("type", [PageHello, PageSnapshot, PageResult, PagePong, PageFocusMoved, PageInput]);
 export type EngineMessage = z.infer<typeof EngineMessage>;
 /** What the helper sends the extension after the handshake. ActRevoke is the native one, unchanged. */
-export const HelperToEngine = z.discriminatedUnion("type", [PageCommand, ScopedActGrant, ActRevoke, PagePing, PageSitesOff]);
+export const HelperToEngine = z.discriminatedUnion("type", [PageCommand, ScopedActGrant, ActRevoke, PagePing, PageSitesOff, PageReadText]);
 export type HelperToEngine = z.infer<typeof HelperToEngine>;
 /** Every message on page.sock or the Native Messaging port, handshake included. */
 export const AnyPageMessage = z.union([EngineMessage, HelperToEngine, EngineChallenge, EngineHello, EngineWelcome, EngineReady, PageChunk]);

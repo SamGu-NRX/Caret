@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ActGrant, AnyMessage, AnyPageMessage, EngineMessage, GRANT_MAX_MS, HelperToEngine, HelperToReader, MAX_ATTACH_BYTES, PageCommand, PageResult, PageSnapshot, ScopedActGrant } from "../src/protocol.ts";
+import { ActGrant, AnyMessage, AnyPageMessage, EngineMessage, GRANT_MAX_MS, HelperToEngine, HelperToReader, MAX_ATTACH_BYTES, PageCommand, PageResult, PageSnapshot, ScopedActGrant, TAB_TEXT_BYTES } from "../src/protocol.ts";
 import { bridgeProof, helperProof, pageKey } from "../src/engines/auth.ts";
 
 const GOLDEN = fileURLToPath(new URL("../fixtures/golden/page.ndjson", import.meta.url));
@@ -20,6 +20,7 @@ describe("page golden lines", () => {
       "pageCommand", "pageResult", "pageInput",
       "pageSnapshot", "pageCommand", "pageResult",
       "pageResult",
+      "pageReadText", "pageResult", "pageReadText", "pageResult", "pageCommand", "pageResult", "pageSnapshot",
     ]);
   });
 
@@ -29,7 +30,7 @@ describe("page golden lines", () => {
 
   it("keeps each direction to its own union", () => {
     const fromEngine = new Set(["pageHello", "pageSnapshot", "pageResult", "pagePong", "pageFocus", "pageInput"]);
-    const toEngine = new Set(["pageCommand", "scopedActGrant", "actRevoke", "pagePing", "pageSitesOff"]);
+    const toEngine = new Set(["pageCommand", "scopedActGrant", "actRevoke", "pagePing", "pageSitesOff", "pageReadText"]);
     for (const l of lines) {
       expect(EngineMessage.safeParse(l).success).toBe(fromEngine.has(l.type as string));
       expect(HelperToEngine.safeParse(l).success).toBe(toEngine.has(l.type as string));
@@ -182,5 +183,47 @@ describe("B28 page lines", () => {
     expect(r.outcome === "failed" && r.readings === undefined && r.choice?.flavor === "pressGroup").toBe(true);
     expect(r.pageChanged).toEqual(["navigationStarted", "beforeunload"]);
     expect(PageResult.safeParse({ ...lines[37], pageChanged: ["reloaded"] }).success).toBe(false);
+  });
+});
+
+describe("P4: the tab the user just left, and the field being typed in", () => {
+  const read = lines[39] as Record<string, unknown>;
+  const text = read.text as Record<string, unknown>;
+
+  it("carries a read's text only with outcome ok", () => {
+    expect(PageResult.safeParse(read).success).toBe(true);
+    expect(PageResult.safeParse({ ...read, outcome: "notAllowed", detail: "it is not the tab you just left" }).success).toBe(false);
+  });
+
+  it("refuses a read over TAB_TEXT_BYTES, counted in UTF-8 bytes across selection and paragraphs", () => {
+    const at = (n: number): Record<string, unknown> => ({ ...read, text: { ...text, selection: [], blocks: ["é".repeat(n)] } });
+    expect(PageResult.safeParse(at(TAB_TEXT_BYTES / 2)).success).toBe(true);
+    expect(PageResult.safeParse(at(TAB_TEXT_BYTES / 2 + 1)).success).toBe(false);
+    expect(PageResult.safeParse({ ...read, text: { ...text, selection: ["x".repeat(TAB_TEXT_BYTES / 2)], blocks: ["y".repeat(TAB_TEXT_BYTES / 2)] } }).success).toBe(false);
+  });
+
+  it("names at least one frame read, and no empty paragraph", () => {
+    expect(PageResult.safeParse({ ...read, text: { ...text, frames: [] } }).success).toBe(false);
+    expect(PageResult.safeParse({ ...read, text: { ...text, blocks: [""] } }).success).toBe(false);
+  });
+
+  it("bounds the text around the caret: 2000 before, 500 after, 2000 selected", () => {
+    const snap = lines[44] as Record<string, unknown>;
+    const focused = snap.focused as Record<string, unknown>;
+    const withText = (t: Record<string, string>): Record<string, unknown> => ({ ...snap, focused: { ...focused, text: { before: "", after: "", selection: "", ...t } } });
+    expect(PageSnapshot.safeParse(withText({ before: "a".repeat(2000), after: "b".repeat(500), selection: "c".repeat(2000) })).success).toBe(true);
+    expect(PageSnapshot.safeParse(withText({ before: "a".repeat(2001) })).success).toBe(false);
+    expect(PageSnapshot.safeParse(withText({ after: "b".repeat(501) })).success).toBe(false);
+    expect(PageSnapshot.safeParse(withText({ selection: "c".repeat(2001) })).success).toBe(false);
+    // An extension before P4 sends no text.
+    expect(PageSnapshot.safeParse({ ...snap, focused: { frameId: 0, id: "e9", selection: null } }).success).toBe(true);
+  });
+
+  it("inserts only a non-empty text, and only where the text before the caret is named", () => {
+    const ins = lines[42] as { verb: Record<string, unknown> } & Record<string, unknown>;
+    expect(PageCommand.safeParse(ins).success).toBe(true);
+    expect(PageCommand.safeParse({ ...ins, verb: { ...ins.verb, text: "" } }).success).toBe(false);
+    const { expect: _gone, ...noExpect } = ins.verb;
+    expect(PageCommand.safeParse({ ...ins, verb: noExpect }).success).toBe(false);
   });
 });

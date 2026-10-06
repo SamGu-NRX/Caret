@@ -54,6 +54,19 @@ export class EngineSession {
   }
 
   command(verb: PageVerb, timeoutMs = this.timeoutMs): Promise<CommandAnswer> {
+    return this.request((id, expires) => ({ type: "pageCommand", v: PROTOCOL_VERSION, id, expires, verb }), timeoutMs);
+  }
+
+  /**
+   * P4: the text of the tab the user just left (PageReadText), answered by a pageResult whose `text` holds it. Only
+   * engines/tab-source.ts calls this. The answer is the caller's alone: nothing here keeps it past resolving.
+   */
+  readText(tabId: number, timeoutMs = this.timeoutMs): Promise<PageResult> {
+    return this.request((id, expires) => ({ type: "pageReadText", v: PROTOCOL_VERSION, id, expires, tabId }), timeoutMs).then((a) => a.result);
+  }
+
+  /** Sends one message the engine answers with a pageResult of the same id, and waits for that answer. */
+  private request(message: (id: string, expires: number) => HelperToEngine, timeoutMs: number): Promise<CommandAnswer> {
     const id = randomUUID();
     return new Promise((resolve) => {
       if (this.closed) return resolve({ result: this.failed(id, "the engine is gone"), snapshot: null });
@@ -62,7 +75,7 @@ export class EngineSession {
         resolve({ result: this.failed(id, `no answer from the engine within ${timeoutMs} ms`), snapshot: null });
       }, timeoutMs);
       this.pending.set(id, { resolve, snapshot: null, timer });
-      if (!this.send({ type: "pageCommand", v: PROTOCOL_VERSION, id, expires: Date.now() + timeoutMs, verb })) {
+      if (!this.send(message(id, Date.now() + timeoutMs))) {
         clearTimeout(timer);
         this.pending.delete(id);
         resolve({ result: this.failed(id, "the engine's connection is closed"), snapshot: null });
