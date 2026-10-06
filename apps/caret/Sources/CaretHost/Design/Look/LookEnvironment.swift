@@ -21,7 +21,7 @@ extension EnvironmentValues {
         set { self[LookMotionKey.self] = newValue }
     }
 
-    /// The goal step whose crop shows, which its row marks with the focus wash.
+    /// The row (`PageTaskPanel.Line.key`) whose crop shows, which it marks with the focus wash.
     var lookFocus: Int? {
         get { self[LookFocusKey.self] }
         set { self[LookFocusKey.self] = newValue }
@@ -38,7 +38,7 @@ enum LookSpace {
     static let group = "pageTaskGroup"
 }
 
-/// Where things stand in the group, gathered from the views: each row's frame by goal step (the thread starts at its
+/// Where things stand in the group, gathered from the views: each row's frame by its key (the thread starts at its
 /// trailing edge, and the coordinator finds the row under the pointer from them), the crop's frame, and the marked
 /// span's line middle (the thread's end).
 struct LookGeometry: Equatable {

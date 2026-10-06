@@ -22,8 +22,8 @@ struct CropContent: Equatable {
         case blank(label: String, blank: PageTaskPanel.Line.Blank, sentence: String)
     }
 
-    /// The row the crop is for.
-    var step: Int
+    /// The row the crop is for (`PageTaskPanel.Line.key`).
+    var key: Int
     var body: Body
 
     /// One drawing per source text: rows whose excerpts are the same text share it, and moving between them moves only

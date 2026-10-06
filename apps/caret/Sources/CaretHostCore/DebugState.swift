@@ -735,6 +735,8 @@ public struct DebugState: Codable, Equatable, Sendable {
             public init(step: Int, frame: [Double]) { self.step = step; self.frame = frame }
         }
 
+        /// `step` here and in `Row` is the row's key (`PageTaskPanel.Line.key`): the goal step in the first group, a
+        /// blank below zero.
         public struct Crop: Codable, Equatable, Sendable {
             public var step: Int
             public var side: String

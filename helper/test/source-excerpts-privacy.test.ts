@@ -37,8 +37,8 @@ describe("a page goal's source excerpts (L1)", () => {
     for (const m of r.published) if (!(m.type === "goalProgress" && m.event === "segment")) expect(JSON.stringify(m)).not.toContain("excerpt");
   });
 
-  it("are not built for an in-process caller that did not ask for them", async () => {
-    const r = await rig();
+  it("are never built for an in-process caller, which has no hello to declare them (review L1-3)", async () => {
+    const r = await rig({ inProcessExcerpts: true });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     expect(JSON.stringify(preview)).not.toContain("excerpt");
     expect((preview.page?.rows[0] as { source?: unknown } | undefined)?.source).toEqual({ kind: "window", name: "TextEdit" });

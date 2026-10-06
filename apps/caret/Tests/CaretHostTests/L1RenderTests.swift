@@ -112,7 +112,7 @@ final class L1RenderTests: XCTestCase {
         let progress = try XCTUnwrap(panels["page-task-progress"])
         let writing = try XCTUnwrap(progress.sections[0].lines.first { $0.state == .writing })
         XCTAssertEqual(writing.label, "Start date")
-        let content = try XCTUnwrap(PageTaskGroupView.cropContent(progress, step: try XCTUnwrap(writing.step)))
+        let content = try XCTUnwrap(PageTaskGroupView.cropContent(progress, key: try XCTUnwrap(writing.key)))
         guard case .source(let e, let kind, let app, let marks) = content.body else { return XCTFail("a source crop") }
         XCTAssertEqual(kind, .window)
         XCTAssertEqual(app, "Notes")
@@ -122,14 +122,25 @@ final class L1RenderTests: XCTestCase {
         XCTAssertEqual(marks.filter { $0.kind == .done }.count, 5, "Full name, Email, Phone, Country, and City, which was already so")
         // A row from another source, or a blank, gets its own crop; a row with no excerpt gets none.
         let preview = try XCTUnwrap(panels["page-task-preview"])
-        let school = try XCTUnwrap(preview.sections[0].lines.first { $0.label == "School" }?.step)
-        guard case .source(_, .memory?, nil, let only)? = PageTaskGroupView.cropContent(preview, step: school)?.body else { return XCTFail("a memory crop") }
+        let school = try XCTUnwrap(preview.sections[0].lines.first { $0.label == "School" }?.key)
+        guard case .source(_, .memory?, nil, let only)? = PageTaskGroupView.cropContent(preview, key: school)?.body else { return XCTFail("a memory crop") }
         XCTAssertEqual(only.map(\.kind), [.focus])
-        let why = try XCTUnwrap(preview.sections[0].lines.first { $0.kind == .blank }?.step)
-        guard case .blank(_, .hatch, let sentence)? = PageTaskGroupView.cropContent(preview, step: why)?.body else { return XCTFail("a blank crop") }
+        let why = try XCTUnwrap(preview.sections[0].lines.first { $0.kind == .blank }?.key)
+        guard case .blank(_, .hatch, let sentence)? = PageTaskGroupView.cropContent(preview, key: why)?.body else { return XCTFail("a blank crop") }
         XCTAssertTrue(sentence.hasPrefix("'Why do you want to work here?' is yours to write"))
-        let tick = try XCTUnwrap(preview.sections[0].lines.first { $0.kind == .step }?.step)
-        XCTAssertNil(PageTaskGroupView.cropContent(preview, step: tick))
+        let tick = try XCTUnwrap(preview.sections[0].lines.first { $0.kind == .step }?.key)
+        XCTAssertNil(PageTaskGroupView.cropContent(preview, key: tick))
+    }
+
+    /// Review L1-2: a reveal's goal numbers its steps from 0 again; each row's crop is its own group's.
+    func testARevealedRowShowsItsOwnSource() throws {
+        let reveal = try XCTUnwrap(Dictionary(uniqueKeysWithValues: Gallery.l1Panels())["page-task-reveal"])
+        let postal = try XCTUnwrap(reveal.sections[1].lines.first { $0.label == "Postal code" })
+        XCTAssertEqual(postal.step, 1, "the reveal's own goal numbers from 0")
+        XCTAssertEqual(reveal.sections[0].lines.first { $0.step == 1 }?.label, "Email", "the first group's step 1 is another row")
+        XCTAssertNotEqual(postal.key, reveal.sections[0].lines.first { $0.step == 1 }?.key)
+        guard case .source(let e, _, _, _)? = PageTaskGroupView.cropContent(reveal, key: try XCTUnwrap(postal.key))?.body else { return XCTFail("a crop") }
+        XCTAssertEqual(e.spanText, "M5V 2T6")
     }
 
     func testTextKitFindsTheSpanAndThePanShowsIt() throws {

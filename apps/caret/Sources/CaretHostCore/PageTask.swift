@@ -377,6 +377,9 @@ public struct PageTask: Equatable, Sendable {
         case .ended(.stopped), .ended(.finished): return .ignored
         default: break
         }
+        // L1: a stop may mean the source changed or was let go (a tab's text expires): its excerpts go now, so no crop
+        // shows text the helper no longer holds (review L1-1).
+        dropExcerpts()
         for r in groups[g].rows.indices where groups[g].rows[r].state == .writing {
             groups[g].rows[r].state = s.reason == .you ? .pending : .failed
         }
@@ -492,6 +495,14 @@ public struct PageTask: Equatable, Sendable {
             tasks = []
         }
         return true
+    }
+
+    /// L1: forgets every row's source excerpt (`SourceExcerpts.swift`): on a stop, when the panel rests without showing,
+    /// and on a host that draws no crop.
+    public mutating func dropExcerpts() {
+        for g in groups.indices {
+            for r in groups[g].rows.indices { groups[g].rows[r].excerpt = nil }
+        }
     }
 
     /// ⌘Z went out for this page: what its writes revealed or left is no longer there to continue.

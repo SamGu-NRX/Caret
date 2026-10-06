@@ -166,7 +166,9 @@ public final class PageTaskMachine {
     /// not a page's preview, or a page task is running (the desk then says so).
     @discardableResult
     public func start(_ m: GoalProgress) -> Bool {
-        guard case .segment(let p) = m.event, let fresh = PageTask(preview: p, goalId: m.goalId), fresh.pid != nil else { return false }
+        guard case .segment(let p) = m.event, var fresh = PageTask(preview: p, goalId: m.goalId), fresh.pid != nil else { return false }
+        // L1: a host that draws no crop keeps no excerpt, whatever a helper sends it (review L1-E).
+        if !drawsCrops { fresh.dropExcerpts() }
         if let t = task {
             switch t.stage {
             case .running, .stopping: return false
@@ -187,6 +189,7 @@ public final class PageTaskMachine {
         let wasEnded: Bool
         if case .ended = t.stage { wasEnded = true } else { wasEnded = false }
         let result = t.receive(m)
+        if !drawsCrops { t.dropExcerpts() }
         switch result {
         case .ignored: return
         case .applied:
@@ -584,6 +587,8 @@ public final class PageTaskMachine {
             if let id = self.toastID { self.arbiter.dismissToast(grantID: id) }
             self.toastID = nil
             self.resting = true
+            // L1: a resting task shows nothing, so it keeps no excerpt: a crop is drawn only while the panel shows (v41 3.1).
+            self.task?.dropExcerpts()
             self.output(.hide(motion: .exit))
             self.timers["forget"] = self.clock.schedule(after: Self.carryWindow, repeats: false) { [weak self] in self?.clear(hide: false) }
         }

@@ -28,7 +28,7 @@ struct PageTaskGroupView: View {
     @Environment(\.lookMotion) private var motion
 
     var body: some View {
-        let content = crop.flatMap { Self.cropContent(panel, step: $0) }
+        let content = crop.flatMap { Self.cropContent(panel, key: $0) }
         Group {
             switch side {
             case .trailing, .leading:
@@ -47,8 +47,8 @@ struct PageTaskGroupView: View {
         .coordinateSpace(name: LookSpace.group)
         .environment(\.lookFocus, panel.sections.contains { $0.marks && $0.lines.contains { $0.state == .writing } } ? nil : crop)
         .overlayPreferenceValue(LookGeometryKey.self) { geometry in
-            if side != .overlay, let step = content?.step, let row = geometry.rows[step], let crop = geometry.crop {
-                PageTaskThread(row: row, crop: crop, spanY: geometry.spanY, side: side, writing: Self.line(panel, step: step)?.state == .writing)
+            if side != .overlay, let key = content?.key, let row = geometry.rows[key], let crop = geometry.crop {
+                PageTaskThread(row: row, crop: crop, spanY: geometry.spanY, side: side, writing: Self.line(panel, key: key)?.state == .writing)
             }
         }
     }
@@ -66,19 +66,19 @@ struct PageTaskGroupView: View {
         }
     }
 
-    /// The row a step is, in any section.
-    static func line(_ panel: PageTaskPanel, step: Int) -> PageTaskPanel.Line? {
+    /// The row with this key, in any section.
+    static func line(_ panel: PageTaskPanel, key: Int) -> PageTaskPanel.Line? {
         let lines: [PageTaskPanel.Line] = panel.sections.flatMap(\.lines)
-        return lines.first { (l: PageTaskPanel.Line) -> Bool in l.step == step && l.kind != .attach }
+        return lines.first { (l: PageTaskPanel.Line) -> Bool in l.key == key && l.kind != .attach }
     }
 
-    /// What the crop shows for `step`: the source with every row from the same drawing marked (written rows settled,
+    /// What the crop shows for the row `key`: the source with every row from the same drawing marked (written rows settled,
     /// the writing row's rule, the focused row's band), or a blank's sentence. Nil when the row has neither.
-    static func cropContent(_ panel: PageTaskPanel, step: Int) -> CropContent? {
+    static func cropContent(_ panel: PageTaskPanel, key: Int) -> CropContent? {
         let lines = panel.sections.flatMap(\.lines)
-        guard let line = lines.first(where: { $0.step == step }) else { return nil }
+        guard let line = lines.first(where: { $0.key == key }) else { return nil }
         if let blank = line.blank {
-            return CropContent(step: step, body: .blank(label: line.label ?? "", blank: blank, sentence: line.text))
+            return CropContent(key: key, body: .blank(label: line.label ?? "", blank: blank, sentence: line.text))
         }
         guard let e = line.excerpt else { return nil }
         var marks: [CropContent.Mark] = []
@@ -87,13 +87,13 @@ struct PageTaskGroupView: View {
             switch other.state {
             case .writing?: marks.append(.init(range: o.nsSpan, kind: .writing))
             case .verified?, .already?: marks.append(.init(range: o.nsSpan, kind: .done))
-            case .pending?, .failed?, nil: if other.step == step { marks.append(.init(range: o.nsSpan, kind: .focus)) }
+            case .pending?, .failed?, nil: if other.key == key { marks.append(.init(range: o.nsSpan, kind: .focus)) }
             }
         }
         // The shown row's mark last, so it leads the pan when nothing is being written.
         if let i = marks.firstIndex(where: { $0.range == e.nsSpan }), i != marks.count - 1 { marks.append(marks.remove(at: i)) }
         let app = line.sourceKind == .memory || line.sourceKind == .request ? nil : line.owner
-        return CropContent(step: step, body: .source(e, kind: line.sourceKind, app: app, marks: marks))
+        return CropContent(key: key, body: .source(e, kind: line.sourceKind, app: app, marks: marks))
     }
 }
 

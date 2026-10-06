@@ -77,8 +77,16 @@ export interface RigOptions {
   now?: () => number;
   /** I6: the offers an hour may show (HelperOptions.offersPerHour); the settings' own by default. */
   offersPerHour?: number;
-  /** L1: the in-process caller shows source excerpts (HelperOptions.sourceExcerpts). */
+  /**
+   * L1: the rig asks and accepts as a connected host session whose hello declared sourceExcerpts (helper.hostConnected),
+   * the only kind of caller a preview's excerpts go to.
+   */
   sourceExcerpts?: boolean;
+  /**
+   * Review L1-3: hands the helper the in-process option the first L1 build had (`sourceExcerpts` in HelperOptions), which
+   * no longer exists, so a test can pin that an in-process caller gets no excerpt whatever it passes.
+   */
+  inProcessExcerpts?: boolean;
   /** The helper's warn line (HelperOptions.warn); dropped by default. */
   warn?: (line: string) => void;
 }
@@ -116,11 +124,13 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
     // As main.ts wires it: the page's address, headings and what its walk left out (a password field).
     pageContext: (id) => host.registry.contextOf(id),
     ...(o.goalFiles === true ? { goalFiles: true } : {}),
-    ...(o.sourceExcerpts === true ? { sourceExcerpts: true } : {}),
     ...(o.now === undefined ? {} : { now: o.now }),
+    ...((o.inProcessExcerpts === true ? { sourceExcerpts: true } : {}) as Record<string, never>),
     ...(o.offersPerHour === undefined ? {} : { offersPerHour: o.offersPerHour }),
   });
   wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
+  const session = o.sourceExcerpts === true ? "rig-host" : undefined;
+  if (session !== undefined) helper.hostConnected(session, false, o.goalFiles === true, true);
   host.registry.add(page.session);
   page.session.receive(hello);
   await new Promise((r) => setTimeout(r, 0));
@@ -140,8 +150,8 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
     setNote: async (text) => {
       await helper.handleReader({ ...snap([field("te/note", text, { role: "AXTextArea" })], { at: Date.now(), windowId: "note", title: "Robin's details.txt", app: TEXTEDIT, focused: false }), reason: "background" });
     },
-    ask: (instruction) => helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "a1", at: Date.now(), instruction, windowId: WIN }, undefined, true, true) as Promise<GoalProgress>,
-    accept: (s, more = {}) => helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: s.goalId, segment: s.segment, digest: s.digest, at: Date.now(), ...more }),
+    ask: (instruction) => helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "a1", at: Date.now(), instruction, windowId: WIN }, session, true, true) as Promise<GoalProgress>,
+    accept: (s, more = {}) => helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: s.goalId, segment: s.segment, digest: s.digest, at: Date.now(), ...more }, session),
     next: async (make, title, path) => {
       page.goTo(make, title, path);
       expect((await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");

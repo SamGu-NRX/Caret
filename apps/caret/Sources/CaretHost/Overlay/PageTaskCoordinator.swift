@@ -71,6 +71,12 @@ final class PageTaskCoordinator {
             voiceStep = nil
             hideCrop?.cancel()
             model.crop = nil
+            // L1: once the panel has left, its content goes too, excerpts with it (review L1-1); a panel shown again is
+            // drawn afresh from the machine.
+            let gone = Motion.exit(motion == .exit ? Motion.Duration.toastExit : 0, reduce: Motion.reduceMotion) + 0.05
+            DispatchQueue.main.asyncAfter(deadline: .now() + gone) { [weak self] in
+                MainActor.assumeIsolated { if let self, !self.panel.isVisible { self.model.panel = nil } }
+            }
             // A panel shown again is announced again, even with the same words (prep-for-prod H11-5).
             announced = ""
             panel.exit(duration: motion == .exit ? Motion.Duration.toastExit : 0)
@@ -101,7 +107,7 @@ final class PageTaskCoordinator {
         var info = DebugState.PageTaskInfo(status: machine.status, choosing: machine.choosing, filesWired: machine.filesWired, panel: panel.debugInfo(), lastAccept: machine.lastAccept)
         // L1: which row's crop shows and where; never the excerpt.
         info.crop = model.crop.map { step in
-            DebugState.PageTaskInfo.Crop(step: step, side: model.side.rawValue, kind: model.panel.flatMap { PageTaskGroupView.line($0, step: step) ?? $0.sections.flatMap(\.lines).first { $0.step == step } }.map { $0.blank?.rawValue ?? $0.sourceKind?.rawValue ?? "none" } ?? "none")
+            DebugState.PageTaskInfo.Crop(step: step, side: model.side.rawValue, kind: model.panel.flatMap { PageTaskGroupView.line($0, key: step) }.map { $0.blank?.rawValue ?? $0.sourceKind?.rawValue ?? "none" } ?? "none")
         }
         if let panel = self.panel.debugInfo(), panel.frame.count == 4 {
             info.rows = model.geometry.rows.sorted { $0.key < $1.key }.map { step, r in
@@ -257,9 +263,9 @@ final class PageTaskCoordinator {
     /// row, else the pointer's.
     private func cropStep(_ content: PageTaskPanel) -> Int? {
         let running = machine.status.stage == "running" || machine.status.stage == "stopping"
-        let writing = content.sections.last?.lines.first { $0.state == .writing }?.step
+        let writing = content.sections.last?.lines.first { $0.state == .writing }?.key
         return PageTaskLook.cropStep(running: running, writing: writing, voiceOver: voiceStep, pointer: pointerStep) {
-            PageTaskGroupView.cropContent(content, step: $0) != nil
+            PageTaskGroupView.cropContent(content, key: $0) != nil
         }
     }
 

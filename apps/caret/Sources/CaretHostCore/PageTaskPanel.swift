@@ -74,8 +74,12 @@ public struct PageTaskPanel: Equatable, Sendable {
         public var attach: Attach?
         /// The text wraps rather than being cut: a file's name and date are always shown whole (H14).
         public var wraps: Bool
-        /// L1: the goal step the row is, for the crop and VoiceOver.
+        /// L1: the goal step the row is.
         public var step: Int?
+        /// L1: the row's own id in the panel, for the crop, the pointer and VoiceOver: unique across groups, whose goals
+        /// each number their steps from 0 (review L1-2). A group's row is `group * 10_000 + step`; a blank, which is no
+        /// step, is below zero.
+        public var key: Int?
         /// L1: the value came from the page's own list (v41's ▾).
         public var picked: Bool
         /// L1: the owner column's words: the source ("Notes", "Memory"), "already so", or a blank's "yours to write".
@@ -143,11 +147,14 @@ public struct PageTaskPanel: Equatable, Sendable {
         var sections: [Section] = []
         for (i, g) in t.groups.enumerated() {
             var lines = Self.runs(Self.lines(g, now: now, calendar: calendar))
-            // A blank row is no goal step; it gets an id of its own below zero, so the crop and VoiceOver can name it.
             var k = 0
-            for j in lines.indices where lines[j].kind == .blank {
-                k += 1
-                lines[j].step = -(i * 1000 + k)
+            for j in lines.indices {
+                if lines[j].kind == .blank {
+                    k += 1
+                    lines[j].key = -(i * Self.keySpan + k)
+                } else if let step = lines[j].step {
+                    lines[j].key = i * Self.keySpan + step
+                }
             }
             sections.append(Section(caption: i == 0 ? nil : PageTaskCopy.continuation(g), lines: lines, marks: g.accepted))
         }
@@ -236,6 +243,9 @@ public struct PageTaskPanel: Equatable, Sendable {
 
     /// L1: the owner bracket (v41 DIRECTION 2.4, the prototype's `rows()`): consecutive field rows from one source form a
     /// run. Only a row whose owner is its source joins one: "already so", a blank, a step or an attach row breaks it.
+    /// Keys per group: a goal has far fewer steps than this.
+    public static let keySpan = 10_000
+
     static func runs(_ lines: [Line]) -> [Line] {
         var out = lines
         func key(_ l: Line) -> String? {

@@ -115,6 +115,17 @@ describe("source excerpts on the socket (L1)", () => {
     for (const c of [both, files, excerpts]) c.s.destroy();
   });
 
+  it("forgets a host that declared sourceExcerpts once its connection closes (review L1-4)", async () => {
+    const held = (): number => (server as unknown as { sourceExcerpts: Set<unknown> }).sourceExcerpts.size;
+    const host = await connect(path);
+    send(host.s, hello(1, ["goalPlans", "sourceExcerpts"]));
+    await tick();
+    expect(held()).toBe(1);
+    host.s.destroy();
+    await tick();
+    expect(held()).toBe(0);
+  });
+
   it("counts a hello as showing excerpts only with host: true, goalPlans and sourceExcerpts", async () => {
     const seen: unknown[][] = [];
     const real = helper.hostConnected.bind(helper);

@@ -45,11 +45,11 @@ struct LookRow: View {
         .background {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(Color(token: CaretColor.focusRow))
-                .opacity(focus != nil && focus == line.step ? 1 : 0)
+                .opacity(focus != nil && focus == line.key ? 1 : 0)
         }
         .background {
             GeometryReader { g in
-                Color.clear.preference(key: LookGeometryKey.self, value: LookGeometry(rows: line.step.map { [$0: g.frame(in: .named(LookSpace.group))] } ?? [:]))
+                Color.clear.preference(key: LookGeometryKey.self, value: LookGeometry(rows: line.key.map { [$0: g.frame(in: .named(LookSpace.group))] } ?? [:]))
             }
         }
         // A panel's first rows arrive 30 ms apart, capped at the sixth (v41 5.2 `stagger`); opacity only.
@@ -60,7 +60,7 @@ struct LookRow: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(line.spoken)
-        .modifier(RowVoiceFocus(step: line.step))
+        .modifier(RowVoiceFocus(key: line.key))
     }
 
     private var sentence: some View {
@@ -77,16 +77,16 @@ struct LookRow: View {
 /// VoiceOver on a row shows its crop, as the pointer does. Only the live panel tracks it (`lookVoiceFocus` set);
 /// off-screen renders draw rows without the focus state.
 private struct RowVoiceFocus: ViewModifier {
-    var step: Int?
+    var key: Int?
     @Environment(\.lookVoiceFocus) private var voiceFocus
     @Environment(\.lookTracksVoiceOver) private var tracks
     @AccessibilityFocusState private var on: Bool
 
     func body(content: Content) -> some View {
-        if tracks, let step {
+        if tracks, let key {
             content
                 .accessibilityFocused($on)
-                .onChange(of: on) { _, now in voiceFocus(step, now) }
+                .onChange(of: on) { _, now in voiceFocus(key, now) }
         } else {
             content
         }

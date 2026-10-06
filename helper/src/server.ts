@@ -474,6 +474,7 @@ export class HelperServer {
       this.spend.delete(s);
       this.goalFiles.delete(s);
       this.pageText.delete(s);
+      this.sourceExcerpts.delete(s);
       if (this.localModelHost === s) {
         this.localModelHost = null;
         this.localModel?.hostGone();

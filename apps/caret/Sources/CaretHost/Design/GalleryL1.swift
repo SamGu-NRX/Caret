@@ -93,8 +93,8 @@ extension Gallery {
     /// The row each state shows its crop for: the row a user would point at, the row being written while it runs, a
     /// blank's sentence where the panel has one. Nil: no crop (a stopped panel, the attach rows).
     static func l1Crop(_ name: String, _ panel: PageTaskPanel) -> Int? {
-        func step(_ label: String) -> Int? { panel.sections.flatMap(\.lines).first { $0.label == label }?.step }
-        let writing = panel.sections.last?.lines.first { $0.state == .writing }?.step
+        func step(_ label: String) -> Int? { panel.sections.flatMap(\.lines).first { $0.label == label }?.key }
+        let writing = panel.sections.last?.lines.first { $0.state == .writing }?.key
         switch name {
         case "page-task-preview": return step("Phone")
         case "page-task-progress", "page-task-progress-stoppable": return writing
@@ -132,9 +132,9 @@ extension Gallery {
         items.append(Item(name: "l1-crop-leading", view: l1View(preview, crop: phone, side: .leading, character: character)))
         items.append(Item(name: "l1-crop-overlay", view: l1View(preview, crop: phone, side: .overlay, character: character)))
         let next = byName["page-task-next-page"]!
-        let referral = next.sections.flatMap(\.lines).first { $0.label == "Who referred you?" }?.step
+        let referral = next.sections.flatMap(\.lines).first { $0.label == "Who referred you?" }?.key
         items.append(Item(name: "l1-next-page-notfound", view: l1View(next, crop: referral, character: character)))
-        let gender = next.sections.flatMap(\.lines).first { $0.label == "Gender" }?.step
+        let gender = next.sections.flatMap(\.lines).first { $0.label == "Gender" }?.key
         items.append(Item(name: "l1-next-page-identity", view: l1View(next, crop: gender, character: character)))
         return items
     }

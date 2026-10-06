@@ -67,8 +67,9 @@ final class LookL1Tests: XCTestCase {
         XCTAssertEqual(blanks.map(\.owner), ["yours to write", "not in your sources"])
         // A blank's sentence is not said twice: its warning is not a withheld line as well.
         XCTAssertTrue(lines.filter { $0.kind == .withheld }.isEmpty, "\(lines.map(\.text))")
-        // Blank rows have ids of their own, below zero, for the crop and VoiceOver.
-        XCTAssertTrue(blanks.allSatisfy { ($0.step ?? 0) < 0 })
+        // Blank rows have keys of their own, below zero, for the crop and VoiceOver; a row's key is its step in the first group.
+        XCTAssertTrue(blanks.allSatisfy { ($0.key ?? 0) < 0 && $0.step == nil })
+        XCTAssertEqual(lines.filter { $0.kind == .field }.map(\.key), [0, 1, 2, 3])
         XCTAssertEqual(panel.yoursCount, "1 is yours")
     }
 
@@ -173,6 +174,50 @@ final class LookL1Tests: XCTestCase {
         let all = try String(contentsOfFile: log.path, encoding: .utf8) + String(contentsOfFile: log.rotatedPath, encoding: .utf8)
         XCTAssertTrue(all.contains("Robin Vale"), "the lines themselves are there")
         for secret in ["ZQ-line-one", "ZQ-line-three", "ZQ-note-name"] { XCTAssertFalse(all.contains(secret), "\(secret) in the log") }
+    }
+
+    // MARK: - Review L1: lifetime
+
+    static func excerpts(_ t: PageTask?) -> [SourceExcerpt] { (t?.groups ?? []).flatMap { $0.rows.compactMap(\.excerpt) } }
+
+    func testAHostThatDrawsNoCropKeepsNoExcerpt() throws {
+        let preview = GoalProgress(at: 1, goalId: "goal-1-a1", requestId: nil, event: .segment(try Self.privatePreview()))
+        let headless = PageTaskTests.Rig()
+        XCTAssertTrue(headless.machine.start(preview))
+        XCTAssertEqual(Self.excerpts(headless.machine.task), [])
+        let drawing = PageTaskTests.Rig()
+        drawing.machine.drawsCrops = true
+        XCTAssertTrue(drawing.machine.start(preview))
+        XCTAssertEqual(Self.excerpts(drawing.machine.task).count, 1)
+    }
+
+    func testAStopForgetsTheExcerpts() throws {
+        let r = PageTaskTests.Rig()
+        r.machine.drawsCrops = true
+        XCTAssertTrue(r.machine.start(GoalProgress(at: 1, goalId: "goal-1-a1", requestId: nil, event: .segment(try Self.privatePreview()))))
+        r.tab()
+        XCTAssertEqual(Self.excerpts(r.machine.task).count, 1)
+        // The helper stops the goal because its source went (a tab's text expired): no crop may show that text after.
+        r.feed([GoalProgress(at: 2, goalId: "goal-1-a1", requestId: nil, event: .stopped(.init(segment: 0, step: 0, reason: .sourceChanged,
+                                                                                                 says: "What Caret was copying from changed, so it stopped.", freshPlan: nil)))])
+        XCTAssertNotNil(r.machine.task)
+        XCTAssertEqual(Self.excerpts(r.machine.task), [])
+    }
+
+    func testAPanelAtRestKeepsNoExcerpt() throws {
+        let r = PageTaskTests.Rig()
+        r.machine.drawsCrops = true
+        XCTAssertTrue(r.machine.start(GoalProgress(at: 1, goalId: "goal-1-a1", requestId: nil, event: .segment(try Self.privatePreview()))))
+        r.tab()
+        r.feed([GoalProgress(at: 2, goalId: "goal-1-a1", requestId: nil, event: .step(.init(segment: 0, taskId: "goal-1-a1:s0", step: 0, steps: 1, phase: .verified, says: "Full name: Robin Vale"))),
+                GoalProgress(at: 3, goalId: "goal-1-a1", requestId: nil, event: .finished(.init(outcome: .done, verified: 1, skipped: 0, left: [], says: "Done: 1 field verified.")))])
+        // Done and after, the crop shows on hover while the panel does.
+        XCTAssertEqual(Self.excerpts(r.machine.task).count, 1)
+        r.clock.advance(by: 30)
+        // The panel has left and the task rests for a late reveal: it holds no excerpt.
+        XCTAssertTrue(r.hidden)
+        XCTAssertNotNil(r.machine.task)
+        XCTAssertEqual(Self.excerpts(r.machine.task), [])
     }
 
     // MARK: - The row grammar

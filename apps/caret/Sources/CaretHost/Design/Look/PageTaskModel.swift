@@ -10,7 +10,7 @@ final class PageTaskModel: ObservableObject {
     @Published var animated = true
     /// What made the last change, which picks its motion (`PageTaskLook.motion`).
     @Published var cause: PageTaskLook.Cause = .helper
-    /// The goal step whose crop shows, and where the crop stands.
+    /// The row (`PageTaskPanel.Line.key`) whose crop shows, and where the crop stands.
     @Published var crop: Int?
     @Published var side: PageTaskLook.CropSide = .trailing
     /// The panel's first show: its rows stagger in.

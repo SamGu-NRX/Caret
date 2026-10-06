@@ -222,11 +222,6 @@ export interface HelperOptions {
    */
   goalFiles?: boolean;
   /**
-   * L1: in-process callers (no host session) play a host that shows source excerpts (SOURCE_EXCERPTS_CAPABILITY). A
-   * host on the socket says so in its hello instead. Absent: no page preview carries an excerpt for them.
-   */
-  sourceExcerpts?: boolean;
-  /**
    * S1: a page window's address (origin and path of its top frame) and its h1 and h2 headings, from the page engines.
    * Saved answers record the address, and the organization guard reads both. Absent: neither is known.
    */
@@ -1502,9 +1497,13 @@ export class Helper {
     return session === undefined ? this.opts.goalFiles === true : this.goalFileHosts.has(session);
   }
 
-  /** L1: whether a goal offered to `session` may carry source excerpts: its host declared SOURCE_EXCERPTS_CAPABILITY, or (in process) the options say so. */
+  /**
+   * L1: whether a goal offered to `session` may carry source excerpts: only a host session whose hello declared
+   * SOURCE_EXCERPTS_CAPABILITY. An in-process caller has no hello, so it never gets one (review L1-3): the user's text
+   * goes to a host that asked for it, on the local socket, and nowhere else.
+   */
   private excerptsFor(session: string | undefined): boolean {
-    return session === undefined ? this.opts.sourceExcerpts === true : this.sourceExcerptHosts.has(session);
+    return session !== undefined && this.sourceExcerptHosts.has(session);
   }
 
   /**
