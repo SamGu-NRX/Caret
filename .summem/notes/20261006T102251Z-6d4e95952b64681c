@@ -1,0 +1,1 @@
+A1: Ask scope is code's reading first (planner/scope-reading.ts; any unread word means no reading); the heads 'reading' question confirms it and intent.agreed skips confirmScope/sectionScope. ask-reading-eval.ts scores readings with no model.

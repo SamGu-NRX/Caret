@@ -119,7 +119,7 @@ helper = new Helper({
   store,
   memoryDir,
   watchMemory: true,
-  askJev: args["no-jev"] ? null : ledgeredJev(makeJevClient(() => loadJevKey()), spend),
+  askJev: args["no-jev"] ? null : ledgeredJev(makeJevClient(loadJevKey), spend),
   shadow: args.shadow,
   allowBackgroundFocus: args["allow-background-focus"],
   audit: auditOut !== undefined,

@@ -11,7 +11,7 @@ import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
 import { jevFailureKind, type AskJev, type JevRequest } from "./fill/jev.ts";
-import { conversionOf, describeInput, emptyInput, FillError, formAsksFor, formFields, memoryWrites, parseMemoryRef, proposeFill, type FillErrorWhy } from "./fill/fill.ts";
+import { conversionOf, describeInput, emptyInput, FillError, formAsksFor, formFields, memoryWrites, parseMemoryRef, proposeFill, selectedFormInputs, type FillErrorWhy } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
   HelperMessage,
@@ -321,6 +321,26 @@ function fillMatches(f: CaretFill, t: Transfer): boolean {
 const FILL_REPEAT_MS = 30_000;
 const PRUNE_EVERY_MS = 10_000;
 
+interface FillIdentity {
+  session: number;
+  document: string | null;
+  triggerKey: string;
+  descriptor: string;
+}
+
+interface FillFlight {
+  windowId: string;
+  identity: FillIdentity;
+  explicit: boolean;
+  queued: boolean;
+  reading: string;
+  focuses: { windowId: string; key: string }[];
+  scope: string | null;
+  ready: Promise<void>;
+  prepared: () => void;
+  result: Promise<FillProposal | null>;
+}
+
 export class Helper {
   readonly model = new ScreenModel();
   readonly text = new RollingText();
@@ -330,7 +350,7 @@ export class Helper {
   mode: "live" | "shadow";
   private readonly opts: HelperOptions;
   private readonly lastFill = new Map<string, number>();
-  private readonly inflight = new Set<string>();
+  private readonly inflight = new Map<string, FillFlight>();
   /** When each About entry was added through memoryRequest add, by id: the newer entries a form has not been asked about (B21). */
   private readonly aboutAddedAt = new Map<string, number>();
   /**
@@ -2551,11 +2571,16 @@ export class Helper {
   }
 
   /** `afterAdd`: asked because an About entry was just added (refillFocused), not because of a focus. */
-  private async fill(windowId: string, key: string, explicit: boolean, afterAdd = false): Promise<FillProposal | null> {
+  private async fill(windowId: string, key: string, explicit: boolean, afterAdd = false, identity?: FillIdentity, queued = false): Promise<FillProposal | null> {
+    // A waiter still names the document and field it asked about, not a replacement with reused reader keys.
+    if (identity !== undefined && !this.fillIdentityMatches(windowId, identity)) {
+      this.fillFailed("the original fill target changed while the request waited", null, null, SAYS.windowChanged);
+      return null;
+    }
     const ask = this.ask;
     const store = this.opts.store;
     if (ask === null || this.mode === "shadow") {
-      if (explicit) this.error(`fill unavailable: ${ask === null ? "Jev is disabled" : "helper is in shadow mode"}`);
+      if (explicit) this.fillFailed(`fill unavailable: ${ask === null ? "Jev is disabled" : "helper is in shadow mode"}`, null);
       return null;
     }
     const now = this.now();
@@ -2575,14 +2600,35 @@ export class Helper {
     let formKey: string;
     try {
       formKey = `${windowId}|${formFields(w, key).map((n) => n.key).sort().join(",")}`;
+      identity ??= { session: this.readerSession, document: this.opts.pageDocument?.(windowId) ?? null, triggerKey: key, descriptor: this.fillTriggerDescriptor(w, key) };
     } catch (e) {
       this.fillFailed(e instanceof Error ? e.message : String(e), e instanceof FillError ? e.why : null, e);
       return null;
     }
-    if (this.inflight.has(formKey)) {
-      // The fill under way read memory before the entry arrived; the form is asked again once it ends.
-      if (afterAdd) this.refillAfter.add(formKey);
-      return null;
+    const same = this.inflight.get(formKey);
+    if (same !== undefined && afterAdd) this.refillAfter.add(formKey);
+    if (same !== undefined && !explicit) return null;
+    if (explicit) {
+      const other = same ?? [...this.inflight.values()].find((f) => f.windowId === windowId);
+      if (other !== undefined) {
+        // TabSource may add source words after an asynchronous read. Compare the inputs from that same view,
+        // not the capped text-only form key: ranked controls can push this request's trigger out of another scope.
+        await other.ready;
+        if (!this.fillIdentityMatches(windowId, identity)) {
+          this.fillFailed("the original fill target changed before it could join", null, null, SAYS.windowChanged);
+          return null;
+        }
+        // Publication checks the flight's trigger. A different trigger must wait with its own identity.
+        const compatible = key === other.identity.triggerKey && this.fillIdentityMatches(windowId, other.identity) && other.scope !== null && this.fillScope(this.fillModel(other.reading), windowId, key) === other.scope;
+        if (compatible && [...this.inflight.values()].includes(other)) {
+          // Keep an ambient result as the explicit proposal handleFillAll accepts, rather than only a pop-up.
+          other.explicit = true;
+          other.queued ||= queued;
+          return other.result;
+        }
+        await other.result;
+        return this.fill(windowId, key, true, afterAdd, identity, true);
+      }
     }
     if (!explicit && this.fillCovered(formKey, w, key, now)) return null;
     // I6: a page the user's Ask is planning, previewing or filling as a goal is that goal's: an ambient Fill all would
@@ -2591,15 +2637,47 @@ export class Helper {
       store.count("fill.held_goal", 1, now);
       return null;
     }
-    this.inflight.add(formKey);
-    const session = this.readerSession;
-    const focuses: { windowId: string; key: string }[] = [];
-    this.pendingFills.add(focuses);
+    let prepared!: () => void;
+    const ready = new Promise<void>((resolve) => { prepared = resolve; });
+    const flight: FillFlight = { windowId, identity, explicit, queued, reading: `fill:${++this.fillSeq}`, focuses: [], scope: null, ready, prepared, result: Promise.resolve(null) };
+    // One socket callback can dispatch another focus before the work microtask. Its history must already exist.
+    this.pendingFills.add(flight.focuses);
+    flight.result = Promise.resolve().then(() => this.performFill(windowId, key, formKey, now, ask, flight));
+    this.inflight.set(formKey, flight);
+    return flight.result;
+  }
+
+  private fillTriggerDescriptor(w: WindowState, key: string): string {
+    const input = emptyInput(w, key);
+    // SAFETY: capture follows formFields validation; identity rechecks first confirm the trigger is present.
+    return input === null ? describeField(w, w.nodes.get(key)!).text : describeInput(w, input);
+  }
+
+  private fillIdentityMatches(windowId: string, identity: FillIdentity): boolean {
+    const w = this.model.windows.get(windowId);
+    return identity.session === this.readerSession && identity.document === (this.opts.pageDocument?.(windowId) ?? null) && w !== undefined && w.nodes.get(identity.triggerKey)?.editable === true && this.fillTriggerDescriptor(w, identity.triggerKey) === identity.descriptor;
+  }
+
+  private fillScope(model: ScreenModel, windowId: string, key: string): string {
+    // SAFETY: selectedFormInputs rejects a missing window before the mapping uses it.
+    const w = model.windows.get(windowId)!;
+    // Descriptor admission spends the privacy budget in this order, so equal sets need not serve equal fields.
+    return JSON.stringify(selectedFormInputs(model, windowId, key).map((x) => [x.node.key, x.control, describeInput(w, x)] as const));
+  }
+
+  private async performFill(windowId: string, key: string, formKey: string, now: number, ask: AskJev, flight: FillFlight): Promise<FillProposal | null> {
+    const store = this.opts.store;
+    const { reading, focuses } = flight;
     // P4: this fill holds the text of the tab the user just left, if it may be read (engines/tab-source.ts), until the
     // fill ends here or passes it to the offer it made.
-    const reading = `fill:${++this.fillSeq}`;
     try {
-      const read = await this.tabSource?.readFor(windowId, reading, { ambient: !explicit });
+      const read = await this.tabSource?.readFor(windowId, reading, { ambient: !flight.explicit });
+      if (!this.fillIdentityMatches(windowId, flight.identity)) {
+        if (flight.explicit) this.fillFailed("the fill target changed before generation", null, null, SAYS.windowChanged);
+        return null;
+      }
+      flight.scope = this.fillScope(this.fillModel(reading), windowId, key);
+      flight.prepared();
       const fromTab = read !== undefined && "windowId" in read;
       // Rule 6: once the text this fill read is dropped (its time ran out, its site was turned off), Jev hears nothing
       // more of this fill and nothing is offered from it.
@@ -2612,14 +2690,15 @@ export class Helper {
         ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
         ...(this.opts.newId === undefined ? {} : { newId: this.opts.newId }),
       });
-      const p = session === this.readerSession && (!fromTab || this.tabSource?.holds(reading) === true) ? this.revalidate(asked) : null;
+      const p = this.fillIdentityMatches(windowId, flight.identity) && (!fromTab || this.tabSource?.holds(reading) === true) ? this.revalidate(asked) : null;
       this.lastFill.set(formKey, now);
       if (p === null) {
         store.count("fill.stale", 1, now);
+        if (flight.explicit) this.fillFailed("the form or reader changed while fill was in flight", null, null, fromTab && this.tabSource?.holds(reading) !== true ? SAYS.tabExpired : SAYS.windowChanged);
         return null;
       }
       // The settings may have changed while Jev answered: a pause or a role turned off then holds this offer too.
-      const heldNow = explicit ? [] : this.gate.holds("fill", this.now());
+      const heldNow = flight.explicit ? [] : this.gate.holds("fill", this.now());
       if (heldNow.length > 0) {
         store.count(`fill.held_${heldNow[0]}`, 1, now);
         return null;
@@ -2634,7 +2713,7 @@ export class Helper {
       // The pop-up runs the fields Caret writes: text, and in a page the engine owns, the controls it writes (D2-04).
       // What it leaves to the user, the pop-up lists.
       const grounded = writtenFields(p, this.model.windows.get(p.windowId));
-      if (!explicit && fillPopupEligible(p)) {
+      if (!flight.explicit && fillPopupEligible(p)) {
         const over = this.fillOverBeforeShown(grounded, formKey, focuses, reading);
         if ("stale" in over) {
           store.count("fill.popup_stale", 1, now);
@@ -2651,6 +2730,13 @@ export class Helper {
         }
         return p;
       }
+      if (flight.explicit && flight.queued) {
+        // A queued scope replaces the load-time offer. Keep disjoint pop-ups, but never offer a destination twice.
+        const destinations = new Set(grounded.fields.map((f) => f.key));
+        for (const [id, { p: shown }] of this.fillPopups) {
+          if (shown.windowId === p.windowId && shown.fields.some((f) => destinations.has(f.key))) this.withdrawFill(id, "stale");
+        }
+      }
       const valued = p.fields.filter((f) => f.value !== null);
       this.proposals.set(p.id, {
         at: now,
@@ -2664,11 +2750,12 @@ export class Helper {
       });
       this.tabSource?.pass(reading, p.id);
       this.publish(p);
-      if (!explicit && p.fields.some((f) => f.value !== null)) this.gate.spoke(this.now());
+      if (!flight.explicit && p.fields.some((f) => f.value !== null)) this.gate.spoke(this.now());
       return p;
     } catch (e) {
       if (e instanceof TabTextExpired) {
         store.count("fill.tab_text_expired", 1, now);
+        if (flight.explicit) this.fillFailed("the tab text expired while fill was in flight", null, e, SAYS.tabExpired);
         return null;
       }
       store.count("fill.error", 1, now);
@@ -2683,6 +2770,8 @@ export class Helper {
       this.fillFailed(e instanceof Error ? e.message : String(e), e instanceof FillError ? e.why : null, e);
       return null;
     } finally {
+      // A failed tab read or scope selection must release callers waiting to decide whether they can join.
+      flight.prepared();
       this.tabSource?.release(reading);
       this.pendingFills.delete(focuses);
       this.inflight.delete(formKey);
@@ -3166,10 +3255,10 @@ export class Helper {
    * A fill that failed: the user reads a plain sentence (planner/says.ts), and what the check found, with its window
    * and field ids, goes to the log (B27; the early exits before proposeFill published the ids until its second review).
    */
-  private fillFailed(detail: string, why: FillErrorWhy | null, cause: unknown = null): void {
+  private fillFailed(detail: string, why: FillErrorWhy | null, cause: unknown = null, says = fillSays(why)): void {
     this.opts.warn?.(`fill: ${detail}`);
     // A failed Jev request says how it failed (out of credits, a refused key, too many requests, no connection).
-    this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: jevFailureSays(cause, fillSays(why)) });
+    this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: jevFailureSays(cause, says) });
   }
 
   private error(message: string): void {

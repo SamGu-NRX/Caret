@@ -45,7 +45,7 @@ mkdirSync(OUT, { recursive: true });
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 process.env.CARET_ENV_FILE = a["env-file"];
-const live = makeJevClient(() => loadJevKey());
+const live = makeJevClient(loadJevKey);
 let routerCalls = 0;
 let spend = 0;
 const askJev: AskJev = async (req: JevRequest) => {

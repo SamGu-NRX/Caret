@@ -8,6 +8,10 @@
 // closed.
 //
 //   node fixtures/web-form/tab-source-journey.ts --sign-identity SHA1 --out DIR [--jev canned|live] [--spend-limit USD]
+//        [--engine canned|jev|gateway:<model>]
+//
+// R1: --engine names the decision engine as page-loop-eval's does (engines/decide/harness.ts), behind the replay cache;
+// its requests carry only the text of the tabs this journey opened from its own fixture pages.
 //
 // Tab switches are made through the browser's own tabs and windows APIs, evaluated in the extension's worker over the
 // DevTools pipe, so the worker's listeners see the same activation events a click on a tab gives. The bridge and its
@@ -31,7 +35,9 @@ import { pageWindowId } from "../../helper/src/engines/windows.ts";
 import { pageTabReader, type TabReader } from "../../helper/src/engines/tab-source.ts";
 import type { EngineSession } from "../../helper/src/engines/session.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
-import { loadJevKey, makeJevClient, type AskJev, type JevRequest, type JevResult } from "../../helper/src/fill/jev.ts";
+import type { AskJev, JevRequest, JevResult } from "../../helper/src/fill/jev.ts";
+import { harnessEngine } from "../../helper/src/engines/decide/harness.ts";
+import { engineName } from "../../helper/src/engines/decide/port.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type OfferPopup, type PageResult } from "../../helper/src/protocol.ts";
 import { CFT_BUILD, Cdp, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
 import { NetworkSink } from "./oracle.ts";
@@ -51,6 +57,8 @@ const { values: args } = parseArgs({
     out: { type: "string" },
     jev: { type: "string", default: "canned" },
     "spend-limit": { type: "string", default: "0.05" },
+    /** R1: the decision engine; overrides --jev. */
+    engine: { type: "string" },
   },
 });
 if (args["sign-identity"] === undefined || args.out === undefined) throw new Error("--sign-identity and --out are required");
@@ -93,11 +101,17 @@ const canned: AskJev = async (req: JevRequest): Promise<JevResult> => {
   );
   return { model: "canned", answers, ...(req.nouls === undefined ? {} : { nouls: Object.fromEntries(Object.keys(req.nouls).map((k) => [k, 0])) }), inputTokens: 0, latencyMs: 0, costUsd: 0 };
 };
-const live = args.jev === "live" ? makeJevClient(() => loadJevKey()) : null;
+const ENGINE = engineName(args.engine ?? (args.jev === "live" ? "jev" : "canned"));
+/** Windows of the tabs this journey opened, each from its own fixture page: the only text a request may carry. */
+const fixtureIds = new Set<string>();
+const decide = harnessEngine({ name: ENGINE, canned, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true } });
+/** Each decision request's latency, for the slow runner's report (R1). */
+const calls: { latencyMs: number; costUsd: number }[] = [];
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
-  const r = live === null ? await canned(req) : await live(req);
+  const r = await decide.ask(req);
   spent += r.costUsd;
+  calls.push({ latencyMs: r.latencyMs, costUsd: r.costUsd });
   return r;
 };
 
@@ -219,11 +233,14 @@ async function main(): Promise<number> {
     if (mailTab === undefined) await sleep(250);
   }
   if (mailTab === undefined) throw new Error("the webmail tab did not open");
+  fixtureIds.add(pageWindowId(session.info.engine, mailTab.id));
   // The form, opened in a tab of the same window, as a link from the message would open it.
   const oldLoads = new Set(oracle.loads(PAGE));
   const formTabId = await inWorker<number>(`chrome.tabs.create({ url: ${JSON.stringify(formUrl)}, windowId: ${mailTab.windowId}, active: true }).then((t) => t.id)`);
+  fixtureIds.add(pageWindowId(session.info.engine, formTabId));
   await oracle.waitFor(() => oracle.currentLoads(PAGE).filter((l) => !oldLoads.has(l)).length >= taskPage(PAGE).files.length && Object.keys(expected).every((k) => k in oracle.values(PAGE)), `${PAGE}'s first full report`, 10_000);
   const strangerTabId = await inWorker<number>(`chrome.tabs.create({ url: ${JSON.stringify(`${mail.origin}/tabsource/message`)}, windowId: ${mailTab.windowId}, active: false }).then((t) => t.id)`);
+  fixtureIds.add(pageWindowId(session.info.engine, strangerTabId));
   const before = { ...oracle.values(PAGE) };
   const fw = await focusedWindow();
   say(`tabs: mail ${mailTab.id}, form ${formTabId}, never visited ${strangerTabId}; last focused window ${fw.id} focused=${fw.focused}`);
@@ -293,11 +310,11 @@ async function main(): Promise<number> {
   await sleep(300);
   check("rule 2: never after the tab left closed", (await direct(mailTab.id)).outcome === "notAllowed");
 
-  const report = { at: new Date().toISOString(), jev: args.jev, spentUsd: spent, page: PAGE, checks, oracle: { right: scored.right, wrong: scored.wrong, missed: scored.missed, submits: oracle.submits.length, strayPresses: oracle.strayPresses().length, offsite: oracle.offsite().length } };
+  const report = { at: new Date().toISOString(), jev: args.jev, engine: decide.says, spentUsd: spent, calls, page: PAGE, checks, oracle: { right: scored.right, wrong: scored.wrong, missed: scored.missed, submits: oracle.submits.length, strayPresses: oracle.strayPresses().length, offsite: oracle.offsite().length } };
   writeFileSync(join(OUT, "journey.json"), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(OUT, "journey.log"), `${lines.join("\n")}\n`);
   const failed = checks.filter((c) => !c.ok);
-  say(`${checks.length - failed.length}/${checks.length} checks passed; Jev ${args.jev}, $${spent.toFixed(4)}`);
+  say(`${checks.length - failed.length}/${checks.length} checks passed; ${decide.says}, $${spent.toFixed(4)}`);
   return failed.length === 0 ? 0 : 1;
 }
 

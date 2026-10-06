@@ -20,6 +20,7 @@ import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
 import { fieldWords, namedSources, onlyInSources, restrictsSources, senderNames, senderOf, type NamedSource } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
+import { peopleOnScreen, PRONOUN_DETAILS, type PersonCandidate } from "./people.ts";
 import { SAYS, SaidError, Unclear, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSsn, type AskPart } from "./says.ts";
 
 export const ROUTES = ["fill", "plan", "ask", "refuse"] as const;
@@ -47,6 +48,16 @@ export interface AskIntent {
    * holds what it did settle. Absent when the maker says only `why`.
    */
   open?: readonly AskPart[];
+  /**
+   * A1: the scope is code's reading of the instruction (scope-reading.ts), which the model chose over the alternatives.
+   * planAsk asks no further confirmation of it. Only the heads maker sets it; the writer's strict schema has no such key.
+   */
+  agreed?: true;
+  /**
+   * A1: whose details go in, as code resolved them to a name the instruction does not spell (people.ts): the one other
+   * person in its sources, or a memory entry for the relation it names. Takes the place of a person ref in `whose`.
+   */
+  person?: string;
 }
 
 /**
@@ -86,6 +97,10 @@ export interface IntentSnapshot {
   persons: { ref: string; span: string }[];
   /** Values the instruction spells out, as exact spans of it (spans.ts), for a maker that can only choose. */
   literals: string[];
+  /** A1: the people in the other windows and in memory (people.ts), for code's reading of whose details; never sent to a model. */
+  others: PersonCandidate[];
+  /** A1: what the user told Caret, for code's reading of a relation ("my wife"); never sent to a model. */
+  memoryValues: readonly MemoryValue[];
   /** Windows the instruction names as its source, resolved by code (sources.ts): read with consent (privacy.ts). */
   named: NamedSource[];
   /** Windows the instruction rules out ("without using Dana's email"): never read for this Ask. */
@@ -122,9 +137,6 @@ export function personSpans(instruction: string): string[] {
   for (const m of instruction.matchAll(RELATION)) add(m[0]);
   return out;
 }
-
-/** "his phone", "her email", "their address": someone's details by a pronoun. */
-const PRONOUN_DETAILS = /\b(?:his|her|their|hers|theirs)\s+(?:\w+\s+){0,2}?(?:name|email|e-mail|phone|number|cell|mobile|address|details|info|information|contact|birthday|date of birth|dob)\b/iu;
 
 /** The fields a snapshot lists: the page's text fields (never the browser's own) and its empty controls, in document order. */
 function formInventory(w: WindowState): { node: Node; control: Control }[] {
@@ -192,6 +204,8 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     windows,
     memory: memoryLabels,
     persons: persons.map((span, i) => ({ ref: `p${i + 1}`, span })),
+    others: peopleOnScreen(model, w, memory),
+    memoryValues: memory,
     literals: instructionValues(instruction),
     named: sources.named,
     excluded: sources.excluded,
@@ -268,7 +282,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
   // Someone's details by a pronoun, with no one named, is refused whatever the maker said: fill would take the
   // user's own (B25 held-out rule 4).
   // Read on the field words: "everything's in her email" names where to copy from, not someone's email (B26 held-out-2).
-  if (fixed.person === undefined && snap.persons.length === 0 && PRONOUN_DETAILS.test(fieldWords(snap.instruction))) stop("otherPersonUnnamed", snap);
+  if (fixed.person === undefined && intent.person === undefined && snap.persons.length === 0 && PRONOUN_DETAILS.test(fieldWords(snap.instruction))) stop("otherPersonUnnamed", snap);
   // An instruction that names a kind Caret never types ("my SSN goes in there too") is refused for that, whatever
   // reason the maker gave: B25's held-out run told the user "Caret stops before payment" for an SSN.
   // B30: a plan as well, since a goal plan is planned from the instruction's words too.
@@ -348,6 +362,11 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
 
   let person: string | null = null;
   if (fixed.person !== undefined) person = fixed.person.kind === "user" ? null : fixed.person.name;
+  else if (intent.person !== undefined) {
+    // Code resolved this name from the people on screen and in memory; it must still be one of them.
+    if (!snap.others.some((p) => p.name === intent.person)) bad(`names '${intent.person}', who is no longer on screen or in memory`);
+    person = intent.person;
+  }
   else {
     if (intent.whose === "unnamed") stop("otherPersonUnnamed", snap);
     else if (intent.whose !== "user") person = (snap.persons.find((p) => p.ref === intent.whose) ?? bad(`names person '${intent.whose}', whom the instruction does not name`)).span;

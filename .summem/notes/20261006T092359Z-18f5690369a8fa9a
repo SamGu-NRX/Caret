@@ -1,0 +1,1 @@
+F2: fillRequest promotes a joined ambient flight to explicit before publication: ambient pop-ups do not populate proposals, so returning their FillProposal alone cannot serve handleFillAll. Different field scopes in one window wait and resolve fields again.

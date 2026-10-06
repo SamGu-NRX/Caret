@@ -66,7 +66,7 @@ const SENTENCES: { text: string; when?: string }[] = [
 ];
 
 process.env.CARET_ENV_FILE = a["env-file"];
-const live = makeJevClient(() => loadJevKey());
+const live = makeJevClient(loadJevKey);
 let routerCalls = 0;
 let spend = 0;
 const isRouter = (r: JevRequest): boolean => "outcome" in r.questions || "task" in r.questions || "route" in r.questions;

@@ -1189,6 +1189,8 @@ async function main(): Promise<number> {
       ...warnings.filter((l) => /^goal |^fill/u.test(l)).slice(-30).map((l) => `- ${cell(l, 300)}`),
     ];
     writeFileSync(join(OUT, drop ? "wizard-drop.md" : "wizard.md"), lines.join("\n") + "\n");
+    // R1: the same rows as data, with each decision request's latency, for the slow runner's scoring.
+    writeFileSync(join(OUT, drop ? "wizard-drop.json" : "wizard.json"), `${JSON.stringify({ engine: decide.says, drop, labelled: LABELLED, attached: attached ?? null, submits: sum.submits, presses, replayed: replayed.length, rows: out, calls }, null, 1)}\n`);
     const wrong = out.reduce((n, r) => n + r.wrong.length, 0);
     const failed = [
       ...out.filter((r) => r.previewMs === null || r.previewMs > 2000).map((r) => `${r.page}: preview ${r.previewMs === null ? "none" : `${Math.round(r.previewMs)} ms`}`),
@@ -1316,14 +1318,8 @@ async function main(): Promise<number> {
       if (trigger === undefined) throw new Error("no empty text field to start the fill from");
       const n1 = calls.length;
       const f0 = performance.now();
-      let proposal = await helper.handleConsumer({ type: "fillRequest", v: 1, windowId, fieldKey: trigger.key });
-      // C2: the page's own ready-on-load fill of the same form may still be under way (helper.ts fill: a form already being
-      // filled answers null, with no error). Asked once more after it ends, so the row measures the Fill all, not the race.
-      if (proposal === null && published.every((m) => m.type !== "error" || !m.message.includes(windowId))) {
-        await sleep(500);
-        proposal = await helper.handleConsumer({ type: "fillRequest", v: 1, windowId, fieldKey: trigger.key });
-        if (proposal !== null) say(`${p.id}: the Fill all request met the page's own load fill under way; asked again`);
-      }
+      // Explicit requests join a load-time fill in the helper; a retry here would hide a dropped product request.
+      const proposal = await helper.handleConsumer({ type: "fillRequest", v: 1, windowId, fieldKey: trigger.key });
       row.fill = proposal === null ? null : { ms: ms(f0), jevMs: proposal.jev.latencyMs, requests: calls.length - n1, proposed: proposal.fields.filter((f) => f.value !== null || f.handoff !== null).length, withheld: proposal.fields.filter((f) => f.withheld !== null).length };
       // Ambient: ready, walked, filled. Ask's intent ran in between here; it is reported apart and added for Ask's preview.
       row.previewMs = proposal === null ? null : toWalked + (row.fill?.ms ?? 0);

@@ -35,7 +35,7 @@ let cost = 0;
 let calls = 0;
 /** Thrown by ask once the budget is spent, so the loop stops asking and still writes its report. */
 class BudgetStop extends Error {}
-const real = makeJevClient(() => loadJevKey());
+const real = makeJevClient(loadJevKey);
 const ask: AskJev = async (req) => {
   if (cost >= MAX_USD) throw new BudgetStop(`stopped at the $${MAX_USD} budget`);
   const r = await real(req);
