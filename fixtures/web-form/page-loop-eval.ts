@@ -722,7 +722,8 @@ async function main(): Promise<number> {
       const fin = published.slice(mark).filter((m) => m.type === "goalProgress" && m.goalId === next?.goalId && m.event === "finished").at(-1);
       if (fin?.type === "goalProgress" && fin.event === "finished") outcome = fin.outcome;
       const seen = new Set(segments.map((x) => `${x.goalId}:${x.segment}`));
-      const more = published.slice(mark).find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && !seen.has(`${m.goalId}:${m.segment}`) && (m.reason === "afterReveal" || m.reason === "moreFields"));
+      // Any segment not yet accepted, as before C2 (a reveal, a fresh plan after a stop), and now the goal's own next part.
+      const more = published.slice(mark).find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && !seen.has(`${m.goalId}:${m.segment}`));
       if (more !== undefined && more.reason === "afterReveal") revealMs ??= ms(lastWrite);
       next = more;
     }
@@ -1315,7 +1316,14 @@ async function main(): Promise<number> {
       if (trigger === undefined) throw new Error("no empty text field to start the fill from");
       const n1 = calls.length;
       const f0 = performance.now();
-      const proposal = await helper.handleConsumer({ type: "fillRequest", v: 1, windowId, fieldKey: trigger.key });
+      let proposal = await helper.handleConsumer({ type: "fillRequest", v: 1, windowId, fieldKey: trigger.key });
+      // C2: the page's own ready-on-load fill of the same form may still be under way (helper.ts fill: a form already being
+      // filled answers null, with no error). Asked once more after it ends, so the row measures the Fill all, not the race.
+      if (proposal === null && published.every((m) => m.type !== "error" || !m.message.includes(windowId))) {
+        await sleep(500);
+        proposal = await helper.handleConsumer({ type: "fillRequest", v: 1, windowId, fieldKey: trigger.key });
+        if (proposal !== null) say(`${p.id}: the Fill all request met the page's own load fill under way; asked again`);
+      }
       row.fill = proposal === null ? null : { ms: ms(f0), jevMs: proposal.jev.latencyMs, requests: calls.length - n1, proposed: proposal.fields.filter((f) => f.value !== null || f.handoff !== null).length, withheld: proposal.fields.filter((f) => f.withheld !== null).length };
       // Ambient: ready, walked, filled. Ask's intent ran in between here; it is reported apart and added for Ask's preview.
       row.previewMs = proposal === null ? null : toWalked + (row.fill?.ms ?? 0);
