@@ -237,13 +237,14 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null): Candidate => {
     const ctx = timed("context", context);
     const labelled = labelledSpan(node, text, ctx);
-    return {
+    const clause = timed("context", () => lineFact(w, node, text, labelled));
+    const c: Candidate = {
     id: `c${out.length + 1}`,
     text,
     kind,
     context: ctx,
     labelled,
-    line: timed("context", () => lineFact(w, node, text, labelled)),
+    line: null,
     section: timed("section", () => sectionAround(w, node)),
     blockHead: timed("blockHead", () => blockHead(w, node, text)),
     recency: recency(w),
@@ -257,7 +258,15 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       kind,
     },
     };
+    if (clause !== null) clauses.set(c, clause);
+    return c;
   };
+  /**
+   * C1: the clause each span would quote (Candidate.line), set only once every span is in (finish): a clause is worth a
+   * window's budget only after every value that fits, so it never pushes another span out. Spent first, clauses took
+   * the room of the lines a field's terms matched, and the cut rule then withheld those fields (corpus clinic-intake).
+   */
+  const clauses = new Map<Candidate, string>();
   /**
    * Adds a span unless the cap is reached, its text is already in, or its window is closed. A span that
    * does not fit its window's budget closes the window.
@@ -265,15 +274,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null): void => {
     if (full() || seen.has(text) || closed.has(w.window.windowId)) return;
     const c = build(w, node, text, kind, context);
-    // C1: a span's line is a fact it can go without: when the clause does not fit the window's budget, the span goes
-    // as it did before C1, so the clause never costs a value.
-    const fits = (): boolean => o.ledger === undefined || o.ledger.take(w, "candidate", candidateTexts(c));
-    let taken = fits();
-    if (!taken && (c.line ?? null) !== null) {
-      c.line = null;
-      taken = fits();
-    }
-    if (!taken) {
+    if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       missed.add(w.window.windowId);
       closed.add(w.window.windowId);
       // What else of a window that is not a conversation was left out is read at the end (leftOut).
@@ -287,6 +288,12 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   /** The window the generator is reading, if it stops there. */
   let reading: string | null = null;
   const finish = (): Collected => {
+    for (const c of out) {
+      const clause = clauses.get(c);
+      const sw = model.windows.get(c.source.windowId);
+      if (clause === undefined || sw === undefined) continue;
+      if (o.ledger === undefined || o.ledger.take(sw, "candidate", [clause])) c.line = clause;
+    }
     for (const id of leftOutOf) {
       const lw = model.windows.get(id);
       if (lw !== undefined) leftOut(lw);
@@ -513,16 +520,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (full() || outOfTime()) return false;
       let best: { k: string; rate: number } | null = null;
       for (const [k, group] of groups) {
-        let cost = out.length + group.length > max ? null : o.ledger?.cost(w, group.flatMap(candidateTexts));
-        // C1: a group that does not fit with its spans' lines goes without them (see add).
-        if ((cost === null || cost === undefined) && out.length + group.length <= max && group.some((c) => (c.line ?? null) !== null)) {
-          const bare = group.map((c) => ({ ...c, line: null }));
-          const c2 = o.ledger?.cost(w, bare.flatMap(candidateTexts));
-          if (c2 !== null && c2 !== undefined) {
-            groups.set(k, bare);
-            cost = c2;
-          }
-        }
+        const cost = out.length + group.length > max ? null : o.ledger?.cost(w, group.flatMap(candidateTexts));
         if (cost === null || cost === undefined) continue;
         const rate = o.kindsByCost === false ? kindOrder.indexOf(k) : cost / served(k);
         if (best === null || rate < best.rate) best = { k, rate };
