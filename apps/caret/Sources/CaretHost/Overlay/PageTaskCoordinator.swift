@@ -37,7 +37,12 @@ final class PageTaskCoordinator {
         ) { [weak self] note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             let pid = app.processIdentifier
-            MainActor.assumeIsolated { self?.machine.appActivated(pid: pid) }
+            MainActor.assumeIsolated {
+                // Caret itself came to the front: its own open panel, or something else of Caret's (debug socket).
+                if pid == ProcessInfo.processInfo.processIdentifier { self?.status.increment("pageTask.caretActivated") }
+                self?.machine.appActivated(pid: pid)
+                self?.publish()
+            }
         }
     }
 
