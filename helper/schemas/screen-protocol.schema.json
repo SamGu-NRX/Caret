@@ -8139,28 +8139,6 @@
                       "type": "string",
                       "minLength": 1
                     },
-                    "app": {
-                      "type": "object",
-                      "properties": {
-                        "pid": {
-                          "type": "integer",
-                          "minimum": -9007199254740991,
-                          "maximum": 9007199254740991
-                        },
-                        "bundleId": {
-                          "type": "string"
-                        },
-                        "name": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "pid",
-                        "bundleId",
-                        "name"
-                      ],
-                      "additionalProperties": false
-                    },
                     "anchor": {
                       "anyOf": [
                         {
@@ -8263,7 +8241,6 @@
                   },
                   "required": [
                     "windowId",
-                    "app",
                     "anchor",
                     "viewport",
                     "from",

@@ -105,7 +105,6 @@ describe("a page segment's preview carries the panel's view (H11)", () => {
     expect(preview).toMatchObject({ type: "goalProgress", event: "segment" });
     const page = preview.page;
     expect(page?.windowId).toBe(WIN);
-    expect(page?.app).toEqual({ pid: chrome.pid, bundleId: chrome.bundleId, name: chrome.name });
     expect(page?.from).toBe("TextEdit, Robin's details.txt");
     const row = (label: string) => page?.rows.find((x) => x.label === label);
     expect(row("Full name")).toMatchObject({ value: "Robin Vale", picked: false });
