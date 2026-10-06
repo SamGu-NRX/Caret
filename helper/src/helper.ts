@@ -452,7 +452,7 @@ export class Helper {
     this.tabSource =
       opts.tabReader === undefined
         ? null
-        : new TabSource({ model: this.model, reader: opts.tabReader, now: this.now, count: (m) => opts.store.count(m, 1), dropped: (id) => this.tabTextDropped(id) });
+        : new TabSource({ model: this.model, reader: opts.tabReader, now: this.now, count: (m) => opts.store.count(m, 1), dropped: (id, owners) => this.tabTextDropped(id, owners) });
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     const jev = opts.askJev;
     // Recorded once the request has gone and been answered, or as failed: a client that throws before
@@ -2184,7 +2184,8 @@ export class Helper {
       const fromTab = read !== undefined && "windowId" in read;
       // Rule 6: once the text this fill read is dropped (its time ran out, its site was turned off), Jev hears nothing
       // more of this fill and nothing is offered from it.
-      const askHere: typeof ask = fromTab ? (req) => (this.tabSource?.holds(reading) === true ? ask(req) : Promise.reject(new TabTextExpired())) : ask;
+      // The client's own retry after a 429 is off for such a fill: it would send the request again unchecked (P4 review).
+      const askHere: typeof ask = fromTab ? (req) => (this.tabSource?.holds(reading) === true ? ask({ ...req, retry429: false }) : Promise.reject(new TabTextExpired())) : ask;
       const saved = this.answersForFill(windowId);
       const asked = await proposeFill(this.fillModel(reading), askHere, windowId, key, now, {
         about: this.aboutValues(),
@@ -2273,12 +2274,12 @@ export class Helper {
 
   /**
    * P4: the text of a tab the user left was dropped. A pop-up made from it is checked again (and withdrawn, since its
-   * source is gone), and a per-field proposal that took a value from that window is forgotten, so no copy of its text
-   * outlives it here.
+   * source is gone), and every per-field proposal made by a fill that held it is forgotten whole, whatever its fields'
+   * sources say, since a proposal also keeps the candidates it asked about (P4 review), so no copy outlives it here.
    */
-  private tabTextDropped(windowId: string): void {
+  private tabTextDropped(windowId: string, owners: readonly string[]): void {
     this.checkFills(windowId);
-    for (const [id, kept] of this.proposals) if (kept.proposal.fields.some((f) => (f.source ?? f.handoff?.source ?? null)?.windowId === windowId)) this.proposals.delete(id);
+    for (const id of owners) this.proposals.delete(id);
   }
 
   /**

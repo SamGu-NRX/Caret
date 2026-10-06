@@ -65,8 +65,11 @@ export interface TabSourceOptions {
   now: () => number;
   /** Counts an outcome by name (Store.count). */
   count: (metric: string) => void;
-  /** Told when held text is dropped, so what was made from it is checked again or let go (Helper.tabTextDropped). */
-  dropped: (windowId: string) => void;
+  /**
+   * Told when held text is dropped, with every owner that held it (the fill and the offers it made), so what was made
+   * from it is checked again or let go (Helper.tabTextDropped).
+   */
+  dropped: (windowId: string, owners: readonly string[]) => void;
 }
 
 /** The static-text nodes a read becomes: the selection's paragraphs first, then the main region's, under the top frame. */
@@ -183,7 +186,8 @@ export class TabSource {
     // texts each window holds; both were filled from this view, so they go with it. They are rebuilt from the model.
     forgetWindows();
     // Later, not here: a drop can come from inside a recheck that reads the view, which must finish first.
-    queueMicrotask(() => this.opts.dropped(h.windowId));
+    const owners = [...h.owners];
+    queueMicrotask(() => this.opts.dropped(h.windowId, owners));
   }
 }
 
