@@ -522,6 +522,8 @@ interface Row {
     steps: number;
     left: number;
     tabs: number;
+    /** C2: the Tabs that accepted a further part of a form over 20 fields (segment reason moreFields). */
+    parts: number;
     eligible: number;
     eligibleWritten: number;
     /** From the last write's verified step to the reveal's preview, when the page revealed controls. */
@@ -679,30 +681,34 @@ async function main(): Promise<number> {
     if (reply.type === "goalProgress" && reply.event === "segment") return reply;
     return `no preview: ${reply.type === "goalProgress" ? `${reply.event} ${"says" in reply ? reply.says : ""}` : reply.type === "askQuestion" ? `asked: ${reply.text}` : `${reply.type} ${"error" in reply && reply.error !== null ? JSON.stringify(reply.error).slice(0, 200) : ""}`}`;
   };
-  /** One Tab: the preview's acceptance. Then any segment the writes revealed, each its own Tab. `mark` is where the Ask's messages start. */
-  const acceptAll = async (reply: Segment, mark: number): Promise<{ segments: { goalId: string }[]; tabs: number; revealMs: number | null; outcome: string }> => {
-    const segments: { goalId: string }[] = [{ goalId: reply.goalId }];
+  /**
+   * One Tab: the preview's acceptance. Then each segment that follows, each its own Tab: the next part of a form over 20
+   * fields (C2, the same goal's next segment, reason moreFields) and any segment the writes revealed (afterReveal).
+   * `mark` is where the Ask's messages start. `segments` lists every segment accepted, for one undo each.
+   */
+  const acceptAll = async (reply: Segment, mark: number): Promise<{ segments: { goalId: string; segment: number }[]; tabs: number; revealMs: number | null; outcome: string; parts: number }> => {
+    const segments: { goalId: string; segment: number }[] = [];
     let tabs = 0;
+    let parts = 0;
     let revealMs: number | null = null;
     let outcome = "refused";
     let next: Segment | undefined = reply;
-    while (next !== undefined && tabs < 4) {
+    while (next !== undefined && tabs < 6) {
       tabs++;
+      if (next.reason === "moreFields") parts++;
+      segments.push({ goalId: next.goalId, segment: next.segment });
       const r = await helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: next.goalId, segment: next.segment, digest: next.digest, at: Date.now() });
       const lastWrite = performance.now();
       await helper.goals.idle();
       outcome = r?.outcome ?? "refused";
       const fin = published.slice(mark).filter((m) => m.type === "goalProgress" && m.goalId === next?.goalId && m.event === "finished").at(-1);
       if (fin?.type === "goalProgress" && fin.event === "finished") outcome = fin.outcome;
-      const goalIds = new Set(segments.map((x) => x.goalId));
-      const more = published.slice(mark).find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && !goalIds.has(m.goalId));
-      if (more !== undefined && more.reason === "afterReveal") {
-        revealMs ??= ms(lastWrite);
-        segments.push({ goalId: more.goalId });
-      }
+      const seen = new Set(segments.map((x) => `${x.goalId}:${x.segment}`));
+      const more = published.slice(mark).find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && !seen.has(`${m.goalId}:${m.segment}`) && (m.reason === "afterReveal" || m.reason === "moreFields"));
+      if (more !== undefined && more.reason === "afterReveal") revealMs ??= ms(lastWrite);
       next = more;
     }
-    return { segments, tabs, revealMs, outcome };
+    return { segments, tabs, revealMs, outcome, parts };
   };
   /** P2: the Ask's goal on this page, from its preview to its undo (see the header). A task page is judged by `task`, the oracle. */
   const goalPath = async (p: Page, row: Row, ready: number, w: WindowState, before: Map<string, string>, task: TaskJudge | null = null): Promise<void> => {
@@ -733,7 +739,7 @@ async function main(): Promise<number> {
     });
     const verifyRequests = calls.length - v0;
     stage = "writes";
-    const { segments, tabs, revealMs, outcome } = await acceptAll(reply, mark);
+    const { segments, tabs, revealMs, outcome, parts } = await acceptAll(reply, mark);
     row.pageMs = ms(ready);
     stage = "final";
     await host.link.run({ kind: "walk", pid, windowId });
@@ -755,8 +761,8 @@ async function main(): Promise<number> {
     stage = "undo";
     const notRestored: string[] = [];
     for (const sgt of [...segments].reverse()) {
-      if (!helper.executor.has(`${sgt.goalId}:s0`)) continue;
-      const u = await helper.executor.undo(`${sgt.goalId}:s0`);
+      if (!helper.executor.has(`${sgt.goalId}:s${sgt.segment}`)) continue;
+      const u = await helper.executor.undo(`${sgt.goalId}:s${sgt.segment}`);
       notRestored.push(...u.notRestored.map((x) => x.reason));
     }
     await host.link.run({ kind: "walk", pid, windowId });
@@ -768,7 +774,7 @@ async function main(): Promise<number> {
     const goalIds = new Set(segments.map((x) => x.goalId));
     const ended = published.slice(mark).flatMap((m) => (m.type === "goalProgress" && goalIds.has(m.goalId) && (m.event === "stopped" || m.event === "finished") ? [`${m.event}: ${m.says}${m.event === "finished" && m.left.length > 0 ? ` [left: ${m.left.join(" / ")}]` : ""}`] : []));
     const jevRequests = calls.filter((c) => c.page === p.id && c.stage !== "verify").length;
-    row.goal = { previewMs, steps: reply.steps.length, left: reply.warnings.length, tabs, eligible, eligibleWritten, revealMs, restored: notRestored.length === 0, notRestored, outcome, disagreements, verifyRequests, warnings: reply.warnings, ended, jevRequests };
+    row.goal = { previewMs, steps: reply.steps.length, left: reply.warnings.length, tabs, parts, eligible, eligibleWritten, revealMs, restored: notRestored.length === 0, notRestored, outcome, disagreements, verifyRequests, warnings: reply.warnings, ended, jevRequests };
   };
 
   /** The desk: last page's sources and memory gone, this page's in place, the source focused last and left for the browser. */
@@ -949,7 +955,7 @@ async function main(): Promise<number> {
       const a = asksOn(name);
       t.unmapped = [...a.unmapped];
       t.ambiguous = [...a.ambiguous];
-      say(`${name} (${t.arrived}): goal ${row.goal?.outcome ?? "-"}, preview ${fmt(row.goal?.previewMs ?? null)} ms, ${row.goal?.steps ?? 0} steps, right ${t.right}/${t.eligible}, wrong ${t.wrong.length}${t.wrong.length > 0 ? ` (${row.wrong.join("; ")})` : ""}, missed ${t.missed.length}, tabs ${row.goal?.tabs ?? 0}, reveal ${fmt(row.goal?.revealMs ?? null)} ms, undo ${row.goal === null ? "-" : row.goal.restored ? "restored" : `NOT restored ${row.goal.notRestored.join("; ")}`}${(t.oracleLag?.length ?? 0) > 0 ? ` (the oracle lagged on ${t.oracleLag?.length ?? 0} fields the DOM shows restored)` : ""}, page ${fmt(row.pageMs)} ms${t.refill === null ? "" : `; second Ask ${t.refill}`}${row.error === null ? "" : `; ${row.error}`}`);
+      say(`${name} (${t.arrived}): goal ${row.goal?.outcome ?? "-"}, preview ${fmt(row.goal?.previewMs ?? null)} ms, ${row.goal?.steps ?? 0} steps, right ${t.right}/${t.eligible}, wrong ${t.wrong.length}${t.wrong.length > 0 ? ` (${row.wrong.join("; ")})` : ""}, missed ${t.missed.length}, tabs ${row.goal?.tabs ?? 0} (more fields ${row.goal?.parts ?? 0}), reveal ${fmt(row.goal?.revealMs ?? null)} ms, undo ${row.goal === null ? "-" : row.goal.restored ? "restored" : `NOT restored ${row.goal.notRestored.join("; ")}`}${(t.oracleLag?.length ?? 0) > 0 ? ` (the oracle lagged on ${t.oracleLag?.length ?? 0} fields the DOM shows restored)` : ""}, page ${fmt(row.pageMs)} ms${t.refill === null ? "" : `; second Ask ${t.refill}`}${row.error === null ? "" : `; ${row.error}`}`);
     }
     page = null;
     readTaskFields = null;

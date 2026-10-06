@@ -22,6 +22,7 @@ import type { DraftPlan } from "../codemode/types.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { matchOption } from "../fill/controls.ts";
+import { MAX_FIELDS } from "../fill/fill.ts";
 import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
@@ -210,6 +211,12 @@ export interface LowerOptions {
    * gets no executor step (executorPlan), so nothing ever presses its control.
    */
   handoffRow?: { target: TargetBinding; says: string; why: HandoffWhy };
+  /**
+   * C2 (lead decision 3): a long page form's part of each fill step, by the draft step's ref (page-planner.ts). Each part
+   * is its own segment (reason moreFields), previewed and accepted with its own Tab and undone on its own; attach rows
+   * and the hand-off row go with the last.
+   */
+  parts?: ReadonlyMap<string, number>;
 }
 
 /** Segment warnings a goalProgress carries at most (protocol GoalProgress.warnings). */
@@ -448,7 +455,10 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     const press = steps.find((x) => x.kind === "handoff" && x.handoff !== null && x.handoff !== "unverifiable" && x.handoff !== "system");
     throw new GoalError("nothingToDo", press?.handoff == null ? "the plan leaves every step to you, so there is nothing for Caret to do" : saysPress(press.handoff, press.target.label));
   }
-  const segments = cut(draft.programDigest, steps, warnings);
+  // C2: a form filled in parts says so before the first Tab.
+  const partCount = new Set(steps.flatMap((x) => (o.parts?.has(x.ref) === true ? [o.parts.get(x.ref) as number] : []))).size;
+  if (partCount > 1) warnings.unshift(`Caret fills this form in ${partCount} parts of up to ${MAX_FIELDS} fields, each with its own preview and Tab.`);
+  const segments = cut(draft.programDigest, steps, warnings, o.parts);
   if (segments.length > MAX_SEGMENTS) throw new GoalError("tooManySegments", `the plan needs ${segments.length} separate acceptances; Caret offers at most ${MAX_SEGMENTS}`);
   return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv };
 }
@@ -470,17 +480,22 @@ function senderValues(reply: string, inv: GoalInventory): ValueBinding[] {
   });
 }
 
-function cut(programHash: string, steps: readonly GoalStep[], warnings: readonly string[]): GoalSegment[] {
+function cut(programHash: string, steps: readonly GoalStep[], warnings: readonly string[], parts?: ReadonlyMap<string, number>): GoalSegment[] {
   const groups: { domain: GoalDomain; reason: SegmentReason; steps: GoalStep[] }[] = [];
+  let part: number | undefined;
   for (const s of steps) {
     const last = groups.at(-1);
     const prev = last?.steps.at(-1);
     const revealed = prev?.kind === "press";
-    if (last !== undefined && sameDomain(last.domain, s.target.domain) && !revealed) {
+    // C2: a step of the next part of a long page form starts its own segment.
+    const next = parts?.get(s.ref);
+    const nextPart = next !== undefined && part !== undefined && next !== part;
+    if (next !== undefined) part = next;
+    if (last !== undefined && sameDomain(last.domain, s.target.domain) && !revealed && !nextPart) {
       last.steps.push(s);
       continue;
     }
-    groups.push({ domain: s.target.domain, reason: last === undefined ? "start" : revealed && sameDomain(last.domain, s.target.domain) ? "afterReveal" : "crossWindow", steps: [s] });
+    groups.push({ domain: s.target.domain, reason: last === undefined ? "start" : nextPart && sameDomain(last.domain, s.target.domain) ? "moreFields" : revealed && sameDomain(last.domain, s.target.domain) ? "afterReveal" : "crossWindow", steps: [s] });
   }
   return groups.map((g, index) => {
     const base = { index, domain: g.domain, reason: g.reason, steps: g.steps };

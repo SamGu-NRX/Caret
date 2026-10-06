@@ -8084,7 +8084,8 @@
                     "crossWindow",
                     "afterReveal",
                     "freshPlan",
-                    "nextPage"
+                    "nextPage",
+                    "moreFields"
                   ]
                 },
                 "replaces": {

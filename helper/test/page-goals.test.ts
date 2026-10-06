@@ -114,30 +114,53 @@ describe("the reveal continuation (P2)", () => {
   });
 });
 
-describe("the size hand-off (P2)", () => {
+describe("the size hand-off (P2), in parts since C2", () => {
   const forty = (): PageControl[] => Array.from({ length: 40 }, (_, i) => c(`t${i + 1}`, "text", `Answer ${i + 1}`, { value: "" }));
   const note = Array.from({ length: 40 }, (_, i) => `Answer ${i + 1}: value ${i + 1}`).join("\n");
   const picks = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`Answer ${i + 1}`, `value ${i + 1}`]));
 
-  it("fills the first fields one fill asks about, and names the rest as the user's before Tab", async () => {
+  it("fills a 40-field form in two parts, each previewed and accepted with its own Tab (C2 decision 3)", async () => {
     const r = await rig({ controls: forty, note, picks });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
-    // I6: MAX_FIELDS writes, then the hand-off row (this form has no forward button).
-    expect(preview.steps).toHaveLength(MAX_FIELDS + 1);
-    expect(preview.steps.at(-1)?.says).toBe("The rest is yours");
+    // The first part: MAX_FIELDS writes, nothing of the second part, and no hand-off row before the last part.
+    expect(preview).toMatchObject({ segment: 0, segments: 2, reason: "start" });
+    expect(preview.steps).toHaveLength(MAX_FIELDS);
     expect(preview.steps[0]?.says).toBe("Answer 1: value 1");
-    expect(preview.warnings.some((w) => /Caret fills 20 fields of a form at once, so 20 more are yours: 'Answer 21'/.test(w))).toBe(true);
+    expect(preview.steps.at(-1)?.says).toBe("Answer 20: value 20");
+    expect(preview.warnings).toContain("Caret fills this form in 2 parts of up to 20 fields, each with its own preview and Tab.");
+    expect(preview.warnings.some((w) => /more are yours/.test(w))).toBe(false);
     await r.accept(preview);
     await r.helper.goals.idle();
-    const finished = goalMessages(r).find((m): m is Finished => m.event === "finished");
-    expect(finished?.outcome).toBe("partial");
     expect(r.page.shown("t20")).toBe("value 20");
     expect(r.page.shown("t21")).toBe("");
-    // The fields past the size limit were on the page all along: they are not offered as revealed.
-    expect(goalMessages(r).filter((m) => m.event === "segment")).toEqual([]);
-    const asks = r.asked.length;
+    // The second part waits for its own Tab: nothing of it is written yet, and no goal has finished.
+    const second = goalMessages(r).find((m): m is Segment => m.event === "segment" && m.goalId === preview.goalId && m.segment === 1);
+    expect(second).toMatchObject({ segment: 1, segments: 2, reason: "moreFields", requestId: null });
+    expect(second?.steps.map((s) => s.says)).toEqual([...Array.from({ length: 20 }, (_, i) => `Answer ${i + 21}: value ${i + 21}`), "The rest is yours"]);
+    expect(goalMessages(r).filter((m) => m.event === "finished")).toEqual([]);
+    // The first part's acceptance cannot run the second: it names segment 0.
+    expect(await r.accept(preview)).toBeNull();
+    expect(r.page.shown("t21")).toBe("");
+    await r.accept(second as Segment);
     await r.helper.goals.idle();
-    expect(r.asked.length).toBe(asks);
+    expect(r.page.shown("t40")).toBe("value 40");
+    expect(goalMessages(r).find((m): m is Finished => m.event === "finished")).toMatchObject({ outcome: "done", verified: 40 });
+    // One undo per part, the second first: each restores only its own fields.
+    expect((await r.helper.executor.undo(`${preview.goalId}:s1`)).notRestored).toEqual([]);
+    expect([r.page.shown("t20"), r.page.shown("t21"), r.page.shown("t40")]).toEqual(["value 20", "", ""]);
+    expect((await r.helper.executor.undo(`${preview.goalId}:s0`)).notRestored).toEqual([]);
+    expect(r.page.shown("t1")).toBe("");
+  });
+
+  it("names the fields past four parts as the user's before Tab", async () => {
+    // A value for the first field of each part only: a short note, read fast enough under load (the candidate
+    // generator's wall-clock budget, candidates.ts).
+    const many = (): PageControl[] => Array.from({ length: 85 }, (_, i) => c(`t${i + 1}`, "text", `Q${i + 1}`, { value: "" }));
+    const firsts = [1, 21, 41, 61, 81];
+    const r = await rig({ controls: many, note: firsts.map((i) => `Q${i}: a${i}`).join("\n"), picks: Object.fromEntries(firsts.map((i) => [`Q${i}`, `a${i}`])) });
+    const preview = (await r.ask("fill out this form from my note")) as Segment;
+    expect(preview).toMatchObject({ segments: 4 });
+    expect(preview.warnings.some((w) => /Caret fills 80 fields of a form, 20 at a time, so 5 more are yours: 'Q81'/.test(w))).toBe(true);
   });
 });
 
