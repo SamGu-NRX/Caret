@@ -2686,6 +2686,13 @@
             },
             "message": {
               "type": "string"
+            },
+            "sourceOff": {
+              "type": "string",
+              "enum": [
+                "Google Docs",
+                "Google Sheets"
+              ]
             }
           },
           "required": [

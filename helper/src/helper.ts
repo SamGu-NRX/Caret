@@ -133,7 +133,7 @@ import type { ValueKind } from "./protocol.ts";
 import { OFFER_WHEN, sentences, type EventCandidate, type SentenceSource } from "./offers/event-card.ts";
 import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
-import { TabSource, TabTextExpired, type TabReader } from "./engines/tab-source.ts";
+import { TabSource, TabTextExpired, type DocsApp, type TabReader } from "./engines/tab-source.ts";
 
 /**
  * The router above the producers (routing/coordinator.ts). With it, no producer makes an ambient offer on its own: a
@@ -1381,10 +1381,13 @@ export class Helper {
     } catch (e) {
       // Read before the release below, which would make any read text look dropped.
       const gone = tab.expired();
+      const docs = e instanceof GoalError && e.code === "nothingToDo" ? (this.tabSource?.docsOff(goalId) ?? null) : null;
       this.pagePlanning.delete(goalId);
       this.tabSource?.release(goalId);
       // Rule 6: a Jev call refused because the text was dropped (askTabRead) is said as that, not as a model failure.
       if (gone) throw new GoalError("nothingToDo", SAYS.tabExpired);
+      // H13: the tab left was a Google editor whose text Caret cannot read yet: say what to turn on.
+      if (docs !== null) throw new GoalError("nothingToDo", docsOffSays(docs));
       if (e instanceof GoalError && tab.windowRead() !== null) e.fromTab = true;
       throw e;
     }
@@ -1618,6 +1621,9 @@ export class Helper {
         if (e instanceof AskRefused && e.intent !== null) this.countAskRoute(e.intent.route);
         // B29: a question with choices, to a consumer that said it can answer one; anyone else reads the refusal.
         if (e instanceof AskAsks && canAsk && session === this.readerSession) return this.askQuestion(requestId, e.question, from);
+        // H13: nothing to fill because the tab left was a Google editor whose text Caret cannot read yet.
+        const docs = e.code === "nothingToDo" ? (this.tabSource?.docsOff(offerKey) ?? null) : null;
+        if (docs !== null) return fail(e.code, "the tab left is a Google editor whose text for assistive technology is off", docsOffSays(docs));
         return fail(e.code, e.message, said(e));
       }
     } else if (resume !== undefined) {
@@ -2665,6 +2671,14 @@ export class Helper {
         return null;
       }
       store.count("fill.error", 1, now);
+      // H13: nothing came from the tab the user left because it was a Google editor whose text is off: say what to turn on.
+      const docs = e instanceof FillError && e.why === "nothingToCopy" ? (this.tabSource?.docsOff(reading) ?? null) : null;
+      if (docs !== null) {
+        store.count("fill.docs_off", 1, now);
+        this.opts.warn?.("fill: nothing to copy; the tab left is a Google editor whose text for assistive technology is off");
+        this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: docsOffSays(docs), sourceOff: docs });
+        return null;
+      }
       this.fillFailed(e instanceof Error ? e.message : String(e), e instanceof FillError ? e.why : null, e);
       return null;
     } finally {
@@ -3165,6 +3179,11 @@ export class Helper {
 
 /** I6: page windows remembered as read for a goal's plan (Helper.tabWindows); each is a tab, so few. Assumed. */
 const TAB_WINDOWS = 16;
+
+/** H13: what to turn on so Caret can read a Google editor's text (brief item 3). */
+function docsOffSays(app: DocsApp): string {
+  return app === "Google Sheets" ? SAYS.docsOffSheets : SAYS.docsOffDocs;
+}
 
 /**
  * H13: how long the grant for one inline insert lasts. The page answers within its command timeout (page-link.ts), and

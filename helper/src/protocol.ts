@@ -1517,6 +1517,12 @@ export const HelperError = z.object({
   v: z.literal(PROTOCOL_VERSION),
   at: ms,
   message: z.string(),
+  /**
+   * H13: a fill found nothing because its source, the tab the user just left, was a Google Docs or Sheets editor whose
+   * text for assistive technology is off; `message` says what to turn on. The host shows it at the field the user is in,
+   * also for a fill nobody asked for, which otherwise ends in silence.
+   */
+  sourceOff: z.enum(["Google Docs", "Google Sheets"]).optional(),
 });
 export type HelperError = z.infer<typeof HelperError>;
 

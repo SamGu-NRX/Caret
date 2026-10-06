@@ -80,6 +80,9 @@ export const SAYS = {
   questionGone: "That question has expired. Ask again.",
   /** I6: the text of the tab the user left, which an Ask read for its fill, was dropped before the offer was made. */
   tabExpired: "Caret no longer has the text of the tab you left. Go back to it, then ask again.",
+  /** H13 (brief item 3): the tab left was a Google Doc or Sheet whose text Caret cannot read until the user turns this on. */
+  docsOffDocs: "Turn on screen reader and braille support in Google Docs, ⌘⌥Z then ⌘⌥H, so Caret can read it.",
+  docsOffSheets: "Turn on screen reader and braille support in Google Sheets, ⌘⌥Z then ⌘⌥H, so Caret can read it.",
   /**
    * Jev failed in a way the user can act on (lead addendum, 2026-10-06): before it, a 402 read "couldn't reach its
    * model just now. Try again.", which was wrong twice: Caret reached Jev, and trying again does not add credits.
