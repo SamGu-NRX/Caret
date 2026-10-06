@@ -55,6 +55,7 @@ import type { WindowState } from "../../helper/src/model.ts";
 import { intentSnapshot } from "../../helper/src/planner/intent.ts";
 import { headsIntentMaker } from "../../helper/src/planner/intent-heads.ts";
 import { jevGate } from "../../helper/src/goals/gates.ts";
+import { readyOnLoad } from "../../helper/src/offers/ready-on-load.ts";
 import { SnippetLedger } from "../../helper/src/privacy.ts";
 import { loadAsks, loadCorpus, normLabel, type CorpusForm } from "../../helper/scripts/realfill-corpus.ts";
 import { CFT_BUILD, Cdp, HOST_NAME, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
@@ -1015,6 +1016,38 @@ async function main(): Promise<number> {
       }
     };
     const wiz = ["wizard-1", "wizard-2", "wizard-3"].map((n) => pages.find((p) => p.id === n) ?? taskPageOf(n));
+    // In the dropzone journey the user gives the resume to the dropzone's row: that field, not the file input, holds it.
+    if (drop) {
+      const e = wiz[2]?.expected as Record<string, string>;
+      (wiz[2] as Page).expected = { ...e, resume: "none", resume_drop: e.resume ?? "none" };
+    }
+    // --sources labelled: one note of the wizard's three pages, each line a field's own label and F1's value (runTasks
+    // builds one per page; the journey's pages share one person and one note).
+    if (LABELLED) {
+      const all: string[] = [];
+      for (const p of wiz) {
+        const expected = p.expected as Record<string, string>;
+        await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}?show=all` }, sessionId);
+        let fields: TaskField[] = [];
+        for (let n = 0; n < 40; n++) {
+          await sleep(150);
+          const v = await evaluate(TASK_FIELDS_JS);
+          fields = Array.isArray(v) ? (v as TaskField[]) : [];
+          if (Object.keys(expected).every((k) => fields.some((f) => f.name === k))) break;
+        }
+        for (const [k, v] of Object.entries(expected)) {
+          const f = fields.find((x) => x.name === k);
+          const label = f?.names.find((x) => x.trim() !== "")?.trim().replace(/[*:]+$/u, "").trim();
+          if (v === "none" || f === undefined || label === undefined || f.kind === "file") continue;
+          all.push(`${label}: ${f.kind === "checkbox" ? (v === "true" ? "yes" : "no") : v}`);
+        }
+      }
+      for (const p of wiz) {
+        p.sources = [noteWindow(all.join("\n"))];
+        p.about = [];
+      }
+      say(`wizard: labelled note of ${all.length} lines`);
+    }
     // The resume the user chooses in page 3's attach row: the one the recruiter's email names (tasks/expect/wizard-3.json).
     const resume = join(tmp, "ines-vandermeer-resume-2026.pdf");
     writeFileSync(resume, "%PDF-1.4\n% synthetic resume for the P3 wizard journey\n");
@@ -1139,7 +1172,7 @@ async function main(): Promise<number> {
       { id: "p3-search", url: `${site.origin}/p3/search.html`, p: null },
       { id: "p3-login", url: `${site.origin}/p3/login.html`, p: null },
     ];
-    const out: { id: string; fired: boolean; requests: number; offerMs: number | null; note: string }[] = [];
+    const out: { id: string; fired: boolean; requests: number; offerMs: number | null; note: string; check: string }[] = [];
     for (const x of list) {
       page = x.p;
       taskFields = null;
@@ -1158,9 +1191,13 @@ async function main(): Promise<number> {
         if (offerMs === null && published.slice(mark).some((m) => m.type === "popup" || m.type === "fillProposal")) offerMs = ms(t1);
       }
       await helper.routedSettled;
+      // The code check as it reads the page now, with no About entries (they are the corpus's memory forms' only source).
+      const w = helper.model.windows.get(windowId);
+      const v = w === undefined ? null : readyOnLoad(helper.model, w, [], { excluded: host.registry.contextOf(windowId)?.excluded ?? {} });
+      const check = v === null ? "not walked" : v.fires ? `fires: ${v.fields.length} fields` : `${v.why}: ${v.fields.length} with a candidate`;
       const fired = published.slice(mark).some((m) => m.type === "popup" || m.type === "fillProposal");
       const errs = published.slice(mark).filter((m) => m.type === "error").map((m) => (m.type === "error" ? m.message : ""));
-      out.push({ id: x.id, fired, requests: calls.length - c0, offerMs, note: errs.join("; ").slice(0, 200) });
+      out.push({ id: x.id, fired, requests: calls.length - c0, offerMs, note: errs.join("; ").slice(0, 200), check });
       say(`${x.id}: ${fired ? `fired (${fmt(offerMs)} ms from navigation)` : "no offer"}, ${calls.length - c0} Jev requests${errs.length > 0 ? `; ${errs[0]}` : ""}`);
     }
     page = null;
@@ -1173,9 +1210,9 @@ async function main(): Promise<number> {
       "",
       "Each page loaded with no Ask and no field in focus, after its sources were put on the desk (the note as the window the user left). Jev canned; a request is any Jev call between the navigation and 3 s after load.",
       "",
-      "| page | fired | Jev requests | offer ms from navigation | note |",
-      "| --- | --- | --- | --- | --- |",
-      ...out.map((o) => `| ${o.id} | ${o.fired ? "yes" : "no"} | ${o.requests} | ${fmt(o.offerMs)} | ${cell(o.note || "-")} |`),
+      "| page | fired | Jev requests | offer ms from navigation | code check now (no About) | note |",
+      "| --- | --- | --- | --- | --- | --- |",
+      ...out.map((o) => `| ${o.id} | ${o.fired ? "yes" : "no"} | ${o.requests} | ${fmt(o.offerMs)} | ${o.check} | ${cell(o.note || "-")} |`),
       "",
       `- B27 corpus: ${group((id) => corpus.forms.some((f) => f.id === id))}`,
       `- W4 saved pages: ${group((id) => W4_SITES.includes(id))}`,
