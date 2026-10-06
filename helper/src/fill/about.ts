@@ -18,7 +18,7 @@
 // ("Guest details") is left to Jev, which reads it in the field's descriptor.
 import type { AboutFields } from "../patterns/memory.ts";
 import { fieldKinds, textKind, words } from "./kinds.ts";
-import { splitAddress, splitDate } from "./derive.ts";
+import { ADDRESS_LINE_2, splitAddress, splitDate } from "./derive.ts";
 import { labelKind, valueKind } from "../memory/sensitive.ts";
 
 /** The source line of a value filled from memory; the host writes it after "from". */
@@ -369,8 +369,11 @@ export function fieldAsksForPart(a: AboutValue, fieldName: string | null, part: 
   const ws = words(fieldName);
   const own = new Set(words(a.label));
   const named = ADDRESS_PART_WORDS[part];
-  // The part's own word must be there: "address" or "line" alone names a street, never a unit.
-  const says = ws.some((w) => named.includes(w) && w !== "address" && w !== "line") || (part === "street" && ws.includes("address"));
+  // The part's own word must be there: "address" or "line" alone names a street, never a unit; but the second address
+  // line holds the unit (C2 review: "Address line 2" took the street).
+  const line2 = ADDRESS_LINE_2.test(fieldName);
+  if (part === "street" && line2) return false;
+  const says = ws.some((w) => named.includes(w) && w !== "address" && w !== "line") || (part === "street" && ws.includes("address")) || (part === "unit" && line2);
   return says && ws.every((w) => named.includes(w) || own.has(w) || PLAIN.has(w));
 }
 

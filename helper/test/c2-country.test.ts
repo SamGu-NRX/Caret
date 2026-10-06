@@ -1,8 +1,9 @@
-// C2 (lead decision 2): a dropdown or menu may take the one option that is the user's place plus its country ("San Diego,
-// California" names "San Diego, California, United States"), when the country follows from the place by a closed list
-// (a US state or its code, a Canadian province or its code) or is the user's own About country. The page engine still
-// picks only an option named exactly that, once the list has loaded for it; every other prefix match stays the user's
-// ("Portland" never becomes "Portland, Oregon"). Jev is a fake that answers by rule; every place is invented or public.
+// C2 (lead decision 2): a dropdown or menu of a field that asks where may take the one option that is the user's place
+// plus its country ("San Diego, California" names "San Diego, California, United States"), when the country follows
+// from the place by a closed list (a US state or its code, a Canadian province or its code). The decision also allows
+// the user's About country; C2's review left it out (derive.ts placeWithCountry). The page engine still picks only an
+// option named exactly that, once the list has loaded for it; every other prefix match stays the user's ("Portland"
+// never becomes "Portland, Oregon"). Jev is a fake that answers by rule; every place is invented or public.
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";
@@ -14,29 +15,25 @@ import { PROTOCOL_VERSION, type PageControl, type PageSnapshot } from "../src/pr
 import { field, jevPickingText, snap } from "./builders.ts";
 
 describe("a place's country", () => {
-  it("follows from a US state or a Canadian province, or is the user's About country, and from nothing else", () => {
-    const table: [string, string | null, string | null][] = [
-      ["San Diego, California", null, "San Diego, California, United States"],
-      ["Portland, Maine", null, "Portland, Maine, United States"],
-      ["Portland, ME", null, "Portland, ME, United States"],
-      ["Toronto, Ontario", null, "Toronto, Ontario, Canada"],
-      ["Halifax, NS", null, "Halifax, NS, Canada"],
-      // Georgia is a state and a country: only the user's own About country tells which.
-      ["Tbilisi, Georgia", null, null],
-      ["Atlanta, Georgia", "United States", "Atlanta, Georgia, United States"],
-      // A region no closed list knows takes the user's About country, or nothing.
-      ["Bengaluru, Karnataka", "India", "Bengaluru, Karnataka, India"],
-      ["Bengaluru, Karnataka", null, null],
-      // The closed list wins over an About country that disagrees: the place says where it is.
-      ["San Diego, California", "Canada", "San Diego, California, United States"],
+  it("follows from a US state or a Canadian province, and from nothing else", () => {
+    const table: [string, string | null][] = [
+      ["San Diego, California", "San Diego, California, United States"],
+      ["Portland, Maine", "Portland, Maine, United States"],
+      ["Portland, ME", "Portland, ME, United States"],
+      ["Toronto, Ontario", "Toronto, Ontario, Canada"],
+      ["Halifax, NS", "Halifax, NS, Canada"],
+      // Georgia is a state and a country.
+      ["Tbilisi, Georgia", null],
+      ["Atlanta, Georgia", null],
+      // A region no closed list knows.
+      ["Bengaluru, Karnataka", null],
       // Already a country, a bare city, a remark, a list of places: nothing is added.
-      ["Oakland, California, United States", null, null],
-      ["Portland", null, null],
-      ["Portland", "United States", null],
-      ["San Diego, California (from November)", null, null],
-      ["Austin, Denver, Boston", null, null],
+      ["Oakland, California, United States", null],
+      ["Portland", null],
+      ["San Diego, California (from November)", null],
+      ["Austin, Denver, Boston", null],
     ];
-    expect(table.map(([t, about]) => [t, about, placeWithCountry(t, about)])).toEqual(table);
+    expect(table.map(([t]) => [t, placeWithCountry(t)])).toEqual(table);
   });
 });
 
@@ -96,10 +93,10 @@ describe("a menu whose options name places with their country", () => {
     expect((await fill(m, (ins) => (ins.includes("'Location'") ? "Portland" : null)))["Location"]).toBeNull();
   });
 
-  it("takes the user's About country for a region no closed list knows", async () => {
+  it("gives a region no closed list knows no country, About country or not", async () => {
     const m = scene("Name: Dmitri\nLocation: Bengaluru, Karnataka", [control("e1", "text", "Name", { value: "" }), select("e2", "Location", ["Bengaluru, Karnataka, India", "Mysuru, Karnataka, India"])]);
     const pick = (ins: string): string | null => (ins.includes("'Location'") ? "Bengaluru, Karnataka" : null);
     expect((await fill(m, pick))["Location"]).toBeNull();
-    expect((await fill(m, pick, [{ label: "Country", value: "India" }]))["Location"]).toEqual(["Bengaluru, Karnataka, India", true]);
+    expect((await fill(m, pick, [{ label: "Country", value: "India" }]))["Location"]).toBeNull();
   });
 });

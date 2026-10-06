@@ -11,7 +11,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { AboutValue } from "../fill/about.ts";
 import type { AskJev } from "../fill/jev.ts";
-import { FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { asksCountry, fieldPart } from "../fill/derive.ts";
@@ -201,6 +201,8 @@ function ordered<T extends { node: Node }>(w: WindowState, xs: readonly T[]): T[
 }
 
 const shortDigest = (s: string): string => sha256(s).slice(0, 16);
+/** The rows one segment's preview shows at most (protocol GoalProgress segment `steps`). */
+const STEP_VIEWS = 24;
 const clip = (s: string, n = 60): string => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
 /**
@@ -285,16 +287,19 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   // C2 (lead decision 3): a form over MAX_FIELDS is filled in parts of at most MAX_FIELDS, in this order. One fill asks
   // about one part; each part is its own segment of the goal, previewed and accepted with its own Tab and undone on its
   // own (lowerGoal `parts`). The goal has at most MAX_SEGMENTS segments, so the fields past that many parts are named
-  // as the user's, in one line (the size hand-off, P2).
-  const room = MAX_FIELDS * MAX_SEGMENTS;
+  // as the user's, in one line (the size hand-off, P2). The segment that ends up last also shows the attach rows and
+  // the hand-off row, and a preview shows at most STEP_VIEWS rows, so with many file controls every part is smaller
+  // (C2 review: 40 fields and four uploads made a last segment of 25 rows, which the protocol refuses).
+  const partSize = Math.max(1, Math.min(MAX_FIELDS, STEP_VIEWS - 1 - files.length));
+  const room = partSize * MAX_SEGMENTS;
   const asked = wanted.slice(0, room);
   const rest = wanted.slice(room);
   if (rest.length > 0) {
     const names = rest.map((x) => `'${fieldName(w, x.node)}'`);
-    left.push({ windowId: o.windowId, key: `size:${o.windowId}`, label: `${rest.length} more fields`, why: "dropped", says: clip(`Caret fills ${room} fields of a form, ${MAX_FIELDS} at a time, so ${rest.length} more are yours: ${names.slice(0, 6).join(", ")}${names.length > 6 ? ` and ${names.length - 6} more` : ""}`, 590) });
+    left.push({ windowId: o.windowId, key: `size:${o.windowId}`, label: `${rest.length} more fields`, why: "dropped", says: clip(`Caret fills ${room} fields of a form, ${partSize} at a time, so ${rest.length} more are yours: ${names.slice(0, 6).join(", ")}${names.length > 6 ? ` and ${names.length - 6} more` : ""}`, 590) });
   }
   const parts: PageInput[][] = [];
-  for (let i = 0; i < asked.length; i += MAX_FIELDS) parts.push(asked.slice(i, i + MAX_FIELDS));
+  for (let i = 0; i < asked.length; i += partSize) parts.push(asked.slice(i, i + partSize));
 
   // 2. Values: fill's one round over exactly each part's fields, under the Ask's scope; the parts' rounds run together.
   const scopeOf = (part: readonly PageInput[]): FillScope | undefined =>
@@ -303,7 +308,10 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     parts.map(async (part) => {
       const scope = scopeOf(part);
       try {
-        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...(scope === undefined ? {} : { scope }), ...(o.fill ?? {}) }), error: null };
+        // With no scope, the part's own fields (C2 review: a fill on focus asks about the 20 nearest the trigger, which
+        // on a long form of look-alike fields were not the part's).
+        const which = scope === undefined ? { only: part.map((x) => x.node.key) } : { scope };
+        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}) }), error: null };
       } catch (e) {
         if (e instanceof FillError) return { part, scope, proposal: null, error: e };
         throw e;
@@ -381,7 +389,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
             ? { kind: "derived", inputs: [], resolver: "fill/when", version: RESOLVER_VERSION, parametersDigest: shortDigest(f.span) }
             : { kind: "span", snapshot: "s1", source: f.source?.windowId ?? "instruction", startUTF16: 0, endUTF16: f.span.length, digest: shortDigest(f.span) },
       source: f.source === null || src === undefined ? null : { windowId: f.source.windowId, key: f.source.nodeKey, revision: windowRevision(src) },
-      memory: f.memory === null ? null : memoryRefOf(f.memory),
+      memory: f.memory === null ? null : memoryRefOf(f.memory, conversionOf(f.control)),
       event: null,
       draft: null,
       owner: f.memory !== null ? "user" : null,

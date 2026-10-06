@@ -11,7 +11,7 @@ import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
 import { jevFailureKind, type AskJev, type JevRequest } from "./fill/jev.ts";
-import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryWrites, parseMemoryRef, proposeFill, type FillErrorWhy } from "./fill/fill.ts";
+import { conversionOf, describeInput, emptyInput, FillError, formAsksFor, formFields, memoryWrites, parseMemoryRef, proposeFill, type FillErrorWhy } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
   HelperMessage,
@@ -1175,12 +1175,13 @@ export class Helper {
       }
       return true;
     }
-    const { id, part } = parseMemoryRef(ref);
+    const { id, part, conv } = parseMemoryRef(ref);
     const text = this.memory.text(id);
     if (text === null || text === undefined) return false;
     // A whole value stays exact; a part is the same part by the same split (fix-check review: a name that
-    // changed from "Riley Ade Okafor" to "Morgan Riley" must not still give "Riley" as a first name).
-    return memoryWrites(text, part, value);
+    // changed from "Riley Ade Okafor" to "Morgan Riley" must not still give "Riley" as a first name). C2: a control's
+    // value is the entry read through that control's conversion, named in the reference.
+    return memoryWrites(text, part, value, conv);
   }
 
   /** Memory the planner may copy from: About values and people's names, not paused. */
@@ -2752,7 +2753,7 @@ export class Helper {
       }
       if (memory !== null) {
         const now = this.aboutNow(memory.id);
-        return now !== null && value !== null && memoryWrites(now.value, memory.part, value) && now.label === memory.label;
+        return now !== null && value !== null && memoryWrites(now.value, memory.part, value, conversionOf(f.control)) && now.label === memory.label;
       }
       const source = f.source ?? f.handoff?.source ?? null;
       return source === null || this.model.windows.has(source.windowId);

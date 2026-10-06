@@ -37,6 +37,8 @@ export function fieldPart(label: string | null, formHasCity = false): FieldPart 
     return /\bname\b/.test(s) ? "full" : null;
   }
   if (/\b(?:apt|apartment|unit|suite)\b/.test(s)) return "unit";
+  // C2 review: the second address line holds the unit; "address line" alone below would read it as the street.
+  if (ADDRESS_LINE_2.test(s)) return "unit";
   if (/\b(?:zip|postal|postcode)\b/.test(s)) return "zip";
   if (/\b(?:city|town)\b/.test(s)) return "city";
   if (/\b(?:state|province)\b/.test(s)) return "state";
@@ -44,6 +46,9 @@ export function fieldPart(label: string | null, formHasCity = false): FieldPart 
   if (formHasCity && words(s).length === 1 && /\baddress\b/.test(s)) return "street";
   return null;
 }
+
+/** C2 review: a label naming an address's second line ("Address line 2", "Address 2", "Line 2"). */
+export const ADDRESS_LINE_2 = /\b(?:address\s*)?line\s*2\b|\baddress\s*2\b/iu;
 
 /** Words that open a surname: "Ana de la Cruz", "Ludwig van der Rohe". Compared without case. */
 const PARTICLES = new Set(["van", "von", "der", "den", "de", "del", "della", "da", "di", "du", "la", "le", "bin", "ibn", "al", "st.", "ter", "ten", "dos", "das"]);
@@ -228,10 +233,12 @@ const ISO_MONTH = /^((?:1[89]|2\d)\d{2})-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\d|3[01]
  * C2 (lead decision 1): the one month and year a span names as the user wrote it: "August 2022", "Aug. 2022", "Aug
  * '22", "08/2022", "2022-08", or a whole date that names its month ("October 18, 2026", "2026-11-01"). Read only
  * from the whole span, so "Started in August 2022" or "August 2022 to May 2023" is null. A year after an apostrophe
- * reads as 2000 to 2039 for '00 to '39 and 1970 to 1999 for '70 to '99; '40 to '69 could be either century and is
- * null. Null too for a season, a bare year, and "08/22" (a month and a day, or a month and a year).
+ * reads as the one year with those last two digits from 50 years before `refYear` to 10 years after it (the dates a
+ * job or school form asks for): around 2026, '00 to '36 and '76 to '99; '37 to '75 is null (C2 review: a fixed century
+ * split read "Aug '30" as 2030 whatever the date was). Null too for a season, a bare year, and "08/22" (a month and a
+ * day, or a month and a year).
  */
-export function monthYear(text: string): { month: number; year: number } | null {
+export function monthYear(text: string, refYear: number = new Date().getUTCFullYear()): { month: number; year: number } | null {
   const t = text.trim().replace(/\s+/gu, " ");
   const named = NAMED_MONTH_YEAR.exec(t);
   if (named !== null) {
@@ -242,7 +249,8 @@ export function monthYear(text: string): { month: number; year: number } | null 
   if (short !== null) {
     const month = monthIndex(short[1] as string);
     const yy = Number(short[2]);
-    const year = yy <= 39 ? 2000 + yy : yy >= 70 ? 1900 + yy : null;
+    const years = [1900 + yy, 2000 + yy, 2100 + yy].filter((y) => y >= refYear - 50 && y <= refYear + 10);
+    const year = years.length === 1 ? (years[0] as number) : null;
     return month === null || year === null ? null : { month, year };
   }
   const num = NUMBER_MONTH_YEAR.exec(t);
@@ -305,21 +313,33 @@ const PROVINCE_CODES = new Set("AB BC MB NB NL NS NT NU ON PE QC SK YT".split(" 
 
 /**
  * C2 (lead decision 2): the user's place "City, Region" with its country added, as a location list names it: "San Diego,
- * California" gives "San Diego, California, United States". The country follows from the region by a closed list (a
- * US state or its USPS code: the United States; a Canadian province or territory or its code: Canada), or else is the
- * user's own About country (`aboutCountry`). Georgia, a state and a country, takes only the About country. Null for
- * anything else: a bare city ("Portland" is many places, so it never becomes one of them), a place that already names
- * a country, a remark, or more than two parts. Fill offers this only to a dropdown or menu, which the page engine sets
- * only to an option named exactly this (fill.ts controlValue).
+ * California" gives "San Diego, California, United States". The country follows from the region by a closed list: a
+ * US state or its USPS code, the United States; a Canadian province or territory or its code, Canada. Georgia, a state
+ * and a country, is neither. Null for anything else: a bare city ("Portland" is many places, so it never becomes one
+ * of them), a place that already names a country, a remark, or more than two parts. The decision also allows the
+ * user's About country; it is not used (C2 review): the written value would then depend on an About entry the
+ * proposal cannot name beside its source, so an edit of that entry after the preview would go unchecked. Fill offers
+ * this only for a field whose label asks where (asksPlace), to a dropdown or menu, which the page engine sets only to
+ * an option named exactly this (fill.ts controlValue).
  */
-export function placeWithCountry(text: string, aboutCountry: string | null): string | null {
+export function placeWithCountry(text: string): string | null {
   const parts = text.split(",").map((p) => p.trim());
   if (parts.length !== 2 || !parts.every((p) => PLACE_WORDS.test(p) && p.length <= 40)) return null;
   const region = parts[1] as string;
-  const georgia = region.toLowerCase() === "georgia";
-  const closed = georgia ? null : usState(region) ? "United States" : PROVINCE_CODES.has(region) || PROVINCES.has(region.toLowerCase()) ? "Canada" : null;
-  const country = closed ?? (aboutCountry !== null && PLACE_WORDS.test(aboutCountry.trim()) ? aboutCountry.trim() : null);
+  if (region.toLowerCase() === "georgia") return null;
+  const country = usState(region) ? "United States" : PROVINCE_CODES.has(region) || PROVINCES.has(region.toLowerCase()) ? "Canada" : null;
   return country === null ? null : `${parts[0]}, ${region}, ${country}`;
+}
+
+/**
+ * C2 review: whether a field's label asks where the user is or will work ("Location", "Location (City)", "Where are you
+ * based?", "City"), so a place may be given its country (placeWithCountry). A field about a person ("Full name") never
+ * is: "Smith, Virginia" read as a place became "Smith, Virginia, United States". Written for common form labels, not
+ * measured.
+ */
+export function asksPlace(label: string | null): boolean {
+  if (label === null || /\bname\b/iu.test(label) || asksCountry(label)) return false;
+  return /\b(?:location|city|town|where|based|located|relocat\w*|office|metro|area|hometown)\b/iu.test(label);
 }
 
 /**

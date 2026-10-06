@@ -28,8 +28,8 @@ const MONTH_SAYS = ["January", "February", "March", "April", "May", "June", "Jul
  * C2 (lead decision 1): the one month and year a span names (derive.ts monthYear), as an HTML month input holds it
  * (YYYY-MM) with how the host says it ("August 2022"); null when it names none or could name two.
  */
-export function readMonth(text: string): { value: string; display: string } | null {
-  const m = monthYear(text);
+export function readMonth(text: string, refYear?: number): { value: string; display: string } | null {
+  const m = monthYear(text, refYear);
   return m === null ? null : { value: `${m.year}-${String(m.month).padStart(2, "0")}`, display: `${MONTH_SAYS[m.month - 1]} ${m.year}` };
 }
 

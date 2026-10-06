@@ -15,7 +15,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { AskOption, FillField, FillProposal, Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
-import { FillError, memoryRefOf, PAGE_WINDOW_KIND, proposeFill, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FillError, memoryRefOf, PAGE_WINDOW_KIND, proposeFill, type FillScope } from "../fill/fill.ts";
 import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
@@ -544,7 +544,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       says: `${name(f)} holds {{${slot}}}`,
       end: { kind: "valueEquals", window: sel, target: { key: f.key, describe: `the ${name(f)} field` }, value: `{{${slot}}}` },
       // A value copied from memory names its entry, so the executor checks it is still there before writing (B17).
-      ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory) }),
+      ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory, conversionOf(f.control)) }),
     };
   });
   // A plan needs a step; with only controls to set, it is one hand-off that names the first of them.

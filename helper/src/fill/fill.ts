@@ -18,7 +18,7 @@ import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
-import { asksCountry, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -545,6 +545,11 @@ export interface FillOptions {
   answers?: readonly SavedAnswer[];
   /** S1: the page's address and headings, which the organization guard reads beside the window's own text. */
   page?: PageContext;
+  /**
+   * C2 review: with no scope, the exact fields to ask about, by node key in order, in place of the nearest MAX_FIELDS to
+   * the trigger: a long page form's part (goals/page-planner.ts). Every other rule is a fill on focus's.
+   */
+  only?: readonly string[];
 }
 
 /**
@@ -652,10 +657,12 @@ function partOf(part: FillPart, text: string): string | null {
  * "08/2022", or a month's name alone for a month menu), when its options are not named as written: "August" or "08"
  * for "Aug '22", "2022" for "Aug '22". Null when none does, or more than one.
  */
-function dateOption(part: "month" | "year", options: readonly string[], text: string): string | null {
-  const my = monthYear(text);
+function dateOption(part: "month" | "year", options: readonly string[], text: string, refYear: number, derived: boolean): string | null {
+  const my = monthYear(text, refYear);
   if (part === "year") return my === null ? null : matchOption(options, String(my.year));
-  const month = my?.month ?? monthIndex(text);
+  // C2 review: a month code split from an ISO date ("03" from "1990-03-14", dateParts) is that month's number.
+  const number = derived && /^(?:0?[1-9]|1[0-2])$/u.test(text.trim()) ? Number(text) : null;
+  const month = my?.month ?? monthIndex(text) ?? number;
   return month === null ? null : monthOption(options, month);
 }
 /** Label words that say only a field's kind, so they cannot tie one of a person's phones or emails to the field. */
@@ -747,7 +754,7 @@ export async function proposeFill(
   // The words of the windows fill reads, for formInputs to keep the inputs a long form's cap would cut by what they show.
   const sourceWords = (): ReadonlySet<string> =>
     new Set([...model.windows.values()].filter((x) => x.window.windowId !== windowId && opts.exclude?.has(x.window.windowId) !== true).flatMap((x) => [...x.nodes.values()].flatMap((n) => words(nodeText(n)))));
-  const inputs = scope === undefined ? formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords) : scopedInputs(w, scope.fields);
+  const inputs = scope !== undefined ? scopedInputs(w, scope.fields) : opts.only !== undefined ? scopedInputs(w, opts.only) : formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords);
   const formHasCity = inputs.some((x) => x.control === "text" && fieldPart(describeField(w, x.node).label, false) === "city");
   for (const x of inputs) {
     const n = x.node;
@@ -1308,9 +1315,8 @@ export async function proposeFill(
   };
   /** Kinds of the user's own values in memory ("email", "name"). */
   const memoryKinds = new Set<string>((opts.about ?? []).map((a) => a.kind));
-  /** C2: the user's own country, when exactly one About entry says it (placeWithCountry). */
-  const countries = (opts.about ?? []).filter((a) => a.kind === "country");
-  const aboutCountry = countries.length === 1 ? (countries[0] as AboutValue).value : null;
+  /** C2: the year a two-digit year is read around (derive.ts monthYear). */
+  const refYear = new Date(now).getUTCFullYear();
 
   /**
    * The value a control takes from a pick (the option it names, PAGE_CHECKED, or the input's own date or time format),
@@ -1342,9 +1348,10 @@ export async function proposeFill(
         // is exactly (partOf).
         const whole = matchOption(options, text);
         const piece = whole === null && f.part !== null ? partOf(f.part, text) : null;
-        // C2 (lead decision 2): the one option that is the user's place with its country ("Portland, Maine, United States").
-        const placed = placeWithCountry(text, aboutCountry);
-        const exact = whole ?? (piece === null ? null : matchOption(options, piece)) ?? (f.part === "month" || f.part === "year" ? dateOption(f.part, options, text) : null) ?? (placed === null ? null : matchOption(options, placed));
+        // C2 (lead decision 2): for a field that asks where, the one option that is the user's place with its country
+        // ("Portland, Maine, United States").
+        const placed = asksPlace(f.name) ? placeWithCountry(text) : null;
+        const exact = whole ?? (piece === null ? null : matchOption(options, piece)) ?? (f.part === "month" || f.part === "year" ? dateOption(f.part, options, text, refYear, p.from === "derived") : null) ?? (placed === null ? null : matchOption(options, placed));
         if (exact !== null) return { value: exact, display: exact, writes: page && !press };
         const o = optionInText(options, text);
         return o === null ? { why: "ambiguous" } : { value: o, display: o, writes: false };
@@ -1371,7 +1378,7 @@ export async function proposeFill(
         const format = f.form?.format ?? "date";
         // C2 (lead decision 1): a month input takes the month and year the user wrote, converted to its own format.
         if (format === "month") {
-          const m = readMonth(text);
+          const m = readMonth(text, refYear);
           return m === null ? { why: "ambiguous" } : { ...m, writes: page };
         }
         if (format === "datetime") {
@@ -1391,12 +1398,13 @@ export async function proposeFill(
         // Read as a text field is, then as one option's name: the page engine types it as the list's filter and picks
         // only an option named exactly that (B27).
         if (misfit(text, f.labelWords) !== null || (f.part !== null && !partFits(f.part, text))) return { why: "wrongKind" };
-        if (!optionName(text)) return { why: "ambiguous" };
-        // C2 (lead decision 2): a place "City, Region" is asked for with its country, as location lists name it; the page
-        // engine types that as the list's filter and picks only the one option named exactly that, once the list has
-        // loaded for it. A place that already names its country, or a bare city, is asked for as written.
-        const placed = placeWithCountry(text, aboutCountry) ?? text;
-        return { value: placed, display: placed, writes: page };
+        // C2 (lead decision 2): in a field that asks where, a place "City, Region" is asked for with its country, as location
+        // lists name it; the page engine types that as the list's filter and picks only the one option named exactly
+        // that, once the list has loaded for it. A place that already names its country, or a bare city, is asked for as
+        // written. placeWithCountry reads the place itself, so a Canadian one passes though optionName reads US ones only.
+        const placed = asksPlace(f.name) ? placeWithCountry(text) : null;
+        if (placed !== null) return { value: placed, display: placed, writes: page };
+        return optionName(text) ? { value: text, display: text, writes: page } : { why: "ambiguous" };
       case "text":
         return misfit(text, f.labelWords) === null && (f.part === null || partFits(f.part, text)) ? { value: text, display: text, writes: true } : { why: "wrongKind" };
     }
@@ -1552,18 +1560,35 @@ export function memoryValue(value: string, part: FillMemory["part"]): string | n
  * its input's own format ("1990-03-14" for "March 14, 1990"). An entry the user changed gives none of them. Before C2 a
  * step from memory had to write the entry's text as typed, so a page goal stopped at Tab on any of these.
  */
-export function memoryWrites(value: string, part: FillMemory["part"], written: string): boolean {
+export function memoryWrites(value: string, part: FillMemory["part"], written: string, conv: MemoryConversion = "exact"): boolean {
   const gives = memoryValue(value, part);
   if (gives === null) return false;
   if (gives === written) return true;
-  const norm = (s: string): string => s.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
-  if (norm(gives) === norm(written)) return true;
-  const ctx: ResolveContext = { locale: Intl.DateTimeFormat().resolvedOptions().locale, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, referenceInstant: null };
-  if (/^\d{4}-\d{2}-\d{2}$/u.test(written) && readDate(gives, ctx)?.value === written) return true;
-  if (/^\d{4}-\d{2}$/u.test(written) && readMonth(gives)?.value === written) return true;
-  // A month menu's option for the entry's month ("03" or "Mar" for "March"; dateOption, monthOption).
-  const month = (s: string): number | null => (/^\d{1,2}$/u.test(s.trim()) ? Number(s) : monthIndex(s));
-  return part === "month" && month(gives) !== null && month(gives) === month(written);
+  // C2 review: a text field is written the entry's text exactly, so only an exact match holds there ("…/Profile" is
+  // not "…/profile"); the looser readings are each tied to the control that needs them.
+  if (conv === "option") {
+    const norm = (s: string): string => s.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
+    if (norm(gives) === norm(written)) return true;
+    // A month menu's option for the entry's month ("03" or "Mar" for "March"; dateOption, monthOption).
+    const month = (s: string): number | null => (/^\d{1,2}$/u.test(s.trim()) ? Number(s) : monthIndex(s));
+    return part === "month" && month(gives) !== null && month(gives) === month(written);
+  }
+  if (conv === "date") {
+    const ctx: ResolveContext = { locale: Intl.DateTimeFormat().resolvedOptions().locale, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, referenceInstant: null };
+    if (/^\d{4}-\d{2}-\d{2}$/u.test(written)) return readDate(gives, ctx)?.value === written;
+    return /^\d{4}-\d{2}$/u.test(written) && readMonth(gives)?.value === written;
+  }
+  return false;
+}
+
+/**
+ * C2 review: how a step from memory writes the entry, which says how memoryWrites checks it again: "exact" for a text
+ * field, "option" for a menu, choice or dropdown (its option's name), "date" for a date or month input (its format).
+ */
+export type MemoryConversion = "exact" | "option" | "date";
+/** The conversion a control's write from memory goes through (memoryWrites). */
+export function conversionOf(control: string): MemoryConversion {
+  return control === "text" ? "exact" : control === "date" || control === "time" ? "date" : "option";
 }
 
 /** Whether two candidates' "Label: value" lines are next to each other in their node, with no line between. */
@@ -1581,14 +1606,20 @@ type FillMemoryPart = NonNullable<FillMemory["part"]>;
 /** The parts a value from memory may be (protocol FillMemory.part): a name's (B24), an address's or a date's (C2). */
 const MEMORY_PARTS: ReadonlySet<string> = new Set<FillMemoryPart>(["first", "middle", "last", "street", "unit", "city", "state", "zip", "month", "day", "year"]);
 
-/** A step's memory reference (executor Step.memory): the entry's id, and "#part" for a part of a remembered name, address or date. */
-export function memoryRefOf(m: { id: string; part?: FillMemory["part"] }): string {
-  return m.part === undefined ? m.id : `${m.id}#${m.part}`;
+/**
+ * A step's memory reference (executor Step.memory): the entry's id, "#part" for a part of a remembered name, address or
+ * date, and (C2 review) "~option" or "~date" for a write through a control's conversion (memoryWrites).
+ */
+export function memoryRefOf(m: { id: string; part?: FillMemory["part"] }, conv: MemoryConversion = "exact"): string {
+  return `${m.part === undefined ? m.id : `${m.id}#${m.part}`}${conv === "exact" ? "" : `~${conv}`}`;
 }
 
 /** The entry id and the part a step's memory reference names (memoryRefOf). */
-export function parseMemoryRef(ref: string): { id: string; part: FillMemory["part"] } {
-  const at = ref.lastIndexOf("#");
-  const part = at < 0 ? "" : ref.slice(at + 1);
-  return MEMORY_PARTS.has(part) ? { id: ref.slice(0, at), part: part as FillMemoryPart } : { id: ref, part: undefined };
+export function parseMemoryRef(ref: string): { id: string; part: FillMemory["part"]; conv: MemoryConversion } {
+  const tail = /~(option|date)$/u.exec(ref);
+  const conv: MemoryConversion = tail === null ? "exact" : (tail[1] as MemoryConversion);
+  const rest = tail === null ? ref : ref.slice(0, tail.index);
+  const at = rest.lastIndexOf("#");
+  const part = at < 0 ? "" : rest.slice(at + 1);
+  return MEMORY_PARTS.has(part) ? { id: rest.slice(0, at), part: part as FillMemoryPart, conv } : { id: rest, part: undefined, conv };
 }

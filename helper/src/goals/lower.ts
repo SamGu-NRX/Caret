@@ -437,6 +437,9 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     steps.push({ ref: "h1", index: steps.length, kind: "handoff", says: h.says, target: h.target, value: null, writes: null, effect: null, handoff: h.why, to: false, gate: null, row: true });
   }
   steps.forEach((x, i) => (x.index = i));
+  // C2: a form filled in parts says so before the first Tab, ahead of what is left (within MAX_WARNINGS, C2 review).
+  const partCount = new Set(steps.flatMap((x) => (o.parts?.has(x.ref) === true ? [o.parts.get(x.ref) as number] : []))).size;
+  if (partCount > 1) warnings.unshift(`Caret fills this form in ${partCount} parts of up to ${MAX_FIELDS} fields, each with its own preview and Tab.`);
   // A goalProgress carries MAX_WARNINGS sentences (P2: a 40-field form can leave more): the rest are named in one.
   const said = left.map((l) => `${l.says}.`);
   const room = MAX_WARNINGS - warnings.length;
@@ -455,9 +458,6 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     const press = steps.find((x) => x.kind === "handoff" && x.handoff !== null && x.handoff !== "unverifiable" && x.handoff !== "system");
     throw new GoalError("nothingToDo", press?.handoff == null ? "the plan leaves every step to you, so there is nothing for Caret to do" : saysPress(press.handoff, press.target.label));
   }
-  // C2: a form filled in parts says so before the first Tab.
-  const partCount = new Set(steps.flatMap((x) => (o.parts?.has(x.ref) === true ? [o.parts.get(x.ref) as number] : []))).size;
-  if (partCount > 1) warnings.unshift(`Caret fills this form in ${partCount} parts of up to ${MAX_FIELDS} fields, each with its own preview and Tab.`);
   const segments = cut(draft.programDigest, steps, warnings, o.parts);
   if (segments.length > MAX_SEGMENTS) throw new GoalError("tooManySegments", `the plan needs ${segments.length} separate acceptances; Caret offers at most ${MAX_SEGMENTS}`);
   return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv };

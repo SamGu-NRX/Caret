@@ -51,7 +51,7 @@ function scene(note: string, controls: PageControl[]): ScreenModel {
 
 /** What fill gives each control, by its name: [value, writes] for a hand-off, the text for a text field, or null. */
 async function filled(m: ScreenModel, trigger: string, pick: (ins: string) => string | null): Promise<Record<string, [string, boolean] | string | null>> {
-  const p = await proposeFill(m, jevPickingText((_id, ins) => pick(ins)), WIN, trigger, 2000);
+  const p = await proposeFill(m, jevPickingText((_id, ins) => pick(ins)), WIN, trigger, Date.UTC(2026, 9, 6));
   return Object.fromEntries(p.fields.map((f) => [f.descriptor.match(/Label: '([^']+)'/u)?.[1] ?? f.key, f.value ?? (f.handoff === null ? null : [f.handoff.value, f.handoff.writes === true])]));
 }
 
@@ -82,7 +82,7 @@ describe("a month and year as the user wrote it", () => {
       ["2021-2022", null],
       ["Augustine 2022", null],
     ];
-    expect(table.map(([t]) => [t, readMonth(t)?.value ?? null])).toEqual(table);
+    expect(table.map(([t]) => [t, readMonth(t, 2026)?.value ?? null])).toEqual(table);
     expect(readMonth("Aug '22")?.display).toBe("August 2022");
     expect(monthYear("08/2022")).toEqual({ month: 8, year: 2022 });
   });

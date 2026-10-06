@@ -30,9 +30,9 @@ describe("the parts of one entry", () => {
 
   it("names a part in a step's memory reference and reads it back", () => {
     for (const part of ["first", "street", "unit", "city", "state", "zip", "month", "day", "year"] as const) {
-      expect(parseMemoryRef(memoryRefOf({ id: "about-3", part }))).toEqual({ id: "about-3", part });
+      expect(parseMemoryRef(memoryRefOf({ id: "about-3", part }))).toEqual({ id: "about-3", part, conv: "exact" });
     }
-    expect(parseMemoryRef("about-3#country")).toEqual({ id: "about-3#country", part: undefined });
+    expect(parseMemoryRef("about-3#country")).toEqual({ id: "about-3#country", part: undefined, conv: "exact" });
   });
 
   it("checks a part again by splitting the entry as it reads now", () => {
@@ -40,8 +40,9 @@ describe("the parts of one entry", () => {
     expect(memoryWrites(ADDRESS.replace("97214", "97215"), "zip", "97214")).toBe(false);
     expect(memoryWrites(BORN, "month", "March")).toBe(true);
     // A month menu listing numbers took "03" for March.
-    expect(memoryWrites(BORN, "month", "03")).toBe(true);
-    expect(memoryWrites("April 14, 1990", "month", "03")).toBe(false);
+    expect(memoryWrites(BORN, "month", "03", "option")).toBe(true);
+    expect(memoryWrites("April 14, 1990", "month", "03", "option")).toBe(false);
+    expect(memoryWrites(BORN, "month", "03")).toBe(false);
     expect(memoryWrites(BORN, "day", "14")).toBe(true);
     expect(memoryWrites(BORN, "year", "1991")).toBe(false);
   });
