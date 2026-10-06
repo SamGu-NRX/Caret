@@ -1112,6 +1112,10 @@ async function main(): Promise<number> {
       `- submits ${sum.submits}, stray presses ${sum.strayPresses.length}, page-link presses ${presses}, off-site ${sum.offsite.length}, probe errors ${sum.probeErrors.length}, POSTs to the blank server ${posts}`,
       `- write verbs sent ${[...sent.values()].reduce((a, b) => a + b, 0)}, replayed ${replayed.length}${replayed.length > 0 ? `: ${replayed.join(", ")}` : ""}`,
       `- Jev requests ${calls.length}${LIVE ? `, $${spent.toFixed(4)}` : ""}; last goal ${goalId ?? "-"}`,
+      "",
+      "Helper warnings about goals and fills (synthetic page text only):",
+      "",
+      ...warnings.filter((l) => /^goal |^fill/u.test(l)).slice(-30).map((l) => `- ${cell(l, 300)}`),
     ];
     writeFileSync(join(OUT, drop ? "wizard-drop.md" : "wizard.md"), lines.join("\n") + "\n");
     const wrong = out.reduce((n, r) => n + r.wrong.length, 0);
