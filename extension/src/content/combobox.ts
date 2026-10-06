@@ -11,12 +11,15 @@
 // The stages: open with a press on the control; find the listbox by aria-controls or aria-owns, else the one newly
 // visible [role=listbox] anywhere in the document (portals and shadow roots included) that is shown to belong to the
 // control, waiting up to 1.5 s; type the value as the filter through the native setter; read the visible
-// [role=option] names; pick only when exactly one normalized name equals the value (shared/choose.ts), read again
-// right before the click; then verify the control's shown text, react-select's hidden input, and
-// aria-expanded=false, before and after blur. A stop puts the filter text back and closes the list, but only while
-// the grant is alive and the control still eligible.
+// [role=option] names until two readings agree while the page shows no loading state; pick only when exactly one
+// normalized name equals the value (shared/choose.ts), read again right before the click; then verify the control's
+// shown text, react-select's hidden input, and aria-expanded=false, before and after blur, and for an ARIA text field
+// Caret typed into, that the list closed on the press. A text field whose list opens only once it holds text (a
+// search-as-you-type picker, C1) gets the filter typed after a short wait for a list, and its list is waited for after.
+// A stop puts the filter text back and closes the list, but only while the grant is alive and the control still
+// eligible.
 import type { ActAnswer, ActVerb, Choice } from "../shared/messages.ts";
-import { matchOptions, normalizeName, whyNoPick } from "../shared/choose.ts";
+import { hiddenAfterStop, matchOptions, normalizeName, pickProblems, settles, typesToOpen, whyNoPick, type ListReading } from "../shared/choose.ts";
 import { accessibleName, clean, composedParent } from "./names.ts";
 import { flavorOf, shownValue, type Flavor } from "./flavor.ts";
 import { errorText, invalidNow, keyEvents, pressEvents, settle, typeInto, until } from "./dom.ts";
@@ -26,6 +29,22 @@ import { deepActiveElement, shadowRootOf, visible } from "./walker.ts";
 const LIST_WAIT_MS = 1500;
 /** How long the pick may take to show in the control. Assumed: react-select shows it in the same task. */
 const PICK_WAIT_MS = 1000;
+/**
+ * How long a text field that filters as you type gets to open a list on the press alone before Caret types the filter
+ * (C1). Assumed, not measured: react-select opens on the mousedown and a generic combobox on focus, both within a frame
+ * or two; F1's pickers and Ashby's location open only once the field holds text, so without typing no wait is enough.
+ */
+const OPEN_WAIT_MS = 300;
+
+/**
+ * Whether the page says the list's results are still loading: aria-busy on the control or the list, or react-select's
+ * loading indicator or loading message (class names with or without a classNamePrefix).
+ */
+function loading(el: Element, f: Flavor, lb: Element): boolean {
+  if (el.getAttribute("aria-busy") === "true" || lb.getAttribute("aria-busy") === "true" || lb.querySelector('[aria-busy="true"]') !== null) return true;
+  const marks = '[class*="loading-indicator"], [class*="loadingIndicator"], [class*="menu-notice--loading"], [class*="loadingMessage"]';
+  return lb.querySelector(marks) !== null || (f.kind === "reactSelect" && f.container.querySelector(marks) !== null);
+}
 
 type ChooseVerb = Extract<ActVerb, { kind: "pageChooseOption" }>;
 
@@ -119,17 +138,20 @@ function optionsOf(listbox: Element): Opt[] {
   return [...deepAll('[role="option"]', listbox)].filter((o) => visible(o) && o.getAttribute("aria-disabled") !== "true").map((el) => ({ el, name: accessibleName(el) }));
 }
 
-/** Reads the options until two readings a settle apart agree and are not empty, or the wait ends. */
-async function settledOptions(listbox: () => Element | null): Promise<Opt[]> {
-  let last = "";
+/**
+ * Reads the options until two readings a settle apart agree, are not empty and come while the page shows no loading
+ * state (shared/choose.ts settles), or the wait ends: a list that queries as you type is read once its results are in.
+ */
+async function settledOptions(el: Element, f: Flavor, listbox: () => Element | null): Promise<Opt[]> {
+  let last: ListReading | null = null;
   const got = await until(() => {
     const lb = listbox();
     if (lb === null) return null;
     const opts = optionsOf(lb);
-    const sig = opts.map((o) => o.name).join("\u0000");
-    const same = opts.length > 0 && sig === last;
-    last = sig;
-    return same ? opts : null;
+    const now = { names: opts.map((o) => o.name), busy: loading(el, f, lb) };
+    const done = settles(last, now);
+    last = now;
+    return done ? opts : null;
   }, LIST_WAIT_MS);
   if (got !== null) return got;
   const lb = listbox();
@@ -189,15 +211,23 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
     const tidy = why.outcome !== "notAllowed" && why.outcome !== "excluded" && (await alive()) && check() === null;
     if (tidy) await restore();
     const detail = `${why.detail ?? why.outcome} (${stage}); ${tidy ? "Caret put the control back and stopped" : "Caret stopped without touching the control again"}`;
+    // The stop's choice says whether react-select's form value moved since Caret began (C1: the helper goes on past a
+    // stop only when it did not), not only whether one exists.
+    const stopChoice = (): Choice => choice(matches, { hiddenInput: hiddenAfterStop(hiddenBefore, hiddenValue(f)) });
     // No reading of a control that is no longer one Caret may read (it left, or turned into an excluded field): W1 review
     // round 2, #3. The list was opened and maybe filtered, so it may show what Caret typed: failed with no readings,
     // which the helper reads as "may have landed" and records for undo.
-    if (check() !== null) return answer("failed", detail, { choice: choice(matches) });
+    if (check() !== null) return answer("failed", detail, { choice: stopChoice() });
+    // React-select shows its chip, not its filter, as the value: filter text still in its field after the tidy is a
+    // change the readings would not show, so it is "may have landed" too (C1).
+    if (f.kind === "reactSelect" && textField !== null && filterBefore !== null && textField.value !== filterBefore) {
+      return answer("failed", `${detail}; the filter text Caret typed is still in the control`, { choice: stopChoice() });
+    }
     const now = shownValue(el, f);
     // A stop that left the filter text in the control (a revoke between filtering and the pick) changed what it shows,
     // so it is failed with that reading, never notAllowed, which would leave the change out of undo (W3 review #10).
     const outcome = why.outcome === "notAllowed" && now === before ? "notAllowed" : "failed";
-    return answer(outcome, detail, { readings: { before, afterInput: now, afterBlur: now, invalid: invalidNow(el), error: errorText(el) }, choice: choice(matches) });
+    return answer(outcome, detail, { readings: { before, afterInput: now, afterBlur: now, invalid: invalidNow(el), error: errorText(el) }, choice: stopChoice() });
   };
   const gate = async (stage: string): Promise<ActAnswer | null> => {
     if (!(await alive())) return answer("notAllowed", `the task's grant ended (before ${stage})`);
@@ -221,17 +251,33 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
     if (deepActiveElement() !== el && el instanceof HTMLElement) el.focus();
   }
   const findList = (): Element | null => namedListbox(el) ?? associatedNewListbox(el, f, listsBefore);
-  listbox = await until(findList, LIST_WAIT_MS);
-  if (listbox === null) return stopped(answer("failed", `no list that belongs to this control opened within ${LIST_WAIT_MS} ms`), "opening");
+  // A field that filters as you type may open its list only once it holds text (C1: F1's pickers, Ashby's location):
+  // after a short wait for a list the press opened, the filter is typed, and the list waited for again.
+  const types = typesToOpen(textField !== null, el.getAttribute("aria-autocomplete"));
+  listbox = await until(findList, types ? OPEN_WAIT_MS : LIST_WAIT_MS);
+  let typed = false;
+  if (listbox === null && types && textField !== null) {
+    const g = await gate("typing the filter");
+    if (g !== null) return stopped(g, "filtering");
+    typeInto(textField, verb.value);
+    typed = true;
+    listbox = await until(findList, LIST_WAIT_MS);
+  }
+  if (listbox === null) return stopped(answer("failed", `no list that belongs to this control opened within ${LIST_WAIT_MS} ms${typed ? " of typing the filter" : ""}`), typed ? "filtering" : "opening");
   const afterOpen = check();
   if (afterOpen !== null) return stopped(afterOpen, "after opening");
 
   // Stage 2: filter.
-  const g2 = await gate("typing the filter");
-  if (g2 !== null) return stopped(g2, "filtering");
-  if (textField !== null && el.getAttribute("aria-autocomplete") !== "none") typeInto(textField, verb.value);
+  if (!typed) {
+    const g2 = await gate("typing the filter");
+    if (g2 !== null) return stopped(g2, "filtering");
+    if (types && textField !== null) {
+      typeInto(textField, verb.value);
+      typed = true;
+    }
+  }
   const current = (): Element | null => (listbox = findList());
-  const options = await settledOptions(current);
+  const options = await settledOptions(el, f, current);
   const m = matchOptions(options, verb.value);
   const why = whyNoPick(m, verb.value);
   const named = (m.exact.length > 1 ? m.exact : m.partial).map((o) => o.name);
@@ -247,7 +293,12 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   if (again.exact.length !== 1 || again.exact[0]?.el !== pick.el) return stopped(answer("failed", "the list changed before the pick"), "picking", again.exact.map((o) => o.name));
   press(pick.el);
   const want = normalizeName(pick.name);
-  await until(() => (normalizeName(shownValue(el, f)) === want ? true : null), PICK_WAIT_MS);
+  // The list closing on the press, before any Escape of Caret's, is what shows an ARIA text field took the pick and
+  // does not just show the filter Caret typed (shared/choose.ts pickProblems).
+  const closed = (): boolean => expandedOf(el) === false || current() === null;
+  const typedAria = f.kind === "aria" && typed;
+  await until(() => (normalizeName(shownValue(el, f)) === want && (!typedAria || closed()) ? true : null), PICK_WAIT_MS);
+  const closedOnPick = closed();
   // A list that stays open after a pick (a multi-select, or closeMenuOnSelect off) is closed with Escape on the control.
   if (expandedOf(el) === true) {
     const g4 = await gate("closing the list");
@@ -271,10 +322,7 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   const expanded = expandedOf(el);
   const readings = { before, afterInput: afterPick, afterBlur, invalid: invalidNow(el), error: errorText(el) };
   const result = { readings, choice: choice([pick.name], { expanded, hiddenInput }) };
-  const problems: string[] = [];
-  if (normalizeName(afterBlur) !== want) problems.push(afterBlur === before ? "the control kept its old value" : `the control shows '${clean(afterBlur, 60)}'`);
-  if (hiddenInput === "unchanged") problems.push("react-select's form value did not change");
-  if (expanded === true) problems.push("the list is still open");
+  const problems = pickProblems({ flavor: f.kind, value: pick.name, before, afterBlur, hiddenInput, expanded, typedText: typed, closedOnPick });
   if (problems.length > 0) return answer("failed", problems.join("; "), result);
   return answer("ok", null, result);
 }
