@@ -130,7 +130,8 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
     if (top === undefined) throw new LlamaUnavailable("llama-server returned no token probabilities");
     const probs = new Map<string, number>();
     for (const t of top) probs.set(t.token, (probs.get(t.token) ?? 0) + Math.exp(t.logprob));
-    return { probs, evaluated: Number(r.tokens_evaluated ?? 0) - Number(r.tokens_cached ?? 0) };
+    // timings.prompt_n is the prompt tokens this completion evaluated, the cached prefix not counted.
+    return { probs, evaluated: Number((r.timings as { prompt_n?: number } | undefined)?.prompt_n ?? 0) };
   };
 
   /** Every label's probability, normalized over `labels`, read position by position (see the file's header). */

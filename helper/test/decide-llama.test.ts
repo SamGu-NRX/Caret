@@ -12,7 +12,7 @@ function server(dist: (prompt: string) => Record<string, number>) {
     if (url.endsWith("/apply-template")) return new Response(JSON.stringify({ prompt: `<user>${body.messages?.[1]?.content}</user><assistant>` }));
     completions.push({ prompt: body.prompt as string, grammar: body.grammar as string });
     const d = dist(body.prompt as string);
-    return new Response(JSON.stringify({ completion_probabilities: [{ top_logprobs: Object.entries(d).map(([token, p]) => ({ token, logprob: Math.log(p) })) }], tokens_evaluated: 10, tokens_cached: 4 }));
+    return new Response(JSON.stringify({ completion_probabilities: [{ top_logprobs: Object.entries(d).map(([token, p]) => ({ token, logprob: Math.log(p) })) }], timings: { prompt_n: 6 } }));
   }) as unknown as typeof fetch;
   return { fetchImpl, completions };
 }
