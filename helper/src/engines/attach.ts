@@ -5,7 +5,7 @@
 // identity (device and inode) and SHA-256, and the read checks both, plus that nothing changed while it read (W2
 // review #6). Nothing here takes a path from memory, a plan or a page: `read` has no path parameter.
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, type Stats } from "node:fs";
 import { basename, extname, isAbsolute } from "node:path";
 import { GRANT_MAX_MS, MAX_ATTACH_BYTES } from "../protocol.ts";
 
@@ -100,9 +100,17 @@ export class ConfirmedFiles {
 
   confirm(taskId: string, path: string, target: string): { ok: true } | { refused: string } {
     if (!isAbsolute(path)) return { refused: "the confirmed file has no absolute path" };
+    // P3 (lead decision): a path that is itself a symlink is refused, not followed. The preview names the link ("Resume.pdf,
+    // edited Tue"), and the bytes would come from whatever file it points at, which the user never saw named. W2 had
+    // followed one. A directory link above the file (macOS's /var, /tmp) is resolved below as before.
+    try {
+      if (lstatSync(path).isSymbolicLink()) return { refused: "the confirmed path is a link to another file" };
+    } catch {
+      return { refused: "the confirmed file cannot be read" };
+    }
     let real: string;
     try {
-      // The file the user saw, with any alias resolved now; read() then refuses a symlink put in its place later.
+      // The file the user saw, with any directory alias resolved now; read() then refuses a symlink put in its place later.
       real = realpathSync(path);
     } catch {
       return { refused: "the confirmed file cannot be read" };

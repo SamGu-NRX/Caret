@@ -58,6 +58,8 @@ const hello = { type: "pageHello" as const, v: 1 as const, extensionId: X, versi
 const commands = (sent: HelperToEngine[]) => sent.flatMap((m) => (m.type === "pageCommand" ? [m.verb] : []));
 
 describe("confirmed files", () => {
+  /** The one field each confirmation here is for. */
+  const T = ConfirmedFiles.target("page:eng1:7", "f0/form[apply]/button:resume~0");
   let dir: string;
   beforeEach(() => (dir = mkdtempSync(join(tmpdir(), "caret-attach-"))));
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -70,72 +72,83 @@ describe("confirmed files", () => {
   it("reads the confirmed file once, as the user named it, with its digest and bytes", () => {
     const bytes = Buffer.from("%PDF-1.4\nsynthetic resume\n");
     const files = new ConfirmedFiles();
-    expect(files.confirm("t1", file("Robin Resume.pdf", bytes))).toEqual({ ok: true });
-    const got = files.read("t1");
+    expect(files.confirm("t1", file("Robin Resume.pdf", bytes), T)).toEqual({ ok: true });
+    const got = files.read("t1", T);
     expect(got).toEqual({ name: "Robin Resume.pdf", type: "application/pdf", size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), data: bytes.toString("base64") });
-    expect(files.read("t1")).toEqual({ refused: "no file was confirmed for task t1" });
+    expect(files.read("t1", T)).toEqual({ refused: "no file was confirmed for task t1" });
   });
 
   it("refuses without a confirmation, for another task, after the grant's lifetime, and when the file changed", () => {
     let now = 0;
     const files = new ConfirmedFiles(() => now);
     const p = file("cv.docx", Buffer.from("one"));
-    expect(files.read("t1")).toEqual({ refused: "no file was confirmed for task t1" });
-    files.confirm("t1", p);
-    expect(files.read("t2")).toEqual({ refused: "no file was confirmed for task t2" });
+    expect(files.read("t1", T)).toEqual({ refused: "no file was confirmed for task t1" });
+    files.confirm("t1", p, T);
+    expect(files.read("t2", T)).toEqual({ refused: "no file was confirmed for task t2" });
     now = 120_001;
-    expect(files.read("t1")).toEqual({ refused: "the confirmation of the file expired" });
+    expect(files.read("t1", T)).toEqual({ refused: "the confirmation of the file expired" });
     now = 0;
-    files.confirm("t1", p);
+    files.confirm("t1", p, T);
     writeFileSync(p, "two!");
-    expect(files.read("t1")).toEqual({ refused: "the file changed after you confirmed it" });
-    files.confirm("t1", p);
+    expect(files.read("t1", T)).toEqual({ refused: "the file changed after you confirmed it" });
+    files.confirm("t1", p, T);
     utimesSync(p, new Date(1_000_000), new Date(1_000_000));
-    expect(files.read("t1")).toEqual({ refused: "the file changed after you confirmed it" });
+    expect(files.read("t1", T)).toEqual({ refused: "the file changed after you confirmed it" });
   });
 
   it("refuses another file put at the path, and the same file with other bytes, even with size and time kept", () => {
     const files = new ConfirmedFiles();
     const p = file("cv.pdf", Buffer.from("aaaa"));
     const t = statSync(p).mtime;
-    files.confirm("t1", p);
+    files.confirm("t1", p, T);
     const swap = file("swap.pdf", Buffer.from("bbbb"));
     utimesSync(swap, t, t);
     renameSync(swap, p);
-    expect(files.read("t1")).toEqual({ refused: "the file changed after you confirmed it" });
-    files.confirm("t2", p);
+    expect(files.read("t1", T)).toEqual({ refused: "the file changed after you confirmed it" });
+    files.confirm("t2", p, T);
     writeFileSync(p, "cccc");
     utimesSync(p, t, t);
-    expect(files.read("t2")).toEqual({ refused: "the file changed after you confirmed it" });
+    expect(files.read("t2", T)).toEqual({ refused: "the file changed after you confirmed it" });
   });
 
   it("refuses a relative path, a directory, a file over the cap, and a symlink planted after the confirmation", () => {
     const files = new ConfirmedFiles();
-    expect(files.confirm("t", "cv.pdf")).toEqual({ refused: "the confirmed file has no absolute path" });
-    expect(files.confirm("t", dir)).toEqual({ refused: "the confirmed path is not a file" });
+    expect(files.confirm("t", "cv.pdf", T)).toEqual({ refused: "the confirmed file has no absolute path" });
+    expect(files.confirm("t", dir, T)).toEqual({ refused: "the confirmed path is not a file" });
     const big = join(dir, "big.pdf");
     writeFileSync(big, Buffer.alloc(MAX_ATTACH_BYTES + 1));
-    expect(files.confirm("t", big)).toMatchObject({ refused: expect.stringContaining("Caret attaches files up to") });
+    expect(files.confirm("t", big, T)).toMatchObject({ refused: expect.stringContaining("Caret attaches files up to") });
     const p = file("cv.pdf", Buffer.from("cv"));
-    files.confirm("t", p);
+    files.confirm("t", p, T);
     unlinkSync(p);
     symlinkSync(file("secret.txt", Buffer.from("cv")), p);
-    expect(files.read("t")).toEqual({ refused: "the confirmed file cannot be opened" });
+    expect(files.read("t", T)).toEqual({ refused: "the confirmed file cannot be opened" });
+  });
+
+  it("gives the file only to the field it was confirmed for (H5 review #1)", () => {
+    const files = new ConfirmedFiles();
+    const p = join(dir, "cv.pdf");
+    writeFileSync(p, "abc");
+    files.confirm("t1", p, T);
+    expect(files.read("t1", ConfirmedFiles.target("page:eng1:7", "f0/form[apply]/textbox:email~0"))).toEqual({ refused: "the file was confirmed for another field" });
+    // The refusal used the confirmation up: the run gets one try.
+    expect(files.read("t1", T)).toEqual({ refused: "no file was confirmed for task t1" });
   });
 
   it("refuses a FIFO at once instead of waiting on it", () => {
     const fifo = join(dir, "resume.pdf");
     execFileSync("mkfifo", [fifo]);
-    expect(new ConfirmedFiles().confirm("t", fifo)).toEqual({ refused: "the confirmed path is not a file" });
+    expect(new ConfirmedFiles().confirm("t", fifo, T)).toEqual({ refused: "the confirmed path is not a file" });
   });
 
-  it("follows an alias at confirmation and gives the page the name the user saw", () => {
+  // P3 (lead decision) replaced W2's "follows an alias": the preview named the link, and the bytes were another file's.
+  it("refuses a path that is a link to another file, and nothing is confirmed", () => {
     const real = file("Resume-final-v3.pdf", Buffer.from("cv"));
     const alias = join(dir, "Resume.pdf");
     symlinkSync(real, alias);
     const files = new ConfirmedFiles();
-    files.confirm("t", alias);
-    expect(files.read("t")).toMatchObject({ name: "Resume.pdf", size: 2 });
+    expect(files.confirm("t", alias, T)).toEqual({ refused: "the confirmed path is a link to another file" });
+    expect(files.read("t", T)).toEqual({ refused: "no file was confirmed for task t" });
   });
 });
 
@@ -201,7 +214,7 @@ describe("page link: combobox and attach", () => {
     expect(commands(sent).filter((v) => v.kind === "pageAttachFile")).toEqual([]);
     const p = join(dir, "cv.pdf");
     writeFileSync(p, "abc");
-    files.confirm("t1", p);
+    files.confirm("t1", p, ConfirmedFiles.target("page:eng1:7", key));
     const done = await link.attachFile("page:eng1:7", key, "t1", files);
     expect(done.verb.outcome).toBe("ok");
     expect(done.page?.attached).toEqual({ via: "input", file: { name: "cv.pdf", size: 3 }, shown: true });
@@ -217,11 +230,12 @@ describe("page link: combobox and attach", () => {
     const files = new ConfirmedFiles();
     const p = join(dir, "cv.pdf");
     writeFileSync(p, "abc");
-    files.confirm("t1", p);
-    const r = await link.attachFile("page:eng1:7", "f0/form[apply]/textbox:email~0", "t1", files);
+    const email = "f0/form[apply]/textbox:email~0";
+    files.confirm("t1", p, ConfirmedFiles.target("page:eng1:7", email));
+    const r = await link.attachFile("page:eng1:7", email, "t1", files);
     expect(r.verb.outcome).toBe("axError");
     expect(commands(sent).filter((v) => v.kind === "pageAttachFile")).toEqual([]);
-    expect(files.read("t1")).toMatchObject({ name: "cv.pdf" });
+    expect(files.read("t1", ConfirmedFiles.target("page:eng1:7", email))).toMatchObject({ name: "cv.pdf" });
   });
 
   it("reads siteOff as not allowed", () => {

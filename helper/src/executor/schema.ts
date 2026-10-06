@@ -67,6 +67,13 @@ export const EndState = z.discriminatedUnion("kind", [
    */
   z.object({ kind: z.literal("handoff"), ...InWindow, why: z.enum(["outbound", "destructive", "money", "system", "unverifiable"]) }),
   /**
+   * The page's file control holds the file the user confirmed for this run (H5, lead decision 7). `wants` says which
+   * file in the user's words ("your resume"), for the slip and a hand-off. The executor attaches only through the
+   * page engine, and only the file confirmed for the task (engines/attach.ts); with no confirmation the step is the
+   * user's. It never holds beforehand, and nothing can undo it: a page may upload a file the moment it gets one.
+   */
+  z.object({ kind: z.literal("fileAttached"), ...InWindow, wants: z.string().min(1).max(80) }),
+  /**
    * D2-06: pressing `via` (a press, required) showed at least one editable field the window did not show right before
    * the press, and changed or removed none it did show; the window keeps its id and title. An event, not a state: it
    * never holds before the press, so a run never skips it. Only a goal plan writes it, for a press a registered
