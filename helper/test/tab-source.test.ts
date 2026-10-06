@@ -55,16 +55,19 @@ function modelWith(trail: [string, number][]): ScreenModel {
   return m;
 }
 
-/** A reader that records each read and answers with `answer`. */
-function fakeReader(answer: (windowId: string) => PageResult | null, off: string[] = []): TabReader & { reads: string[] } {
+/** A reader that records each read and answers with `answer`; `off` and `docs` are the live "Not on this site" list and each window's document. */
+function fakeReader(answer: (windowId: string) => PageResult | null, off: string[] = [], docs = new Map<string, string>()): TabReader & { reads: string[]; off: string[]; docs: Map<string, string> } {
   const reads: string[] = [];
   return {
     reads,
+    off,
+    docs,
     readText: async (w) => {
       reads.push(w);
       return answer(w);
     },
     sitesOff: () => off,
+    documentOf: (w) => docs.get(w) ?? "D1",
   };
 }
 
@@ -121,7 +124,7 @@ describe("TabSource: which tab is read (rules 1 and 2)", () => {
     const m = modelWith([[MAIL, 1000], [FORM, 2000]]);
     const s = source(m, fakeReader(() => ({ type: "pageResult", v: 1, id: "r", at: 0, outcome: "notAllowed", detail: "the tab navigated or reloaded since you left it" })));
     expect(await s.readFor(FORM, "f1")).toEqual({ refused: "refused" });
-    expect(s.view()).toBe(m);
+    expect(s.viewFor("f1")).toBe(m);
     const gone = source(m, fakeReader(() => null));
     expect(await gone.readFor(FORM, "f1")).toEqual({ refused: "noEngine" });
   });
@@ -135,7 +138,7 @@ describe("TabSource: which tab is read (rules 1 and 2)", () => {
     expect(s.holding()).toBe(MAIL);
     now = 4000 + LEFT_TAB_MS;
     expect(s.holding()).toBeNull();
-    expect(s.view()).toBe(m);
+    expect(s.viewFor("f1")).toBe(m);
     await Promise.resolve();
     expect(dropped).toEqual([MAIL]);
   });
@@ -149,6 +152,7 @@ describe("TabSource: which tab is read (rules 1 and 2)", () => {
         return ok();
       },
       sitesOff: () => [],
+      documentOf: () => "D1",
     });
     expect(await s.readFor(FORM, "f1")).toEqual({ refused: "moved" });
     expect(s.holding()).toBeNull();
@@ -173,7 +177,7 @@ describe("TabSource: the text expires and never enters the model (rule 6)", () =
     const m = modelWith([[MAIL, 1000], [FORM, 2000]]);
     const s = new TabSource({ model: m, reader: fakeReader(() => ok({ selection: ["Email: ines.vandermeer@example.org"] })), now: () => 3000, count: () => {}, dropped: () => {} });
     await s.readFor(FORM, "f1");
-    const v = s.view();
+    const v = s.viewFor("f1");
     const read = [...(v.windows.get(MAIL)?.nodes.values() ?? [])].filter((n) => n.subrole === PAGE_SUBROLE.readOnDemand);
     expect(read.map((n) => n.value)).toEqual(["Email: ines.vandermeer@example.org", ...MESSAGE.blocks]);
     expect(read.every((n) => n.role === "AXStaticText")).toBe(true);
@@ -186,7 +190,36 @@ describe("TabSource: the text expires and never enters the model (rule 6)", () =
     expect(s.holding()).toBe(MAIL);
     s.release("offer-1");
     expect(s.holding()).toBeNull();
-    expect([...(s.view().windows.get(MAIL)?.nodes.values() ?? [])].some((n) => n.subrole === PAGE_SUBROLE.readOnDemand)).toBe(false);
+    expect([...(s.viewFor("offer-1").windows.get(MAIL)?.nodes.values() ?? [])].some((n) => n.subrole === PAGE_SUBROLE.readOnDemand)).toBe(false);
+  });
+
+  it("is seen only by the fill that read it and the offers it made, never by another fill (P4 review)", async () => {
+    const m = modelWith([[MAIL, 1000], [FORM, 2000]]);
+    const s = new TabSource({ model: m, reader: fakeReader(() => ok()), now: () => 3000, count: () => {}, dropped: () => {} });
+    await s.readFor(FORM, "f1");
+    s.pass("f1", "offer-1");
+    expect(s.viewFor("f1")).not.toBe(m);
+    expect(s.viewFor("offer-1")).not.toBe(m);
+    // A second fill, refused its own read (its window just left was a note), reads the model alone.
+    expect(s.viewFor("f2")).toBe(m);
+    expect(s.holds("f2")).toBe(false);
+  });
+
+  it("reads afresh for every fill, and drops what it holds when its site is turned off or its tab shows another document (P4 review)", async () => {
+    const m = modelWith([[MAIL, 1000], [FORM, 2000]]);
+    const r = fakeReader(() => ok());
+    const s = new TabSource({ model: m, reader: r, now: () => 3000, count: () => {}, dropped: () => {} });
+    await s.readFor(FORM, "f1");
+    await s.readFor(FORM, "f2");
+    expect(r.reads).toEqual([MAIL, MAIL]);
+    r.off.push("https://mail.example.test");
+    expect(s.holding()).toBeNull();
+    expect(s.viewFor("f2")).toBe(m);
+    r.off.length = 0;
+    await s.readFor(FORM, "f3");
+    expect(s.holding()).toBe(MAIL);
+    r.docs.set(MAIL, "D2");
+    expect(s.holds("f3")).toBe(false);
   });
 
   it("holds one tab at a time: a read of another tab drops the first", async () => {
@@ -328,11 +361,89 @@ describe("one fill from the tab the user just left (rules 1 to 7, through the he
   });
 });
 
+describe("a fill whose tab text expires while Jev answers (rule 6, P4 review)", () => {
+  it("offers nothing from it, and asks Jev nothing more", async () => {
+    // Shares the two-tab setup by running the same steps in a fresh helper.
+    const dir = mkdtempSync(join(tmpdir(), "caret-p4-exp-"));
+    const store = new Store(join(dir, "data"));
+    let ahead = 0;
+    let calls = 0;
+    const published: HelperMessage[] = [];
+    let helper: Helper;
+    const sent: HelperToEngine[] = [];
+    /** The user has switched to the form tab: the mail tab is no longer the active one. */
+    let inForm = false;
+    const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m) => {
+      sent.push(m);
+      queueMicrotask(() => {
+        const reply = (id: string, r: object): void => void session.receive({ type: "pageResult", v: 1, id, at: Date.now(), ...r } as never);
+        if (m.type === "pageReadText") return reply(m.id, { outcome: "ok", detail: null, text: { ...MESSAGE, leftAt: Date.now() - 1000 } });
+        if (m.type === "pageCommand" && m.verb.kind === "pageWalk") {
+          const tab = m.verb.tabId === 3 ? tabSnap(3, MESSAGE.title, "https://mail.example.test", [ctl("m1", "search", "Search mail")], null, false) : tabSnap(7, "Apply", "http://127.0.0.1:4310", [ctl("e1", "text", "First name"), ctl("e2", "text", "Last name"), ctl("e3", "email", "Email")], { frameId: 0, id: "e1", selection: [0, 0] }, true);
+          session.receive({ ...tab, id: m.id, active: m.verb.tabId === 3 ? !inForm : true, inFocusedWindow: true });
+          return reply(m.id, { outcome: "ok", detail: null });
+        }
+      });
+      return true;
+    }, 500);
+    const host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) }, apply: (m) => void helper.handleReader(m), warn: () => {} });
+    const PICK: Record<string, string> = { "First name": "Ines", "Last name": "Vandermeer", Email: "ines.vandermeer@example.org" };
+    const picking = jevPickingText((_, ins) => PICK[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null, 0.95);
+    helper = new Helper({
+      store, shadow: false, allowBackgroundFocus: true, readerLink: host.link, calendar: null, now: () => Date.now() + ahead, tabReader: pageTabReader(host.registry), publish: (m) => void published.push(m), warn: () => {},
+      // The text's time runs out while Jev answers the first question.
+      askJev: async (req) => {
+        calls++;
+        ahead = LEFT_TAB_MS + 10;
+        return picking(req);
+      },
+    });
+    wirePageEngines({ host, helper, publish: () => {}, warn: () => {}, allowBackground: true });
+    host.registry.add(session);
+    session.receive(hello);
+    await new Promise((r) => setTimeout(r, 0));
+    try {
+      session.onFocus?.({ type: "pageFocus", v: 1, at: Date.now(), tabId: 3, frameId: 0 }, session);
+      await vi.waitFor(() => expect(helper.model.windows.get(MAIL)?.focused).toBe(true));
+      inForm = true;
+      session.onFocus?.({ type: "pageFocus", v: 1, at: Date.now(), tabId: 7, frameId: 0 }, session);
+      await vi.waitFor(() => expect(sent.some((m) => m.type === "pageReadText")).toBe(true));
+      await vi.waitFor(() => expect(calls).toBeGreaterThan(0));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(published.some((m) => m.type === "popup" || m.type === "fillProposal")).toBe(false);
+      // At most the one question already on its way when the text expired.
+      expect(calls).toBe(1);
+    } finally {
+      helper.shutdown();
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the text around the caret is not kept (item 7, P4 review)", () => {
+  it("reaches the one waiting for the walk, and the tab's kept snapshot holds none of it", async () => {
+    let session: EngineSession;
+    session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m) => {
+      if (m.type === "pageCommand") queueMicrotask(() => {
+        session.receive({ ...tabSnap(7, "Apply", "http://127.0.0.1:4310", [ctl("e1", "textarea", "Cover letter")], { frameId: 0, id: "e1", selection: [5, 5], text: { before: "Dear ", after: "", selection: "" } }, true), id: m.id, docs: { kind: "document", text: "on", field: { before: "Owner: ", after: "Ines", selection: "" } } });
+        session.receive({ type: "pageResult", v: 1, id: m.id, at: 1, outcome: "ok", detail: null });
+      });
+      return true;
+    }, 200);
+    session.receive(hello);
+    const a = await session.command({ kind: "pageWalk", tabId: 7 });
+    expect(a.snapshot?.focused?.text?.before).toBe("Dear ");
+    expect(session.tabs.get(7)?.focused).toEqual({ frameId: 0, id: "e1", selection: [5, 5] });
+    expect(session.tabs.get(7)?.docs).toEqual({ kind: "document", text: "on", field: null });
+  });
+});
+
 describe("pageTabReader", () => {
   it("asks only a live engine that said hello, for the tab the page window names", async () => {
     const sent: HelperToEngine[] = [];
     const s = new EngineSession({ engine: "eng1", browser: chrome, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m) => (sent.push(m), true), 50);
-    const r = pageTabReader({ session: (e) => (e === "eng1" ? s : undefined), sitesOff: () => [] });
+    const r = pageTabReader({ session: (e) => (e === "eng1" ? s : undefined), sitesOff: () => [], documentOf: () => null });
     expect(await r.readText("page:eng1:3")).toBeNull();
     s.receive(hello);
     void r.readText("page:eng1:3");

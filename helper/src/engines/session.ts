@@ -143,8 +143,11 @@ export class EngineSession {
         const p = this.pending.get(m.id);
         if (p === undefined) return `a snapshot for command ${m.id}, which nobody is waiting for`;
         p.snapshot = m;
-        this.tabs.set(m.tabId, m);
-        this.onSnapshot?.(m, this);
+        // P4 item 7: the text around the caret goes to the one waiting for this walk only; the tab's kept snapshot holds
+        // none of it, so the field's text is not kept past the walk that read it (P4 review).
+        const kept = withoutFieldText(m);
+        this.tabs.set(m.tabId, kept);
+        this.onSnapshot?.(kept, this);
         return null;
       }
       case "pageResult": {
@@ -187,4 +190,17 @@ export class EngineSession {
     this.pongs.clear();
     for (const w of this.helloWaiters.splice(0)) w(null);
   }
+}
+
+/**
+ * A snapshot without the text around the caret (focused.text, docs.field), as a tab's last walk is kept. Only those
+ * two go: whatever else a walk says about the focused field stays.
+ */
+export function withoutFieldText(s: PageSnapshot): PageSnapshot {
+  let focused = s.focused;
+  if (focused !== null && focused.text !== undefined) {
+    const { text: _dropped, ...rest } = focused;
+    focused = rest;
+  }
+  return { ...s, focused, ...(s.docs === undefined ? {} : { docs: { ...s.docs, field: null } }) };
 }

@@ -30,18 +30,31 @@ export interface TabReader {
   readText(windowId: string): Promise<PageResult | null>;
   /** "Not on this site" as the helper holds it now (EngineRegistry.sitesOff). */
   sitesOff(): readonly string[];
+  /** The page window's document as its last walk saw it (EngineRegistry.documentOf); null when no engine walked it. */
+  documentOf(windowId: string): string | null;
 }
 
 /** Why a fill got no text from the tab just left, for counts: never any of the page's text. */
 export type Refusal = "notAPage" | "notLeft" | "tooLong" | "noEngine" | "refused" | "siteOff" | "moved";
 
+/** Thrown into a fill that is still asking Jev after the text it read was dropped (rule 6); the fill then ends quietly. */
+export class TabTextExpired extends Error {
+  constructor() {
+    super("the text of the tab you left is no longer held");
+  }
+}
+
 interface Held {
   windowId: string;
   title: string;
   nodes: Node[];
+  /** Every frame's origin the text came from: a site turned off later drops it (rule 5). */
+  origins: string[];
+  /** The tab's document as the helper's last walk of it saw it when it was read: another one drops it. */
+  document: string | null;
   /** When it is dropped whatever holds it: LEFT_TAB_MS after the user left the tab. */
   until: number;
-  /** The fills and offers it is held for; dropped when the last lets go. */
+  /** The fill, and then the offers, it was read for; only they see it, and it is dropped when the last lets go. */
   owners: Set<string>;
   timer: NodeJS.Timeout;
 }
@@ -52,7 +65,7 @@ export interface TabSourceOptions {
   now: () => number;
   /** Counts an outcome by name (Store.count). */
   count: (metric: string) => void;
-  /** Told when held text is dropped, so offers made from it are checked again (Helper.checkFills). */
+  /** Told when held text is dropped, so what was made from it is checked again or let go (Helper.tabTextDropped). */
   dropped: (windowId: string) => void;
 }
 
@@ -72,7 +85,8 @@ export class TabSource {
 
   /**
    * Reads the tab the user left for the form in `formWindowId` and holds its text for `owner`, when rules 1, 2 and 5
-   * allow; otherwise reads nothing. Returns the page window read, or why not.
+   * allow; otherwise reads nothing. Every fill reads afresh: text read for another fill is never handed on, since the
+   * site may have been turned off or the tab may have moved since. Returns the page window read, or why not.
    */
   async readFor(formWindowId: string, owner: string): Promise<{ windowId: string } | { refused: Refusal }> {
     const r = await this.read(formWindowId, owner);
@@ -87,11 +101,7 @@ export class TabSource {
     const leftAt = model.leftAt(left);
     if (leftAt === null) return { refused: "notLeft" };
     if (this.opts.now() - leftAt > LEFT_TAB_MS) return { refused: "tooLong" };
-    this.expire();
-    if (this.held?.windowId === left) {
-      this.held.owners.add(owner);
-      return { windowId: left };
-    }
+    const document = reader.documentOf(left);
     const res = await reader.readText(left);
     if (res === null) return { refused: "noEngine" };
     if (res.outcome !== "ok" || res.text === undefined) return { refused: res.outcome === "siteOff" ? "siteOff" : "refused" };
@@ -101,7 +111,7 @@ export class TabSource {
     const off = new Set(reader.sitesOff());
     if (t.frames.some((f) => off.has(f.origin))) return { refused: "siteOff" };
     // Rule 1 again: the user may have moved on while it was read; rule 2 by the worker's clock too.
-    if (model.windowBefore(formWindowId) !== left || model.leftAt(left) !== leftAt) return { refused: "moved" };
+    if (model.windowBefore(formWindowId) !== left || model.leftAt(left) !== leftAt || reader.documentOf(left) !== document) return { refused: "moved" };
     const until = Math.min(leftAt, t.leftAt) + LEFT_TAB_MS;
     if (now >= until) return { refused: "tooLong" };
     // A view can only add nodes to a window the model has; one that closed while it was read is not brought back.
@@ -111,29 +121,29 @@ export class TabSource {
     this.drop();
     const timer = setTimeout(() => this.drop(), until - now);
     timer.unref();
-    this.held = { windowId: left, title: t.title, nodes: readNodes(t, w.nodes.has("f0")), until, owners: new Set([owner]), timer };
+    this.held = { windowId: left, title: t.title, nodes: readNodes(t, w.nodes.has("f0")), origins: t.frames.map((f) => f.origin), document, until, owners: new Set([owner]), timer };
     return { windowId: left };
   }
 
   /**
-   * The model as fill reads it: with the held text as static text of its tab's window while it is held, the model
-   * itself otherwise. Built anew for each use, so it never outlives the text.
+   * The model as `owner` (a fill, or the offer it made) reads it: with the text it read as static text of its tab's
+   * window while that text is held for it, the model itself otherwise. Another fill never sees it (P4 review: a fill
+   * refused a read was given the text another fill held). Built anew for each use, so it never outlives the text.
    */
-  view(): ScreenModel {
-    this.expire();
-    const h = this.held;
-    if (h === null) return this.opts.model;
-    if (!this.opts.model.windows.has(h.windowId)) {
-      this.drop();
-      return this.opts.model;
-    }
+  viewFor(owner: string): ScreenModel {
+    const h = this.live();
+    if (h === null || !h.owners.has(owner)) return this.opts.model;
     return this.opts.model.withNodes(new Map([[h.windowId, { nodes: h.nodes, title: h.title === "" ? null : h.title }]]));
+  }
+
+  /** Whether `owner` still holds text it read. */
+  holds(owner: string): boolean {
+    return this.live()?.owners.has(owner) === true;
   }
 
   /** The page window whose text is held now, if any. */
   holding(): string | null {
-    this.expire();
-    return this.held?.windowId ?? null;
+    return this.live()?.windowId ?? null;
   }
 
   /** `to` holds the text `from` holds (a fill's offer, once published, holds what the fill read). */
@@ -148,12 +158,22 @@ export class TabSource {
     if (h.owners.size === 0) this.drop();
   }
 
-  /** Drops held text whose time ran out. Its timer does the same; this covers a clock the helper was given. */
-  expire(): void {
-    if (this.held !== null && this.opts.now() >= this.held.until) this.drop();
+  /**
+   * The held text, after dropping it if it may no longer be kept: its time ran out (its timer does the same; this
+   * covers a clock the helper was given), one of its sites was turned off, the helper saw its tab hold another
+   * document, or its window closed (P4 review: held text outlived a site turned off).
+   */
+  private live(): Held | null {
+    const h = this.held;
+    if (h === null) return null;
+    const off = new Set(this.opts.reader.sitesOff());
+    const stale =
+      this.opts.now() >= h.until || h.origins.some((o) => off.has(o)) || this.opts.reader.documentOf(h.windowId) !== h.document || !this.opts.model.windows.has(h.windowId);
+    if (stale) this.drop();
+    return this.held;
   }
 
-  /** Drops the held text now, whoever holds it (a new reader session, a helper shutdown, or its time ran out). */
+  /** Drops the held text now, whoever holds it (a new reader session, a helper shutdown, or it may no longer be kept). */
   drop(): void {
     const h = this.held;
     if (h === null) return;
@@ -162,7 +182,7 @@ export class TabSource {
     // The privacy ledger keeps one line table per window id, holding the lines it was asked about, and caches which
     // texts each window holds; both were filled from this view, so they go with it. They are rebuilt from the model.
     forgetWindows();
-    // Later, not here: a drop can come from inside a recheck that reads the view (expire), which must finish first.
+    // Later, not here: a drop can come from inside a recheck that reads the view, which must finish first.
     queueMicrotask(() => this.opts.dropped(h.windowId));
   }
 }
@@ -174,7 +194,7 @@ export class TabSource {
 export const READ_TIMEOUT_MS = 2500;
 
 /** The page engines as TabSource reads them: the live session that shows a page window, and "Not on this site". */
-export function pageTabReader(registry: { session(engine: string): EngineSession | undefined; sitesOff(): readonly string[] }): TabReader {
+export function pageTabReader(registry: { session(engine: string): EngineSession | undefined; sitesOff(): readonly string[]; documentOf(windowId: string): string | null }): TabReader {
   return {
     readText: async (windowId) => {
       const w = parsePageWindow(windowId);
@@ -183,5 +203,6 @@ export function pageTabReader(registry: { session(engine: string): EngineSession
       return s.readText(w.tabId, READ_TIMEOUT_MS);
     },
     sitesOff: () => registry.sitesOff(),
+    documentOf: (windowId) => registry.documentOf(windowId),
   };
 }
