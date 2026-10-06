@@ -1,0 +1,1 @@
+C1: the candidate generator's 15 ms wall-clock budget makes in-process fill probes load-dependent: the corpus probe swung 45-62 proposed under load avg ~30; compare runs only at like load, or pass budgetMs Infinity.
