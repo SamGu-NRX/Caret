@@ -48,6 +48,11 @@ export interface DonePress {
 export class GoalError extends Error {
   readonly code: GoalRefusal;
   readonly says: string;
+  /**
+   * I6: the plan read the tab the user left, so `says` and the message may quote its text (a hand-off's value): the
+   * user is told, and logs name the code only (P4 rule 6).
+   */
+  fromTab = false;
   constructor(code: GoalRefusal, says: string, detail?: string) {
     super(detail === undefined ? says : `${says} (${detail})`);
     this.code = code;

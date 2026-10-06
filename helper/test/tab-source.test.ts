@@ -222,6 +222,18 @@ describe("TabSource: the text expires and never enters the model (rule 6)", () =
     expect(s.holds("f3")).toBe(false);
   });
 
+  it("lets no ambient read take the text a pinned owner holds; an explicit one still may (I6 review)", async () => {
+    const m = modelWith([[MAIL, 1000], [FORM, 2000]]);
+    const r = fakeReader(() => ok());
+    const s = new TabSource({ model: m, reader: r, now: () => 3000, count: () => {}, dropped: () => {}, pinned: (o) => o === "goal-1" });
+    await s.readFor(FORM, "goal-1");
+    expect(await s.readFor(FORM, "fill:2", { ambient: true })).toEqual({ refused: "pinned" });
+    expect(s.holds("goal-1")).toBe(true);
+    expect(s.holds("fill:2")).toBe(false);
+    expect(await s.readFor(FORM, "fill:3")).toEqual({ windowId: MAIL });
+    expect(s.holds("goal-1")).toBe(false);
+  });
+
   it("holds one tab at a time: a read of another tab drops the first", async () => {
     const m = modelWith([[MAIL, 1000], [FORM, 2000], ["page:eng1:4", 2500], ["page:eng1:5", 2600]]);
     const s = new TabSource({ model: m, reader: fakeReader((w) => ok({ tabId: Number(w.split(":")[2]) })), now: () => 3000, count: () => {}, dropped: () => {} });

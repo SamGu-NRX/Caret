@@ -398,6 +398,10 @@ export class Helper {
   /** P4: the text of the tab the user just left, held for a fill and its offer (engines/tab-source.ts); null without page engines. */
   private readonly tabSource: TabSource | null;
   private fillSeq = 0;
+  /** I6: goals whose page plan is being made, by goal id, with the page window it plans. */
+  private readonly pagePlanning = new Map<string, string>();
+  /** I6: goals whose plan read the tab the user left, by goal id, with that tab's window. */
+  private readonly tabGoals = new Map<string, string>();
   /**
    * Each fill request in flight, with every focus in an editable field of the app the user is in since
    * it began, so a pop-up whose Jev answer arrives late can see whether one of them left the form.
@@ -470,7 +474,7 @@ export class Helper {
     this.tabSource =
       opts.tabReader === undefined
         ? null
-        : new TabSource({ model: this.model, reader: opts.tabReader, now: this.now, count: (m) => opts.store.count(m, 1), dropped: (id, owners) => this.tabTextDropped(id, owners) });
+        : new TabSource({ model: this.model, reader: opts.tabReader, now: this.now, count: (m) => opts.store.count(m, 1), dropped: (id, owners) => this.tabTextDropped(id, owners), pinned: (owner) => this.goalHolds(owner) });
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     const jev = opts.askJev;
     // Recorded once the request has gone and been answered, or as failed: a client that throws before
@@ -606,7 +610,7 @@ export class Helper {
       aboutNow: (id) => this.aboutNow(id),
       // I6: a page goal's sources may be the tab the user left, which its plan read and holds until the goal ends.
       sourceModel: (goalId) => this.fillModel(goalId),
-      ended: (goalId) => this.tabSource?.release(goalId),
+      ended: (goalId) => this.goalEnded(goalId),
       // P2: a page goal's one read of its page before it ends (engines/page-link.ts no longer walks after each write).
       walk: async (windowId) => {
         const w = this.model.windows.get(windowId);
@@ -988,6 +992,10 @@ export class Helper {
       this.opts.store.count(`fill.load_held_${held[0]}`, 1, now);
       return;
     }
+    if (this.goalOnPage(windowId)) {
+      this.opts.store.count("fill.load_held_goal", 1, now);
+      return;
+    }
     const w = this.model.windows.get(windowId);
     if (w === undefined) return;
     const v = readyOnLoad(this.model, w, this.aboutValues(), { excluded: this.opts.pageContext?.(windowId)?.excluded ?? {} });
@@ -1223,11 +1231,11 @@ export class Helper {
       }
       if (!(e instanceof GoalError)) throw e;
       this.opts.store.count(`goal.refused_${e.code}`, 1);
-      this.opts.warn?.(`goal ${goalId}: ${e.message}`);
+      this.opts.warn?.(`goal ${goalId}: ${e.fromTab ? `refused (${e.code}); not logged, since it may quote the tab you left` : e.message}`);
       return refuse(e.says.charAt(0).toUpperCase() + e.says.slice(1));
     } finally {
       // I6: a goal that was never offered lets go of what its plan read of the tab the user left.
-      if (this.goals.get(goalId) === null) this.tabSource?.release(goalId);
+      if (this.goals.get(goalId) === null) this.goalEnded(goalId);
     }
   }
 
@@ -1302,16 +1310,48 @@ export class Helper {
     // for this goal alone until it ends (GoalRuns ended); its acceptance and run check those sources in the same view
     // (GoalRuns sourceModel). A plan that is never offered lets the text go.
     const tab = this.askTabRead(goalId, ask);
+    this.pagePlanning.set(goalId, windowId);
     try {
       const plan = await this.planPageWith(await tab.fillModel(windowId), tab.ask, pageDocument, goalId, instruction, windowId, page, more);
       if (tab.expired()) throw new GoalError("nothingToDo", SAYS.tabExpired);
+      const from = tab.windowRead();
+      if (from !== null) this.tabGoals.set(goalId, from);
       return plan;
     } catch (e) {
+      // Read before the release below, which would make any read text look dropped.
+      const gone = tab.expired();
       this.tabSource?.release(goalId);
       // Rule 6: a Jev call refused because the text was dropped (askTabRead) is said as that, not as a model failure.
-      if (tab.expired()) throw new GoalError("nothingToDo", SAYS.tabExpired);
+      if (gone) throw new GoalError("nothingToDo", SAYS.tabExpired);
+      if (e instanceof GoalError && tab.windowRead() !== null) e.fromTab = true;
       throw e;
+    } finally {
+      this.pagePlanning.delete(goalId);
     }
+  }
+
+  /** I6: a page window a goal is planning (pagePlan), or one whose goal waits for its acceptance or runs. */
+  private goalOnPage(windowId: string): boolean {
+    return [...this.pagePlanning.values()].includes(windowId) || this.goals.previewing(windowId);
+  }
+
+  /** I6: whether `owner` is a goal that is planning, waiting or running: its tab text is pinned (TabSource.pinned). */
+  private goalHolds(owner: string): boolean {
+    if (this.pagePlanning.has(owner)) return true;
+    const g = this.goals.get(owner);
+    return g !== null && (g.state === "awaiting" || g.state === "running");
+  }
+
+  /**
+   * I6: a goal ended (or a plan made for it was never offered). What it held of the tab the user left goes, and once the
+   * goal's own end has been worked out, the values its plan took from that tab are forgotten from the plan it keeps.
+   */
+  private goalEnded(goalId: string): void {
+    this.tabSource?.release(goalId);
+    const from = this.tabGoals.get(goalId);
+    if (from === undefined) return;
+    this.tabGoals.delete(goalId);
+    queueMicrotask(() => this.goals.forgetSource(goalId, from));
   }
 
   private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string> }): Promise<GoalPlan> {
@@ -1371,7 +1411,7 @@ export class Helper {
       return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, session: r.session, attached, ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
     } catch (e) {
       if (!(e instanceof GoalError)) throw e;
-      this.opts.warn?.(`goal ${goalId}: no fresh page plan: ${e.message}`);
+      this.opts.warn?.(`goal ${goalId}: no fresh page plan: ${e.fromTab ? `${e.code}; not logged, since it may quote the tab you left` : e.message}`);
       return null;
     }
   }
@@ -1546,9 +1586,10 @@ export class Helper {
    * view only this offer sees; a failed read leaves the model as it is. Once it read, `ask` refuses every later Jev call
    * after the text was dropped (rule 6, as fill's askHere), and `expired` says it was dropped.
    */
-  private askTabRead(offerKey: string, ask: NonNullable<Helper["ask"]>): { fillModel: (formWindowId: string) => Promise<ScreenModel>; ask: NonNullable<Helper["ask"]>; expired: () => boolean } {
+  private askTabRead(offerKey: string, ask: NonNullable<Helper["ask"]>): { fillModel: (formWindowId: string) => Promise<ScreenModel>; ask: NonNullable<Helper["ask"]>; expired: () => boolean; windowRead: () => string | null } {
     let tried = false;
     let read = false;
+    let windowRead: string | null = null;
     const held = (): boolean => this.tabSource?.holds(offerKey) === true;
     return {
       fillModel: async (formWindowId) => {
@@ -1556,10 +1597,12 @@ export class Helper {
         tried = true;
         const r = await this.tabSource.readFor(formWindowId, offerKey).catch(() => ({ refused: "refused" as const }));
         read = "windowId" in r;
+        windowRead = "windowId" in r ? r.windowId : null;
         return this.fillModel(offerKey);
       },
       ask: (req) => (!read ? ask(req) : held() ? ask({ ...req, retry429: false }) : Promise.reject(new TabTextExpired())),
       expired: () => read && !held(),
+      windowRead: () => windowRead,
     };
   }
 
@@ -2347,6 +2390,12 @@ export class Helper {
       return null;
     }
     if (!explicit && this.fillCovered(formKey, w, key, now)) return null;
+    // I6: a page the user's Ask is planning, previewing or filling as a goal is that goal's: an ambient Fill all would
+    // offer the same fields twice, and its read of the tab the user left would take the text the goal's plan holds.
+    if (!explicit && this.goalOnPage(windowId)) {
+      store.count("fill.held_goal", 1, now);
+      return null;
+    }
     this.inflight.add(formKey);
     const session = this.readerSession;
     const focuses: { windowId: string; key: string }[] = [];
@@ -2355,7 +2404,7 @@ export class Helper {
     // fill ends here or passes it to the offer it made.
     const reading = `fill:${++this.fillSeq}`;
     try {
-      const read = await this.tabSource?.readFor(windowId, reading);
+      const read = await this.tabSource?.readFor(windowId, reading, { ambient: !explicit });
       const fromTab = read !== undefined && "windowId" in read;
       // Rule 6: once the text this fill read is dropped (its time ran out, its site was turned off), Jev hears nothing
       // more of this fill and nothing is offered from it.

@@ -226,8 +226,48 @@ describe("an Ask reads the tab the user just left (I6)", () => {
       expect(tabs.form.map((c) => c.value)).toEqual(["Ines", "Vandermeer", "ines.vandermeer@example.org"]);
       await helper.goals.idle();
       expect(tabSource().holding()).toBeNull();
-      // The plan keeps fill's values and spans, never the tab's whole text (page-planner.ts sources).
-      expect(JSON.stringify([...(helper.goals.planOf(s.goalId)?.inventory.texts.values() ?? [])])).not.toMatch(/Gareth/);
+      // The plan keeps fill's values and spans, never the tab's whole text (page-planner.ts sources); once the goal has
+      // ended and let the text go, the plan it keeps forgets those values too (review finding 2).
+      await new Promise((x) => setTimeout(x, 0));
+      const kept = JSON.stringify(helper.goals.planOf(s.goalId), (_, v: unknown) => (v instanceof Map ? [...v.entries()] : v));
+      expect(kept).not.toMatch(/Gareth|Vandermeer|ines\.vandermeer|Ines/);
+      expect(helper.goals.planOf(s.goalId)?.segments[0]?.steps.map((x) => x.says)).toEqual(["First name: …", "Last name: …", "Email: …", "The rest is yours"]);
+    });
+
+    it("forgets the values from the tab in a preview that stopped untaken, and logs no refusal that could quote it", async () => {
+      const s = (await askGoal()) as Segment;
+      host.registry.setSitesOff(["https://mail.example.test"]);
+      expect(tabSource().holding()).toBeNull();
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      const kept = JSON.stringify(helper.goals.planOf(s.goalId), (_, v: unknown) => (v instanceof Map ? [...v.entries()] : v));
+      expect(kept).not.toMatch(/Vandermeer|ines\.vandermeer/);
+      expect(warnings.join("\n")).not.toMatch(/Vandermeer|Gareth/);
+    });
+
+    it("logs a page plan's refusal by its code alone when the plan read the tab", async () => {
+      // Jev is unsure of every value: the planner refuses with a sentence that may quote what it read.
+      (helper as unknown as { ask: AskJev }).ask = async (req) => ({ answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "none", confidence: 0.2 }])), costUsd: 0, latencyMs: 0 }) as never;
+      const g = await askGoal();
+      // Said as the planner's own refusal, not as text that expired (the release in pagePlan's catch comes after that check).
+      expect(g).toMatchObject({ event: "stopped", says: "Caret found nothing to put in First name, Last name or Email." });
+      expect(tabs.reads).toEqual([3]);
+      expect(warnings.some((l) => /refused \(nothingToDo\); not logged, since it may quote the tab you left/.test(l))).toBe(true);
+      expect(tabSource().holding()).toBeNull();
+    });
+
+    it("keeps an ambient Fill all off the page while the goal's preview waits, so the goal keeps its text (review finding 3)", async () => {
+      const s = (await askGoal()) as Segment;
+      helper.model.frontmostPid = chrome.pid;
+      // The user clicks into the form while reading the preview.
+      tabs.session.onFocus?.({ type: "pageFocus", v: 1, at: Date.now(), tabId: 7, frameId: 0 }, tabs.session);
+      for (let i = 0; i < 20; i++) await new Promise((x) => setTimeout(x, 5));
+      await helper.routedSettled;
+      expect(tabs.reads).toEqual([3]);
+      expect(tabSource().holds(s.goalId)).toBe(true);
+      expect(published.some((m) => m.type === "goalProgress" && m.event === "stopped")).toBe(false);
+      store.flush();
+      expect(store.counts()["fill.held_goal"]).toBeGreaterThan(0);
     });
 
     it("refuses the acceptance after the text expired: the sources recheck finds the values gone, and nothing is written", async () => {

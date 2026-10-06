@@ -35,7 +35,7 @@ export interface TabReader {
 }
 
 /** Why a fill got no text from the tab just left, for counts: never any of the page's text. */
-export type Refusal = "notAPage" | "notLeft" | "tooLong" | "noEngine" | "refused" | "siteOff" | "moved";
+export type Refusal = "notAPage" | "notLeft" | "tooLong" | "noEngine" | "refused" | "siteOff" | "moved" | "pinned";
 
 /** Thrown into a fill that is still asking Jev after the text it read was dropped (rule 6); the fill then ends quietly. */
 export class TabTextExpired extends Error {
@@ -70,6 +70,11 @@ export interface TabSourceOptions {
    * from it is checked again or let go (Helper.tabTextDropped).
    */
   dropped: (windowId: string, owners: readonly string[]) => void;
+  /**
+   * I6: owners whose text an ambient read may not replace (helper.ts: a goal the user's Ask planned, while it is planning,
+   * waiting for its acceptance or running). Rule 1 still holds: such a read gets nothing rather than a second tab.
+   */
+  pinned?: (owner: string) => boolean;
 }
 
 /** The static-text nodes a read becomes: the selection's paragraphs first, then the main region's, under the top frame. */
@@ -91,13 +96,13 @@ export class TabSource {
    * allow; otherwise reads nothing. Every fill reads afresh: text read for another fill is never handed on, since the
    * site may have been turned off or the tab may have moved since. Returns the page window read, or why not.
    */
-  async readFor(formWindowId: string, owner: string): Promise<{ windowId: string } | { refused: Refusal }> {
-    const r = await this.read(formWindowId, owner);
+  async readFor(formWindowId: string, owner: string, o: { ambient?: boolean } = {}): Promise<{ windowId: string } | { refused: Refusal }> {
+    const r = await this.read(formWindowId, owner, o.ambient === true);
     this.opts.count("refused" in r ? `tabtext.refused_${r.refused}` : "tabtext.read");
     return r;
   }
 
-  private async read(formWindowId: string, owner: string): Promise<{ windowId: string } | { refused: Refusal }> {
+  private async read(formWindowId: string, owner: string, ambient: boolean): Promise<{ windowId: string } | { refused: Refusal }> {
     const { model, reader } = this.opts;
     const left = model.windowBefore(formWindowId);
     if (left === null || parsePageWindow(left) === null) return { refused: "notAPage" };
@@ -120,6 +125,9 @@ export class TabSource {
     // A view can only add nodes to a window the model has; one that closed while it was read is not brought back.
     const w = model.windows.get(left);
     if (w === undefined) return { refused: "moved" };
+    // I6: an ambient fill's read, finished after a goal the user asked for took the text, leaves that goal's text alone.
+    const now0 = this.live();
+    if (ambient && now0 !== null && [...now0.owners].some((x) => this.opts.pinned?.(x) === true)) return { refused: "pinned" };
     // Rule 1: one tab. Whatever another fill held is dropped first.
     this.drop();
     const timer = setTimeout(() => this.drop(), until - now);

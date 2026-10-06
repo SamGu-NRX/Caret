@@ -32,7 +32,7 @@ import { formControls } from "../fill/controls.ts";
 import { fieldName } from "../planner/planner.ts";
 import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
-import { executable, segmentDigest, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal } from "./plan.ts";
+import { executable, segmentDigest, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
 import { effectKey, type DonePress } from "./lower.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
@@ -987,6 +987,52 @@ export class GoalRuns {
     const seg = run.plan.segments[run.cursor.segment] as GoalSegment;
     const gone = seg.steps.find((s) => s.value !== null && s.value.source !== null && !this.sourceShows(run, s.value));
     if (gone !== undefined) this.stop(run, "sourceChanged", null, `the text Caret read for '${gone.target.label}' from the tab you left has expired, so this plan can't run`);
+  }
+
+  /**
+   * I6: whether a goal for page window `windowId` is waiting for its acceptance or running. The ambient Fill all and ready
+   * on load leave that page to it (helper.ts goalOnPage), so neither reads the tab the goal's plan holds.
+   */
+  previewing(windowId: string): boolean {
+    for (const r of this.runs.values()) if ((r.state === "awaiting" || r.state === "running") && r.plan.page?.windowId === windowId) return true;
+    return false;
+  }
+
+  /**
+   * I6 (P4 rule 6): a goal that has ended keeps its plan (planOf, receipts, carry), so the values and spans its plan took
+   * from `windowId`, the tab the user left, are forgotten from it once the text that gave them is let go: those values,
+   * the step sentences and slots that quote them, and the warnings and left items that quote them. Receipts and keys
+   * stay. Only a goal that has ended: a live one still needs them to run and to check its sources.
+   */
+  forgetSource(goalId: string, windowId: string): void {
+    const run = this.runs.get(goalId);
+    if (run === undefined || (run.state !== "finished" && run.state !== "stopped")) return;
+    const quoted = new Set<string>();
+    const fromTab = (v: ValueBinding | null): boolean => v !== null && (v.source?.windowId === windowId || (v.origin.kind === "span" && v.origin.source === windowId));
+    const blank = (v: ValueBinding): ValueBinding => {
+      for (const t of [v.text, v.fill?.span ?? "", v.fill?.context ?? ""]) if (t.trim() !== "") quoted.add(t);
+      return { ...v, text: "", display: "", ...(v.fill === undefined ? {} : { fill: { ...v.fill, span: "", context: null } }) };
+    };
+    const plan = structuredClone(run.plan);
+    const values = new Map([...plan.inventory.values].map(([k, v]) => [k, fromTab(v) ? blank(v) : v]));
+    const texts = new Map([...plan.inventory.texts].filter(([k]) => k !== windowId));
+    for (const seg of plan.segments) {
+      for (const s of seg.steps) {
+        if (s.value === null || !fromTab(s.value)) continue;
+        s.value = blank(s.value);
+        if (s.writes !== null) s.writes = "";
+      }
+    }
+    const scrub = (x: string): string => [...quoted].sort((a, b) => b.length - a.length).reduce((a, t) => a.split(t).join("…"), x);
+    for (const seg of plan.segments) {
+      for (const s of seg.steps) s.says = scrub(s.says);
+      seg.slots = Object.fromEntries(Object.entries(seg.slots).map(([k, v]) => [k, seg.plan.sources?.[k] === windowId ? "" : scrub(v)]));
+    }
+    const next: GoalPlan = { ...plan, inventory: { ...plan.inventory, values, texts }, warnings: plan.warnings.map(scrub), left: plan.left.map((l) => ({ ...l, says: scrub(l.says) })) };
+    for (const seg of next.segments) deepFreeze(seg);
+    run.plan = next;
+    run.owed = run.owed.map((l) => ({ ...l, says: scrub(l.says) }));
+    for (const c of this.carries.values()) if (c.goalId === goalId) c.owed = c.owed.map((l) => ({ ...l, says: scrub(l.says) }));
   }
 
   /** Previews not accepted in time stop. Called on the helper's tick. */
