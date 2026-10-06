@@ -1,0 +1,1 @@
+T2: writing fixes are OfferKind.writing; a mark is bound to its checked sentence (WritingMarks), so any edit in that sentence (or its '. ' before) drops it; range edits are AX-only (select, revalidate, AXSelectedText, caret back, verify), never paste.

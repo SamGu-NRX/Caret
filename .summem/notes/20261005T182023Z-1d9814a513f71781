@@ -1,1 +1,0 @@
-H8: in a process running when Calendar access was granted, EKEventStore.authorizationStatus flapped notDetermined/fullAccess (VM) while a new store's calendars(for:) read fine; host and reader probe a store when status says notDetermined (no prompt).

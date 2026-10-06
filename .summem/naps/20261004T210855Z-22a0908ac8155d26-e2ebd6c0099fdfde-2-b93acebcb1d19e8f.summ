@@ -1,1 +1,0 @@
-Push v2/* only to remote sam (SamGu-NRX/Caret); origin is the team hackathon repo. Ask intents use INTENT_ROUTE (gpt-oss-120b), plan programs WRITER_ROUTE (qwen3.8, ~1,000 output tokens/min, 200k/day on Groq); gpt-oss strict json_schema can 400.

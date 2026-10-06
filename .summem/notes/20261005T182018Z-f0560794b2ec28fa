@@ -1,1 +1,0 @@
-H8: since D2-03 an event sentence whose time leaves AM/PM open ('Thursday at 3') makes no event card; use 'at 3pm'. onscreen_acceptance.py still types 'at 3'. A card from a time with no end asks how long (30 min first, Tab takes it).

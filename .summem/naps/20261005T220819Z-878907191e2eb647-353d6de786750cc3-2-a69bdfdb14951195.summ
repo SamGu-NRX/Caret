@@ -1,0 +1,1 @@
+P2: page-link patches a written control and walks once TRAILING_WALK_MS after the last act. A page Ask is planned by page-planner.ts with no writer; gate 'fill' is marked by identity, so propose refuses a structuredClone'd plan.

@@ -1,1 +1,0 @@
-P2: an Ask about a page (goals:true) comes back as AskGoal.page and is planned by goals/page-planner.ts with no writer; its steps are gate 'fill', which only lowering marks (gates.ts markFilled, by identity), so GoalRuns.propose refuses a structuredClone'd page plan.

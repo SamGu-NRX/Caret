@@ -1,1 +1,0 @@
-H10: in the rig guest Mail has no account: opening an .eml shows the Add Account sheet, not the message; its SwiftUI buttons carry their label in AXDescription, not AXTitle.

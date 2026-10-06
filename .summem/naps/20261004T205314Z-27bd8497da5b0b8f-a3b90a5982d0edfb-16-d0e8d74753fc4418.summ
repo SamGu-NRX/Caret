@@ -1,1 +1,0 @@
-U1: panels +24pt for shadow (not desk); contrast gated from pixels; mkdir ModelRuntime/Vendor first. T2 range edits AX-only. build-app.sh holds build.lock (CARET_NO_LOCK under lockf); Caret.app starts own services unless a socket is named; acting debug cmds need --test-hooks.

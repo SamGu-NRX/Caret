@@ -1,0 +1,1 @@
+F1-H10: headless CfT calls Google hosts through any proxy; the F1 sink files them as browserService(), not offsite(). The rig guest's Mail has no account (an .eml shows Add Account; its buttons label in AXDescription).
