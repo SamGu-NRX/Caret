@@ -153,3 +153,37 @@ describe("the parts code derives for C1", () => {
     expect(splitDate("2021-2022")).toBeNull();
   });
 });
+
+describe("a menu takes the part of a whole value it asks for", () => {
+  const F = (s: string): string => `dev.caret.fixture/standard/${s}`;
+  const menu = (key: string, label: string, options: string[], y: number): Node[] => [
+    { key: F(key), parent: null, role: "AXPopUpButton", label, value: "Select...", editable: true, frame: [100, y, 200, 24] },
+    ...options.map((o, i): Node => ({ key: F(`${key}/item${i}`), parent: F(key), role: "AXMenuItem", label: o })),
+  ];
+  it("writes May for a month menu and Oregon for a state menu when Jev picks the whole date and address", async () => {
+    const m = new ScreenModel();
+    const note = "Signup\nAddress: 2210 Willow Bend Drive, Apt 5B, Portland, Oregon 97214\nGraduated in May 2021 from Northfield, after four long years of night classes and weekend shifts.";
+    m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: note, editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
+    const nodes: Node[] = [
+      field(F("city"), "", { label: "City", frame: [100, 60, 200, 24] }),
+      ...menu("month", "Graduation date month", ["January", "February", "March", "April", "May", "June"], 100),
+      ...menu("state", "State", ["Ohio", "Oregon", "Texas"], 140),
+    ];
+    m.apply(snap(nodes, { at: 2000, windowId: FORM, title: "Application", focused: true }));
+    const jev = jevPickingText((_id, ins) => (ins.includes("'Graduation date month'") ? "May 2021" : ins.includes("'State'") ? "2210 Willow Bend Drive, Apt 5B, Portland, Oregon 97214" : null));
+    const p = await proposeFill(m, jev, FORM, F("city"), 3000);
+    const got = Object.fromEntries(p.fields.map((f) => [f.key.split("/").pop(), f.handoff === null ? null : [f.handoff.value, f.handoff.writes ?? false]]));
+    // Through Accessibility a menu is the user's to set (writes false); the value is the part, an option's exact name.
+    expect(got).toEqual({ city: null, month: ["May", false], state: ["Oregon", false] });
+  });
+});
+
+describe("a second address is named by any word for second", () => {
+  it("fills Alternate email from a note's Backup email beside other emails, and not from a Work email", async () => {
+    const note = "Signup\nBackup email: jab.cole@example.org\nWork email: jo.cole@work.example\nMy husband Marcus is marcus.cole@example.net.";
+    const { values } = await fill(note, { "Alternate email": "jab.cole@example.org" });
+    expect(values).toEqual({ "Alternate email": "jab.cole@example.org" });
+    const other = await fill(note, { "Alternate email": "jo.cole@work.example" });
+    expect(other.values).toEqual({ "Alternate email": null });
+  });
+});

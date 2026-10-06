@@ -622,6 +622,27 @@ const ADDRESS_PARTS: ReadonlySet<FillPart> = new Set(["street", "unit", "city", 
 const PLACE_PARTS: ReadonlySet<FillPart> = new Set(["city", "state", "country"]);
 /** C1: parts of a date, for a field or a menu that asks only for its month or year (derive.ts splitDate). */
 const DATE_PARTS: ReadonlySet<FillPart> = new Set(["month", "year"]);
+/** C1: the part a menu asks for, if any: a date's month or year, a state, or a country. */
+function menuPart(name: string | null): FillPart | null {
+  const d = datePart(name);
+  if (d !== null) return d;
+  if (asksCountry(name)) return "country";
+  return fieldPart(name) === "state" ? "state" : null;
+}
+/**
+ * C1: the part `part` of a whole date, address or place `text`, as code splits it (derive.ts), or null. A menu's pick
+ * that is a whole date ("May 2021") or address names its option only through this part ("May"), which the menu then
+ * matches exactly, as a part fill offered on its own would be.
+ */
+function partOf(part: FillPart, text: string): string | null {
+  if (part === "month" || part === "year") {
+    const d = splitDate(text);
+    return d === null ? null : part === "month" ? d.month : d.year;
+  }
+  if (part === "state") return splitAddress(text)?.state ?? splitPlace(text)?.state ?? null;
+  if (part === "country") return splitPlace(text)?.country ?? null;
+  return null;
+}
 /** Label words that say only a field's kind, so they cannot tie one of a person's phones or emails to the field. */
 const KIND_ONLY_WORDS: ReadonlySet<string> = new Set(["phone", "telephone", "tel", "mobile", "cell", "number", "email", "mail", "address", "contact"]);
 /** Label words that say a value is a link, or nothing about what it is for. */
@@ -629,6 +650,12 @@ const LINK_WORDS: ReadonlySet<string> = new Set(["url", "website", "web", "site"
 /** What a label says a value is for: its words less those naming a kind or a link ("Portfolio" from "Portfolio URL"). */
 const purposeOf = (labels: readonly (string | null)[]): Set<string> =>
   new Set([...fieldTerms(labels)].filter((t) => !isKindTerm(t) && t !== NAME_TERM && !KIND_ONLY_WORDS.has(t) && !LINK_WORDS.has(t)));
+/**
+ * C1: words that say the same purpose of a second email, phone or link: a note's "Backup email" is a form's "Alternate
+ * email". Written for common labels, not measured.
+ */
+const SECOND = new Set(["alternate", "alternative", "backup", "secondary", "additional", "second"]);
+const samePurpose = (w: string): string => (SECOND.has(w) ? "alternate" : w);
 /** Kinds of which a screen often shows several, each labelled for what it is for. */
 const LABELLED_KINDS: ReadonlySet<string> = new Set(["email", "phone", "url"]);
 /** Kinds whose values are someone's: whose they are is asked before one fills a field that wants someone's (B24 owner veto). */
@@ -723,7 +750,9 @@ export async function proposeFill(
     const terms = fieldTerms(labelWords);
     for (const k of kinds) terms.add(kindTerm(k));
     // C1: a field or a menu that asks for a date's month or year takes that part of a date (derive.ts datePart).
-    const part = !derive ? null : typed ? (datePart(name) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : x.control === "select" ? datePart(name) : null;
+    // A menu that asks for a date's month or year, a state or a country takes that part of a date, an address or a place:
+    // its options are names, which a whole date or address is not (C1, MENU_PARTS).
+    const part = !derive ? null : typed ? (datePart(name) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : x.control === "select" ? menuPart(name) : null;
     // A country is no one's detail, so it asks no whose question. A dropdown that takes a person's details meets the owner
     // veto and the whose gate as a text field does (B27 review: "Your full name" took another person's name otherwise).
     // So does a list of options, read by its label alone: a "Your full name" pop-up menu listing two people was handed
@@ -755,9 +784,10 @@ export async function proposeFill(
   // An Ask that names its sources reads only those windows.
   const sourcesOnly = scope?.windows ?? null;
   const unread = sourcesOnly === null ? opts.exclude : new Set([...(opts.exclude ?? []), ...[...model.windows.keys()].filter((id) => id !== windowId && !sourcesOnly.has(id))]);
-  const { candidates, cut, cutTerms, cutAll, namesCut } = collectCandidates(model, windowId, {
+  const { candidates, cut, cutTerms, cutAll, namesCut, clauses } = collectCandidates(model, windowId, {
     now,
     ledger,
+    deferClauses: true,
     ...(unread === undefined ? {} : { exclude: unread }),
     ...(opts.relevance === false ? {} : { fields: fields.map((f) => f.terms) }),
     ...(opts.kindsByCost === false ? { kindsByCost: false } : {}),
@@ -928,11 +958,22 @@ export async function proposeFill(
   // A field the instruction gives a value for is asked whatever was cut: the cut rules guard window values, and its
   // window picks still meet them (pickCut).
   const uncut = fields.filter((f) => !answersFor.has(f.id) && askable(f) && (literalOf(f) !== undefined || !fieldCut(f) || anchored(f)));
-  const aboutSent = [...new Map(uncut.flatMap((f) => [...f.about, ...(derived.get(f.id) ?? []).flatMap((d) => (d.base.from === "memory" ? [d.base.a] : []))]).map((a) => [a.id, a])).values()];
-  // Both the value and its label go into the question (describeAbout), so both are declared and priced.
-  if (aboutSent.length > 0 && !ledger.memory(aboutSent.flatMap((a) => [a.value, a.label]))) {
-    for (const f of fields) f.about = [];
-    for (const [id, list] of derived) derived.set(id, list.filter((d) => d.base.from !== "memory"));
+  const aboutWanted = [...new Map(uncut.flatMap((f) => [...f.about, ...(derived.get(f.id) ?? []).flatMap((d) => (d.base.from === "memory" ? [d.base.a] : []))]).map((a) => [a.id, a])).values()];
+  // Both the value and its label go into the question (describeAbout), so both are declared and priced. C1: each entry on
+  // its own, so one that shares text with a window over its budget does not keep the rest out (a LinkedIn link whose
+  // handle a note's file names repeat withheld every entry on F1's Greenhouse page).
+  const aboutIn = new Set(aboutWanted.filter((a) => ledger.memory([a.value, a.label])).map((a) => a.id));
+  const aboutSent = aboutWanted.filter((a) => aboutIn.has(a.id));
+  if (aboutSent.length < aboutWanted.length) {
+    for (const f of fields) f.about = f.about.filter((a) => aboutIn.has(a.id));
+    for (const [id, list] of derived) derived.set(id, list.filter((d) => d.base.from !== "memory" || aboutIn.has(d.base.a.id)));
+  }
+  // C1: each candidate's clause (candidates.ts Candidate.line) only now, when every span and memory value is in, and
+  // only where its window's budget still has room.
+  for (const [c, clause] of clauses) {
+    const sw = model.windows.get(c.source.windowId);
+    // A candidate the anchor replaced (labelledCandidate above) is not sent, so neither is its clause.
+    if (sw !== undefined && candidates.includes(c) && ledger.take(sw, "candidate", [clause])) c.line = clause;
   }
   // S1: a saved answer is the user's memory, not screen text, and is declared and charged as memory, as an About value
   // is (lead decision 4). The question it was saved for and its first ANSWER_CRITERION_CHARS characters are what a match
@@ -1215,8 +1256,8 @@ export async function proposeFill(
     if (p.from !== "window" || p.c.labelled !== true || p.c.context === null || literalOf(f) === p.c.text) return false;
     const kind = textKind(p.c.text);
     if (!LABELLED_KINDS.has(kind)) return false;
-    const purpose = purposeOf([p.c.context]);
-    const named = purposeOf(f.labelWords);
+    const purpose = new Set([...purposeOf([p.c.context])].map(samePurpose));
+    const named = new Set([...purposeOf(f.labelWords)].map(samePurpose));
     if (purpose.size === 0 || [...purpose].some((t) => named.has(t))) return false;
     return candidates.some((c) => c.text !== p.c.text && textKind(c.text) === kind);
   };
@@ -1254,8 +1295,12 @@ export async function proposeFill(
       case "select": {
         const options = f.form?.options ?? null;
         if (options === null) return { why: "ambiguous" };
-        const exact = matchOption(options, text);
         const press = f.node.subrole === PAGE_SUBROLE.pressGroup;
+        // C1: a whole date, address or place picked for a menu that asks for one part of it names the option that part
+        // is exactly (partOf).
+        const whole = matchOption(options, text);
+        const piece = whole === null && f.part !== null ? partOf(f.part, text) : null;
+        const exact = whole ?? (piece === null ? null : matchOption(options, piece));
         if (exact !== null) return { value: exact, display: exact, writes: page && !press };
         const o = optionInText(options, text);
         return o === null ? { why: "ambiguous" } : { value: o, display: o, writes: false };

@@ -141,6 +141,11 @@ export interface GenerateOptions {
    */
   nameGroup?: boolean;
   /**
+   * C1: leave each span's clause (Candidate.line) to the caller, in Collected.clauses, instead of charging it once every
+   * span is in: fill charges clauses after the user's own values from memory (fill.ts), so a clause never costs one.
+   */
+  deferClauses?: boolean;
+  /**
    * Windows an Ask names (B26 lead decision 1) and the people it names: in those windows, the spans whose line or
    * section names one of the people go before the rest, in the order the fields would take them otherwise.
    */
@@ -174,6 +179,8 @@ export interface Collected {
    * proposes no name-like value (fill.ts).
    */
   namesCut: boolean;
+  /** C1: with GenerateOptions.deferClauses, each offered span's clause, for the caller to charge and set; empty otherwise. */
+  clauses: ReadonlyMap<Candidate, string>;
 }
 
 export interface GenerateStats {
@@ -288,11 +295,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   /** The window the generator is reading, if it stops there. */
   let reading: string | null = null;
   const finish = (): Collected => {
+    const pending = new Map<Candidate, string>();
     for (const c of out) {
       const clause = clauses.get(c);
       const sw = model.windows.get(c.source.windowId);
       if (clause === undefined || sw === undefined) continue;
-      if (o.ledger === undefined || o.ledger.take(sw, "candidate", [clause])) c.line = clause;
+      if (o.deferClauses === true) pending.set(c, clause);
+      else if (o.ledger === undefined || o.ledger.take(sw, "candidate", [clause])) c.line = clause;
     }
     for (const id of leftOutOf) {
       const lw = model.windows.get(id);
@@ -301,7 +310,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     leftOutOf.clear();
     stats.windows = touched.size;
     stats.ms = clock() - t0;
-    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)) };
+    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending };
   };
   /**
    * Stops early, on the cap or the clock, partway through `reading`: what of it was offered is a partial
