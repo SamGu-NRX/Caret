@@ -2335,8 +2335,9 @@ export const GoalStepView = z
      * P3: on an attach step only, the file its row offers. `choose`: none yet; the host's row says "Choose a file" and
      * opens a file chooser. `saved`: a file the user saved for this question before (fileSave), which a Jev choice matched
      * to this field; the row shows its `name` and when it was last `edited` (its modification time, so a stale resume
-     * shows as one), and is confirmed only by the user's Tab on this preview, which sends its path as confirmedFile. Caret
-     * never looks for a file on disk.
+     * shows as one), and is confirmed only by the user's own action on this preview's row (⌘2/⌘3 or a click in H14's
+     * host; Tab alone never confirms a file), after which the next Tab sends its path as confirmedFile. Caret never
+     * looks for a file on disk.
      */
     file: z
       .discriminatedUnion("source", [
