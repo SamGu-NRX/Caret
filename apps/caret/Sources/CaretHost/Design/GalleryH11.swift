@@ -34,7 +34,7 @@ extension Gallery {
         ("School", "University of Waterloo", true), ("Degree", "BMath, Computer Science", true),
     ]
 
-    static let h11Withheld = ["'Why do you want to work here?' is yours: Caret wasn't sure what goes there."]
+    static let h11Withheld = ["'Why do you want to work here?' is yours to write: Caret doesn't write answers."]
 
     static func h11Task() -> PageTask {
         PageTask(preview: h11Preview(h11Rows, tick: "Do you need visa sponsorship?", warnings: h11Withheld, attach: ["Resume/CV"]), goalId: "goal-1-a1")!
