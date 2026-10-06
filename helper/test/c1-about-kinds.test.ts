@@ -32,6 +32,7 @@ describe("which entries are which kind", () => {
     ["Needs visa sponsorship", "No", "sponsorship"],
     // C1 review: a label that turns the answer around is no kind.
     ["Sponsorship not needed", "Yes", null],
+    ["Sponsorship unnecessary", "Yes", null],
     // Shapes that do not fit the label's kind.
     ["Phone", "call me after five", null],
     ["LinkedIn", "ask me", null],

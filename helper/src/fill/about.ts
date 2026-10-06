@@ -100,10 +100,9 @@ export function aboutKind(label: string, value: string): AboutKind | null {
   if (has(ws, "github")) return url && /github\.com\//iu.test(v) ? "github" : null;
   if (has(ws, "website", "portfolio", "homepage", "blog", "site")) return url && !/(?:linkedin|github)\.com\//iu.test(v) ? "website" : null;
   if (url) return null;
-  // A label that turns the yes or no around ("Sponsorship not needed") is no kind: which way it answers is a guess.
-  const turned = ws.some((w) => TURNS.has(w));
-  if (has(ws, "sponsorship", "sponsor", "visa")) return YES_NO.test(v) && !turned ? "sponsorship" : null;
-  if (has(ws, "authorization", "authorisation", "authorized", "authorised", "eligibility", "eligible")) return YES_NO.test(v) && !turned ? "workAuth" : null;
+  // A label with a word beyond its kind's few ("Sponsorship unnecessary") is no kind: which way it answers is a guess.
+  if (has(ws, "sponsorship", "sponsor", "visa")) return YES_NO.test(v) && ws.every((w) => SPONSOR_LABEL.has(w)) ? "sponsorship" : null;
+  if (has(ws, "authorization", "authorisation", "authorized", "authorised", "eligibility", "eligible")) return YES_NO.test(v) && ws.every((w) => AUTH_LABEL.has(w)) ? "workAuth" : null;
   if (has(ws, "phone", "mobile", "cell", "telephone", "tel")) return textKind(v) === "phone" ? "phone" : null;
   if (has(ws, "graduation", "graduate", "grad")) return splitDate(v) !== null ? "gradDate" : null;
   if (has(ws, "school", "university", "college")) return v.length <= 80 && !/[\d@]/u.test(v) ? "school" : null;
@@ -160,8 +159,13 @@ const FIELD_WORDS: Partial<Record<AboutKind, { asks: string[]; may: string[] }>>
 const WORK_WORDS = new Set(["are", "you", "legally", "currently", "authorized", "authorised", "eligible", "to", "work", "in", "the", "your", "country", "of", "residence", "for", "employment", "this", "role", "position", "job", "at", "any", "employer"]);
 /** The same for sponsorship: "Will you now or in the future require sponsorship for employment visa status?". */
 const SPONSOR_WORDS = new Set(["will", "you", "now", "or", "in", "the", "future", "require", "need", "sponsorship", "visa", "for", "employment", "status", "to", "work", "an", "a", "this", "role", "position", "job", "do", "would", "immigration", "eg", "h1b"]);
-/** Words of an entry's label that turn its yes or no around ("Sponsorship not needed: Yes"); such an entry fills nothing. */
-const TURNS = new Set(["not", "no", "without", "don't", "dont", "never"]);
+/**
+ * The only words a work authorization or sponsorship entry's label may use, so its yes or no reads one way: "Work
+ * authorization", "Authorized to work in the United States", "Needs visa sponsorship". A label with any other word
+ * ("Sponsorship unnecessary", "not needed") may turn the answer around, so it is no kind (C1 review).
+ */
+const AUTH_LABEL = new Set(["work", "authorization", "authorisation", "authorized", "authorised", "eligibility", "eligible", "to", "in", "the", "legally", "status", "us", "usa", "united", "states", "america", "canada", "uk", "kingdom", "britain", "eu", "europe", "australia", "india", "germany", "france", "mexico", "ireland", "singapore", "japan"]);
+const SPONSOR_LABEL = new Set(["needs", "need", "requires", "require", "required", "visa", "sponsorship", "sponsor", "for", "work", "employment", "in", "the", "us", "usa", "united", "states", "america", "canada", "uk", "kingdom", "britain", "eu", "europe", "australia", "india", "germany", "france", "mexico", "ireland", "singapore", "japan"]);
 
 /**
  * C1: whether a yes-or-no question asks exactly what the entry answers: whether the user may work there, or needs
@@ -171,7 +175,6 @@ const TURNS = new Set(["not", "no", "without", "don't", "dont", "never"]);
  */
 function questionAsks(a: AboutValue, ws: ReadonlySet<string>): boolean {
   const own = new Set(words(a.label));
-  if ([...own].some((w) => TURNS.has(w))) return false;
   const allowed = a.kind === "sponsorship" ? SPONSOR_WORDS : WORK_WORDS;
   if (![...ws].every((w) => allowed.has(w) || own.has(w))) return false;
   return a.kind === "sponsorship"

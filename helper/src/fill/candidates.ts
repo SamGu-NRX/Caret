@@ -244,15 +244,18 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string): Candidate => {
     const ctx = timed("context", context);
     const labelled = labelledSpan(node, text, ctx);
-    // A span that must go with its line's words (line-values.ts LineText.with) carries them from the start, charged with it.
-    const clause = quote !== undefined ? null : timed("context", () => lineFact(w, node, text, labelled));
+    // A span that must go with its line's words (line-values.ts LineText.with, or a clause its line warns in) carries them
+    // from the start, charged with it; any other clause waits until every span is in.
+    const fact = quote !== undefined ? null : timed("context", () => lineFact(w, node, text, labelled));
+    const required = quote ?? (fact?.required === true ? fact.clause : undefined);
+    const clause = fact === null || fact.required ? null : fact.clause;
     const c: Candidate = {
     id: `c${out.length + 1}`,
     text,
     kind,
     context: ctx,
     labelled,
-    line: quote ?? null,
+    line: required ?? null,
     section: timed("section", () => sectionAround(w, node)),
     blockHead: timed("blockHead", () => blockHead(w, node, text)),
     recency: recency(w),
@@ -702,7 +705,7 @@ export function lineGives(raw: string, span: string): boolean {
  * line that shows another typed value of its kind, the clause around it; null otherwise, or when the span carries its
  * line's label (the label says what it is).
  */
-export function lineFact(w: WindowState, node: Node, text: string, labelled: boolean): string | null {
+export function lineFact(w: WindowState, node: Node, text: string, labelled: boolean): { clause: string; required: boolean } | null {
   const t = nodeText(node);
   const at = t.indexOf(text);
   if (at < 0) return null;
@@ -710,14 +713,20 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
   const line = bareLine(raw);
   const pos = line.indexOf(text);
   if (pos < 0) return null;
-  // A label says what the span is, unless the line also warns about it ("Phone: 555-0101 (my old number, no longer
-  // works)"): then the clause goes too, so Jev reads the warning (C1 review).
-  if (labelled) return WARNS.test(line.replace(text, " ")) ? clauseAround(line, pos, text) : null;
+  // A line that warns about something ("Don't give out 555-0112", "Phone: 555-0101 (my old number, no longer works)")
+  // sends the span's clause with it, or not the span: the warning may be about it (C1 review). A label otherwise says
+  // what the span is.
+  if (WARNS.test(line.replace(text, " "))) {
+    const clause = clauseAround(line, pos, text);
+    return clause === null ? null : { clause, required: true };
+  }
+  if (labelled) return null;
   const values = lineValues(line);
   const kind = values.find((v) => v.text === text)?.kind;
   const twins = kind !== undefined && values.filter((v) => v.kind === kind).length > 1;
   if (line.length <= MAX_LINE && !twins) return null;
-  return clauseAround(line, pos, text);
+  const clause = clauseAround(line, pos, text);
+  return clause === null ? null : { clause, required: false };
 }
 
 /**

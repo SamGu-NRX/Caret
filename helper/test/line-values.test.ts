@@ -67,17 +67,21 @@ describe("free text a line bounds", () => {
     // C1 review: a remark that warns against the value keeps it whole.
     expect(texts("Preferred first name: Alex (do not use this old name; use Robin instead for all future applications).")).toEqual([]);
     expect(texts("Phone: 555-0101 (my old number, no longer works)")).toEqual([]);
+    expect(texts("Legal name: Alex Smith (do not use this old name; use Robin Smith instead for all future applications).")).toEqual([]);
   });
 
   it("takes no first part that the next part may continue", () => {
     // C1 review: "University of California" is not the school "University of California, Berkeley".
     expect(texts("School: University of California, Berkeley, Bachelor of Science in Electrical Engineering, graduating May 2027")).toEqual([]);
     expect(texts("School: Stanford University, Palo Alto, California")).toEqual([["Palo Alto, California", null]]);
+    expect(texts("School: University of California, Berkeley (UC Berkeley), graduating May 2027")).toEqual([]);
   });
 
   it("takes a labelled value's first part when it is a whole name", () => {
     expect(texts("School: Lakeshore Polytechnic Institute, B.S. Electrical Engineering, September 2016 to May 2020.")).toEqual([["Lakeshore Polytechnic Institute", "School"]]);
-    expect(texts("Name: Josephine Abernathy-Cole, but everyone calls me Jo. Pronouns she/her.")).toEqual([["Josephine Abernathy-Cole", "Name"]]);
+    // "but" may turn the value around ("Alex Smith, but use Robin"), so a value that says it gives no piece of itself.
+    expect(texts("Name: Josephine Abernathy-Cole, but everyone calls me Jo. Pronouns she/her.")).toEqual([]);
+    expect(texts("Name: Josephine Abernathy-Cole, she/her")).toEqual([["Josephine Abernathy-Cole", "Name"]]);
   });
 
   it("takes the one name that ends a person label's first part, and no other part", () => {

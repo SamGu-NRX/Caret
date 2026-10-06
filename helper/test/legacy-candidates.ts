@@ -39,7 +39,7 @@ export function legacyGenerateCandidates(model: ScreenModel, targetWindowId: str
       context,
       // B24's fact about the span, worked out as the generator does; the ranking under test is unchanged.
       labelled,
-      line: quote ?? lineFact(w, node, text, labelled),
+      line: quote ?? lineFact(w, node, text, labelled)?.clause ?? null,
       section: sectionAround(w, node),
       blockHead: blockHead(w, node, text),
       recency: recency(w),

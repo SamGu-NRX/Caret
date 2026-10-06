@@ -156,12 +156,14 @@ export function lineTexts(line: string): LineText[] {
   const m = LABELLED.exec(line);
   const label = m?.[1]?.trim() ?? null;
   const value = m?.[2]?.trim() ?? null;
-  if (label !== null && value !== null) {
+  // A labelled value its line warns about ("Legal name: Alex Smith (do not use this old name ...)") gives no piece of
+  // itself: only the whole value, whose words Jev reads (C1 review).
+  if (label !== null && value !== null && !WARNS.test(value)) {
     const r = REMARK.exec(value);
-    if (r?.[1] !== undefined && !r[1].includes("(") && !WARNS.test(r[2] ?? "")) add(r[1], label, value);
+    if (r?.[1] !== undefined && !r[1].includes("(")) add(r[1], label, value);
     const parts = value.split(/\s*[,;]\s*/u);
     const first = (parts[0] ?? "").replace(/\s*\(.*$/u, "").replace(/[.!?]+$/u, "").trim();
-    const next = (parts[1] ?? "").replace(/[.!?]+$/u, "").trim();
+    const next = (parts[1] ?? "").replace(/\s*\(.*$/u, "").replace(/[.!?]+$/u, "").trim();
     if (first !== "" && !/\d/u.test(first) && !CONTINUES.test(next)) {
       if (isNameLike(first, null)) add(first, label);
       else if (PERSON_LABEL.test(label)) {

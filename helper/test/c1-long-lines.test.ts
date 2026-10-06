@@ -193,6 +193,20 @@ describe("a second address is named by any word for second", () => {
   });
 });
 
+describe("a value its line warns about, under a tight budget", () => {
+  it("is not offered without its warning", async () => {
+    // A note held to half its long lines, where the warning's clause cannot fit beside everything else.
+    const long = "Phone: 555-0101 (my old number, no longer works; please use the new mobile number on my current application instead).";
+    const m = new ScreenModel();
+    m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: `Contact\n${long}`, editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
+    m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));
+    const { SnippetLedger } = await import("../src/privacy.ts");
+    const cs = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()) }).candidates;
+    const c = cs.find((x) => x.text === "555-0101");
+    expect(c === undefined || (c.line ?? "").includes("no longer works")).toBe(true);
+  });
+});
+
 describe("a labelled value its line warns about", () => {
   it("carries the warning as its clause", () => {
     const m = new ScreenModel();
