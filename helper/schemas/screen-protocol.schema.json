@@ -668,6 +668,10 @@
                   "submit"
                 ]
               }
+            },
+            "restored": {
+              "type": "boolean",
+              "const": true
             }
           },
           "required": [

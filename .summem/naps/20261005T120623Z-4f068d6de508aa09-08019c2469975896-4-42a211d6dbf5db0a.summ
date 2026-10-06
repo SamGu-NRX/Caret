@@ -1,0 +1,1 @@
+B30/R2: drafts check whole typed facts (drafts.ts; whole-expression rules, never token lists); typing replays send a value in its text's snapshot; recorded snapshots need focusedKey or Router 1 abstains; Router 1 skips only offers on a held offer's record.

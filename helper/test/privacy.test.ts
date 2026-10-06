@@ -147,6 +147,10 @@ function measure(r: Recorded): WindowMeasure[] {
     for (const line of w.lines) {
       if (line.length < 3 && !declaredHere.has(line)) continue;
       if (body.includes(line)) {
+        // A line that is one text already counted inside an earlier line of this window ("Bram Tupou" after "Message
+        // from Bram Tupou") reveals nothing new: the ledger marks one occurrence of a text per window (privacy.ts
+        // chargeInside), and C1's typed contact phones, whose sections are those names, showed this counted twice.
+        if (used.has(line)) continue;
         covered += line.length;
         if (prose(line)) coveredProse += line.length;
         for (const t of texts) if (line.includes(t)) used.add(t);

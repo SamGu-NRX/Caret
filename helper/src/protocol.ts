@@ -404,9 +404,16 @@ export const VerbResult = z
      * pageChanged). Comes with outcome axError: the press may have landed, and the run stops at once.
      */
     pageChanged: z.lazy(() => PageChanges).optional(),
+    /**
+     * Page engines only (C1): a dropdown pick that failed, after which the page closed the list, put the control's text
+     * back and read it as it showed before, with its form value unchanged (engines/page-link.ts restoredPick). Comes with
+     * outcome changed. A goal run may then leave that field to the user and go on (executor RunOptions.leaveFailedToYou).
+     */
+    restored: z.literal(true).optional(),
   })
   .refine((r) => (r.outcome === "blocked") === (r.blocked !== undefined), { message: "blocked comes with outcome blocked, and blocked needs it", path: ["blocked"] })
-  .refine((r) => r.pageChanged === undefined || r.outcome === "axError", { message: "pageChanged comes with outcome axError", path: ["pageChanged"] });
+  .refine((r) => r.pageChanged === undefined || r.outcome === "axError", { message: "pageChanged comes with outcome axError", path: ["pageChanged"] })
+  .refine((r) => r.restored === undefined || r.outcome === "changed", { message: "restored comes with outcome changed", path: ["restored"] });
 export type VerbResult = z.infer<typeof VerbResult>;
 
 /**

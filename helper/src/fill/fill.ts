@@ -15,10 +15,10 @@ import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCa
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, misfit, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
-import { ABOUT_SAYS, fieldAsksFor, fieldAsksForNamePart, type AboutValue } from "./about.ts";
+import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
-import { asksCountry, fieldPart, joinName, namePart, partFits, splitAddress, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { asksCountry, datePart, fieldPart, joinName, namePart, partFits, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { clockTime, readClock, readDate, readDateTime } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -306,7 +306,7 @@ export const whoseId = (fieldId: string): string => `${fieldId}_whose`;
 
 /** The criterion for a value the user told Caret: what it is, and that it is the user's own. */
 export function describeAbout(a: AboutValue): string {
-  return `"${a.value}" (${a.kind === "email" ? "email" : "a name"}; the user's own ${a.label}, which the user told Caret)`;
+  return `"${a.value}" (${ABOUT_KIND_SAYS[a.kind]}; the user's own ${a.label}, which the user told Caret)`;
 }
 
 /** Values code derived for one field, or candidates whose owner is asked, under one ask's ids. */
@@ -572,6 +572,8 @@ export interface FillScope {
   consented?: ReadonlySet<string>;
   /** People whose lines go first in the windows the instruction names: the name that named one, and its sender. */
   first?: readonly string[];
+  /** C1: the instruction asks for the whole form (planner/intent.ts scope "all"); see plainAsk in proposeFill. */
+  wholeForm?: boolean;
 }
 
 /** The inputs a scope names, in its order: text fields (filled or not, never one Caret never types) and empty controls. */
@@ -614,10 +616,35 @@ const PART_SAYS: Record<FillPart, string> = {
   state: "state",
   zip: "ZIP code",
   country: "country",
+  month: "month",
+  year: "year",
 };
 const ADDRESS_PARTS: ReadonlySet<FillPart> = new Set(["street", "unit", "city", "state", "zip"]);
 /** Parts a place written "City, State, Country" gives (derive.ts splitPlace). */
 const PLACE_PARTS: ReadonlySet<FillPart> = new Set(["city", "state", "country"]);
+/** C1: parts of a date, for a field or a menu that asks only for its month or year (derive.ts splitDate). */
+const DATE_PARTS: ReadonlySet<FillPart> = new Set(["month", "year"]);
+/** C1: the part a menu asks for, if any: a date's month or year, a state, or a country. */
+function menuPart(name: string | null): FillPart | null {
+  const d = datePart(name);
+  if (d !== null) return d;
+  if (asksCountry(name)) return "country";
+  return fieldPart(name) === "state" ? "state" : null;
+}
+/**
+ * C1: the part `part` of a whole date, address or place `text`, as code splits it (derive.ts), or null. A menu's pick
+ * that is a whole date ("May 2021") or address names its option only through this part ("May"), which the menu then
+ * matches exactly, as a part fill offered on its own would be.
+ */
+function partOf(part: FillPart, text: string): string | null {
+  if (part === "month" || part === "year") {
+    const d = splitDate(text);
+    return d === null ? null : part === "month" ? d.month : d.year;
+  }
+  if (part === "state") return splitAddress(text)?.state ?? splitPlace(text)?.state ?? null;
+  if (part === "country") return splitPlace(text)?.country ?? null;
+  return null;
+}
 /** Label words that say only a field's kind, so they cannot tie one of a person's phones or emails to the field. */
 const KIND_ONLY_WORDS: ReadonlySet<string> = new Set(["phone", "telephone", "tel", "mobile", "cell", "number", "email", "mail", "address", "contact"]);
 /** Label words that say a value is a link, or nothing about what it is for. */
@@ -625,10 +652,21 @@ const LINK_WORDS: ReadonlySet<string> = new Set(["url", "website", "web", "site"
 /** What a label says a value is for: its words less those naming a kind or a link ("Portfolio" from "Portfolio URL"). */
 const purposeOf = (labels: readonly (string | null)[]): Set<string> =>
   new Set([...fieldTerms(labels)].filter((t) => !isKindTerm(t) && t !== NAME_TERM && !KIND_ONLY_WORDS.has(t) && !LINK_WORDS.has(t)));
+/**
+ * C1: words that say the same purpose of a second email, phone or link: a note's "Backup email" is a form's "Alternate
+ * email". Written for common labels, not measured.
+ */
+const SECOND = new Set(["alternate", "alternative", "backup", "secondary", "additional", "second"]);
+const samePurpose = (w: string): string => (SECOND.has(w) ? "alternate" : w);
 /** Kinds of which a screen often shows several, each labelled for what it is for. */
 const LABELLED_KINDS: ReadonlySet<string> = new Set(["email", "phone", "url"]);
 /** Kinds whose values are someone's: whose they are is asked before one fills a field that wants someone's (B24 owner veto). */
 const PERSONAL_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "address"]);
+/**
+ * C1: the kind of screen value an About entry stands beside, so a cut that took a window's value of that kind withholds
+ * the entry too, as it does an email (pickCut). Kinds with no typed screen value (a school, a yes or no) have none.
+ */
+const ABOUT_VALUE_KIND: Partial<Record<AboutKind, ValueKind>> = { email: "email", phone: "phone", address: "address", street: "address", gradDate: "date", linkedin: "url", github: "url", website: "url" };
 /** Labels of a message header's sender. */
 const SENDER = /^(?:from|sender|reply-to)$/i;
 /** Owner questions one ask carries at most. Assumed: well above the personal values a few source windows hold. */
@@ -667,8 +705,15 @@ export async function proposeFill(
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
   const scope = opts.scope;
   const ledger = new SnippetLedger(model.windows.values(), scope?.consented === undefined ? {} : { consented: scope.consented });
+  // C1 (item 6): an Ask for the whole form that narrows nothing (every source, memory, no person, no value it spells out)
+  // asks each value as a Fill all does. Live on the same corpus and W4 pages and sources, Ask's wording that quotes the
+  // instruction (B25) agreed on the same values as Fill all's but under FILL_CUTOFF, which was calibrated on Fill all's
+  // wording: 40 such fields, 25 of them the answer key's value word for word, while Fill all wrote no wrong value there
+  // (P1 loop-live, P2 goal-live-3; evidence/screen/c1/ask-vs-fill). Every other Ask rule stands, the owner veto and the
+  // untied rule included.
+  const plainAsk = scope !== undefined && scope.wholeForm === true && scope.windows === null && scope.memory && scope.person === null && scope.literals.size === 0 && (scope.consented?.size ?? 0) === 0;
   // An Ask's instruction is in every question; it may quote a window, which pays for what it quotes.
-  if (scope !== undefined && !ledger.plan([scope.instruction])) throw new FillError("instructionTooLong", "the instruction quotes more of an open window than one question to Jev may carry");
+  if (scope !== undefined && !plainAsk && !ledger.plan([scope.instruction])) throw new FillError("instructionTooLong", "the instruction quotes more of an open window than one question to Jev may carry");
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   type Field = {
     id: string;
@@ -713,7 +758,10 @@ export async function proposeFill(
     const kinds = x.control === "date" ? new Set<ValueKind>(["date"]) : x.control === "time" ? new Set<ValueKind>(["time"]) : typed ? fieldKinds(labelWords) : new Set<ValueKind>();
     const terms = fieldTerms(labelWords);
     for (const k of kinds) terms.add(kindTerm(k));
-    const part = typed && derive ? (fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : null;
+    // C1: a field or a menu that asks for a date's month or year takes that part of a date (derive.ts datePart).
+    // A menu that asks for a date's month or year, a state or a country takes that part of a date, an address or a place:
+    // its options are names, which a whole date or address is not (C1, MENU_PARTS).
+    const part = !derive ? null : typed ? (datePart(name) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : x.control === "select" ? menuPart(name) : null;
     // A country is no one's detail, so it asks no whose question. A dropdown that takes a person's details meets the owner
     // veto and the whose gate as a text field does (B27 review: "Your full name" took another person's name otherwise).
     // So does a list of options, read by its label alone: a "Your full name" pop-up menu listing two people was handed
@@ -722,10 +770,10 @@ export async function proposeFill(
     const personKinds = typed ? kinds : listed ? fieldKinds(labelWords) : new Set<ValueKind>();
     const personal =
       (typed || listed) &&
-      ((part !== null && part !== "country") || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
+      ((part !== null && part !== "country" && !DATE_PARTS.has(part)) || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
     // An Ask that names no memory, or names another person for a personal field, is not offered the user's own.
     const memoryOk = scope === undefined || (scope.memory && (scope.person === null || !personal));
-    const about = x.control === "text" && memoryOk ? (opts.about ?? []).filter((a) => fieldAsksFor(a, name)) : [];
+    const about = memoryOk ? (opts.about ?? []).filter((a) => aboutFits(a, x.control) && fieldAsksFor(a, name)) : [];
     const descriptor = describeInput(w, x);
     fields.push({ id: `f${fields.length + 1}`, node: n, descriptor, name: name ?? "unnamed field", kinds, terms, texts, about, control: x.control, form: c, part, labelWords, personal });
   }
@@ -745,9 +793,10 @@ export async function proposeFill(
   // An Ask that names its sources reads only those windows.
   const sourcesOnly = scope?.windows ?? null;
   const unread = sourcesOnly === null ? opts.exclude : new Set([...(opts.exclude ?? []), ...[...model.windows.keys()].filter((id) => id !== windowId && !sourcesOnly.has(id))]);
-  const { candidates, cut, cutTerms, cutAll, namesCut } = collectCandidates(model, windowId, {
+  const { candidates, cut, cutTerms, cutAll, namesCut, clauses } = collectCandidates(model, windowId, {
     now,
     ledger,
+    deferClauses: true,
     ...(unread === undefined ? {} : { exclude: unread }),
     ...(opts.relevance === false ? {} : { fields: fields.map((f) => f.terms) }),
     ...(opts.kindsByCost === false ? { kindsByCost: false } : {}),
@@ -855,6 +904,13 @@ export async function proposeFill(
           const v = parts?.[part as "street" | "unit" | "city" | "state" | "zip"] ?? place?.[part as "city" | "state" | "country"] ?? undefined;
           if (v !== undefined && v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
         }
+      } else if (DATE_PARTS.has(part)) {
+        for (const c of candidates) {
+          if (!candidateKinds(model, c).has("date")) continue;
+          const d = splitDate(c.text);
+          const v = d === null ? null : part === "month" ? d.month : d.year;
+          if (v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
+        }
       }
       if (list.length > 0) derived.set(f.id, list);
     }
@@ -911,11 +967,22 @@ export async function proposeFill(
   // A field the instruction gives a value for is asked whatever was cut: the cut rules guard window values, and its
   // window picks still meet them (pickCut).
   const uncut = fields.filter((f) => !answersFor.has(f.id) && askable(f) && (literalOf(f) !== undefined || !fieldCut(f) || anchored(f)));
-  const aboutSent = [...new Map(uncut.flatMap((f) => [...f.about, ...(derived.get(f.id) ?? []).flatMap((d) => (d.base.from === "memory" ? [d.base.a] : []))]).map((a) => [a.id, a])).values()];
-  // Both the value and its label go into the question (describeAbout), so both are declared and priced.
-  if (aboutSent.length > 0 && !ledger.memory(aboutSent.flatMap((a) => [a.value, a.label]))) {
-    for (const f of fields) f.about = [];
-    for (const [id, list] of derived) derived.set(id, list.filter((d) => d.base.from !== "memory"));
+  const aboutWanted = [...new Map(uncut.flatMap((f) => [...f.about, ...(derived.get(f.id) ?? []).flatMap((d) => (d.base.from === "memory" ? [d.base.a] : []))]).map((a) => [a.id, a])).values()];
+  // Both the value and its label go into the question (describeAbout), so both are declared and priced. C1: each entry on
+  // its own, so one that shares text with a window over its budget does not keep the rest out (a LinkedIn link whose
+  // handle a note's file names repeat withheld every entry on F1's Greenhouse page).
+  const aboutIn = new Set(aboutWanted.filter((a) => ledger.memory([a.value, a.label])).map((a) => a.id));
+  const aboutSent = aboutWanted.filter((a) => aboutIn.has(a.id));
+  if (aboutSent.length < aboutWanted.length) {
+    for (const f of fields) f.about = f.about.filter((a) => aboutIn.has(a.id));
+    for (const [id, list] of derived) derived.set(id, list.filter((d) => d.base.from !== "memory" || aboutIn.has(d.base.a.id)));
+  }
+  // C1: each candidate's clause (candidates.ts Candidate.line) only now, when every span and memory value is in, and
+  // only where its window's budget still has room.
+  for (const [c, clause] of clauses) {
+    const sw = model.windows.get(c.source.windowId);
+    // A candidate the anchor replaced (labelledCandidate above) is not sent, so neither is its clause.
+    if (sw !== undefined && candidates.includes(c) && ledger.take(sw, "candidate", [clause])) c.line = clause;
   }
   // S1: a saved answer is the user's memory, not screen text, and is declared and charged as memory, as an About value
   // is (lead decision 4). The question it was saved for and its first ANSWER_CRITERION_CHARS characters are what a match
@@ -977,7 +1044,7 @@ export async function proposeFill(
   const ownerCands = owners && personal.size > 0 ? candidates.filter(personalCand).slice(0, MAX_OWNERS) : [];
   const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
   const more = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({
-    ...(scope === undefined ? {} : { instruction: scope.instruction, person: scope.person }),
+    ...(scope === undefined || plainAsk ? {} : { instruction: scope.instruction, person: scope.person }),
     derived: askDerived(dIds),
     personal: whose ? personal : new Set(),
     owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeCandidate({ ...c, id: "" }) })),
@@ -1055,6 +1122,11 @@ export async function proposeFill(
     return { choice: id as string, confidence: a.confidence, value: pickText(p) };
   };
 
+  /** Whether a cut took a window's value of the kind an About entry stands beside (ABOUT_VALUE_KIND). */
+  const aboutCut = (a: AboutValue): boolean => {
+    const k = ABOUT_VALUE_KIND[a.kind];
+    return k !== undefined && isCut(new Set([k]));
+  };
   // Picks of a kind a cut took are withheld (see above); a value from memory is of its own kind; a derived
   // value meets its source's rules.
   const pickCut = (p: Pick): boolean =>
@@ -1064,12 +1136,12 @@ export async function proposeFill(
       ? pickCut(p.base) || (p.also !== null && pickCut({ from: "window", c: p.also }))
       : p.from === "window"
         ? isCut(candidateKinds(model, p.c)) || (nameCut && isNameLike(p.c.text, p.c.context))
-        : p.a.kind === "email"
-          ? isCut(new Set(["email"]))
-          : nameCut;
+        : p.a.kind === "name"
+          ? nameCut
+          : aboutCut(p.a);
   /** A pick of a kind a cut took, whatever window it came from. */
   const kindCut = (p: Pick): boolean =>
-    p.from === "instruction" ? false : p.from === "derived" ? kindCut(p.base) || (p.also !== null && kindCut({ from: "window", c: p.also })) : p.from === "window" ? isCut(candidateKinds(model, p.c)) : p.a.kind === "email" && isCut(new Set(["email"]));
+    p.from === "instruction" ? false : p.from === "derived" ? kindCut(p.base) || (p.also !== null && kindCut({ from: "window", c: p.also })) : p.from === "window" ? isCut(candidateKinds(model, p.c)) : aboutCut(p.a);
   /**
    * What still withholds a pick from the window the user just left: a cut of its own kind, and the name cut for
    * a name (review: a cut chat's "Name: Dana Whitfield" beside the note's "Name: Alex Raman"; nothing says the
@@ -1151,7 +1223,9 @@ export async function proposeFill(
     // the owner to be settled blanked B13's fill desk, an order confirmation's details on a checkout form (final
     // live replay, evidence/screen/b24/adv-live-replay-final): there the unsettled owner vetoes nothing.
     const labelsField = c.labelled === true && c.recency === "justLeft" && c.context !== null && overlap(fieldTerms([c.context]), f.terms) > 0;
-    const kind = candidateKinds(model, c).has("email") ? "email" : personName(c) !== null || isNameLike(c.text, c.context) ? "name" : null;
+    // C1: a phone the user told Caret counts as their own value of that kind, as an email does.
+    const ck = candidateKinds(model, c);
+    const kind = ck.has("email") ? "email" : ck.has("phone") ? "phone" : personName(c) !== null || isNameLike(c.text, c.context) ? "name" : null;
     if (wants === "user" && is !== "user" && kind !== null && memoryKinds.has(kind) && !labelsField) return true;
     // An Ask that names no source reads every window, as fill on focus does, but its questions quote the
     // instruction instead of where users copy from, and Jev picks more boldly: "fill in whatever you know about me"
@@ -1191,8 +1265,8 @@ export async function proposeFill(
     if (p.from !== "window" || p.c.labelled !== true || p.c.context === null || literalOf(f) === p.c.text) return false;
     const kind = textKind(p.c.text);
     if (!LABELLED_KINDS.has(kind)) return false;
-    const purpose = purposeOf([p.c.context]);
-    const named = purposeOf(f.labelWords);
+    const purpose = new Set([...purposeOf([p.c.context])].map(samePurpose));
+    const named = new Set([...purposeOf(f.labelWords)].map(samePurpose));
     if (purpose.size === 0 || [...purpose].some((t) => named.has(t))) return false;
     return candidates.some((c) => c.text !== p.c.text && textKind(c.text) === kind);
   };
@@ -1230,8 +1304,12 @@ export async function proposeFill(
       case "select": {
         const options = f.form?.options ?? null;
         if (options === null) return { why: "ambiguous" };
-        const exact = matchOption(options, text);
         const press = f.node.subrole === PAGE_SUBROLE.pressGroup;
+        // C1: a whole date, address or place picked for a menu that asks for one part of it names the option that part
+        // is exactly (partOf).
+        const whole = matchOption(options, text);
+        const piece = whole === null && f.part !== null ? partOf(f.part, text) : null;
+        const exact = whole ?? (piece === null ? null : matchOption(options, piece));
         if (exact !== null) return { value: exact, display: exact, writes: page && !press };
         const o = optionInText(options, text);
         return o === null ? { why: "ambiguous" } : { value: o, display: o, writes: false };

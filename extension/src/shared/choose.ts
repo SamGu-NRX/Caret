@@ -30,3 +30,71 @@ export function whyNoPick<T extends { name: string }>(m: OptionMatch<T>, value: 
   if (m.partial.length === 1) return `no option is named exactly '${value}'; the list offers ${quote(m.partial)}, so you choose`;
   return `no option in the list matches '${value}'`;
 }
+
+/**
+ * Whether the handler types the filter before any list shows, when a press opened none: a text field that filters as
+ * you type (aria-autocomplete anything but "none"). F1's School picker and Ashby's location open their list only once
+ * the field holds text, and fetch its options from the server for that text.
+ */
+export function typesToOpen(textField: boolean, autocomplete: string | null): boolean {
+  return textField && autocomplete !== "none";
+}
+
+/** One reading of a list: its enabled options' names, and whether the page says its results are still loading. */
+export interface ListReading {
+  names: readonly string[];
+  busy: boolean;
+}
+
+/**
+ * Whether `now` settles a list that queries as you type: its results are in (not loading, not empty) and read the same
+ * as `prev`, the reading a settle before, which was not loading either. While it loads, a list may still show the
+ * results of an earlier query (react-select async does once it has loaded one).
+ */
+export function settles(prev: ListReading | null, now: ListReading): boolean {
+  if (prev === null || prev.busy || now.busy || now.names.length === 0) return false;
+  return prev.names.length === now.names.length && prev.names.every((n, i) => n === now.names[i]);
+}
+
+/** What the handler read after a pick and a blur, for pickProblems. */
+export interface PickState {
+  flavor: "aria" | "reactSelect";
+  /** The picked option's name. */
+  value: string;
+  before: string;
+  afterBlur: string;
+  hiddenInput: "set" | "unchanged" | "none";
+  expanded: boolean | null;
+  /** Caret typed the value as the filter into the control's own text field, so for an ARIA combobox the text it shows proves nothing. */
+  typedText: boolean;
+  /** The list closed, or the control said aria-expanded=false, on the press of the option, before any Escape of Caret's. */
+  closedOnPick: boolean;
+}
+
+/** Whitespace collapsed and trimmed, then cut to `max` characters, as content/names.ts clean() does. */
+function clip(t: string, max: number): string {
+  const c = t.replace(/\s+/g, " ").trim();
+  return c.length <= max ? c : `${c.slice(0, max - 1)}…`;
+}
+
+/** Why a pick is not verified, each as a clause for the receipt; empty when it is. */
+export function pickProblems(s: PickState): string[] {
+  const out: string[] = [];
+  if (normalizeName(s.afterBlur) !== normalizeName(s.value)) out.push(s.afterBlur === s.before ? "the control kept its old value" : `the control shows '${clip(s.afterBlur, 60)}'`);
+  if (s.hiddenInput === "unchanged") out.push("react-select's form value did not change");
+  if (s.expanded === true) out.push("the list is still open");
+  // An ARIA combobox's text field shows the typed filter whether or not the page took the option: only the list
+  // closing on the press shows it did. React-select's chip, and text Caret did not type, are set only by a pick.
+  if (s.flavor === "aria" && s.typedText && !s.closedOnPick) out.push("the list stayed open after the option was pressed, so the text the control shows may be only the filter Caret typed");
+  return out;
+}
+
+/**
+ * React-select's hidden form input after a stop, against what it held before Caret touched the control: any change
+ * reads as set, so a stop that moved the form value is never reported as put back.
+ */
+export function hiddenAfterStop(before: string | null, now: string | null): "set" | "unchanged" | "none" {
+  // C1 review: a hidden input that was there and is gone moved the form value too.
+  if (now === null) return before === null ? "none" : "set";
+  return now === before ? "unchanged" : "set";
+}

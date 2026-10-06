@@ -531,6 +531,11 @@ interface Row {
     outcome: string;
     disagreements: { field: string; value: string; verify: "dropped" | "kept"; key: "right" | "wrong" | "unscored" }[];
     verifyRequests: number;
+    /** C1: what the preview said Caret left, and how each segment ended (a stop's or finish's own words), for diagnosis. */
+    warnings: string[];
+    ended: string[];
+    /** C1: Jev requests this page made outside the disagreement report: the Ask's, and any fill a focus asked for. */
+    jevRequests: number;
   } | null;
   /** A task page, by F1's oracle (--suite tasks only). */
   task?: TaskRow;
@@ -757,7 +762,10 @@ async function main(): Promise<number> {
       const differ = [...undone.nodes.values()].filter((n) => n.editable === true && (n.value ?? "") !== (before.get(n.key) ?? ""));
       for (const n of differ) notRestored.push(`${n.label ?? n.key} holds '${n.value ?? ""}'`);
     } else notRestored.push(...(await task.unrestored()));
-    row.goal = { previewMs, steps: reply.steps.length, left: reply.warnings.length, tabs, eligible, eligibleWritten, revealMs, restored: notRestored.length === 0, notRestored, outcome, disagreements, verifyRequests };
+    const goalIds = new Set(segments.map((x) => x.goalId));
+    const ended = published.slice(mark).flatMap((m) => (m.type === "goalProgress" && goalIds.has(m.goalId) && (m.event === "stopped" || m.event === "finished") ? [`${m.event}: ${m.says}${m.event === "finished" && m.left.length > 0 ? ` [left: ${m.left.join(" / ")}]` : ""}`] : []));
+    const jevRequests = calls.filter((c) => c.page === p.id && c.stage !== "verify").length;
+    row.goal = { previewMs, steps: reply.steps.length, left: reply.warnings.length, tabs, eligible, eligibleWritten, revealMs, restored: notRestored.length === 0, notRestored, outcome, disagreements, verifyRequests, warnings: reply.warnings, ended, jevRequests };
   };
 
   /** The desk: last page's sources and memory gone, this page's in place, the source focused last and left for the browser. */

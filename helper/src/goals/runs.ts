@@ -326,7 +326,7 @@ export class GoalRuns {
       this.stop(run, "expired", null, `${SAYS.expired}; nothing was done for it`);
       return { refused: `segment ${m.segment + 1} of goal ${m.goalId} expired before it was accepted` };
     }
-    const taskId = `${run.plan.goalId}:s${seg.index}`;
+    const taskId = segmentTaskId(run.plan.goalId, seg.index);
     // P3: the file the user confirmed in this preview, for one of its attach rows. Checked and read before the segment
     // counts as accepted: a file Caret refuses (a link, not a regular file, too large) leaves the preview waiting, so the
     // user can choose another. Attach rows given no file are dropped from the run below and left to the user.
@@ -367,7 +367,9 @@ export class GoalRuns {
     const expect: Record<string, Record<string, string>> = {};
     if (w !== undefined) expect[w.window.windowId] = Object.fromEntries(seg.steps.filter((s) => s.kind === "write").map((s) => [s.target.key, w.nodes.get(s.target.key)?.value ?? ""]));
     try {
-      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true }) };
+      // C1: a pick the page put back and the executor read back as it was is listed as the user's (leftNow), and the
+      // segment's other steps still run.
+      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true, leaveFailedToYou: true }) };
     } catch (e) {
       // The executor refused the plan before its first step (PlanError): nothing was dispatched.
       const says = `${SAYS.error}: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`;
@@ -722,6 +724,14 @@ export class GoalRuns {
     const add = (l: LeftItem): void => {
       if (!out.some((x) => x.windowId === l.windowId && x.key === l.key)) out.push(l);
     };
+    // C1: the steps a segment's run left to the user (Executor.leftToYou) come first, with the executor's reason.
+    for (const seg of run.plan.segments) {
+      for (const l of this.deps.executor.leftToYou(segmentTaskId(run.plan.goalId, seg.index))) {
+        // The executor's step index, mapped back to the segment's (P3: a run may drop attach rows given no file).
+        const x = stepOf(run, seg, l.step);
+        if (x !== undefined && !wrote(whereOf(x), effectKey(x.target, x.value))) add({ windowId: whereOf(x), key: effectKey(x.target, x.value), label: x.target.label, why: "planned", says: l.says });
+      }
+    }
     for (const l of run.owed) {
       if (l.why === "dropped" || l.why === "planned") {
         if (!wrote(l.windowId, l.key)) add(l);
@@ -967,6 +977,9 @@ export class GoalRuns {
 }
 
 const clip = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
+
+/** The executor task id of a goal's segment. */
+const segmentTaskId = (goalId: string, segment: number): string => `${goalId}:s${segment}`;
 
 /** Where a step acts, as a left item names it: its window, or "calendar". */
 const whereOf = (x: GoalStep): string => (x.target.domain.kind === "window" ? x.target.domain.windowId : "calendar");

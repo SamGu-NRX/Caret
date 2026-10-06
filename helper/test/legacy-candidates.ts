@@ -1,15 +1,17 @@
 // The candidate generator as it was before B6 (commit 129b4b3), frozen as the reference that the
-// early-capped generator must reproduce exactly. Not used by the helper. One deliberate change since
-// is carried over so the two stay comparable: a text holding a typed value is not a label (B13,
-// src/fill/descriptor.ts labelTexts).
+// early-capped generator must reproduce exactly. Not used by the helper. Deliberate changes since
+// are carried over so the two stay comparable: a text holding a typed value is not a label (B13,
+// src/fill/descriptor.ts labelTexts); and C1's reading of a line, taken from the generator itself so the
+// two compare only rank and cap: the typed values code finds (windowValues), every span a line offers
+// (lineSpans), a label naming only the typed value it starts with or the only one of its kind, and the
+// clause a span's description quotes (lineFact).
 import type { Frame, Node, ValueKind } from "../src/protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../src/model.ts";
 import { isLabelLike } from "../src/fill/descriptor.ts";
-import { labelledSpan, MAX_CANDIDATES, RECENT_MS, type Candidate, type Recency } from "../src/fill/candidates.ts";
+import { labelledSpan, lineFact, lineSpans, MAX_CANDIDATES, RECENT_MS, windowValues, type Candidate, type Recency } from "../src/fill/candidates.ts";
+import { bareLine, lineValues } from "../src/fill/line-values.ts";
 
 const MAX_CONTEXT_CHARS = 60;
-const MIN_LINE = 2;
-const MAX_LINE = 80;
 const LINE_ROLES = new Set(["AXStaticText", "AXCell", "AXHeading", "AXLink"]);
 const LABELLED = /^([^:]{1,32}):\s+(.+)$/;
 const MAX_LEFT_GAP = 260;
@@ -26,16 +28,18 @@ export function legacyGenerateCandidates(model: ScreenModel, targetWindowId: str
 
   const out: Candidate[] = [];
   const seen = new Set<string>();
-  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: string | null): void => {
+  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: string | null, quote?: string): void => {
     if (out.length >= max || seen.has(text)) return;
     seen.add(text);
+    const labelled = labelledSpan(node, text, context);
     out.push({
       id: `c${out.length + 1}`,
       text,
       kind,
       context,
       // B24's fact about the span, worked out as the generator does; the ranking under test is unchanged.
-      labelled: labelledSpan(node, text, context),
+      labelled,
+      line: quote ?? lineFact(w, node, text, labelled)?.clause ?? null,
       section: sectionAround(w, node),
       blockHead: blockHead(w, node, text),
       recency: recency(w),
@@ -52,7 +56,7 @@ export function legacyGenerateCandidates(model: ScreenModel, targetWindowId: str
   };
 
   for (const w of windows) {
-    for (const v of w.values) {
+    for (const v of windowValues(w)) {
       const node = w.nodes.get(v.nodeKey);
       if (node === undefined) continue;
       add(w, node, v.text, v.kind, contextFor(w, node, v.text));
@@ -64,16 +68,14 @@ export function legacyGenerateCandidates(model: ScreenModel, targetWindowId: str
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = nodeText(node).split(/\r?\n/);
       for (const raw of lines) {
-        const line = raw.replace(/\s+/g, " ").trim();
-        if (line.length < MIN_LINE || line.length > MAX_LINE || !/[\p{L}\p{N}]/u.test(line)) continue;
-        if (line.endsWith(":")) continue; // a label, not a value
-        const m = LABELLED.exec(line);
-        if (m !== null && m[1] !== undefined && m[2] !== undefined) {
-          add(w, node, m[2].trim(), null, m[1].trim());
-          continue;
+        for (const s of lineSpans(raw)) {
+          if (s.label !== null) {
+            add(w, node, s.text, null, s.label, s.with);
+            continue;
+          }
+          const context = lines.length === 1 ? (isSourceField ? (node.label ?? nearestText(w, node, isLabelLike)) : nearestText(w, node, isLabelLike)) : null;
+          add(w, node, s.text, null, context);
         }
-        const context = lines.length === 1 ? (isSourceField ? (node.label ?? nearestText(w, node, isLabelLike)) : nearestText(w, node, isLabelLike)) : null;
-        add(w, node, line, null, context);
       }
     }
   }
@@ -82,8 +84,8 @@ export function legacyGenerateCandidates(model: ScreenModel, targetWindowId: str
 
 function contextFor(w: WindowState, node: Node, span: string): string | null {
   for (const line of nodeText(node).split(/\r?\n/)) {
-    const m = LABELLED.exec(line.trim());
-    if (m !== null && m[1] !== undefined && m[2]?.includes(span)) return m[1].trim();
+    const m = LABELLED.exec(bareLine(line));
+    if (m !== null && m[1] !== undefined && m[2] !== undefined && m[2].includes(span) && labelNames(m[2].trim(), span)) return m[1].trim();
   }
   if (node.editable === true && node.label !== undefined) return node.label;
   return nearestText(w, node, isLabelLike);
@@ -177,4 +179,12 @@ function clean(s: string | undefined | null): string | null {
 
 function stripColon(s: string | null): string | null {
   return s === null ? null : s.replace(/\s*:\s*$/, "");
+}
+
+/** C1: a label names a typed value its value starts with, or the only one of its kind there (candidates.ts labelNames). */
+function labelNames(value: string, span: string): boolean {
+  if (value.startsWith(span)) return true;
+  const vs = lineValues(value);
+  const kind = vs.find((v) => v.text === span)?.kind;
+  return kind === undefined || vs.filter((v) => v.kind === kind).length === 1;
 }

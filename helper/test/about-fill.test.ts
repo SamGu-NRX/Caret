@@ -33,13 +33,15 @@ describe("which values and fields About entries fit", () => {
     expect(aboutKind("Nickname", "Sam")).toBeNull();
     expect(aboutKind("Name", "Sam Rivera 2")).toBeNull();
     expect(aboutKind("Company", "Lumen Labs")).toBeNull();
-    expect(aboutKind("Home city", "Porto")).toBeNull();
+    // C1: a city is a kind of its own (test/c1-about-kinds.test.ts).
+    expect(aboutKind("Home city", "Porto")).toBe("city");
   });
 
   it("keeps typed entries only, trimmed, with their kinds", () => {
     const e = (id: string, label: string, v: string, source: "typed" | "edit" | "contacts") => ({ id, fields: { label, value: v, source } });
-    expect(aboutValues([e("a", "Name", "Sam Rivera ", "typed"), e("b", "Guest", "Marcus Lowe", "edit"), e("c", "Email", "x@y.example", "contacts"), e("d", "Home city", "Porto", "typed")])).toEqual([
+    expect(aboutValues([e("a", "Name", "Sam Rivera ", "typed"), e("b", "Guest", "Marcus Lowe", "edit"), e("c", "Email", "x@y.example", "contacts"), e("d", "Home city", "Porto", "typed"), e("f", "Nickname", "Sam", "typed")])).toEqual([
       { id: "a", label: "Name", value: "Sam Rivera", kind: "name" },
+      { id: "d", label: "Home city", value: "Porto", kind: "city" },
     ]);
   });
 
