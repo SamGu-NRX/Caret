@@ -1,0 +1,1 @@
+P3: a cut reader walk (root null, stats.truncated) keeps every prior node it did not send until a complete walk (model.ts mergeCutWalk); inferring 'passed' nodes from the old order dropped a text area that a moved node jumped ahead of. Pages are still replaced whole.

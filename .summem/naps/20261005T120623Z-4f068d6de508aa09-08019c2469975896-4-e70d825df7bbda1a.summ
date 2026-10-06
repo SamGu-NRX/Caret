@@ -1,0 +1,1 @@
+B30: drafts.ts checks drafted text as whole typed facts; fix holes with whole-expression rules, never token allowlists. R2: replayed typing carries its typed value in the text's snapshot, with focusedKey; Router 1 is skipped only for consented held-offer records from a host.
