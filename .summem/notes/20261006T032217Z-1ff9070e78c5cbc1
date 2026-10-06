@@ -1,0 +1,1 @@
+P4: text read from the tab the user just left never enters ScreenModel; only fill paths see it, via TabSource.viewFor(owner) (engines/tab-source.ts). Never hand helper.model views or TabSource nodes to other consumers (router, event cards, shadow, transfers).
