@@ -50,4 +50,14 @@ describe("typing reports", () => {
     tick();
     expect(reports()).toBe(0);
   });
+
+  it("reports the document losing focus at once, though it is no longer in front, but not during Caret's act", () => {
+    const { r, reports, timers } = rig(false);
+    r.left();
+    expect(reports()).toBe(1);
+    expect(timers).toEqual([]);
+    r.actStarted();
+    r.left();
+    expect(reports()).toBe(1);
+  });
 });

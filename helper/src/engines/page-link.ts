@@ -286,6 +286,15 @@ export function pressGroupFor(s: PageSnapshot | undefined, key: string): { frame
 }
 
 /** The element a node key names in a tab's last walk, or null. */
+/**
+ * H13: the walked element a key names, as one opaque string: its frame, its document and its id in that document's
+ * registry. A node key is a label and an ordinal, so a page that replaces a field with another of the same label keeps
+ * the key; this token changes. The host gets it with the field (pageField) and gives it back with an insert.
+ */
+export function elementToken(t: { frameId: number; documentId: string; id: string }): string {
+  return `${t.frameId}:${t.documentId}:${t.id}`;
+}
+
 export function targetFor(s: PageSnapshot | undefined, key: string): PageTargetRef | null {
   if (s === undefined) return null;
   for (const f of s.frames) for (const c of f.controls) if (nodeKey(f.frameId, c) === key) return { frameId: f.frameId, documentId: f.documentId, id: c.id, control: c };
@@ -574,7 +583,7 @@ export class PageEngineLink implements ReaderLink {
    * reads exactly `expect` before its caret, by execCommand("insertText"), so the page's own Undo takes it back. Under
    * the task's grant, as every act. Only an accepted inline offer on a page calls this (the host's half, H13).
    */
-  async insertText(windowId: string, key: string, expect: string, text: string, taskId: string): Promise<VerbResult> {
+  async insertText(windowId: string, key: string, expect: string, text: string, taskId: string, token?: string): Promise<VerbResult> {
     const w = parsePageWindow(windowId);
     if (w === null || w.engine !== this.session.info.engine) return verbResult("noWindow", `${windowId} is not a window of engine ${this.session.info.engine}`);
     const snap = this.session.tabs.get(w.tabId);
@@ -582,6 +591,8 @@ export class PageEngineLink implements ReaderLink {
     if (t === null) return verbResult("noElement", `no element ${key} in the tab's last walk`);
     if (!INSERT_KINDS.has(t.control.kind)) return verbResult("axError", `'${t.control.name}' is a ${t.control.kind}, which takes no typed text`);
     if (snap?.focused?.frameId !== t.frameId || snap.focused.id !== t.id) return verbResult("changed", `'${t.control.name}' is not the field that has focus`);
+    // H13 review: the key may name another element now (the page replaced the field with one of the same label).
+    if (token !== undefined && elementToken(t) !== token) return verbResult("changed", `'${t.control.name}' is not the element the offer was made for`);
     return this.act({ kind: "pageInsertText", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId, expect, text }, w.tabId);
   }
 

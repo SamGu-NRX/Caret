@@ -349,7 +349,8 @@ public final class OfferArbiter: @unchecked Sendable {
             // H11: one page segment per Tab. A held Tab's autorepeat accepts nothing: a continuation that arrives while
             // the key is still down would otherwise be taken by a press the user made for the segment before. It is
             // consumed with nothing changed, so the page does not move its focus either (review H11-2).
-            if key.isRepeat, key.isPlainTab, Self.isPageTask(offer) { return .navigate(offerID: offer.id, ui: s.ui) }
+            // H13 review: nor a page's inline text, which a held Tab would otherwise take one offer after another.
+            if key.isRepeat, key.isPlainTab, Self.isPageTask(offer) || (offer.source == .page && offer.kind.name == "ghost") { return .navigate(offerID: offer.id, ui: s.ui) }
             let surface = Self.surface(of: offer, ui: s.ui, typed: s.typedSinceOffer)
             guard KeyOwnership.owns(surface, keyClass) else {
                 // Typing the head of ghost text keeps the rest on offer. Everything else that passes

@@ -2096,6 +2096,11 @@
               "minLength": 1,
               "maxLength": 2000
             },
+            "token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            },
             "at": {
               "type": "integer",
               "minimum": 0,
@@ -2111,6 +2116,7 @@
             "key",
             "expect",
             "text",
+            "token",
             "at"
           ],
           "additionalProperties": false
@@ -9278,6 +9284,11 @@
                   "type": "null"
                 }
               ]
+            },
+            "token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
             }
           },
           "required": [

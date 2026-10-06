@@ -248,6 +248,84 @@ final class PageInlineTests: XCTestCase {
         XCTAssertNil(r.arbiter.snapshot().current)
     }
 
+    // MARK: - Review findings (H13 review)
+
+    func testAClaimRacingAnUnchangedReportStillInserts() throws {
+        let r = Rig()
+        r.field(try Self.field(1))
+        r.suggest("Field Robotics Technician role")
+        // The tap takes Tab; before its claim reaches the machine, the page reports the field again.
+        guard case .consume(let claim) = r.arbiter.handleKeyDown(.tab(to: Self.chrome), now: r.clock.now) else { return XCTFail("Tab took nothing") }
+        r.field(try Self.field(1))
+        r.machine.claimed(claim)
+        XCTAssertEqual(r.inserts.map(\.text), ["Field Robotics Technician role"])
+        XCTAssertEqual(r.inserts.first?.token, "0:D0:e4")
+    }
+
+    func testNoOfferOverTheFieldAsItWasWhileTheInsertIsOnItsWay() throws {
+        let r = Rig()
+        r.field(try Self.field(1))
+        r.suggest("Field Robotics Technician role")
+        r.press(.tab(to: Self.chrome))
+        let asked = r.requests.count
+        // A report from before the insert landed: nothing is generated or offered for it.
+        r.field(try Self.field(1))
+        XCTAssertEqual(r.requests.count, asked)
+        XCTAssertEqual(r.machine.lastOutcome, "insertPending")
+        // The field with the insert in it: inline text as usual.
+        r.field(try Self.field(4))
+        XCTAssertEqual(r.requests.count, asked + 1)
+    }
+
+    func testAHeldTabsAutorepeatTakesNothing() throws {
+        let r = Rig()
+        r.field(try Self.field(1))
+        r.suggest("Field Robotics Technician role")
+        XCTAssertEqual(r.press(KeyStroke(keyCode: KeyStroke.tabKeyCode, targetPID: Self.chrome, isRepeat: true)).isConsume, false)
+        XCTAssertEqual(r.inserts, [])
+    }
+
+    func testTypedThroughTextIsCountedOnceWhereverItIsReported() throws {
+        let r = Rig()
+        r.field(try Self.field(1))
+        r.suggest("Field Robotics Technician role")
+        r.press(.typing("F", to: Self.chrome))
+        XCTAssertEqual(r.ghosts.last?.1.minX, 361.5 + 7, "the typed F, measured")
+        var f = try Self.field(1)
+        f.text?.before += "F"
+        f.caret = Frame(x: 368, y: 221, width: 1, height: 18)
+        r.field(f)
+        XCTAssertEqual(r.ghosts.last?.1.minX, 368)
+        r.press(.typing("i", to: Self.chrome))
+        XCTAssertEqual(r.ghosts.last?.0, "eld Robotics Technician role")
+        XCTAssertEqual(r.ghosts.last?.1.minX, 368 + 7, "only the i is not in the page's report yet")
+        // A report of the same text with the page scrolled: the rest, at the new caret.
+        f.caret = Frame(x: 368, y: 200, width: 1, height: 18)
+        r.field(f)
+        XCTAssertEqual(r.ghosts.last?.0, "eld Robotics Technician role")
+    }
+
+    func testAReplacedElementWithTheSameKeyTakesTheOfferDown() throws {
+        let r = Rig()
+        r.field(try Self.field(1))
+        r.suggest("Field Robotics Technician role")
+        var f = try Self.field(1)
+        f.token = "0:D0:e9"
+        r.field(f)
+        XCTAssertNil(r.arbiter.snapshot().current)
+        XCTAssertEqual(r.press(.tab(to: Self.chrome)), .pass(.noOffer))
+    }
+
+    func testNoOfferWithoutTheElementsToken() throws {
+        let r = Rig()
+        var f = try Self.field(1)
+        f.token = nil
+        r.field(f)
+        r.suggest("Field Robotics Technician role")
+        XCTAssertNil(r.arbiter.snapshot().current)
+        XCTAssertEqual(r.machine.lastOutcome, "noToken")
+    }
+
     // MARK: - Pages with their own suggestions
 
     func testGmailShowsNoGhostAndItsOwnSuggestionsKeepTab() throws {

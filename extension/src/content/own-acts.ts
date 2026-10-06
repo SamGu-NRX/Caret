@@ -50,6 +50,16 @@ export class FocusReporter {
   }
 
   /**
+   * H13 review: the page's document lost focus (the user clicked the address bar, or another browser window): reported
+   * at once, though the document is no longer in front, so the helper walks the tab and the host takes down inline text
+   * the user's next Tab would otherwise claim. Not during Caret's own act.
+   */
+  left(): void {
+    if (this.acts > 0) return;
+    this.deps.report();
+  }
+
+  /**
    * H13: the text or the caret of the focused field changed (an input or selectionchange event). Arms one report,
    * sent TYPED_EVERY_MS later if still in front, so the helper walks the field and the host learns the text around its
    * caret. During Caret's own act (an insert at the caret writes the field too) it waits for the act to end.

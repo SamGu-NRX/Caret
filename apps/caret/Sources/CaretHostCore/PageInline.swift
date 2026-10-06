@@ -28,27 +28,29 @@ public struct PageInsert: Codable, Equatable, Sendable {
     /// The text before the caret the page must read: the offer's, plus what the user typed through since.
     public var expect: String
     public var text: String
+    /// The element the offer was made for (`PageField.token`); the page refuses an insert into any other.
+    public var token: String
     public var at: Int64
 
-    public init(requestId: String, windowId: String, key: String, expect: String, text: String, at: Int64) {
-        self.requestId = requestId; self.windowId = windowId; self.key = key; self.expect = expect; self.text = text; self.at = at
+    public init(requestId: String, windowId: String, key: String, expect: String, text: String, token: String, at: Int64) {
+        self.requestId = requestId; self.windowId = windowId; self.key = key; self.expect = expect; self.text = text; self.token = token; self.at = at
     }
 
-    enum CodingKeys: String, CodingKey { case type, v, requestId, windowId, key, expect, text, at }
+    enum CodingKeys: String, CodingKey { case type, v, requestId, windowId, key, expect, text, token, at }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         try GoalPlans.envelope(c, type: Self.type, typeKey: .type, vKey: .v)
         requestId = try c.decode(String.self, forKey: .requestId); windowId = try c.decode(String.self, forKey: .windowId)
         key = try c.decode(String.self, forKey: .key); expect = try c.decode(String.self, forKey: .expect)
-        text = try c.decode(String.self, forKey: .text); at = try c.decode(Int64.self, forKey: .at)
+        text = try c.decode(String.self, forKey: .text); token = try c.decode(String.self, forKey: .token); at = try c.decode(Int64.self, forKey: .at)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(Self.type, forKey: .type); try c.encode(Proto.version, forKey: .v)
         try c.encode(requestId, forKey: .requestId); try c.encode(windowId, forKey: .windowId); try c.encode(key, forKey: .key)
-        try c.encode(expect, forKey: .expect); try c.encode(text, forKey: .text); try c.encode(at, forKey: .at)
+        try c.encode(expect, forKey: .expect); try c.encode(text, forKey: .text); try c.encode(token, forKey: .token); try c.encode(at, forKey: .at)
     }
 }
 
@@ -106,8 +108,9 @@ public enum PageInline {
     /// What the debug socket's offer record may show of an offer's text and of what the user typed through: nothing for
     /// inline text in a page field, whose typed characters are the page's own text and whose suggestion is made from it
     /// (brief item 4). Every other offer as before.
-    public static func debugText(_ offer: Offer, typed: String) -> (text: String, typed: String) {
-        offer.source == .page ? ("", "") : (String(offer.text.dropFirst(typed.count)), typed)
+    public static func debugText(_ offer: Offer, typed: String) -> (text: String, typed: String, revision: String) {
+        // H13 review: the revision too, an unsalted digest of the field's text, which a guess could be checked against.
+        offer.source == .page ? ("", "", "") : (String(offer.text.dropFirst(typed.count)), typed, offer.target.elementRevision)
     }
 
     /// Text that follows the caret on its own line, where inline text would cover it.
@@ -243,12 +246,18 @@ public final class PageInlineMachine {
         var before: String
         var after: String
         var target: TargetIdentity
+        /// The walked element (`PageField.token`) the offer was made for.
+        var token: String
+        /// The caret as the page last reported it, and the characters typed through that report already shows.
         var caret: CGRect
+        var reflected: String
         var look: PageField.Look?
     }
     private var shown: Shown?
     private var inserts = 0
-    private var awaiting: (requestId: String, timer: SurfaceTimer)?
+    /// An insert on its way: until the page answers, a report of the field as it was before the insert offers nothing,
+    /// so a stale offer is never drawn over text that is going in (H13 review).
+    private var awaiting: (requestId: String, before: String, after: String, timer: SurfaceTimer)?
     /// The quiet line on screen: about a page's own suggestions (`page`), or a source Caret cannot read (nil).
     private var notice: (offerID: UInt64, page: PageField.OwnSuggestions?, timer: SurfaceTimer)?
     /// Pages whose line showed in this run: it shows once a run at most ("Not now" is this run).
@@ -287,20 +296,21 @@ public final class PageInlineMachine {
         guard let text = f.text, text.selection.isEmpty, let caretFrame = f.caret, f.frame != nil else { return clear("noText") }
         if PageInline.midLine(text.after) { return clear("midLine") }
         let caret = Self.rect(caretFrame)
+        if let a = awaiting, text.before == a.before, text.after == a.after { return clear("insertPending") }
         if let s = shown {
-            guard arbiter.snapshot().current?.id == s.offerID else { return clear("offerGone") }
-            if s.target.elementID == key, s.target.windowID == f.windowId, text.after == s.after, text.before.hasPrefix(s.before) {
-                let typed = String(text.before.dropFirst(s.before.count))
-                if typed.isEmpty {
-                    // The same text: a scroll or a caret report. The ghost follows the caret.
-                    if caret != s.caret { shown?.caret = caret; output(.drawGhost(String(s.text), caret: caret, look: f.look)) }
-                    return
-                }
-                if s.text.hasPrefix(typed), typed.count < s.text.count {
-                    // Typed through: the rest stays on offer, drawn at the new caret (the arbiter keeps the offer).
+            let snap = arbiter.snapshot()
+            guard snap.current?.id == s.offerID else {
+                // Tab took it a moment ago: its claim, on its way to `claimed`, sends the insert (H13 review).
+                if snap.lastClaim?.offerID == s.offerID { return }
+                return clear("offerGone")
+            }
+            if s.target.elementID == key, s.target.windowID == f.windowId, f.token == s.token, text.after == s.after, text.before.hasPrefix(s.before) {
+                let reported = String(text.before.dropFirst(s.before.count))
+                if s.text.hasPrefix(reported), reported.count < s.text.count, snap.typedSinceOffer.hasPrefix(reported) {
+                    // The same text (a scroll, a caret report) or typed through: the rest stays on offer at the page's caret.
                     shown?.caret = caret
-                    output(.drawGhost(String(s.text.dropFirst(typed.count)), caret: caret, look: f.look))
-                    return
+                    shown?.reflected = reported
+                    return redraw()
                 }
             }
             clear("textChanged")
@@ -319,6 +329,7 @@ public final class PageInlineMachine {
         guard let text, !text.isEmpty else { return note(why.map { "suppressed.\($0)" } ?? "nothing") }
         guard let f = current, let t = PageInline.target(f), let fieldText = f.text, fieldText.before == r.before, fieldText.after == r.after,
               let caretFrame = f.caret, let frame = f.frame else { return note("stale") }
+        guard let token = f.token else { return note("noToken") }
         let caret = Self.rect(caretFrame)
         let box = Self.rect(frame)
         // The ghost stays inside the field, short of its right padding (the left inset stands in for it).
@@ -328,7 +339,7 @@ public final class PageInlineMachine {
                           caretUTF16: UTF16Text.length(r.before), createdAt: clock.now, maxAgeSeconds: Self.offerAge)
         // Published unshown, drawn, then revealed: Tab takes only text that is on screen.
         guard let id = arbiter.publish(offer, shown: false) else { return note("refused") }
-        shown = Shown(offerID: id, text: text, before: r.before, after: r.after, target: t, caret: caret, look: f.look)
+        shown = Shown(offerID: id, text: text, before: r.before, after: r.after, target: t, token: token, caret: caret, reflected: "", look: f.look)
         output(.drawGhost(text, caret: caret, look: f.look))
         guard arbiter.reveal(offerID: id) else {
             shown = nil
@@ -348,12 +359,17 @@ public final class PageInlineMachine {
             output(.hideGhost)
             return
         }
-        if reason == .typedThrough {
-            // Moved by what was typed, in the field's size, until the page's next report places it exactly.
-            let typed = snap.typedSinceOffer
-            let shift = measure(typed, CGFloat(s.look?.fontSize ?? 13))
-            output(.drawGhost(String(s.text.dropFirst(typed.count)), caret: s.caret.offsetBy(dx: shift, dy: 0), look: s.look))
-        }
+        if reason == .typedThrough { redraw() }
+    }
+
+    /// The rest of the offer after what was typed through, at the page's last caret moved by what it does not show yet
+    /// (measured in the field's size until the page's next report places it exactly).
+    private func redraw() {
+        guard let s = shown else { return }
+        let typed = arbiter.snapshot().typedSinceOffer
+        let unreported = typed.hasPrefix(s.reflected) ? String(typed.dropFirst(s.reflected.count)) : ""
+        let shift = unreported.isEmpty ? 0 : measure(unreported, CGFloat(s.look?.fontSize ?? 13))
+        output(.drawGhost(String(s.text.dropFirst(typed.count)), caret: s.caret.offsetBy(dx: shift, dy: 0), look: s.look))
     }
 
     /// Tab (or ⌥→) took the offer, or a key took the quiet line's action.
@@ -380,13 +396,14 @@ public final class PageInlineMachine {
         shown = nil
         output(.hideGhost)
         // The field the page last reported must still be the one the offer was made for; the page checks its text.
-        guard let f = current, f.windowId == s.target.windowID, f.key == s.target.elementID, Int32(exactly: f.app.pid) == s.target.pid else {
+        guard let f = current, f.windowId == s.target.windowID, f.key == s.target.elementID, f.token == s.token, Int32(exactly: f.app.pid) == s.target.pid else {
             return note("insert.fieldMoved")
         }
         inserts += 1
         let requestId = "inline-\(inserts)"
+        let expect = PageInline.lastUnits(s.before + claim.typedSinceOffer)
         output(.send(PageInsert(requestId: requestId, windowId: s.target.windowID, key: s.target.elementID,
-                                expect: PageInline.lastUnits(s.before + claim.typedSinceOffer), text: claim.insertionText,
+                                expect: expect, text: claim.insertionText, token: s.token,
                                 at: Int64(clock.now.timeIntervalSince1970 * 1000))))
         note("insert.sent")
         awaiting?.timer.cancel()
@@ -395,7 +412,7 @@ public final class PageInlineMachine {
             self.awaiting = nil
             self.note("insert.unanswered")
         }
-        awaiting = (requestId, timer)
+        awaiting = (requestId, expect, s.after, timer)
     }
 
     public func replied(_ r: PageInsertReply) {

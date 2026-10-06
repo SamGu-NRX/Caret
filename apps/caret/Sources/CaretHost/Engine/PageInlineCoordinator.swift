@@ -163,6 +163,8 @@ final class PageInlineCoordinator {
                 outcome = try await engine.suggest(for: context)
             } catch {
                 gate.cancel()
+                // H13 review: a failed generation ends its request, so the next report of the same text asks again.
+                if !(error is CancellationError), let self { self.machine.generated(r.id, text: nil, why: "engineError") }
                 return
             }
             await gate.value

@@ -2229,7 +2229,7 @@ export class Helper {
     const pid = this.model.windows.get(m.windowId)?.app.pid ?? 0;
     link.grant?.({ type: "actGrant", v: PROTOCOL_VERSION, taskId, pid, windowId: m.windowId, at, expires: at + INLINE_GRANT_MS });
     try {
-      const r = await link.insertText(m.windowId, m.key, m.expect, m.text, taskId);
+      const r = await link.insertText(m.windowId, m.key, m.expect, m.text, taskId, m.token);
       switch (r.outcome) {
         case "ok":
           return reply("inserted", "inserted");

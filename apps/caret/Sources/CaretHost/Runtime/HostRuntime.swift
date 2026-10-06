@@ -1107,7 +1107,7 @@ public final class HostRuntime {
                 pid: offer.target.pid,
                 bundleID: offer.target.bundleID,
                 caretUTF16: offer.caretUTF16,
-                elementRevision: offer.target.elementRevision,
+                elementRevision: shown.revision,
                 presentation: offer.kind == .ghost && offer.source == .engine ? fields.presentation : offer.kind.name
             )
             info.kind = offer.kind.name

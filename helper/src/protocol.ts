@@ -1232,6 +1232,8 @@ export const PageInsert = z.object({
   key: z.string().min(1),
   expect: z.string().max(FIELD_BEFORE_MAX),
   text: z.string().min(1).max(FIELD_BEFORE_MAX),
+  /** The element the offer was made for, as pageField.token named it; the page engine refuses any other (H13 review). */
+  token: z.string().min(1).max(300),
   at: ms,
 });
 export type PageInsert = z.infer<typeof PageInsert>;
@@ -2251,6 +2253,11 @@ export const PageField = z.object({
   docsText: z.enum(["on", "off"]).nullable().optional(),
   /** H13: the caret in screen points, for a field of the top frame; with `text`, to the same hosts only. */
   caret: Frame.nullable().optional(),
+  /**
+   * H13 review: the walked element itself (page-link.ts elementToken: frame, document, registry id), with `text`. The
+   * key is a label and an ordinal, which a replacement field of the same label keeps; an insert names this token.
+   */
+  token: z.string().min(1).max(300).optional(),
 });
 export type PageField = z.infer<typeof PageField>;
 

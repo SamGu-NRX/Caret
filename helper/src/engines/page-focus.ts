@@ -14,7 +14,7 @@ import type { ScreenModel } from "../model.ts";
 import type { EngineSession } from "./session.ts";
 import { pageWindowId } from "./windows.ts";
 import { pageFieldText } from "./field-text.ts";
-import { screenRect } from "./page-link.ts";
+import { elementToken, screenRect } from "./page-link.ts";
 
 export interface PageFocusOptions {
   model: ScreenModel;
@@ -72,7 +72,7 @@ export class PageFocus {
   }
 
   /** The host's record of the field the user is in on this tab: `key` null for none. */
-  private tell(session: EngineSession, windowId: string, title: string, at: number, n: { key: string; role: string; editable: boolean; empty: boolean; frame: PageField["frame"]; look?: PageField["look"]; text?: PageFieldText; caret?: PageField["caret"] } | null): void {
+  private tell(session: EngineSession, windowId: string, title: string, at: number, n: { key: string; role: string; editable: boolean; empty: boolean; frame: PageField["frame"]; look?: PageField["look"]; text?: PageFieldText; caret?: PageField["caret"]; token?: string } | null): void {
     this.opts.publish?.({
       type: "pageField",
       v: PROTOCOL_VERSION,
@@ -91,6 +91,7 @@ export class PageFocus {
       // pageText; nothing here logs them.
       ...(n?.text === undefined || (n.text.text === null && n.text.ownSuggestions === null && n.text.docsText === null) ? {} : n.text),
       ...(n?.caret === undefined || n.caret === null ? {} : { caret: n.caret }),
+      ...(n?.token === undefined || n.text === undefined || n.text.text === null ? {} : { token: n.token }),
     });
   }
 
@@ -121,7 +122,9 @@ export class PageFocus {
     const look = f?.look !== undefined && f.frameId === 0 && view !== null && n.frame !== undefined ? { inset: f.look.inset * view.zoom, fontSize: f.look.fontSize * view.zoom, placeholder: f.look.placeholder, dark: f.look.dark } : undefined;
     // H13: the caret on screen, for a field of the top frame only, which alone has a screen frame (page-link screenRect).
     const caret = f?.caret !== undefined && f.caret !== null && f.frameId === 0 && view !== null && n.frame !== undefined ? screenRect(view, f.caret) : null;
-    this.tell(session, windowId, w.window.title, a.snapshot.at, { key: n.key, role: n.role, editable: n.editable === true, empty: (n.value ?? "") === "", frame: n.frame ?? null, ...(look === undefined ? {} : { look }), text: pageFieldText(a.snapshot), caret });
+    const doc = f === null ? undefined : a.snapshot.frames.find((x) => x.frameId === f.frameId)?.documentId;
+    const token = f === null || doc === undefined ? undefined : elementToken({ frameId: f.frameId, documentId: doc, id: f.id });
+    this.tell(session, windowId, w.window.title, a.snapshot.at, { key: n.key, role: n.role, editable: n.editable === true, empty: (n.value ?? "") === "", frame: n.frame ?? null, ...(look === undefined ? {} : { look }), text: pageFieldText(a.snapshot), caret, ...(token === undefined ? {} : { token }) });
     const said = `${windowId} ${n.key}`;
     if (this.lastFocus.get(pid) === said) return;
     this.lastFocus.set(pid, said);

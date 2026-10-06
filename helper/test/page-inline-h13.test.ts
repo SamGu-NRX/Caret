@@ -12,10 +12,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { HelperServer, withoutPageText } from "../src/server.ts";
 import { Store } from "../src/store.ts";
-import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarGrant, type HelperToEngine, type PageField, type PageSnapshot, type VerbResult } from "../src/protocol.ts";
+import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarGrant, type HelperToEngine, type PageControl, type PageField, type PageSnapshot, type VerbResult } from "../src/protocol.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { pageHost } from "../src/engines/host.ts";
+import { PageEngineLink } from "../src/engines/page-link.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
 import { X, chrome, hello as pageHello } from "./fake-page.ts";
 
@@ -256,6 +257,8 @@ describe("the page field the host hears (H13)", () => {
     expect(f).toMatchObject({ key: "f0/form[apply]/textarea:cover letter~0", text: { before: "I am writing", after: "", selection: "" }, ownSuggestions: null, docsText: null });
     // The viewport's top sits at the window's bottom less its height: 50 + 600 - 500 = 150 (page-link screenRect).
     expect(f?.caret).toEqual([210, 200, 1, 18]);
+    // The walked element itself, which an insert must name (H13 review: a key survives a replaced field).
+    expect(f?.token).toBe("0:D0:e1");
     expect(HelperMessage.safeParse(f).success).toBe(true);
   });
 
@@ -280,5 +283,32 @@ describe("the page field the host hears (H13)", () => {
     expect(f).toBeDefined();
     expect(Object.keys(f as object)).not.toContain("text");
     expect(Object.keys(f as object)).not.toContain("caret");
+  });
+});
+
+describe("an insert names the element the offer was made for (H13 review)", () => {
+  const CONTROLS: PageControl[] = [{ id: "e1", key: "form[a]/textarea:cover letter~0", strongKey: null, kind: "textarea", role: "textbox", name: "Cover letter", form: "form#a", rect: [0, 0, 100, 20], value: "" }];
+  function snap(id: string): PageSnapshot {
+    return {
+      type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w", at: 1, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/apply", navGen: 1, title: "Apply", headings: [], controls: CONTROLS.map((c) => ({ ...c, id })), iframes: [], excluded: {}, truncated: false }],
+      missing: [], focused: { frameId: 0, id, selection: [0, 0], text: { before: "", after: "", selection: "" } },
+    };
+  }
+  it("refuses when the key now names a replacement element, and sends nothing to the page", async () => {
+    const sent: HelperToEngine[] = [];
+    const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m) => {
+      sent.push(m);
+      if (m.type === "pageCommand") queueMicrotask(() => session.receive({ type: "pageResult", v: 1, id: m.id, at: 1, outcome: "ok", detail: null }));
+      return true;
+    }, 200);
+    session.receive(pageHello);
+    // The offer was made for e1; the page has since replaced the field with e9 under the same label.
+    session.tabs.set(7, snap("e9"));
+    const link = new PageEngineLink(session, () => {});
+    const key = "f0/form[a]/textarea:cover letter~0";
+    expect((await link.insertText("page:eng1:7", key, "", "x", "t", "0:D0:e1")).outcome).toBe("changed");
+    expect(sent.filter((m) => m.type === "pageCommand")).toEqual([]);
+    expect((await link.insertText("page:eng1:7", key, "", "x", "t", "0:D0:e9")).outcome).toBe("ok");
   });
 });

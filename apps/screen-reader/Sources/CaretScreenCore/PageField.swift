@@ -27,6 +27,9 @@ public struct PageField: Codable, Equatable, Sendable {
     public var docsText: DocsText?
     /// H13: the caret in screen points, for a field of the page's top frame; nil when the page could not place it.
     public var caret: Frame?
+    /// H13 review: the walked element itself (frame, document, registry id), opaque. The key is a label and an ordinal,
+    /// which a replacement field of the same label keeps; an insert names this token and the page refuses any other.
+    public var token: String?
 
     /// The text before the caret (at most 2,000 characters), after it (500) and selected.
     public struct Text: Codable, Equatable, Sendable {
@@ -57,13 +60,13 @@ public struct PageField: Codable, Equatable, Sendable {
     }
 
     public init(at: Int64, app: AppRef, windowId: String, title: String, key: String?, role: String, editable: Bool, empty: Bool, frame: Frame?, look: Look? = nil,
-                text: Text? = nil, ownSuggestions: OwnSuggestions? = nil, docsText: DocsText? = nil, caret: Frame? = nil) {
+                text: Text? = nil, ownSuggestions: OwnSuggestions? = nil, docsText: DocsText? = nil, caret: Frame? = nil, token: String? = nil) {
         self.at = at; self.app = app; self.windowId = windowId; self.title = title; self.key = key
         self.role = role; self.editable = editable; self.empty = empty; self.frame = frame; self.look = look
-        self.text = text; self.ownSuggestions = ownSuggestions; self.docsText = docsText; self.caret = caret
+        self.text = text; self.ownSuggestions = ownSuggestions; self.docsText = docsText; self.caret = caret; self.token = token
     }
 
-    enum CodingKeys: String, CodingKey { case at, app, windowId, title, key, role, editable, empty, frame, look, text, ownSuggestions, docsText, caret }
+    enum CodingKeys: String, CodingKey { case at, app, windowId, title, key, role, editable, empty, frame, look, text, ownSuggestions, docsText, caret, token }
 
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
@@ -79,6 +82,7 @@ public struct PageField: Codable, Equatable, Sendable {
         ownSuggestions = try c.decodeIfPresent(OwnSuggestions.self, forKey: .ownSuggestions)
         docsText = try c.decodeIfPresent(DocsText.self, forKey: .docsText)
         caret = try c.decodeIfPresent(Frame.self, forKey: .caret)
+        token = try c.decodeIfPresent(String.self, forKey: .token)
         if let text, text.before.count > 2000 || text.after.count > 500 || text.selection.count > 2000 {
             throw ProtocolError("pageField's text is longer than a walk reports")
         }
@@ -96,7 +100,7 @@ public struct PageField: Codable, Equatable, Sendable {
         try c.encode(editable, forKey: .editable); try c.encode(empty, forKey: .empty); try c.encode(frame, forKey: .frame)
         try c.encodeIfPresent(look, forKey: .look)
         try c.encodeIfPresent(text, forKey: .text); try c.encodeIfPresent(ownSuggestions, forKey: .ownSuggestions)
-        try c.encodeIfPresent(docsText, forKey: .docsText); try c.encodeIfPresent(caret, forKey: .caret)
+        try c.encodeIfPresent(docsText, forKey: .docsText); try c.encodeIfPresent(caret, forKey: .caret); try c.encodeIfPresent(token, forKey: .token)
     }
 }
 

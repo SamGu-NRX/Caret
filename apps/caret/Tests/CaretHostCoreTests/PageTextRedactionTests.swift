@@ -25,7 +25,7 @@ final class PageTextRedactionTests: XCTestCase {
         let offer = Offer(text: "SEEDPAGEGHOST role", source: .page, target: target, fieldValue: "Dear SEEDPAGEBEFORE \nSEEDPAGEAFTER", caretUTF16: 20)
         let shown = PageInline.debugText(offer, typed: "SEEDPAGETYPED")
         state.offer = DebugState.OfferInfo(id: 3, text: shown.text, typedSinceOffer: shown.typed, ageMs: 1, pid: target.pid, bundleID: target.bundleID,
-                                           caretUTF16: offer.caretUTF16, elementRevision: target.elementRevision, presentation: offer.kind.name)
+                                           caretUTF16: offer.caretUTF16, elementRevision: shown.revision, presentation: offer.kind.name)
         state.pageInline = DebugState.PageInlineInfo(last: "shown", shownLength: 18, notice: false, fieldRole: "AXTextArea", beforeLength: 20, afterLength: 13,
                                                      ownSuggestions: nil, tabOwner: nil, latency: LatencyRecorder().summary(), generation: LatencyRecorder().summary())
         state.counters["pageInline.shown"] = 1
@@ -38,6 +38,8 @@ final class PageTextRedactionTests: XCTestCase {
         let full = String(decoding: try JSONEncoder().encode(state), as: UTF8.self)
         for seed in ["SEEDPAGEBEFORE", "SEEDPAGEAFTER", "SEEDPAGEGHOST"] { XCTAssertFalse(full.contains(seed), "\(seed) in the full state") }
         XCTAssertTrue(full.contains(#""beforeLength":20"#), full)
+        // Nor the field's digest, which a guess at its text could be checked against (H13 review).
+        XCTAssertEqual(state.offer?.elementRevision, "")
         let release = String(decoding: try JSONEncoder().encode(ReleaseState(state)), as: UTF8.self)
         for seed in Self.seeds { XCTAssertFalse(release.contains(seed), "\(seed) leaked: \(release)") }
         XCTAssertFalse(release.contains("pageInline"), "the release state keeps no page inline record")

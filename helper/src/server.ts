@@ -120,7 +120,7 @@ export class HelperServer {
     }
     // H13: the text around a page field's caret goes only to hosts that declared pageText; every other consumer gets
     // the field without it.
-    if (m.type === "pageField" && (m.text !== undefined || m.caret !== undefined || m.ownSuggestions !== undefined || m.docsText !== undefined)) {
+    if (m.type === "pageField" && (m.text !== undefined || m.caret !== undefined || m.ownSuggestions !== undefined || m.docsText !== undefined || m.token !== undefined)) {
       for (const c of this.pageText) c.write(line);
       const stripped = JSON.stringify(withoutPageText(m)) + "\n";
       for (const c of this.consumers) if (!this.pageText.has(c)) c.write(stripped);
@@ -514,6 +514,6 @@ function isAlive(path: string): Promise<boolean> {
 
 /** H13: a pageField as a consumer without the pageText capability gets it: the field's key and frame, no text. */
 export function withoutPageText(m: PageField): PageField {
-  const { text: _text, caret: _caret, ownSuggestions: _own, docsText: _docs, ...rest } = m;
+  const { text: _text, caret: _caret, ownSuggestions: _own, docsText: _docs, token: _token, ...rest } = m;
   return rest;
 }

@@ -23,7 +23,23 @@ const answer = (outcome: ActAnswer["outcome"], detail: string | null): ActAnswer
 function hasFocus(el: Element): boolean {
   if (document.visibilityState !== "visible" || !document.hasFocus()) return false;
   const active = deepActiveElement();
-  return active !== null && (active === el || (el instanceof HTMLElement && el.isContentEditable && el.contains(active)));
+  if (active === null) return false;
+  if (!(el instanceof HTMLElement) || !el.isContentEditable) return active === el;
+  // H13 review: in an editor, focus and the selection must belong to the editor the walk kept, not to an editor nested
+  // in it behind a non-editable boundary (its own editing host), nor to an input inside it.
+  const host = editingHost(el);
+  const sel = el.ownerDocument.getSelection();
+  const anchor = sel === null || sel.rangeCount === 0 ? null : sel.getRangeAt(0).startContainer;
+  return editingHost(active) === host && anchor !== null && editingHost(anchor) === host;
+}
+
+/** The outermost element of the editable region `n` is in: up through editable parents, never past a non-editable one. */
+function editingHost(n: Node): HTMLElement | null {
+  const e = n instanceof HTMLElement ? n : n.parentElement;
+  if (e === null || !e.isContentEditable) return null;
+  let host = e;
+  for (let p = e.parentElement; p !== null && p.isContentEditable; p = p.parentElement) host = p;
+  return host;
 }
 
 export async function insertAtCaret(

@@ -205,6 +205,11 @@ if (globalThis.__caretContent === undefined) {
     if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement || (el instanceof HTMLElement && el.isContentEditable)) focus.typed();
   };
   addEventListener("input", typedIn, { capture: true, passive: true });
+  // H13 review: the document losing focus (the address bar, another window) is reported too; only the window's own
+  // blur, not a field's (blur does not bubble, but a capturing listener would see every element's).
+  window.addEventListener("blur", (e) => {
+    if (e.target === window) focus.left();
+  });
   document.addEventListener("selectionchange", typedIn, { passive: true });
   // H10: a scroll moves the focused field on screen, so the host's offer drawn at it must move with it. Only while a
   // control has focus: a page read with nothing focused has no offer to move.
