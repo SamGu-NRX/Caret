@@ -29,6 +29,7 @@ const PAGES: Record<string, string> = {
 <div role="button">ROLEBUTTON-archive</div>
 <div contenteditable="true">EDITABLE-reply</div>
 <span style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">SRONLY-hint</span>
+<div style="position:absolute;width:1px;height:1px;overflow:hidden;white-space:nowrap">TINYBOX-hint</div>
 <div style="display:none">DISPLAYNONE-ssn</div>
 <div aria-hidden="true">ARIAHIDDEN-x</div>
 <div style="opacity:0">OPACITY-x</div>
@@ -101,7 +102,7 @@ interface Read {
   cut: boolean;
 }
 
-const MUST_NOT = ["NAV-ONLY", "PW-hunter2", "HIDDEN-token", "INPUT-text", "TEXTAREA-draft", "OPTION-one", "BUTTON-send", "ROLEBUTTON-archive", "EDITABLE-reply", "SRONLY-hint", "DISPLAYNONE-ssn", "ARIAHIDDEN-x", "OPACITY-x", "OFFSCREEN-x", "VISHIDDEN-x", "SCRIPT-x", "STYLE-x", "IFRAME-text", "FOOTER-only"];
+const MUST_NOT = ["NAV-ONLY", "PW-hunter2", "HIDDEN-token", "INPUT-text", "TEXTAREA-draft", "OPTION-one", "BUTTON-send", "ROLEBUTTON-archive", "EDITABLE-reply", "SRONLY-hint", "TINYBOX-hint", "DISPLAYNONE-ssn", "ARIAHIDDEN-x", "OPACITY-x", "OFFSCREEN-x", "VISHIDDEN-x", "SCRIPT-x", "STYLE-x", "IFRAME-text", "FOOTER-only"];
 
 describe("what a read takes from the page (rule 4)", () => {
   test("only the main region's visible text, never a control, a hidden or off-screen element, a script or a frame", async () => {
@@ -284,6 +285,15 @@ describe("the insert at the caret (item 8)", () => {
     await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.setSelectionRange(11, 11); document.getElementById("t").focus(); })()`);
     assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ta", "Dear team, ", "thanks"))).outcome, "stale");
     assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Dear team, ");
+    await tab.close();
+  });
+
+  test("touches nothing when the user types while Caret asks the worker whether its grant holds", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.value = "Dear team, "; ta.focus(); ta.setSelectionRange(11, 11); })()`);
+    const typedMeanwhile = `__p4.insertAtCaret(document.getElementById("ta"), { expect: "Dear team, ", text: "thanks" }, async () => { const ta = document.getElementById("ta"); ta.setRangeText("I ", 11, 11, "end"); return null; })`;
+    assert.equal((await tab.evaluate<{ outcome: string }>(typedMeanwhile)).outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Dear team, I ");
     await tab.close();
   });
 });
