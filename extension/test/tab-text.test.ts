@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import { LEFT_TAB_MS, LeftTab, deniedOrigin, type FrameMark } from "../src/worker/left-tab.ts";
 import { TAB_TEXT_BYTES, capFrame, capParagraphs, cutParagraph, joinFrames, utf8Bytes } from "../src/shared/tab-text.ts";
 
-const gen = (): number => 1;
+/** No frame of the tab being left has moved: every generation is 1. */
+const gen: ReadonlyMap<number, number> = new Map();
 const marks = (top: [string, number], ...children: [number, string, number][]): FrameMark[] => [
   { frameId: 0, documentId: top[0], navGen: top[1] },
   ...children.map(([frameId, documentId, navGen]) => ({ frameId, documentId, navGen })),
@@ -94,11 +95,21 @@ describe("recent and unchanged (rule 2)", () => {
   it("is not read when its top frame moved between leaving and the worker noting its frames", () => {
     const t = new LeftTab();
     t.moved({ tabId: 1, windowId: 9 }, 0, gen);
-    const rec = t.moved({ tabId: 2, windowId: 9 }, 1000, () => 4);
+    const rec = t.moved({ tabId: 2, windowId: 9 }, 1000, new Map([[0, 4]]));
     if (rec === null) throw new Error("no record");
     // Generation 4 when the user left; the frames, read a moment later, show 5.
     t.noted(rec, marks(["docA", 5]));
     expect(t.check(1, 1100, marks(["docA", 5]))).toMatchObject({ ok: false });
+  });
+
+  it("never takes a child frame that navigated after the user left as the document they left (P4 review)", () => {
+    const t = new LeftTab();
+    t.moved({ tabId: 1, windowId: 9 }, 0, gen);
+    // When the user left, frame 5 was at generation 1; by the time its document was read it had navigated (generation 2).
+    const rec = t.moved({ tabId: 2, windowId: 9 }, 1000, new Map([[0, 1], [5, 1]]));
+    if (rec === null) throw new Error("no record");
+    t.noted(rec, marks(["docA", 1], [5, "docAfter", 2]));
+    expect(t.check(1, 1100, marks(["docA", 1], [5, "docAfter", 2]))).toEqual({ ok: true, frames: marks(["docA", 1]) });
   });
 
   it("is not read before its frames are noted, and a late note for an older record is ignored", () => {

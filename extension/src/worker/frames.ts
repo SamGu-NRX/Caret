@@ -23,6 +23,13 @@ export class NavGens {
     return n;
   }
 
+  /** P4: every frame of a tab that has moved, with its generation now; a frame not listed is at 1. */
+  ofTab(tabId: number): Map<number, number> {
+    const out = new Map<number, number>();
+    for (const [k, n] of this.gens) if (k.startsWith(`${tabId}:`)) out.set(Number(k.slice(k.indexOf(":") + 1)), n);
+    return out;
+  }
+
   forgetTab(tabId: number): void {
     for (const k of [...this.gens.keys()]) if (k.startsWith(`${tabId}:`)) this.gens.delete(k);
   }

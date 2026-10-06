@@ -160,7 +160,7 @@ async function main(): Promise<number> {
     const r = await base.readText(w);
     if (r !== null) fillReads.push(r);
     return r;
-  }, sitesOff: () => base.sitesOff() };
+  }, sitesOff: () => base.sitesOff(), documentOf: (w) => base.documentOf(w) };
   const published: HelperMessage[] = [];
   // No reader plays the Mac here: focus counts wherever it is (allowBackgroundFocus), as in the other page evals' tests.
   helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: true, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, pageDocument: (id) => host.registry.documentOf(id), calendar: null, tabReader, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l) });

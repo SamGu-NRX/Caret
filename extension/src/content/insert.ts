@@ -33,8 +33,10 @@ export async function insertAtCaret(
   if (now.before !== verb.expect) return answer("stale", "the text before the caret changed since the offer");
   const ready = await gate("before the text went in");
   if (ready !== null) return ready;
-  // The gate awaited the worker; the user may have typed or moved meanwhile.
-  if (!hasFocus(el) || fieldText(el)?.before !== verb.expect) return answer("stale", "the field changed while Caret checked its grant");
+  // The gate awaited the worker; the user or the page may have typed, moved the caret or selected text meanwhile, and
+  // execCommand would replace a selection (P4 review).
+  const again = hasFocus(el) ? fieldText(el) : null;
+  if (again === null || again.before !== verb.expect || again.selection !== "") return answer("stale", "the field changed while Caret checked its grant");
   const went = document.execCommand("insertText", false, verb.text);
   await settle();
   const after = fieldText(el);

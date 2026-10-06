@@ -29,11 +29,11 @@ export interface FrameMark {
 
 export interface Left {
   tabId: number;
-  /** When the user left it (epoch ms). */
+  /** When the user left it (epoch ms), taken in the event that said so. */
   at: number;
-  /** The top frame's navigation generation at that moment, taken synchronously. */
-  topGen: number;
-  /** Every frame as it was then; null until the worker has read them, or when the tab moved while they were read. */
+  /** Each frame's navigation generation at that moment, by frame id, taken in the same event (absent: 1, never moved). */
+  gens: ReadonlyMap<number, number>;
+  /** Every frame as it was then; null until the worker has read them, or when the top frame moved before they were read. */
   frames: FrameMark[] | null;
 }
 
@@ -54,28 +54,31 @@ export class LeftTab {
   }
 
   /**
-   * The user is now in `next` (null: no browser window of this profile has focus). Returns the record of the tab just
-   * left when this move left one, so the worker can note its frames; null otherwise. `topGen` is the left tab's top
-   * frame generation now.
+   * The user is now in `next` (null: no browser window of this profile has focus). Called in the event that says so,
+   * with `gens`, the navigation generations of the tab being left (current()) as they are in that same event, so a
+   * navigation after the user left can never become what they left (P4 review: the generations were once read after
+   * awaits). Returns the record of the tab just left when this move left one; null otherwise.
    */
-  moved(next: Front | null, now: number, topGen: (tabId: number) => number): Left | null {
+  moved(next: Front | null, now: number, gens: ReadonlyMap<number, number>): Left | null {
     const prev = this.front;
     this.front = next;
     // Back in the tab they left: it is the tab they are in again.
     if (next !== null && this.left?.tabId === next.tabId) this.left = null;
     if (prev === null || (next !== null && next.tabId === prev.tabId)) return null;
-    this.left = { tabId: prev.tabId, at: now, topGen: topGen(prev.tabId), frames: null };
+    this.left = { tabId: prev.tabId, at: now, gens: new Map(gens), frames: null };
     return this.left;
   }
 
   /**
-   * The frames of the tab just left, read right after `moved`. Kept only if this is still the record they were read
-   * for and the top frame has not moved since the user left; otherwise the record can never be read.
+   * The frames of the tab just left, read (with their documents) right after `moved`. Only frames whose generation is
+   * still the one they had when the user left are kept: a frame that navigated, or appeared, since is never read. If the
+   * top frame moved, the record can never be read. Ignored unless this is still the record they were read for.
    */
   noted(record: Left, frames: FrameMark[]): void {
     if (this.left !== record) return;
-    const top = frames.find((f) => f.frameId === 0);
-    record.frames = top !== undefined && top.navGen === record.topGen ? frames : null;
+    const then = (f: FrameMark): number => record.gens.get(f.frameId) ?? 1;
+    const kept = frames.filter((f) => f.navGen === then(f));
+    record.frames = kept.some((f) => f.frameId === 0) ? kept : null;
   }
 
   /** A tab closed: if it is the one the user left, it is never read. */

@@ -39,6 +39,11 @@ const PAGES: Record<string, string> = {
 <iframe srcdoc="<p>IFRAME-text</p>"></iframe>
 </main>
 <footer>FOOTER-only</footer>`,
+  "/hidden-main": `<!doctype html><title>Hidden main</title><div aria-hidden="true"><main><p>PRIVATE-main</p></main></div><p>Body text</p>`,
+  "/clip": `<!doctype html><title>Clip</title><main>
+<div style="width:200px;height:40px;overflow:hidden;position:relative"><p style="margin:0">Visible line</p><p style="position:absolute;left:300px;top:0;margin:0">CLIPPED-out</p></div>
+<div style="height:60px;overflow:auto"><p style="margin-top:300px">SCROLL-reachable</p></div></main>`,
+  "/scroller": `<!doctype html><title>Scroller</title><body style="margin:0;overflow:hidden;height:300px"><main style="height:300px;overflow:auto"><p style="margin-top:2000px">BELOW-fold</p></main></body>`,
   "/role-main": `<!doctype html><title>App</title><div id="nav">SIDEBAR-x</div><div role="main"><p>Order ORD-48213 ships Friday.</p></div><main hidden><p>HIDDEN-MAIN</p></main>`,
   "/no-main": `<!doctype html><title>Note</title><p>Phone: 555-0147</p><div style="display:none">GONE</div>`,
   "/sel": `<!doctype html><title>Sel</title><aside id="side"><p id="aside">Cell: 555-0147</p></aside>
@@ -123,6 +128,20 @@ describe("what a read takes from the page (rule 4)", () => {
     const b = await open("/no-main");
     assert.deepEqual((await b.evaluate<Read>("__p4.readMainText()")).blocks, ["Phone: 555-0147"]);
     await b.close();
+  });
+
+  test("never a main region something above hides, nor text an ancestor clips away; a scroller's text is reachable (P4 review)", async () => {
+    const a = await open("/hidden-main");
+    assert.deepEqual((await a.evaluate<Read>("__p4.readMainText()")).blocks, ["Body text"]);
+    await a.close();
+    const b = await open("/clip");
+    const clip = (await b.evaluate<Read>("__p4.readMainText()")).blocks.join("\n");
+    assert.ok(clip.includes("Visible line") && clip.includes("SCROLL-reachable"), clip);
+    assert.ok(!clip.includes("CLIPPED-out"), clip);
+    await b.close();
+    const c = await open("/scroller");
+    assert.deepEqual((await c.evaluate<Read>("__p4.readMainText()")).blocks, ["BELOW-fold"]);
+    await c.close();
   });
 
   test("is capped at 16 KB, cut between paragraphs", async () => {
@@ -285,6 +304,15 @@ describe("the insert at the caret (item 8)", () => {
     await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.setSelectionRange(11, 11); document.getElementById("t").focus(); })()`);
     assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ta", "Dear team, ", "thanks"))).outcome, "stale");
     assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Dear team, ");
+    await tab.close();
+  });
+
+  test("touches nothing when text is selected in the field while Caret asks the worker whether its grant holds (P4 review)", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const t = document.getElementById("t"); t.focus(); t.setSelectionRange(5, 5); })()`);
+    const selectedMeanwhile = `__p4.insertAtCaret(document.getElementById("t"), { expect: "Hello", text: "!" }, async () => { document.getElementById("t").setSelectionRange(5, 11); return null; })`;
+    assert.equal((await tab.evaluate<{ outcome: string }>(selectedMeanwhile)).outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("t").value`), "Hello world");
     await tab.close();
   });
 

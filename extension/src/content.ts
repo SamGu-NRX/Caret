@@ -16,7 +16,7 @@
 // P4 adds one more message the worker may ask, never sent on its own: "text", the frame's visible text, read once
 // for the tab the user just left (content/text.ts). A walk also reports the text around the caret of the focused
 // field it kept (content/field-text.ts), for the host's inline text.
-import type { FocusMoved, FrameReport, FrameTextAnswer, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
+import type { FocusMoved, FrameReport, FrameSelfAnswer, FrameTextAnswer, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
 import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
@@ -64,14 +64,16 @@ function visibleIframes(): FrameReport["iframes"] {
   return [...document.querySelectorAll("iframe")].filter((f) => visible(f) && contentBox(f)[0] > 1 && contentBox(f)[1] > 1).map((f) => ({ src: srcOf(f), rect: r(f), inner: contentBox(f) }));
 }
 
-/**
- * P4: this frame's visible text, read once on the worker's message for the tab the user just left (content/text.ts),
- * with what the worker needs to tell whether the frame is visible in its parent.
- */
+/** P4: what the worker needs to tell whether this frame is visible in its parent, before it asks for any text. */
+function selfOf(): FrameSelfAnswer {
+  return { origin: self.origin, viewport: [window.innerWidth, window.innerHeight], iframes: visibleIframes() };
+}
+
+/** P4: this frame's visible text, read once on the worker's message for the tab the user just left (content/text.ts). */
 function textOf(): FrameTextAnswer {
   const path = location.protocol === "about:" ? location.href : location.pathname;
   const t = readFrameText(self.origin, path, window.self === window.top);
-  return { origin: self.origin, viewport: [window.innerWidth, window.innerHeight], iframes: visibleIframes(), selection: t.selection, blocks: t.blocks, cut: t.cut, docsText: t.docsText };
+  return { selection: t.selection, blocks: t.blocks, cut: t.cut, docsText: t.docsText };
 }
 
 function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
@@ -121,7 +123,7 @@ function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
 function isToContent(m: unknown): m is ToContent {
   if (typeof m !== "object" || m === null) return false;
   const x = m as Record<string, unknown>;
-  return x.caret === 1 && (x.op === "walk" || x.op === "text" || x.op === "viewport" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number" && typeof x.guardUntil === "number"));
+  return x.caret === 1 && (x.op === "walk" || x.op === "frame" || x.op === "text" || x.op === "viewport" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number" && typeof x.guardUntil === "number"));
 }
 
 if (globalThis.__caretContent === undefined) {
@@ -166,6 +168,10 @@ if (globalThis.__caretContent === undefined) {
     if (sender.id !== chrome.runtime.id || sender.tab !== undefined || !isToContent(m)) return false;
     if (m.op === "walk") {
       reply(walk(reg, entries));
+      return false;
+    }
+    if (m.op === "frame") {
+      reply(selfOf());
       return false;
     }
     if (m.op === "text") {

@@ -159,6 +159,8 @@ export interface FrameReport {
  */
 export type ToContent =
   | { caret: 1; op: "walk" }
+  /** P4: about the frame itself, no text (FrameSelfAnswer), so the worker knows it is visible before it asks for text. */
+  | { caret: 1; op: "frame" }
   /** P4: the frame's visible text, once, for the tab the user just left (content/text.ts). Answered with FrameTextAnswer. */
   | { caret: 1; op: "text" }
   /** The frame's viewport only, [innerWidth, innerHeight]: asked of a captcha frame, which is never walked (W4). */
@@ -174,13 +176,17 @@ export interface FieldText {
 }
 
 /**
- * P4: one frame's answer to a text read: what composition needs to tell whether the frame is visible (its origin,
- * viewport and visible iframes, as a walk reports them), and its text (content/text.ts FrameTextReport).
+ * P4: one frame's answer about itself before a text read, with no text: what composition needs to tell whether the
+ * frame is visible (its origin, viewport and visible iframes, as a walk reports them).
  */
-export interface FrameTextAnswer {
+export interface FrameSelfAnswer {
   origin: string;
   viewport: [number, number];
   iframes: { src: string; rect: Rect; inner: [number, number] }[];
+}
+
+/** P4: one visible frame's text (content/text.ts FrameTextReport). */
+export interface FrameTextAnswer {
   selection: string[];
   blocks: string[];
   cut: boolean;
