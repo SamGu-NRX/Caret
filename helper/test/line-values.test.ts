@@ -1,7 +1,7 @@
 // C1: what code reads inside one line (fill/line-values.ts). Each value must be a span of the line exactly as written,
 // so these tests pin the exact spans, and what is never offered. Every name, number and address is invented.
 import { describe, expect, it } from "vitest";
-import { bareLine, clauseAround, lineTexts, lineValues } from "../src/fill/line-values.ts";
+import { bareLine, clauseAround, lineTexts, lineValues, sentenceAround } from "../src/fill/line-values.ts";
 
 const values = (line: string): [string, string][] => lineValues(line).map((v) => [v.kind, v.text]);
 const texts = (line: string): [string, string | null][] => lineTexts(line).map((t) => [t.text, t.label]);
@@ -138,5 +138,16 @@ describe("the clause of a value with a remark", () => {
   it("takes the remark in brackets right after the value", () => {
     const line = "Phone: 555-0101 (my old number, no longer works)";
     expect(clauseAround(line, line.indexOf("555-0101"), "555-0101")).toBe("Phone: 555-0101 (my old number, no longer works)");
+  });
+});
+
+describe("the sentence a warning may be in", () => {
+  it("runs from the sentence before to its own end, past semicolons and a remark, uncut", () => {
+    const a = "Phone: 555-0101; do not use this old number.";
+    expect(sentenceAround(a, a.indexOf("555-0101"), "555-0101")).toBe(a);
+    const b = "You were born Aug 9, 1987. Their old chart had 1978, so make sure it's right this time.";
+    expect(sentenceAround(b, b.indexOf("Aug 9, 1987"), "Aug 9, 1987")).toBe("You were born Aug 9, 1987.");
+    const c = "Phone: 555-0101 (my old number, no longer works; please use the new mobile number on my current application instead).";
+    expect(sentenceAround(c, c.indexOf("555-0101"), "555-0101")).toBe(c);
   });
 });

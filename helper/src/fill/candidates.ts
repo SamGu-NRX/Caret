@@ -8,7 +8,7 @@ import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
-import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, WARNS } from "./line-values.ts";
+import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, sentenceAround, WARNS } from "./line-values.ts";
 import { splitDate } from "./derive.ts";
 
 /**
@@ -270,8 +270,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     },
     };
     if (clause !== null) clauses.set(c, clause);
+    if (required !== undefined) quoted.add(c);
     return c;
   };
+  /** Spans that go only with their clause (Candidate.line set at build). */
+  const quoted = new WeakSet<Candidate>();
   /**
    * C1: the clause each span would quote (Candidate.line), set only once every span is in (finish): a clause is worth a
    * window's budget only after every value that fits, so it never pushes another span out. Spent first, clauses took
@@ -287,6 +290,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     const c = build(w, node, text, kind, context, quote);
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       missed.add(w.window.windowId);
+      // A span that goes only with its line (a warning, a remark) and does not fit with it is left out alone: the window
+      // counts as cut, so the cut rules withhold its kind and words, but the spans after it are still read. Closing the
+      // window instead cut every later line of a mail whose prose warns often (corpus clinic-intake, 7 -> 5).
+      if (quoted.has(c)) {
+        if (!ranked.has(w.window.windowId)) leftOutOf.add(w.window.windowId);
+        return;
+      }
       closed.add(w.window.windowId);
       // What else of a window that is not a conversation was left out is read at the end (leftOut).
       if (!ranked.has(w.window.windowId)) leftOutOf.add(w.window.windowId);
@@ -713,10 +723,12 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
   const line = bareLine(raw);
   const pos = line.indexOf(text);
   if (pos < 0) return null;
-  // A line that warns about something ("Don't give out 555-0112", "Phone: 555-0101; do not use this old number") sends
-  // its whole self with the span, or not the span: the warning may be about it, anywhere in the line, and a clause cut at
-  // a semicolon or to a length lost it (C1 review). A label otherwise says what the span is.
-  if (WARNS.test(line.replace(text, " "))) return line === text ? null : { clause: line, required: true };
+  // A sentence that warns ("Don't give out 555-0112, ...", "Phone: 555-0101; do not use this old number.") goes whole with
+  // the span on it, or not the span: the warning may be about it, and a clause cut at a semicolon or to a length lost it
+  // (C1 review). Only the span's own sentence: a whole line sent for "old" in the next sentence ("Their old chart had
+  // 1978") cost corpus clinic-intake two values. A label otherwise says what the span is.
+  const sentence = sentenceAround(line, pos, text);
+  if (WARNS.test(sentence.replace(text, " "))) return sentence === text ? null : { clause: sentence, required: true };
   if (labelled) return null;
   const values = lineValues(line);
   const kind = values.find((v) => v.text === text)?.kind;

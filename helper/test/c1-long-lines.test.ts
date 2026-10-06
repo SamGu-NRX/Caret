@@ -80,10 +80,10 @@ describe("what a value inside a line carries, and what it never offers", () => {
     const cs = candidates("- Cell: 555-0147. Don't give out 555-0112, that's Mom and Dad's landline.");
     const cell = cs.find((c) => c.text === "555-0147");
     const landline = cs.find((c) => c.text === "555-0112");
-    expect([cell?.context, cell?.labelled, cell?.line ?? null]).toEqual(["Cell", true, "Cell: 555-0147. Don't give out 555-0112, that's Mom and Dad's landline."]);
-    // The line warns, so each value goes with the whole line.
-    expect([landline?.context, landline?.labelled, landline?.line]).toEqual([null, false, "Cell: 555-0147. Don't give out 555-0112, that's Mom and Dad's landline."]);
-    expect(describeCandidate(landline as NonNullable<typeof landline>)).toContain("in the line 'Cell: 555-0147. Don't give out 555-0112, that's Mom and Dad's landline.'");
+    expect([cell?.context, cell?.labelled, cell?.line ?? null]).toEqual(["Cell", true, null]);
+    // The landline's sentence warns, so it goes with that sentence; the cell's own sentence warns of nothing.
+    expect([landline?.context, landline?.labelled, landline?.line]).toEqual([null, false, "Don't give out 555-0112, that's Mom and Dad's landline."]);
+    expect(describeCandidate(landline as NonNullable<typeof landline>)).toContain("in the line 'Don't give out 555-0112, that's Mom and Dad's landline.'");
   });
 
   it("offers nothing from a line that shows a card number or is labelled as a secret, however long", () => {

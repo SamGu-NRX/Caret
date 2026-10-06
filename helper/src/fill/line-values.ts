@@ -212,3 +212,18 @@ export function clauseAround(line: string, at: number, text: string): string | n
   const clause = line.slice(start, stop).trim();
   return clause === text || clause === "" ? null : clause;
 }
+
+/**
+ * The sentence of a line that holds a value at `at`, uncut: from the end of the sentence before (". ", "! ", "? ") to the
+ * end of its own, a bracketed remark right after the value included. A warning in it may be about the value, so fill
+ * sends it whole with the value, or not the value (candidates.ts lineFact).
+ */
+export function sentenceAround(line: string, at: number, text: string): string {
+  let start = 0;
+  for (const m of line.slice(0, at).matchAll(/[.!?]\s+/gu)) start = (m.index ?? 0) + m[0].length;
+  const end = at + text.length;
+  const remark = /^\s*\([^()]*\)/u.exec(line.slice(end));
+  const from = remark === null ? end : end + remark[0].length;
+  const stop = /[.!?](?=\s|$)/u.exec(line.slice(from));
+  return line.slice(start, stop === null ? line.length : from + stop.index + 1).trim();
+}
