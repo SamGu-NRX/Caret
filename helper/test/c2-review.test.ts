@@ -232,3 +232,10 @@ describe("fix-check 2.2 and 2.3: a statement is no place, and a bonus is no loca
     expect(["Relocation bonus", "Are you willing to relocate?", "Cloud-based platform", "Where are you based?", "Current location"].map(asksPlace)).toEqual([false, false, false, true, true]);
   });
 });
+
+// Confirm review (astra, foreground) on f2aaa04.
+describe("confirm review: a negation is no place, and Coeur d'Alene is one", () => {
+  it("refuses 'Not Toronto, Ontario' and keeps a name with a lowercase d' particle", () => {
+    expect([placeWithCountry("Not Toronto, Ontario"), placeWithCountry("Coeur d'Alene, Idaho"), placeWithCountry("Winston-Salem, NC"), placeWithCountry("O'Fallon, MO")]).toEqual([null, "Coeur d'Alene, Idaho, United States", "Winston-Salem, NC, United States", "O'Fallon, MO, United States"]);
+  });
+});

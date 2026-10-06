@@ -309,7 +309,7 @@ export function splitPlace(text: string): { city: string; state: string; country
 }
 
 /** Words a statement opens with, never part of a place's name (second fix-check: "My Toronto, Ontario"). */
-const NOT_PLACE_WORDS = new Set(["i", "me", "my", "we", "our", "us", "in", "at", "from", "to", "near", "moving", "moved", "living", "live", "lived", "based", "currently", "now", "love", "work", "working"]);
+const NOT_PLACE_WORDS = new Set(["i", "me", "my", "we", "our", "us", "in", "at", "from", "to", "near", "moving", "moved", "living", "live", "lived", "based", "currently", "now", "love", "work", "working", "not", "no", "never", "except", "but", "or", "and"]);
 /** Lowercase words a place's name may hold between capitalized ones. */
 const PLACE_JOINERS = new Set(["de", "del", "la", "le", "du", "des", "of", "on", "upon", "the", "sur", "en"]);
 /** C2: Canada's province and territory codes, as Canada Post writes them. */
@@ -333,7 +333,7 @@ export function placeWithCountry(text: string): string | null {
   // words, each capitalized or a joiner place names use ("Sault Ste. Marie", "Stratford upon Avon").
   // Each word capitalized as a name is, not in capitals ("I LOVE TORONTO"), and none a word a statement opens with.
   const city = (parts[0] as string).split(/\s+/u);
-  const named = (w: string): boolean => /^\p{Lu}[\p{Ll}'’.-]*(?:[-’'][\p{Lu}][\p{Ll}'’.-]*)*$/u.test(w) && !NOT_PLACE_WORDS.has(w.toLowerCase());
+  const named = (w: string): boolean => /^(?:d['’])?\p{Lu}[\p{Ll}'’.-]*(?:[-’'][\p{Lu}][\p{Ll}'’.-]*)*$/u.test(w) && !NOT_PLACE_WORDS.has(w.toLowerCase());
   if (city.length > 4 || !city.every((w) => named(w) || PLACE_JOINERS.has(w))) return null;
   const region = parts[1] as string;
   if (region.toLowerCase() === "georgia") return null;
