@@ -198,6 +198,11 @@ export interface LowerOptions {
    * after every other step, so an attach the user leaves without a file (runs.ts drops it from the run) holds up nothing.
    */
   attach?: readonly { target: TargetBinding; file: AttachOffer }[];
+  /**
+   * I6: a page plan's hand-off row (page-planner.ts handoffRow), put after every other step, attach rows included. It
+   * gets no executor step (executorPlan), so nothing ever presses its control.
+   */
+  handoffRow?: { target: TargetBinding; says: string; why: HandoffWhy };
 }
 
 /** Segment warnings a goalProgress carries at most (protocol GoalProgress.warnings). */
@@ -412,6 +417,11 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     const what = t.label === "" ? "File" : t.label;
     steps.push({ ref: `a${i + 1}`, index: steps.length, kind: "attach", says: a.file.source === "saved" ? `${what}: ${a.file.name}` : `${what}: a file you choose`, target: t, value: null, writes: null, effect: null, handoff: null, to: false, gate: null, file: a.file });
   }
+  if (o.handoffRow !== undefined) {
+    const h = o.handoffRow;
+    if (h.target.domain.kind !== "window" || !h.target.domain.page) throw new GoalError("schema", "only a page plan has a hand-off row", h.target.ref);
+    steps.push({ ref: "h1", index: steps.length, kind: "handoff", says: h.says, target: h.target, value: null, writes: null, effect: null, handoff: h.why, to: false, gate: null, row: true });
+  }
   steps.forEach((x, i) => (x.index = i));
   // A goalProgress carries MAX_WARNINGS sentences (P2: a 40-field form can leave more): the rest are named in one.
   const said = left.map((l) => `${l.says}.`);
@@ -488,7 +498,9 @@ function executorPlan(id: string, s: { domain: GoalDomain; steps: readonly GoalS
   };
   const d = s.domain;
   const sel: WindowSel | null = d.kind === "window" ? { bundleId: d.bundleId, title: slot("title", d.title, "the window's title", d.windowId), ...(d.number === null ? {} : { number: d.number }) } : null;
-  const out: Step[] = s.steps.map((x, i): Step => {
+  // I6: a hand-off row is the plan's last step and is never run, so the executor plan stops before it; every other step
+  // keeps its index.
+  const out: Step[] = s.steps.filter((x) => x.row !== true).map((x, i): Step => {
     if (x.kind === "calendar") {
       const ev = x.value?.event;
       if (ev == null || d.kind !== "calendar") throw new GoalError("schema", "a calendar step needs an event and the calendar", x.ref);

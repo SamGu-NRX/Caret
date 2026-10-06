@@ -20,6 +20,7 @@ import type { EventClock } from "../offers/event-time.ts";
 import { writtenFields } from "../offers/fill-popup.ts";
 import { fieldName } from "../planner/planner.ts";
 import { saysNoValue } from "../planner/says.ts";
+import { handoffWhy } from "../planner/validate.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import type { DraftPlan } from "../codemode/types.ts";
 import { buildInventory, windowRevision } from "./inventory.ts";
@@ -27,8 +28,62 @@ import { GoalError, lowerGoal } from "./lower.ts";
 import { canonical, sha256, type AttachOffer, type GoalControl, type GoalInventory, type GoalPlan, type LeftItem, type PageGoal, type TargetBinding, type ValueBinding } from "./plan.ts";
 import type { Replan } from "./runs.ts";
 
-/** The planner's version, in every page plan's identity (programHash). */
-export const PAGE_PLANNER = "page/1";
+/** The planner's version, in every page plan's identity (programHash). I6: page/2 adds the hand-off row. */
+export const PAGE_PLANNER = "page/2";
+
+/**
+ * I6 (lead decision): the names that read as a form's forward control. A label reads so when, lowercased with its
+ * punctuation and arrows dropped, it is one of these or one of these followed by at most two more words ("Submit
+ * application", "Continue to payment"; not "Apply for this job", which opens a form rather than sending one). A closed
+ * list, as scope words are (scope-words.ts): a word added here changes which pages say "You press".
+ */
+const FORWARD = ["save and continue", "next", "continue", "review", "submit", "apply"] as const;
+const FORWARD_TAIL_WORDS = 2;
+
+export function readsForward(label: string): boolean {
+  const s = label.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return FORWARD.some((f) => s === f || (s.startsWith(`${f} `) && s.split(" ").length - f.split(" ").length <= FORWARD_TAIL_WORDS));
+}
+
+/**
+ * The form a page control's key places it in (extension content/walker.ts: `fN/` then the form's scope, `form[id]`,
+ * `form@i` or a shadow host, then `role:name~ordinal`), or "" for a control in no form. The frame is part of it.
+ */
+export function formScopeOf(key: string): string {
+  const slash = key.indexOf("/");
+  if (slash < 0) return key;
+  const frame = key.slice(0, slash);
+  const rest = key.slice(slash + 1);
+  if (rest.startsWith("form[")) {
+    const end = rest.indexOf("]/");
+    return end < 0 ? frame : `${frame}/${rest.slice(0, end + 1)}`;
+  }
+  const colon = rest.indexOf(":");
+  const sep = rest.indexOf("/");
+  return sep >= 0 && (colon < 0 || sep < colon) ? `${frame}/${rest.slice(0, sep)}` : frame;
+}
+
+/**
+ * I6 (lead decision, the memo's hand-off): the page plan's last row. A page plan presses nothing, so the panel says
+ * who goes on: "You press <label>" when the form the plan fills (the forms and frames of the controls it writes or
+ * attaches to) shows exactly one enabled button whose name reads as forward (readsForward); "The rest is yours" with
+ * none, or with more than one, since Caret cannot tell which the user means. The button is named by its own label.
+ * The row is never pressed (lower.ts gives it no executor step).
+ */
+export function handoffRow(w: WindowState, domain: TargetBinding["domain"], keys: readonly string[]): { target: TargetBinding; says: string; why: ReturnType<typeof handoffWhy> } {
+  const scopes = new Set(keys.map(formScopeOf));
+  const forward = [...w.nodes.values()].filter(
+    (n) => n.role === "AXButton" && n.subrole !== PAGE_SUBROLE.file && n.states?.includes("disabled") !== true && inWebArea(w, n) && scopes.has(formScopeOf(n.key)) && readsForward(n.label ?? ""),
+  );
+  const one = forward.length === 1 ? forward[0] : undefined;
+  if (one !== undefined) {
+    const label = (one.label ?? "").trim();
+    return { target: { ref: "th", domain, key: one.key, role: one.role, label, own: label, placeholder: null, control: "button", value: "", options: null }, says: `You press ${label}`, why: handoffWhy(label) };
+  }
+  // No one control to name: the row stands for the page itself.
+  const frame = keys[0]?.split("/")[0] ?? "f0";
+  return { target: { ref: "th", domain, key: frame, role: "AXWebArea", label: "", own: "", placeholder: null, control: "button", value: "", options: null }, says: "The rest is yours", why: "unverifiable" };
+}
 
 export interface PlanPageOptions {
   goalId: string;
@@ -327,11 +382,13 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     attach.push({ target: t, file: o.attachOffer === undefined ? { source: "choose" } : await o.attachOffer(w, n, label) });
   }
   const inventory: GoalInventory = { ...inv.inventory, targets, values };
+  // I6: who goes on after Caret's steps, as the plan's last row.
+  const row = handoffRow(w, domain, [...[...gated.keys()].map((r) => (targets.get(r) as TargetBinding).key), ...attach.map((a) => a.target.key)]);
 
   // 5. Lowering, with fill's picks gated by fill. 6. The planning's identity.
   const programHash = sha256(canonical({ planner: PAGE_PLANNER, instruction, scopeKind: o.kind, section: o.section, revealed: o.revealed ?? null, revision: windowRevision(w), document, fields: asked.map((x) => x.node.key), files: files.map((n) => n.key) }));
   const draft: DraftPlan = { basedOn: windowRevision(w), window: o.windowId, steps, choices: [], drafts: [], programDigest: programHash };
-  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, gated, carried: [...(o.carried?.owed ?? []), ...left], attach });
+  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, gated, carried: [...(o.carried?.owed ?? []), ...left], attach, handoffRow: row });
   const page: PageGoal = {
     windowId: o.windowId,
     scope: o.scope ?? { fields: [], windows: null, memory: true, instruction, person: null, literals: new Map() },

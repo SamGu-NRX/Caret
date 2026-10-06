@@ -102,18 +102,22 @@ export const Via = z.discriminatedUnion("kind", [
 ]);
 export type Via = z.infer<typeof Via>;
 
-export const Step = z.object({
-  /** The end state as a sentence, for progress, the activity view and a hand-off. */
-  says: z.string(),
-  end: EndState,
-  via: Via.optional(),
-  /**
-   * The memory entry the step's value came from (B17: a typed About entry). Right before writing, the
-   * executor asks that the entry still holds the value, and stops the run if it does not: the user forgot,
-   * paused or changed it after accepting the offer.
-   */
-  memory: z.string().min(1).optional(),
-});
+export const Step = z
+  .object({
+    /** The end state as a sentence, for progress, the activity view and a hand-off. */
+    says: z.string(),
+    end: EndState,
+    via: Via.optional(),
+    /**
+     * The memory entry the step's value came from (B17: a typed About entry). Right before writing, the
+     * executor asks that the entry still holds the value, and stops the run if it does not: the user forgot,
+     * paused or changed it after accepting the offer.
+     */
+    memory: z.string().min(1).optional(),
+  })
+  // I6: a hand-off is the user's press, never Caret's action: a plan that gives one a means to act is refused whole
+  // before anything runs, rather than run up to it.
+  .refine((s) => s.end.kind !== "handoff" || s.via === undefined, { message: "a hand-off is the user's to do; it cannot carry a press or a URL for Caret", path: ["via"] });
 export type Step = z.infer<typeof Step>;
 
 export const Plan = z.object({

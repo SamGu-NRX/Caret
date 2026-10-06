@@ -270,6 +270,11 @@ export class GoalRuns {
   /** Offers a goal's first segment for acceptance, as the reply to `requestId` (or as a fresh plan replacing another). */
   propose(given: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[]; pressed: DonePress[]; owed: LeftItem[] } | null = null): GoalProgress {
     if (this.runs.has(given.goalId)) throw new Error(`goal ${given.goalId} already exists`);
+    // I6: a hand-off row is a page plan's, and the goal's very last step, after its attach rows: it is never run, and the
+    // executor plan stops before it (lower.ts executorPlan).
+    const all = given.segments.flatMap((s) => s.steps);
+    const misplacedRow = all.find((s, i) => s.row === true && (i !== all.length - 1 || s.kind !== "handoff" || given.page === undefined || s.target.domain.kind !== "window" || !s.target.domain.page));
+    if (misplacedRow !== undefined) throw new Error(`goal ${given.goalId}: step ${misplacedRow.ref} is not a hand-off row a page plan may offer`);
     // Only lowering's gates (G2, gates.ts) mark a write: a plan built any other way is a bug, never offered.
     // A "derived" step skipped Jev, so it must be the very object lowering marked (gates.ts isDerived), not a copy.
     // A "fill" step (P2) skipped Jev because fill agreed on its very value for its very target: only lowering marks one.
@@ -278,9 +283,10 @@ export class GoalRuns {
     // P3: an attach step is a page plan's, into a page's file control, with the file its row offers, after every other
     // step of its segment (runs drop the ones the acceptance gives no file, which must hold up nothing after them).
     for (const seg of given.segments) {
-      const first = seg.steps.findIndex((s) => s.kind === "attach");
+      const acts = seg.steps.filter((s) => s.row !== true);
+      const first = acts.findIndex((s) => s.kind === "attach");
       if (first < 0) continue;
-      const bad = seg.steps.find((s, i) => (s.kind === "attach") !== (i >= first) || (s.kind === "attach" && (s.file === undefined || s.target.control !== "file" || given.page === undefined || s.target.domain.kind !== "window" || !s.target.domain.page)));
+      const bad = acts.find((s, i) => (s.kind === "attach") !== (i >= first) || (s.kind === "attach" && (s.file === undefined || s.target.control !== "file" || given.page === undefined || s.target.domain.kind !== "window" || !s.target.domain.page)));
       if (bad !== undefined) throw new Error(`goal ${given.goalId}: step ${bad.ref} is not an attach a page plan may offer`);
     }
     // The run owns its own frozen copy: what is shown is what runs, whatever the caller does with its object later.
@@ -341,7 +347,7 @@ export class GoalRuns {
     const cf = m.confirmedFile;
     const attachStep = cf === undefined ? undefined : seg.steps.find((s) => s.index === cf.step);
     // A segment of attach rows alone runs nothing without a file: the preview waits for one (P3 review).
-    if (cf === undefined && seg.steps.every((s) => s.kind === "attach")) return { refused: "this preview only attaches files: choose one, then accept again; nothing ran" };
+    if (cf === undefined && seg.steps.every((s) => s.kind === "attach" || s.row === true)) return { refused: "this preview only attaches files: choose one, then accept again; nothing ran" };
     if (cf !== undefined) {
       if (attachStep === undefined || attachStep.kind !== "attach" || attachStep.target.domain.kind !== "window") return { refused: `step ${cf.step + 1} of segment ${m.segment + 1} is not an attach step; nothing runs` };
       if (this.deps.confirmFile === undefined) return { refused: "this helper attaches no files; nothing runs" };
@@ -364,7 +370,8 @@ export class GoalRuns {
     run.cause = null;
     // What runs: the previewed plan, less each attach row the acceptance gave no file (a subset of what the digest
     // covers, never anything it does not).
-    const keep = seg.steps.map((s) => s.kind !== "attach" || s.index === attachStep?.index);
+    // I6: a hand-off row never runs (the executor plan has no step for it).
+    const keep = seg.steps.map((s) => s.row !== true && (s.kind !== "attach" || s.index === attachStep?.index));
     run.stepMap = seg.steps.flatMap((_, i) => (keep[i] === true ? [i] : []));
     run.confirmed = cf === undefined || attachStep === undefined ? null : { step: attachStep.index, path: cf.path };
     const plan = { ...seg.plan, steps: seg.plan.steps.filter((_, i) => keep[i] === true) };
@@ -402,6 +409,8 @@ export class GoalRuns {
       if (doc !== undefined && this.deps.pageDocument?.(d.windowId) !== doc) return { reason: "reload", says: `'${d.title}' reloaded or went to another page since Caret planned this` };
       if (w.window.title !== d.title) return { reason: "targetChanged", says: `'${d.title}' is now titled '${w.window.title}'` };
       for (const s of seg.steps) {
+        // I6: a hand-off row names what the user does next; nothing of it runs, so nothing of it is checked.
+        if (s.row === true) continue;
         const n = w.nodes.get(s.target.key);
         // A button is the control its label names (the boundary checks the label again right before the press), and so is
         // a file control (P3 review: a page that relabels it to another upload question is not the row the user saw).
@@ -549,7 +558,7 @@ export class GoalRuns {
     const acted = status === "verified" ? run.acting.get(s.index) : undefined;
     run.cursor.receipts.push({ goalId: run.plan.goalId, segment: seg.index, step: s.index, stepRef: s.ref, status, target: { windowId, key: effectKey(s.target, s.value) }, effect: s.effect, before, after, at, ms: acted === undefined ? null : at - acted });
     if (status !== "handoff") run.cursor.nextStep = s.index + 1;
-    const total = run.plan.segments.reduce((n, x) => n + x.steps.length, 0);
+    const total = run.plan.segments.reduce((n, x) => n + x.steps.filter((y) => y.row !== true).length, 0);
     this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "step", segment: seg.index, taskId: run.task?.id ?? "", step: s.index, steps: total, phase: status === "verified" ? "verified" : status === "alreadyTrue" ? "skipped" : "handoff", says: s.says });
   }
 
@@ -640,7 +649,9 @@ export class GoalRuns {
     const skipped = run.cursor.receipts.filter((r) => r.status === "alreadyTrue").length;
     const left = [...notHeld, ...this.leftNow(run).filter((l) => !notHeld.some((x) => x.windowId === l.windowId && x.key === l.key))];
     const outcome = left.some((l) => l.why !== "recipient") ? "partial" : left.length > 0 ? "handoff" : reached;
-    const handoff = reached === "handoff" ? run.plan.segments.flatMap((x) => x.steps).find((x) => x.kind === "handoff") : undefined;
+    const handoff = reached === "handoff" ? run.plan.segments.flatMap((x) => x.steps).find((x) => x.kind === "handoff" && x.row !== true) : undefined;
+    // I6: a page plan's hand-off row says who goes on, after whatever the goal did ("You press Next.").
+    const row = run.plan.segments.flatMap((x) => x.steps).find((x) => x.row === true);
     const tally = `${verified}${skipped > 0 ? `, ${skipped} already so` : ""}`;
     const names = left.map((l) => `'${l.label}'`).join(", ");
     const says =
@@ -649,7 +660,7 @@ export class GoalRuns {
         : outcome === "handoff"
           ? [`Ready: ${tally} done.`, ...left.map((l) => `You add the recipient in '${l.label}'.`), ...(handoff === undefined ? [] : [`${handoff.says}.`])].join(" ")
           : `Done: ${verified} step${verified === 1 ? "" : "s"} verified${skipped > 0 ? `, ${skipped} already so` : ""}.`;
-    this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "finished", outcome, verified, skipped, left: left.slice(0, 24).map((l) => clip(l.says, 300)), says: clip(says, 600) });
+    this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "finished", outcome, verified, skipped, left: left.slice(0, 24).map((l) => clip(l.says, 300)), says: clip(row === undefined ? says : `${says} ${row.says}.`, 600) });
     this.keepCarry(run, left);
   }
 
@@ -814,7 +825,7 @@ export class GoalRuns {
     run.state = "stopped";
     this.deps.ended?.(run.plan.goalId);
     const done = run.cursor.receipts.filter((r) => r.status !== "handoff").length;
-    const total = run.plan.segments.reduce((n, x) => n + x.steps.length, 0);
+    const total = run.plan.segments.reduce((n, x) => n + x.steps.filter((y) => y.row !== true).length, 0);
     const sentence = `${says.charAt(0).toUpperCase()}${says.slice(1)}, so Caret stopped after ${done} of ${total} steps.`;
     const next = REPLANNABLE.has(reason) ? await this.fresh(run, reason, fresh) : null;
     this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "stopped", segment: run.cursor.segment, step, reason, says: next === null ? sentence : `${sentence} A fresh plan from the screen as it is now is ready for you to check.`, freshPlan: next?.event === "segment" ? next.goalId : null });

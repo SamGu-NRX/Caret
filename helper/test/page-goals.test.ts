@@ -31,6 +31,8 @@ describe("an Ask about a page is planned by the page planner (P2)", () => {
       "Interview time: 15:30",
       "Available from: 2026-10-19T09:00",
       "Country of residence: United States",
+      // I6: the form's one forward button, by its own label; never pressed.
+      "You press Submit Application",
     ]);
     // The box whose value fill would not write ("34" for "Are you over 18?") is named as the user's before Tab.
     expect(preview.warnings.some((w) => /Are you over 18\?/.test(w))).toBe(true);
@@ -57,7 +59,7 @@ describe("an Ask about a page is planned by the page planner (P2)", () => {
   it("writes a value the instruction spells out for a field it names, which has no source window", async () => {
     const r = await rig({ picks: { ...PICKS, Email: "robin@work.test" }, intent: { scope: "list", fields: ["f2"], literals: [{ field: "f2", text: "robin@work.test" }] } });
     const preview = (await r.ask("put robin@work.test in Email")) as Segment;
-    expect(preview.steps.map((s) => s.says)).toEqual(["Email: robin@work.test"]);
+    expect(preview.steps.map((s) => s.says)).toEqual(["Email: robin@work.test", "You press Submit Application"]);
     await r.accept(preview);
     expect(r.page.shown("e2")).toBe("robin@work.test");
   });
@@ -91,7 +93,7 @@ describe("the reveal continuation (P2)", () => {
     const next = goalMessages(r).find((m): m is Segment => m.event === "segment" && m.goalId !== preview.goalId);
     expect(Date.now() - t0).toBeLessThan(1500);
     expect(next).toMatchObject({ reason: "afterReveal", replaces: preview.goalId, segment: 0 });
-    expect(next?.steps.map((s) => s.says)).toEqual(["Province: Ontario"]);
+    expect(next?.steps.map((s) => s.says)).toEqual(["Province: Ontario", "You press Submit Application"]);
     expect(r.page.shown("e20")).toBe("");
     await r.accept(next as Segment);
     await r.helper.goals.idle();
@@ -103,7 +105,7 @@ describe("the reveal continuation (P2)", () => {
     const r = await rig({ note: `${NOTE}\nProvince: Ontario`, picks: { ...PICKS, Province: "Ontario" }, intent: { scope: "list", fields: ["f3"] } });
     revealing(r.page);
     const preview = (await r.ask("fill in the Country from my note")) as Segment;
-    expect(preview.steps.map((s) => s.says)).toEqual(["Country: Canada"]);
+    expect(preview.steps.map((s) => s.says)).toEqual(["Country: Canada", "You press Submit Application"]);
     await r.accept(preview);
     await r.helper.goals.idle();
     // The first preview was the Ask's reply; nothing more is published.
@@ -120,7 +122,9 @@ describe("the size hand-off (P2)", () => {
   it("fills the first fields one fill asks about, and names the rest as the user's before Tab", async () => {
     const r = await rig({ controls: forty, note, picks });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
-    expect(preview.steps).toHaveLength(MAX_FIELDS);
+    // I6: MAX_FIELDS writes, then the hand-off row (this form has no forward button).
+    expect(preview.steps).toHaveLength(MAX_FIELDS + 1);
+    expect(preview.steps.at(-1)?.says).toBe("The rest is yours");
     expect(preview.steps[0]?.says).toBe("Answer 1: value 1");
     expect(preview.warnings.some((w) => /Caret fills 20 fields of a form at once, so 20 more are yours: 'Answer 21'/.test(w))).toBe(true);
     await r.accept(preview);
@@ -187,7 +191,7 @@ describe("a page goal's checks before and while it writes (P2)", () => {
     const withSubject = (): PageControl[] => [...mixedControls().slice(0, 2), c("e30", "text", "Subject", { value: "" })];
     const r = await rig({ controls: withSubject, note: `${NOTE}\nSubject: Hello there`, picks: { ...PICKS, Subject: "Hello there" } });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
-    expect(preview.steps.map((x) => x.says)).toEqual(["Full name: Robin Vale", "Email: robin@example.test"]);
+    expect(preview.steps.map((x) => x.says)).toEqual(["Full name: Robin Vale", "Email: robin@example.test", "The rest is yours"]);
     expect(preview.warnings).toContain("Caret left 'Subject' empty: Caret doesn't write subject lines.");
   });
 });
@@ -201,7 +205,7 @@ describe("the fill gate cannot be borrowed (P2)", () => {
     const { macClock } = await import("../src/offers/event-time.ts");
     const ask: AskJev = jevPickingText(byLabel, 0.95);
     const plan = await planPage(r.helper.model, { goalId: "g-copy", instruction: "fill out this form", windowId: WIN, scope: null, kind: "all", section: null, about: [], askJev: ask, now: Date.now(), clock: macClock(new Date()), readerSession: 0, pageDocument: (id) => r.host.registry.documentOf(id) });
-    expect(plan.segments[0]?.steps.every((s) => s.gate === "fill")).toBe(true);
+    expect(plan.segments[0]?.steps.filter((s) => s.row !== true).every((s) => s.gate === "fill")).toBe(true);
     expect(() => r.helper.goals.propose(structuredClone(plan), undefined, null)).toThrow(/without passing the value gates/);
   });
 });

@@ -42,8 +42,10 @@ describe("an attach row in a page goal's preview (P3)", () => {
     const r = await rig({ goalFiles: true });
     const s = (await r.ask("fill out this form from my note")) as Segment;
     const attach = s.steps.filter((x) => x.kind === "attach");
-    expect(attach).toEqual([{ index: s.steps.length - 1, kind: "attach", says: "Resume: a file you choose", file: { source: "choose" } }]);
-    expect(s.steps.slice(0, -1).every((x) => x.kind === "write")).toBe(true);
+    expect(attach).toEqual([{ index: s.steps.length - 2, kind: "attach", says: "Resume: a file you choose", file: { source: "choose" } }]);
+    expect(s.steps.slice(0, -2).every((x) => x.kind === "write")).toBe(true);
+    // I6: the hand-off row comes last, after the attach rows.
+    expect(s.steps.at(-1)).toMatchObject({ kind: "handoff", says: "You press Submit Application" });
   });
 
   it("offers none to a host that cannot show one, and the file control stays the user's", async () => {
@@ -70,7 +72,7 @@ describe("attaching the file the user confirmed (P3)", () => {
   it("lands by the dropzone when that is the row the user gave the file, and nothing goes to the other", async () => {
     const r = await rig({ goalFiles: true, controls: documents, title: "Apply: step 3" });
     const s = (await r.ask("fill out this form from my note")) as Segment;
-    expect(s.steps.map((x) => x.says)).toEqual(["Full name: Robin Vale", "Resume: a file you choose", "Or drop your resume here: a file you choose"]);
+    expect(s.steps.map((x) => x.says)).toEqual(["Full name: Robin Vale", "Resume: a file you choose", "Or drop your resume here: a file you choose", "You press Submit application"]);
     await r.accept(s, { confirmedFile: { step: 2, path: resume() } });
     await settle(r);
     expect(r.page.files.get("r2")?.name).toBe("Robin Vale Resume.pdf");
@@ -165,7 +167,7 @@ describe("the P3 review's attach findings", () => {
     await r.next(files, "Apply: documents", "/docs");
     await settle(r);
     const docs = goalMessages(r).filter((m): m is Segment => m.event === "segment").at(-1) as Segment;
-    expect(docs.steps.map((x) => x.kind)).toEqual(["attach"]);
+    expect(docs.steps.map((x) => x.kind)).toEqual(["attach", "handoff"]);
     expect(await r.accept(docs)).toBeNull();
     expect(errors(r).at(-1)).toMatch(/only attaches files: choose one/);
     // The preview still waits: with a file, the same Tab runs it.

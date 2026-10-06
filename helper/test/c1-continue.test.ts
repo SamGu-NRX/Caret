@@ -90,7 +90,8 @@ async function rig(onChoose: (v: Extract<PageVerb, { kind: "pageChooseOption" }>
   expect((await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");
   const preview = (await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "a1", at: Date.now(), instruction: "fill out this form from my note", windowId: WIN }, undefined, true, true)) as Segment;
   expect(preview.event).toBe("segment");
-  expect(preview.steps.map((s) => s.says)).toEqual(["Full name: Robin Vale", "Country: Canada", "City: Toronto", "Email: robin@example.test"]);
+  // I6: the form has no forward button, so its hand-off row says the rest is the user's.
+  expect(preview.steps.map((s) => s.says)).toEqual(["Full name: Robin Vale", "Country: Canada", "City: Toronto", "Email: robin@example.test", "The rest is yours"]);
   const r: Rig = {
     page,
     helper,

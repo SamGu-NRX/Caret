@@ -134,6 +134,12 @@ export interface GoalStep {
   gate: "jev" | "fill" | "draft" | "derived" | null;
   /** P3: on an attach step only, the file its row offers. */
   file?: AttachOffer;
+  /**
+   * I6: on a page plan's hand-off row only (page-planner.ts handoffRow): the step the user reads last, "You press Next"
+   * or "The rest is yours". It is a row, never an action: lowering gives it no executor step, a run never reaches it,
+   * and no check reads its target.
+   */
+  row?: true;
 }
 
 /**
@@ -248,6 +254,8 @@ export function segmentDigest(programHash: string, s: Omit<GoalSegment, "digest"
         handoff: x.handoff,
         // P3: the file an attach row offers, which the user reads before Tab; absent (and so not hashed) on other steps.
         file: x.file,
+        // I6: a hand-off row (never run), absent on every other step.
+        row: x.row,
       })),
       warnings,
     }),

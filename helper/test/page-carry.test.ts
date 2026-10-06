@@ -45,7 +45,7 @@ describe("a whole-form goal carries across the user's Next (P3)", () => {
     expect(next.replaces).toBe(first.goalId);
     expect(next.goalId).not.toBe(first.goalId);
     expect(next.requestId).toBeNull();
-    expect(next.steps.map((s) => s.says)).toEqual(["Email: robin@example.test", "Full name: Robin Vale"]);
+    expect(next.steps.map((s) => s.says)).toEqual(["Email: robin@example.test", "Full name: Robin Vale", "You press Next"]);
     await r.accept(next);
     await settle(r);
     expect(r.page.shown("q1")).toBe("robin@example.test");
