@@ -1455,12 +1455,14 @@ async function batchC1(e: Engine, site: FixtureSite): Promise<void> {
   /** Navigates the tab over the pipe (task pages have no control channel) and walks until `ready` holds. */
   const open = async (path: string, ready: (s: PageSnapshot) => boolean): Promise<PageSnapshot> => {
     await cdp.send("Page.navigate", { url: `${site.mainOrigin}${path}` }, sessionId);
+    let last: PageSnapshot | null = null;
     for (let i = 0; i < 40; i++) {
       await sleep(250);
       const s = await walk(e).catch(() => null);
+      if (s !== null) last = s;
       if (s !== null && s.frames.some((f) => f.path === path) && ready(s)) return s;
     }
-    throw new Error(`${path} did not show its controls`);
+    throw new Error(`${path} did not show its controls; the last walk: ${JSON.stringify(last?.frames.map((f) => ({ path: f.path, comboboxes: f.controls.filter((c) => c.kind === "combobox").map((c) => c.name) })) ?? null)}`);
   };
   const hasBox = (prefix: string) => (s: PageSnapshot): boolean => s.frames.some((f) => f.controls.some((c) => c.kind === "combobox" && c.name.startsWith(prefix)));
   const pickerValue = (oracle: string): Promise<string> => evaluate<string>(`document.querySelector('.picker[data-oracle="${oracle}"]').dataset.oracleValue`);
@@ -1468,7 +1470,7 @@ async function batchC1(e: Engine, site: FixtureSite): Promise<void> {
   const listboxes = (): Promise<number> => evaluate<number>(`document.querySelectorAll('[role="listbox"]').length`);
 
   await check("C1: wizard-2's School picker, whose list shows only once the field holds text and is fetched as you type, is picked and verified by the page", async () => {
-    let s = await open("/tasks/wizard-2", hasBox("School"));
+    let s = await open("/tasks/wizard/2", hasBox("School"));
     grant(e, "t-c1-school");
     const r = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, "School", "t-c1-school"), expect: "", value: "Northfield State University" });
     expect(r.outcome === "ok", `${outcome(r)} ${JSON.stringify(r.choice)}`);
@@ -1476,7 +1478,7 @@ async function batchC1(e: Engine, site: FixtureSite): Promise<void> {
     const dom = await pickerValue("school");
     expect(dom === "Northfield State University" && (await listboxes()) === 0, `DOM: picked '${dom}', ${await listboxes()} lists open`);
     // A value that is only part of an option's name ("Northfield" starts two) is not picked, and the page is as it was.
-    s = await open("/tasks/wizard-2", hasBox("School"));
+    s = await open("/tasks/wizard/2", hasBox("School"));
     grant(e, "t-c1-school2");
     const part = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, "School", "t-c1-school2"), expect: "", value: "Northfield" });
     expect(part.outcome === "failed" && part.readings?.afterBlur === "" && part.choice?.expanded === false, `a partial name: ${outcome(part)} ${JSON.stringify(part.readings)} ${JSON.stringify(part.choice)}`);
