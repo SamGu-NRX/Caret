@@ -18,7 +18,7 @@ import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
-import { asksCountry, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { asksCountry, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -1308,6 +1308,9 @@ export async function proposeFill(
   };
   /** Kinds of the user's own values in memory ("email", "name"). */
   const memoryKinds = new Set<string>((opts.about ?? []).map((a) => a.kind));
+  /** C2: the user's own country, when exactly one About entry says it (placeWithCountry). */
+  const countries = (opts.about ?? []).filter((a) => a.kind === "country");
+  const aboutCountry = countries.length === 1 ? (countries[0] as AboutValue).value : null;
 
   /**
    * The value a control takes from a pick (the option it names, PAGE_CHECKED, or the input's own date or time format),
@@ -1339,7 +1342,9 @@ export async function proposeFill(
         // is exactly (partOf).
         const whole = matchOption(options, text);
         const piece = whole === null && f.part !== null ? partOf(f.part, text) : null;
-        const exact = whole ?? (piece === null ? null : matchOption(options, piece)) ?? (f.part === "month" || f.part === "year" ? dateOption(f.part, options, text) : null);
+        // C2 (lead decision 2): the one option that is the user's place with its country ("Portland, Maine, United States").
+        const placed = placeWithCountry(text, aboutCountry);
+        const exact = whole ?? (piece === null ? null : matchOption(options, piece)) ?? (f.part === "month" || f.part === "year" ? dateOption(f.part, options, text) : null) ?? (placed === null ? null : matchOption(options, placed));
         if (exact !== null) return { value: exact, display: exact, writes: page && !press };
         const o = optionInText(options, text);
         return o === null ? { why: "ambiguous" } : { value: o, display: o, writes: false };
@@ -1386,7 +1391,12 @@ export async function proposeFill(
         // Read as a text field is, then as one option's name: the page engine types it as the list's filter and picks
         // only an option named exactly that (B27).
         if (misfit(text, f.labelWords) !== null || (f.part !== null && !partFits(f.part, text))) return { why: "wrongKind" };
-        return optionName(text) ? { value: text, display: text, writes: page } : { why: "ambiguous" };
+        if (!optionName(text)) return { why: "ambiguous" };
+        // C2 (lead decision 2): a place "City, Region" is asked for with its country, as location lists name it; the page
+        // engine types that as the list's filter and picks only the one option named exactly that, once the list has
+        // loaded for it. A place that already names its country, or a bare city, is asked for as written.
+        const placed = placeWithCountry(text, aboutCountry) ?? text;
+        return { value: placed, display: placed, writes: page };
       case "text":
         return misfit(text, f.labelWords) === null && (f.part === null || partFits(f.part, text)) ? { value: text, display: text, writes: true } : { why: "wrongKind" };
     }

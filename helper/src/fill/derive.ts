@@ -300,6 +300,28 @@ export function splitPlace(text: string): { city: string; state: string; country
   return { city: parts[0] as string, state: parts[1] as string, country: parts[2] ?? null };
 }
 
+/** C2: Canada's province and territory codes, as Canada Post writes them. */
+const PROVINCE_CODES = new Set("AB BC MB NB NL NS NT NU ON PE QC SK YT".split(" "));
+
+/**
+ * C2 (lead decision 2): the user's place "City, Region" with its country added, as a location list names it: "San Diego,
+ * California" gives "San Diego, California, United States". The country follows from the region by a closed list (a
+ * US state or its USPS code: the United States; a Canadian province or territory or its code: Canada), or else is the
+ * user's own About country (`aboutCountry`). Georgia, a state and a country, takes only the About country. Null for
+ * anything else: a bare city ("Portland" is many places, so it never becomes one of them), a place that already names
+ * a country, a remark, or more than two parts. Fill offers this only to a dropdown or menu, which the page engine sets
+ * only to an option named exactly this (fill.ts controlValue).
+ */
+export function placeWithCountry(text: string, aboutCountry: string | null): string | null {
+  const parts = text.split(",").map((p) => p.trim());
+  if (parts.length !== 2 || !parts.every((p) => PLACE_WORDS.test(p) && p.length <= 40)) return null;
+  const region = parts[1] as string;
+  const georgia = region.toLowerCase() === "georgia";
+  const closed = georgia ? null : usState(region) ? "United States" : PROVINCE_CODES.has(region) || PROVINCES.has(region.toLowerCase()) ? "Canada" : null;
+  const country = closed ?? (aboutCountry !== null && PLACE_WORDS.test(aboutCountry.trim()) ? aboutCountry.trim() : null);
+  return country === null ? null : `${parts[0]}, ${region}, ${country}`;
+}
+
 /**
  * Whether a value reads as the part of a name or an address a field asks for: a person's full name splits
  * (splitName), a first, middle or last name is words of letters, a ZIP code is five digits (or ZIP+4), a
