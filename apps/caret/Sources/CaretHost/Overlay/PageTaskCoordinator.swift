@@ -73,6 +73,9 @@ final class PageTaskCoordinator {
         }
     }
 
+    /// Test hook: see `HostedPanel.gatesPointer`.
+    func setGatesPointer(_ on: Bool) { panel.gatesPointer = on }
+
     /// H14: the machine's state and the panel on screen, for the debug socket.
     func publish() {
         // The task let go of the open panel (Tab went out, another preview came, the task ended): it closes, so it can

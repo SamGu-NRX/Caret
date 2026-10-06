@@ -135,6 +135,11 @@ final class HostedPanel {
     }
     /// The monitors are up only while the panel shows and takes clicks (prep-for-prod H14-5).
     private var wantsPointer: Bool { clickableContent && panel.isVisible && !isExiting }
+    /// Test hook (`pagetask clicks`): false takes every click over the whole window while the content is clickable,
+    /// with no pointer gating, to tell a gating fault from a panel that takes no click at all.
+    var gatesPointer = true {
+        didSet { if gatesPointer != oldValue { pointerMoved() } }
+    }
     private var pointerMonitors: [Any] = []
     /// Mouse moves the monitors have seen, for the debug socket.
     private var pointerMoves = 0
@@ -282,7 +287,7 @@ final class HostedPanel {
     /// Takes mouse events while the pointer is over the content of a shown panel; passes them through otherwise.
     private func pointerMoved() {
         guard clickableContent else { return }
-        let over = panel.isVisible && !isExiting && contentFrame(size: size).contains(NSEvent.mouseLocation)
+        let over = panel.isVisible && !isExiting && (!gatesPointer || contentFrame(size: size).contains(NSEvent.mouseLocation))
         if panel.ignoresMouseEvents == over { panel.ignoresMouseEvents = !over }
     }
 

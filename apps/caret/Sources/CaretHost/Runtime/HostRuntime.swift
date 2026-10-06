@@ -647,6 +647,13 @@ public final class HostRuntime {
                     return (try? String(decoding: encoder.encode(status.read().pageTask), as: UTF8.self)) ?? "{}"
                 }
             },
+            pageTaskClicks: { gated in
+                MainActor.assumeIsolated {
+                    guard testHooks else { return #"{"error":"pagetask clicks is a test hook: start the host with --test-hooks"}"# }
+                    pageTask.setGatesPointer(gated)
+                    return #"{"ok":true}"#
+                }
+            },
             testHooks: testHooks,
             access: configuration.socketAccess
         )
@@ -877,6 +884,8 @@ public final class HostRuntime {
         /// H14: `pagetask` reads the page task panel; `pagetask start <goalProgress json>` starts it from a preview as the
         /// desk's Ask would (test hooks), for a run with no model to plan the page.
         let pageTask: @Sendable (String?) -> String
+        /// `pagetask clicks gated|always` (test hooks): `HostedPanel.gatesPointer`.
+        let pageTaskClicks: @Sendable (Bool) -> String
         /// The host was started with `--test-hooks`.
         let testHooks: Bool
         /// What the socket answers at all; checked before anything else (H12).
@@ -1103,6 +1112,9 @@ public final class HostRuntime {
             return Data((reply + "\n").utf8)
         case "pagesight":
             let reply = DispatchQueue.main.sync { hooks.pageSight(words) }
+            return Data((reply + "\n").utf8)
+        case "pagetask" where words.count == 3 && words[1] == "clicks" && ["gated", "always"].contains(words[2]):
+            let reply = DispatchQueue.main.sync { hooks.pageTaskClicks(words[2] == "gated") }
             return Data((reply + "\n").utf8)
         case "pagetask":
             // `pagetask start <json>` carries JSON with spaces; keep it whole after the verb.
