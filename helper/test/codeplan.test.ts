@@ -1,7 +1,8 @@
 // B24: Ask with natural phrasing through the code-mode writer (planner/codeplan.ts). A fake writer returns a
 // fixed program; the sandbox runs it for real; a stand-in Jev answers the checks. The plan must be the planner's
 // own shape, checked by validatePlan, and every write the writer chose must pass code's and Jev's checks.
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { ScreenModel } from "../src/model.ts";
 import { planWithCode } from "../src/planner/codeplan.ts";
 import { PlannerError } from "../src/planner/validate.ts";
@@ -9,6 +10,23 @@ import type { WriterPort, WriterRequest } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { field, node, snap, text } from "./builders.ts";
+
+// F2's memory-value check got "guest compute passed 250 ms" rather than its expected refusal.
+// The worker charges wall time inside QuickJS slices, including time it is descheduled.
+// Use the existing per-run limits seam only here; the real worker and validation still run.
+// Sandbox boundary tests retain the product's 250 ms compute and 1,000 ms watchdog limits.
+vi.mock("../src/codemode/sandbox.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../src/codemode/sandbox.ts")>();
+  return {
+    ...original,
+    runCodePlan: (...[source, snapshots, choose, opts = {}]: Parameters<typeof original.runCodePlan>) =>
+      original.runCodePlan(source, snapshots, choose, { ...opts, limits: { ...opts.limits, guestCpuMs: 10_000, watchdogMs: 10_000 } }),
+  };
+});
+
+// Candidate completeness is part of these semantic checks too, not a 15 ms performance assertion.
+beforeEach(() => setGeneratorClock(() => 0));
+afterEach(() => setGeneratorClock(null));
 
 const NOTE_APP = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
 const FORM_APP = { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" };

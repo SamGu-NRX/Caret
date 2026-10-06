@@ -7,7 +7,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { Snapshot } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
@@ -17,6 +18,11 @@ import { SAYS } from "../src/planner/says.ts";
 import type { MemoryValue } from "../src/planner/trace.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { field, snap } from "./builders.ts";
+
+// T1 reproduced the missing first/last names twice beside a full-suite run: the 15 ms
+// generator budget stopped before them. These assertions check the reading, not elapsed time.
+beforeEach(() => setGeneratorClock(() => 0));
+afterEach(() => setGeneratorClock(null));
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = loadCorpus(join(here, "../../fixtures/realfill"));

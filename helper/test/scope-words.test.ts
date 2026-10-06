@@ -214,10 +214,12 @@ describe("the exclusion words", () => {
     }
   });
 
+  // Loaded full-suite runs took 7,449 ms in P1 and 14,994 ms in F2 against a 5,000 ms timeout.
+  // Keep the exhaustive grammar check; only this test gets more time, not a product budget.
   it("is in no sentence of either grammar, so a trusted whole form or section never holds one", () => {
     const bad = [...sentences(WHOLE_FORM), ...sentences(SECTION)].filter((s) => exclusionsIn(s).length > 0);
     expect(bad).toEqual([]);
-  });
+  }, 30_000);
 });
 
 // B28b lead decision 2: "contact info" trusts the contact fields of its section, read by fill's kinds and parts.
