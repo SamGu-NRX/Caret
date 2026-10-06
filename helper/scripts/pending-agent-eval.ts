@@ -28,7 +28,7 @@ const REPS = positiveInt("reps", a.reps);
 const MAX_USD = positiveNumber("max-usd", a["max-usd"]);
 mkdirSync(OUT, { recursive: true });
 loadJevKey(); // fail now, not at the first question
-const jev = capJev(makeJevClient(() => loadJevKey()), MAX_USD);
+const jev = capJev(makeJevClient(loadJevKey), MAX_USD);
 const ask = jev.ask;
 
 type Build = (o: AgentWindow) => Node[];

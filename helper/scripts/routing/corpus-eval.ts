@@ -110,7 +110,7 @@ const detected = JSON.parse(execFileSync(detectBin, { input: JSON.stringify(allT
 const valuesOf = new Map(allTexts.map((t, i) => [t, detected[i] ?? []]));
 
 // Live Jev, counted by question type, under the spend limit.
-const jevClient = makeJevClient(() => loadJevKey());
+const jevClient = makeJevClient(loadJevKey);
 const spend = { usd: 0, calls: { router1: 0, router2: 0, producer: 0 }, routerMs: [] as number[], routerTokens: [] as number[], producerTokens: [] as number[] };
 const askJev: AskJev = async (req: JevRequest) => {
   if (spend.usd >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);

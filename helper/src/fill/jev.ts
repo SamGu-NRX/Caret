@@ -1,28 +1,73 @@
-// Minimal client for TypeSafe's System One endpoint (https://docs.typesafe.ai/api.md).
-// The key is read at call time from TYPESAFE_API_KEY or from the .env file named by
-// CARET_ENV_FILE. It is never logged; errors name the variable, not the value.
+// System One through TypeSafe or Vercel (brief GW1). Keys are read at call time from the environment or
+// CARET_ENV_FILE. Gateway uses only CARET_JEV_GATEWAY_KEY, never the writer's AI_GATEWAY_API_KEY.
 import { readFileSync } from "node:fs";
 import * as z from "zod";
 import type { Snippet } from "../privacy.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
+import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
 
 export const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
+export const JEV_GATEWAY_URL = "https://ai-gateway.vercel.sh/typesafe/v1/systemone";
+export const JEV_GATEWAY_MODEL = "typesafe-ai/jev";
+export type JevProvider = "typesafe" | "gateway";
+export interface JevSettings {
+  provider: JevProvider;
+  url: string;
+  model: string;
+}
+
+function setting(name: string, env: NodeJS.ProcessEnv): string | undefined {
+  const direct = env[name];
+  if (direct !== undefined && direct !== "") return direct;
+  const file = env.CARET_ENV_FILE;
+  if (file === undefined || file === "") return undefined;
+  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+    const m = /^\s*(?:export\s+)?([A-Z_]+)\s*=\s*(.*?)\s*$/.exec(line);
+    if (m?.[1] === name && m[2] !== undefined) {
+      const value = m[2].replace(/^(['"])(.*)\1$/, "$2").trim();
+      if (value !== "") return value;
+    }
+  }
+  return undefined;
+}
+
+/** Gateway is opt-in; Laya is used only when CARET_JEV_MODEL or the bake-off names it (brief GW1). */
+export function jevSettings(env: NodeJS.ProcessEnv = process.env): JevSettings {
+  const provider = setting("CARET_JEV_PROVIDER", env) ?? "typesafe";
+  if (provider !== "typesafe" && provider !== "gateway") throw new Error("CARET_JEV_PROVIDER must be typesafe or gateway");
+  return {
+    provider,
+    url: provider === "gateway" ? JEV_GATEWAY_URL : JEV_URL,
+    model: setting("CARET_JEV_MODEL", env) ?? (provider === "gateway" ? JEV_GATEWAY_MODEL : JEV_MODEL),
+  };
+}
 /** Sourced: $0.042 per million input tokens, output free (https://docs.typesafe.ai/models.md). */
 export const JEV_USD_PER_INPUT_TOKEN = 0.042 / 1_000_000;
 
 /**
  * How a Jev request failed, which decides what the user can do about it (lead addendum, 2026-10-06):
  * - `billing`: HTTP 402, the account has no credits; trying again does not help until someone adds them.
- * - `auth`: HTTP 401 or 403, the key is wrong or revoked.
+ * - `auth`: HTTP 401 or a 403 without a recognised gateway account code, the key is wrong or revoked.
+ * - `card`: gateway 403 customer_verification_required; Vercel needs a card on file.
+ * - `paidCredits`: gateway 403 no_providers_available; Jev needs paid Vercel credits.
  * - `rate`: HTTP 429 after the client's one retry (or the first 429, for a caller that allows no retry).
  * - `network`: no HTTP answer at all: DNS, a dropped connection, or no answer within the client's timeout.
  * - `service`: any other HTTP error, such as a 500 from the service.
  * - `cap`: nothing was sent, because the day's spend reached CARET_JEV_DAILY_CAP (engines/decide/daily-cap.ts, J1).
  */
-export type JevFailureKind = "billing" | "auth" | "rate" | "network" | "service" | "cap";
+export type JevFailureKind = "billing" | "auth" | "rate" | "network" | "service" | "cap" | "card" | "paidCredits";
 
-function httpKind(status: number): JevFailureKind {
+function httpKind(status: number, detail: string, provider: JevProvider): JevFailureKind {
+  if (status === 403 && provider === "gateway") {
+    // Only the structured code means a missing card; an arbitrary 403 still means auth.
+    try {
+      const error = JSON.parse(detail) as { error?: { code?: unknown; type?: unknown }; error_type?: unknown };
+      const code = error?.error?.code ?? error?.error?.type ?? error?.error_type;
+      if (code === "customer_verification_required") return "card";
+      if (code === "no_providers_available") return "paidCredits";
+    } catch { /* A non-JSON error retains its HTTP kind. */ }
+  }
   if (status === 402) return "billing";
   if (status === 401 || status === 403) return "auth";
   if (status === 429) return "rate";
@@ -36,11 +81,11 @@ function httpKind(status: number): JevFailureKind {
 export class JevHttpError extends Error {
   readonly status: number;
   readonly kind: JevFailureKind;
-  constructor(status: number, detail: string) {
-    super(`Jev HTTP ${status}: ${detail}`);
+  constructor(status: number, detail: string, provider: JevProvider = "typesafe") {
+    super(`Jev HTTP ${status}: ${detail.slice(0, 300)}`);
     this.name = "JevHttpError";
     this.status = status;
-    this.kind = httpKind(status);
+    this.kind = httpKind(status, detail, provider);
   }
 }
 
@@ -60,7 +105,7 @@ export class JevNetworkError extends Error {
 export function jevFailureKind(e: unknown): JevFailureKind | null {
   let at: unknown = e;
   for (let depth = 0; depth < 4 && at instanceof Error; depth++) {
-    if (at instanceof JevHttpError || at instanceof JevNetworkError || at instanceof JevCapError) return at.kind;
+    if (at instanceof JevHttpError || at instanceof JevNetworkError || at instanceof JevCapError || at instanceof JevGatewayPolicyError) return at.kind;
     at = at.cause;
   }
   return null;
@@ -115,7 +160,20 @@ const JevResponse = z.object({
   model: z.string(),
   answers: z.record(z.string(), z.union([NoulAnswer, ChoiceAnswer])),
   usage: z.object({ input_tokens: z.number() }).loose(),
+  provider_metadata: z.unknown().optional(),
 });
+
+const GatewayCost = z.union([
+  z.number(),
+  z.string().regex(/^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/).transform(Number),
+]).pipe(z.number().finite().nonnegative());
+const GatewayMetadata = z.object({ gateway: z.object({ cost: GatewayCost.optional() }).loose().optional() }).loose();
+
+/** Vercel reports dollars as a string; zero is a real cost, not a missing estimate (Vercel TypeSafe API docs). */
+export function jevCostUsd(inputTokens: number, provider: JevProvider, metadata?: unknown): number {
+  const cost = provider === "gateway" && metadata !== undefined ? GatewayMetadata.parse(metadata).gateway?.cost : undefined;
+  return cost ?? inputTokens * JEV_USD_PER_INPUT_TOKEN;
+}
 
 export interface JevResult {
   model: string;
@@ -135,21 +193,15 @@ export interface JevResult {
 
 export type AskJev = (req: JevRequest) => Promise<JevResult>;
 
-export function loadJevKey(env: NodeJS.ProcessEnv = process.env): string {
-  const direct = env.TYPESAFE_API_KEY;
-  if (direct !== undefined && direct.length > 0) return direct;
-  const file = env.CARET_ENV_FILE;
-  if (file === undefined || file.length === 0) {
-    throw new Error("Jev key missing: set TYPESAFE_API_KEY, or CARET_ENV_FILE to a .env file that defines it");
-  }
-  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
-    const m = /^\s*(?:export\s+)?TYPESAFE_API_KEY\s*=\s*(.*)\s*$/.exec(line);
-    if (m?.[1] !== undefined) {
-      const v = m[1].replace(/^(['"])(.*)\1$/, "$2").trim();
-      if (v.length > 0) return v;
-    }
-  }
-  throw new Error(`Jev key missing: ${file} has no TYPESAFE_API_KEY line`);
+export function loadJevKey(provider?: JevProvider): string;
+export function loadJevKey(env: NodeJS.ProcessEnv, provider?: JevProvider): string;
+export function loadJevKey(envOrProvider: NodeJS.ProcessEnv | JevProvider = process.env, selectedProvider?: JevProvider): string {
+  const env = typeof envOrProvider === "string" ? process.env : envOrProvider;
+  const provider = typeof envOrProvider === "string" ? envOrProvider : selectedProvider ?? jevSettings(env).provider;
+  const name = provider === "gateway" ? "CARET_JEV_GATEWAY_KEY" : "TYPESAFE_API_KEY";
+  const value = setting(name, env);
+  if (value !== undefined) return value;
+  throw new Error(`Jev key missing: set ${name}, or CARET_ENV_FILE to a .env file that defines it`);
 }
 
 /** The state key under which a body describes, once, the options several of its questions share (wireBody). */
@@ -160,6 +212,7 @@ export interface WireBody {
   state: JevRequest["state"];
   model: string;
   questions: Record<string, ChoiceQuestion | NoulQuestion>;
+  providerOptions?: { gateway: { only: string[] } };
 }
 
 /**
@@ -219,58 +272,178 @@ export function expandWireBody(body: WireBody): WireBody {
  * The Jev client. Every request first takes a hold on the day's budget (engines/decide/daily-cap.ts): past
  * CARET_JEV_DAILY_CAP it is refused with JevCapError before anything is sent.
  */
-export function makeJevClient(key: () => string, timeoutMs = 10_000, spend: DailySpend = DailySpend.fromEnv()): AskJev {
+export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs = 10_000, spend: DailySpend = DailySpend.fromEnv(), settings: JevSettings = jevSettings(), fetchFn: typeof fetch = (input, init) => fetch(input, init), onUsage?: (usage: JevUsage) => void, evaluation?: { fixture: FixtureSources; env: NodeJS.ProcessEnv }): AskJev {
+  const route = { ...settings };
   return async (req) => {
+    if (route.model === LAYA_FREE_MODEL) {
+      // Laya's boundless endpoint reports has_no_training:false and has_zdr:false (Oct 6, 2026).
+      // Real-screen text must never reach it, even with explicit model configuration or no replay cache.
+      if (evaluation === undefined) throw new JevGatewayPolicyError("Laya runs only with declared fixture sources in evaluation harnesses", route.model);
+      refuseShipped(process.env);
+      refuseShipped(evaluation.env);
+      checkFixture(req, evaluation.fixture);
+    }
     const ids = Object.keys(req.nouls ?? {});
-    if (ids.some((id) => id in req.questions)) throw new Error(`Jev request repeats a question id between its choices and its yes/no questions`);
-    const body = JSON.stringify(wireBody(req));
+    if (ids.some((id) => id in req.questions)) throw new Error("Jev request repeats a question id between its choices and its yes/no questions");
+    const wire = wireBody(req, route.model);
+    if (route.provider === "gateway") {
+      wire.providerOptions = { gateway: { only: [checkGatewayModel(route.model)] } };
+    }
+    const body = JSON.stringify(wire);
     const hold = spend.reserve(DailySpend.estimateUsd(body.length, JEV_USD_PER_INPUT_TOKEN));
-    let result: JevResult;
+    let settled = false;
+    const settle = (costUsd: number, inputTokens: number): void => {
+      settled = true;
+      hold.settle(costUsd, inputTokens);
+      onUsage?.({ costUsd, inputTokens });
+    };
     try {
-      result = await post(key, timeoutMs, req, body, ids);
+      const result = await post(key, timeoutMs, req, body, ids, route, fetchFn, settle);
+      if (!settled) settle(result.costUsd, result.inputTokens);
+      return result;
     } catch (e) {
-      hold.release();
+      if (!settled) hold.release();
       throw e;
     }
-    hold.settle(result.costUsd, result.inputTokens);
-    return result;
   };
 }
 
-async function post(key: () => string, timeoutMs: number, req: JevRequest, body: string, ids: string[]): Promise<JevResult> {
+export interface JevUsage { inputTokens: number; costUsd: number }
+
+export const LAYA_FREE_MODEL = "convaiinnovations/laya-free";
+const GATEWAY_PROVIDERS: Readonly<Record<string, string>> = {
+  [JEV_GATEWAY_MODEL]: "typesafe-ai",
+  // The gateway endpoint lists boundless as Laya's sole provider, not its model publisher (Oct 6, 2026).
+  [LAYA_FREE_MODEL]: "boundless",
+};
+const blockedGatewayModels = new Set<string>();
+
+/** A refused gateway answer can already have cost money; callers must not use its choices (GW1 lead decision). */
+export class JevGatewayPolicyError extends Error {
+  readonly kind = "service" as const;
+  readonly model: string;
+  readonly usage: JevUsage;
+  constructor(message: string, model: string, usage = { inputTokens: 0, costUsd: 0 }) {
+    super(message);
+    this.name = "JevGatewayPolicyError";
+    this.model = model;
+    this.usage = usage;
+  }
+}
+
+function checkGatewayModel(model: string): string {
+  if (blockedGatewayModels.has(model)) throw new JevGatewayPolicyError("this gateway model is blocked for the rest of this process", model);
+  const provider = Object.hasOwn(GATEWAY_PROVIDERS, model) ? GATEWAY_PROVIDERS[model] : undefined;
+  if (provider === undefined) throw new JevGatewayPolicyError("this model is not allowed on Caret's Jev gateway key", model);
+  return provider;
+}
+
+// Laya's free tier returned 429 on the fifth rapid request (GW1 lead evidence, Oct 6). All clients share the pace.
+let layaQueue: Promise<void> = Promise.resolve();
+let layaNext = 0;
+async function paceLaya(): Promise<void> {
+  const turn = layaQueue.then(async () => {
+    // An in-flight 429 can extend the deadline while this turn sleeps. Check it again after each wake.
+    while (layaNext > Date.now()) await new Promise((resolve) => setTimeout(resolve, layaNext - Date.now()));
+    layaNext = Date.now() + 3000;
+  });
+  layaQueue = turn.catch(() => {});
+  await turn;
+}
+
+const GatewayEnvelope = z.object({ model: z.unknown().optional(), usage: z.unknown().optional(), provider_metadata: z.unknown().optional() }).loose();
+const GatewayTokens = z.object({ input_tokens: z.number().finite().nonnegative() });
+function gatewayUsage(json: unknown): { inputTokens: number; hasInputTokens: boolean; costUsd: number | undefined; costInvalid: boolean; model: string | undefined } {
+  const raw = GatewayEnvelope.parse(json);
+  const metadata = raw.provider_metadata === undefined ? undefined : GatewayMetadata.safeParse(raw.provider_metadata);
+  const tokens = GatewayTokens.safeParse(raw.usage);
+  return {
+    inputTokens: tokens.success ? tokens.data.input_tokens : 0,
+    hasInputTokens: tokens.success,
+    costUsd: metadata?.success ? metadata.data.gateway?.cost : undefined,
+    costInvalid: metadata !== undefined && !metadata.success,
+    model: typeof raw.model === "string" ? raw.model : undefined,
+  };
+}
+
+async function post(key: (provider: JevProvider) => string, timeoutMs: number, req: JevRequest, body: string, ids: string[], settings: JevSettings, fetchFn: typeof fetch, settle: (costUsd: number, inputTokens: number) => void): Promise<JevResult> {
   for (let attempt = 0; ; attempt++) {
+    if (settings.provider === "gateway") {
+      if (settings.model === LAYA_FREE_MODEL) await paceLaya();
+      checkGatewayModel(settings.model);
+    }
+    let credential = "";
     const t0 = performance.now();
     let res: Response;
     try {
-      res = await fetch(JEV_URL, {
+      // Bind credential selection to the captured route, even if the environment changes between calls.
+      credential = key(settings.provider);
+      res = await fetchFn(settings.url, {
         method: "POST",
-        headers: { Authorization: `Bearer ${key()}`, "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" },
         body,
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
       const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
-      throw new JevNetworkError(timedOut ? `Jev did not answer within ${timeoutMs} ms` : `Jev could not be reached: ${e instanceof Error ? e.message : String(e)}`, e);
+      const rawDetail = e instanceof Error ? e.message : String(e);
+      const detail = credential === "" ? rawDetail : rawDetail.split(credential).join("[redacted]");
+      throw new JevNetworkError(timedOut ? `Jev did not answer within ${timeoutMs} ms` : `Jev could not be reached: ${detail}`, e);
     }
     const latencyMs = performance.now() - t0;
-    if (res.status === 429 && attempt === 0 && req.retry429 !== false) {
-      const wait = Number(res.headers.get("retry-after") ?? "1");
-      await new Promise((r) => setTimeout(r, Math.min(5, Number.isFinite(wait) ? wait : 1) * 1000));
-      continue;
+    let json: unknown;
+    let errorText = "";
+    let reportedGatewayCost = false;
+    if (settings.provider === "gateway") {
+      // Account before checking answers or policy: a charged refusal or malformed answer still used the daily budget.
+      // H13's success-only host ledger is separate; this is the helper ledger J1's daily cap reads.
+      const text = await res.text().catch((e: unknown) => {
+        if (!res.ok) return "(the body could not be read)";
+        throw new JevNetworkError("Jev's answer did not arrive whole", e);
+      });
+      errorText = text.split(credential).join("[redacted]");
+      try { json = JSON.parse(text); } catch {
+        if (res.ok) throw new JevHttpError(res.status, "the answer was not JSON", settings.provider);
+      }
+      if (typeof json === "object" && json !== null && !Array.isArray(json)) {
+        const usage = gatewayUsage(json);
+        const model = usage.model ?? settings.model;
+        const wrongModel = !Object.hasOwn(GATEWAY_PROVIDERS, model);
+        const laya = model === LAYA_FREE_MODEL || settings.model === LAYA_FREE_MODEL;
+        const costUsd = usage.costUsd ?? (!laya && usage.hasInputTokens && !usage.costInvalid ? usage.inputTokens * JEV_USD_PER_INPUT_TOKEN : undefined);
+        if (costUsd !== undefined) {
+          reportedGatewayCost = true;
+          settle(costUsd, usage.inputTokens);
+        }
+        if (wrongModel || laya && (usage.costInvalid || usage.costUsd !== 0 && (res.ok || usage.costUsd !== undefined))) {
+          blockedGatewayModels.add(model);
+          blockedGatewayModels.add(settings.model);
+          const safeModel = model.split(credential).join("[redacted]");
+          throw new JevGatewayPolicyError(wrongModel ? "the gateway answered with a model that is not allowed" : "Laya requires an explicit zero gateway cost; this model is blocked", safeModel, { inputTokens: usage.inputTokens, costUsd: costUsd ?? 0 });
+        }
+        if (usage.costInvalid) throw new JevHttpError(res.status, "the gateway returned invalid cost metadata", settings.provider);
+      }
+    }
+    if (res.status === 429) {
+      const raw = res.headers.get("retry-after");
+      const seconds = Number(raw ?? "1");
+      const waitMs = Number.isFinite(seconds) ? Math.max(0, seconds * 1000) : Math.max(0, Date.parse(raw ?? "") - Date.now()) || 1000;
+      if (settings.provider === "gateway" && settings.model === LAYA_FREE_MODEL) layaNext = Math.max(layaNext, Date.now() + waitMs);
+      // A no-retry caller still leaves Laya's backoff for the next call. A reported cost is already settled.
+      if (attempt === 0 && req.retry429 !== false && !reportedGatewayCost) {
+        await new Promise((r) => setTimeout(r, settings.provider === "gateway" ? Math.max(3000, waitMs) : Math.min(5000, waitMs)));
+        continue;
+      }
     }
     if (!res.ok) {
-      // The body is the service's own text; the key is cut out in case it is ever echoed back. A body that cannot be read
-      // still leaves the status, which says how the request failed (P3 review).
-      const text = await res.text().catch(() => "(the body could not be read)");
-      throw new JevHttpError(res.status, text.slice(0, 300).split(key()).join("[redacted]"));
+      const text = settings.provider === "gateway" ? errorText : (await res.text().catch(() => "(the body could not be read)")).split(credential).join("[redacted]");
+      throw new JevHttpError(res.status, text, settings.provider);
     }
-    let json: unknown;
-    try {
-      json = await res.json();
-    } catch (e) {
-      // The answer stopped arriving (a dropped connection, the timeout) or was not JSON (P3 review).
-      if (e instanceof SyntaxError) throw new JevHttpError(res.status, "the answer was not JSON");
-      throw new JevNetworkError(`Jev's answer did not arrive whole: ${e instanceof Error ? e.message : String(e)}`, e);
+    if (settings.provider !== "gateway") {
+      try { json = await res.json(); } catch (e) {
+        if (e instanceof SyntaxError) throw new JevHttpError(res.status, "the answer was not JSON");
+        throw new JevNetworkError(`Jev's answer did not arrive whole: ${e instanceof Error ? e.message : String(e)}`, e);
+      }
     }
     const parsed = JevResponse.parse(json);
     const answers: JevResult["answers"] = {};
@@ -296,7 +469,7 @@ async function post(key: () => string, timeoutMs: number, req: JevRequest, body:
       ...(Object.keys(probabilities).length === 0 ? {} : { probabilities }),
       inputTokens: parsed.usage.input_tokens,
       latencyMs,
-      costUsd: parsed.usage.input_tokens * JEV_USD_PER_INPUT_TOKEN,
+      costUsd: jevCostUsd(parsed.usage.input_tokens, settings.provider, parsed.provider_metadata),
     };
   }
 }

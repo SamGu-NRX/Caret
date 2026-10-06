@@ -9,7 +9,8 @@
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { HOIST_SHARED_OPTIONS, JEV_MODEL, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
+import { HOIST_SHARED_OPTIONS, LAYA_FREE_MODEL, jevSettings, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
+import { DailySpend } from "./daily-cap.ts";
 import { cachedAsk, cacheFromEnv, checkFixture, refuseShipped, type FixtureSources } from "./cache.ts";
 import { calibrated, UNCALIBRATED, type Calibration } from "./confidence.ts";
 import { LLAMA_READING, llamaEngine } from "./llama.ts";
@@ -60,12 +61,15 @@ export function calibrationFromEnv(env: NodeJS.ProcessEnv, model?: string): Cali
 }
 
 function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngine {
+  if (o.name === "jev" || o.name.startsWith("gateway:")) {
+    const providerEnv = o.name === "jev" ? env : { ...env, CARET_JEV_PROVIDER: "gateway", CARET_JEV_MODEL: o.name.slice("gateway:".length) };
+    const settings = jevSettings(providerEnv);
+    return { name: o.name, model: settings.model, reach: settings.provider, ask: makeJevClient((provider) => loadJevKey(providerEnv, provider), 10_000, DailySpend.fromEnv(providerEnv), settings, undefined, undefined, { fixture: o.fixture, env }) };
+  }
   switch (o.name) {
     case "canned":
       if (o.canned === null) throw new Error("this harness has no canned engine");
       return { name: "canned", model: "canned", reach: "mac", ask: o.canned };
-    case "jev":
-      return { name: "jev", model: JEV_MODEL, reach: "typesafe", ask: makeJevClient(() => loadJevKey(env)) };
     case "llama": {
       const prompt = env.CARET_LLAMA_PROMPT ?? "chat";
       if (prompt !== "chat" && prompt !== "document") throw new Error(`CARET_LLAMA_PROMPT is '${prompt}'; it must be chat or document`);
@@ -76,6 +80,8 @@ function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngi
     case "gemini":
       // Brief J1: Gemini Flash-Lite's free tier only with a key in Caret's .env, and there is none.
       throw new Error("--engine gemini needs GEMINI_API_KEY in Caret's .env, and there is none; it is not built");
+    default:
+      throw new Error("unrecognised decision engine");
   }
 }
 
@@ -83,8 +89,20 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   const env = o.env ?? process.env;
   const engine = baseEngine(o, env);
   const cache = engine.name === "canned" ? null : cacheFromEnv(env, HARNESS_CACHE_DIR);
-  const variant = engine.name === "jev" ? `body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}` : engine.name === "llama" ? `prompt:${env.CARET_LLAMA_PROMPT ?? "chat"};thinking:${env.CARET_LLAMA_THINKING ?? "default"};read:${LLAMA_READING}` : "";
+  const variant = engine.reach === "typesafe" || engine.reach === "gateway" ? `provider:${engine.reach};body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}` : engine.name === "llama" ? `prompt:${env.CARET_LLAMA_PROMPT ?? "chat"};thinking:${env.CARET_LLAMA_THINKING ?? "default"};read:${LLAMA_READING}` : "";
   let ask = cache === null ? engine.ask : cachedAsk(engine.ask, { ...cache, engine: engine.name, model: engine.model, variant, fixture: o.fixture, env });
+  if (engine.model === LAYA_FREE_MODEL) {
+    // Guard cached answers too: fixture-only Laya is not available in the shipped app.
+    refuseShipped(process.env);
+    refuseShipped(env);
+    const fixtureAsk = ask;
+    ask = async (req) => {
+      refuseShipped(process.env);
+      refuseShipped(env);
+      checkFixture(req, o.fixture);
+      return fixtureAsk(req);
+    };
+  }
   const cal = engine.name === "llama" ? calibrationFromEnv(env, engine.model) : UNCALIBRATED;
   if (engine.name === "llama") ask = calibrated(ask, cal);
   const log = o.logRequests;
@@ -95,7 +113,7 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
     ask = async (req) => {
       // The log holds request text, so it takes what the cache takes: fixture text only.
       checkFixture(req, o.fixture);
-      const body = { state: req.state, model: JEV_MODEL, questions: { ...req.questions, ...req.nouls } };
+      const body = { state: req.state, model: engine.model, questions: { ...req.questions, ...req.nouls } };
       const t0 = performance.now();
       let r: Awaited<ReturnType<AskJev>>;
       try {
@@ -105,7 +123,7 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
         appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, error: e instanceof Error ? `${e.name}: ${e.message}` : String(e), afterMs: performance.now() - t0 })}\n`, { mode: 0o600 });
         throw e;
       }
-      appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, sharedChars: JSON.stringify(wireBody(req, JEV_MODEL, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })}\n`, { mode: 0o600 });
+      appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, sharedChars: JSON.stringify(wireBody(req, engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })}\n`, { mode: 0o600 });
       return r;
     };
   }

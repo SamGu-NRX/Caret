@@ -166,7 +166,7 @@ const drafter: LocalModelPort | null = tool === null ? null : (() => {
 })();
 if (tool !== null) console.log(`local model ${tool.model} loaded in ${Math.round(tool.loadMs)} ms; footprint ${tool.memoryAtLoad.footprintMB} MB, resident ${tool.memoryAtLoad.residentMB} MB`);
 const intentWriter = a["intent-model"] === undefined ? null : spaced(makeWriterPort(devWriterRoute(a["intent-model"])));
-const jevLive = makeJevClient(() => loadJevKey());
+const jevLive = makeJevClient(loadJevKey);
 let jevSpent = 0;
 let jevCalls = 0;
 const askJev: AskJev = async (req) => {

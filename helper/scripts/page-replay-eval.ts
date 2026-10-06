@@ -48,7 +48,7 @@ const noteText = readFileSync(resolve(a.note), "utf8");
 let spent = 0;
 let calls = 0;
 let current = "";
-const live = makeJevClient(() => loadJevKey());
+const live = makeJevClient(loadJevKey);
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   const r = await live(req);
