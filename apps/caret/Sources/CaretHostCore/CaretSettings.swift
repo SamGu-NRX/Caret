@@ -108,6 +108,10 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// H13, the Sites tab and the quiet line in Gmail: pages with their own suggestions where Caret's inline text is
     /// on, and those whose line the user asked never to see again.
     public var pageInline = PageInlineSettings()
+    /// H13: inline text in web page fields. Off by default: on the test Mac (runs/20261006T151009Z-37788) one ⌘Z after
+    /// real typing in a contenteditable removed the typed sentence along with the insert (Chrome joins the insert to the
+    /// typing's undo step), which loses the user's words. A textarea undid only the insert. On only by the user's choice.
+    public var pageInlineText = false
 
     public init() {}
 
@@ -119,7 +123,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         sitesOff = set.sorted()
     }
 
-    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline }
+    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText }
 
     /// Strict: a file written by a newer host, or a role or level this host does not know, is an
     /// error the caller reports, not a guess.
@@ -154,6 +158,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         }
         // Absent from a file written before H13: Caret stays quiet on every page with its own suggestions.
         pageInline = try c.decodeIfPresent(PageInlineSettings.self, forKey: .pageInline) ?? PageInlineSettings()
+        pageInlineText = try c.decodeIfPresent(Bool.self, forKey: .pageInlineText) ?? false
         let pages = Set(PageField.OwnSuggestions.allCases.map(\.rawValue))
         if let bad = (pageInline.on + pageInline.quiet).first(where: { !pages.contains($0) }) {
             throw DecodingError.dataCorruptedError(forKey: .pageInline, in: c, debugDescription: "\(bad) is not a page with its own suggestions")
@@ -174,6 +179,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         try c.encode(routing, forKey: .routing)
         try c.encodeIfPresent(eventCalendar, forKey: .eventCalendar)
         if pageInline != PageInlineSettings() { try c.encode(pageInline, forKey: .pageInline) }
+        if pageInlineText { try c.encode(pageInlineText, forKey: .pageInlineText) }
     }
 
     public var gate: GatePolicy { GatePolicy(self) }

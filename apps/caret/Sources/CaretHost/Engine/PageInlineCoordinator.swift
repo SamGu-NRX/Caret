@@ -123,7 +123,8 @@ final class PageInlineCoordinator {
     }
 
     private func gate(pid: Int32) -> PageInlineMachine.Gate {
-        let allowed = engine.state == .ready && wordsAllowed() && (drawsOnScreen ? policy.allowsLive(pid: pid) : policy.allows(pid: pid, bundleID: nil))
+        let allowed = PageInline.allowed(SettingsStore.shared.settings, wordsAllowed: wordsAllowed(), engineReady: engine.state == .ready,
+                                         browserAllowed: drawsOnScreen ? policy.allowsLive(pid: pid) : policy.allows(pid: pid, bundleID: nil))
         return PageInlineMachine.Gate(allowed: allowed, settings: SettingsStore.shared.settings.pageInline)
     }
 

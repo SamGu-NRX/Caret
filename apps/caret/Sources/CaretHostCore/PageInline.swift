@@ -113,6 +113,12 @@ public enum PageInline {
         offer.source == .page ? ("", "", "") : (String(offer.text.dropFirst(typed.count)), typed, offer.target.elementRevision)
     }
 
+    /// Whether inline text may show in page fields now: the user turned it on (`CaretSettings.pageInlineText`, off by
+    /// default), ghost text is allowed (not paused, the words role on), the engine is ready and the browser allowed.
+    public static func allowed(_ settings: CaretSettings, wordsAllowed: Bool, engineReady: Bool, browserAllowed: Bool) -> Bool {
+        settings.pageInlineText && wordsAllowed && engineReady && browserAllowed
+    }
+
     /// Text that follows the caret on its own line, where inline text would cover it.
     public static func midLine(_ after: String) -> Bool {
         after.prefix { !$0.isNewline }.contains { !$0.isWhitespace }
@@ -321,7 +327,8 @@ public final class PageInlineMachine {
         if let n = notice, previous?.key != key || previous?.windowId != f.windowId || f.ownSuggestions != n.page { hideNotice() }
         if let own = f.ownSuggestions, !(own == .gmail && g.settings.isOn(own)) {
             clear(own == .googleDocs ? "docs" : "ownSuggestions")
-            if own == .gmail { offerNotice(own, field: f, pid: pid) }
+            // Only while inline text on pages may show: Turn Caret on here would otherwise do nothing.
+            if own == .gmail, g.allowed { offerNotice(own, field: f, pid: pid) }
             return
         }
         guard g.allowed else { return clear("notAllowed") }

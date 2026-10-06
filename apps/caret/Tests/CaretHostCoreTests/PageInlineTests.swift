@@ -349,6 +349,24 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(b.requests, [])
     }
 
+    /// The test Mac (runs/20261006T151009Z-37788): one ⌘Z after real typing in a contenteditable took the typed
+    /// sentence too. Inline text on pages is off until the user turns it on, and while it is off nothing of it shows,
+    /// Gmail's line included (its "Turn Caret on here" would do nothing).
+    func testInlineTextOnPagesIsOffByDefaultAndShowsNothingWhileOff() throws {
+        XCTAssertFalse(CaretSettings().pageInlineText)
+        XCTAssertFalse(PageInline.allowed(CaretSettings(), wordsAllowed: true, engineReady: true, browserAllowed: true))
+        var on = CaretSettings()
+        on.pageInlineText = true
+        XCTAssertTrue(PageInline.allowed(on, wordsAllowed: true, engineReady: true, browserAllowed: true))
+        XCTAssertTrue(try JSONDecoder().decode(CaretSettings.self, from: JSONEncoder().encode(on)).pageInlineText)
+        let r = Rig()
+        r.gate.allowed = false
+        r.field(try Self.field(1))
+        r.field(try Self.field(7))
+        XCTAssertEqual(r.requests, [])
+        XCTAssertEqual(r.notices, [], "no Gmail line while inline text on pages is off")
+    }
+
     func testAReplacedElementWithTheSameKeyTakesTheOfferDown() throws {
         let r = Rig()
         r.field(try Self.field(1))
