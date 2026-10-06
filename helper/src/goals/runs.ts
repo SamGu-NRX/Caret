@@ -1004,18 +1004,21 @@ export class GoalRuns {
    * the step sentences and slots that quote them, and the warnings and left items that quote them. Receipts and keys
    * stay. Only a goal that has ended: a live one still needs them to run and to check its sources.
    */
-  forgetSource(goalId: string, windowId: string): void {
+  forgetSource(goalId: string, windows: ReadonlySet<string>): void {
     const run = this.runs.get(goalId);
     if (run === undefined || (run.state !== "finished" && run.state !== "stopped")) return;
     const quoted = new Set<string>();
-    const fromTab = (v: ValueBinding | null): boolean => v !== null && (v.source?.windowId === windowId || (v.origin.kind === "span" && v.origin.source === windowId));
+    const fromTab = (v: ValueBinding | null): boolean => v !== null && ((v.source !== null && windows.has(v.source.windowId)) || (v.origin.kind === "span" && windows.has(v.origin.source)));
     const blank = (v: ValueBinding): ValueBinding => {
       for (const t of [v.text, v.fill?.span ?? "", v.fill?.context ?? ""]) if (t.trim() !== "") quoted.add(t);
       return { ...v, text: "", display: "", ...(v.fill === undefined ? {} : { fill: { ...v.fill, span: "", context: null } }) };
     };
+    // A left item's quoted value (a hand-off's), wherever the item went: the plan, the run's obligations, a carry.
+    const items = [...run.plan.left, ...run.owed, ...[...this.carries.values()].filter((c) => c.goalId === goalId).flatMap((c) => c.owed)];
+    for (const l of items) if (l.quotes !== undefined && windows.has(l.quotes.windowId) && l.quotes.text.trim() !== "") quoted.add(l.quotes.text);
     const plan = structuredClone(run.plan);
     const values = new Map([...plan.inventory.values].map(([k, v]) => [k, fromTab(v) ? blank(v) : v]));
-    const texts = new Map([...plan.inventory.texts].filter(([k]) => k !== windowId));
+    const texts = new Map([...plan.inventory.texts].filter(([k]) => !windows.has(k)));
     for (const seg of plan.segments) {
       for (const s of seg.steps) {
         if (s.value === null || !fromTab(s.value)) continue;
@@ -1024,15 +1027,19 @@ export class GoalRuns {
       }
     }
     const scrub = (x: string): string => [...quoted].sort((a, b) => b.length - a.length).reduce((a, t) => a.split(t).join("…"), x);
+    const scrubItem = (l: LeftItem): LeftItem => {
+      const { quotes, ...rest } = l;
+      return { ...rest, says: scrub(l.says), ...(quotes === undefined || windows.has(quotes.windowId) ? {} : { quotes }) };
+    };
     for (const seg of plan.segments) {
       for (const s of seg.steps) s.says = scrub(s.says);
-      seg.slots = Object.fromEntries(Object.entries(seg.slots).map(([k, v]) => [k, seg.plan.sources?.[k] === windowId ? "" : scrub(v)]));
+      seg.slots = Object.fromEntries(Object.entries(seg.slots).map(([k, v]) => [k, seg.plan.sources?.[k] !== undefined && windows.has(seg.plan.sources[k] as string) ? "" : scrub(v)]));
     }
-    const next: GoalPlan = { ...plan, inventory: { ...plan.inventory, values, texts }, warnings: plan.warnings.map(scrub), left: plan.left.map((l) => ({ ...l, says: scrub(l.says) })) };
+    const next: GoalPlan = { ...plan, inventory: { ...plan.inventory, values, texts }, warnings: plan.warnings.map(scrub), left: plan.left.map(scrubItem) };
     for (const seg of next.segments) deepFreeze(seg);
     run.plan = next;
-    run.owed = run.owed.map((l) => ({ ...l, says: scrub(l.says) }));
-    for (const c of this.carries.values()) if (c.goalId === goalId) c.owed = c.owed.map((l) => ({ ...l, says: scrub(l.says) }));
+    run.owed = run.owed.map(scrubItem);
+    for (const c of this.carries.values()) if (c.goalId === goalId) c.owed = c.owed.map(scrubItem);
   }
 
   /** Previews not accepted in time stop. Called on the helper's tick. */

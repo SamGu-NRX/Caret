@@ -123,3 +123,27 @@ describe("the mixed form", () => {
     expect(s.steps.at(-1)).toEqual({ index: s.steps.length - 1, kind: "handoff", says: "You press Submit Application" });
   });
 });
+
+describe("forgetting a source's values from a goal that ended (I6 review, GoalRuns.forgetSource)", () => {
+  it("blanks the values and spans from that window, and a hand-off's quoted value in what the goal left", async () => {
+    const r = await rig({ controls: () => [...fields(), c("b1", "button", "Next")], title: "Apply: details" });
+    const { planPage } = await import("../src/goals/page-planner.ts");
+    const { macClock } = await import("../src/offers/event-time.ts");
+    const { jevPickingText } = await import("./builders.ts");
+    const { byLabel, WIN } = await import("./fake-page.ts");
+    const plan = await planPage(r.helper.model, { goalId: "g-forget", instruction: "fill out this form", windowId: WIN, scope: null, kind: "all", section: null, about: [], askJev: jevPickingText(byLabel, 0.95), now: Date.now(), clock: macClock(new Date()), readerSession: 0, pageDocument: (id) => r.host.registry.documentOf(id) });
+    // A hand-off the plan left, quoting a value read from the note (as page-planner.ts leave records one).
+    plan.left.push({ windowId: WIN, key: "k-choice", label: "Team", why: "dropped", says: "'Team' is yours: Caret leaves setting it to you ('Robotics Lab' fits it)", quotes: { windowId: "note", text: "Robotics Lab" } });
+    r.helper.goals.propose(plan, undefined, null);
+    // Not while it waits: a live goal still needs its values.
+    r.helper.goals.forgetSource("g-forget", new Set(["note"]));
+    expect(JSON.stringify(r.helper.goals.planOf("g-forget")?.left)).toMatch(/Robotics Lab/);
+    r.helper.goals.readerRestarted();
+    r.helper.goals.forgetSource("g-forget", new Set(["note"]));
+    const kept = r.helper.goals.planOf("g-forget");
+    const all = JSON.stringify(kept, (_, v: unknown) => (v instanceof Map ? [...v.entries()] : v));
+    expect(all).not.toMatch(/Robotics Lab|Robin Vale|robin@example\.test/);
+    expect(kept?.left.find((l) => l.key === "k-choice")).toEqual({ windowId: WIN, key: "k-choice", label: "Team", why: "dropped", says: "'Team' is yours: Caret leaves setting it to you ('…' fits it)" });
+    expect(kept?.segments[0]?.steps.map((s) => s.says)).toEqual(["Full name: …", "Email: …", "You press Next"]);
+  });
+});

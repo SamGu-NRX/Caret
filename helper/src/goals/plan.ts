@@ -159,6 +159,11 @@ export interface LeftItem {
   /** For "asked": how many distinct events the goal must add before it can be done. */
   count?: number;
   says: string;
+  /**
+   * I6: a value `says` quotes and the window it was read from (a hand-off's "'Canada' fits it"), so a goal that ended can
+   * forget it once that window's text expires (runs.ts forgetSource).
+   */
+  quotes?: { windowId: string; text: string };
 }
 
 /**

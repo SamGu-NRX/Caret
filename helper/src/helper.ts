@@ -400,8 +400,11 @@ export class Helper {
   private fillSeq = 0;
   /** I6: goals whose page plan is being made, by goal id, with the page window it plans. */
   private readonly pagePlanning = new Map<string, string>();
-  /** I6: goals whose plan read the tab the user left, by goal id, with that tab's window. */
-  private readonly tabGoals = new Map<string, string>();
+  /**
+   * I6: the page windows any goal's plan read as the tab the user left (the newest TAB_WINDOWS): a goal that ends forgets
+   * the values its plan, or a goal it replaces, took from them (GoalRuns.forgetSource).
+   */
+  private readonly tabWindows = new Set<string>();
   /**
    * Each fill request in flight, with every focus in an editable field of the app the user is in since
    * it began, so a pop-up whose Jev answer arrives late can see whether one of them left the form.
@@ -1315,31 +1318,36 @@ export class Helper {
       const plan = await this.planPageWith(await tab.fillModel(windowId), tab.ask, pageDocument, goalId, instruction, windowId, page, more);
       if (tab.expired()) throw new GoalError("nothingToDo", SAYS.tabExpired);
       const from = tab.windowRead();
-      if (from !== null) this.tabGoals.set(goalId, from);
+      if (from !== null) {
+        this.tabWindows.delete(from);
+        this.tabWindows.add(from);
+        if (this.tabWindows.size > TAB_WINDOWS) this.tabWindows.delete(this.tabWindows.values().next().value as string);
+      }
       return plan;
     } catch (e) {
       // Read before the release below, which would make any read text look dropped.
       const gone = tab.expired();
+      this.pagePlanning.delete(goalId);
       this.tabSource?.release(goalId);
       // Rule 6: a Jev call refused because the text was dropped (askTabRead) is said as that, not as a model failure.
       if (gone) throw new GoalError("nothingToDo", SAYS.tabExpired);
       if (e instanceof GoalError && tab.windowRead() !== null) e.fromTab = true;
       throw e;
-    } finally {
-      this.pagePlanning.delete(goalId);
     }
   }
 
   /** I6: a page window a goal is planning (pagePlan), or one whose goal waits for its acceptance or runs. */
   private goalOnPage(windowId: string): boolean {
-    return [...this.pagePlanning.values()].includes(windowId) || this.goals.previewing(windowId);
+    return [...this.pagePlanning].some(([g, w]) => w === windowId && this.goalHolds(g)) || this.goals.previewing(windowId);
   }
 
   /** I6: whether `owner` is a goal that is planning, waiting or running: its tab text is pinned (TabSource.pinned). */
   private goalHolds(owner: string): boolean {
-    if (this.pagePlanning.has(owner)) return true;
     const g = this.goals.get(owner);
-    return g !== null && (g.state === "awaiting" || g.state === "running");
+    // Planned and not yet offered (pagePlan's entry stays until the goal is offered and ends, or is never offered), or
+    // waiting or running: no gap between planning and the preview in which an ambient read could take the text.
+    if (g === null) return this.pagePlanning.has(owner);
+    return g.state === "awaiting" || g.state === "running";
   }
 
   /**
@@ -1347,11 +1355,11 @@ export class Helper {
    * goal's own end has been worked out, the values its plan took from that tab are forgotten from the plan it keeps.
    */
   private goalEnded(goalId: string): void {
+    this.pagePlanning.delete(goalId);
     this.tabSource?.release(goalId);
-    const from = this.tabGoals.get(goalId);
-    if (from === undefined) return;
-    this.tabGoals.delete(goalId);
-    queueMicrotask(() => this.goals.forgetSource(goalId, from));
+    if (this.tabWindows.size === 0) return;
+    const windows = new Set(this.tabWindows);
+    queueMicrotask(() => this.goals.forgetSource(goalId, windows));
   }
 
   private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string> }): Promise<GoalPlan> {
@@ -2969,6 +2977,9 @@ export class Helper {
     this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message });
   }
 }
+
+/** I6: page windows remembered as read for a goal's plan (Helper.tabWindows); each is a tab, so few. Assumed. */
+const TAB_WINDOWS = 16;
 
 /** Page windows whose last load's document pageWalked remembers; the oldest is forgotten past this. Assumed: tabs a person keeps open. */
 const LOAD_DOCUMENTS = 200;

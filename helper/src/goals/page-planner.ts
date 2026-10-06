@@ -243,9 +243,9 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   const byKey = new Map(inputs.map((x) => [x.node.key, x]));
   const sectionOf = (n: Node): string | null => describeField(w, n).section;
   const left: LeftItem[] = [];
-  const leave = (n: Node, says: string): void => {
+  const leave = (n: Node, says: string, quotes?: LeftItem["quotes"]): void => {
     const label = fieldName(w, n);
-    left.push({ windowId: o.windowId, key: n.key, label, why: "dropped", says: `'${label}' is yours: ${says}` });
+    left.push({ windowId: o.windowId, key: n.key, label, why: "dropped", says: `'${label}' is yours: ${says}`, ...(quotes === undefined ? {} : { quotes }) });
   };
   let wanted: PageInput[];
   if (o.revealed !== undefined) wanted = o.revealed.flatMap((k) => byKey.get(k) ?? []);
@@ -318,7 +318,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     const n = w.nodes.get(f.key);
     if (n === undefined) continue;
     if (f.withheld !== null) leave(n, WITHHELD_SAYS[f.withheld] ?? "Caret wasn't sure what goes there");
-    else if (f.handoff !== null) leave(n, `Caret leaves setting it to you ('${clip(f.handoff.display)}' fits it)`);
+    else if (f.handoff !== null) leave(n, `Caret leaves setting it to you ('${clip(f.handoff.display)}' fits it)`, f.handoff.source === null ? undefined : { windowId: f.handoff.source.windowId, text: clip(f.handoff.display) });
   }
   if (writes.size === 0 && files.length === 0) {
     const unsure = left.filter((l) => l.key !== `size:${o.windowId}`);
