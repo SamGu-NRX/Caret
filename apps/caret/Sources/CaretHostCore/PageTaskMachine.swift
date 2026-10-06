@@ -39,14 +39,17 @@ public enum PageTaskSend: Equatable, Sendable {
 }
 
 /// H14: what the open panel for an attach row needs: which row, what it is called, what the control accepts, and the
-/// browser to give the foreground back to.
+/// browser to give the foreground back to. `token` names this one chooser: its answer counts only while the preview it
+/// was opened for still waits (`PageTaskMachine.filePicked`).
 public struct FileChoice: Equatable, Sendable {
+    public var token: UInt64
     public var step: Int
     public var label: String
     public var accept: AcceptTypes
     public var browserPid: Int32
 
-    public init(step: Int, label: String, accept: AcceptTypes, browserPid: Int32) {
+    public init(token: UInt64, step: Int, label: String, accept: AcceptTypes, browserPid: Int32) {
+        self.token = token
         self.step = step
         self.label = label
         self.accept = accept
@@ -99,8 +102,20 @@ public final class PageTaskMachine {
     /// one needs the open panel. Only then may the hello name goalFiles (`HostHello.capabilities`), so a helper never
     /// sends this host an attach row it cannot fill.
     public var filesWired: Bool { canChooseFiles }
+    /// H14: the open panel that is up, bound to the preview it was opened for. Review (H14 astra 1): a chooser bound
+    /// only to a step let a pick finished after Tab and the next page confirm a file for a later preview's row at the
+    /// same step. Tab, a new preview, the ending and the task's end each drop it, and a newer chooser replaces it.
+    private struct PendingChoice: Equatable {
+        var token: UInt64
+        var goalId: String
+        var segment: Int
+        var digest: String
+        var step: Int
+    }
+    private var pendingChoice: PendingChoice?
+    private var choiceTokens: UInt64 = 0
     /// H14: the attach row whose open panel is up.
-    public private(set) var choosing: Int?
+    public var choosing: Int? { pendingChoice?.step }
 
     /// An ending with ⌘Z stays this long. A guess, not measured: DIRECTION.md's toast is 5 s for one
     /// line, and this panel lists every field it wrote, which takes longer to read.
@@ -141,6 +156,7 @@ public final class PageTaskMachine {
             }
         }
         task = fresh
+        pendingChoice = nil
         hidden = false
         output(.count("pageTask.started"))
         showPreview(.enter)
@@ -169,6 +185,8 @@ public final class PageTaskMachine {
             }
         case .continued, .nextPage:
             task = t
+            // Another preview: a chooser opened for the one before answers for nothing.
+            pendingChoice = nil
             output(.count(result == .nextPage ? "pageTask.nextPage" : "pageTask.continued"))
             endResult()
             // A task at rest comes back as the panel first came: its panel had left.
@@ -235,6 +253,8 @@ public final class PageTaskMachine {
         cancel("expire")
         switch t.tab(nowMs: nowMs) {
         case .accept(let accept):
+            // Tab went out: a chooser still open answers for nothing.
+            pendingChoice = nil
             task = t
             lastHeld = nil
             output(.send(.accept(accept)))
@@ -285,25 +305,28 @@ public final class PageTaskMachine {
         }
         if republish { showPreview(.none) }
         guard canChooseFiles, let pid = t.pid else { return output(.count("pageTask.noChooser")) }
-        choosing = step
+        choiceTokens += 1
+        let g = t.current
+        pendingChoice = PendingChoice(token: choiceTokens, goalId: g.goalId, segment: g.segment, digest: g.digest, step: step)
         output(.count("pageTask.chooseFile"))
-        output(.chooseFile(FileChoice(step: step, label: a.label, accept: AcceptTypes(a.accept), browserPid: pid)))
+        output(.chooseFile(FileChoice(token: choiceTokens, step: step, label: a.label, accept: AcceptTypes(a.accept), browserPid: pid)))
     }
 
-    /// The user picked `file` in the open panel for row `step`. It is that row's file for this Tab; nothing is sent
-    /// until Tab.
-    public func filePicked(step: Int, file: AttachFile) {
-        guard choosing == step else { return }
-        choosing = nil
-        guard var t = task, t.confirm(step: step, file: file) else { return output(.count("pageTask.pickDropped")) }
+    /// The user picked `file` in the open panel `token` for row `step`. It is that row's file for this Tab, only while
+    /// the preview the panel was opened for still waits; nothing is sent until Tab.
+    public func filePicked(token: UInt64, step: Int, file: AttachFile) {
+        guard let p = pendingChoice, p.token == token, p.step == step else { return output(.count("pageTask.pickDropped")) }
+        pendingChoice = nil
+        guard var t = task, case .preview = t.stage, !t.current.accepted, t.current.goalId == p.goalId, t.current.segment == p.segment,
+              t.current.digest == p.digest, t.confirm(step: step, file: file) else { return output(.count("pageTask.pickDropped")) }
         task = t
         output(.count("pageTask.filePicked"))
         showPreview(.none)
     }
 
-    /// The open panel closed with no file.
-    public func chooserClosed() {
-        choosing = nil
+    /// The open panel `token` closed with no file.
+    public func chooserClosed(token: UInt64) {
+        if pendingChoice?.token == token { pendingChoice = nil }
     }
 
     /// The arbiter's current offer changed for a reason a key or its age gave. A preview that is no longer
@@ -485,6 +508,7 @@ public final class PageTaskMachine {
     /// The task ended: its working line goes, a toast holds ⌘Z when something was written, and the panel
     /// leaves after its time.
     private func ended() {
+        pendingChoice = nil
         guard let t = task else { return }
         cancel("stoppable")
         cancel("expire")
@@ -546,7 +570,7 @@ public final class PageTaskMachine {
 
     /// Ends everything this task holds in the arbiter and forgets it.
     private func clear(hide: Bool, motion: PageTaskMotion = .none) {
-        choosing = nil
+        pendingChoice = nil
         for (_, timer) in timers { timer.cancel() }
         timers = [:]
         if let id = offerID { arbiter.invalidate(offerID: id) }

@@ -92,9 +92,9 @@ final class PageTaskCoordinator {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if let url, let file = Self.attachFile(url) {
-                    self.machine.filePicked(step: choice.step, file: file)
+                    self.machine.filePicked(token: choice.token, step: choice.step, file: file)
                 } else {
-                    self.machine.chooserClosed()
+                    self.machine.chooserClosed(token: choice.token)
                 }
                 self.publish()
                 if let browser = NSRunningApplication(processIdentifier: choice.browserPid) {

@@ -164,9 +164,11 @@ final class AttachH14Tests: XCTestCase {
         r.machine.canChooseFiles = true
         r.machine.start(try Self.preview())
         cmd(r, 3)
-        XCTAssertEqual(choices(r), [FileChoice(step: 2, label: "Or drop your resume here", accept: AcceptTypes([]), browserPid: Self.pid)])
+        XCTAssertEqual(choices(r).map { [$0.step: $0.label] }, [[2: "Or drop your resume here"]])
+        XCTAssertEqual(choices(r).first?.accept, AcceptTypes([]))
+        XCTAssertEqual(choices(r).first?.browserPid, Self.pid)
         XCTAssertTrue(r.accepts.isEmpty)
-        r.machine.filePicked(step: 2, file: Self.resume)
+        r.machine.filePicked(token: try XCTUnwrap(choices(r).last).token, step: 2, file: Self.resume)
         XCTAssertEqual(try attachLine(r, step: 2).attach?.state, .confirmed)
         r.tab()
         // The golden's acceptance, but for its time.
@@ -195,7 +197,7 @@ final class AttachH14Tests: XCTestCase {
         // Clicked again, a confirmed row opens the chooser to change it.
         r.machine.attachRequested(step: 1)
         XCTAssertEqual(choices(r).map(\.step), [1])
-        r.machine.chooserClosed()
+        r.machine.chooserClosed(token: choices(r).last?.token ?? 0)
         // Closed with no file: the confirmed one stays.
         r.tab()
         XCTAssertEqual(r.accepts.first?.confirmedFile?.path, Self.resume.path)
@@ -206,9 +208,9 @@ final class AttachH14Tests: XCTestCase {
         r.machine.canChooseFiles = true
         r.machine.start(try Self.preview())
         cmd(r, 2)
-        r.machine.filePicked(step: 1, file: Self.resume)
+        r.machine.filePicked(token: choices(r).last?.token ?? 0, step: 1, file: Self.resume)
         cmd(r, 3)
-        r.machine.filePicked(step: 2, file: Self.cover)
+        r.machine.filePicked(token: choices(r).last?.token ?? 0, step: 2, file: Self.cover)
         XCTAssertEqual(try attachLine(r, step: 1).attach?.state, .choose)
         XCTAssertEqual(try attachLine(r, step: 2).attach?.state, .confirmed)
         r.tab()
@@ -220,14 +222,56 @@ final class AttachH14Tests: XCTestCase {
         r.machine.canChooseFiles = true
         r.machine.start(try Self.preview())
         // No chooser was opened for step 2.
-        r.machine.filePicked(step: 2, file: Self.resume)
+        r.machine.filePicked(token: choices(r).last?.token ?? 0, step: 2, file: Self.resume)
         XCTAssertEqual(try attachLine(r, step: 2).attach?.state, .choose)
         cmd(r, 2)
         r.tab()
         // Tab went out while the chooser was up: the pick changes nothing that was sent.
-        r.machine.filePicked(step: 1, file: Self.resume)
+        r.machine.filePicked(token: choices(r).last?.token ?? 0, step: 1, file: Self.resume)
         XCTAssertNil(r.accepts.first?.confirmedFile)
         XCTAssertEqual(r.accepts.count, 1)
+    }
+
+    /// Review (H14 astra 1): a chooser opened for one preview, still open after Tab, the run and the next page, picks a
+    /// file. The next page's attach row at the same step must not take it: only a pick made for that preview counts.
+    func testAChooserLeftOpenNeverConfirmsAFileForALaterPreview() throws {
+        let r = Rig()
+        r.machine.canChooseFiles = true
+        r.machine.start(try Self.preview())
+        cmd(r, 2)
+        let stale = try XCTUnwrap(choices(r).last)
+        r.tab()
+        XCTAssertNil(r.machine.choosing)
+        guard case .segment(let p) = try Self.preview().event else { return XCTFail() }
+        r.machine.receive(GoalProgress(at: 1, goalId: "goal-3-a1", requestId: nil, event: .finished(.init(outcome: .handoff, verified: 1, skipped: 0, left: [], says: "Ready: 1 done. You press Submit application."))))
+        var next = p
+        next.reason = .nextPage
+        next.replaces = "goal-3-a1"
+        next.digest = String(repeating: "c", count: 64)
+        r.machine.receive(GoalProgress(at: 2, goalId: "goal-3-a1~1", requestId: nil, event: .segment(next)))
+        XCTAssertEqual(r.machine.status.page, 2)
+        r.machine.filePicked(token: stale.token, step: stale.step, file: Self.resume)
+        XCTAssertEqual(try attachLine(r, step: 1).attach?.state, .choose)
+        r.tab()
+        XCTAssertEqual(r.accepts.count, 2)
+        XCTAssertNil(r.accepts[1].confirmedFile)
+    }
+
+    /// A second chooser replaces the first: the first one's answer counts for nothing, even for the same row.
+    func testOnlyTheNewestChooserCounts() throws {
+        let r = Rig()
+        r.machine.canChooseFiles = true
+        r.machine.start(try Self.preview())
+        cmd(r, 2)
+        let first = try XCTUnwrap(choices(r).last)
+        r.machine.attachRequested(step: 1)
+        let second = try XCTUnwrap(choices(r).last)
+        XCTAssertNotEqual(first.token, second.token)
+        r.machine.filePicked(token: first.token, step: 1, file: Self.cover)
+        XCTAssertEqual(try attachLine(r, step: 1).attach?.state, .choose)
+        r.machine.filePicked(token: second.token, step: 1, file: Self.resume)
+        r.tab()
+        XCTAssertEqual(r.accepts.first?.confirmedFile?.path, Self.resume.path)
     }
 
     func testWithoutAChooserNoOpenPanelIsAskedFor() throws {
@@ -250,7 +294,7 @@ final class AttachH14Tests: XCTestCase {
         XCTAssertTrue(r.machine.status.ownsTab)
         XCTAssertEqual(try attachLine(r, step: 1).note, PageTaskCopy.chooseFirst)
         cmd(r, 2)
-        r.machine.filePicked(step: 1, file: Self.resume)
+        r.machine.filePicked(token: choices(r).last?.token ?? 0, step: 1, file: Self.resume)
         XCTAssertEqual(r.lastPanel?.hints.map(\.key), ["Tab", "Esc"])
         XCTAssertEqual(r.lastPanel?.hints.first?.label, "Attach")
         r.tab()
@@ -262,7 +306,7 @@ final class AttachH14Tests: XCTestCase {
         r.machine.canChooseFiles = true
         r.machine.start(try Self.preview())
         cmd(r, 2)
-        r.machine.filePicked(step: 1, file: Self.resume)
+        r.machine.filePicked(token: choices(r).last?.token ?? 0, step: 1, file: Self.resume)
         r.tab()
         r.machine.helperError(HelperError(at: 1, message: "goalAccept refused: Caret can't attach the file you chose (it is a link); nothing ran, so choose another and accept again"))
         XCTAssertEqual(r.machine.status.stage, "preview")
@@ -271,7 +315,7 @@ final class AttachH14Tests: XCTestCase {
         XCTAssertEqual(line.attach?.state, .choose)
         XCTAssertEqual(line.note, "Caret can't attach the file you chose (it is a link). Choose another file.")
         cmd(r, 2)
-        r.machine.filePicked(step: 1, file: Self.cover)
+        r.machine.filePicked(token: choices(r).last?.token ?? 0, step: 1, file: Self.cover)
         r.tab()
         XCTAssertEqual(r.accepts.map { $0.confirmedFile?.path }, [Self.resume.path, Self.cover.path])
     }
@@ -281,7 +325,7 @@ final class AttachH14Tests: XCTestCase {
         r.machine.canChooseFiles = true
         r.machine.start(try Self.preview())
         cmd(r, 2)
-        r.machine.filePicked(step: 1, file: Self.resume)
+        r.machine.filePicked(token: choices(r).last?.token ?? 0, step: 1, file: Self.resume)
         r.tab()
         r.machine.helperError(HelperError(at: 1, message: "goalAccept refused: segment 1 of goal goal-3-a1 expired before it was accepted"))
         XCTAssertEqual(r.machine.status.stage, "ended:notRun")
