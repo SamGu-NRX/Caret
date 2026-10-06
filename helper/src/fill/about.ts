@@ -86,6 +86,9 @@ const NAME_PART_WORDS = new Set(["first", "given", "middle", "last", "surname", 
 const NEVER = new Set(["gender", "sex", "race", "racial", "ethnicity", "ethnic", "hispanic", "latino", "latina", "latinx", "veteran", "veterans", "military", "disability", "disabilities", "disabled", "transgender", "orientation", "pronouns", "pronoun", "consent", "agree", "terms", "privacy", "subscribe", "marketing", "newsletter", "certify", "acknowledge"]);
 const never = (label: string | null): boolean => words(label).some((w) => NEVER.has(w));
 
+/** L1: whether a field's label asks a self-identification or consent question (NEVER's words), which is the user's to answer. */
+export const isIdentityQuestion = (label: string): boolean => never(label);
+
 /** A yes or no, as an entry says whether the user may work somewhere or needs sponsorship. */
 const YES_NO = /^(?:yes|no)$/iu;
 const URLISH = /^(?:https?:\/\/|www\.)\S+$|^(?:[\w-]+\.)*(?:linkedin|github)\.com\/\S+$/iu;

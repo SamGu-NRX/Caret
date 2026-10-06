@@ -153,7 +153,8 @@ describe("a reveal's preview (H11)", () => {
     const next = r.published.find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && m.goalId !== preview.goalId);
     expect(next).toMatchObject({ reason: "afterReveal", replaces: preview.goalId });
     expect(next?.page?.windowId).toBe(WIN);
-    expect(next?.page?.rows).toEqual([{ step: 0, label: "Province", value: "Ontario", picked: true }]);
+    // L1: each row says where its value came from (the note, a TextEdit window).
+    expect(next?.page?.rows).toEqual([{ step: 0, label: "Province", value: "Ontario", picked: true, source: { kind: "window", name: "TextEdit" } }]);
   });
 });
 

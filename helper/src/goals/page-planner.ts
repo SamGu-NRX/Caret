@@ -9,7 +9,7 @@
 // Nothing here acts.
 import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
-import type { AboutValue } from "../fill/about.ts";
+import { isIdentityQuestion, type AboutValue } from "../fill/about.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { conversionOf, FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
@@ -246,9 +246,11 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   const byKey = new Map(inputs.map((x) => [x.node.key, x]));
   const sectionOf = (n: Node): string | null => describeField(w, n).section;
   const left: LeftItem[] = [];
-  const leave = (n: Node, says: string, quotes?: LeftItem["quotes"], whose = "is yours"): void => {
+  // L1: `mark` is the reason the host's panel draws (LeftItem.mark); it changes no sentence, and no digest reads it.
+  const leave = (n: Node, says: string, quotes?: LeftItem["quotes"], whose = "is yours", mark?: NonNullable<LeftItem["mark"]> | ((label: string) => NonNullable<LeftItem["mark"]>)): void => {
     const label = fieldName(w, n);
-    left.push({ windowId: o.windowId, key: n.key, label, why: "dropped", says: `'${label}' ${whose}: ${says}`, ...(quotes === undefined ? {} : { quotes }) });
+    const why = typeof mark === "function" ? mark(label) : mark;
+    left.push({ windowId: o.windowId, key: n.key, label, why: "dropped", says: `'${label}' ${whose}: ${says}`, ...(quotes === undefined ? {} : { quotes }), ...(why === undefined ? {} : { mark: why }) });
   };
   let wanted: PageInput[];
   if (o.revealed !== undefined) wanted = o.revealed.flatMap((k) => byKey.get(k) ?? []);
@@ -270,7 +272,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   for (const n of neverTyped) {
     const inScope = o.revealed === undefined && (scopeKeys === null || scopeKeys.has(n.key) || (o.kind === "section" && sectionOf(n) === o.section));
     const kind = labelKind(describeField(w, n).label ?? describeField(w, n).nearest) ?? labelKind(describeField(w, n).placeholder);
-    if (inScope && kind !== null) leave(n, `Caret never types ${SENSITIVE_SAYS[kind]}`);
+    if (inScope && kind !== null) leave(n, `Caret never types ${SENSITIVE_SAYS[kind]}`, undefined, undefined, "sensitive");
   }
   // P3: the file controls the scope takes, for a host that shows attach rows; one a goal before this already attached is done.
   const files =
@@ -326,7 +328,9 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   const failed = rounds.find((x) => x.error !== null && x.error.why !== "nothingToCopy")?.error;
   if (failed !== undefined && failed !== null) throw new GoalError("nothingToDo", "Caret couldn't read this form's values", failed.message);
   if (rounds.every((x) => x.error !== null) && rounds.length > 0 && files.length === 0) throw new GoalError("nothingToDo", saysNoValue(asked.map((x) => fieldName(w, x.node))), rounds[0]?.error?.message);
-  for (const x of rounds) if (x.error !== null) for (const y of x.part) leave(y.node, "Caret found nothing on screen or in memory for it");
+  // A self-identification or consent question is the user's on purpose, whatever fill found (fill/about.ts NEVER).
+  const nothing = (label: string): "identity" | "notFound" => (isIdentityQuestion(label) ? "identity" : "notFound");
+  for (const x of rounds) if (x.error !== null) for (const y of x.part) leave(y.node, "Caret found nothing on screen or in memory for it", undefined, undefined, nothing);
   // What a Fill all would write: text values and the controls fill says it writes, each with its span and source; and
   // (an Ask's own) a value the instruction spells out for the field, which both asks chose as written there.
   const writes = new Map<string, Written>();
@@ -345,7 +349,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       if (n === undefined) continue;
       // H13: a field that takes a written answer is the user's by design, whatever Jev made of it: "wasn't sure" would say
       // Caret tried to write it. A saved answer matched to it but held back (`answer`) keeps that reason instead.
-      if (f.withheld !== null && f.answer === undefined && isAnswerField(n)) leave(n, "Caret doesn't write answers", undefined, "is yours to write");
+      if (f.withheld !== null && f.answer === undefined && isAnswerField(n)) leave(n, "Caret doesn't write answers", undefined, "is yours to write", "answer");
       else if (f.withheld !== null) leave(n, WITHHELD_SAYS[f.withheld] ?? "Caret wasn't sure what goes there");
       else if (f.handoff !== null) leave(n, `Caret leaves setting it to you ('${clip(f.handoff.display)}' fits it)`, f.handoff.source === null ? undefined : { windowId: f.handoff.source.windowId, text: clip(f.handoff.display) });
     }

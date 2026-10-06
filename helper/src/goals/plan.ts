@@ -169,6 +169,13 @@ export interface LeftItem {
    * forget it once that window's text expires (runs.ts forgetSource).
    */
   quotes?: { windowId: string; text: string };
+  /**
+   * L1: why a page plan left the field, as the host's panel draws it (protocol GoalPageView.left), set where the page
+   * planner leaves it (page-planner.ts): "answer", "identity" and "sensitive" are the user's on purpose, "notFound" is a
+   * field Caret found nothing for. Absent for every other reason. No digest reads it: what the user reads of an item is
+   * `says`, which the digests cover through `warnings`.
+   */
+  mark?: "answer" | "identity" | "sensitive" | "notFound";
 }
 
 /**

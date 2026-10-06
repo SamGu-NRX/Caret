@@ -1001,6 +1001,39 @@ export const GOAL_PLANS_CAPABILITY = "goalPlans";
  */
 export const GOAL_FILES_CAPABILITY = "goalFiles";
 
+/**
+ * L1: the hello capability for source excerpts. A goal-planning host that declares it (only with `host: true` and
+ * GOAL_PLANS_CAPABILITY in the same hello) is sent, on a page preview's rows, a crop of the user's own source text with
+ * the value's span marked (GoalPageView rows' `excerpt`), and promises never to log or store that text, nor show it on
+ * its debug socket. Every other recipient of the same preview gets it with every `excerpt` removed.
+ */
+export const SOURCE_EXCERPTS_CAPABILITY = "sourceExcerpts";
+
+/**
+ * L1: a crop of a value's source as the page task panel shows it beside the value's row: `text` is the source's whole
+ * lines around the span (at most six lines and 600 characters; a line longer than that is cut to a 600-character window
+ * around the span, with no ellipsis, so the offsets stay exact), and `start` and `end` mark the span in it, as UTF-16
+ * code units (JavaScript string indices; Swift's `String.utf16` view). `name` is the source's display name: a window's
+ * title, else its app's name; a memory entry's label; a tab's title. `edited` is when the source was last edited, when
+ * the helper knows it, else null; today it never knows for a window or a tab, and says null rather than guess. `pdf`
+ * names a PDF source's file and page (from 0); nothing produces it today, since the reader reports no document path.
+ * `tab` is a browser tab's title and host. Never both.
+ */
+export const SourceExcerpt = z
+  .object({
+    text: z.string().min(1).max(600),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+    name: z.string().min(1).max(200),
+    edited: ms.nullable(),
+    pdf: z.object({ path: z.string().min(1).max(1024), page: z.number().int().nonnegative() }).optional(),
+    tab: z.object({ title: z.string().max(300), host: z.string().min(1).max(253) }).optional(),
+  })
+  .refine((x) => x.start < x.end && x.end <= x.text.length, { message: "start < end <= text.length (UTF-16 code units)", path: ["end"] })
+  .refine((x) => x.text.split("\n").length <= 6, { message: "at most six lines", path: ["text"] })
+  .refine((x) => x.pdf === undefined || x.tab === undefined, { message: "a pdf or a tab, not both", path: ["tab"] });
+export type SourceExcerpt = z.infer<typeof SourceExcerpt>;
+
 /** An absolute path on this Mac, as a file chooser returns it. */
 export const AbsolutePath = z
   .string()
@@ -2377,6 +2410,18 @@ export type GoalStopReason = z.infer<typeof GoalStopReason>;
  * - `files`: H14: each attach step's row as the panel shows it: the control's name and the types its chooser may offer.
  *   Not under the digest. `accept` is the control's accept tokens (Node.accept), empty when it names none. Absent when
  *   the segment has no attach step.
+ * - rows' `source` (L1): where the row's value came from: `window` (a native app's window) or `tab` (a browser tab),
+ *   named by the app (the browser for a tab); `memory` (what the user told Caret) or `request` (the instruction), with
+ *   an empty name. Sent to every goal-planning host.
+ * - rows' `excerpt` (L1): the source's text around the value (SourceExcerpt), absent when the helper cannot find the
+ *   value's span in it, for the request, or for a host that did not declare SOURCE_EXCERPTS_CAPABILITY. It is the
+ *   user's own text, already on their screen or in their memory: the helper builds it when it sends the preview and
+ *   keeps no copy (not on the plan, the run, the journal or the store), never logs it, never sends it to a model, and
+ *   sends it only to a host that declared the capability. Every other recipient gets the preview without it.
+ * - `left` (L1): the plan's left items in this page window that have a structured reason, as the panel draws them:
+ *   `answer` (a field that takes a written answer), `identity` (a self-identification or consent question Caret found
+ *   nothing for), `sensitive` (a kind Caret never types) are the user's on purpose; `notFound` is a field Caret found
+ *   nothing for. `says` is the sentence the item adds to `warnings`. Absent when none has such a reason.
  */
 export const GoalPageView = z.object({
   windowId: z.string().min(1),
@@ -2384,12 +2429,27 @@ export const GoalPageView = z.object({
   anchor: Frame.nullable(),
   viewport: Frame.nullable(),
   from: z.string().max(300),
-  rows: z.array(z.object({ step: z.number().int().nonnegative(), label: z.string().max(300), value: z.string().max(900), picked: z.boolean() })).max(24),
+  rows: z
+    .array(
+      z.object({
+        step: z.number().int().nonnegative(),
+        label: z.string().max(300),
+        value: z.string().max(900),
+        picked: z.boolean(),
+        source: z.object({ kind: z.enum(["window", "tab", "memory", "request"]), name: z.string().max(120) }).optional(),
+        excerpt: SourceExcerpt.optional(),
+      }),
+    )
+    .max(24),
   attach: z.array(z.string().min(1).max(200)).max(8),
   files: z
     .array(z.object({ step: z.number().int().nonnegative(), label: z.string().min(1).max(300), accept: z.array(z.string().min(1).max(100)).max(20) }))
     .max(8)
     .refine((f) => new Set(f.map((x) => x.step)).size === f.length, "each attach step has one row")
+    .optional(),
+  left: z
+    .array(z.object({ label: z.string().min(1).max(300), why: z.enum(["answer", "identity", "sensitive", "notFound"]), says: z.string().min(1).max(600) }))
+    .max(24)
     .optional(),
 });
 export type GoalPageView = z.infer<typeof GoalPageView>;

@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, type AnswerSaveReply, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, SOURCE_EXCERPTS_CAPABILITY, type GoalProgress, GOAL_PLANS_CAPABILITY, Hello, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, type AnswerSaveReply, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
 import { carriesAnswer, withoutAnswers } from "./offers/answer-gate.ts";
 import type { Helper } from "./helper.ts";
 import type { HostLocalModel } from "./writer/local-port.ts";
@@ -54,6 +54,12 @@ export class HelperServer {
    * send pageInsert: a host that has not promised to keep the text off its logs and debug socket never sees it.
    */
   private readonly pageText = new Set<Socket>();
+  /**
+   * L1: goal-planning hosts whose hello also listed SOURCE_EXCERPTS_CAPABILITY. Only they get a page preview's source
+   * excerpts (the user's own text around each value): a host that has not promised to keep that text off its logs and
+   * debug socket never sees it, and gets the same preview without them.
+   */
+  private readonly sourceExcerpts = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -129,7 +135,19 @@ export class HelperServer {
     // P3: an offer to keep a file names the file, and only a host that shows attach rows may answer it; a preview with an
     // attach row goes only to such hosts too (a host without the capability could not show the row, nor decode it).
     const files = m.type === "fileSaveOffer" || (m.type === "goalProgress" && m.event === "segment" && m.steps.some((x) => x.kind === "attach"));
+    // L1: a preview's source excerpts are the user's own text: whole only to the recipients that declared sourceExcerpts,
+    // the rest get the preview with every excerpt removed. The recipients are those the preview goes to anyway.
+    if (m.type === "goalProgress" && carriesExcerpts(m)) {
+      const stripped = JSON.stringify(withoutExcerpts(m)) + "\n";
+      for (const c of files ? this.goalFiles : this.goalPlans) c.write(this.sourceExcerpts.has(c) ? line : stripped);
+      return;
+    }
     for (const c of files ? this.goalFiles : m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : m.type === "spend" ? this.spend : this.consumers) c.write(line);
+  }
+
+  /** L1: a reply to one asker, with any source excerpt removed unless that asker declared sourceExcerpts (publish). */
+  private forAsker(s: Socket, r: HelperMessage): string {
+    return JSON.stringify(r.type === "goalProgress" && !this.sourceExcerpts.has(s) && carriesExcerpts(r) ? withoutExcerpts(r) : r) + "\n";
   }
 
   async listen(): Promise<void> {
@@ -214,11 +232,14 @@ export class HelperServer {
             if (files) this.goalFiles.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(LOCAL_MODEL_CAPABILITY) === true) this.localModelHost = s;
             if (hello.data.host === true && hello.data.capabilities?.includes(PAGE_TEXT_CAPABILITY) === true) this.pageText.add(s);
+            // L1: excerpts of the user's text go with page previews, so only a goal-planning host may declare it.
+            const excerpts = hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true && hello.data.capabilities.includes(SOURCE_EXCERPTS_CAPABILITY);
+            if (excerpts) this.sourceExcerpts.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(SAVED_ANSWERS_CAPABILITY) === true) {
               this.savedAnswers.add(s);
               this.helper().setAnswerHosts(this.savedAnswers.size);
             }
-            if (hello.data.host === true) this.helper().hostConnected(session, routing, files);
+            if (hello.data.host === true) this.helper().hostConnected(session, routing, files, excerpts);
             else this.helper().consumerConnected(session);
           } else {
             // The proof goes first, before any command or grant this connection could carry.
@@ -291,7 +312,7 @@ export class HelperServer {
                   return this.helper().goals.refused(`goal-failed-${requestId}`.slice(0, 200), requestId, "The planner failed; the helper logged why");
                 })
                 .then((r) => {
-                  if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
+                  if (!s.destroyed) s.write(this.forAsker(s, r));
                 });
             }
           }
@@ -390,7 +411,7 @@ export class HelperServer {
               })
               .then((r) => {
                 if (s.destroyed) return;
-                s.write(JSON.stringify(r) + "\n");
+                s.write(this.forAsker(s, r));
                 // The noticed facts the plan used, to the asker too, when it understands them.
                 const p = r.type === "planProposal" && r.outcome === "proposed" && this.memoryDocuments.has(s) ? this.helper().provenanceFor(r.offerKey) : null;
                 if (p !== null) s.write(JSON.stringify(p) + "\n");
@@ -518,6 +539,17 @@ function isAlive(path: string): Promise<boolean> {
     });
     c.once("error", () => resolve(false));
   });
+}
+
+/** L1: whether a goal message carries a source excerpt (a page preview's row's `excerpt`). */
+export function carriesExcerpts(m: GoalProgress): boolean {
+  return m.event === "segment" && (m.page?.rows.some((r) => r.excerpt !== undefined) ?? false);
+}
+
+/** L1: the goal message as a recipient without SOURCE_EXCERPTS_CAPABILITY reads it: every row's `excerpt` removed. */
+export function withoutExcerpts(m: GoalProgress): GoalProgress {
+  if (m.event !== "segment" || m.page === undefined) return m;
+  return { ...m, page: { ...m.page, rows: m.page.rows.map(({ excerpt: _excerpt, ...row }) => row) } };
 }
 
 /** H13: a pageField as a consumer without the pageText capability gets it: the field's key and frame, no text. */

@@ -222,6 +222,11 @@ export interface HelperOptions {
    */
   goalFiles?: boolean;
   /**
+   * L1: in-process callers (no host session) play a host that shows source excerpts (SOURCE_EXCERPTS_CAPABILITY). A
+   * host on the socket says so in its hello instead. Absent: no page preview carries an excerpt for them.
+   */
+  sourceExcerpts?: boolean;
+  /**
    * S1: a page window's address (origin and path of its top frame) and its h1 and h2 headings, from the page engines.
    * Saved answers record the address, and the organization guard reads both. Absent: neither is known.
    */
@@ -398,6 +403,8 @@ export class Helper {
   readonly files: ConfirmedFiles;
   /** P3: host sessions that declared GOAL_FILES_CAPABILITY: only their page goals get attach rows (filesFor). */
   private readonly goalFileHosts = new Set<string>();
+  /** L1: host sessions that declared SOURCE_EXCERPTS_CAPABILITY: only their page previews carry source excerpts (excerptsFor). */
+  private readonly sourceExcerptHosts = new Set<string>();
   /** H13: inline inserts on pages, for their one-insert grants' task ids. */
   private inlineSeq = 0;
   /** P3: the page document each page window's load last asked a Fill all for (pageWalked): once per document. */
@@ -646,6 +653,9 @@ export class Helper {
       aboutNow: (id) => this.aboutNow(id),
       // I6: a page goal's sources may be the tab the user left, which its plan read and holds until the goal ends.
       sourceModel: (goalId) => this.fillModel(goalId),
+      // L1: excerpts of the user's own text are cut only for a host that asked for them (protocol SOURCE_EXCERPTS_CAPABILITY).
+      excerptsFor: (session) => this.excerptsFor(session),
+      pageSite: (id) => this.opts.pageContext?.(id)?.site ?? null,
       ended: (goalId) => this.goalEnded(goalId),
       // P2: a page goal's one read of its page before it ends (engines/page-link.ts no longer walks after each write).
       walk: async (windowId) => {
@@ -1124,10 +1134,11 @@ export class Helper {
    * A host session connected: a consumer on the socket (HelperServer), or an in-process caller that plays
    * the host, such as an evaluation that answers offers itself. Runs with no Tab start only while one is.
    */
-  hostConnected(session: string, routing = false, goalFiles = false): void {
+  hostConnected(session: string, routing = false, goalFiles = false, sourceExcerpts = false): void {
     this.sessions.add(session);
     this.hosts.add(session);
     if (goalFiles) this.goalFileHosts.add(session);
+    if (sourceExcerpts) this.sourceExcerptHosts.add(session);
     if (routing) {
       this.routingHosts.add(session);
       // Write is legal from now: the moment is decided again with it.
@@ -1170,6 +1181,7 @@ export class Helper {
   hostDisconnected(session: string): void {
     this.hosts.delete(session);
     this.goalFileHosts.delete(session);
+    this.sourceExcerptHosts.delete(session);
     if (this.routingHosts.delete(session)) {
       // What that host said about the field (selection, composing) no longer holds, and write is not legal without it.
       this.routing?.hostEditing(null);
@@ -1488,6 +1500,11 @@ export class Helper {
   /** P3: whether a goal offered to `session` may show attach rows: its host declared GOAL_FILES_CAPABILITY, or (in process) the options say so. */
   private filesFor(session: string | undefined): boolean {
     return session === undefined ? this.opts.goalFiles === true : this.goalFileHosts.has(session);
+  }
+
+  /** L1: whether a goal offered to `session` may carry source excerpts: its host declared SOURCE_EXCERPTS_CAPABILITY, or (in process) the options say so. */
+  private excerptsFor(session: string | undefined): boolean {
+    return session === undefined ? this.opts.sourceExcerpts === true : this.sourceExcerptHosts.has(session);
   }
 
   /**

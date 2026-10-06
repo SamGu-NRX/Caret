@@ -8701,6 +8701,114 @@
                           },
                           "picked": {
                             "type": "boolean"
+                          },
+                          "source": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "window",
+                                  "tab",
+                                  "memory",
+                                  "request"
+                                ]
+                              },
+                              "name": {
+                                "type": "string",
+                                "maxLength": 120
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "name"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "excerpt": {
+                            "type": "object",
+                            "properties": {
+                              "text": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 600
+                              },
+                              "start": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "end": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200
+                              },
+                              "edited": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991,
+                                    "description": "Milliseconds since the Unix epoch"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "pdf": {
+                                "type": "object",
+                                "properties": {
+                                  "path": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 1024
+                                  },
+                                  "page": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "path",
+                                  "page"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "tab": {
+                                "type": "object",
+                                "properties": {
+                                  "title": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "host": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 253
+                                  }
+                                },
+                                "required": [
+                                  "title",
+                                  "host"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "text",
+                              "start",
+                              "end",
+                              "name",
+                              "edited"
+                            ],
+                            "additionalProperties": false
                           }
                         },
                         "required": [
@@ -8751,6 +8859,40 @@
                           "step",
                           "label",
                           "accept"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "left": {
+                      "maxItems": 24,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 300
+                          },
+                          "why": {
+                            "type": "string",
+                            "enum": [
+                              "answer",
+                              "identity",
+                              "sensitive",
+                              "notFound"
+                            ]
+                          },
+                          "says": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 600
+                          }
+                        },
+                        "required": [
+                          "label",
+                          "why",
+                          "says"
                         ],
                         "additionalProperties": false
                       }

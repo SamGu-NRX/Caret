@@ -44,6 +44,7 @@ export interface Rig {
   page: FakePage;
   helper: Helper;
   host: PageHost;
+  store: Store;
   published: HelperMessage[];
   asked: JevRequest[];
   /** The note window's text now; setNote replaces it, as the user editing the note does. */
@@ -76,6 +77,10 @@ export interface RigOptions {
   now?: () => number;
   /** I6: the offers an hour may show (HelperOptions.offersPerHour); the settings' own by default. */
   offersPerHour?: number;
+  /** L1: the in-process caller shows source excerpts (HelperOptions.sourceExcerpts). */
+  sourceExcerpts?: boolean;
+  /** The helper's warn line (HelperOptions.warn); dropped by default. */
+  warn?: (line: string) => void;
 }
 
 /** A Helper over one page tab and the note the user just left, with canned picks by field label (fake-page.ts PICKS). */
@@ -105,12 +110,13 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
     readerLink: host.link,
     calendar: null,
     publish: (m) => void published.push(m),
-    warn: () => {},
+    warn: o.warn ?? (() => {}),
     ask: { maker: "writer", writer: intentWriter(o.intent ?? { scope: "all" }) },
     pageDocument: (id) => host.registry.documentOf(id),
     // As main.ts wires it: the page's address, headings and what its walk left out (a password field).
     pageContext: (id) => host.registry.contextOf(id),
     ...(o.goalFiles === true ? { goalFiles: true } : {}),
+    ...(o.sourceExcerpts === true ? { sourceExcerpts: true } : {}),
     ...(o.now === undefined ? {} : { now: o.now }),
     ...(o.offersPerHour === undefined ? {} : { offersPerHour: o.offersPerHour }),
   });
@@ -127,6 +133,7 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
     page,
     helper,
     host,
+    store,
     published,
     asked,
     // A background walk of the note: the user's focus stays where it was.

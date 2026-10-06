@@ -27,7 +27,7 @@ import { isDerived, isFilled } from "./gates.ts";
 import { sourceHolds } from "../offers/fill-popup.ts";
 import { memoryWrites, parseMemoryRef } from "../fill/fill.ts";
 import { continuationScope, pageInputKeys } from "./page-planner.ts";
-import { pageView } from "./page-view.ts";
+import { pageView, type PageViewOptions } from "./page-view.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { formControls } from "../fill/controls.ts";
 import { fieldName } from "../planner/planner.ts";
@@ -199,6 +199,14 @@ export interface GoalRunDeps {
    * Only source checks read it; targets, documents and fields are always the model's own.
    */
   sourceModel?: (goalId: string) => ScreenModel;
+  /**
+   * L1: whether the host session a goal was offered to declared SOURCE_EXCERPTS_CAPABILITY (helper.ts excerptsFor). Only
+   * then does a page preview's view cut the user's source text into excerpts (page-view.ts): a host that did not ask
+   * never gets one built for it. Absent: none is.
+   */
+  excerptsFor?: (session: string | undefined) => boolean;
+  /** L1: a page window's address, from the page engines (helper.ts pageContext), for a tab excerpt's host; null when unknown. */
+  pageSite?: (windowId: string) => string | null;
   /** I6: a goal ended (finished or stopped), or a plan made for it was never offered: what it held for its plan goes. */
   ended?: (goalId: string) => void;
 }
@@ -941,7 +949,13 @@ export class GoalRuns {
       where: d.kind === "window" ? { kind: "window", app: d.appName, title: d.title } : { kind: "calendar", calendar: d.calendar },
       steps: seg.steps.map((s) => ({ index: s.index, kind: s.kind, says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }), ...(s.kind === "attach" && s.file !== undefined ? { file: s.file } : {}) })),
       warnings: run.cursor.segment === 0 ? run.plan.warnings : [],
-      ...pageOf(this.deps.model, run.plan, seg),
+      // L1: the excerpts are cut here, as the message is built, and leave with it: the run and its plan keep none.
+      ...pageOf(this.deps.model, run.plan, seg, {
+        excerpts: this.deps.excerptsFor?.(run.session) === true,
+        ...(this.deps.sourceModel === undefined ? {} : { sourceModel: this.deps.sourceModel(run.plan.goalId) }),
+        ...(this.deps.aboutNow === undefined ? {} : { aboutNow: this.deps.aboutNow }),
+        ...(this.deps.pageSite === undefined ? {} : { site: this.deps.pageSite }),
+      }),
     };
   }
 
@@ -1145,8 +1159,8 @@ function sameField(w: WindowState, s: GoalStep): boolean {
 }
 
 /** H11: a page segment's view for the host's panel, as a spread: empty for every other segment. */
-function pageOf(model: ScreenModel, plan: GoalPlan, seg: GoalSegment): { page?: NonNullable<ReturnType<typeof pageView>> } {
-  const page = pageView(model, plan, seg);
+function pageOf(model: ScreenModel, plan: GoalPlan, seg: GoalSegment, o: PageViewOptions): { page?: NonNullable<ReturnType<typeof pageView>> } {
+  const page = pageView(model, plan, seg, o);
   return page === undefined ? {} : { page };
 }
 
