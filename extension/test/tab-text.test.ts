@@ -43,6 +43,16 @@ describe("the tab the user just left (rule 1)", () => {
     expect(t.check(1, 1600, marks(["docA", 1]))).toMatchObject({ ok: false });
   });
 
+  it("is not read while the user is in it again after another app, which leaves no other tab behind", () => {
+    const t = new LeftTab();
+    t.moved({ tabId: 1, windowId: 9 }, 0, gen);
+    const rec = t.moved(null, 1000, gen);
+    if (rec === null) throw new Error("losing focus left no record");
+    t.noted(rec, marks(["docA", 1]));
+    t.moved({ tabId: 1, windowId: 9 }, 1200, gen);
+    expect(t.check(1, 1300, marks(["docA", 1]))).toMatchObject({ ok: false });
+  });
+
   it("is still the tab left when the browser loses focus to another app, and after it comes back to another tab", () => {
     const t = new LeftTab();
     t.moved({ tabId: 1, windowId: 9 }, 0, gen);
