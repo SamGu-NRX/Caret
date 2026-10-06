@@ -100,8 +100,10 @@ export function aboutKind(label: string, value: string): AboutKind | null {
   if (has(ws, "github")) return url && /github\.com\//iu.test(v) ? "github" : null;
   if (has(ws, "website", "portfolio", "homepage", "blog", "site")) return url && !/(?:linkedin|github)\.com\//iu.test(v) ? "website" : null;
   if (url) return null;
-  if (has(ws, "sponsorship", "sponsor", "visa")) return YES_NO.test(v) ? "sponsorship" : null;
-  if (has(ws, "authorization", "authorisation", "authorized", "authorised", "eligibility", "eligible")) return YES_NO.test(v) ? "workAuth" : null;
+  // A label that turns the yes or no around ("Sponsorship not needed") is no kind: which way it answers is a guess.
+  const turned = ws.some((w) => TURNS.has(w));
+  if (has(ws, "sponsorship", "sponsor", "visa")) return YES_NO.test(v) && !turned ? "sponsorship" : null;
+  if (has(ws, "authorization", "authorisation", "authorized", "authorised", "eligibility", "eligible")) return YES_NO.test(v) && !turned ? "workAuth" : null;
   if (has(ws, "phone", "mobile", "cell", "telephone", "tel")) return textKind(v) === "phone" ? "phone" : null;
   if (has(ws, "graduation", "graduate", "grad")) return splitDate(v) !== null ? "gradDate" : null;
   if (has(ws, "school", "university", "college")) return v.length <= 80 && !/[\d@]/u.test(v) ? "school" : null;
@@ -149,22 +151,32 @@ const FIELD_WORDS: Partial<Record<AboutKind, { asks: string[]; may: string[] }>>
   website: { asks: ["portfolio", "personal"], may: ["website", "site", "web", "url", "link", "page"] },
 };
 
-/** Words a question about working somewhere or sponsorship uses that name a country. Written for common form questions, not measured. */
-const COUNTRY_WORDS = new Set(["united", "states", "us", "usa", "america", "canada", "canadian", "uk", "kingdom", "britain", "eu", "europe", "european", "australia", "india", "germany", "france", "mexico", "ireland", "singapore", "japan"]);
+/**
+ * C1 review: the only words a question about working somewhere may use, so the entry's yes or no answers exactly it:
+ * "Are you legally authorized to work in your country of residence?". Any other word ("without", "Brazil", "have")
+ * may change what yes means, so the field is the user's. A question that names a country must name it in words the
+ * entry's label also has ("Authorized to work in the United States"). Written for common form questions, not measured.
+ */
+const WORK_WORDS = new Set(["are", "you", "legally", "currently", "authorized", "authorised", "eligible", "to", "work", "in", "the", "your", "country", "of", "residence", "for", "employment", "this", "role", "position", "job", "at", "any", "employer"]);
+/** The same for sponsorship: "Will you now or in the future require sponsorship for employment visa status?". */
+const SPONSOR_WORDS = new Set(["will", "you", "now", "or", "in", "the", "future", "require", "need", "sponsorship", "visa", "for", "employment", "status", "to", "work", "an", "a", "this", "role", "position", "job", "do", "would", "immigration", "eg", "h1b"]);
+/** Words of an entry's label that turn its yes or no around ("Sponsorship not needed: Yes"); such an entry fills nothing. */
+const TURNS = new Set(["not", "no", "without", "don't", "dont", "never"]);
 
 /**
- * C1: whether a yes-or-no question asks what the entry answers: whether the user may work there ("Are you legally
- * authorized to work in the United States?") or needs sponsorship ("Will you now or in the future require
- * sponsorship…?"). The country a question names must be one the entry's label names: an entry "Work authorization: Yes"
- * that names none answers a question that names none ("…in your country of residence?"), never one about a named
- * country, which may not be the user's.
+ * C1: whether a yes-or-no question asks exactly what the entry answers: whether the user may work there, or needs
+ * sponsorship. Every word of the question must be one such a question uses (WORK_WORDS, SPONSOR_WORDS) or one of the
+ * entry's own label, and it must say "work" and "authorized" (or "eligible"), or "sponsorship" and "require" (or
+ * "need"). Anything else is the user's to answer, since a yes there could mean the opposite.
  */
 function questionAsks(a: AboutValue, ws: ReadonlySet<string>): boolean {
-  const sponsor = ws.has("sponsorship") || ws.has("sponsor") || ws.has("visa");
-  const work = (ws.has("authorized") || ws.has("authorised") || ws.has("eligible") || ws.has("legally")) && ws.has("work");
-  if (a.kind === "sponsorship" ? !sponsor : !work || sponsor) return false;
   const own = new Set(words(a.label));
-  return [...ws].every((w) => !COUNTRY_WORDS.has(w) || own.has(w));
+  if ([...own].some((w) => TURNS.has(w))) return false;
+  const allowed = a.kind === "sponsorship" ? SPONSOR_WORDS : WORK_WORDS;
+  if (![...ws].every((w) => allowed.has(w) || own.has(w))) return false;
+  return a.kind === "sponsorship"
+    ? ws.has("sponsorship") && (ws.has("require") || ws.has("need"))
+    : ws.has("work") && (ws.has("authorized") || ws.has("authorised") || ws.has("eligible"));
 }
 
 /**

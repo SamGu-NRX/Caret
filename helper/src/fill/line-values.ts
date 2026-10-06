@@ -111,10 +111,25 @@ export function lineValues(line: string): LineValue[] {
 export interface LineText {
   text: string;
   label: string | null;
+  /**
+   * The text a request must quote beside the span, or the span is not offered (C1 review): a value cut from before its
+   * remark goes with the remark ("Dima (legal name Dmitri Halvorsen)."), so Jev reads what the note said about it.
+   */
+  with?: string;
 }
 
 /** What may follow a value in its "Label: value" line and is a remark about it, not part of it: "Dima (legal name …)". */
-const REMARK = /^(.+?)\s+\([^()]*\)[.!]?(?:\s.*)?$/u;
+const REMARK = /^(.+?)\s+\(([^()]*)\)[.!]?(?:\s.*)?$/u;
+/**
+ * Words that make a remark a warning about the value before it ("Alex (do not use this old name; use Robin instead)"):
+ * then the value is not offered apart from its line at all (C1 review). Written for common note wording, not measured.
+ */
+export const WARNS = /\b(?:not|don'?t|doesn'?t|never|no longer|old|former|previous|outdated|instead|wrong|ignore|except|unless|but)\b/iu;
+/**
+ * A comma part that may continue the name before it rather than start another fact: one or two capitalized words
+ * ("University of California, Berkeley"; "Stanford University, Palo Alto"). The first part is then not offered alone.
+ */
+const CONTINUES = /^\p{Lu}[\p{L}'’-]*(?: \p{Lu}[\p{L}'’-]*)?$/u;
 
 /** Labels that say their value is a person: "Emergency contact", "Reference", "Landlord". Written for common note labels, not measured. */
 const PERSON_LABEL = /\b(?:name|contact|reference|referee|landlord|manager|spouse|partner|husband|wife|parent|guardian|recruiter|advisor|supervisor)\b/iu;
@@ -133,19 +148,21 @@ const PERSON_LABEL = /\b(?:name|contact|reference|referee|landlord|manager|spous
 export function lineTexts(line: string): LineText[] {
   if (secretLine(line)) return [];
   const out: LineText[] = [];
-  const add = (text: string, label: string | null): void => {
+  const add = (text: string, label: string | null, quote?: string): void => {
     const t = text.trim().replace(/[.,;:!?]+$/u, "");
     if (t.length < 2 || !line.includes(t) || out.some((o) => o.text === t)) return;
-    out.push({ text: t, label });
+    out.push({ text: t, label, ...(quote === undefined ? {} : { with: quote }) });
   };
   const m = LABELLED.exec(line);
   const label = m?.[1]?.trim() ?? null;
   const value = m?.[2]?.trim() ?? null;
   if (label !== null && value !== null) {
     const r = REMARK.exec(value);
-    if (r?.[1] !== undefined && !r[1].includes("(")) add(r[1], label);
-    const first = (value.split(/\s*[,;]\s*/u)[0] ?? "").replace(/\s*\(.*$/u, "").replace(/[.!?]+$/u, "").trim();
-    if (first !== "" && !/\d/u.test(first)) {
+    if (r?.[1] !== undefined && !r[1].includes("(") && !WARNS.test(r[2] ?? "")) add(r[1], label, value);
+    const parts = value.split(/\s*[,;]\s*/u);
+    const first = (parts[0] ?? "").replace(/\s*\(.*$/u, "").replace(/[.!?]+$/u, "").trim();
+    const next = (parts[1] ?? "").replace(/[.!?]+$/u, "").trim();
+    if (first !== "" && !/\d/u.test(first) && !CONTINUES.test(next)) {
       if (isNameLike(first, null)) add(first, label);
       else if (PERSON_LABEL.test(label)) {
         const names = namesIn(first);
@@ -175,8 +192,11 @@ export function clauseAround(line: string, at: number, text: string): string | n
   const end = at + text.length;
   let start = 0;
   for (const m of line.slice(0, at).matchAll(/[.!?;]\s+|[()]/gu)) start = (m.index ?? 0) + m[0].length;
-  const after = /[.!?;]\s|[()]|[.!?;]$/u.exec(line.slice(end));
-  let stop = after === null ? line.length : end + after.index + (after[0].startsWith(")") || after[0].startsWith("(") ? 0 : 1);
+  // A remark in brackets right after the value is part of what the line says about it: "555-0101 (my old number)".
+  const remark = /^\s*\([^()]*\)/u.exec(line.slice(end));
+  const from = remark === null ? end : end + remark[0].length;
+  const after = /[.!?;]\s|[()]|[.!?;]$/u.exec(line.slice(from));
+  let stop = after === null ? line.length : from + after.index + (after[0].startsWith(")") || after[0].startsWith("(") ? 0 : 1);
   if (stop - start > CLAUSE_MAX) {
     // Cut to whole words around the value, at most CLAUSE_MAX characters.
     const room = Math.max(0, CLAUSE_MAX - text.length);

@@ -62,8 +62,17 @@ describe("typed values inside a line", () => {
 });
 
 describe("free text a line bounds", () => {
-  it("takes a labelled value before its remark in parentheses", () => {
-    expect(texts("Preferred first name: Dima (legal name Dmitri Halvorsen).")).toEqual([["Dima", "Preferred first name"]]);
+  it("takes a labelled value before its remark in parentheses, quoting the remark, and none before a warning", () => {
+    expect(lineTexts("Preferred first name: Dima (legal name Dmitri Halvorsen).")).toEqual([{ text: "Dima", label: "Preferred first name", with: "Dima (legal name Dmitri Halvorsen)." }]);
+    // C1 review: a remark that warns against the value keeps it whole.
+    expect(texts("Preferred first name: Alex (do not use this old name; use Robin instead for all future applications).")).toEqual([]);
+    expect(texts("Phone: 555-0101 (my old number, no longer works)")).toEqual([]);
+  });
+
+  it("takes no first part that the next part may continue", () => {
+    // C1 review: "University of California" is not the school "University of California, Berkeley".
+    expect(texts("School: University of California, Berkeley, Bachelor of Science in Electrical Engineering, graduating May 2027")).toEqual([]);
+    expect(texts("School: Stanford University, Palo Alto, California")).toEqual([["Palo Alto, California", null]]);
   });
 
   it("takes a labelled value's first part when it is a whole name", () => {
@@ -118,5 +127,12 @@ describe("a note's line", () => {
     expect(bareLine("  -   Cell:  555-0147. ")).toBe("Cell: 555-0147.");
     expect(bareLine("• Phone: 555-0101")).toBe("Phone: 555-0101");
     expect(bareLine("-5 degrees")).toBe("-5 degrees");
+  });
+});
+
+describe("the clause of a value with a remark", () => {
+  it("takes the remark in brackets right after the value", () => {
+    const line = "Phone: 555-0101 (my old number, no longer works)";
+    expect(clauseAround(line, line.indexOf("555-0101"), "555-0101")).toBe("Phone: 555-0101 (my old number, no longer works)");
   });
 });

@@ -28,7 +28,7 @@ export function legacyGenerateCandidates(model: ScreenModel, targetWindowId: str
 
   const out: Candidate[] = [];
   const seen = new Set<string>();
-  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: string | null): void => {
+  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: string | null, quote?: string): void => {
     if (out.length >= max || seen.has(text)) return;
     seen.add(text);
     const labelled = labelledSpan(node, text, context);
@@ -39,7 +39,7 @@ export function legacyGenerateCandidates(model: ScreenModel, targetWindowId: str
       context,
       // B24's fact about the span, worked out as the generator does; the ranking under test is unchanged.
       labelled,
-      line: lineFact(w, node, text, labelled),
+      line: quote ?? lineFact(w, node, text, labelled),
       section: sectionAround(w, node),
       blockHead: blockHead(w, node, text),
       recency: recency(w),
@@ -70,7 +70,7 @@ export function legacyGenerateCandidates(model: ScreenModel, targetWindowId: str
       for (const raw of lines) {
         for (const s of lineSpans(raw)) {
           if (s.label !== null) {
-            add(w, node, s.text, null, s.label);
+            add(w, node, s.text, null, s.label, s.with);
             continue;
           }
           const context = lines.length === 1 ? (isSourceField ? (node.label ?? nearestText(w, node, isLabelLike)) : nearestText(w, node, isLabelLike)) : null;

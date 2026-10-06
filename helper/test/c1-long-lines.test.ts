@@ -80,7 +80,8 @@ describe("what a value inside a line carries, and what it never offers", () => {
     const cs = candidates("- Cell: 555-0147. Don't give out 555-0112, that's Mom and Dad's landline.");
     const cell = cs.find((c) => c.text === "555-0147");
     const landline = cs.find((c) => c.text === "555-0112");
-    expect([cell?.context, cell?.labelled, cell?.line ?? null]).toEqual(["Cell", true, null]);
+    // The line warns ("Don't give out"), so the labelled value's own clause goes too; it is the value's sentence alone.
+    expect([cell?.context, cell?.labelled, cell?.line ?? null]).toEqual(["Cell", true, "Cell: 555-0147."]);
     expect([landline?.context, landline?.labelled, landline?.line]).toEqual([null, false, "Don't give out 555-0112, that's Mom and Dad's landline."]);
     expect(describeCandidate(landline as NonNullable<typeof landline>)).toContain("in the line 'Don't give out 555-0112, that's Mom and Dad's landline.'");
   });
@@ -115,6 +116,10 @@ describe("the recheck reads a line the way fill read it", () => {
 
   it("refuses a line that now has a label naming the value", () => {
     expect(sourceHolds(src("Do not use: May 2020"), key, "May", null, "select")).toBe(false);
+    // C1 review: a value code found in a line (not the reader's typed value) is checked by the line as it reads now.
+    expect(sourceHolds(src("Do not use: May 2027"), key, "May 2027", null, "select")).toBe(false);
+    expect(sourceHolds(src("Do not use: 555-0147"), key, "555-0147", null, "combobox")).toBe(false);
+    expect(sourceHolds(src("Graduating in May 2027 from Lakeshore, with the transcript to follow by mail, I hope."), key, "May 2027", null, "select")).toBe(true);
     expect(sourceHolds(src("Do not use: Oakland, California, United States"), key, "Oakland, California, United States", null, "combobox")).toBe(false);
   });
 
@@ -185,5 +190,15 @@ describe("a second address is named by any word for second", () => {
     expect(values).toEqual({ "Alternate email": "jab.cole@example.org" });
     const other = await fill(note, { "Alternate email": "jo.cole@work.example" });
     expect(other.values).toEqual({ "Alternate email": null });
+  });
+});
+
+describe("a labelled value its line warns about", () => {
+  it("carries the warning as its clause", () => {
+    const m = new ScreenModel();
+    m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: "Contact\nPhone: 555-0101 (my old number, no longer works)\nEmail: jo@example.org", editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
+    m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));
+    const c = collectCandidates(m, FORM, { now: 3000 }).candidates.find((x) => x.text === "555-0101");
+    expect([c?.context, c?.line]).toEqual(["Phone", "Phone: 555-0101 (my old number, no longer works)"]);
   });
 });

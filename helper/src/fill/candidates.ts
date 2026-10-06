@@ -8,7 +8,7 @@ import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
-import { bareLine, clauseAround, LABELLED, lineTexts, lineValues } from "./line-values.ts";
+import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, WARNS } from "./line-values.ts";
 import { splitDate } from "./derive.ts";
 
 /**
@@ -241,17 +241,18 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   /** Windows a span of which did not fit their budget, closed or not. */
   const missed = new Set<string>();
   /** The candidate for a span, with every fact about it worked out. */
-  const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null): Candidate => {
+  const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string): Candidate => {
     const ctx = timed("context", context);
     const labelled = labelledSpan(node, text, ctx);
-    const clause = timed("context", () => lineFact(w, node, text, labelled));
+    // A span that must go with its line's words (line-values.ts LineText.with) carries them from the start, charged with it.
+    const clause = quote !== undefined ? null : timed("context", () => lineFact(w, node, text, labelled));
     const c: Candidate = {
     id: `c${out.length + 1}`,
     text,
     kind,
     context: ctx,
     labelled,
-    line: null,
+    line: quote ?? null,
     section: timed("section", () => sectionAround(w, node)),
     blockHead: timed("blockHead", () => blockHead(w, node, text)),
     recency: recency(w),
@@ -278,9 +279,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * Adds a span unless the cap is reached, its text is already in, or its window is closed. A span that
    * does not fit its window's budget closes the window.
    */
-  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null): void => {
+  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string): void => {
     if (full() || seen.has(text) || closed.has(w.window.windowId)) return;
-    const c = build(w, node, text, kind, context);
+    const c = build(w, node, text, kind, context, quote);
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       missed.add(w.window.windowId);
       closed.add(w.window.windowId);
@@ -390,7 +391,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * them in relevance order. False when the cap or the clock ran out. A span's group is the term of the
    * whole-or-nothing set it goes in with: its kind's for a typed value, NAME_TERM for a name-like line.
    */
-  type Span = { node: Node; text: string; kind: ValueKind | null; group: string | null; context: () => string | null; terms: Set<string>; names: string[] };
+  type Span = { node: Node; text: string; kind: ValueKind | null; group: string | null; context: () => string | null; terms: Set<string>; names: string[]; quote?: string };
   const byRelevance = (w: WindowState, fields: readonly ReadonlySet<string>[]): boolean => {
     const spans: Span[] = [];
     const built = { done: false };
@@ -458,7 +459,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
           const names = wantsNames && kinds.some((k) => CONTACT_KINDS.has(k)) ? namesOutside(s.line, valuesOf.get(node.key)) : [];
           if (name) names.push(s.text);
           if (names.length > 0) terms.add(NAME_TERM);
-          spans.push({ node, text: s.text, kind: null, group: name ? NAME_TERM : null, context, terms, names });
+          spans.push({ node, text: s.text, kind: null, group: name ? NAME_TERM : null, context, terms, names, ...(s.with === undefined ? {} : { quote: s.with }) });
           // Each name a contact line holds goes in with the names too, as its own span, copied verbatim from
           // the line: else "From: Priya Raman <priya.raman@…>" left a name out whenever the line was cut, and
           // the names spent the budget for nothing (B14 oracle replay, Claim form with the sources as Messages).
@@ -516,7 +517,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         const sp = spans[i] as (typeof spans)[number];
         if (sp.group !== k || seen.has(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
-        group.push(build(w, sp.node, sp.text, sp.kind, sp.context));
+        group.push(build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote));
       }
       if (group.length > 0) groups.set(k, group);
     }
@@ -553,7 +554,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (closed.has(w.window.windowId)) break;
       const sp = spans[i] as (typeof spans)[number];
       if ([...sp.terms].some((t) => leftOut.has(t))) continue;
-      add(w, sp.node, sp.text, sp.kind, sp.context);
+      add(w, sp.node, sp.text, sp.kind, sp.context, sp.quote);
     }
     return true;
   };
@@ -593,7 +594,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       for (const raw of lines) {
         // A node can hold thousands of lines (a log, a transcript), so the cap and the clock apply per line too.
         if (full() || outOfTime()) return stop();
-        for (const s of lineSpans(raw)) add(w, node, s.text, null, s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField));
+        for (const s of lineSpans(raw)) add(w, node, s.text, null, s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField), s.with);
       }
     }
   }
@@ -634,12 +635,12 @@ function spanOfLine(raw: string): { line: string; text: string; label: string | 
  * under its line's label or none. A line of any length offers the bounded text; only spanOfLine's needs it short. Its
  * typed values are offered as the window's typed values (windowValues), not here.
  */
-export function lineSpans(raw: string): { line: string; text: string; label: string | null }[] {
+export function lineSpans(raw: string): { line: string; text: string; label: string | null; with?: string }[] {
   const line = bareLine(raw);
   if (line.length < MIN_LINE) return [];
   const whole = spanOfLine(raw);
-  const out = whole === null ? [] : [whole];
-  for (const t of lineTexts(line)) if (!out.some((o) => o.text === t.text)) out.push({ line, text: t.text, label: t.label });
+  const out: { line: string; text: string; label: string | null; with?: string }[] = whole === null ? [] : [whole];
+  for (const t of lineTexts(line)) if (!out.some((o) => o.text === t.text)) out.push({ line, text: t.text, label: t.label, ...(t.with === undefined ? {} : { with: t.with }) });
   return out;
 }
 
@@ -702,7 +703,6 @@ export function lineGives(raw: string, span: string): boolean {
  * line's label (the label says what it is).
  */
 export function lineFact(w: WindowState, node: Node, text: string, labelled: boolean): string | null {
-  if (labelled) return null;
   const t = nodeText(node);
   const at = t.indexOf(text);
   if (at < 0) return null;
@@ -710,6 +710,9 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
   const line = bareLine(raw);
   const pos = line.indexOf(text);
   if (pos < 0) return null;
+  // A label says what the span is, unless the line also warns about it ("Phone: 555-0101 (my old number, no longer
+  // works)"): then the clause goes too, so Jev reads the warning (C1 review).
+  if (labelled) return WARNS.test(line.replace(text, " ")) ? clauseAround(line, pos, text) : null;
   const values = lineValues(line);
   const kind = values.find((v) => v.text === text)?.kind;
   const twins = kind !== undefined && values.filter((v) => v.kind === kind).length > 1;

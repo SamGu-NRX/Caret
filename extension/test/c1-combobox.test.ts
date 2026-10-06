@@ -59,6 +59,8 @@ describe("a stop says whether react-select's form value moved", () => {
     expect(hiddenAfterStop("", "")).toBe("unchanged");
     expect(hiddenAfterStop("us", "us")).toBe("unchanged");
     expect(hiddenAfterStop("", "ca")).toBe("set");
+    // C1 review: a form value that was there and is gone moved too.
+    expect(hiddenAfterStop("ca", null)).toBe("set");
     expect(hiddenAfterStop("us", "")).toBe("set");
   });
 });

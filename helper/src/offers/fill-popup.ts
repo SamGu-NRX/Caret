@@ -10,7 +10,7 @@ import { PAGE_SUBROLE, PROTOCOL_VERSION, type FillField, type FillMemory, type F
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
-import { labelledLines, lineGives, windowValues } from "../fill/candidates.ts";
+import { labelledLines, lineGives } from "../fill/candidates.ts";
 import { splitAddress, splitPlace } from "../fill/derive.ts";
 import { describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
@@ -235,7 +235,9 @@ function derivesSpan(line: string, span: string): boolean {
 export function sourceHolds(sw: WindowState, nodeKey: string, span: string, context: string | null, control: string): boolean {
   const src = sw.nodes.get(nodeKey);
   if (src === undefined) return false;
-  const typed = windowValues(sw).some((v) => v.nodeKey === nodeKey && v.text === span);
+  // The reader's own typed values only: one code finds in a line (fill/candidates.ts windowValues) is checked by the line
+  // as it reads now (lineGives in derivesSpan), so a line that gained a label naming it passes nothing (C1 review).
+  const typed = sw.values.some((v) => v.nodeKey === nodeKey && v.text === span);
   if (context !== null) {
     const box = control === "checkbox";
     return labelledLines(sw).some((l) => l.node.key === nodeKey && l.label === context && (box ? l.value === span : l.value.includes(span)));

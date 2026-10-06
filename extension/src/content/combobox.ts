@@ -154,8 +154,9 @@ async function settledOptions(el: Element, f: Flavor, listbox: () => Element | n
     return done ? opts : null;
   }, LIST_WAIT_MS);
   if (got !== null) return got;
+  // C1 review: a list still loading when the wait ends gives no options, so nothing is picked from an older query's.
   const lb = listbox();
-  return lb === null ? [] : optionsOf(lb);
+  return lb === null || loading(el, f, lb) ? [] : optionsOf(lb);
 }
 
 export async function chooseOption(el: Element, verb: ChooseVerb, check: () => ActAnswer | null, alive: () => Promise<boolean>): Promise<ActAnswer> {
@@ -291,6 +292,7 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   const lbNow = current();
   const again = lbNow === null ? { exact: [], partial: [] } : matchOptions(optionsOf(lbNow), verb.value);
   if (again.exact.length !== 1 || again.exact[0]?.el !== pick.el) return stopped(answer("failed", "the list changed before the pick"), "picking", again.exact.map((o) => o.name));
+  if (lbNow !== null && loading(el, f, lbNow)) return stopped(answer("failed", "the list was loading again right before the pick"), "picking", [pick.name]);
   press(pick.el);
   const want = normalizeName(pick.name);
   // The list closing on the press, before any Escape of Caret's, is what shows an ARIA text field took the pick and

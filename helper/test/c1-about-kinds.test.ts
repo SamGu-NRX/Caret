@@ -30,6 +30,8 @@ describe("which entries are which kind", () => {
     ["Work authorization", "Yes", "workAuth"],
     ["Authorized to work in the United States", "yes", "workAuth"],
     ["Needs visa sponsorship", "No", "sponsorship"],
+    // C1 review: a label that turns the answer around is no kind.
+    ["Sponsorship not needed", "Yes", null],
     // Shapes that do not fit the label's kind.
     ["Phone", "call me after five", null],
     ["LinkedIn", "ask me", null],
@@ -102,6 +104,11 @@ describe("which fields an entry is offered to", () => {
     ["Authorized to work in the United States", "Yes", "Are you legally authorized to work in the United States?", true],
     ["Work authorization", "Yes", "Will you now or in the future require sponsorship for employment visa status?", false],
     ["Needs visa sponsorship", "No", "Will you now or in the future require sponsorship for employment visa status?", true],
+    // C1 review: a question whose yes means something else, or that names a country the entry does not, is the user's.
+    ["Needs visa sponsorship", "No", "Can you work without visa sponsorship?", false],
+    ["Needs visa sponsorship", "No", "Do you have a visa?", false],
+    ["Work authorization", "Yes", "Are you authorized to work in Brazil?", false],
+    ["Work authorization", "Yes", "Are you authorized to work for any employer?", true],
     // Self-identification and consent are never asked for, whatever the entry.
     ["Work authorization", "Yes", "Are you a protected veteran authorized to work?", false],
     ["City", "Austin", "Gender", false],

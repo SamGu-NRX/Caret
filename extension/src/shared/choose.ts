@@ -94,6 +94,7 @@ export function pickProblems(s: PickState): string[] {
  * reads as set, so a stop that moved the form value is never reported as put back.
  */
 export function hiddenAfterStop(before: string | null, now: string | null): "set" | "unchanged" | "none" {
-  if (now === null) return "none";
+  // C1 review: a hidden input that was there and is gone moved the form value too.
+  if (now === null) return before === null ? "none" : "set";
   return now === before ? "unchanged" : "set";
 }
