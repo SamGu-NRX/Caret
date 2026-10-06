@@ -12,11 +12,22 @@ import CaretHostCore
 // CARET_ALLOW_PIDS, CARET_SCREEN_SOCKET, CARET_GHOST=off, CARET_FILL_ADVANCE=off, CARET_PERCH=hidden,
 // CARET_SURFACES=headless, CARET_TEST_HOOKS=1, CARET_SETTINGS_PATH,
 // CARET_ONBOARDING, CARET_STATUS_ITEM=off, CARET_GHOST_OVERFLOW=drop, CARET_HOME, CARET_NMH_DIR.
+// Environment only: CARET_DEBUG_SOCKET=full|release (DebugSocketAccess), CARET_HOST_LOG=off (HostLog).
+//
+// `Caret --unregister` removes the login item and exits (H12); D1's uninstall.sh runs it. It touches no data.
 //
 // A built Caret.app starts its own helper and caret-screen (H4, CaretServices) unless a helper socket is named
 // (--helper-socket, CARET_SCREEN_SOCKET), which every acceptance script does. --home <dir> puts their sockets and data,
 // and the host's debug socket and settings unless named, in <dir> instead of ~/Library/Application Support/CaretV2.
 // --nmh-dir <dir> is where Add to Chrome writes its manifest in such a run; a run with --home writes nowhere else.
+
+// Removes the login item (SMAppService.unregister) and nothing else, prints what happened, and exits: 0 when the login
+// item is gone afterwards, 1 when it could not be removed. If the agent is running, launchd stops it.
+if CommandLine.arguments.dropFirst().first == "--unregister" {
+    let result = LoginAgent.unregister(LoginAgent.system())
+    print(result.message)
+    exit(result.ok ? 0 : 1)
+}
 
 var configuration = HostRuntime.Configuration()
 
@@ -160,8 +171,9 @@ while let argument = arguments.next() {
         default: FileHandle.standardError.write(Data("caret: --status-item takes on or off\n".utf8)); exit(2)
         }
     case "--onboarding":
-        // `off` (default: the menu's Set Up Caret opens it), `auto` (at launch until finished
-        // once), `show`, or `hidden` (the flow with no window, driven over the debug socket).
+        // `auto` (the user's own Caret's default: at launch until finished once, then while
+        // Accessibility is off), `off` (a test run's default: the menu's Set Up Caret opens it),
+        // `show`, or `hidden` (the flow with no window, driven over the debug socket).
         switch arguments.next() {
         case let mode? where ["off", "auto", "show", "hidden"].contains(mode): configuration.onboarding = mode
         default: FileHandle.standardError.write(Data("caret: --onboarding takes off, auto, show or hidden\n".utf8)); exit(2)
@@ -191,9 +203,40 @@ do {
     FileHandle.standardError.write(Data("caret: \(error)\n".utf8))
     exit(2)
 }
+// H12: the user's own Caret writes its log to ~/Library/Logs/Caret/host.log, since launchd cannot put it there for a
+// bundled agent. Done before anything below writes to standard error.
+let hostLog = HostLog.default(userHome: NSHomeDirectory())
+var rotatingLog: HostLog?
+if HostLog.redirects(homeOverridden: home.isOverride, stderrIsTerminal: isatty(STDERR_FILENO) == 1, environment: environment) {
+    do {
+        try hostLog.redirect()
+        rotatingLog = hostLog
+    } catch {
+        FileHandle.standardError.write(Data("caret: \(error); the log stays on standard error\n".utf8))
+    }
+}
+// H12: the debug socket lives in Caret's own sockets folder (0700), never the development path it used to.
+if !hostSocketNamed {
+    configuration.socketPath = home.hostSocket
+    configuration.socketInCaretsFolder = true
+}
+// A debug or acceptance build answers every command; a release build only `state` and `spend`, unless opened.
+#if DEBUG || CARET_ACCEPTANCE_HOST
+let developmentBuild = true
+#else
+let developmentBuild = false
+#endif
+do {
+    configuration.socketAccess = try DebugSocketAccess.resolve(developmentBuild: developmentBuild, environment: environment)
+} catch {
+    FileHandle.standardError.write(Data("caret: \(error)\n".utf8))
+    exit(2)
+}
+if configuration.onboarding == nil {
+    configuration.onboarding = OnboardingLaunch.defaultMode(homeOverridden: home.isOverride, settingsNamed: settingsNamed)
+}
 if home.isOverride {
     // A run with its own home reads and writes only there.
-    if !hostSocketNamed { configuration.socketPath = home.hostSocket }
     if !settingsNamed { SettingsStore.path = home.settingsFile }
     // A likely file for an attach is looked for under the run's own home, never the user's folders.
     configuration.fileRoots = ["Documents", "Downloads", "Desktop"].map { (home.root as NSString).appendingPathComponent($0) }
@@ -229,7 +272,12 @@ configuration.helperSocketPath = MainActor.assumeIsolated { services.helperSocke
 let launchConfiguration = configuration
 let launchStatusItem = showsStatusItem
 let launchManifestDirectory = manifestDirectory
+let launchLog = rotatingLog
 MainActor.assumeIsolated {
+    if let log = launchLog {
+        // The run loop keeps the timer; the log is checked for its size every 30 s for the life of the process.
+        Timer.scheduledTimer(withTimeInterval: HostLog.checkInterval, repeats: true) { _ in log.rotateIfNeeded() }
+    }
     let app = NSApplication.shared
     let delegate = AppDelegate(configuration: launchConfiguration, services: services, home: home,
                                manifestDirectory: launchManifestDirectory, showsStatusItem: launchStatusItem)

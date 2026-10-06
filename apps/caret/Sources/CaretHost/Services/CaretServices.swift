@@ -78,6 +78,10 @@ public final class CaretServices {
     /// Called on main when anything the menu shows changes.
     public var onChange: (() -> Void)?
 
+    /// The Jev key Caret keeps, for the user's own Caret only: a run with its own home never reads or writes the login
+    /// keychain (H12). Nil when there is none to use.
+    public let jevKeys: JevKeyStore?
+
     /// `extraBrowserRequirements` is kept only by the acceptance build (`CARET_ACCEPTANCE_HOST`, which adds Chrome for
     /// Testing by cdhash for a run); the shipped build drops it, whoever passes it (H8 decision 2).
     public init(mode: Mode, extraBrowserRequirements: [String] = []) throws {
@@ -93,11 +97,37 @@ public final class CaretServices {
         self.log = log
         switch mode {
         case .launch(let home, let programs, _):
-            launcher = try ServiceLauncher(programs: programs, home: home, log: log)
+            let keys = home.isOverride ? nil : JevKeyStore.login(userHome: NSHomeDirectory())
+            jevKeys = keys
+            launcher = try ServiceLauncher(programs: programs, home: home, log: log, storedKey: { keys?.read() })
         case .attached:
+            jevKeys = nil
             launcher = nil
         }
         launcher?.onChange = { [weak self] in self?.onChange?() }
+    }
+
+    /// The launchd agent, which is the only copy whose menu offers "Stop Opening at Login".
+    public var isLoginAgent: Bool {
+        if case .launch(_, _, .agent) = mode { return true }
+        return false
+    }
+
+    /// Whether the helper has a Jev key to use, read before it starts (onboarding opens before the services do).
+    /// True when Caret starts no helper: the one it attaches to is someone else's to configure.
+    public var jevKeyAvailable: Bool {
+        guard case .launch = mode else { return true }
+        if ServiceLauncher.hasJevKey(ServiceLauncher.childEnvironment(ProcessInfo.processInfo.environment, passesJevKey: true)) { return true }
+        return jevKeys?.exists() ?? false
+    }
+
+    /// The helper runs without Jev because Caret has no key: the menu says so.
+    public var jevOff: Bool { launcher.map { $0.jevSource == .off && $0.stopped == nil } ?? false }
+
+    /// A key was saved in onboarding: the helper starts again with it.
+    public func reloadJevKey() {
+        launcher?.reloadJevKey()
+        onChange?()
     }
 
     /// The socket the host's helper client connects to.

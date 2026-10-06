@@ -101,9 +101,16 @@ CARET_ALLOW_BUNDLES=com.apple.TextEdit .build/Caret.app/Contents/MacOS/Caret
   while someone is using the Mac.
 - `--settings <path>` (`CARET_SETTINGS_PATH`) names the settings file, default
   `~/Library/Application Support/Caret/v2-host/settings.json`. Test runs pass their own.
-- `--onboarding off|auto|show|hidden` (`CARET_ONBOARDING`): `off` by default, so no test run puts
-  a window up, and the menu's Set Up Caret opens it; `auto` opens it at launch until it has been
-  finished once; `hidden` runs the flow with no window, for the debug socket.
+- `--onboarding off|auto|show|hidden` (`CARET_ONBOARDING`): `auto` opens it at launch until it has
+  been finished once, and after that on its permissions step alone while Accessibility is off;
+  `off` leaves it to the menu's Set Up Caret; `hidden` runs the flow with no window, for the debug
+  socket. With neither set, the user's own Caret uses `auto` and a run that names `--home` or
+  `--settings` uses `off`, so no test run puts a window up (H12).
+- `Caret --unregister` removes the login item (SMAppService) and exits; it touches no data. The
+  agent's menu has the same as "Stop Opening at Login" (H12).
+- The user's own Caret writes its log to `~/Library/Logs/Caret/host.log`, capped at 4 MiB with one
+  older file, `host.log.1`. A run with `--home`, or one whose standard error is a terminal, keeps
+  standard error; `CARET_HOST_LOG=off` keeps it in any run (H12).
 - `--status-item off` (`CARET_STATUS_ITEM=off`): no menu bar item, for runs that put nothing on
   screen.
 - SIGTERM and SIGINT shut down cleanly, freeing llama/Metal before exit.
@@ -143,8 +150,12 @@ working line (done, stopped, handoff, paused). Esc on the working line after 3 s
 
 ## Debug socket
 
-`~/.caret-run/sockets/host.sock` (override: `--socket`, `CARET_HOST_SOCKET`) answers one
-command per connection with JSON: `state` (default), `latency-reset`, `ping`, and test hooks
+`~/Library/Application Support/CaretV2/sockets/host.sock`, in a 0700 folder (override: `--socket`,
+`CARET_HOST_SOCKET`; a run with `--home` uses `<home>/sockets/host.sock`), answers one command per
+connection with JSON. A release build answers only `state`, as an allowlist with no offer, inserted or
+typed text, field digests, captions or paths (`ReleaseState`), and `spend`, unless started with
+`CARET_DEBUG_SOCKET=full`; a debug or acceptance build answers everything below (H12). In full:
+`state` (default), `spend`, `latency-reset`, `ping`, and test hooks
 (`inject` and `progress` only when the host runs with `--test-hooks` or `CARET_TEST_HOOKS=1`):
 
 - `key <tab|shift-tab|opt-right|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:c> <pid>`

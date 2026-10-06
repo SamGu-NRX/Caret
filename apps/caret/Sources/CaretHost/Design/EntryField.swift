@@ -34,6 +34,8 @@ struct EntryField: View {
     var focusToken = 0
     /// False while what it holds is being saved: later typing would be lost.
     var enabled = true
+    /// A secret (onboarding's Jev key): dots on screen and off, and no copy or cut.
+    var secure = false
     var onChange: (String) -> Void
     var onSubmit: () -> Void = {}
 
@@ -67,11 +69,27 @@ struct EntryField: View {
                     if showsFocus { caret }
                     Text(placeholder).foregroundStyle(Color(token: Tokens.secondary))
                 } else {
-                    Text(text).foregroundStyle(Color(token: Tokens.ink)).lineLimit(1)
+                    Text(secure ? String(repeating: "\u{2022}", count: min(text.count, 40)) : text)
+                        .foregroundStyle(Color(token: Tokens.ink)).lineLimit(1)
                     if showsFocus { caret }
                 }
             }
             .accessibilityHidden(true)
+        } else if secure {
+            SecureField(title, text: Binding(get: { text }, set: onChange), prompt: Text(placeholder).foregroundStyle(Color(token: Tokens.secondary)))
+                .textFieldStyle(.plain)
+                .labelsHidden()
+                .foregroundStyle(Color(token: Tokens.ink))
+                .focused($focused)
+                .disabled(!enabled)
+                .onSubmit(onSubmit)
+                .accessibilityLabel(title)
+                .onChange(of: focusNow) { _, now in if now { focused = true } }
+                .onChange(of: focusToken) { _, _ in focused = true }
+                .onAppear {
+                    guard autofocus else { return }
+                    DispatchQueue.main.async { focused = true }
+                }
         } else {
             TextField(title, text: Binding(get: { text }, set: onChange), prompt: Text(placeholder).foregroundStyle(Color(token: Tokens.secondary)))
                 .textFieldStyle(.plain)

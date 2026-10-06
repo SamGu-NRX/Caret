@@ -11,23 +11,29 @@ final class DebugStateSocket: @unchecked Sendable {
         case pathTooLong(String)
         case alreadyServed(String)
         case system(String, Int32)
+        case notPrivate(String, String)
 
         var description: String {
             switch self {
             case .pathTooLong(let path): return "socket path too long: \(path)"
             case .alreadyServed(let path): return "another host is already answering on \(path)"
+            case .notPrivate(let dir, let why): return "the debug socket's folder \(dir) is not Caret's own: \(why)"
             case .system(let call, let code): return "\(call) failed: \(String(cString: strerror(code)))"
             }
         }
     }
 
     let path: String
+    /// The socket's folder is Caret's own (`CaretHome.socketsDirectory`), so the host makes sure it is a real folder of
+    /// the user's, open to no one else (H12). False for a socket a run named, whose folder belongs to whoever named it.
+    let privateDirectory: Bool
     private let respond: @Sendable (String) -> Data
     private var listener: Int32 = -1
     private var thread: Thread?
 
-    init(path: String, respond: @escaping @Sendable (String) -> Data) {
+    init(path: String, privateDirectory: Bool = false, respond: @escaping @Sendable (String) -> Data) {
         self.path = path
+        self.privateDirectory = privateDirectory
         self.respond = respond
     }
 
@@ -35,11 +41,9 @@ final class DebugStateSocket: @unchecked Sendable {
         // A client that hangs up before the reply must not kill the host. SO_NOSIGPIPE on each
         // connection covers writes; ignoring the signal covers everything else on the socket path.
         signal(SIGPIPE, SIG_IGN)
-        try FileManager.default.createDirectory(
-            atPath: (path as NSString).deletingLastPathComponent,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        let directory = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        if privateDirectory { try Self.makePrivate(directory) }
         if Self.isServed(path) { throw SocketError.alreadyServed(path) }
         unlink(path)
 
@@ -123,6 +127,37 @@ final class DebugStateSocket: @unchecked Sendable {
             raw[bytes.count] = 0
         }
         return address
+    }
+
+    /// `directory` must be a folder, not a link, owned by this user, and set to 0700; and every folder above it, once
+    /// links are resolved, must be one no one else can change: owned by this user or root, and writable by others only
+    /// with the sticky bit (/private/tmp). With a trusted chain, nobody else can swap the folder between this check and
+    /// the bind that follows by path (H12 review). The final folder is tightened through a descriptor opened without
+    /// following links, so the chmod cannot land anywhere else.
+    static func makePrivate(_ directory: String) throws {
+        var info = stat()
+        guard lstat(directory, &info) == 0 else { throw SocketError.system("lstat \(directory)", errno) }
+        guard (info.st_mode & S_IFMT) == S_IFDIR else { throw SocketError.notPrivate(directory, "it is not a folder") }
+        guard let resolved = realpath(directory, nil) else { throw SocketError.system("realpath \(directory)", errno) }
+        let real = String(cString: resolved)
+        free(resolved)
+        var ancestor = (real as NSString).deletingLastPathComponent
+        while true {
+            var a = stat()
+            guard lstat(ancestor, &a) == 0 else { throw SocketError.system("lstat \(ancestor)", errno) }
+            guard a.st_uid == getuid() || a.st_uid == 0 else { throw SocketError.notPrivate(directory, "\(ancestor) belongs to user \(a.st_uid)") }
+            guard a.st_mode & 0o022 == 0 || a.st_mode & mode_t(S_ISVTX) != 0 else {
+                throw SocketError.notPrivate(directory, "others can change \(ancestor)")
+            }
+            if ancestor == "/" { break }
+            ancestor = (ancestor as NSString).deletingLastPathComponent
+        }
+        let fd = open(real, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw SocketError.system("open \(real)", errno) }
+        defer { close(fd) }
+        guard fstat(fd, &info) == 0 else { throw SocketError.system("fstat \(real)", errno) }
+        guard info.st_uid == getuid() else { throw SocketError.notPrivate(directory, "it belongs to user \(info.st_uid)") }
+        if info.st_mode & 0o777 != 0o700, fchmod(fd, 0o700) != 0 { throw SocketError.system("fchmod \(real)", errno) }
     }
 
     /// True when a live process accepts connections on `path`: a second host must not steal the

@@ -40,8 +40,16 @@ public final class HostRuntime {
         /// not loaded. For the rig's VM, which has no room for it.
         public var ghostReplayPath: String?
         /// When onboarding opens (`--onboarding`, `CARET_ONBOARDING`): `off` (the menu opens it),
-        /// `auto` (at launch until finished once), `show`, or `hidden` (no window; socket only).
-        public var onboarding: String
+        /// `auto` (at launch until finished once, or while Accessibility is off), `show`, or `hidden`
+        /// (no window; socket only). Nil when neither names it: main.swift then picks
+        /// `OnboardingLaunch.defaultMode` (H12: `auto` for the user's own Caret).
+        public var onboarding: String?
+        /// What the debug socket answers (`DebugSocketAccess`, H12). main.swift decides from the build and
+        /// `CARET_DEBUG_SOCKET`; a test that builds a runtime gets `full`, as before.
+        public var socketAccess: DebugSocketAccess = .full
+        /// The socket sits in Caret's own sockets folder rather than one a run named, so the host makes that folder
+        /// private (`DebugStateSocket.makePrivate`).
+        public var socketInCaretsFolder = false
         /// `CARET_TEST_RESTORE_DELAY_MS`, used only with test hooks: how long a paste holds Caret's item
         /// on the pasteboard after the field settles, so an acceptance run can copy in the middle of a
         /// paste on cue. Ignored in normal use.
@@ -63,7 +71,7 @@ public final class HostRuntime {
             perchDrawsOnScreen: Bool = ProcessInfo.processInfo.environment["CARET_PERCH"] != "hidden",
             surfacesHeadless: Bool = ProcessInfo.processInfo.environment["CARET_SURFACES"] == "headless",
             testHooks: Bool = ProcessInfo.processInfo.environment["CARET_TEST_HOOKS"] == "1",
-            onboarding: String = ProcessInfo.processInfo.environment["CARET_ONBOARDING"] ?? "off",
+            onboarding: String? = ProcessInfo.processInfo.environment["CARET_ONBOARDING"].flatMap { $0.isEmpty ? nil : $0 },
             ghostOverflow: GhostFit.OverflowRule = ProcessInfo.processInfo.environment["CARET_GHOST_OVERFLOW"] == "drop" ? .drop : .capsule
         ) {
             self.ghostOverflow = ghostOverflow
@@ -84,12 +92,14 @@ public final class HostRuntime {
         }
     }
 
+    /// `CARET_HOST_SOCKET`, else Caret's own sockets folder (`CaretHome.hostSocket`). Before H12 the default was
+    /// `~/.caret-run/sockets/host.sock`, a development path, even in the shipped app.
     public nonisolated static var defaultSocketPath: String {
         if let override = ProcessInfo.processInfo.environment["CARET_HOST_SOCKET"], !override.isEmpty {
             return override
         }
         return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".caret-run/sockets/host.sock").path
+            .appendingPathComponent("Library/Application Support/CaretV2/sockets/host.sock").path
     }
 
     /// The helper's socket: `CARET_SCREEN_SOCKET`, else `~/.caret-run/sockets/screen.sock`.
@@ -209,7 +219,7 @@ public final class HostRuntime {
                 writing.displaced(offer)
             }
         }
-        let onboarding = OnboardingController(mode: OnboardingController.Mode(rawValue: configuration.onboarding) ?? .off, testHooks: configuration.testHooks)
+        let onboarding = OnboardingController(mode: OnboardingController.Mode(rawValue: configuration.onboarding ?? "off") ?? .off, testHooks: configuration.testHooks)
         self.onboarding = onboarding
         let activity = ActivityCenter()
         self.activity = activity
@@ -544,9 +554,10 @@ public final class HostRuntime {
                     return info
                 }
             },
-            testHooks: testHooks
+            testHooks: testHooks,
+            access: configuration.socketAccess
         )
-        socket = DebugStateSocket(path: configuration.socketPath) { command in
+        socket = DebugStateSocket(path: configuration.socketPath, privateDirectory: configuration.socketInCaretsFolder) { command in
             Self.respond(to: command, arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods, hooks: hooks)
         }
         surface.onWorkingChanged = { [weak self] working in
@@ -621,7 +632,32 @@ public final class HostRuntime {
     /// The menu's Set Up Caret: onboarding in its window.
     public func openOnboarding() { onboarding.open(drawing: true) }
 
-    /// Onboarding's Add to Chrome, which the app shell runs (`ChromeBridgeInstaller`).
+    /// The menu's "Jev is off. Add a key…": the key step on its own.
+    public func openJevKeyStep() { onboarding.open(drawing: true, only: .jevKey) }
+
+    /// The key step's keychain, check and helper restart (H12), from the app shell's services. Set before `start`, which
+    /// is when onboarding first opens.
+    public func useJevKeys(_ services: CaretServices, transport: JevKeyTransport = URLSessionJevKeyTransport()) {
+        let keys = services.jevKeys
+        onboarding.jevKey = OnboardingController.JevKeyHooks(
+            available: { [weak services] in services?.jevKeyAvailable ?? true },
+            stored: { keys?.exists() ?? false },
+            check: { await JevKeyCheck.check($0, transport: transport) },
+            save: { key in
+                guard let keys else { return false }
+                do {
+                    try keys.save(key)
+                    return true
+                } catch {
+                    FileHandle.standardError.write(Data("caret: \(error)\n".utf8))
+                    return false
+                }
+            },
+            saved: { [weak services] in services?.reloadJevKey() }
+        )
+    }
+
+    /// Onboarding's Add to your browser, which the app shell runs (`ChromeBridgeInstaller`).
     public var onAddToChrome: () -> Void {
         get { onboarding.onAddToChrome }
         set {
@@ -743,6 +779,8 @@ public final class HostRuntime {
         let pageSight: @Sendable ([String]) -> String
         /// The host was started with `--test-hooks`.
         let testHooks: Bool
+        /// What the socket answers at all; checked before anything else (H12).
+        let access: DebugSocketAccess
     }
 
     /// The ask field, over the debug socket. Main thread.
@@ -866,6 +904,21 @@ public final class HostRuntime {
         return "{\"error\":\"\(name) is a test hook: start the host with --test-hooks\"}"
     }
 
+    /// A release build's whole socket (H12): `state` as `ReleaseState`, `spend`, and a refusal for everything else.
+    /// `state` and `spend` are read only when asked for. Socket thread.
+    nonisolated static func releaseReply(to words: [String], state: () -> DebugState, spend: () -> HelperSpend?) -> Data {
+        if let refusal = DebugSocketAccess.release.refusal(words) { return Data((refusal + "\n").utf8) }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let body: Data?
+        switch words.first ?? "state" {
+        case "spend": body = spend().flatMap { try? encoder.encode($0) }
+        default: body = try? encoder.encode(ReleaseState(state()))
+        }
+        return (body ?? Data("{}".utf8)) + Data("\n".utf8)
+    }
+
     nonisolated static func nowMs() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }
 
     nonisolated static func jsonString(_ text: String) -> String {
@@ -880,6 +933,15 @@ public final class HostRuntime {
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let words = command.split(separator: " ").map(String.init)
+        if hooks.access == .release {
+            return releaseReply(to: words, state: {
+                var state = makeState(arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods)
+                let running = DispatchQueue.main.sync { NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier) }
+                let others = OtherTabOwners.running(in: running)
+                state.otherTabOwners = others.isEmpty ? nil : others
+                return state
+            }, spend: { status.read().spend })
+        }
         if let refusal = testHookRefusal(words, testHooks: hooks.testHooks) { return Data((refusal + "\n").utf8) }
         switch words.first ?? "state" {
         case "ping":
@@ -948,6 +1010,10 @@ public final class HostRuntime {
         case "perch", "activity", "control", "click", "perch-avoid":
             let reply = DispatchQueue.main.sync { hooks.perch(words) }
             return Data((reply + "\n").utf8)
+        case "spend":
+            // H8's ledger as the helper last sent it: counts, tokens and dollars only.
+            let spend = status.read().spend
+            return ((spend.flatMap { try? encoder.encode($0) }) ?? Data("{}".utf8)) + Data("\n".utf8)
         case "state":
             var state = makeState(arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods)
             state.surface = DispatchQueue.main.sync { hooks.surface() }

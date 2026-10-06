@@ -64,12 +64,20 @@ final class ServiceLauncher {
     private var accessibilityPoll: Timer?
     /// Called on main whenever a service's status changes.
     var onChange: (() -> Void)?
+    /// The Jev key Caret keeps (`JevKeyStore`), read at each helper start so a key saved in onboarding is used by the
+    /// next start. Returns nil in a run with its own home, which never reads the user's keychain.
+    private let storedKey: () -> String?
+    /// Where the running helper's key came from, for the menu and the debug socket.
+    private(set) var jevSource: JevSource?
+    /// The helper is being stopped to start again with a new key; its exit is not a crash.
+    private var helperRestartRequested = false
 
     /// Throws only when the system has no randomness to give, which ends the launch.
-    init(programs: CaretServices.Programs, home: CaretHome, log: @escaping (String) -> Void) throws {
+    init(programs: CaretServices.Programs, home: CaretHome, log: @escaping (String) -> Void, storedKey: @escaping () -> String? = { nil }) throws {
         self.programs = programs
         self.home = home
         self.log = log
+        self.storedKey = storedKey
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
             throw LaunchError("no random bytes for the launch secret (SecRandomCopyBytes failed)")
@@ -124,6 +132,7 @@ final class ServiceLauncher {
     /// Stops both children: SIGTERM, then SIGKILL after `grace` seconds. Returns once both are reaped.
     func stop(grace: TimeInterval = 3) async {
         stopping = true
+        helperRestartRequested = false
         generation += 1
         accessibilityPoll?.invalidate()
         accessibilityPoll = nil
@@ -158,15 +167,73 @@ final class ServiceLauncher {
 
     private func startHelper() {
         guard !stopping else { return }
+        let launch = Self.helperLaunch(programs: programs, home: home, hostEnvironment: ProcessInfo.processInfo.environment, storedKey: storedKey)
+        jevSource = launch.jev
+        log(launch.logLine)
+        spawn(.helper, path: programs.node, args: launch.args, env: launch.env)
+    }
+
+    /// Where the helper's Jev key comes from.
+    enum JevSource: String, Equatable {
+        /// `TYPESAFE_API_KEY` or `CARET_ENV_FILE` in Caret's own environment: a development run, or the test Mac's
+        /// `launchctl setenv`. It wins over the keychain, so those keep working as before H12.
+        case environment
+        /// The key onboarding saved (`JevKeyStore`).
+        case keychain
+        /// No key: the helper runs with `--no-jev`.
+        case off
+    }
+
+    struct HelperLaunch: Equatable {
+        let args: [String]
+        let env: [String: String]
+        let jev: JevSource
+        /// What the log says about the launch. Never the key.
+        let logLine: String
+    }
+
+    /// The helper's arguments and environment.
+    ///
+    /// A key from the keychain goes to the helper as `TYPESAFE_API_KEY` in its environment, which the helper already
+    /// reads (fill/jev.ts loadJevKey), and nowhere else: not on its argv, which every process can read with ps, not in
+    /// the agent plist, not in the log, not in the reader's environment. A child's environment can still be read by
+    /// other processes of the same user (ps eww), so this narrows the key's exposure rather than closing it. Handing the
+    /// key over a pipe, as the launch secret is (`spawnWithSecret`), would close that gap but needs the helper to read
+    /// it there; that is a follow-up, not H12.
+    ///
+    /// Without any key the helper refuses to start (loadJevKey), and every restart would fail the same way, so it runs
+    /// with `--no-jev` and the menu says Jev is off.
+    static func helperLaunch(programs: CaretServices.Programs, home: CaretHome, hostEnvironment: [String: String],
+                             storedKey: () -> String?) -> HelperLaunch {
         var args = [programs.helperEntry, "--auth-fd", "0", "--socket", home.screenSocket, "--page-socket", home.pageSocket, "--data-dir", home.dataDirectory]
-        let env = Self.childEnvironment(ProcessInfo.processInfo.environment)
-        if !Self.hasJevKey(env) {
-            // Without a key the helper refuses to start (fill/jev.ts loadJevKey), and every restart would fail the
-            // same way. Provisional (H4): run it without Jev and say so, until key setup is part of onboarding.
-            args.append("--no-jev")
-            log("the helper runs without Jev: no TYPESAFE_API_KEY or CARET_ENV_FILE in Caret's environment")
+        var env = childEnvironment(hostEnvironment, passesJevKey: true)
+        if hasJevKey(env) {
+            return HelperLaunch(args: args, env: env, jev: .environment, logLine: "the helper has Jev: its key comes from Caret's environment")
         }
-        spawn(.helper, path: programs.node, args: args, env: env)
+        if let key = storedKey(), !key.isEmpty {
+            env["TYPESAFE_API_KEY"] = key
+            return HelperLaunch(args: args, env: env, jev: .keychain, logLine: "the helper has Jev: its key comes from the login keychain")
+        }
+        args.append("--no-jev")
+        return HelperLaunch(args: args, env: env, jev: .off, logLine: "the helper runs without Jev: Caret has no Jev key yet")
+    }
+
+    /// A key was saved: a helper running without it, or with an older one, starts again with it. One running with a key
+    /// from the environment keeps it, since the environment wins. A helper that has not exited `grace` seconds after
+    /// SIGTERM is killed, so a hung one cannot leave the new key unused (H12 review); its exit then starts the new one.
+    func reloadJevKey(grace: TimeInterval = 3) {
+        guard jevSource != .environment, case .running(let pid) = helper.status, !stopping, !helperRestartRequested else { return }
+        helperRestartRequested = true
+        log("starting the helper again to use the new Jev key")
+        kill(pid, SIGTERM)
+        let generation = self.generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + grace) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.generation == generation, self.helperRestartRequested, self.sources[pid] != nil else { return }
+                self.log("process \(pid) did not stop within \(Int(grace)) s of SIGTERM; killing it")
+                kill(pid, SIGKILL)
+            }
+        }
     }
 
     /// caret-screen exits at once without the Accessibility grant (caret-screen main.swift), which would spend the
@@ -194,7 +261,7 @@ final class ServiceLauncher {
 
     private func startReader() {
         spawn(.reader, path: programs.reader, args: Self.readerArguments(home: home, settingsPath: SettingsStore.path),
-              env: Self.childEnvironment(ProcessInfo.processInfo.environment))
+              env: Self.childEnvironment(ProcessInfo.processInfo.environment, passesJevKey: false))
     }
 
     /// `--calendar-user`: the reader adds accepted events to the user's calendars, the one chosen in What Caret knows
@@ -204,14 +271,17 @@ final class ServiceLauncher {
     }
 
     /// The children's environment, built rather than inherited: nothing like NODE_OPTIONS or DYLD_* reaches them.
-    /// The Jev key passes through by the two names the helper reads (fill/jev.ts).
-    static func childEnvironment(_ host: [String: String]) -> [String: String] {
+    /// For the helper, the Jev key passes through by the two names it reads (fill/jev.ts); the reader never asks Jev and
+    /// gets neither.
+    static func childEnvironment(_ host: [String: String], passesJevKey: Bool) -> [String: String] {
         var env = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-        for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "TYPESAFE_API_KEY", "CARET_ENV_FILE"] {
+        for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG"] + (passesJevKey ? jevKeyNames : []) {
             if let v = host[key], !v.isEmpty { env[key] = v }
         }
         return env
     }
+
+    static let jevKeyNames = ["TYPESAFE_API_KEY", "CARET_ENV_FILE"]
 
     static func hasJevKey(_ env: [String: String]) -> Bool {
         env["TYPESAFE_API_KEY"] != nil || env["CARET_ENV_FILE"] != nil
@@ -321,6 +391,12 @@ final class ServiceLauncher {
     }
 
     private func exited(_ which: Which, how: String) {
+        if which == .helper, helperRestartRequested {
+            // Stopped on purpose by `reloadJevKey`: start at once, outside the crash budget.
+            helperRestartRequested = false
+            update(.helper) { $0.lastExit = how }
+            return startHelper()
+        }
         let now = ProcessInfo.processInfo.systemUptime
         var decision = RestartBudget.Decision.stop(exits: 0)
         update(which) {
@@ -424,7 +500,7 @@ final class ServiceLauncher {
             if let last = s.lastExit { e["lastExit"] = last }
             return e
         }
-        var r: [String: Any] = ["helper": entry(helper), "reader": entry(reader)]
+        var r: [String: Any] = ["helper": entry(helper), "reader": entry(reader), "jev": jevSource?.rawValue ?? "notStarted"]
         if let stopped { r["stopped"] = stopped }
         return r
     }

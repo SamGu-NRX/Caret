@@ -14,19 +14,33 @@ import SwiftUI
 @MainActor
 final class OnboardingController {
     enum Mode: String {
-        /// Never opens by itself; the menu's Set Up Caret opens it. The default, so test runs of
-        /// the host never put a window up.
+        /// Never opens by itself; the menu's Set Up Caret opens it. A test run's default, so test
+        /// runs of the host never put a window up (`OnboardingLaunch.defaultMode`).
         case off
-        /// Opens at launch until onboarding has reached its end once.
+        /// Opens at launch until onboarding has reached its end once, and after that on its
+        /// permissions step alone while Accessibility is off (`OnboardingLaunch.auto`). The user's
+        /// own Caret's default since H12.
         case auto
         /// Opens at launch.
         case show
         /// Runs without a window; only the debug socket drives it.
         case hidden
 
-        static var fromEnvironment: Mode {
-            ProcessInfo.processInfo.environment["CARET_ONBOARDING"].flatMap(Mode.init(rawValue:)) ?? .off
-        }
+    }
+
+    /// The key step's system side (H12): whether Caret has a key, the check with Jev, the keychain, and the helper's
+    /// restart. The app shell fills it from `CaretServices`; the default has a key already, so a runtime built without
+    /// services (a test) never shows the step or touches a keychain.
+    struct JevKeyHooks {
+        /// The helper has a key from anywhere: the keychain, or a development run's environment.
+        var available: () -> Bool = { true }
+        /// The keychain holds one.
+        var stored: () -> Bool = { false }
+        var check: (String) async -> JevKeyCheck.Outcome = { _ in .unreachable }
+        /// Saves to the keychain; false when the keychain refused.
+        var save: (String) -> Bool = { _ in false }
+        /// After a save: start the helper again with the key.
+        var saved: () -> Void = {}
     }
 
     final class Model: ObservableObject {
@@ -43,7 +57,7 @@ final class OnboardingController {
     private var pollTimer: Timer?
     private var closeObserver: NSObjectProtocol?
     /// A test run's stand-in for the grants (`onboarding permissions`), read instead of the system.
-    private var permissionsOverride: OnboardingPermissions?
+    var permissionsOverride: OnboardingPermissions?
     /// A test run's stand-in for the running apps that also take Tab (`onboarding tab-owners`).
     private var tabOwnersOverride: [String]?
     /// Sends a request to the helper; false when it is not connected.
@@ -68,6 +82,10 @@ final class OnboardingController {
     var knowAvailable: () -> Bool = { false }
     /// What the window refused to do because it is hidden, for the debug state.
     private var suppressed: [String] = []
+    var jevKey = JevKeyHooks()
+    /// Bumped by every key check this controller starts, in any flow. Only the newest may save: a check from a flow
+    /// closed and opened again must not write over a key saved after it (H12 review).
+    private var jevKeyGeneration = 0
 
     init(mode: Mode, testHooks: Bool, store: SettingsStore = .shared) {
         self.mode = mode
@@ -81,18 +99,28 @@ final class OnboardingController {
 
     /// At launch: opens when the mode says so.
     func launch() {
+        guard let opening = launchOpening() else { return }
+        let drawing = mode != .hidden
+        switch opening {
+        case .all: open(drawing: drawing)
+        case .only(let step): open(drawing: drawing, only: step)
+        }
+    }
+
+    /// What `launch` opens, from the mode, the finished flag in Caret's settings and the grants.
+    func launchOpening() -> OnboardingLaunch.Opening? {
         switch mode {
-        case .off: return
-        case .auto: if !store.settings.onboarded { open(drawing: true) }
-        case .show: open(drawing: true)
-        case .hidden: open(drawing: false)
+        case .off: return nil
+        case .auto: return OnboardingLaunch.auto(onboarded: store.settings.onboarded, permissions: readPermissions())
+        case .show, .hidden: return .all
         }
     }
 
     /// Starts the flow from the current settings and grants, with its window when `drawing` (the
     /// menu's Set Up Caret) and never on a hidden run. An open flow is brought forward rather than
-    /// restarted.
-    func open(drawing: Bool) {
+    /// restarted. `only`: the flow is that one step (a returning user missing Accessibility, the
+    /// menu's "Jev is off").
+    func open(drawing: Bool, only: OnboardingStep? = nil) {
         if let flow, !flow.state.finished {
             // Only the menu brings a window forward; the socket never shows one.
             if drawing, drawsWindow, let window {
@@ -104,7 +132,8 @@ final class OnboardingController {
         drawsWindow = drawing && mode != .hidden
         let flow = OnboardingFlow(
             settings: store.settings, permissions: readPermissions(), clock: RunLoopClock(),
-            token: String(UUID().uuidString.prefix(8)).lowercased(), showsKnow: knowAvailable()
+            token: String(UUID().uuidString.prefix(8)).lowercased(), showsKnow: only == nil && knowAvailable(),
+            jevKeyAvailable: jevKey.available(), jevKeyStored: jevKey.stored(), only: only
         )
         flow.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
         flow.send(.otherTabOwners(readTabOwners()))
@@ -175,6 +204,8 @@ final class OnboardingController {
         case .addToChrome:
             guard drawsWindow else { return suppressed.append("addToChrome") }
             onAddToChrome()
+        case .checkJevKey(let key):
+            checkJevKey(key)
         case .askFirstLook(let request):
             if !sendFirstLook(request) { flow?.send(.firstLookUnsent) }
         case .accept(let accept):
@@ -194,6 +225,26 @@ final class OnboardingController {
             if !sendControl(control) { flow?.send(.sendFailed(.undo)) }
         case .filled: break
         case .close: close()
+        }
+    }
+
+    /// One request to Jev, then the keychain on an answer that keeps the key, then the helper. The save goes ahead even
+    /// if the window closed meanwhile, since the user pressed Continue to keep it, unless a newer check has started
+    /// since. Only the flow that asked hears the answer.
+    private func checkJevKey(_ key: SecretText) {
+        let hooks = jevKey
+        let asking = flow
+        jevKeyGeneration += 1
+        let generation = jevKeyGeneration
+        Task { @MainActor [weak self] in
+            let outcome = await hooks.check(key.reveal)
+            var saved = false
+            if outcome.keepsKey, self?.jevKeyGeneration == generation {
+                saved = hooks.save(key.reveal)
+                if saved { hooks.saved() }
+            }
+            guard let self, let flow = self.flow, flow === asking else { return }
+            flow.send(.jevKeyChecked(outcome, saved: saved))
         }
     }
 
@@ -302,10 +353,25 @@ final class OnboardingController {
                 // Return that commits an input method's composition (Japanese, Chinese) in the name
                 // field belongs to the field, not to Continue.
                 let composing = (event.window?.firstResponder as? NSTextView)?.hasMarkedText() ?? false
+                // Caret has no main menu, which is where ⌘V, ⌘C, ⌘X and ⌘A reach a text field from in other apps;
+                // without this, the key step's field could not take a paste.
+                if state.step != .firstLook, let action = Self.editAction(for: event), NSApp.sendAction(action, to: nil, from: nil) { return nil }
                 guard let mapped = Self.event(for: event, step: state.step, offerVisible: state.tryIt.offerVisible, firstLook: state.firstLookKeys, composing: composing) else { return event }
                 flow.send(mapped)
                 return nil
             }
+        }
+    }
+
+    /// ⌘V, ⌘C, ⌘X and ⌘A as the Edit menu would send them, or nil for any other key.
+    static func editAction(for event: NSEvent) -> Selector? {
+        guard event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command else { return nil }
+        switch event.charactersIgnoringModifiers {
+        case "v": return #selector(NSText.paste(_:))
+        case "c": return #selector(NSText.copy(_:))
+        case "x": return #selector(NSText.cut(_:))
+        case "a": return #selector(NSText.selectAll(_:))
+        default: return nil
         }
     }
 
@@ -363,6 +429,7 @@ final class OnboardingController {
     ///   onboarding tab-owners none|<name...>   (the running apps that also take Tab, as the run says)
     ///   onboarding reply <firstLookReply json>              onboarding look-again
     ///   onboarding about name|email <text...>               onboarding skip
+    ///   onboarding jev-key <text>                           (the key field's text, as pasting it would)
     func command(_ words: [String]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -386,6 +453,8 @@ final class OnboardingController {
         case ("back", 1): flow.send(.back)
         case ("look-again", 1): flow.send(.lookAgain)
         case ("skip", 1): flow.send(.skip)
+        case ("jev-key", 2):
+            flow.send(.setJevKey(rest[1]))
         case ("about", _) where rest.count >= 2:
             guard let field = AboutField(rawValue: rest[1]) else { return #"{"error":"usage: onboarding about name|email <text>"}"# }
             flow.send(.setAbout(field, rest.dropFirst(2).joined(separator: " ")))
