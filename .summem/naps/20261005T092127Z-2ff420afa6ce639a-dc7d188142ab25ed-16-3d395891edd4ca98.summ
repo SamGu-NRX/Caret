@@ -1,1 +1,0 @@
-B29-R3: continued Asks refuse a changed form; goal steps run only on a digest-named goalAccept (Target.exact); GoalRuns.blocked is null after a segment; goal writes skip Cc/Bcc/Subject; drafts are checked as whole facts; R3 evals use the fake clock.

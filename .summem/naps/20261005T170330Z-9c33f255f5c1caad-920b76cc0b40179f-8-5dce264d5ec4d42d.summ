@@ -1,0 +1,1 @@
+R3/G2/L1: event-card misses are event-card code; 'unknown' selection reads as caret; a goal is done only with left[] empty; goal writes pass gates.ts (desk tests: standInJev); never widen drafts.ts restates(); D2-06 scene 2 partial live; no default chat route.

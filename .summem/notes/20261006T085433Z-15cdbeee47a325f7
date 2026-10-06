@@ -1,0 +1,1 @@
+C2: Step.memory refs are id[#part][~option|~date]; memoryWrites checks text exactly and only options/dates through their conversion. Build refs with memoryRefOf(m, conversionOf(control)), never by hand.

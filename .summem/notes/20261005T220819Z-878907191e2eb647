@@ -1,1 +1,0 @@
-P2: engines/page-link.ts no longer walks after a verified pageWrite/pageSelect/pageSetChecked; it patches that control in the tab's last walk and walks once TRAILING_WALK_MS after the last act. Tests that expected a pageWalk after an ok write must expect the patch.

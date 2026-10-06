@@ -1,1 +1,0 @@
-G2: every goal write passes goals/gates.ts (lowerGoal is async, needs askJev + ledger; desk tests use goal-desk.ts standInJev); drafts.ts restates() is a closed clause-suffix rule that reviews broke 5 times when loosened: never widen it.
