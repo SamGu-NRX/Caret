@@ -649,6 +649,22 @@ public final class HostRuntime {
                     return (try? String(decoding: encoder.encode(status.read().pageTask), as: UTF8.self)) ?? "{}"
                 }
             },
+            pageTaskFeed: { json in
+                MainActor.assumeIsolated {
+                    guard testHooks else { return #"{"error":"pagetask feed is a test hook: start the host with --test-hooks"}"# }
+                    do {
+                        // L1: a receipt, a stop or an ending for the canned task, as the helper would send it: the test Mac
+                        // has no model, so a canned preview's run has no helper to report its steps.
+                        pageTask.machine.receive(try JSONDecoder().decode(GoalProgress.self, from: Data(json.utf8)))
+                    } catch {
+                        return "{\"error\":\(Self.jsonString(String(describing: error)))}"
+                    }
+                    pageTask.publish()
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.sortedKeys]
+                    return (try? String(decoding: encoder.encode(status.read().pageTask), as: UTF8.self)) ?? "{}"
+                }
+            },
             pageTaskClicks: { gated in
                 MainActor.assumeIsolated {
                     guard testHooks else { return #"{"error":"pagetask clicks is a test hook: start the host with --test-hooks"}"# }
@@ -886,6 +902,8 @@ public final class HostRuntime {
         /// H14: `pagetask` reads the page task panel; `pagetask start <goalProgress json>` starts it from a preview as the
         /// desk's Ask would (test hooks), for a run with no model to plan the page.
         let pageTask: @Sendable (String?) -> String
+        /// L1: `pagetask feed <goalProgress json>` (test hooks): a goal message for the panel, as from the helper.
+        let pageTaskFeed: @Sendable (String) -> String
         /// `pagetask clicks gated|always` (test hooks): `HostedPanel.gatesPointer`.
         let pageTaskClicks: @Sendable (Bool) -> String
         /// The host was started with `--test-hooks`.
@@ -1121,8 +1139,10 @@ public final class HostRuntime {
         case "pagetask":
             // `pagetask start <json>` carries JSON with spaces; keep it whole after the verb.
             let parts = command.split(separator: " ", maxSplits: 2).map(String.init)
-            guard words.count == 1 || (parts.count == 3 && parts[1] == "start") else { return Data("{\"error\":\"usage: pagetask | pagetask start <goalProgress json>\"}\n".utf8) }
-            let reply = DispatchQueue.main.sync { hooks.pageTask(parts.count == 3 ? parts[2] : nil) }
+            guard words.count == 1 || (parts.count == 3 && ["start", "feed"].contains(parts[1])) else {
+                return Data("{\"error\":\"usage: pagetask | pagetask start|feed <goalProgress json>\"}\n".utf8)
+            }
+            let reply = DispatchQueue.main.sync { parts.count == 3 && parts[1] == "feed" ? hooks.pageTaskFeed(parts[2]) : hooks.pageTask(parts.count == 3 ? parts[2] : nil) }
             return Data((reply + "\n").utf8)
         case "placement-bounds":
             let reply = DispatchQueue.main.sync { hooks.placementBounds(words) }

@@ -103,6 +103,11 @@ final class PageTaskCoordinator {
         info.crop = model.crop.map { step in
             DebugState.PageTaskInfo.Crop(step: step, side: model.side.rawValue, kind: model.panel.flatMap { PageTaskGroupView.line($0, step: step) ?? $0.sections.flatMap(\.lines).first { $0.step == step } }.map { $0.blank?.rawValue ?? $0.sourceKind?.rawValue ?? "none" } ?? "none")
         }
+        if let panel = self.panel.debugInfo(), panel.frame.count == 4 {
+            info.rows = model.geometry.rows.sorted { $0.key < $1.key }.map { step, r in
+                .init(step: step, frame: [panel.frame[0] + r.minX, panel.frame[1] + r.minY, r.width, r.height].map { Double($0) })
+            }
+        }
         status.update { $0.pageTask = info }
     }
 

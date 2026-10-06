@@ -725,6 +725,15 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// L1: the crop beside the panel: which row's, on which side, and what it draws (the source's kind, "hatch" or
         /// "dotted"). Never the excerpt's text, its name or its span: like page field text, it stays off this socket.
         public var crop: Crop?
+        /// L1: each row's frame on screen (global, top-left points) by goal step, for a test that points at one. Geometry
+        /// only.
+        public var rows: [Row]?
+
+        public struct Row: Codable, Equatable, Sendable {
+            public var step: Int
+            public var frame: [Double]
+            public init(step: Int, frame: [Double]) { self.step = step; self.frame = frame }
+        }
 
         public struct Crop: Codable, Equatable, Sendable {
             public var step: Int
