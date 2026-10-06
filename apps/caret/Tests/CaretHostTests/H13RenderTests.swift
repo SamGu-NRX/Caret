@@ -54,6 +54,8 @@ final class H13RenderTests: XCTestCase {
     func testTheLinesWords() {
         XCTAssertEqual(PageInlineCopy.notice(.gmail).question?.hints.map(\.label), ["Turn Caret on here", "Don't show again", "Not now"])
         XCTAssertFalse(PageInlineCopy.gmail.contains("—"))
+        // What VoiceOver hears for a fresh suggestion (prep-for-prod): the words and the key.
+        XCTAssertEqual(PageInlineCopy.spoken(" Field Robotics Technician role"), "Suggestion: Field Robotics Technician role. Tab accepts it.")
         XCTAssertFalse(PageInlineCopy.sitesIntro.contains("—"))
     }
 

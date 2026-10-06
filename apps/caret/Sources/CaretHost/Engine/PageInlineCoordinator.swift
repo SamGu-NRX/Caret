@@ -179,7 +179,12 @@ final class PageInlineCoordinator {
                 self.machine.generated(r.id, text: s.text)
                 // Keystroke to a fresh suggestion drawn, as native ghost text is measured; a ghost typed through is
                 // redrawn without the engine and is not counted.
-                if self.machine.lastOutcome == "shown" { self.recordLatency() }
+                if self.machine.lastOutcome == "shown" {
+                    self.recordLatency()
+                    // prep-for-prod: a VoiceOver user hears that a suggestion is there and that Tab takes it. Fresh
+                    // suggestions only, never a redraw while typing through, and only while VoiceOver runs.
+                    if NSWorkspace.shared.isVoiceOverEnabled { AccessibilityNotification.Announcement(PageInlineCopy.spoken(s.text)).post() }
+                }
             case .suppressed(let why): self.machine.generated(r.id, text: nil, why: why)
             }
             self.publish()

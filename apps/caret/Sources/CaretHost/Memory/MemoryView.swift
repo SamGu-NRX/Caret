@@ -349,7 +349,7 @@ struct MemoryView: View {
                 Spacer(minLength: 0)
                 Button(on ? PageInlineCopy.sitesTurnOff : PageInlineCopy.sitesTurnOn) { send(.pageInline(.gmail, !on)) }
                     .buttonStyle(WindowButtonStyle(kind: on ? .ink : .key, small: true))
-                    .accessibilityLabel(on ? "Turn Caret's text off in Gmail" : "Turn Caret's text on in Gmail")
+                    .accessibilityLabel(on ? "Turn off Caret's text in Gmail" : "Turn on Caret's text in Gmail")
             }
             .padding(.vertical, 10)
             .accessibilityElement(children: .contain)

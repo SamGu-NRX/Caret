@@ -183,6 +183,11 @@ public enum PageInlineCopy {
     public static func sitesState(_ on: Bool) -> String { on ? "Caret's text is on" : "Caret stays quiet" }
     public static let sitesTurnOn = "Turn on"
     public static let sitesTurnOff = "Turn off"
+
+    /// What VoiceOver hears when a fresh suggestion appears: the ghost is drawn in a panel that takes no focus.
+    public static func spoken(_ suggestion: String) -> String {
+        "Suggestion: \(suggestion.trimmingCharacters(in: .whitespaces)). Tab accepts it."
+    }
 }
 
 /// Decides inline text in page fields. Main thread only.
