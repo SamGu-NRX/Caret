@@ -85,7 +85,7 @@ const TRAILING_MARKS = /[.,;:!?)\]'"]+$/u;
  * codes (typed "address", as the reader types a whole address). A line that shows or is labelled as a value Caret never
  * types gives none.
  */
-export function lineValues(line: string): LineValue[] {
+export function lineValues(line: string): readonly LineValue[] {
   const hit = valuesMemo.get(line);
   if (hit !== undefined) return hit;
   const found = scanValues(line);
@@ -100,9 +100,14 @@ export function lineValues(line: string): LineValue[] {
  * more time. Bounded; the number is assumed, well above the lines of a few source windows.
  */
 const MEMO_LINES = 4000;
-const valuesMemo = new Map<string, LineValue[]>();
+const valuesMemo = new Map<string, readonly LineValue[]>();
 
-function scanValues(line: string): LineValue[] {
+/** The memo's arrays and values are shared by every caller, so they are frozen. */
+function scanValues(line: string): readonly LineValue[] {
+  return Object.freeze(scan(line).map((v) => Object.freeze(v)));
+}
+
+function scan(line: string): LineValue[] {
   if (secretLine(line)) return [];
   const hits: { text: string; kind: ValueKind; at: number }[] = [];
   const scan = (re: RegExp, kind: ValueKind, trim = false): void => {
@@ -231,11 +236,12 @@ export function clauseAround(line: string, at: number, text: string): string | n
 }
 
 /**
- * Where a sentence ends: ". ", "! " or "? " before a capital, a quote or a bracket, and not after an abbreviation: a
- * single letter ("U.S.", "B.S.", "e.g.") or a common title or word ("Dr.", "St.", "Apt."), which would split a sentence
- * early and leave its warning out (C1 review).
+ * Where a sentence ends: ". ", "! " or "? " after a lowercase word or a number and before a capital, a quote or a
+ * bracket. A period after a capital or a single letter ("U.S.", "B.S.", "Corp.", "Dr. Lee", "e.g.") ends nothing, so a
+ * sentence is read too long rather than too short and its warning stays in (C1 review). "I live in Denver. Then" reads as
+ * one sentence; that costs budget, never a warning.
  */
-const SENTENCE_END = /(?<!\b(?:\p{L}|Dr|Mr|Mrs|Ms|Mx|St|Jr|Sr|Prof|Inc|Ltd|Co|vs|etc|approx|No|Apt|Ste|Ave|Rd|Blvd|Mt|Ft))[.!?]\s+(?=[\p{Lu}"'“‘(\[])/gu;
+const SENTENCE_END = /(?<=(?:\b\p{Ll}[\p{Ll}'’-]+|\d|["'”’)\]]))[.!?]\s+(?=[\p{Lu}"'“‘(\[])/gu;
 
 /**
  * The sentence of a line that holds a value at `at`, uncut: from the end of the sentence before (". ", "! ", "? ") to the
@@ -248,7 +254,9 @@ export function sentenceAround(line: string, at: number, text: string): string {
   const end = at + text.length;
   const remark = /^\s*(?:\([^()]*\)|\[[^[\]]*\])/u.exec(line.slice(end));
   const from = remark === null ? end : end + remark[0].length;
-  const rest = line.slice(from);
-  const stop = new RegExp(SENTENCE_END.source, "u").exec(rest);
-  return line.slice(start, stop === null ? line.length : from + stop.index + 1).trim();
+  // Searched in the whole line from the value on, so the lookbehind sees the word before a period.
+  const ends = new RegExp(SENTENCE_END.source, "gu");
+  ends.lastIndex = from;
+  const stop = ends.exec(line);
+  return line.slice(start, stop === null ? line.length : stop.index + 1).trim();
 }

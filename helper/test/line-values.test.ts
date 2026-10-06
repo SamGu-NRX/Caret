@@ -158,7 +158,19 @@ describe("abbreviations inside a warning sentence", () => {
     expect(sentenceAround(a, a.indexOf("555-0101"), "555-0101")).toBe(a);
     const b = "Do not use the old B.S. graduation date May 2020 for this application because the records were incorrect.";
     expect(sentenceAround(b, b.indexOf("May 2020"), "May 2020")).toBe(b);
+    const d = "Phone: 555-0101 belongs to Acme Corp. Ltd and must not be used for this application or any contact form.";
+    expect(sentenceAround(d, d.indexOf("555-0101"), "555-0101")).toBe(d);
     const c = "Call e.g. Dr. Lee at 555-0101 only after five. Then rest.";
     expect(sentenceAround(c, c.indexOf("555-0101"), "555-0101")).toBe("Call e.g. Dr. Lee at 555-0101 only after five.");
+  });
+});
+
+describe("line values are shared", () => {
+  it("and cannot be changed by a caller", () => {
+    const vs = lineValues("Phone: 555-0199");
+    expect(() => {
+      (vs[0] as { text: string }).text = "x";
+    }).toThrow();
+    expect(lineValues("Phone: 555-0199")[0]?.text).toBe("555-0199");
   });
 });

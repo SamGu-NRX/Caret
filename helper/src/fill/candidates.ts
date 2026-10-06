@@ -280,6 +280,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * too, so it cannot stand in for the warned one, and the cut rules still count it as kept out (C1 review).
    */
   const unwarned = new Set<string>();
+  /** Whether a span holds a text left out for its warning, whole ("555-0101 ext 42" holds "555-0101"). */
+  const holdsUnwarned = (text: string): boolean => unwarned.size > 0 && [...unwarned].some((u) => holdsWhole(text, u));
   /**
    * C1: the clause each span would quote (Candidate.line), set only once every span is in (finish): a clause is worth a
    * window's budget only after every value that fits, so it never pushes another span out. Spent first, clauses took
@@ -291,7 +293,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * does not fit its window's budget closes the window.
    */
   const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string): void => {
-    if (full() || seen.has(text) || unwarned.has(text) || closed.has(w.window.windowId)) return;
+    if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId)) return;
     const c = build(w, node, text, kind, context, quote);
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       missed.add(w.window.windowId);
@@ -534,7 +536,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const texts = new Set<string>();
       for (const i of order) {
         const sp = spans[i] as (typeof spans)[number];
-        if (sp.group !== k || seen.has(sp.text) || unwarned.has(sp.text) || texts.has(sp.text)) continue;
+        if (sp.group !== k || seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
         group.push(build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote));
       }
