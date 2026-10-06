@@ -40,7 +40,11 @@ export interface HarnessEngine {
  * not listed has none, and an eval refuses to run it without CARET_ENGINE_CALIBRATION, since a small model's raw
  * probabilities pass callers' floors that Jev's would not; "1,1" runs it raw, for fitting.
  */
-export const CALIBRATIONS: Readonly<Record<string, Calibration>> = {};
+export const CALIBRATIONS: Readonly<Record<string, Calibration>> = {
+  // B24 read raw (T 1, 1) gave no wrong value (runs/b24-qwen3-4b-T1: 1 right, 4 partial, 4 asked, 11 refused), so the
+  // smallest temperature that keeps B24 at 0 wrong is 1. Held-out results: evidence/screen/j1 bake-off.
+  "qwen3-4b-instruct-2507-q4km": { choiceT: 1, noulT: 1 },
+};
 
 export function calibrationFromEnv(env: NodeJS.ProcessEnv, model?: string): Calibration {
   const raw = env.CARET_ENGINE_CALIBRATION;

@@ -1,1 +1,0 @@
-G2: every goal write passes goals/gates.ts (never-typed, misfit + numberFieldMisfit, Ask's verifyWrites Jev question); lowerGoal is async and needs askJev + ledger; with no Jev a goal writes no copied value, so desk tests pass test/goal-desk.ts standInJev.
