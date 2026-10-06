@@ -168,7 +168,9 @@ const oracle: AskJev = async (req) => {
       const label = labelIn(ins);
       const v = label === null ? null : valueOf(label);
       const hit = v === null || v === "none" ? undefined : Object.entries(q.criteria).find(([, d]) => typeof d === "string" && (same(quoted(d), v) || d === v));
-      pick(hit?.[0] ?? "none");
+      // The planner's target questions (an Ask that asks for a press): the press the must-refuse ask names.
+      const press = ask?.reason === "submit" || ask?.reason === "send" ? Object.entries(q.criteria).find(([, d]) => typeof d === "string" && new RegExp(`\\b${ask.reason}\\b`, "iu").test(d)) : undefined;
+      pick(hit?.[0] ?? press?.[0] ?? "none");
     }
   }
   // The field yes/no heads say no: only code's reading, confirmed, ever settles fields.
