@@ -13,6 +13,9 @@ public enum Surface: Equatable, Sendable {
     case alternatives(count: Int)
     /// One action in another app. `numbered` lists the Command-digits with a visible action.
     case actionLine(numbered: Set<Int>, hasVariants: Bool)
+    /// H11: a line with no Tab action, only Command-digits (the offer to save an answer the user typed).
+    /// Tab stays the app's, so moving between a form's fields never takes it; `numbered` lists its digits.
+    case quietLine(numbered: Set<Int>)
     /// `rows` counts choice rows; `numbered` the Command-digits with a visible action; `hasDown`
     /// says an action is bound to the down arrow ("↓ Review one by one").
     case popup(rows: Int, numbered: Set<Int>, hasDown: Bool)
@@ -139,6 +142,12 @@ public enum KeyOwnership {
             return key == .commandZ || key == .escape
         case .errorLine:
             return key == .escape
+        case .quietLine(let numbered):
+            switch key {
+            case .escape: return true
+            case .commandDigit(let n): return numbered.contains(n)
+            default: return false
+            }
         case .writingLine(let tabFixes):
             // ⌥→ stays the app's: it moves the caret a word, and a fix has no next word to take.
             switch key {

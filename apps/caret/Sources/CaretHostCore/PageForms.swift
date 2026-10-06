@@ -74,6 +74,11 @@ public final class PageFocusBook {
         return f
     }
 
+    /// H11: the field with focus in page window `windowId`, from whichever browser holds it; nil when none does.
+    public func field(windowId: String) -> PageField? {
+        latest.values.first { $0.windowId == windowId && $0.key != nil }
+    }
+
     /// The browser's process went away.
     public func forget(pid: Int32) { latest[pid] = nil }
 }

@@ -195,8 +195,6 @@ if home.isOverride {
     // A run with its own home reads and writes only there.
     if !hostSocketNamed { configuration.socketPath = home.hostSocket }
     if !settingsNamed { SettingsStore.path = home.settingsFile }
-    // A likely file for an attach is looked for under the run's own home, never the user's folders.
-    configuration.fileRoots = ["Documents", "Downloads", "Desktop"].map { (home.root as NSString).appendingPathComponent($0) }
 }
 
 #if CARET_ACCEPTANCE_HOST

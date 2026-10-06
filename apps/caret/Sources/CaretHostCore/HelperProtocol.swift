@@ -46,6 +46,16 @@ public enum HelperInbound: Equatable, Sendable {
     case spend(HelperSpend)
     /// H10: the page field the user is in, which the host cannot read itself (`PageFocusBook`).
     case pageField(PageField)
+    /// H11 (H9's types): a goal's preview, a step's receipt, its stop or its end, to a host whose hello
+    /// names `goalPlans`. The page task panel shows a page goal (`PageTaskMachine`).
+    case goalProgress(GoalProgress)
+    /// L1: words from the host's local model. This host names no `localModel`, so it answers each
+    /// one `unavailable` (`LocalText`).
+    case localTextRequest(LocalTextRequest)
+    /// S1: the user left a prose field they typed; Caret may keep their words.
+    case answerSaveOffer(AnswerSaveOffer)
+    /// S1: what became of this host's `answerSave`.
+    case answerSaveReply(AnswerSaveReply)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -76,6 +86,10 @@ public enum HelperInbound: Equatable, Sendable {
         case .fileConfirmReply: return FileConfirmReply.type
         case .spend: return HelperSpend.type
         case .pageField: return PageField.type
+        case .goalProgress: return GoalProgress.type
+        case .localTextRequest: return LocalTextRequest.type
+        case .answerSaveOffer: return AnswerSaveOffer.type
+        case .answerSaveReply: return AnswerSaveReply.type
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -150,6 +164,30 @@ public enum HelperInbound: Equatable, Sendable {
             return .planProposal(try JSONDecoder().decode(PlanProposal.self, from: line))
         case SkillOffer.type:
             return .skillOffer(try JSONDecoder().decode(SkillOffer.self, from: line))
+        case GoalProgress.type:
+            return .goalProgress(try JSONDecoder().decode(GoalProgress.self, from: line))
+        case LocalTextRequest.type:
+            return .localTextRequest(try JSONDecoder().decode(LocalTextRequest.self, from: line))
+        case AnswerSaveOffer.type:
+            return .answerSaveOffer(try JSONDecoder().decode(AnswerSaveOffer.self, from: line))
+        case AnswerSaveReply.type:
+            return .answerSaveReply(try JSONDecoder().decode(AnswerSaveReply.self, from: line))
+        // The host's own goal, local-text and save messages, echoed back; validated so a malformed line is still counted.
+        case GoalRequest.type:
+            _ = try JSONDecoder().decode(GoalRequest.self, from: line)
+            return .notForConsumer(type: envelope.type)
+        case GoalAccept.type:
+            _ = try JSONDecoder().decode(GoalAccept.self, from: line)
+            return .notForConsumer(type: envelope.type)
+        case GoalEdit.type:
+            _ = try JSONDecoder().decode(GoalEdit.self, from: line)
+            return .notForConsumer(type: envelope.type)
+        case LocalTextReply.type:
+            _ = try JSONDecoder().decode(LocalTextReply.self, from: line)
+            return .notForConsumer(type: envelope.type)
+        case AnswerSave.type:
+            _ = try JSONDecoder().decode(AnswerSave.self, from: line)
+            return .notForConsumer(type: envelope.type)
         case SkillAnswer.type:
             // The host's own answer, echoed back; validated so a malformed line is still counted.
             _ = try JSONDecoder().decode(SkillAnswer.self, from: line)
@@ -223,6 +261,10 @@ public struct LineFramer: Sendable {
 /// - `memoryDocuments` (M1): noticed facts as noticed, with provenance, "Not right" and the documents.
 /// - `fillAll` (D2-04): ⌘1 on a field's fill sends `fillAll` for the whole form.
 /// - `askChoices` (B29): an Ask may come back as a question with choices, answered with `askAnswer`.
+/// - `goalPlans` (D2-06, H11): an Ask about a page comes back as a page goal, previewed in the panel at the
+///   form one segment at a time; each Tab sends `goalAccept` for the segment showing (`PageTaskMachine`).
+/// - `savedAnswers` (S1, H11): the host shows a saved answer whole before inserting it and offers to save one
+///   on ⌘1 only (`SavedAnswers`, `AnswerSaveMachine`).
 /// - `routing` (D2-02, H6): only while the user's setting "Caret decides when to help" is on. The
 ///   helper then sends route decisions, and its offers wait for them.
 /// A helper from before any of these ignores the names it does not know (its hello schema is not strict).
@@ -231,7 +273,11 @@ public enum HostHello {
     public static let askChoicesCapability = "askChoices"
 
     public static func capabilities(routing: Bool) -> [String] {
-        [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability] + (routing ? [Routing.capability] : [])
+        // H11: goalPlans, so an Ask about a page comes back as a page goal for the panel at the form; savedAnswers,
+        // since the host shows an answer whole before inserting it (`SavedAnswers`), offers to save one on ⌘1 only,
+        // and decodes the answers document. No localModel: this host serves no local text (`LocalText`).
+        [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability, GoalPlans.capability, SavedAnswers.capability]
+            + (routing ? [Routing.capability] : [])
     }
 
     public static func make(pid: Int, routing: Bool) -> Message {

@@ -336,6 +336,10 @@ public final class OfferArbiter: @unchecked Sendable {
                 return .pass(.dismissed)
             }
 
+            // H11: one page segment per Tab. A held Tab's autorepeat accepts nothing: a continuation that arrives while
+            // the key is still down would otherwise be taken by a press the user made for the segment before. It is
+            // consumed with nothing changed, so the page does not move its focus either (review H11-2).
+            if key.isRepeat, key.isPlainTab, Self.isPageTask(offer) { return .navigate(offerID: offer.id, ui: s.ui) }
             let surface = Self.surface(of: offer, ui: s.ui, typed: s.typedSinceOffer)
             guard KeyOwnership.owns(surface, keyClass) else {
                 // Typing the head of ghost text keeps the rest on offer. Everything else that passes
@@ -489,8 +493,16 @@ public final class OfferArbiter: @unchecked Sendable {
     /// helper has already judged them worth the slot, and the host has no message to refuse one
     /// it was sent. Between two other offers the newer wins, as before writing existed.
     static func mayReplace(_ current: Offer, ui: OfferUI, with incoming: Offer) -> Bool {
+        // H11: a page task's preview keeps its browser's keys; another page task (a reveal, the next page)
+        // takes over, and an offer in another app is the user's attention moving there.
+        if Self.isPageTask(current), !Self.isPageTask(incoming), incoming.target.pid == current.target.pid { return false }
         guard current.kind.writing != nil || incoming.kind.writing != nil else { return true }
         return WritingOffer.incomingWins(producer(of: incoming), over: slot(of: current, ui: ui))
+    }
+
+    static func isPageTask(_ offer: Offer) -> Bool {
+        if case .popup(let p) = offer.kind { return p.pageTask }
+        return false
     }
 
     static func producer(of offer: Offer) -> WritingOffer.Producer {
@@ -568,6 +580,7 @@ public final class OfferArbiter: @unchecked Sendable {
             if ui.expanded, let variants = offer.visibleSpec(ui: ui) {
                 return .popup(rows: variants.rowCount, numbered: variants.numberedDigits, hasDown: variants.hasDownAction)
             }
+            if line.primary == nil, line.variants == nil { return .quietLine(numbered: Set(line.actions.compactMap(\.key.digit))) }
             return .actionLine(numbered: Set(line.actions.compactMap(\.key.digit)), hasVariants: line.variants != nil)
         case .writing(let writing):
             switch writing.presentation {

@@ -336,7 +336,8 @@ extension KeyStroke {
             option: flags.contains(.maskAlternate),
             shift: flags.contains(.maskShift),
             text: (command || control) ? nil : Self.typedText(event),
-            targetPID: target > 0 ? Int32(truncatingIfNeeded: target) : nil
+            targetPID: target > 0 ? Int32(truncatingIfNeeded: target) : nil,
+            isRepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         )
     }
 

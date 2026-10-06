@@ -64,6 +64,7 @@ struct AskSection: View {
         case .question(let q): return AskCopy.questionHint(q.ask.pick)
         case .running: return "A plan is running. Escape stops it."
         case .asking: return "Caret is planning what you asked."
+        case .atForm: return "The preview is at the form. Tab there fills it."
         case .idle, .failed, .ended: return "Return plans it. Nothing runs until you press Tab."
         }
     }
@@ -87,6 +88,9 @@ struct AskSection: View {
             status(AskCopy.planning, ink: false)
         case .failed(let sentence):
             status(sentence, ink: true)
+        case .atForm:
+            // H11: the preview is at the form; the desk says so quietly and steps aside.
+            status(AskCopy.atForm, ink: false)
         case .proposed(let card):
             AskCard(card: card, ending: nil, running: false, character: character, animated: animated, notRight: notRight,
                     onRun: onRun, onEscape: onEscape, onNotRight: onNotRight).padding(.top, 8)
@@ -569,6 +573,7 @@ struct AskLiveSection: View {
         case .running(let card): return "Running in \(card.app). Escape stops it."
         case .asking: return AskCopy.planning
         case .failed(let sentence): return sentence
+        case .atForm: return AskCopy.atForm
         case .proposed(let card): return "\(card.title). Tab to \(card.action.lowercased()), Escape to dismiss."
         // Said once when the question comes; moving between rows is the rows' own selected state.
         case .question(let q): return "\(q.ask.text) \(q.ask.options.count) choices."

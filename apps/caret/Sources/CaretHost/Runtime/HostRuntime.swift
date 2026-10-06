@@ -46,11 +46,6 @@ public final class HostRuntime {
         /// on the pasteboard after the field settles, so an acceptance run can copy in the middle of a
         /// paste on cue. Ignored in normal use.
         public var pasteRestoreDelay: TimeInterval
-        /// Where a plan's likely file is looked for (H5, `LikelyFiles`): the user's Documents,
-        /// Downloads and Desktop, or the same folders under a test run's `--home`.
-        public var fileRoots: [String] = ["Documents", "Downloads", "Desktop"].map {
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent($0).path
-        }
 
         public init(
             socketPath: String = HostRuntime.defaultSocketPath,
@@ -119,6 +114,10 @@ public final class HostRuntime {
     private let coordinator: HostCoordinator
     private let fill: FillCoordinator
     private let surface: SurfaceCoordinator
+    /// H11: the page task panel at the form.
+    private let pageTask: PageTaskCoordinator
+    /// H11: the quiet offer to keep an answer the user typed (S1).
+    private let answerSave: AnswerSaveCoordinator
     private let writing: WritingCoordinator
     private let helper: HelperClient
     private let activity: ActivityCenter
@@ -161,6 +160,10 @@ public final class HostRuntime {
             headless: configuration.surfacesHeadless
         )
         self.surface = surface
+        let pageTask = PageTaskCoordinator(arbiter: arbiter, status: status, drawsOnScreen: !configuration.surfacesHeadless)
+        self.pageTask = pageTask
+        let answerSave = AnswerSaveCoordinator(arbiter: arbiter, status: status, drawsOnScreen: !configuration.surfacesHeadless)
+        self.answerSave = answerSave
         let writing = WritingCoordinator(arbiter: arbiter, status: status, policy: policy)
         self.writing = writing
         let routeLink = RouteLink(status: status, enabled: SettingsStore.shared.settings.routing)
@@ -206,6 +209,8 @@ public final class HostRuntime {
                 coordinator.displaced(offer)
                 fill.displaced(offer)
                 surface.displaced(offer)
+                pageTask.machine.displaced(offer)
+                answerSave.machine.displaced(offer)
                 writing.displaced(offer)
             }
         }
@@ -228,6 +233,7 @@ public final class HostRuntime {
         // Every helper message takes this route, on main: a line from the helper's socket, and one the
         // debug socket injects (`inject helperLine`), so an injected offer is taken, accepted and
         // reported exactly as a real one.
+        let linkedClient = ClientBox()
         let route: @MainActor (HelperInbound, UInt64) -> Void = { message, at in
             activity.receive(message)
             // Where a skill's run with no Tab acts, and which skill it is, come from its record.
@@ -245,6 +251,11 @@ public final class HostRuntime {
             // A decision is no offer: it says when ambient help may show, which the pause already stops.
             if case .routeDecision(let decision) = message { return routeLink.receive(decision) }
             if case .spend(let spend) = message { return status.update { $0.spend = spend } }
+            // L1: this host serves no local model (`LocalText`); every request is answered at once.
+            if case .localTextRequest(let request) = message {
+                if linkedClient.client?.send(LocalText.unavailable(request)) != true { status.increment("localText.replyUnsent") }
+                return
+            }
             // H10: which page field the user is in, which the host cannot read itself. Kept whatever the gate says, so a
             // fill that opens later finds the field the user is in now.
             if case .pageField(let field) = message {
@@ -268,6 +279,15 @@ public final class HostRuntime {
                 surface.taskProgress(progress)
                 onboarding.receive(progress)
                 perch.ask.receive(progress)
+                pageTask.machine.taskProgress(progress)
+            // H11: an Ask about a page comes back as a goal; its preview goes to the panel at the form. Every
+            // later goal message is the panel's.
+            case .goalProgress(let goal):
+                if !perch.ask.receive(goal, toForm: { pageTask.machine.start($0) }) { pageTask.machine.receive(goal) }
+            case .error(let e): pageTask.machine.helperError(e)
+            // S1: keep an answer the user typed; only ⌘1 on the line says yes.
+            case .answerSaveOffer(let offer): answerSave.receive(offer)
+            case .answerSaveReply(let reply): answerSave.machine.receive(reply)
             case .planProposal(let proposal): perch.ask.receive(proposal)
             case .askQuestion(let question): perch.ask.receive(question)
             case .fileConfirmReply(let reply): perch.ask.receive(reply)
@@ -287,7 +307,6 @@ public final class HostRuntime {
         }
         // The client reads this on its own thread at each connect, for its hello's capabilities.
         let wantsRouting = OSAllocatedUnfairLock(initialState: SettingsStore.shared.settings.routing)
-        let linkedClient = ClientBox()
         helper = HelperClient(path: configuration.helperSocketPath, onMessage: { message in
             let at = DispatchTime.now().uptimeNanoseconds
             DispatchQueue.main.async {
@@ -300,6 +319,7 @@ public final class HostRuntime {
                     routeLink.linkChanged(up: up, routing: up && (linkedClient.client?.declaresRouting ?? false))
                     memory.linkChanged(up)
                     perch.ask.linkChanged(up)
+                    pageTask.machine.linkChanged(up: up)
                     if !up {
                         surface.helperGone()
                         pageSight.sight.helperGone()
@@ -311,6 +331,13 @@ public final class HostRuntime {
         let routeClient = helper
         routeLink.send = { routeClient.send($0) }
         fill.client = helper
+        pageTask.client = helper
+        answerSave.client = helper
+        pageTask.onToastTaken = {
+            surface.toastChanged()
+            fill.toastChanged()
+            writing.toastChanged()
+        }
         let firstLookClient = helper
         onboarding.sendFirstLook = { firstLookClient.send($0) }
         onboarding.sendAccept = { firstLookClient.send($0) }
@@ -345,8 +372,8 @@ public final class HostRuntime {
             case .answer(let answer): return askClient.send(answer)
             }
         }
-        let fileRoots = configuration.fileRoots
-        perch.ask.likelyFile = { wants in LikelyFiles.find(wants: wants, roots: fileRoots) }
+        // Caret never searches the disk for a file (lead decision, H11): H5's guess by name in Documents, Downloads and
+        // Desktop is gone, so the desk's card leaves an attach to the user. A file comes only from the user's own pick.
         perch.ask.dropSession = { [weak askClient] in askClient?.dropSession() }
         // ⌘Z in the app an Ask run acted in, while its card offers it on screen, as a fill's toast does
         // (q1 bug 8). A run that ends while the list is closed shows no card, so it takes no ⌘Z there
@@ -363,6 +390,7 @@ public final class HostRuntime {
             surface.toastChanged()
             fill.toastChanged()
             writing.toastChanged()
+            pageTask.machine.toastChanged()
         }
         perch.ask.onUndoChanged = { _ in syncAskToast() }
         perch.onListChanged = { _ in syncAskToast() }
@@ -390,14 +418,17 @@ public final class HostRuntime {
         surface.onToastChanged = {
             fill.toastChanged()
             writing.toastChanged()
+            pageTask.machine.toastChanged()
         }
         fill.onToastShown = {
             surface.toastChanged()
             writing.toastChanged()
+            pageTask.machine.toastChanged()
         }
         writing.onToastShown = {
             surface.toastChanged()
             fill.toastChanged()
+            pageTask.machine.toastChanged()
         }
         activity.client = helper
         let pauseClient = helper
@@ -417,6 +448,8 @@ public final class HostRuntime {
                         coordinator.claimed(claim)
                         fill.claimed(claim)
                         surface.claimed(claim)
+                        pageTask.machine.claimed(claim)
+                        answerSave.machine.claimed(claim)
                         writing.claimed(claim)
                     }
                 }
@@ -427,6 +460,8 @@ public final class HostRuntime {
                         coordinator.offerChanged(reason, key: key)
                         fill.offerChanged(reason)
                         surface.offerChanged(reason)
+                        pageTask.machine.offerChanged(reason)
+                        answerSave.machine.offerChanged(reason)
                         writing.offerChanged(reason)
                     }
                 }
@@ -438,7 +473,8 @@ public final class HostRuntime {
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
                             // H10: a fill the helper ran for a Tab on a page field, or for ⌘1, is the fill line's.
-                            if perch.ask.ownsUndo(taskID) { perch.ask.undo() } else if fill.ownsTask(taskID) { fill.undoStarted(grant) } else { surface.undoStarted(grant) }
+                            // H11: the page task panel's ⌘Z undoes every task on its page.
+                            if pageTask.machine.ownsTask(taskID) { pageTask.machine.undoStarted(grant) } else if perch.ask.ownsUndo(taskID) { perch.ask.undo() } else if fill.ownsTask(taskID) { fill.undoStarted(grant) } else { surface.undoStarted(grant) }
                         }
                     }
                 } else {
@@ -461,7 +497,7 @@ public final class HostRuntime {
                 }
             },
             stopWork: { line in
-                DispatchQueue.main.async { MainActor.assumeIsolated { surface.stopWork(line) } }
+                DispatchQueue.main.async { MainActor.assumeIsolated { if !pageTask.machine.stopWork(line) { surface.stopWork(line) } } }
             },
             realKey: { pid in pauser.key(pid: pid) },
             mouseDown: { point in
@@ -473,6 +509,8 @@ public final class HostRuntime {
                     MainActor.assumeIsolated {
                         surface.offerClosed(offerID)
                         writing.offerClosed(offerID)
+                        pageTask.machine.offerClosed(offerID)
+                        answerSave.machine.offerClosed(offerID)
                     }
                 }
             }
@@ -683,6 +721,8 @@ public final class HostRuntime {
         helper.stop()
         fill.shutdown()
         surface.shutdown()
+        pageTask.shutdown()
+        answerSave.shutdown()
         writing.shutdown()
         perch.shutdown()
         pageSight.shutdown()

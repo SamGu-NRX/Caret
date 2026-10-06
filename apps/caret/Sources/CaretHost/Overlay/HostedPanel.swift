@@ -272,11 +272,14 @@ final class HostedPanel {
     /// Opacity 0 to 1, scale 0.97 (pop-ups 0.96) to 1 and a 2 pt settle toward the anchor, 160 ms
     /// (pop-ups 180 ms) `ease-out`, about the anchored corner. Reduce Motion keeps a 0.12 s fade
     /// and drops the movement (`Motion.Entrance`).
-    func enter() {
+    /// `scales: false, rises: true` (H11's page task panel): opacity and a 2 pt rise from below, as the memo
+    /// specifies, whichever corner is pinned.
+    func enter(scales: Bool = true, rises: Bool = false) {
         isExiting = false
         panel.alphaValue = 0
         panel.orderFrontRegardless()
-        let entrance = Motion.Entrance.panel(popup: popup, reduce: Motion.reduceMotion)
+        var entrance = Motion.Entrance.panel(popup: popup, reduce: Motion.reduceMotion)
+        if !scales, entrance.scale != nil { entrance.scale = 1 }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = entrance.duration
             context.timingFunction = Motion.caCurve(Motion.easeOut)
@@ -289,7 +292,7 @@ final class HostedPanel {
         let px = margin + (right ? size.width : 0)
         let py = margin + (top ? size.height : 0)
         // Settle toward the anchor: from above when pinned at the top, from below otherwise.
-        let settle = top ? entrance.settle : -entrance.settle
+        let settle = rises ? -entrance.settle : (top ? entrance.settle : -entrance.settle)
         let start = CATransform3DConcat(
             CATransform3DMakeTranslation(-px, -py, 0),
             CATransform3DConcat(CATransform3DMakeScale(scale, scale, 1), CATransform3DMakeTranslation(px, py + settle, 0))

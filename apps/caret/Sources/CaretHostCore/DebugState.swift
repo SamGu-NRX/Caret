@@ -228,6 +228,11 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var spend: UInt64 = 0
         /// H10: the helper's word on which page field the user is in (`PageFocusBook`).
         public var pageFields: UInt64 = 0
+        /// H11: goal messages for the page task panel, local-text requests answered unavailable, and saved-answer
+        /// offers and replies.
+        public var goalProgress: UInt64 = 0
+        public var localTextRequests: UInt64 = 0
+        public var answerSaves: UInt64 = 0
         /// `planRequest` lines written from the ask field, and `planProposal` answers received.
         public var planRequests: UInt64 = 0
         public var planProposals: UInt64 = 0

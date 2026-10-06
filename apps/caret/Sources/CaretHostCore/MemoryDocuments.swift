@@ -14,9 +14,11 @@ public enum MemoryDocs {
     /// The hello capability that turns on noticed facts, provenance, "Not right" and the documents.
     public static let capability = "memoryDocuments"
 
-    /// A memory document, named by the helper: one of three fixed files or a skill's. Never a path.
+    /// A memory document, named by the helper: one of four fixed files or a skill's. Never a path.
+    /// `answers` (S1) holds the user's saved answers; before H11 the host refused it, and with it the
+    /// whole document list, so the memory window lost every file once answers.md existed.
     public static func isDocId(_ s: String) -> Bool {
-        if ["about-me", "people", "preferences"].contains(s) { return true }
+        if ["about-me", "people", "preferences", "answers"].contains(s) { return true }
         guard s.hasPrefix("skills/") else { return false }
         let id = s.dropFirst("skills/".count)
         guard (3...80).contains(id.count), let first = id.unicodeScalars.first, alnum(first) else { return false }

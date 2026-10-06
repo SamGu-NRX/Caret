@@ -81,39 +81,9 @@ public struct ProposedFile: Codable, Equatable, Sendable {
     }
 }
 
-/// Which of the user's files a plan most likely means, from what it `wants` ("your resume").
+/// How the desk names a file the user picked for an attach step (H5). Caret never searches the disk for one (lead
+/// decision, H11): H5's guess by name in the user's folders is gone with its matcher.
 public enum LikelyFile {
-    /// The largest file the helper attaches (protocol.ts MAX_ATTACH_BYTES).
-    public static let maxBytes = 10 * 1024 * 1024
-    /// Document types forms take; a file of another type is never proposed.
-    public static let extensions: Set<String> = ["pdf", "doc", "docx", "rtf", "txt", "odt", "pages"]
-
-    /// The name parts that mean what the plan wants, matched against a file's name, lowercased, with
-    /// its separators read as spaces.
-    public static func words(for wants: String) -> [String] {
-        let w = wants.lowercased()
-        if w.contains("resume") || w.contains("résumé") || w.contains("cv") { return ["resume", "résumé", "cv", "curriculum vitae"] }
-        if w.contains("cover letter") { return ["cover letter", "coverletter"] }
-        if w.contains("transcript") { return ["transcript"] }
-        if w.contains("portfolio") { return ["portfolio"] }
-        return []
-    }
-
-    /// Whether a file of this name is one the plan wants: a word on its own in the name ("Dana_Resume_2026.pdf"),
-    /// a document type, not a hidden file.
-    public static func matches(name: String, wants: String) -> Bool {
-        let ext = (name as NSString).pathExtension.lowercased()
-        guard !name.hasPrefix("."), extensions.contains(ext) else { return false }
-        let base = (name as NSString).deletingPathExtension.lowercased()
-        let spaced = " " + base.map { $0.isLetter || $0.isNumber || $0 == "é" ? $0 : " " }.reduce(into: "") { $0.append($1) } + " "
-        return words(for: wants).contains { spaced.contains(" \($0) ") }
-    }
-
-    /// The newest of the files that match and are small enough to attach.
-    public static func pick(_ files: [ProposedFile], wants: String) -> ProposedFile? {
-        files.filter { $0.size <= maxBytes && matches(name: $0.name, wants: wants) }.max { $0.modified < $1.modified }
-    }
-
     /// "edited today", "edited yesterday", "edited Tue" within the last week, else "edited Mar 3".
     public static func edited(_ date: Date, now: Date, calendar: Calendar = .current, locale: Locale = Locale(identifier: "en_US")) -> String {
         let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 0

@@ -786,7 +786,9 @@ public final class SurfaceMachine {
     static func compactContent(for offer: Offer, ui: OfferUI) -> PanelContent? {
         switch offer.kind {
         case .action(let line): return .compactLine(CompactOffer.line(line))
-        case .popup(let popup): return .compactLine(CompactOffer.line(popup.spec, highlight: ui.highlight))
+        // S1, H11: a pop-up that writes a saved answer shows it whole before Tab, so it never shrinks to a line
+        // whose Tab takes it unseen; with no clear spot for the card it is not drawn at all.
+        case .popup(let popup): return popup.spec.carriesSavedAnswer ? nil : .compactLine(CompactOffer.line(popup.spec, highlight: ui.highlight))
         case .ghost, .fill, .writing: return nil
         }
     }

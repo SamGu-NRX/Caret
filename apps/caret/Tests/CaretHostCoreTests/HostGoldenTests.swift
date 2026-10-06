@@ -374,16 +374,7 @@ final class AttachmentTests: XCTestCase {
         XCTAssertTrue(sent.contains { if case .accept = $0 { return true } else { return false } })
     }
 
-    func testLikelyFileNamesAndWords() {
-        XCTAssertTrue(LikelyFile.matches(name: "Dana_Resume_2026.pdf", wants: "your resume"))
-        XCTAssertTrue(LikelyFile.matches(name: "CV - Dana.docx", wants: "your resume"))
-        XCTAssertFalse(LikelyFile.matches(name: "resumes-notes.png", wants: "your resume"), "not a document")
-        XCTAssertFalse(LikelyFile.matches(name: "presume.pdf", wants: "your resume"), "a word on its own")
-        XCTAssertFalse(LikelyFile.matches(name: ".resume.pdf", wants: "your resume"))
-        XCTAssertTrue(LikelyFile.matches(name: "Cover Letter.pdf", wants: "your cover letter"))
-        let old = ProposedFile(path: "/a", name: "Resume.pdf", modified: now.addingTimeInterval(-90 * 86_400), size: 10)
-        let big = ProposedFile(path: "/b", name: "Resume big.pdf", modified: now, size: LikelyFile.maxBytes + 1)
-        XCTAssertEqual(LikelyFile.pick([old, resume, big], wants: "your resume"), resume, "the newest the helper can attach")
+    func testAPickedFileIsNamedWithWhenItWasEdited() {
         XCTAssertEqual(LikelyFile.edited(now.addingTimeInterval(-3600), now: now, calendar: chicago), "edited today")
         XCTAssertEqual(LikelyFile.edited(now.addingTimeInterval(-86_400), now: now, calendar: chicago), "edited yesterday")
         XCTAssertEqual(LikelyFile.edited(now.addingTimeInterval(-40 * 86_400), now: now, calendar: chicago), "edited Aug 22")

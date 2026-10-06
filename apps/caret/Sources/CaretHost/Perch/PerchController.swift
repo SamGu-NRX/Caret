@@ -137,6 +137,7 @@ final class PerchController {
         askModel.undo = { [weak self] in self?.ask.undo() }
         askModel.notRightAction = { [weak self] in self?.deskNotRight($0) }
         ask.onChange = { [weak self] in self?.askChanged() }
+        ask.onAtForm = { [weak self] in self?.stepAside() }
     }
 
     // MARK: - The ask field
@@ -564,6 +565,30 @@ final class PerchController {
         renderList()
     }
 
+    /// H11: an Ask's preview went to the panel at the form. The desk shows its one line long enough to read,
+    /// then closes, so the browser has its keys for the panel's Tab; a second call (Tab or Esc in the desk)
+    /// closes it at once.
+    private var stepAsideTimer: DispatchWorkItem?
+    static let stepAsideAfter: TimeInterval = 0.6
+
+    func stepAside() {
+        if let pending = stepAsideTimer {
+            pending.cancel()
+            stepAsideTimer = nil
+            closeList(exit: 0)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, case .atForm = self.ask.phase else { return }
+                self.stepAsideTimer = nil
+                self.closeList(exit: Motion.exit(Motion.Duration.fade, reduce: Motion.reduceMotion))
+            }
+        }
+        stepAsideTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.stepAsideAfter, execute: work)
+    }
+
     func closeList(exit: TimeInterval = 0.1) {
         guard listOpen else { return }
         listOpen = false
@@ -571,7 +596,7 @@ final class PerchController {
         // it, and a half-typed request stays for the next opening.
         switch ask.phase {
         case .running, .idle: break
-        case .asking, .proposed, .question, .failed, .ended: ask.escape()
+        case .asking, .proposed, .question, .failed, .ended, .atForm: ask.escape()
         }
         donePages = 1
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }

@@ -134,6 +134,9 @@ public final class AskCaret {
         case question(Question)
         /// No plan, and why in a sentence (`AskCopy.planError`).
         case failed(String)
+        /// H11: the Ask was about a page, and its preview is in the page task panel at the form. The desk
+        /// says so in one line and steps aside (`onAtForm`), so the browser has the keys again.
+        case atForm
         /// Tab took the plan; the helper is running it.
         case running(Card)
         /// The run ended: the steps as they ended and the line that says how.
@@ -197,7 +200,9 @@ public final class AskCaret {
     /// most 10 MB once, which takes well under a second on a Mac.
     public static let confirmWait: TimeInterval = 5
 
-    /// The user's file the plan most likely means (`LikelyFile`), found by the host; nil for none.
+    /// A file the user picked for the plan's attach step; nil for none. Nothing in the app sets it: Caret never searches
+    /// the disk for one (lead decision, H11, retiring H5's guess by name), so the card leaves the attach to the user.
+    /// The user's own pick arrives on the goal path (P3, `goalAccept.confirmedFile`).
     public var likelyFile: (_ wants: String) -> ProposedFile? = { _ in nil }
 
     private let clock: SurfaceClock
@@ -210,6 +215,8 @@ public final class AskCaret {
     public var onUndoChanged: (UndoOffer?) -> Void = { _ in }
     /// Called after every change, for the view and the debug socket.
     public var onChange: () -> Void = {}
+    /// H11: the desk handed a page goal's preview to the panel at the form; the host closes the desk.
+    public var onAtForm: () -> Void = {}
 
     public init(clock: SurfaceClock) {
         self.clock = clock
@@ -233,7 +240,7 @@ public final class AskCaret {
         }
         self.text = text
         switch phase {
-        case .asking, .proposed, .question, .failed, .ended: settle(.idle)
+        case .asking, .proposed, .question, .failed, .ended, .atForm: settle(.idle)
         case .idle, .running: onChange()
         }
     }
@@ -269,6 +276,11 @@ public final class AskCaret {
     @discardableResult
     public func tab() -> Bool {
         if case .question(let q) = phase { return answer(q) }
+        // The preview is at the form, and Tab there is the panel's: the desk gets out of the way at once.
+        if case .atForm = phase {
+            onAtForm()
+            return true
+        }
         guard case .proposed(let card) = phase else { return false }
         if confirming != nil { return true }
         if let file = card.attach?.file {
@@ -393,7 +405,7 @@ public final class AskCaret {
                 if self.stopping == key, case .ended(let card, _) = self.phase { self.settle(.ended(card, WorkLines.stopUnreached)) }
             }
             return true
-        case .failed, .ended:
+        case .failed, .ended, .atForm:
             // One Esc puts away the answer and the instruction it answered (A18, bug 14).
             text = ""
             settle(.idle)
@@ -424,6 +436,7 @@ public final class AskCaret {
         case .proposed: settle(.failed(AskCopy.planGone))
         // The helper keeps a question for the connection that was asked it (B29).
         case .question: settle(.failed(AskCopy.planGone))
+        // The panel at the form says what became of its task.
         // A run in flight, or one whose stop has not been answered: losing the connection says
         // nothing about how far the helper got, so the card does not guess.
         case .running(let card): settle(.ended(card, AskCopy.lostTouch))
@@ -493,6 +506,35 @@ public final class AskCaret {
         }
     }
 
+    /// H11: the answer to this desk's Ask came back as a goal, which only a page fill is since L1. Its
+    /// preview goes to the panel at the form when `toForm` takes it, and the desk says so in one line; a
+    /// stop is said in the helper's own words (a 402 says the account is out of credits). True when this
+    /// was the desk's answer, so the caller does not treat it as anyone else's.
+    @discardableResult
+    public func receive(_ goal: GoalProgress, toForm: (GoalProgress) -> Bool) -> Bool {
+        guard case .asking(let id) = phase, goal.requestId == id else { return false }
+        switch goal.event {
+        case .segment(let p):
+            guard p.page != nil else {
+                // A goal that is not a page's needs H9's goal card, which this host does not show yet. Only a
+                // developer's plan writer makes one (L1): the helper plans a native Ask as before without one.
+                settle(.failed(AskCopy.goalNotShown))
+                return true
+            }
+            if toForm(goal) {
+                settle(.atForm)
+                onAtForm()
+            } else {
+                settle(.failed(AskCopy.pageBusy))
+            }
+        case .stopped(let stop):
+            settle(.failed(AskCopy.showable(stop.says) ? stop.says : AskCopy.planError(nil)))
+        case .step, .finished:
+            settle(.failed(AskCopy.planError(nil)))
+        }
+        return true
+    }
+
     public func receive(_ progress: TaskProgress) {
         // Any ending answers a stop sent for this task, whether or not its card still shows.
         if [.stopped, .done, .paused, .handoff].contains(progress.phase) { stopDeadlines.removeValue(forKey: progress.taskId)?.cancel() }
@@ -523,7 +565,7 @@ public final class AskCaret {
         var card: Card
         switch phase {
         case .running(let c), .ended(let c, _): card = c
-        case .idle, .asking, .proposed, .question, .failed: return
+        case .idle, .asking, .proposed, .question, .failed, .atForm: return
         }
         if progress.steps > 0 { steps = progress.steps }
         let index = progress.step.flatMap { Self.cardIndex(ofPlanStep: $0, in: card) }
@@ -683,7 +725,7 @@ public final class AskCaret {
         confirming = nil
         switch next {
         case .running, .ended: break
-        case .idle, .asking, .proposed, .question, .failed: tracking = nil
+        case .idle, .asking, .proposed, .question, .failed, .atForm: tracking = nil
         }
         var shown = next
         var offer: UndoOffer?
@@ -734,6 +776,7 @@ public final class AskCaret {
             info.phase = "question"; info.question = q.ask; info.highlight = q.highlight
             info.selected = q.ask.options.map(\.id).filter(q.selected.contains)
         case .failed(let sentence): info.phase = "failed"; info.line = sentence
+        case .atForm: info.phase = "atForm"; info.line = AskCopy.atForm
         case .running(let card): info.phase = "running"; info.card = card
         case .ended(let card, let line): info.phase = "ended"; info.card = card; info.line = line.text
         }
@@ -772,6 +815,11 @@ public enum AskCopy {
     }
 
     public static let placeholder = "Ask Caret to do something"
+    /// H11: the desk's one line when an Ask's preview is at the form.
+    public static let atForm = "Preview at the form"
+    public static let pageBusy = "Caret is still filling this page. Ask again when it's done."
+    /// A goal that is not a page's: only with a developer's plan writer (--dev-writer), and this host shows page goals only.
+    public static let goalNotShown = "Caret can't show a plan like that here yet."
     public static let planning = "Planning"
     public static let helperDown = "My helper isn't running, so I can't plan that."
     public static let noAnswer = "I didn't hear back in time, so nothing was planned."

@@ -37,6 +37,11 @@ struct PopupView: View {
     static let figureSlot: CGFloat = figureSize
     static let indent: CGFloat = figureSlot + 8
 
+    /// A pop-up that shows a saved answer whole takes the full width, so the answer's wrapped height is
+    /// measured at the width it is drawn at (H11: measured at its one-line width, the card clipped its header and
+    /// keys). Otherwise the width given, or none.
+    private var fixedWidth: CGFloat? { width ?? (spec.carriesSavedAnswer ? Tokens.Shape.popupMaxWidth : nil) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
@@ -49,8 +54,7 @@ struct PopupView: View {
             .padding(.horizontal, 12)
             if let under { under }
         }
-        .frame(minWidth: width ?? Self.minWidth, maxWidth: width ?? Tokens.Shape.popupMaxWidth, alignment: .leading)
-        .fixedSize(horizontal: true, vertical: true)
+        .modifier(PopupWidth(answer: spec.carriesSavedAnswer, width: fixedWidth))
         .background(alignment: .topLeading) {
             Cast(strength: figureState == .error ? 0 : 1, diameter: 64)
                 .offset(x: 12 + Self.figureSize / 2 - 32, y: 10 + 10 - 32)
@@ -134,10 +138,46 @@ struct PopupView: View {
     }
 }
 
+/// The pop-up's width. A pop-up showing a saved answer is laid out at exactly its width and sized to the wrapped
+/// answer's height: fixed to its ideal width, it measured the answer as one line and the card clipped its header and
+/// keys (H11 render). Every other pop-up keeps its one-line rows' ideal width between 280 and 380.
+private struct PopupWidth: ViewModifier {
+    var answer: Bool
+    var width: CGFloat?
+
+    func body(content: Content) -> some View {
+        if answer, let width {
+            content.frame(width: width, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+        } else {
+            content
+                .frame(minWidth: width ?? PopupView.minWidth, maxWidth: width ?? Tokens.Shape.popupMaxWidth, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: true)
+        }
+    }
+}
+
 private struct FieldRow: View {
     var row: PopupSpec.Fields.Row
 
     var body: some View {
+        if whole {
+            // S1, H11: a saved answer is shown whole before Tab writes it: the question it answers over it, then the
+            // user's words wrapped across the card. Any other value keeps to its line beside its label.
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.destination.text)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(row.value?.text ?? "")
+                    .foregroundStyle(Color(token: Tokens.ink))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 2)
+        } else {
+            line
+        }
+    }
+
+    private var line: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(row.destination.text)
                 .foregroundStyle(Color(token: Tokens.ink2))
@@ -159,6 +199,8 @@ private struct FieldRow: View {
 
     /// Words, not icons or colors: success is not green and failure is not red.
     private var note: String? { SlipSpeech.fieldNote(row.state) }
+
+    private var whole: Bool { row.value.map(SavedAnswers.isSavedAnswer) ?? false }
 }
 
 /// An option row: 24 tall. The chosen row has a 2 pt Carrot edge at its left and its words in Ink;

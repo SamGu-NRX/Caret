@@ -170,7 +170,8 @@ public extension AskCaret.Phase {
     /// offer key (the helper runs an accepted offer under its id).
     func header(listed: (String) -> Bool) -> ListHeader.Ask {
         switch self {
-        case .idle, .failed, .ended: return .none
+        // The preview went to the panel at the form (H11): nothing waits on the desk.
+        case .idle, .failed, .ended, .atForm: return .none
         case .asking: return .planning
         // A question waits on the user as a plan does.
         case .proposed, .question: return .waiting

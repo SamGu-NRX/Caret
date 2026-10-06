@@ -169,6 +169,11 @@ public enum FillSelection {
         /// The value came from a memory entry that was edited, paused or forgotten after the
         /// proposal arrived: what the user told Caret is no longer that value.
         case memoryChanged
+        /// S1, H11: the value is one of the user's saved answers. A host that names `savedAnswers` shows
+        /// one whole before inserting it, which ghost text in the field cannot promise (an answer runs to
+        /// 4,000 characters); the fill pop-up shows it whole and writes it. The helper refuses a field's
+        /// own Tab for one anyway (helper.ts handleFillAll, `answers: false`).
+        case savedAnswer
     }
 
     /// Identifies one value in one field of one window, for `suppressed`.
@@ -199,6 +204,7 @@ public enum FillSelection {
         guard focusedValue.isEmpty else { return .skip(.fieldNotEmpty) }
         guard field.withheld == nil else { return .skip(.withheld) }
         guard field.choice != "none", let value = field.value, !value.isEmpty else { return .skip(.answerNone) }
+        guard field.answer == nil else { return .skip(.savedAnswer) }
         let from: FillOrigin.Source
         if let source = field.source {
             // The source's own pid (protocol.ts FillSource.pid): a source that is a page window names no pid in its id.
@@ -227,7 +233,8 @@ public enum FillSelection {
     /// and where it came from, and (D2-04) every control whose hand-off says Caret writes it.
     public static func fillAllWrites(_ proposal: FillProposal) -> Int {
         proposal.fields.filter { f in
-            if f.control == .text { return f.value != nil && (f.source != nil || f.memory != nil) }
+            // A saved answer is written only from the pop-up that shows it whole; ⌘1 never writes one (S1).
+            if f.control == .text { return f.value != nil && f.answer == nil && (f.source != nil || f.memory != nil) }
             guard let h = f.handoff else { return false }
             return h.writes == true && (h.source != nil || h.memory != nil)
         }.count

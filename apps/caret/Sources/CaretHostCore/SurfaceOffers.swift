@@ -40,11 +40,16 @@ public struct PopupOffer: Equatable, Sendable {
     /// A grounded fill's source apps, each once, in field order (`OfferPopup.sourceApps`). The
     /// toast names these ("Filled 3 fields from Mail"), never the source block's "App, Title".
     public var sourceApps: [String]?
+    /// H11: the page task panel's preview (`PageTaskMachine`), which draws itself. While it is current,
+    /// no other producer's offer for the same browser takes its keys (`OfferArbiter.mayReplace`): all
+    /// of a page's work stays in the one panel.
+    public var pageTask: Bool
 
-    public init(offerKey: String, spec: PopupSpec, sourceApps: [String]? = nil) {
+    public init(offerKey: String, spec: PopupSpec, sourceApps: [String]? = nil, pageTask: Bool = false) {
         self.offerKey = offerKey
         self.spec = spec
         self.sourceApps = sourceApps
+        self.pageTask = pageTask
     }
 }
 

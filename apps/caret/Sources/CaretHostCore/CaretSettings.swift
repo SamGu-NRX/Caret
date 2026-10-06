@@ -324,6 +324,8 @@ public enum HostGate {
         case .fillProposal: return settings.gate.allows(family: "fill")
         // A keep or promote question is an offer too: paused, Caret asks nothing.
         case .alternatives, .action, .popup, .skillOffer: return !settings.paused
+        // S1's offer to keep an answer is an offer too (H11).
+        case .answerSaveOffer: return !settings.paused
         default: return true
         }
     }

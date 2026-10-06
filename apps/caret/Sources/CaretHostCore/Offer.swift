@@ -191,6 +191,8 @@ public struct KeyStroke: Equatable, Sendable {
     /// The process the window server will deliver this key to (`kCGEventTargetUnixProcessID`).
     /// Nil when unknown, and then the key takes no offer and no undo.
     public var targetPID: Int32?
+    /// H11: the key is held and this down is the keyboard's autorepeat, not a new press.
+    public var isRepeat: Bool
 
     public init(
         keyCode: Int64,
@@ -199,7 +201,8 @@ public struct KeyStroke: Equatable, Sendable {
         option: Bool = false,
         shift: Bool = false,
         text: String? = nil,
-        targetPID: Int32? = nil
+        targetPID: Int32? = nil,
+        isRepeat: Bool = false
     ) {
         self.keyCode = keyCode
         self.command = command
@@ -208,6 +211,7 @@ public struct KeyStroke: Equatable, Sendable {
         self.shift = shift
         self.text = text
         self.targetPID = targetPID
+        self.isRepeat = isRepeat
     }
 
     public static let tab = KeyStroke(keyCode: tabKeyCode)

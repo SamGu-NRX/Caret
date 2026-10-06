@@ -202,6 +202,29 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? NDJSON.line(answer))
     }
 
+    /// H11: Tab on the page task panel: the segment it previewed, under that preview's digest. True when written.
+    @discardableResult
+    func send(_ accept: GoalAccept) -> Bool {
+        let sent = sendLine(try? NDJSON.line(accept))
+        if sent {
+            stats.withLock { $0.accepts &+= 1 }
+            lastAccept.withLock { $0 = Date() }
+        }
+        return sent
+    }
+
+    /// H11: the answer to a `localTextRequest`: this host serves none (`LocalText`).
+    @discardableResult
+    func send(_ reply: LocalTextReply) -> Bool {
+        sendLine(try? NDJSON.line(reply))
+    }
+
+    /// H11: the user's yes to saving an answer they typed (S1); answered with `answerSaveReply` to this connection.
+    @discardableResult
+    func send(_ save: AnswerSave) -> Bool {
+        sendLine(try? NDJSON.line(save))
+    }
+
     /// H5: the file the user took for a plan's attach step; answered with `fileConfirmReply` to this connection.
     @discardableResult
     func send(_ confirm: FileConfirm) -> Bool {
@@ -377,6 +400,9 @@ final class HelperClient: @unchecked Sendable {
             case .fileConfirmReply: s.fileConfirmReplies &+= 1
             case .spend: s.spend &+= 1
             case .pageField: s.pageFields &+= 1
+            case .goalProgress: s.goalProgress &+= 1
+            case .localTextRequest: s.localTextRequests &+= 1
+            case .answerSaveOffer, .answerSaveReply: s.answerSaves &+= 1
             case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1
             }
         }
