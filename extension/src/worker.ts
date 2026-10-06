@@ -295,7 +295,7 @@ async function walk(id: string, tabId: number | null): Promise<void> {
     focused:
       focusedFrame?.r.focused === undefined || focusedFrame.r.focused === null
         ? null
-        : { frameId: focusedFrame.f.frameId, ...focusedFrame.r.focused, ...(deniedOrigin(focusedFrame.origin) || (top !== null && deniedOrigin(top)) ? { text: null } : {}) },
+        : { frameId: focusedFrame.f.frameId, ...focusedFrame.r.focused, ...(deniedOrigin(focusedFrame.origin) || (top !== null && deniedOrigin(top)) ? { text: null, caret: null } : {}) },
     view,
     walkMs: Math.round((performance.now() - t0) * 10) / 10,
   });
@@ -490,27 +490,48 @@ chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
 });
 
 /**
- * Focus moved in a frame of a tab. Passed to the helper only when the tab is the active tab of the last focused
- * browser window, its site and its frame's site are not off, an engine is connected, and the tab sent none in the
- * last 150 ms. Nothing about the element travels.
+ * Focus moved in a frame of a tab, or (H13) the user typed in its focused field. Passed to the helper only when the tab
+ * is the active tab of the last focused browser window, its site and its frame's site are not off, and an engine is
+ * connected; at most one per FOCUS_EVERY_MS per tab. One that comes sooner is held and sent when that time is up, the
+ * latest frame's, so the last keystroke of a burst is never lost: the host's inline text would stay on the text before
+ * it. Nothing about the element travels.
  */
+const heldFocus = new Map<number, { frameId: number; timer: ReturnType<typeof setTimeout> }>();
+function forwardFocus(tabId: number, frameId: number): void {
+  const now = Date.now();
+  lastFocus.set(tabId, now);
+  void (async () => {
+    const [tab, win, all] = await Promise.all([chrome.tabs.get(tabId).catch(() => undefined), chrome.windows.getLastFocused().catch(() => undefined), chrome.webNavigation.getAllFrames({ tabId })]);
+    if (engine === null || tab === undefined || !tab.active || win === undefined || tab.windowId !== win.id || !win.focused) return;
+    const top = frameOrigin(all ?? [], 0);
+    const here = frameOrigin(all ?? [], frameId);
+    if ((top !== null && sitesOff.has(top)) || (here !== null && sitesOff.has(here))) return;
+    send({ type: "pageFocus", v: 1, at: now, tabId, frameId });
+  })();
+}
 chrome.runtime.onMessage.addListener((m: unknown, sender) => {
   const x = m as { caret?: unknown; op?: unknown } | null;
   if (x?.caret !== 1 || x.op !== "focusMoved") return false;
   if (sender.id !== chrome.runtime.id || sender.tab?.id === undefined || sender.frameId === undefined || engine === null) return false;
   const tabId = sender.tab.id;
   const frameId = sender.frameId;
-  const now = Date.now();
-  if (now - (lastFocus.get(tabId) ?? 0) < FOCUS_EVERY_MS) return false;
-  lastFocus.set(tabId, now);
-  void (async () => {
-    const [tab, win, all] = await Promise.all([chrome.tabs.get(tabId).catch(() => undefined), chrome.windows.getLastFocused().catch(() => undefined), chrome.webNavigation.getAllFrames({ tabId })]);
-    if (tab === undefined || !tab.active || win === undefined || tab.windowId !== win.id || !win.focused) return;
-    const top = frameOrigin(all ?? [], 0);
-    const here = frameOrigin(all ?? [], frameId);
-    if ((top !== null && sitesOff.has(top)) || (here !== null && sitesOff.has(here))) return;
-    send({ type: "pageFocus", v: 1, at: now, tabId, frameId });
-  })();
+  const wait = (lastFocus.get(tabId) ?? 0) + FOCUS_EVERY_MS - Date.now();
+  if (wait <= 0) {
+    forwardFocus(tabId, frameId);
+    return false;
+  }
+  const held = heldFocus.get(tabId);
+  if (held !== undefined) held.frameId = frameId;
+  else {
+    const entry = {
+      frameId,
+      timer: setTimeout(() => {
+        heldFocus.delete(tabId);
+        forwardFocus(tabId, entry.frameId);
+      }, wait),
+    };
+    heldFocus.set(tabId, entry);
+  }
   return false;
 });
 

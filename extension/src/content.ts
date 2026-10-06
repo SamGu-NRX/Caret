@@ -29,6 +29,7 @@ import { EntryTracker } from "./content/entry.ts";
 import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
 import { docsKind, readFrameText } from "./content/text.ts";
 import { docsFocus, fieldText } from "./content/field-text.ts";
+import { caretRect } from "./content/caret-rect.ts";
 
 declare global {
   // Set once per isolated world, so a script injected again after install (worker onInstalled) does nothing.
@@ -117,7 +118,8 @@ function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): 
       } catch {
         selection = null;
       }
-      focused = { id: c.id, selection, look: lookOf(active), text: caretText ? fieldText(active) : null };
+      // H13: the caret's rect with its text, for the host's inline text; neither on a site on the deny list.
+      focused = { id: c.id, selection, look: lookOf(active), text: caretText ? fieldText(active) : null, caret: caretText ? caretRect(active) : null };
     }
   }
   const docs = window.self === window.top ? docsKind(self.origin, location.pathname) : null;
@@ -196,6 +198,14 @@ if (globalThis.__caretContent === undefined) {
   // focusout too: focus that leaves a field for no other field (a click on the page's background) sends no focusin, and
   // the host would keep a fill offer drawn at a field the user left (H10).
   addEventListener("focusout", () => focus.focusIn(), { capture: true, passive: true });
+  // H13: typing in the field, or moving its caret, is reported too, so the host's inline text follows the text around
+  // the caret. Only while an editable control has focus; nothing about the text travels with the report.
+  const typedIn = (): void => {
+    const el = deepActiveElement();
+    if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement || (el instanceof HTMLElement && el.isContentEditable)) focus.typed();
+  };
+  addEventListener("input", typedIn, { capture: true, passive: true });
+  document.addEventListener("selectionchange", typedIn, { passive: true });
   // H10: a scroll moves the focused field on screen, so the host's offer drawn at it must move with it. Only while a
   // control has focus: a page read with nothing focused has no offer to move.
   addEventListener(

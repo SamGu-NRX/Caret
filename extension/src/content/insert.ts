@@ -15,8 +15,13 @@ import { settle } from "./dom.ts";
 
 const answer = (outcome: ActAnswer["outcome"], detail: string | null): ActAnswer => ({ outcome, detail });
 
-/** Whether `el`, a control the walk kept, is where focus is now: the element itself, or an editor holding it. */
+/**
+ * Whether `el`, a control the walk kept, is where focus is now: the element itself, or an editor holding it, in a
+ * document the user is looking at. A tab the user left keeps its focused element, so the document must have focus and
+ * be visible too (H13 review question 1): a Tab pressed just after switching tabs never types into the tab left behind.
+ */
 function hasFocus(el: Element): boolean {
+  if (document.visibilityState !== "visible" || !document.hasFocus()) return false;
   const active = deepActiveElement();
   return active !== null && (active === el || (el instanceof HTMLElement && el.isContentEditable && el.contains(active)));
 }

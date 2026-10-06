@@ -111,7 +111,7 @@ import { headsIntentMaker } from "./planner/intent-heads.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
 import type { LocalModelPort } from "./writer/local-port.ts";
-import type { FileConfirm, FileConfirmReply, PlanErrorCode } from "./protocol.ts";
+import type { FileConfirm, FileConfirmReply, PageInsert, PageInsertReply, PlanErrorCode } from "./protocol.ts";
 
 /** The planner's failures that mean it could not ground the instruction, after which the code-mode writer is tried. */
 const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
@@ -378,6 +378,8 @@ export class Helper {
   readonly files: ConfirmedFiles;
   /** P3: host sessions that declared GOAL_FILES_CAPABILITY: only their page goals get attach rows (filesFor). */
   private readonly goalFileHosts = new Set<string>();
+  /** H13: inline inserts on pages, for their one-insert grants' task ids. */
+  private inlineSeq = 0;
   /** P3: the page document each page window's load last asked a Fill all for (pageWalked): once per document. */
   private readonly loadAsked = new Map<string, string>();
   /** P3: saved files, offered in attach rows and kept on the user's yes (goals/saved-files.ts). */
@@ -2200,6 +2202,47 @@ export class Helper {
    * the same rules as the offer; an offer's text must be what the field still holds. The reply goes to the asker only
    * and says why when nothing was saved.
    */
+  /**
+   * H13: inline text the host's user accepted with Tab in a page field (protocol.ts PageInsert). The page engine inserts
+   * it under a grant for this one insert, which ends as soon as the page answers (engines/page-link.ts insertText): the
+   * page checks that the field still has focus in the tab the user is in and reads exactly `expect` before its caret,
+   * then puts the text in through its own editing, so its Undo takes it back. Neither the text nor the field's is
+   * logged; only the outcome is counted.
+   */
+  async handlePageInsert(m: PageInsert): Promise<PageInsertReply> {
+    const reply = (outcome: PageInsertReply["outcome"], says: string): PageInsertReply => {
+      this.opts.store.count(`page.insert_${outcome}`, 1);
+      return { type: "pageInsertReply", v: PROTOCOL_VERSION, requestId: m.requestId, outcome, says, at: this.now() };
+    };
+    if (this.mode !== "live") return reply("refused", "the helper is in shadow mode");
+    if (this.gate.settings.paused) return reply("refused", "Caret is paused");
+    const link = this.opts.readerLink;
+    if (link?.insertText === undefined || !isPageWindow(m.windowId)) return reply("refused", "no page engine has that window");
+    const taskId = `inline-${++this.inlineSeq}`;
+    const at = this.now();
+    const pid = this.model.windows.get(m.windowId)?.app.pid ?? 0;
+    link.grant?.({ type: "actGrant", v: PROTOCOL_VERSION, taskId, pid, windowId: m.windowId, at, expires: at + INLINE_GRANT_MS });
+    try {
+      const r = await link.insertText(m.windowId, m.key, m.expect, m.text, taskId);
+      switch (r.outcome) {
+        case "ok":
+          return reply("inserted", "inserted");
+        case "changed":
+        case "noElement":
+        case "notSameElement":
+        case "noWindow":
+        case "notAllowed":
+        case "secure":
+          // The verb's own outcome only: its detail can name the field.
+          return reply("refused", `the page refused the insert (${r.outcome})`);
+        default:
+          return reply("failed", `the page did not keep the insert (${r.outcome})`);
+      }
+    } finally {
+      link.grant?.({ type: "actRevoke", v: PROTOCOL_VERSION, taskId, at: this.now() });
+    }
+  }
+
   async handleAnswerSave(m: AnswerSave): Promise<AnswerSaveReply> {
     const refused = (why: AnswerSaveReply["why"] & string, says: string): AnswerSaveReply => {
       this.opts.store.count(`answers.refused_${why}`, 1);
@@ -3122,6 +3165,13 @@ export class Helper {
 
 /** I6: page windows remembered as read for a goal's plan (Helper.tabWindows); each is a tab, so few. Assumed. */
 const TAB_WINDOWS = 16;
+
+/**
+ * H13: how long the grant for one inline insert lasts. The page answers within its command timeout (page-link.ts), and
+ * the grant is revoked as soon as it does; this bounds a grant whose revoke is lost. Assumed, not measured: the walk
+ * and act round trips P1 measured stay well under a second.
+ */
+const INLINE_GRANT_MS = 5_000;
 
 /** Page windows whose last load's document pageWalked remembers; the oldest is forgotten past this. Assumed: tabs a person keeps open. */
 const LOAD_DOCUMENTS = 200;

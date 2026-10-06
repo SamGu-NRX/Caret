@@ -2062,6 +2062,58 @@
             "offerId"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pageInsert"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "windowId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expect": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "windowId",
+            "key",
+            "expect",
+            "text",
+            "at"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -9134,6 +9186,91 @@
                 "dark"
               ],
               "additionalProperties": false
+            },
+            "text": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "before": {
+                      "type": "string",
+                      "maxLength": 2000
+                    },
+                    "after": {
+                      "type": "string",
+                      "maxLength": 500
+                    },
+                    "selection": {
+                      "type": "string",
+                      "maxLength": 2000
+                    }
+                  },
+                  "required": [
+                    "before",
+                    "after",
+                    "selection"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "ownSuggestions": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "gmail",
+                    "google-docs"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "docsText": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "on",
+                    "off"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "caret": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "items": false,
+                  "minItems": 4,
+                  "maxItems": 4
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -9571,6 +9708,51 @@
             "outcome",
             "fileId",
             "says"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pageInsertReply"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "inserted",
+                "refused",
+                "failed"
+              ]
+            },
+            "says": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "outcome",
+            "says",
+            "at"
           ],
           "additionalProperties": false
         }

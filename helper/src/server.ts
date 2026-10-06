@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, type AnswerSaveReply, type MemoryDocumentReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, type AnswerSaveReply, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
 import { carriesAnswer, withoutAnswers } from "./offers/answer-gate.ts";
 import type { Helper } from "./helper.ts";
 import type { HostLocalModel } from "./writer/local-port.ts";
@@ -49,6 +49,11 @@ export class HelperServer {
    * answerSave is the user's consent. A host that has not said it shows an answer whole never gets one to insert.
    */
   private readonly savedAnswers = new Set<Socket>();
+  /**
+   * H13: hosts whose hello listed PAGE_TEXT_CAPABILITY. Only they get a pageField's text and caret, and only they may
+   * send pageInsert: a host that has not promised to keep the text off its logs and debug socket never sees it.
+   */
+  private readonly pageText = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -111,6 +116,14 @@ export class HelperServer {
       if (m.type !== "fillProposal") return;
       const stripped = JSON.stringify(withoutAnswers(m)) + "\n";
       for (const c of this.consumers) if (!this.savedAnswers.has(c)) c.write(stripped);
+      return;
+    }
+    // H13: the text around a page field's caret goes only to hosts that declared pageText; every other consumer gets
+    // the field without it.
+    if (m.type === "pageField" && (m.text !== undefined || m.caret !== undefined || m.ownSuggestions !== undefined || m.docsText !== undefined)) {
+      for (const c of this.pageText) c.write(line);
+      const stripped = JSON.stringify(withoutPageText(m)) + "\n";
+      for (const c of this.consumers) if (!this.pageText.has(c)) c.write(stripped);
       return;
     }
     // P3: an offer to keep a file names the file, and only a host that shows attach rows may answer it; a preview with an
@@ -200,6 +213,7 @@ export class HelperServer {
             const files = hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true && hello.data.capabilities.includes(GOAL_FILES_CAPABILITY);
             if (files) this.goalFiles.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(LOCAL_MODEL_CAPABILITY) === true) this.localModelHost = s;
+            if (hello.data.host === true && hello.data.capabilities?.includes(PAGE_TEXT_CAPABILITY) === true) this.pageText.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(SAVED_ANSWERS_CAPABILITY) === true) {
               this.savedAnswers.add(s);
               this.helper().setAnswerHosts(this.savedAnswers.size);
@@ -287,6 +301,23 @@ export class HelperServer {
             else if (this.localModel?.reply(m.data) !== true) this.warn(`localTextReply ${m.data.id}: no request waits for it`);
           }
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
+          // H13: inline text the user accepted with Tab in a page field. Only a host that declared pageText.
+          else if (m.data.type === "pageInsert") {
+            if (!this.pageText.has(s)) this.reject(s, `pageInsert needs a host hello with "${PAGE_TEXT_CAPABILITY}" in its capabilities`);
+            else {
+              const requestId = m.data.requestId;
+              void this.helper()
+                .handlePageInsert(m.data)
+                .catch((e: unknown): PageInsertReply => {
+                  // The error's name only: its message could quote the page.
+                  this.warn(`pageInsert ${requestId} failed: ${e instanceof Error ? e.name : "error"}`);
+                  return { type: "pageInsertReply", v: PROTOCOL_VERSION, requestId, outcome: "failed", says: "the helper could not insert the text", at: Date.now() };
+                })
+                .then((r) => {
+                  if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
+                });
+            }
+          }
           // S1: the user's yes to saving an answer. Only a host that shows answers whole speaks for the user here.
           else if (m.data.type === "answerSave") {
             if (!this.savedAnswers.has(s)) this.reject(s, `answerSave needs a host hello with "${SAVED_ANSWERS_CAPABILITY}" in its capabilities`);
@@ -413,6 +444,7 @@ export class HelperServer {
       this.goalPlans.delete(s);
       this.spend.delete(s);
       this.goalFiles.delete(s);
+      this.pageText.delete(s);
       if (this.localModelHost === s) {
         this.localModelHost = null;
         this.localModel?.hostGone();
@@ -478,4 +510,10 @@ function isAlive(path: string): Promise<boolean> {
     });
     c.once("error", () => resolve(false));
   });
+}
+
+/** H13: a pageField as a consumer without the pageText capability gets it: the field's key and frame, no text. */
+export function withoutPageText(m: PageField): PageField {
+  const { text: _text, caret: _caret, ownSuggestions: _own, docsText: _docs, ...rest } = m;
+  return rest;
 }

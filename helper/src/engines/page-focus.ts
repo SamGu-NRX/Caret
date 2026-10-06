@@ -9,10 +9,12 @@
 // moving, focus leaving, a scroll or zoom while a control has focus, and another tab or window coming to the front, so
 // the record follows the field. The helper's own focus message goes out only when the field changed: a scroll is no
 // new focus, and must not ask for a fill again.
-import { PROTOCOL_VERSION, type Focus, type PageField, type PageFocusMoved } from "../protocol.ts";
+import { PROTOCOL_VERSION, type Focus, type PageField, type PageFieldText, type PageFocusMoved } from "../protocol.ts";
 import type { ScreenModel } from "../model.ts";
 import type { EngineSession } from "./session.ts";
 import { pageWindowId } from "./windows.ts";
+import { pageFieldText } from "./field-text.ts";
+import { screenRect } from "./page-link.ts";
 
 export interface PageFocusOptions {
   model: ScreenModel;
@@ -70,7 +72,7 @@ export class PageFocus {
   }
 
   /** The host's record of the field the user is in on this tab: `key` null for none. */
-  private tell(session: EngineSession, windowId: string, title: string, at: number, n: { key: string; role: string; editable: boolean; empty: boolean; frame: PageField["frame"]; look?: PageField["look"] } | null): void {
+  private tell(session: EngineSession, windowId: string, title: string, at: number, n: { key: string; role: string; editable: boolean; empty: boolean; frame: PageField["frame"]; look?: PageField["look"]; text?: PageFieldText; caret?: PageField["caret"] } | null): void {
     this.opts.publish?.({
       type: "pageField",
       v: PROTOCOL_VERSION,
@@ -84,6 +86,11 @@ export class PageFocus {
       empty: n?.empty ?? true,
       frame: n?.frame ?? null,
       ...(n?.look === undefined ? {} : { look: n.look }),
+      // H13: the text around the caret and the caret, for the host's inline text, when the page said anything about them
+      // (a field from an extension before P4 reads as before). The server sends them only to a host that declared
+      // pageText; nothing here logs them.
+      ...(n?.text === undefined || (n.text.text === null && n.text.ownSuggestions === null && n.text.docsText === null) ? {} : n.text),
+      ...(n?.caret === undefined || n.caret === null ? {} : { caret: n.caret }),
     });
   }
 
@@ -112,7 +119,9 @@ export class PageFocus {
     const f = a.snapshot.focused;
     const view = a.snapshot.view ?? null;
     const look = f?.look !== undefined && f.frameId === 0 && view !== null && n.frame !== undefined ? { inset: f.look.inset * view.zoom, fontSize: f.look.fontSize * view.zoom, placeholder: f.look.placeholder, dark: f.look.dark } : undefined;
-    this.tell(session, windowId, w.window.title, a.snapshot.at, { key: n.key, role: n.role, editable: n.editable === true, empty: (n.value ?? "") === "", frame: n.frame ?? null, ...(look === undefined ? {} : { look }) });
+    // H13: the caret on screen, for a field of the top frame only, which alone has a screen frame (page-link screenRect).
+    const caret = f?.caret !== undefined && f.caret !== null && f.frameId === 0 && view !== null && n.frame !== undefined ? screenRect(view, f.caret) : null;
+    this.tell(session, windowId, w.window.title, a.snapshot.at, { key: n.key, role: n.role, editable: n.editable === true, empty: (n.value ?? "") === "", frame: n.frame ?? null, ...(look === undefined ? {} : { look }), text: pageFieldText(a.snapshot), caret });
     const said = `${windowId} ${n.key}`;
     if (this.lastFocus.get(pid) === said) return;
     this.lastFocus.set(pid, said);

@@ -162,7 +162,7 @@ export interface FrameReport {
   excluded: Partial<Record<PageExclusion, number>>;
   truncated: boolean;
   /** P4 item 7: `text`, the text around the caret of a focused text control (content/field-text.ts); null when it holds none. */
-  focused: { id: string; selection: [number, number] | null; look?: FieldLook; text: FieldText | null } | null;
+  focused: { id: string; selection: [number, number] | null; look?: FieldLook; text: FieldText | null; caret?: [number, number, number, number] | null } | null;
   /** P4 items 6 and 7: a Google Docs or Sheets editor's top frame only (content/field-text.ts docsFocus). */
   docs?: { kind: "document" | "spreadsheet"; text: "on" | "off"; field: FieldText | null };
   hasFocus: boolean;

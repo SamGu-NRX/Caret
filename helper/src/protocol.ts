@@ -1163,6 +1163,78 @@ export type LocalTextReply = z.infer<typeof LocalTextReply>;
 
 // MARK: - saved answers (S1)
 
+/** P4 item 7: characters of a field's text the walk reports before its caret, after it, and selected. */
+export const FIELD_BEFORE_MAX = 2000;
+export const FIELD_AFTER_MAX = 500;
+export const FIELD_SELECTION_MAX = 2000;
+
+/**
+ * P4 item 7: the text around the caret of the field the user is typing in (extension content/field-text.ts), for the
+ * host's inline text, which had no context in any web page. Only for a control the walk kept, so never for a password,
+ * card, one-time-code or hidden field, a self-identification question, or a frame on a site Caret is off for. Kept
+ * only in the tab's latest snapshot in memory; never logged or stored.
+ */
+export const PageFocusText = z.object({
+  before: z.string().max(FIELD_BEFORE_MAX),
+  after: z.string().max(FIELD_AFTER_MAX),
+  selection: z.string().max(FIELD_SELECTION_MAX),
+});
+export type PageFocusText = z.infer<typeof PageFocusText>;
+
+/**
+ * P4 items 6 and 7: a Google Docs or Sheets editor, whose text is drawn on a canvas. `text`: whether its text for
+ * assistive technology is there ("off" until the user turns on screen reader and braille support); `field`: the text
+ * around the caret there while the user types in it. From the tab's top frame only.
+ */
+export const PageDocs = z.object({
+  kind: z.enum(["document", "spreadsheet"]),
+  text: z.enum(["on", "off"]),
+  field: PageFocusText.nullable(),
+});
+export type PageDocs = z.infer<typeof PageDocs>;
+
+/**
+ * P4 items 7 and 9: what the host's pageField says about the field the user is typing in on a page, beside the field's
+ * key and frame (H10's PageField, on v2/host: spread this shape into it). `text`: the text around its caret
+ * (PageFocusText), null when no field has focus, the control holds no text the user types, or its caret is not exposed.
+ * `ownSuggestions`: the page offers its own inline suggestions there ("gmail": Gmail's compose body; "google-docs": a
+ * Google Doc), decided by origin and path (engines/field-text.ts); the host decides what to do about it. `docsText`: in
+ * a Google Docs or Sheets editor, whether its text for assistive technology is there, so the host can tell the user how
+ * to turn it on ("off"); null elsewhere. Never logged or stored; the host's debug state redacts `text`.
+ */
+export const PageFieldText = z.object({
+  text: PageFocusText.nullable(),
+  ownSuggestions: z.enum(["gmail", "google-docs"]).nullable(),
+  docsText: z.enum(["on", "off"]).nullable(),
+});
+export type PageFieldText = z.infer<typeof PageFieldText>;
+
+/**
+ * H13: the hello capability for page text. A host that lists it draws inline text in a page field from the text around
+ * its caret, and promises never to log or store that text, nor show it on its debug socket. Only such a host is sent a
+ * pageField's text and caret (every other consumer gets pageField without them), and only it may send pageInsert.
+ */
+export const PAGE_TEXT_CAPABILITY = "pageText";
+
+/**
+ * H13: insert `text` at the caret of the page field `key` names in page window `windowId`: the inline text the user
+ * accepted with Tab there. The helper sends the page engine one pageInsertText for it (engines/page-link.ts insertText),
+ * under a grant for this one insert, so it goes in through the page's own editing and the page's Undo removes it.
+ * `expect` is the text before the caret the offer was made for, with any characters the user typed through since; the
+ * page refuses unless its field reads exactly that before its caret, still has focus, and the tab is the one the user
+ * is in. Answered with pageInsertReply under `requestId`, to the asker only.
+ */
+export const PageInsert = z.object({
+  type: z.literal("pageInsert"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1).max(80),
+  windowId: z.string().min(1),
+  key: z.string().min(1),
+  expect: z.string().max(FIELD_BEFORE_MAX),
+  text: z.string().min(1).max(FIELD_BEFORE_MAX),
+  at: ms,
+});
+export type PageInsert = z.infer<typeof PageInsert>;
 /**
  * The hello capability for saved answers (S1). A consumer that lists it promises to show a saved answer's whole text
  * before it inserts it, and to insert one only on the user's own acceptance after that. Only such a consumer is sent an
@@ -1238,7 +1310,7 @@ export const FileSave = z.object({
 });
 export type FileSave = z.infer<typeof FileSave>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -2163,8 +2235,33 @@ export const PageField = z.object({
   frame: Frame.nullable(),
   /** How the field draws its text, in screen points; absent when the walk did not say, or the field is in a child frame. */
   look: FieldLook.optional(),
+  /**
+   * H13, P4 items 7 and 9 (PageFieldText): the text around the caret, whether the page offers its own suggestions there,
+   * and a Docs editor's text for assistive technology. Sent only to hosts that declared PAGE_TEXT_CAPABILITY; absent for
+   * every other consumer (server.ts) and from a helper before H13.
+   */
+  text: PageFocusText.nullable().optional(),
+  ownSuggestions: z.enum(["gmail", "google-docs"]).nullable().optional(),
+  docsText: z.enum(["on", "off"]).nullable().optional(),
+  /** H13: the caret in screen points, for a field of the top frame; with `text`, to the same hosts only. */
+  caret: Frame.nullable().optional(),
 });
 export type PageField = z.infer<typeof PageField>;
+
+/**
+ * H13: what became of a pageInsert. `inserted`: the page took the text and read it back after the caret. `refused`: the
+ * field changed, lost focus or is not the user's, so nothing went in. `failed`: the page did not keep the text as sent.
+ * `says` is for the log and names no text from the page.
+ */
+export const PageInsertReply = z.object({
+  type: z.literal("pageInsertReply"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1).max(80),
+  outcome: z.enum(["inserted", "refused", "failed"]),
+  says: z.string().max(300),
+  at: ms,
+});
+export type PageInsertReply = z.infer<typeof PageInsertReply>;
 
 /**
  * One step of a goal as the user reads it: what it does, and whether Caret does it or hands it over. `drafted` (B30) is
@@ -2395,7 +2492,7 @@ export type FileSaveReply = z.infer<typeof FileSaveReply>;
 
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField, LocalTextRequest, AnswerSaveOffer, AnswerSaveReply, FileSaveOffer, FileSaveReply,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField, LocalTextRequest, AnswerSaveOffer, AnswerSaveReply, FileSaveOffer, FileSaveReply, PageInsertReply,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
@@ -2558,51 +2655,6 @@ export const PageFrame = z.object({
 });
 export type PageFrame = z.infer<typeof PageFrame>;
 
-/** P4 item 7: characters of a field's text the walk reports before its caret, after it, and selected. */
-export const FIELD_BEFORE_MAX = 2000;
-export const FIELD_AFTER_MAX = 500;
-export const FIELD_SELECTION_MAX = 2000;
-
-/**
- * P4 item 7: the text around the caret of the field the user is typing in (extension content/field-text.ts), for the
- * host's inline text, which had no context in any web page. Only for a control the walk kept, so never for a password,
- * card, one-time-code or hidden field, a self-identification question, or a frame on a site Caret is off for. Kept
- * only in the tab's latest snapshot in memory; never logged or stored.
- */
-export const PageFocusText = z.object({
-  before: z.string().max(FIELD_BEFORE_MAX),
-  after: z.string().max(FIELD_AFTER_MAX),
-  selection: z.string().max(FIELD_SELECTION_MAX),
-});
-export type PageFocusText = z.infer<typeof PageFocusText>;
-
-/**
- * P4 items 6 and 7: a Google Docs or Sheets editor, whose text is drawn on a canvas. `text`: whether its text for
- * assistive technology is there ("off" until the user turns on screen reader and braille support); `field`: the text
- * around the caret there while the user types in it. From the tab's top frame only.
- */
-export const PageDocs = z.object({
-  kind: z.enum(["document", "spreadsheet"]),
-  text: z.enum(["on", "off"]),
-  field: PageFocusText.nullable(),
-});
-export type PageDocs = z.infer<typeof PageDocs>;
-
-/**
- * P4 items 7 and 9: what the host's pageField says about the field the user is typing in on a page, beside the field's
- * key and frame (H10's PageField, on v2/host: spread this shape into it). `text`: the text around its caret
- * (PageFocusText), null when no field has focus, the control holds no text the user types, or its caret is not exposed.
- * `ownSuggestions`: the page offers its own inline suggestions there ("gmail": Gmail's compose body; "google-docs": a
- * Google Doc), decided by origin and path (engines/field-text.ts); the host decides what to do about it. `docsText`: in
- * a Google Docs or Sheets editor, whether its text for assistive technology is there, so the host can tell the user how
- * to turn it on ("off"); null elsewhere. Never logged or stored; the host's debug state redacts `text`.
- */
-export const PageFieldText = z.object({
-  text: PageFocusText.nullable(),
-  ownSuggestions: z.enum(["gmail", "google-docs"]).nullable(),
-  docsText: z.enum(["on", "off"]).nullable(),
-});
-export type PageFieldText = z.infer<typeof PageFieldText>;
 
 /**
  * One tab, composed by the worker from every frame that answered. `id` names the pageWalk it answers; the
@@ -2637,6 +2689,11 @@ export const PageSnapshot = z.object({
       look: FieldLook.optional(),
       /** P4 item 7: the text around the caret; absent from an extension before P4. */
       text: PageFocusText.nullable().optional(),
+      /**
+       * H13: the caret, in the frame's viewport CSS pixels as control rects are (extension content/caret-rect.ts); null
+       * when the page cannot place it, absent from an extension before H13.
+       */
+      caret: Frame.nullable().optional(),
     })
     .nullable(),
   /**
