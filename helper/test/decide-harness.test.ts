@@ -58,3 +58,9 @@ describe("an eval's decision engine", () => {
     expect(harnessEngine({ name: "llama", canned: null, fixture, env: { CARET_LLAMA_MODEL: "unfitted", CARET_JEV_CACHE: "off", CARET_ENGINE_CALIBRATION: "1,1" } }).says).toContain("choice T 1");
   });
 });
+
+describe("the request log", () => {
+  it("refuses the shipped app even with the cache off", () => {
+    expect(() => harnessEngine({ name: "canned", canned, fixture, env: { CARET_JEV_CACHE: "off", CARET_LAUNCHD_AGENT: "1" }, logRequests: join(tmp(), "r.ndjson") })).toThrow(CacheRefused);
+  });
+});

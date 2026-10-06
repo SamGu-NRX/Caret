@@ -171,16 +171,16 @@ export interface WireBody {
  * (evidence/screen/j1, probe/fill-base.ndjson). Nothing is dropped; expandWireBody gives back the request's questions.
  * Only a state that is a JSON object takes the key; a string state is sent as it was.
  *
- * No evidence yet on how Jev answers in this shape: Jev's credits ran out before it could be asked (HTTP 402 since
- * 2026-10-06). The first live run after credits return must compare the corpus and W4 runs with the earlier ones
- * (evidence/screen/p2/goal-live-3, p1/loop-live), wrong 0 first; HOIST_SHARED_OPTIONS = false sends the old body.
+ * Off until there is evidence on how Jev answers in this shape: Jev's credits ran out before it could be asked (HTTP 402
+ * since 2026-10-06), and a body that says the same need not get the same answers (J1 review). Turning it on needs one
+ * live run of the corpus and W4 pages compared with evidence/screen/p2/goal-live-3 and p1/loop-live, wrong 0 first.
  */
-export const HOIST_SHARED_OPTIONS = true;
+export const HOIST_SHARED_OPTIONS = false;
 
-export function wireBody(req: JevRequest, model: string = JEV_MODEL): WireBody {
+export function wireBody(req: JevRequest, model: string = JEV_MODEL, hoist: boolean = HOIST_SHARED_OPTIONS): WireBody {
   const all: Record<string, ChoiceQuestion | NoulQuestion> = { ...req.questions, ...req.nouls };
   const state = req.state;
-  if (!HOIST_SHARED_OPTIONS || typeof state !== "object" || state === null || Array.isArray(state)) return { state, model, questions: all };
+  if (!hoist || typeof state !== "object" || state === null || Array.isArray(state)) return { state, model, questions: all };
   if (OPTION_DESCRIPTIONS in state) throw new Error(`a Jev request's state already has a ${OPTION_DESCRIPTIONS} key, which the body uses for shared options`);
   // Each id's one description across the choice questions, or null when some question gives it none or another one.
   const described = new Map<string, string | null>();

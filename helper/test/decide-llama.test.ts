@@ -1,7 +1,7 @@
 // J1 part B: the llama.cpp engine's prompt layout, label reading and confidence, against a stand-in llama-server.
 import { describe, expect, it } from "vitest";
 import { labelsFor, layout, llamaEngine } from "../src/engines/decide/llama.ts";
-import { calibrate, choiceConfidence, noulWithTemperature, withTemperature } from "../src/engines/decide/confidence.ts";
+import { calibrate, calibrated, choiceConfidence, noulWithTemperature, withTemperature } from "../src/engines/decide/confidence.ts";
 import type { JevRequest } from "../src/fill/jev.ts";
 
 /** A stand-in llama-server: /apply-template wraps the user turn; /completion answers from `dist(prompt)`, by token. */
@@ -45,11 +45,11 @@ describe("the llama.cpp engine", () => {
   });
 
   it("reads the split over the allowed labels, normalized, as the answer and Jev's confidence", async () => {
-    const s = server((p): Record<string, number> => (p.includes("Name?") ? { A: 0.6, B: 0.2, C: 0.1, The: 0.1 } : p.includes("Email?") ? { B: 0.9, A: 0.05, C: 0.05 } : { A: 0.8, B: 0.2 }));
+    const s = server((p): Record<string, number> => (p.includes("Name?") ? { A: 0.6, B: 0.2, C: 0.15, The: 0.05 } : p.includes("Email?") ? { B: 0.9, A: 0.05, C: 0.05 } : { A: 0.8, B: 0.2 }));
     const r = await llamaEngine({ url: "http://x", model: "m", prompt: "chat", fetchImpl: s.fetchImpl }).ask(REQ);
     expect(r.answers.f1?.choice).toBe("c1");
-    expect(r.probabilities?.f1?.c1).toBeCloseTo(0.6 / 0.9, 9);
-    expect(r.answers.f1?.confidence).toBeCloseTo((0.6 / 0.9 - 1 / 3) / (2 / 3), 9);
+    expect(r.probabilities?.f1?.c1).toBeCloseTo(0.6 / 0.95, 9);
+    expect(r.answers.f1?.confidence).toBeCloseTo((0.6 / 0.95 - 1 / 3) / (2 / 3), 9);
     expect(r.answers.f2?.choice).toBe("c2");
     expect(r.nouls?.n1).toBeCloseTo(0.8, 9);
     expect(s.completions.every((c) => c.grammar.startsWith("root ::= "))).toBe(true);
@@ -57,26 +57,36 @@ describe("the llama.cpp engine", () => {
     expect(r.costUsd).toBe(0);
   });
 
-  it("gives an even split when the labels hold under half of the position's probability", async () => {
-    const s = server(() => ({ The: 0.7, A: 0.2, B: 0.1 }));
+  it("gives an even split when the labels hold under 0.9 of the probability", async () => {
+    const s = server(() => ({ The: 0.15, A: 0.75, B: 0.1 }));
     const r = await llamaEngine({ url: "http://x", model: "m", prompt: "chat", fetchImpl: s.fetchImpl }).ask({ ...REQ, nouls: undefined });
     expect(r.answers.f1?.confidence).toBe(0);
   });
 
-  it("reads two-digit labels digit by digit", async () => {
+  it("reads two-digit labels digit by digit, a forced digit included, as joint probabilities", async () => {
     const criteria: Record<string, string> = {};
     for (let i = 1; i <= 30; i++) criteria[`c${i}`] = `"value ${i}"`;
     const req: JevRequest = { state: "s", questions: { f1: { type: "choice", instructions: "Which?", criteria } }, snippets: [], charged: {} };
-    // First digit: 1 (0.9) or 2 (0.1); after 1, 2 is 0.5 and 7 is 0.5; 2's branch (0.1) reads on too, as 0.1 >= 0.01.
-    const s = server((p): Record<string, number> => (p.endsWith("<assistant>") ? { "1": 0.9, "2": 0.1 } : p.endsWith("<assistant>1") ? { "2": 0.5, "7": 0.5 } : { "0": 1 }));
+    // First digit 1 (0.6) or 3 (0.38); after 1, 2 and 7 at 0.5 each; after 3 the only label is 30, but the model gives
+    // "0" there only 0.5, so 30 holds 0.19, not 0.38.
+    const s = server((p): Record<string, number> => (p.endsWith("<assistant>") ? { "1": 0.6, "3": 0.38 } : p.endsWith("<assistant>1") ? { "2": 0.5, "7": 0.5 } : { "0": 0.5 }));
     const r = await llamaEngine({ url: "http://x", model: "m", prompt: "chat", fetchImpl: s.fetchImpl }).ask(req);
-    expect(r.probabilities?.f1?.c12).toBeCloseTo(0.45, 9);
-    expect(r.probabilities?.f1?.c17).toBeCloseTo(0.45, 9);
-    expect(r.probabilities?.f1?.c20).toBeCloseTo(0.1, 9);
-    expect(Object.values(r.probabilities?.f1 ?? {}).reduce((a, b) => a + b, 0)).toBeCloseTo(1, 9);
-    expect(s.completions[0]?.grammar).toBe('root ::= "0" | "1" | "2" | "3"');
-    // 3's branch holds no probability and only "30", so it is not read further; 0's is under EXPAND and shared evenly.
-    expect(s.completions).toHaveLength(3);
+    const held = 0.3 + 0.3 + 0.19;
+    expect(held).toBeLessThan(0.9);
+    // The labels hold 0.79 of the probability, under MIN_LABEL_MASS: an even split.
+    expect(r.answers.f1?.confidence).toBe(0);
+    const sure = server((p): Record<string, number> => (p.endsWith("<assistant>") ? { "1": 0.6, "3": 0.38 } : p.endsWith("<assistant>1") ? { "2": 0.5, "7": 0.5 } : { "0": 1 }));
+    const r2 = await llamaEngine({ url: "http://x", model: "m", prompt: "chat", fetchImpl: sure.fetchImpl }).ask(req);
+    expect(r2.probabilities?.f1?.c12).toBeCloseTo(0.3 / 0.98, 9);
+    expect(r2.probabilities?.f1?.c30).toBeCloseTo(0.38 / 0.98, 9);
+    expect(sure.completions[0]?.grammar).toBe('root ::= "0" | "1" | "2" | "3"');
+    expect(sure.completions.some((c) => c.prompt.endsWith("<assistant>3"))).toBe(true);
+  });
+
+  it("reads a yes of 0.5 against a no of 0.001 as unsure, not as 0.998", async () => {
+    const s = server((): Record<string, number> => ({ A: 0.5, B: 0.001, The: 0.499 }));
+    const r = await llamaEngine({ url: "http://x", model: "m", prompt: "chat", fetchImpl: s.fetchImpl }).ask({ ...REQ, questions: {} });
+    expect(r.nouls?.n1).toBe(0.5);
   });
 
   it("answers one request at a time, so requests do not push each other's prefix out of the cache", async () => {
@@ -117,5 +127,16 @@ describe("confidence as Jev computes it", () => {
     expect(r.answers.q?.confidence).toBeCloseTo(0.5, 12);
     expect(r.nouls?.y).toBeCloseTo(0.75, 12);
     expect(() => calibrate({ model: "m", answers: { q: { choice: "a", confidence: 1 } }, inputTokens: 0, latencyMs: 0, costUsd: 0 }, { choiceT: 1, noulT: 1 })).toThrow(/without the probabilities/);
+  });
+});
+
+describe("an engine's answers through its calibration", () => {
+  const req: JevRequest = { state: "s", questions: { q: { type: "choice", instructions: "i", criteria: { a: null, b: null } } }, snippets: [], charged: {} };
+  const result = (choice: string, p: Record<string, number>) => async () => ({ model: "m", answers: { q: { choice, confidence: 0.1 } }, probabilities: { q: p }, inputTokens: 0, latencyMs: 0, costUsd: 0 });
+  it("refuses an answer its own probabilities do not rank first, instead of passing the probabilities' pick", async () => {
+    await expect(calibrated(result("a", { a: 0.01, b: 0.99 }), { choiceT: 1, noulT: 1 })(req)).rejects.toThrow(/do not rank first/);
+  });
+  it("refuses probabilities over other options than the question listed", async () => {
+    await expect(calibrated(result("a", { a: 1 }), { choiceT: 1, noulT: 1 })(req)).rejects.toThrow(/not over the options/);
   });
 });

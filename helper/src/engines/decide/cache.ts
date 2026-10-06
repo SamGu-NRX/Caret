@@ -48,9 +48,10 @@ const PLAN_SNIPPETS = "plan";
 export interface CacheOptions {
   dir: string;
   mode: CacheMode;
-  /** The engine and model answering, part of every key. */
+  /** The engine and model answering, and anything else that changes their answer (canonicalRequest), part of every key. */
   engine: string;
   model: string;
+  variant?: string;
   fixture: FixtureSources;
   /** The environment checked for the shipped app's markers; the process's own by default. */
   env?: NodeJS.ProcessEnv;
@@ -58,7 +59,8 @@ export interface CacheOptions {
 
 const SHIPPED_MARKERS = ["CARET_LAUNCHD_AGENT", "CARET_OPENED_BY_LAUNCHSERVICES"] as const;
 
-function refuseShipped(env: NodeJS.ProcessEnv): void {
+/** Throws CacheRefused in the shipped app (its launchd agent's marker, or a copy LaunchServices opened). */
+export function refuseShipped(env: NodeJS.ProcessEnv): void {
   for (const m of SHIPPED_MARKERS) {
     if (env[m] !== undefined && env[m] !== "") throw new CacheRefused(`the decision cache stores request text on disk and runs only in test harnesses, but ${m} is set: this is the shipped app`);
   }
@@ -110,7 +112,11 @@ function sortedJson(v: unknown): string {
   return JSON.stringify(v);
 }
 
-export function canonicalRequest(req: JevRequest, engine: string, model: string): Canonical {
+/**
+ * `variant` names anything else that changes what the engine sees or how its answer is read for the same request: Jev's
+ * body shape, llama's prompt and reading (harness.ts).
+ */
+export function canonicalRequest(req: JevRequest, engine: string, model: string, variant = ""): Canonical {
   const all: [string, Question][] = [...Object.entries(req.questions), ...Object.entries(req.nouls ?? {})];
   // Each option id's one description, and each description's one id; a clash in either direction keys exactly.
   const descOf = new Map<string, string | null>();
@@ -128,6 +134,13 @@ export function canonicalRequest(req: JevRequest, engine: string, model: string)
         idOf.set(d, id);
       }
     }
+  }
+  // An option id the state or an instruction names ties that text to the id, not to the description: renaming would let
+  // two requests that differ only in which description an id carries share a key (review). Such a request keys exactly.
+  if (!exact) {
+    const said = JSON.stringify([req.state, all.map(([, q]) => q.instructions)]);
+    const named = (id: string): boolean => new RegExp(`(?<![\\w-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "u").test(said);
+    if ([...idOf.values()].some(named)) exact = true;
   }
   const toCanon = new Map<string, string>();
   if (!exact) {
@@ -148,7 +161,7 @@ export function canonicalRequest(req: JevRequest, engine: string, model: string)
   }
   entries.sort((a, b) => (a.text < b.text ? -1 : a.text > b.text ? 1 : 0));
   const questions = entries.map((e) => e.c);
-  const key = createHash("sha256").update(sortedJson({ v: FORMAT, engine, model, exact, state: req.state, questions })).digest("hex");
+  const key = createHash("sha256").update(sortedJson({ v: FORMAT, engine, model, variant, exact, state: req.state, questions })).digest("hex");
   return { key, exact, questions, questionIds: entries.map((e) => e.id), toCanon, fromCanon: new Map([...toCanon].map(([a, b]) => [b, a])) };
 }
 
@@ -189,7 +202,7 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
   return async (req) => {
     refuseShipped(opts.env ?? process.env);
     checkFixture(req, opts.fixture);
-    const c = canonicalRequest(req, opts.engine, opts.model);
+    const c = canonicalRequest(req, opts.engine, opts.model, opts.variant ?? "");
     const path = join(opts.dir, c.key.slice(0, 2), `${c.key}.json`);
     if (opts.mode !== "record") {
       let entry: Entry | null = null;

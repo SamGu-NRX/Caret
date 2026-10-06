@@ -62,7 +62,23 @@ export function calibrate(r: JevResult, cal: Calibration): JevResult {
   return { ...r, answers, ...(nouls === undefined ? {} : { nouls }) };
 }
 
-/** `ask` with its answers read through `cal`. */
+/**
+ * `ask` with its answers read through `cal`. Each answer must come with a probability for exactly the options its
+ * question listed, and must be the most likely of them: calibrate picks the choice again from the probabilities, so a
+ * result whose choice and probabilities disagree would otherwise pass as its probabilities' pick (review).
+ */
 export function calibrated(ask: AskJev, cal: Calibration): AskJev {
-  return async (req) => calibrate(await ask(req), cal);
+  return async (req) => {
+    const r = await ask(req);
+    for (const [q, question] of Object.entries(req.questions)) {
+      const a = r.answers[q];
+      const p = r.probabilities?.[q];
+      if (a === undefined || p === undefined) throw new Error(`the engine left ${q} without an answer and its probabilities`);
+      const listed = Object.keys(question.criteria).sort();
+      if (JSON.stringify(Object.keys(p).sort()) !== JSON.stringify(listed)) throw new Error(`the engine's probabilities for ${q} are not over the options it listed`);
+      const top = Math.max(...Object.values(p));
+      if ((p[a.choice] ?? -1) < top) throw new Error(`the engine answered ${q} with ${a.choice}, which its own probabilities do not rank first`);
+    }
+    return calibrate(r, cal);
+  };
 }

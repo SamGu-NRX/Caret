@@ -9,10 +9,10 @@
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { JEV_MODEL, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
-import { cachedAsk, cacheFromEnv, checkFixture, type FixtureSources } from "./cache.ts";
+import { HOIST_SHARED_OPTIONS, JEV_MODEL, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
+import { cachedAsk, cacheFromEnv, checkFixture, refuseShipped, type FixtureSources } from "./cache.ts";
 import { calibrated, UNCALIBRATED, type Calibration } from "./confidence.ts";
-import { llamaEngine } from "./llama.ts";
+import { LLAMA_READING, llamaEngine } from "./llama.ts";
 import type { DecideEngine, EngineName } from "./port.ts";
 
 /** Where harnesses keep recorded answers unless CARET_JEV_CACHE says otherwise: outside every worktree, never committed. */
@@ -24,7 +24,7 @@ export interface HarnessEngineOptions {
   canned: AskJev | null;
   fixture: FixtureSources;
   env?: NodeJS.ProcessEnv;
-  /** Appends every request as sent (its wire body, fixture text only) to this file, for the token breakdown. */
+  /** Appends every request (fixture text only) to this file, with its size as sent and with shared options sent once. */
   logRequests?: string;
 }
 
@@ -82,18 +82,21 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   const env = o.env ?? process.env;
   const engine = baseEngine(o, env);
   const cache = engine.name === "canned" ? null : cacheFromEnv(env, HARNESS_CACHE_DIR);
-  let ask = cache === null ? engine.ask : cachedAsk(engine.ask, { ...cache, engine: engine.name, model: engine.model, fixture: o.fixture, env });
+  const variant = engine.name === "jev" ? `body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}` : engine.name === "llama" ? `prompt:${env.CARET_LLAMA_PROMPT ?? "chat"};thinking:${env.CARET_LLAMA_THINKING ?? "default"};read:${LLAMA_READING}` : "";
+  let ask = cache === null ? engine.ask : cachedAsk(engine.ask, { ...cache, engine: engine.name, model: engine.model, variant, fixture: o.fixture, env });
   const cal = engine.name === "llama" ? calibrationFromEnv(env, engine.model) : UNCALIBRATED;
   if (engine.name === "llama") ask = calibrated(ask, cal);
   const log = o.logRequests;
   const inner = ask;
   if (log !== undefined) {
+    // The log stores request text as the cache does, so it refuses the shipped app too, with the cache off as well.
+    refuseShipped(env);
     ask = async (req) => {
       // The log holds request text, so it takes what the cache takes: fixture text only.
       checkFixture(req, o.fixture);
       const r = await inner(req);
       const body = { state: req.state, model: JEV_MODEL, questions: { ...req.questions, ...req.nouls } };
-      appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, wireChars: JSON.stringify(wireBody(req)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })}\n`, { mode: 0o600 });
+      appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, sharedChars: JSON.stringify(wireBody(req, JEV_MODEL, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })}\n`, { mode: 0o600 });
       return r;
     };
   }

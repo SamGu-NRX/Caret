@@ -164,3 +164,17 @@ describe("the fixture check", () => {
     await expect(cachedAsk(engine().ask, { ...opts("replay-or-record"), fixture: { ...FIXTURE, plan: false } })({ ...req, charged: {} })).rejects.toThrow(/plan's text/);
   });
 });
+
+describe("the cache key", () => {
+  it("keys exactly when the state names an option id, so swapping two options' descriptions is another request", () => {
+    const req = (a: string, b: string): JevRequest => ({ state: { hint: "option a is the sender" }, questions: { q: { type: "choice", instructions: "Who?", criteria: { a, b } } }, snippets: [], charged: {} });
+    const one = canonicalRequest(req("Alice", "Bob"), "jev", "m");
+    expect(one.exact).toBe(true);
+    expect(one.key).not.toBe(canonicalRequest(req("Bob", "Alice"), "jev", "m").key);
+  });
+
+  it("changes with the engine's variant: Jev's body shape, llama's prompt and reading", () => {
+    const r = fillReq(["c1", "c2", "c3"]);
+    expect(canonicalRequest(r, "jev", "m", "body:per-question").key).not.toBe(canonicalRequest(r, "jev", "m", "body:shared-options").key);
+  });
+});

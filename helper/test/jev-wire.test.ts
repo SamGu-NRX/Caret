@@ -5,7 +5,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { expandWireBody, makeJevClient, OPTION_DESCRIPTIONS, wireBody, type JevRequest } from "../src/fill/jev.ts";
+import { expandWireBody, HOIST_SHARED_OPTIONS, JEV_MODEL, makeJevClient, OPTION_DESCRIPTIONS, wireBody as sent, type JevRequest } from "../src/fill/jev.ts";
+
+/** The body with shared options hoisted, as the client sends it once HOIST_SHARED_OPTIONS is on. */
+const wireBody = (req: JevRequest) => sent(req, JEV_MODEL, true);
 import { DailySpend } from "../src/engines/decide/daily-cap.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,9 +68,10 @@ describe("the body sent to Jev", () => {
     expect(() => wireBody(req)).toThrow(OPTION_DESCRIPTIONS);
   });
 
-  it("is what the client posts", async () => {
+  it("is off until a live run shows Jev answers the same, and the client posts what wireBody gives", async () => {
+    expect(HOIST_SHARED_OPTIONS).toBe(false);
     const fetch = vi.fn(async (_url: string, init: { body: string }) => {
-      expect(JSON.parse(init.body)).toEqual(JSON.parse(JSON.stringify(wireBody(fill(4, 6)))));
+      expect(JSON.parse(init.body)).toEqual(JSON.parse(JSON.stringify(sent(fill(4, 6)))));
       return new Response(JSON.stringify({ model: "m", answers: { f1: { choice: "c1", confidence: 1 }, f2: { choice: "c1", confidence: 1 }, f3: { choice: "c1", confidence: 1 }, f4: { choice: "c1", confidence: 1 }, n_1: { type: "noul", noul: 0.5 } }, usage: { input_tokens: 10 } }), { status: 200 });
     });
     vi.stubGlobal("fetch", fetch);

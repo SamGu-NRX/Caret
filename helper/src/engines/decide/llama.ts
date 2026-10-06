@@ -30,11 +30,14 @@ export interface LlamaOptions {
 /** Token probabilities read per position; a label's token past these is counted as having none. */
 const N_PROBS = 100;
 /**
- * The least share of a position's probability the allowed labels must hold for their split to be read. Below it the
- * model wanted to write something else there, so its split over the labels says little, and the answer is an even split
- * (confidence 0). Assumed, not measured.
+ * The least share of the model's probability its labels together must hold for their split to be read. Below it the
+ * model wanted to write something else, so its split over the labels says little, and the answer is an even split
+ * (confidence 0). Assumed, not measured; 0.5 until the review, which showed a yes of 0.5 against a no of 0.001
+ * passing a 0.95 floor.
  */
-const MIN_LABEL_MASS = 0.5;
+const MIN_LABEL_MASS = 0.9;
+/** How this file reads probabilities: part of the replay cache's key, so answers read the old way are not replayed. */
+export const LLAMA_READING = "joint-v2";
 /** A first digit at least this likely is read further; the rest share their probability evenly. Assumed. */
 const EXPAND = 0.01;
 
@@ -134,33 +137,38 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
     return { probs, evaluated: Number((r.timings as { prompt_n?: number } | undefined)?.prompt_n ?? 0) };
   };
 
-  /** Every label's probability, normalized over `labels`, read position by position (see the file's header). */
+  /**
+   * Every label's probability, read position by position: a label's raw probability is the product of its characters'
+   * probabilities, each given the ones before it, a forced character included. The labels' total is the share of the
+   * model's probability that went to some label; under MIN_LABEL_MASS the split is even (confidence 0), else it is
+   * normalized over the labels (review: renormalizing per position counted a forced digit as certain, and read a yes of
+   * 0.5 against a no of 0.001 as 0.998).
+   */
   const split = async (prompt: string, labels: readonly string[]): Promise<{ p: Map<string, number>; evaluated: number }> => {
     const width = labels[0]?.length ?? 1;
     let evaluated = 0;
-    const out = new Map<string, number>();
+    const raw = new Map<string, number>();
     const walk = async (prefix: string, mass: number, under: readonly string[]): Promise<void> => {
       if (prefix.length === width) {
-        out.set(prefix, (out.get(prefix) ?? 0) + mass);
+        raw.set(prefix, (raw.get(prefix) ?? 0) + mass);
         return;
       }
       const next = [...new Set(under.map((l) => l[prefix.length] as string))];
-      if (next.length === 1) return walk(prefix + (next[0] as string), mass, under);
       const c = await complete(prompt + prefix, next);
       evaluated += c.evaluated;
-      const raw = next.map((ch) => c.probs.get(ch) ?? 0);
-      const held = raw.reduce((a, b) => a + b, 0);
-      const even = held < MIN_LABEL_MASS;
-      for (const [i, ch] of next.entries()) {
-        const p = even ? 1 / next.length : (raw[i] as number) / held;
+      for (const ch of next) {
+        const q = (c.probs.get(ch) ?? 0) * mass;
         const branch = under.filter((l) => l[prefix.length] === ch);
-        if (prefix.length + 1 < width && p * mass < EXPAND) {
-          for (const l of branch) out.set(l, (out.get(l) ?? 0) + (p * mass) / branch.length);
-        } else await walk(prefix + ch, p * mass, branch);
+        // A branch this unlikely is not read further: its labels share what it holds evenly.
+        if (prefix.length + 1 < width && q < EXPAND) {
+          for (const l of branch) raw.set(l, (raw.get(l) ?? 0) + q / branch.length);
+        } else await walk(prefix + ch, q, branch);
       }
     };
     await walk("", 1, labels);
-    return { p: out, evaluated };
+    const held = [...raw.values()].reduce((a, b) => a + b, 0);
+    const p = new Map(labels.map((l) => [l, held < MIN_LABEL_MASS ? 1 / labels.length : (raw.get(l) ?? 0) / held]));
+    return { p, evaluated };
   };
 
   let queue: Promise<unknown> = Promise.resolve();

@@ -96,7 +96,8 @@ export class DailySpend {
   private day = "";
   private offset = 0;
   private landed = 0;
-  private inFlight = 0;
+  /** Estimates held by this process's requests in flight, by the day they were reserved on. */
+  private readonly inFlight = new Map<string, number>();
 
   constructor(opts: DailySpendOptions) {
     if (!Number.isFinite(opts.capUsd) || opts.capUsd <= 0) throw new Error(`the daily Jev cap must be above $0, not ${opts.capUsd}`);
@@ -123,14 +124,16 @@ export class DailySpend {
   reserve(estimateUsd: number): Reservation {
     this.catchUp();
     const day = this.day;
-    const held = this.landed + this.inFlight;
+    const held = this.landed + (this.inFlight.get(day) ?? 0);
     if (held + estimateUsd > this.capUsd) throw new JevCapError(this.capUsd, held, day);
-    this.inFlight += estimateUsd;
+    this.inFlight.set(day, (this.inFlight.get(day) ?? 0) + estimateUsd);
     let open = true;
     const close = (): void => {
       if (!open) throw new Error("a Jev spend reservation was closed twice");
       open = false;
-      this.inFlight -= estimateUsd;
+      const left = (this.inFlight.get(day) ?? 0) - estimateUsd;
+      if (left > 1e-12) this.inFlight.set(day, left);
+      else this.inFlight.delete(day);
     };
     return {
       settle: (costUsd, inputTokens) => {
