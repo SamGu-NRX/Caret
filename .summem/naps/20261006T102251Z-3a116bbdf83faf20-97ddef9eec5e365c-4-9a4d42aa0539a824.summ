@@ -1,0 +1,1 @@
+A1/R1 Laya lore: free Laya 422s requests over ~512 tokens, JSON-object state and long choice options, and allows 5 req/min, so Ask cannot run on it; Ask scope is code's reading first (scope-reading.ts); run Laya evals via slow-eval.sh under laya.lock.

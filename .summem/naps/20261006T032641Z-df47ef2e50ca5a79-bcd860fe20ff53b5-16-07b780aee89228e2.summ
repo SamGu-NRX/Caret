@@ -1,0 +1,1 @@
+C1-J1, H11-H13: page plans end in a hand-off row; host.sock is in <home>/sockets; Jev has a daily cap (CARET_JEV_DAILY_CAP); inject test pageFields over the debug socket; page offers are OfferSource.page and Tab sends pageInsert; never lockf build.lock in with-heavy.

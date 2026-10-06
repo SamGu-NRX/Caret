@@ -1,1 +1,0 @@
-J1-H13: Jev confidence (p_max-1/n)/(1-1/n); daily cap throws JevCapError; replay cache fixture-only; no distilling Jev output; test pageFields via the host debug socket; page inline offers are OfferSource.page; launchd argv0 is relative.

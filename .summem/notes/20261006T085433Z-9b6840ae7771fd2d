@@ -1,1 +1,0 @@
-C2: placeWithCountry adds a country only by the closed US-state/CA-province lists and only for fields asksPlace accepts; the engine still needs exactly one loaded option equal to it. About country is deliberately not used.
