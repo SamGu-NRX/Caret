@@ -1,0 +1,1 @@
+F1's probe posts state with fetch keepalive and drops a failed post after recording it sent, so after a burst of writes the oracle can lag the DOM; page-loop-eval checks undo by reading the DOM over CDP (DOM_VALUES_JS).

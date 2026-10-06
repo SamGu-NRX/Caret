@@ -213,6 +213,11 @@ describe("the size hand-off (P2)", () => {
     expect(finished?.outcome).toBe("partial");
     expect(r.page.shown("t20")).toBe("value 20");
     expect(r.page.shown("t21")).toBe("");
+    // The fields past the size limit were on the page all along: they are not offered as revealed.
+    expect(goalMessages(r).filter((m) => m.event === "segment")).toEqual([]);
+    const asks = r.asked.length;
+    await r.helper.goals.idle();
+    expect(r.asked.length).toBe(asks);
   });
 });
 

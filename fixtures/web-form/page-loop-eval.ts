@@ -19,8 +19,17 @@
 // with W4's synthetic note. Canned Jev answers each fill question with the answer key's value, so every kind of write
 // is made; live Jev is TypeSafe's, under --spend-limit. Nothing is pressed or submitted: the server counts any POST.
 //
+// --suite tasks (with --path goal): F1's browser task pages (tasks/site.ts TASK_PAGES) instead, served by FixtureSite
+// in-process, with Chrome behind F1's network sink, scored by F1's oracle (oracle.ts), which reads the pages through
+// their own probe and never through Caret. Each page's tasks/expect/<page>.json sources are replayed as the reader would
+// show them: the email as a Mail window, then the note as a TextEdit window (the window the user just left), and each
+// memory entry as an About entry. The wizard's pages are reached by the harness's own Next press after a second Ask
+// and acceptance leaves Caret's fill on the page. Canned Jev finds a question's field by the texts the page's markup
+// puts next to each data-oracle field (taskFields below), not by reading Caret's walk.
+//
 // Exit 0 when every page was walked, no field took a value the answer key does not allow, nothing was pressed and the
-// POST count is 0. The bridge and its test host must already be built (accept.ts builds them); the extension is
+// POST count is 0 (tasks: no oracle wrong, submit, stray press, off-site request or probe error, every undo restored,
+// every page previewed). The bridge and its test host must already be built (accept.ts builds them); the extension is
 // rebuilt here. Keys come from CARET_ENV_FILE and are never printed.
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -41,7 +50,7 @@ import type { VerbTiming } from "../../helper/src/engines/page-link.ts";
 import type { EngineSession } from "../../helper/src/engines/session.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
 import { loadJevKey, makeJevClient, type AskJev, type JevRequest, type JevResult } from "../../helper/src/fill/jev.ts";
-import { PAGE_CHECKED, PROTOCOL_VERSION, Snapshot, type HelperMessage } from "../../helper/src/protocol.ts";
+import { PAGE_CHECKED, PROTOCOL_VERSION, Snapshot, type GoalProgress, type HelperMessage } from "../../helper/src/protocol.ts";
 import type { WindowState } from "../../helper/src/model.ts";
 import { intentSnapshot } from "../../helper/src/planner/intent.ts";
 import { headsIntentMaker } from "../../helper/src/planner/intent-heads.ts";
@@ -49,6 +58,9 @@ import { jevGate } from "../../helper/src/goals/gates.ts";
 import { SnippetLedger } from "../../helper/src/privacy.ts";
 import { loadAsks, loadCorpus, normLabel, type CorpusForm } from "../../helper/scripts/realfill-corpus.ts";
 import { CFT_BUILD, Cdp, HOST_NAME, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
+import { NetworkSink, type Oracle, type Scored } from "./oracle.ts";
+import { FixtureSite } from "./server.ts";
+import { TASK_PAGES, loadExpectation, taskPage, type Expectation } from "./tasks/site.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = join(HERE, "..", "..");
@@ -73,12 +85,25 @@ const { values: args } = parseArgs({
     "log-jev": { type: "string" },
     /** fill: P1's Fill all (Command-1). goal: P2's Ask on the page, planned by the page planner. */
     path: { type: "string", default: "fill" },
+    /** corpus: the realfill corpus and W4's saved pages. tasks: F1's browser task pages, scored by F1's oracle (goal path only). */
+    suite: { type: "string", default: "corpus" },
+    /**
+     * Task pages only. blind: F1's own sources (its note, email and memory, written blind to fill). labelled: one note
+     * of "Label: value" lines, each the page's own label for a field and F1's expected value, so every reveal trigger
+     * is a value fill can copy; it measures the loop's mechanics (Tabs, reveals, control kinds), not fill's reading.
+     */
+    sources: { type: "string", default: "blind" },
   },
 });
 if (args["sign-identity"] === undefined || args.out === undefined) throw new Error("--sign-identity and --out are required");
 if (args.jev !== "canned" && args.jev !== "live") throw new Error("--jev is canned or live");
 if (args.path !== "fill" && args.path !== "goal") throw new Error("--path is fill or goal");
+if (args.suite !== "corpus" && args.suite !== "tasks") throw new Error("--suite is corpus or tasks");
+if (args.suite === "tasks" && args.path !== "goal") throw new Error("--suite tasks runs the goal path only: add --path goal");
 const GOAL = args.path === "goal";
+const TASKS = args.suite === "tasks";
+if (args.sources !== "blind" && args.sources !== "labelled") throw new Error("--sources is blind or labelled");
+const LABELLED = args.sources === "labelled";
 const OUT = args.out;
 const LIVE = args.jev === "live";
 const SPEND_LIMIT = Number(args["spend-limit"]);
@@ -100,7 +125,7 @@ interface Expect {
 }
 interface Page {
   id: string;
-  kind: "corpus" | "w4";
+  kind: "corpus" | "w4" | "task";
   path: string;
   /** The answer key: what each field may hold after the fill. */
   key: Expect[];
@@ -110,6 +135,8 @@ interface Page {
   sources: Snapshot[];
   /** What the user told Caret, for a form whose source is memory. */
   about: { label: string; value: string }[];
+  /** A task page's expectations by data-oracle name (tasks/expect/<page>.json); the oracle scores against these. */
+  expected?: Record<string, string>;
 }
 
 // ---- pages ----
@@ -156,11 +183,47 @@ const w4Page = (site: string): Page => ({
   sources: [noteWindow(w4Note)],
   about: [],
 });
+/** A task page's email as Mail shows it: its header lines and its body as static text, top to bottom. */
+const mailWindow = (m: Expectation["sources"]["email"]): Snapshot => {
+  const line = (n: number, text: string, height = 18): Snapshot["nodes"][number] => ({ key: `com.apple.mail/standard/statictext:~${n}`, parent: null, role: "AXStaticText", value: text, frame: [20, 560 + n * 24, 860, height] });
+  return {
+    type: "snapshot",
+    v: PROTOCOL_VERSION,
+    seq: 1,
+    at: Date.now(),
+    reason: "initial",
+    app: { pid: 7002, bundleId: "com.apple.mail", name: "Mail" },
+    window: { windowId: "task-mail", kind: "standard", title: m.subject, frame: [0, 520, 900, 640] },
+    focused: false,
+    root: null,
+    nodes: [line(0, `From: ${m.from}`), line(1, `To: ${m.to}`), line(2, `Subject: ${m.subject}`), line(3, m.body, 400)],
+    values: [],
+    focusedKey: null,
+    stats: { walkMs: 0, visited: 4, truncated: false },
+  };
+};
+/** The goal path's Ask on every page. It names no source: see askGoal. */
+const TASK_INSTRUCTION = "fill out this form";
+/** F1's task pages: the email focused first and the note last, so the note is the window the user just left. */
+const taskPageOf = (name: string): Page => {
+  const e = loadExpectation(name);
+  return {
+    id: name,
+    kind: "task",
+    path: taskPage(name).path,
+    key: [],
+    instruction: TASK_INSTRUCTION,
+    sources: [mailWindow(e.sources.email), noteWindow(e.sources.note)],
+    about: e.sources.memory.map((m) => ({ label: m.key, value: m.value })),
+    expected: e.expected,
+  };
+};
 const wanted = args.pages?.split(",");
-const pages: Page[] = [
-  ...corpus.forms.map(corpusPage),
-  ...(existsSync(args["w4-dir"]) ? W4_SITES.filter((s) => existsSync(join(args["w4-dir"], `${s}.html`))).map(w4Page) : []),
-].filter((p) => wanted === undefined || wanted.includes(p.id));
+const pages: Page[] = (
+  TASKS
+    ? TASK_PAGES.map((t) => taskPageOf(t.name))
+    : [...corpus.forms.map(corpusPage), ...(existsSync(args["w4-dir"]) ? W4_SITES.filter((s) => existsSync(join(args["w4-dir"], `${s}.html`))).map(w4Page) : [])]
+).filter((p) => wanted === undefined || wanted.includes(p.id));
 if (pages.length === 0) throw new Error("no pages to run");
 
 // ---- the site: the corpus forms and W4's saved markup, on 127.0.0.1; any POST is counted and refused ----
@@ -218,8 +281,165 @@ function fits(text: string, e: Expect): boolean {
     const hhmm = m === null ? null : `${String((Number(m[1]) % 12) + (m[3]?.toLowerCase() === "p" ? 12 : 0)).padStart(2, "0")}:${m[2]}`;
     return hhmm !== null && values.includes(hhmm);
   }
-  if (e.control === "radio" || e.control === "select" || e.control === "combobox") return values.some((v) => new RegExp(`(?:^|[^\\p{L}])${v.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?:$|[^\\p{L}])`, "iu").test(text));
+  if (e.control === "radio" || e.control === "select" || e.control === "combobox") return namesOption(text, values);
+  // Task pages only. A month field: the same month ("August 2022" for 2022-08).
+  if (e.control === "month") {
+    const d = new Date(Date.parse(text));
+    return !Number.isNaN(d.getTime()) && values.includes(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  // A picker or react-select lists options by search: the option as a whole word, or two or more words that each start
+  // a word of the option, as the page's own search matches them ("San Diego, California" finds "San Diego, California,
+  // United States"). One word is not enough: "Portland" would stand for either Portland.
+  if (e.control === "picker") {
+    const words = (s: string): string[] => s.toLowerCase().split(/[\s,]+/u).filter((x) => x !== "");
+    const typed = words(text);
+    return namesOption(text, values) || (typed.length >= 2 && values.some((v) => typed.every((w) => words(v).some((p) => p.startsWith(w)))));
+  }
   return false;
+}
+/** Whether `text` holds one of `values` as a whole word ("Large, mushroom and onion" for Large). */
+const namesOption = (text: string, values: readonly string[]): boolean => values.some((v) => new RegExp(`(?:^|[^\\p{L}])${v.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?:$|[^\\p{L}])`, "iu").test(text));
+
+// ---- task pages: which data-oracle field a fill question is about ----
+/**
+ * A task page field as the page's markup names it: its data-oracle name and kind, its control's type, and every text the
+ * markup puts next to it that could label it (label[for], aria-labelledby, aria-label, a wrapping label, a fieldset's
+ * legend, the label of its row, a placeholder). Read from the live page (frames and open shadow roots included), since
+ * some labels follow the page's state (State reads Province for Canada).
+ */
+interface TaskField {
+  name: string;
+  kind: string;
+  type: string;
+  names: string[];
+}
+/**
+ * Run in the page through the DevTools pipe: every [data-oracle] field of the document, its same-origin frames and its
+ * open shadow roots, with the texts next to it. A radio's own label ("Yes") is left out: it names an option, not the field.
+ */
+const TASK_FIELDS_JS = `(() => {
+  const clean = (s) => (s ?? "").replace(/\\s+/g, " ").trim();
+  const out = [];
+  const visit = (root) => {
+    for (const e of root.querySelectorAll("[data-oracle]")) {
+      const controls = e.matches("input, select, textarea") ? [e] : [...e.querySelectorAll("input, select, textarea, [role=combobox], button")];
+      const names = new Set();
+      const add = (s) => { const t = clean(s); if (t !== "") names.add(t); };
+      const refs = (ids) => {
+        if (!ids) return;
+        const parts = ids.split(/\\s+/).filter(Boolean).map((id) => clean(root.getElementById(id)?.textContent));
+        add(parts.join(" "));
+        for (const x of parts) add(x);
+      };
+      for (const x of [e, ...controls]) {
+        if (x.id) for (const l of root.querySelectorAll('label[for="' + CSS.escape(x.id) + '"]')) add(l.textContent);
+        refs(x.getAttribute("aria-labelledby"));
+        refs(x.getAttribute("data-labelledby"));
+        add(x.getAttribute("aria-label"));
+        if (!(x.tagName === "INPUT" && x.type === "radio")) add(x.closest("label")?.textContent);
+        add(x.getAttribute("placeholder"));
+      }
+      if (e.tagName === "FIELDSET") add(e.querySelector("legend")?.textContent);
+      // The row's label, unless it is another field's own (Ashby's Phone row also holds the SMS consent radios).
+      const head = e.closest(".row, [data-field-path]")?.querySelector("label, .label");
+      const owner = head?.getAttribute("for") ? root.getElementById(head.getAttribute("for")) : null;
+      if (head && !head.contains(e) && (owner === null || owner === e || controls.includes(owner))) add(head.textContent);
+      const c = controls[0];
+      out.push({ name: e.getAttribute("data-oracle"), kind: e.getAttribute("data-oracle-kind") ?? "", type: c === undefined ? "" : (c.getAttribute("type") ?? c.tagName.toLowerCase()), names: [...names] });
+    }
+    for (const el of root.querySelectorAll("*")) {
+      if (el.shadowRoot) visit(el.shadowRoot);
+      if (el.tagName === "IFRAME") {
+        let d = null;
+        try { d = el.contentDocument; } catch {}
+        if (d) visit(d);
+      }
+    }
+  };
+  visit(document);
+  return out;
+})()`;
+/**
+ * Run in the page: each [data-oracle] field's own state, read from the DOM (value, selected option, checked boxes and
+ * radios), across same-origin frames and open shadow roots. The undo check reads it beside the oracle (P2): F1's probe
+ * posts state with fetch keepalive and drops a failed post after recording it as sent, so a burst of restores can
+ * leave the oracle on an older reading (tasks-forty-debug: the DOM empty, the oracle still "Josephine").
+ */
+const DOM_VALUES_JS = `(() => {
+  const out = {};
+  const visit = (root) => {
+    for (const e of root.querySelectorAll("[data-oracle]")) {
+      const xs = e.matches("input, select, textarea") ? [e] : [...e.querySelectorAll("input, select, textarea")];
+      out[e.getAttribute("data-oracle")] = JSON.stringify(xs.map((x) => (x.type === "checkbox" || x.type === "radio" ? x.checked : x.tagName === "SELECT" ? x.value : x.type === "file" ? x.files?.length ?? 0 : x.value)));
+    }
+    for (const el of root.querySelectorAll("*")) {
+      if (el.shadowRoot) visit(el.shadowRoot);
+      if (el.tagName === "IFRAME") {
+        let d = null;
+        try { d = el.contentDocument; } catch {}
+        if (d) visit(d);
+      }
+    }
+  };
+  visit(document);
+  return out;
+})()`;
+/** Reads the current page's TaskFields; set once the browser is up. */
+let readTaskFields: (() => Promise<TaskField[]>) | null = null;
+/** The current page's fields as last read; null until the first question about a page. */
+let taskFields: TaskField[] | null = null;
+/** Per task page: what canned Jev picked for each field it was asked about while the Ask ran (null: none), and question labels that named no field or several. */
+interface TaskAsks {
+  picked: Map<string, string | null>;
+  unmapped: Set<string>;
+  ambiguous: Set<string>;
+}
+const taskAsks = new Map<string, TaskAsks>();
+const asksOn = (id: string): TaskAsks => {
+  let a = taskAsks.get(id);
+  if (a === undefined) taskAsks.set(id, (a = { picked: new Map(), unmapped: new Set(), ambiguous: new Set() }));
+  return a;
+};
+/** Fields whose markup names `said`; a label the descriptor cut ("…") matches by its start. */
+function fieldsNamed(said: string, fields: readonly TaskField[]): TaskField[] {
+  const want = normLabel(said);
+  const cut = want.endsWith("…") ? want.slice(0, -1).trim() : null;
+  return fields.filter((f) => f.names.some((n) => (cut === null ? normLabel(n) === want : normLabel(n).startsWith(cut))));
+}
+/** fits()'s control for a task field: option lists by their kind, dates and months by their input type. */
+const controlOf = (f: TaskField): string | null =>
+  f.kind === "select" || f.kind === "radios" || f.kind === "pressgroup" ? "select" : f.kind === "react-select" || f.kind === "picker" ? "picker" : f.type === "date" || f.type === "month" || f.type === "time" ? f.type : null;
+/** The texts a fill question names its field by (descriptor.ts, controls.ts), in the order they are tried. A label may hold an apostrophe ("Referrer's name"), so each ends at "'." */
+const SAID = [/Label: '(.+?)'\.(?=\s|$)/u, /Nearest label: '(.+?)'\.(?=\s|$)/u, /Placeholder: '(.+?)'\.(?=\s|$)/u];
+/**
+ * The task page expectation for a fill question's field: the one data-oracle field whose markup carries the question's
+ * label (else its nearest label, else its placeholder). A label no field carries rereads the page once, for a field
+ * revealed or relabelled since; a label two fields carry answers nothing.
+ */
+async function taskKeyFor(ins: string): Promise<Expect | undefined> {
+  const p = page;
+  if (p?.expected === undefined || readTaskFields === null) return undefined;
+  const said = SAID.flatMap((re) => {
+    const m = re.exec(ins)?.[1];
+    return m === undefined ? [] : [m];
+  });
+  if (said.length === 0) return undefined;
+  const log = asksOn(p.id);
+  for (let fresh = taskFields === null; ; fresh = true) {
+    if (fresh) taskFields = await readTaskFields();
+    for (const s of said) {
+      const hits = fieldsNamed(s, taskFields ?? []);
+      const f = hits[0];
+      if (hits.length === 1 && f !== undefined) return { label: f.name, expected: p.expected[f.name] ?? "none", accept: [], control: controlOf(f) };
+      if (hits.length > 1) {
+        log.ambiguous.add(`'${s}': ${hits.map((h) => h.name).join(", ")}`);
+        return undefined;
+      }
+    }
+    if (fresh) break;
+  }
+  log.unmapped.add(said.map((s) => `'${s}'`).join(" / "));
+  return undefined;
 }
 
 /** Canned Jev: Ask's heads read the whole form from any source for the user; each fill question takes the answer key's value. */
@@ -228,16 +448,26 @@ const canned: AskJev = async (req: JevRequest): Promise<JevResult> => {
     const pick: Record<string, string> = { scope: "all", source: "any", whose: "user", why: "nothingToFill", section: "none" };
     return { model: "canned", answers: Object.fromEntries(Object.keys(req.questions).map((k) => [k, { choice: pick[k] ?? "none", confidence: 0.9 }])), nouls: Object.fromEntries(Object.keys(req.nouls ?? {}).map((k) => [k, 0])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
   }
+  const entries = Object.entries(req.questions);
+  const filled = (k: string, q: (typeof entries)[number][1]): boolean => !(k.endsWith("_whose") || k.endsWith("_owner") || ("yes" in q.criteria && "no" in q.criteria));
+  const instructionsOf = (q: (typeof entries)[number][1]): string => (typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions));
+  const keys = await Promise.all(entries.map(([k, q]) => (!filled(k, q) ? undefined : TASKS ? taskKeyFor(instructionsOf(q)) : keyFor(instructionsOf(q)))));
   const answers = Object.fromEntries(
-    Object.entries(req.questions).map(([k, q]) => {
+    entries.map(([k, q], i) => {
       if (k.endsWith("_whose") || k.endsWith("_owner")) return [k, { choice: "user", confidence: 0.95 }];
       if ("yes" in q.criteria && "no" in q.criteria) return [k, { choice: "no", confidence: 0.95 }];
-      const e = keyFor(typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions));
+      const e = keys[i];
       const quoted = (t: string | null): string | null => (t === null ? null : (/^"([^"]*)"/u.exec(t)?.[1] ?? null));
       const hit = e === undefined ? undefined : Object.entries(q.criteria).find(([, t]) => {
         const text = quoted(t);
         return text !== null && fits(text, e);
       })?.[0];
+      // Task pages: what canned Jev picked for each field the Ask (and its reveal) asked about; a pick is never replaced by a later none.
+      if (TASKS && e !== undefined && page !== null && (stage === "ask" || stage === "writes")) {
+        const picked = asksOn(page.id).picked;
+        const text = hit === undefined ? null : quoted(q.criteria[hit] ?? null);
+        if (text !== null || !picked.has(e.label)) picked.set(e.label, text);
+      }
       return [k, hit === undefined ? { choice: "none" in q.criteria ? "none" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 } : { choice: hit, confidence: 0.95 }];
     }),
   );
@@ -288,7 +518,46 @@ interface Row {
     disagreements: { field: string; value: string; verify: "dropped" | "kept"; key: "right" | "wrong" | "unscored" }[];
     verifyRequests: number;
   } | null;
+  /** A task page, by F1's oracle (--suite tasks only). */
+  task?: TaskRow;
 }
+
+interface TaskRow {
+  /** How the page was reached: navigated, or the harness's Next on the wizard page before. */
+  arrived: string;
+  /** Fields the oracle still read as changed after the undo while the DOM read them as before (the probe's lag). */
+  oracleLag?: string[];
+  /** The preview's warnings, what Caret said it left. */
+  warnings: string[];
+  /** Whether the oracle scored the page (right, eligible, wrong and missed below hold its result). */
+  scored: boolean;
+  right: number;
+  eligible: number;
+  wrong: Scored["wrong"];
+  /** Expected a value, still empty; each says what canned Jev picked for it, if it was asked. */
+  missed: string[];
+  absent: string[];
+  /** wizard-3's file fields: P3's attach gap, not counted as missed. */
+  attachGap: string[];
+  /** Expected fields hidden when the page loaded, when no afterReveal preview came. */
+  revealMissing: string[];
+  /** The second Ask that leaves Caret's fill on a wizard page before the harness presses Next. */
+  refill: string | null;
+  unmapped: string[];
+  ambiguous: string[];
+}
+
+/** How the goal path judges a task page: by the oracle, not by Caret's walk. */
+interface TaskJudge {
+  preview(reply: Segment): void;
+  /** Scores the page once the probe's reports settle; fills the row's wrong and its task fields. */
+  score(): Promise<{ eligible: number; right: number }>;
+  /** Fields whose value differs from the reading before the Ask. */
+  unrestored(): Promise<string[]>;
+  /** A write the disagreement report names, judged by the expectation of the field its label names. */
+  scoreWrite(label: string, value: string): "right" | "wrong" | "unscored";
+}
+type Segment = Extract<GoalProgress, { event: "segment" }>;
 
 async function main(): Promise<number> {
   preflight();
@@ -303,6 +572,17 @@ async function main(): Promise<number> {
   undo.push({ what: `temporary directory ${tmp}`, fn: () => rmSync(tmp, { recursive: true, force: true }) });
   const site = await serve();
   undo.push({ what: "page server", fn: () => new Promise<void>((r) => (site.server.closeAllConnections(), site.server.close(() => r()))) });
+  // Task pages: F1's site in-process, its oracle, and the network sink Chrome is launched behind.
+  let fixture: { site: FixtureSite; sink: NetworkSink } | null = null;
+  if (TASKS) {
+    const fs = new FixtureSite();
+    await fs.start();
+    undo.push({ what: "fixture site", fn: () => fs.stop() });
+    const sink = new NetworkSink(fs.tasks.oracle);
+    await sink.start();
+    undo.push({ what: "network sink", fn: () => sink.stop() });
+    fixture = { site: fs, sink };
+  }
 
   const sockDir = join(tmp, "s");
   mkdirSync(sockDir, { mode: 0o700 });
@@ -334,7 +614,7 @@ async function main(): Promise<number> {
   writeManifest(join(profile, "NativeMessagingHosts"), extensionId, bridge);
   const log = join(tmp, "chrome.log");
   const since = Date.now();
-  const browser = launch(exe, profile, [`${site.origin}/blank.html`], { ...process.env, CARET_BRIDGE_SERVICE: service }, join(EXT, "dist"), log, ["--window-size=1280,1600"], true);
+  const browser = launch(exe, profile, [`${site.origin}/blank.html`], { ...process.env, CARET_BRIDGE_SERVICE: service }, join(EXT, "dist"), log, ["--window-size=1280,1600", ...(fixture?.sink.chromeFlags() ?? [])], true);
   let session: EngineSession;
   try {
     session = await host.registry.waitForEngine((s) => s.info.extensionId === extensionId && s.info.connectedAt >= since, 30_000);
@@ -364,40 +644,26 @@ async function main(): Promise<number> {
     if (e === undefined || e.expected === "handoff") return null;
     return e.expected === "checked" ? now === PAGE_CHECKED : e.expected !== "none" && e.expected !== "unchecked" && (now === e.expected || e.accept.includes(now));
   };
-  /** P2: the Ask's goal on this page, from its preview to its undo (see the header). */
-  const goalPath = async (p: Page, row: Row, ready: number, w: WindowState, before: Map<string, string>): Promise<void> => {
-    stage = "ask";
-    const mark = published.length;
-    const a0 = performance.now();
-    const reply = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: `eval-${p.id}`, at: Date.now(), instruction: "fill out this form from my notes", windowId }, undefined, true, true);
-    const previewMs = ms(ready);
-    void a0;
-    if (reply.type !== "goalProgress" || reply.event !== "segment") {
-      row.error = `no preview: ${reply.type === "goalProgress" ? `${reply.event} ${"says" in reply ? reply.says : ""}` : reply.type === "askQuestion" ? `asked: ${reply.text}` : `${reply.type} ${"error" in reply && reply.error !== null ? JSON.stringify(reply.error).slice(0, 200) : ""}`}`;
-      row.pageMs = ms(ready);
-      return;
-    }
-    // The disagreement report: the goal value gate's question on every fill-gated write of the plan, scored by the key.
-    stage = "verify";
-    const plan = helper.goals.planOf(reply.goalId);
-    const gated = (plan?.segments ?? []).flatMap((s) => s.steps).filter((x) => x.gate === "fill" && x.value !== null);
-    const v0 = calls.length;
-    const dropped = gated.length === 0 ? new Map<string, string>() : await jevGate(plan?.instruction ?? "", gated.map((x) => ({ ref: x.ref, target: x.target, written: x.writes ?? x.value?.text ?? "", value: x.value as NonNullable<typeof x.value> })), askJev, new SnippetLedger(helper.model.windows.values()));
-    const disagreements = gated.flatMap((x) => {
-      const verdict = dropped.has(x.ref) ? ("dropped" as const) : ("kept" as const);
-      const node = w.nodes.get(x.target.key);
-      const right = scoreField(node?.label ?? x.target.own, x.writes ?? "");
-      // Only the writes verifyWrites would drop disagree with fill; each kept one agrees.
-      return verdict === "dropped" ? [{ field: x.target.label, value: x.writes ?? "", verify: verdict, key: right === null ? ("unscored" as const) : right ? ("right" as const) : ("wrong" as const) }] : [];
-    });
-    const verifyRequests = calls.length - v0;
-    // One Tab: the preview's acceptance. Then any segment the writes revealed, each its own Tab.
-    stage = "writes";
+  /**
+   * Ask's whole-form instruction on this page: the first segment's preview, or why there is none. Every page asks "fill
+   * out this form", which names no source: "from my notes" makes code read only the window it resolves "my notes" to
+   * (planner/sources.ts; intent.ts "A picked source is the only one"), which on the corpus was a decoy note
+   * (evidence/screen/p2/goal-canned-2) and on F1's pages left out its email and memory (tasks-dev2).
+   */
+  const askGoal = async (p: Page, requestId: string): Promise<Segment | string> => {
+    // P1's per-page instruction (Page.instruction) stays the fill path's intent probe; the goal path asks the whole form.
+    const instruction = TASK_INSTRUCTION;
+    const reply = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId, at: Date.now(), instruction, windowId }, undefined, true, true);
+    if (reply.type === "goalProgress" && reply.event === "segment") return reply;
+    return `no preview: ${reply.type === "goalProgress" ? `${reply.event} ${"says" in reply ? reply.says : ""}` : reply.type === "askQuestion" ? `asked: ${reply.text}` : `${reply.type} ${"error" in reply && reply.error !== null ? JSON.stringify(reply.error).slice(0, 200) : ""}`}`;
+  };
+  /** One Tab: the preview's acceptance. Then any segment the writes revealed, each its own Tab. `mark` is where the Ask's messages start. */
+  const acceptAll = async (reply: Segment, mark: number): Promise<{ segments: { goalId: string }[]; tabs: number; revealMs: number | null; outcome: string }> => {
     const segments: { goalId: string }[] = [{ goalId: reply.goalId }];
     let tabs = 0;
     let revealMs: number | null = null;
     let outcome = "refused";
-    let next: typeof reply | undefined = reply;
+    let next: Segment | undefined = reply;
     while (next !== undefined && tabs < 4) {
       tabs++;
       const r = await helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: next.goalId, segment: next.segment, digest: next.digest, at: Date.now() });
@@ -407,13 +673,45 @@ async function main(): Promise<number> {
       const fin = published.slice(mark).filter((m) => m.type === "goalProgress" && m.goalId === next?.goalId && m.event === "finished").at(-1);
       if (fin?.type === "goalProgress" && fin.event === "finished") outcome = fin.outcome;
       const goalIds = new Set(segments.map((x) => x.goalId));
-      const more = published.slice(mark).find((m): m is typeof reply => m.type === "goalProgress" && m.event === "segment" && !goalIds.has(m.goalId));
+      const more = published.slice(mark).find((m): m is Segment => m.type === "goalProgress" && m.event === "segment" && !goalIds.has(m.goalId));
       if (more !== undefined && more.reason === "afterReveal") {
         revealMs ??= ms(lastWrite);
         segments.push({ goalId: more.goalId });
       }
       next = more;
     }
+    return { segments, tabs, revealMs, outcome };
+  };
+  /** P2: the Ask's goal on this page, from its preview to its undo (see the header). A task page is judged by `task`, the oracle. */
+  const goalPath = async (p: Page, row: Row, ready: number, w: WindowState, before: Map<string, string>, task: TaskJudge | null = null): Promise<void> => {
+    stage = "ask";
+    const mark = published.length;
+    const reply = await askGoal(p, `eval-${p.id}`);
+    const previewMs = ms(ready);
+    if (typeof reply === "string") {
+      row.error = reply;
+      row.pageMs = ms(ready);
+      return;
+    }
+    task?.preview(reply);
+    // The disagreement report: the goal value gate's question on every fill-gated write of the plan, scored by the key.
+    stage = "verify";
+    const plan = helper.goals.planOf(reply.goalId);
+    const gated = (plan?.segments ?? []).flatMap((s) => s.steps).filter((x) => x.gate === "fill" && x.value !== null);
+    const v0 = calls.length;
+    const dropped = gated.length === 0 ? new Map<string, string>() : await jevGate(plan?.instruction ?? "", gated.map((x) => ({ ref: x.ref, target: x.target, written: x.writes ?? x.value?.text ?? "", value: x.value as NonNullable<typeof x.value> })), askJev, new SnippetLedger(helper.model.windows.values()));
+    const disagreements = gated.flatMap((x) => {
+      const verdict = dropped.has(x.ref) ? ("dropped" as const) : ("kept" as const);
+      const node = w.nodes.get(x.target.key);
+      const label = node?.label ?? x.target.own;
+      const right = task === null ? scoreField(label, x.writes ?? "") : task.scoreWrite(label, x.writes ?? "");
+      const key = right === null || right === "unscored" ? ("unscored" as const) : right === true || right === "right" ? ("right" as const) : ("wrong" as const);
+      // Only the writes verifyWrites would drop disagree with fill; each kept one agrees.
+      return verdict === "dropped" ? [{ field: x.target.label, value: x.writes ?? "", verify: verdict, key }] : [];
+    });
+    const verifyRequests = calls.length - v0;
+    stage = "writes";
+    const { segments, tabs, revealMs, outcome } = await acceptAll(reply, mark);
     row.pageMs = ms(ready);
     stage = "final";
     await host.link.run({ kind: "walk", pid, windowId });
@@ -424,11 +722,13 @@ async function main(): Promise<number> {
       const now = n.value ?? "";
       if (n.editable !== true || now === was) continue;
       row.written++;
+      if (task !== null) continue;
       const ok = scoreField(n.label ?? "", now);
       if (ok === false) row.wrong.push(`${n.label ?? n.key}: '${now}'`);
       if (ok === true) eligibleWritten++;
     }
-    const eligible = p.key.filter((k) => k.expected !== "none" && k.expected !== "handoff" && k.expected !== "unchecked").length;
+    let eligible = p.key.filter((k) => k.expected !== "none" && k.expected !== "handoff" && k.expected !== "unchecked").length;
+    if (task !== null) ({ eligible, right: eligibleWritten } = await task.score());
     // One undo per segment, newest first: every field must hold what it held before the Ask.
     stage = "undo";
     const notRestored: string[] = [];
@@ -438,28 +738,226 @@ async function main(): Promise<number> {
       notRestored.push(...u.notRestored.map((x) => x.reason));
     }
     await host.link.run({ kind: "walk", pid, windowId });
-    const undone = helper.model.windows.get(windowId) as WindowState;
-    const differ = [...undone.nodes.values()].filter((n) => n.editable === true && (n.value ?? "") !== (before.get(n.key) ?? ""));
-    for (const n of differ) notRestored.push(`${n.label ?? n.key} holds '${n.value ?? ""}'`);
+    if (task === null) {
+      const undone = helper.model.windows.get(windowId) as WindowState;
+      const differ = [...undone.nodes.values()].filter((n) => n.editable === true && (n.value ?? "") !== (before.get(n.key) ?? ""));
+      for (const n of differ) notRestored.push(`${n.label ?? n.key} holds '${n.value ?? ""}'`);
+    } else notRestored.push(...(await task.unrestored()));
     row.goal = { previewMs, steps: reply.steps.length, left: reply.warnings.length, tabs, eligible, eligibleWritten, revealMs, restored: notRestored.length === 0, notRestored, outcome, disagreements, verifyRequests };
   };
+
+  /** The desk: last page's sources and memory gone, this page's in place, the source focused last and left for the browser. */
+  const desk = (p: Page): void => {
+    for (const w of [...helper.model.windows.values()]) if (w.window.windowId !== windowId) helper.handleReader({ type: "windowClosed", v: 1, at: Date.now(), windowId: w.window.windowId });
+    for (const e of helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "l", op: "list", kind: "about" }).entries ?? []) helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "f", op: "forget", id: e.id });
+    for (const a of p.about) {
+      const added = helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "a", op: "add", kind: "about", fields: { label: a.label, value: a.value, source: "typed" } });
+      if (added.error !== null) throw new Error(`About '${a.label}' was not added: ${added.error}`);
+    }
+    const base = Date.now() - 60_000 * p.sources.length;
+    p.sources.forEach((s, i) => void helper.handleReader({ ...s, at: base + i * 60_000, focused: i === p.sources.length - 1 }));
+    helper.handleReader({ type: "appSwitch", v: 1, at: Date.now(), from: textEdit, to: session.info.browser });
+  };
+  const newRow = (p: Page): Row => ({ id: p.id, kind: p.kind, controls: 0, walk: null, intent: null, fill: null, previewMs: null, run: null, finalWalk: null, pageMs: null, wrong: [], written: 0, error: null, goal: null });
+
+  // ---- task pages (--suite tasks): the goal path on each, judged by F1's oracle ----
+  const runTasks = async (fs: FixtureSite): Promise<number> => {
+    const oracle = fs.tasks.oracle;
+    readTaskFields = async () => {
+      const v = await evaluate(TASK_FIELDS_JS);
+      if (!Array.isArray(v)) throw new Error(`reading the task page's fields gave ${JSON.stringify(v)?.slice(0, 200)}`);
+      return v as TaskField[];
+    };
+    /** The page's values once two readings 200 ms apart agree (probe.js posts each change as it happens), at most 4 s. */
+    const settle = async (name: string): Promise<Record<string, string>> => {
+      let prev = JSON.stringify(oracle.values(name));
+      for (let i = 0; i < 20; i++) {
+        await sleep(200);
+        const now = JSON.stringify(oracle.values(name));
+        if (now === prev) break;
+        prev = now;
+      }
+      return JSON.parse(prev) as Record<string, string>;
+    };
+    // --sources labelled: each page's note from its own labels (read with every dependent section shown) and F1's values.
+    if (LABELLED) {
+      for (const p of pages) {
+        const expected = p.expected as Record<string, string>;
+        await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}?show=all` }, sessionId);
+        let fields: TaskField[] = [];
+        for (let n = 0; n < 40; n++) {
+          await sleep(150);
+          const v = await evaluate(TASK_FIELDS_JS);
+          fields = Array.isArray(v) ? (v as TaskField[]) : [];
+          if (Object.keys(expected).every((k) => fields.some((f) => f.name === k))) break;
+        }
+        const lines = Object.entries(expected).flatMap(([k, v]) => {
+          const f = fields.find((x) => x.name === k);
+          const label = f?.names.find((x) => x.trim() !== "")?.trim().replace(/[*:]+$/u, "").trim();
+          if (v === "none" || f === undefined || label === undefined || f.kind === "file") return [];
+          return [`${label}: ${f.kind === "checkbox" ? (v === "true" ? "yes" : "no") : v}`];
+        });
+        p.sources = [noteWindow(lines.join("\n"))];
+        p.about = [];
+        say(`${p.id}: labelled note of ${lines.length} lines`);
+      }
+    }
+    const rows: Row[] = [];
+    /** The wizard page whose Next the harness presses to reach the next page, once Caret's fill is on it. */
+    let pressFrom: string | null = null;
+    for (const [i, p] of pages.entries()) {
+      page = p;
+      taskFields = null;
+      const name = p.id;
+      const expected = p.expected as Record<string, string>;
+      const row = newRow(p);
+      const t: TaskRow = { arrived: "navigated", warnings: [], scored: false, right: 0, eligible: 0, wrong: [], missed: [], absent: [], attachGap: [], revealMissing: [], refill: null, unmapped: [], ambiguous: [] };
+      row.task = t;
+      rows.push(row);
+      const from = pressFrom;
+      pressFrom = null;
+      try {
+        desk(p);
+        // Load: by the harness's Next from the wizard page before, else by navigating. Ready is the oracle's first full
+        // report from this load (every field the expectations name, from every frame), as tests/browser.test.ts waits.
+        stage = "load";
+        const old = new Set(oracle.loads(name));
+        if (from !== null) {
+          try {
+            await fs.tasks.harnessPress(from, "next");
+            t.arrived = `harness Next on ${from}`;
+          } catch (e) {
+            t.arrived = `navigated: the harness Next on ${from} failed (${e instanceof Error ? e.message : String(e)})`;
+            await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}` }, sessionId);
+          }
+        } else await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}` }, sessionId);
+        const frames = taskPage(name).files.length;
+        await oracle.waitFor(() => oracle.currentLoads(name).filter((l) => !old.has(l)).length === frames && Object.keys(expected).every((k) => k in oracle.values(name)), `${name}'s first full report from this load`, 15_000);
+        const ready = performance.now();
+        // The walk must show an editable control: Ashby renders its form 400 ms after load.
+        stage = "walk";
+        let w: WindowState | undefined;
+        for (let n = 0; n < 50; n++) {
+          const walked = await host.link.run({ kind: "walk", pid, windowId });
+          w = walked.outcome === "ok" ? helper.model.windows.get(windowId) : undefined;
+          if (w !== undefined && [...w.nodes.values()].some((x) => x.editable === true)) break;
+          w = undefined;
+          await sleep(100);
+        }
+        if (w === undefined) throw new Error(`the walk never showed an editable control on ${name}`);
+        const w0 = timings.filter((x) => x.page === p.id && x.stage === "walk").at(-1);
+        row.walk = w0 === undefined ? null : { commandMs: w0.commandMs, extensionMs: w0.extensionMs, contentMs: contentMs() };
+        const before = new Map([...w.nodes.values()].map((n) => [n.key, n.value ?? ""]));
+        row.controls = [...w.nodes.values()].filter((n) => n.editable === true).length;
+        const oracleBefore = await settle(name);
+        const domBefore = (await evaluate(DOM_VALUES_JS)) as Record<string, string>;
+        const hiddenAtLoad = Object.entries(oracle.readings(name) ?? {}).filter(([k, r]) => !r.visible && (expected[k] ?? "none") !== "none").map(([k]) => k);
+
+        // wizard-3's file fields are P3's attach gap (the dropzone's input is hidden): not a fill miss.
+        const attachGap = (): string[] => (name === "wizard-3" ? Object.entries(oracle.readings(name) ?? {}).filter(([, r]) => r.kind === "file").map(([k]) => k) : []);
+        const eligibleOf = (gap: readonly string[]): number => Object.entries(expected).filter(([k, v]) => v !== "none" && !gap.includes(k)).length;
+        const judge: TaskJudge = {
+          preview: (reply) => void (t.warnings = reply.warnings),
+          score: async () => {
+            await settle(name);
+            t.scored = true;
+            const s = oracle.score(name, expected);
+            const gap = attachGap();
+            const kinds = oracle.readings(name) ?? {};
+            const picked = asksOn(name).picked;
+            t.eligible = eligibleOf(gap);
+            t.right = s.right.filter((k) => !gap.includes(k)).length;
+            t.wrong = s.wrong;
+            row.wrong = s.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${x.expected})`);
+            t.missed = s.missed.filter((k) => !gap.includes(k)).map((k) => `${k} (${kinds[k]?.kind === "file" ? "file; " : ""}${!picked.has(k) ? "canned never asked" : picked.get(k) === null ? "canned: none" : `canned picked '${picked.get(k)}'`})`);
+            t.attachGap = gap.filter((k) => (expected[k] ?? "none") !== "none");
+            t.absent = s.absent;
+            return { eligible: t.eligible, right: t.right };
+          },
+          unrestored: async () => {
+            // A field is unrestored when the DOM itself differs from before the Ask; one only the oracle still shows
+            // as changed is the probe's lag, said apart (oracleLag).
+            const now = await settle(name);
+            const dom = (await evaluate(DOM_VALUES_JS)) as Record<string, string>;
+            const differs = [...new Set([...Object.keys(oracleBefore), ...Object.keys(now)])].filter((k) => (now[k] ?? "") !== (oracleBefore[k] ?? ""));
+            const real = [...new Set([...Object.keys(domBefore), ...Object.keys(dom)])].filter((k) => (dom[k] ?? "") !== (domBefore[k] ?? ""));
+            t.oracleLag = differs.filter((k) => !real.includes(k));
+            return real.map((k) => `${k}: the DOM holds ${dom[k] ?? "nothing"} (was ${domBefore[k] ?? "nothing"}; the oracle reads '${now[k] ?? ""}')`);
+          },
+          scoreWrite: (label, value) => {
+            const hits = fieldsNamed(label, taskFields ?? []);
+            const f = hits[0];
+            const want = f === undefined || hits.length > 1 ? undefined : expected[f.name];
+            if (f === undefined || want === undefined) return "unscored";
+            if (want === "none") return "wrong";
+            if (value === want) return "right";
+            // A typed text is compared as written; a pick, a date or a number may be written in another form than the oracle reads.
+            return f.kind === "text" && !["date", "month", "time", "number"].includes(f.type) ? "wrong" : "unscored";
+          },
+        };
+        await goalPath(p, row, ready, w, before, judge);
+        // A page with no preview is scored as it stands, so its missed fields say what canned Jev was offered.
+        if (row.goal === null) await judge.score();
+        if (hiddenAtLoad.length > 0 && row.goal !== null && row.goal.revealMs === null) t.revealMissing = hiddenAtLoad;
+
+        // The wizard: a second Ask leaves Caret's fill on the page, and the harness presses Next to the next page (pressed
+        // even when the first Ask had no preview, so the next page still loads the way a person reaches it).
+        const nextName = taskPage(name).next;
+        if (nextName !== null && pages[i + 1]?.id === nextName) pressFrom = name;
+        if (pressFrom !== null && row.goal !== null) {
+          stage = "refill";
+          const mark = published.length;
+          const again = await askGoal(p, `eval-${p.id}-again`);
+          if (typeof again === "string") t.refill = `second Ask: ${again}`;
+          else {
+            const r = await acceptAll(again, mark);
+            await settle(name);
+            const s = oracle.score(name, expected);
+            const gap = attachGap();
+            t.refill = `${s.right.filter((k) => !gap.includes(k)).length}/${eligibleOf(gap)} right, ${s.wrong.length} wrong (${r.outcome}, ${r.tabs} tabs)`;
+            row.wrong.push(...s.wrong.map((x) => `second Ask ${x.field}: '${x.actual}' (expected ${x.expected})`));
+          }
+        }
+      } catch (e) {
+        row.error = e instanceof Error ? e.message : String(e);
+      }
+      const a = asksOn(name);
+      t.unmapped = [...a.unmapped];
+      t.ambiguous = [...a.ambiguous];
+      say(`${name} (${t.arrived}): goal ${row.goal?.outcome ?? "-"}, preview ${fmt(row.goal?.previewMs ?? null)} ms, ${row.goal?.steps ?? 0} steps, right ${t.right}/${t.eligible}, wrong ${t.wrong.length}${t.wrong.length > 0 ? ` (${row.wrong.join("; ")})` : ""}, missed ${t.missed.length}, tabs ${row.goal?.tabs ?? 0}, reveal ${fmt(row.goal?.revealMs ?? null)} ms, undo ${row.goal === null ? "-" : row.goal.restored ? "restored" : `NOT restored ${row.goal.notRestored.join("; ")}`}${(t.oracleLag?.length ?? 0) > 0 ? ` (the oracle lagged on ${t.oracleLag?.length ?? 0} fields the DOM shows restored)` : ""}, page ${fmt(row.pageMs)} ms${t.refill === null ? "" : `; second Ask ${t.refill}`}${row.error === null ? "" : `; ${row.error}`}`);
+    }
+    page = null;
+    readTaskFields = null;
+
+    const presses = timings.filter((x) => x.verb === "pagePress" || x.verb === "pageAttachFile").length;
+    const sum = oracle.summary();
+    writeTaskReport(rows, presses, sum);
+    const wrong = rows.reduce((n, r) => n + r.wrong.length, 0);
+    const failed = [
+      wrong > 0 ? `${wrong} wrong` : "",
+      sum.submits > 0 ? `${sum.submits} submits` : "",
+      sum.strayPresses.length > 0 ? `${sum.strayPresses.length} stray presses` : "",
+      sum.offsite.length > 0 ? `${sum.offsite.length} off-site requests` : "",
+      sum.probeErrors.length > 0 ? `${sum.probeErrors.length} probe errors` : "",
+      presses > 0 ? `${presses} page-link presses` : "",
+      posts > 0 ? `${posts} POSTs to the blank-page server` : "",
+      // No preview fails a page, except one with nothing eligible to fill (wizard-3 once its file fields, P3's attach gap,
+      // are set aside), where Caret's "found nothing to put in" is the right answer.
+      ...rows.filter((r) => r.goal === null && !(r.task?.scored === true && r.task.eligible === 0 && r.error?.startsWith("no preview") === true)).map((r) => `${r.id}: no preview (${r.error ?? "?"})`),
+      ...rows.filter((r) => r.goal !== null && !r.goal.restored).map((r) => `${r.id}: undo not restored`),
+    ].filter((x) => x !== "");
+    say(`pages ${rows.length}, wrong ${wrong}, submits ${sum.submits}, stray presses ${sum.strayPresses.length}, off-site ${sum.offsite.length}, probe errors ${sum.probeErrors.length}, presses ${presses}; ${failed.length === 0 ? "pass" : `FAIL: ${failed.join("; ")}`}`);
+    return failed.length === 0 ? 0 : 1;
+  };
+  if (fixture !== null) return await runTasks(fixture.site);
 
   const rows: Row[] = [];
   for (const p of pages) {
     page = p;
-    const row: Row = { id: p.id, kind: p.kind, controls: 0, walk: null, intent: null, fill: null, previewMs: null, run: null, finalWalk: null, pageMs: null, wrong: [], written: 0, error: null, goal: null };
+    const row = newRow(p);
     rows.push(row);
     try {
-      // The desk: last page's sources and memory gone, this page's in place, the source focused last and left for the browser.
-      for (const w of [...helper.model.windows.values()]) if (w.window.windowId !== windowId) helper.handleReader({ type: "windowClosed", v: 1, at: Date.now(), windowId: w.window.windowId });
-      for (const e of helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "l", op: "list", kind: "about" }).entries ?? []) helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "f", op: "forget", id: e.id });
-      for (const a of p.about) {
-        const added = helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "a", op: "add", kind: "about", fields: { label: a.label, value: a.value, source: "typed" } });
-        if (added.error !== null) throw new Error(`About '${a.label}' was not added: ${added.error}`);
-      }
-      const base = Date.now() - 60_000 * p.sources.length;
-      p.sources.forEach((s, i) => void helper.handleReader({ ...s, at: base + i * 60_000, focused: i === p.sources.length - 1 }));
-      helper.handleReader({ type: "appSwitch", v: 1, at: Date.now(), from: textEdit, to: session.info.browser });
+      desk(p);
 
       // Load. Ready is the page's own document.readyState, read through the DevTools pipe.
       stage = "load";
@@ -554,18 +1052,22 @@ const pct = (xs: readonly number[], p: number): number | null => {
 const fmt = (x: number | null): string => (x === null ? "-" : String(Math.round(x)));
 const line = (name: string, xs: readonly number[], target: string, note = ""): string => `| ${name} | ${xs.length} | ${fmt(pct(xs, 0.5))} | ${fmt(pct(xs, 0.95))} | ${fmt(xs.length === 0 ? null : Math.max(...xs))} | ${target} | ${note} |`;
 
+/** A write's kind, for the per-kind rows of the stage table, and each kind's budget. */
+const kindOf = (t: VerbTiming): string => (t.verb === "pageSelect" ? "native select" : t.control === "combobox" ? "combobox" : t.control === "radio" || (t.verb === "pageChooseOption" && t.control === "button") ? "radio / Yes-No" : t.control === "checkbox" ? "checkbox" : t.control === "date" || t.control === "time" || t.control === "datetime" ? "date / time" : "text");
+const kinds = ["text", "date / time", "radio / Yes-No", "checkbox", "native select", "combobox"];
+const target: Record<string, string> = { text: "≤ 120", "date / time": "≤ 120", "radio / Yes-No": "≤ 120", checkbox: "≤ 120", "native select": "≤ 150", combobox: "≤ 1500 (cap 4000)" };
+const numsOf = (rows: readonly Row[], f: (r: Row) => number | null | undefined): number[] => rows.flatMap((r) => {
+  const x = f(r);
+  return typeof x === "number" ? [x] : [];
+});
+const cell = (s: string, max = 400): string => s.replace(/\|/g, "/").replace(/\n/g, " ").slice(0, max);
+
 function writeReport(rows: readonly Row[], presses: number): void {
-  const nums = (f: (r: Row) => number | null | undefined): number[] => rows.flatMap((r) => {
-    const x = f(r);
-    return typeof x === "number" ? [x] : [];
-  });
+  const nums = (f: (r: Row) => number | null | undefined): number[] => numsOf(rows, f);
   const acts = timings.filter((t) => t.stage === "writes" && t.verb !== "pageWalk");
   const walks = timings.filter((t) => t.verb === "pageWalk" && t.extensionMs !== null);
   const rewalks = acts.flatMap((t) => (t.rewalk === null ? [] : [t.rewalk]));
   const hop = [...walks.map((t) => t.commandMs - (t.extensionMs as number)), ...rewalks.flatMap((r) => (r.extensionMs === null ? [] : [r.commandMs - r.extensionMs]))];
-  const kindOf = (t: VerbTiming): string => (t.verb === "pageSelect" ? "native select" : t.control === "combobox" ? "combobox" : t.control === "radio" || (t.verb === "pageChooseOption" && t.control === "button") ? "radio / Yes-No" : t.control === "checkbox" ? "checkbox" : t.control === "date" || t.control === "time" || t.control === "datetime" ? "date / time" : "text");
-  const kinds = ["text", "date / time", "radio / Yes-No", "checkbox", "native select", "combobox"];
-  const target: Record<string, string> = { text: "≤ 120", "date / time": "≤ 120", "radio / Yes-No": "≤ 120", checkbox: "≤ 120", "native select": "≤ 150", combobox: "≤ 1500 (cap 4000)" };
   const md = [
     `# Page loop latency (P1): ${args.jev} Jev`,
     "",
@@ -602,7 +1104,7 @@ function writeReport(rows: readonly Row[], presses: number): void {
     md.push(
       `# Page goals (P2): ${args.jev} Jev`,
       "",
-      `${rows.length} pages. Ask: "fill out this form from my notes", heads maker, page planner. Jev: ${args.jev}${LIVE ? `, ${calls.length} requests, $${spent.toFixed(4)}` : ""}. Wrong ${rows.reduce((n, r) => n + r.wrong.length, 0)}, presses ${presses}, POSTs ${posts}.`,
+      `${rows.length} pages. Ask: "fill out this form", heads maker, page planner. Jev: ${args.jev}${LIVE ? `, ${calls.length} requests, $${spent.toFixed(4)}` : ""}. Wrong ${rows.reduce((n, r) => n + r.wrong.length, 0)}, presses ${presses}, POSTs ${posts}.`,
       "",
       "| stage | n | p50 | p95 | max | budget | how measured |",
       "|---|---|---|---|---|---|---|",
@@ -626,6 +1128,70 @@ function writeReport(rows: readonly Row[], presses: number): void {
   }
   writeFileSync(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
   writeFileSync(join(OUT, "page-loop.json"), `${JSON.stringify({ jev: args.jev, cft: CFT_BUILD, spent, posts, presses, rows, timings, calls }, null, 1)}\n`);
+  say(`wrote ${join(OUT, "page-loop.md")}`);
+}
+
+/** The task suite's report: each page as F1's oracle scored it, the oracle's run-wide record, and the stage times. */
+function writeTaskReport(rows: readonly Row[], presses: number, sum: ReturnType<Oracle["summary"]>): void {
+  const nums = (f: (r: Row) => number | null | undefined): number[] => numsOf(rows, f);
+  const acts = timings.filter((t) => t.stage === "writes" && t.verb !== "pageWalk");
+  const rewalks = acts.flatMap((t) => (t.rewalk === null ? [] : [t.rewalk]));
+  const g = rows.flatMap((r) => (r.goal === null ? [] : [{ r, g: r.goal }]));
+  const dis = g.flatMap(({ r, g: x }) => x.disagreements.map((d) => ({ page: r.id, ...d })));
+  const wrong = rows.reduce((n, r) => n + r.wrong.length, 0);
+  const notes = (r: Row): string => {
+    const t = r.task;
+    if (t === undefined) return "";
+    return [
+      t.arrived,
+      r.error ?? "",
+      t.refill === null ? "" : `second Ask: ${t.refill}`,
+      t.attachGap.length > 0 ? `attach gap (P3, not counted): ${t.attachGap.join(", ")}` : "",
+      r.goal === null && t.scored && t.eligible === 0 ? "nothing eligible to fill, so no preview is right" : "",
+      t.revealMissing.length > 0 ? `no afterReveal preview; expected fields hidden at load: ${t.revealMissing.join(", ")}` : "",
+      t.absent.length > 0 ? `absent: ${t.absent.join(", ")}` : "",
+      t.unmapped.length > 0 ? `labels no field carries: ${t.unmapped.join("; ")}` : "",
+      t.ambiguous.length > 0 ? `labels several fields carry: ${t.ambiguous.join("; ")}` : "",
+      t.warnings.length > 0 ? `left: ${t.warnings.join(" / ")}` : "",
+    ].filter((x) => x !== "").join(". ");
+  };
+  const md = [
+    `# Page goals on F1's task pages (P2): ${args.jev} Jev`,
+    "",
+    `${rows.length} pages, served by FixtureSite in-process; Chrome for Testing ${CFT_BUILD}, headless, behind F1's network sink; extension, signed bridge and test host as accept.ts runs them. Ask: "${TASK_INSTRUCTION}" (it names no source: "from my notes" would keep Caret to the note, and the expectations also draw on the email and memory), heads maker, page planner. Scored by F1's oracle (oracle.ts), which reads each page through its own probe: right / wrong / missed from oracle.score against tasks/expect/<page>.json; eligible is the fields expected to hold a value. Undo is checked against oracle.values before the Ask. Jev: ${args.jev}${LIVE ? `, ${calls.length} requests, $${spent.toFixed(4)}` : ""}.`,
+    "",
+    ...(LIVE
+      ? []
+      : [
+          "Canned Jev's mapping: a fill question names its field by the label, nearest label or placeholder in Caret's descriptor. Canned Jev takes the one data-oracle field whose markup carries that text (label[for], aria-labelledby, aria-label, a wrapping label, a fieldset legend, its row's label, its placeholder), read from the live page through the DevTools pipe, and answers with a candidate that is that field's expected value: exactly; the same day or month for a date or month input; the option as a whole word for a select, radios or Yes/No; for a picker or react-select also two or more words that each start a word of the option. A label no field or several fields carry gets none. It never reads Caret's walk, so a field Caret mislabels is asked about and answered none.",
+          "",
+        ]),
+    `Oracle, whole run: wrong ${wrong}, submits ${sum.submits}, stray presses ${sum.strayPresses.length}${sum.strayPresses.length > 0 ? ` (${sum.strayPresses.map((p) => `${p.page} ${p.target}${p.trusted ? " trusted" : ""}`).join("; ")})` : ""}, harness presses ${sum.harnessPresses}, off-site ${sum.offsite.length}${sum.offsite.length > 0 ? ` (${sum.offsite.map((o) => `${o.method} ${o.target}`).join("; ")})` : ""}, browser's own services ${sum.browserService}, probe errors ${sum.probeErrors.length}${sum.probeErrors.length > 0 ? ` (${sum.probeErrors.map((e) => `${e.page}: ${e.error}`).join("; ")})` : ""}. Page-link presses ${presses}.`,
+    "",
+    "| stage | n | p50 | p95 | max | budget | how measured |",
+    "|---|---|---|---|---|---|---|",
+    line("Walk on load (round trip)", nums((r) => r.walk?.commandMs), "≤ 100", "the first walk that showed an editable control"),
+    line("Preview visible, Ask", nums((r) => r.goal?.previewMs), "≤ 2200", "the oracle's first full report to the goal's preview: walk, intent, fill, plan"),
+    line("Reveal preview after the last write", nums((r) => r.goal?.revealMs), "≤ 1500", "accept's end to the afterReveal preview"),
+    line("Page time", nums((r) => r.pageMs), "< 10000", "ready to the last segment's end, every Tab included"),
+    ...kinds.map((k) => line(`Write: ${k} (verb round trip)`, acts.filter((t) => kindOf(t) === k).map((t) => t.commandMs), target[k] as string, "")),
+    line("  re-walk after a write", rewalks.map((r) => r.commandMs), "(cut in P2)", "acts that still re-walk: combobox picks, failures"),
+    "",
+    "| page | controls | preview | steps | left | tabs | right / eligible | wrong | missed | reveal | outcome | undo | page | disagreements | note |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ...rows.map((r) => {
+      const t = r.task;
+      return `| ${r.id} | ${r.controls} | ${fmt(r.goal?.previewMs ?? null)} | ${r.goal?.steps ?? "-"} | ${r.goal?.left ?? "-"} | ${r.goal?.tabs ?? "-"} | ${t === undefined || !t.scored ? "-" : `${t.right} / ${t.eligible}`} | ${r.wrong.length === 0 ? 0 : cell(r.wrong.join("; "))} | ${t === undefined || t.missed.length === 0 ? 0 : cell(`${t.missed.length}: ${t.missed.join("; ")}`)} | ${fmt(r.goal?.revealMs ?? null)} | ${r.goal?.outcome ?? "-"} | ${r.goal === null ? "-" : r.goal.restored ? "restored" : cell(r.goal.notRestored.join("; "), 300)} | ${fmt(r.pageMs)} | ${r.goal?.disagreements.length ?? "-"} | ${cell(notes(r), 900)} |`;
+    }),
+    "",
+    `Disagreements, verifyWrites against proposeFill: ${dis.length} fill-gated writes would be dropped by verifyWrites (${g.reduce((n, x) => n + x.g.verifyRequests, 0)} extra requests). Scored by the field's expectation: wrong ${dis.filter((d) => d.key === "wrong").length}, right ${dis.filter((d) => d.key === "right").length}, unscored ${dis.filter((d) => d.key === "unscored").length} (a pick, date or number whose written form differs from the oracle's reading, or a label no single field carries).${LIVE ? "" : " Canned Jev answers no to every yes/no question, verifyWrites' included, so under canned Jev every fill-gated write counts as dropped: this table means something only with live Jev."}`,
+    "",
+    "| page | field | value | verifyWrites | expectation |",
+    "|---|---|---|---|---|",
+    ...dis.map((d) => `| ${d.page} | ${cell(d.field)} | ${cell(d.value, 60)} | ${d.verify} | ${d.key} |`),
+  ];
+  writeFileSync(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
+  writeFileSync(join(OUT, "page-loop.json"), `${JSON.stringify({ suite: "tasks", jev: args.jev, cft: CFT_BUILD, spent, presses, oracle: sum, cannedPicks: Object.fromEntries([...taskAsks].map(([k, a]) => [k, Object.fromEntries(a.picked)])), rows, timings, calls }, null, 1)}\n`);
   say(`wrote ${join(OUT, "page-loop.md")}`);
 }
 
