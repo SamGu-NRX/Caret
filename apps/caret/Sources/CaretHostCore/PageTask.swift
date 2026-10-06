@@ -13,6 +13,9 @@ import Foundation
 /// - A preview for another goal changes nothing unless it continues this one: the fields this goal's writes
 ///   revealed (`afterReveal`, naming this goal in `replaces`), the next page after the user's own Next
 ///   (`nextPage`, P3), or a fresh plan after a stop that named it (`freshPlan`).
+/// - H14: Tab sends a file only when the user confirmed it in this preview: one they chose in the attach row's open
+///   panel, or the saved file the row offered, confirmed with ⌘2 or a click. Tab alone never confirms a file. One
+///   file per Tab, as the helper takes one (`GoalAccept.confirmedFile`).
 public struct PageTask: Equatable, Sendable {
     public struct Row: Equatable, Sendable {
         public enum State: String, Codable, Sendable {
@@ -36,12 +39,45 @@ public struct PageTask: Equatable, Sendable {
         /// The value was chosen from a list the page offers.
         public var picked: Bool
         public var state: State
+        /// H14: an attach step's row; nil for every other kind.
+        public var attach: Attach?
 
-        /// The user's own step: a hand-off. Caret presses nothing on a page and never marks it done. An attach step
-        /// (P3) is the user's too: this host declares no goalFiles until its file chooser exists (lead addendum 2).
-        public var yours: Bool { kind == .handoff || kind == .press || kind == .attach }
+        /// H14: what an attach row offers and what the user confirmed in it.
+        public struct Attach: Equatable, Sendable {
+            /// The file control's name: "Resume".
+            public var label: String
+            /// The control's accept tokens; empty when it takes any file.
+            public var accept: [String]
+            /// What the helper offered: a chooser, or a file the user kept for this question.
+            public var offered: GoalProgress.Step.File
+            /// The file the user confirmed in this preview: one they chose, or the saved one after ⌘2 or a click.
+            public var confirmed: AttachFile?
+            /// Why the last file confirmed here was not taken, or that Tab needs a file first.
+            public var problem: String?
 
-        public init(step: Int, kind: GoalProgress.Step.Kind, says: String, label: String? = nil, value: String? = nil, picked: Bool = false, state: State = .pending) {
+            public init(label: String, accept: [String], offered: GoalProgress.Step.File, confirmed: AttachFile? = nil, problem: String? = nil) {
+                self.label = label
+                self.accept = accept
+                self.offered = offered
+                self.confirmed = confirmed
+                self.problem = problem
+            }
+
+            /// The saved file the row offers, as the row shows it.
+            public var savedFile: AttachFile? {
+                guard case .saved(_, let path, let name, let edited) = offered else { return nil }
+                return AttachFile(path: path, name: name, edited: edited)
+            }
+        }
+
+        /// The user's own step: a hand-off. Caret presses nothing on a page and never marks it done.
+        public var yours: Bool { kind == .handoff || kind == .press }
+
+        /// The step is part of the run Tab starts: every write, and an attach row only with a file confirmed. An attach
+        /// row with none is left to the user (runs.ts drops it from the run).
+        public var runs: Bool { !yours && (kind != .attach || attach?.confirmed != nil) }
+
+        public init(step: Int, kind: GoalProgress.Step.Kind, says: String, label: String? = nil, value: String? = nil, picked: Bool = false, state: State = .pending, attach: Attach? = nil) {
             self.step = step
             self.kind = kind
             self.says = says
@@ -49,6 +85,7 @@ public struct PageTask: Equatable, Sendable {
             self.value = value
             self.picked = picked
             self.state = state
+            self.attach = attach
         }
     }
 
@@ -66,9 +103,17 @@ public struct PageTask: Equatable, Sendable {
         public var accepted = false
         /// The executor task it runs in, from its first receipt.
         public var taskId: String?
+        /// The file the last Tab sent with this group, so a refusal of that file can give the preview back.
+        public var sentFile: GoalAccept.ConfirmedFile?
 
         /// Writes Caret makes in this group.
         public var writes: Int { rows.filter { $0.kind == .write }.count }
+        /// The group's attach rows, in order.
+        public var attachRows: [Row] { rows.filter { $0.kind == .attach } }
+        /// The one file confirmed in this group, if any.
+        public var confirmedFile: GoalAccept.ConfirmedFile? {
+            rows.first { $0.attach?.confirmed != nil }.flatMap { r in r.attach?.confirmed.map { GoalAccept.ConfirmedFile(step: r.step, path: $0.path) } }
+        }
     }
 
     public enum Stage: Equatable, Sendable {
@@ -131,11 +176,29 @@ public struct PageTask: Equatable, Sendable {
 
     static func group(_ p: GoalProgress.Preview, goalId: String) -> Group {
         let byStep = Dictionary((p.page?.rows ?? []).map { ($0.step, $0) }, uniquingKeysWith: { a, _ in a })
+        let files = Dictionary((p.page?.files ?? []).map { ($0.step, $0) }, uniquingKeysWith: { a, _ in a })
         let rows = p.steps.map { s -> Row in
             let r = s.kind == .write ? byStep[s.index] : nil
-            return Row(step: s.index, kind: s.kind, says: s.says, label: r?.label, value: r?.value, picked: r?.picked ?? false)
+            var attach: Row.Attach?
+            if s.kind == .attach, let offered = s.file {
+                // A helper from before H14 names no file row: the step's own words stand for the control's name.
+                let row = files[s.index]
+                attach = Row.Attach(label: row?.label ?? Self.attachLabel(s, offered), accept: row?.accept ?? [], offered: offered)
+            }
+            return Row(step: s.index, kind: s.kind, says: s.says, label: r?.label, value: r?.value, picked: r?.picked ?? false, attach: attach)
         }
         return Group(goalId: goalId, segment: p.segment, reason: p.reason, digest: p.digest, expires: p.expires, rows: rows, withheld: p.warnings)
+    }
+
+    /// The control's name in an attach step's words ("Resume: a file you choose", "Resume: Resume.pdf"; lower.ts),
+    /// for a page view with no file rows.
+    static func attachLabel(_ s: GoalProgress.Step, _ offered: GoalProgress.Step.File) -> String {
+        let tail: String
+        switch offered {
+        case .choose: tail = ": a file you choose"
+        case .saved(_, _, let name, _): tail = ": \(name)"
+        }
+        return s.says.hasSuffix(tail) && s.says.count > tail.count ? String(s.says.dropLast(tail.count)) : s.says
     }
 
     /// The group Tab is about: the newest previewed.
@@ -168,10 +231,42 @@ public struct PageTask: Equatable, Sendable {
             stage = .ended(.notRun(PageTaskCopy.expired))
             return .held("the preview expired")
         }
+        // A preview that only attaches runs nothing without a file (runs.ts): Tab waits for one, and says so.
+        let file = groups[i].confirmedFile
+        if file == nil, groups[i].writes == 0, let first = groups[i].rows.firstIndex(where: { $0.kind == .attach }) {
+            groups[i].rows[first].attach?.problem = PageTaskCopy.chooseFirst
+            return .held("no file was chosen")
+        }
         groups[i].accepted = true
+        groups[i].sentFile = file
         stage = .running
         markNextWriting(in: i, after: -1)
-        return .accept(GoalAccept(goalId: groups[i].goalId, segment: groups[i].segment, digest: groups[i].digest, at: nowMs))
+        return .accept(GoalAccept(goalId: groups[i].goalId, segment: groups[i].segment, digest: groups[i].digest, at: nowMs, confirmedFile: file))
+    }
+
+    // MARK: - Attach rows (H14)
+
+    /// The user's file for attach row `step` of the waiting group: one they chose in the open panel, or the saved one
+    /// they confirmed. Any other row's file in the group is let go: one file goes with one Tab. False when the group
+    /// is not waiting or has no such row.
+    @discardableResult
+    public mutating func confirm(step: Int, file: AttachFile) -> Bool {
+        guard case .preview = stage, !current.accepted, GoalFiles.isAbsolutePath(file.path) else { return false }
+        let i = groups.count - 1
+        guard let r = groups[i].rows.firstIndex(where: { $0.step == step && $0.kind == .attach && $0.attach != nil }) else { return false }
+        for o in groups[i].rows.indices where groups[i].rows[o].kind == .attach {
+            groups[i].rows[o].attach?.confirmed = nil
+            groups[i].rows[o].attach?.problem = nil
+        }
+        groups[i].rows[r].attach?.confirmed = file
+        return true
+    }
+
+    /// ⌘2 or a click on a row offering a saved file: the user's yes to that file for this Tab.
+    @discardableResult
+    public mutating func confirmSaved(step: Int) -> Bool {
+        guard let file = current.rows.first(where: { $0.step == step && $0.kind == .attach })?.attach?.savedFile else { return false }
+        return confirm(step: step, file: file)
     }
 
     // MARK: - From the helper
@@ -275,7 +370,7 @@ public struct PageTask: Equatable, Sendable {
         for r in groups[g].rows.indices where groups[g].rows[r].state == .writing {
             groups[g].rows[r].state = s.reason == .you ? .pending : .failed
         }
-        if let step = s.step, s.reason != .you, let i = groups[g].rows.firstIndex(where: { $0.step == step && $0.state == .pending && !$0.yours }) {
+        if let step = s.step, s.reason != .you, let i = groups[g].rows.firstIndex(where: { $0.step == step && $0.state == .pending && $0.runs }) {
             groups[g].rows[i].state = .failed
         }
         end(.stopped(s))
@@ -285,7 +380,7 @@ public struct PageTask: Equatable, Sendable {
     /// The row after `after` that the run writes next, marked as being written; any other writing row goes back.
     private mutating func markNextWriting(in g: Int, after: Int) {
         for r in groups[g].rows.indices where groups[g].rows[r].state == .writing { groups[g].rows[r].state = .pending }
-        if let next = groups[g].rows.indices.first(where: { $0 > after && !groups[g].rows[$0].yours && groups[g].rows[$0].state == .pending }) {
+        if let next = groups[g].rows.indices.first(where: { $0 > after && groups[g].rows[$0].runs && groups[g].rows[$0].state == .pending }) {
             groups[g].rows[next].state = .writing
         }
     }
@@ -295,16 +390,36 @@ public struct PageTask: Equatable, Sendable {
         undo = tasks.isEmpty ? .none : .available
     }
 
+    public enum Refusal: Equatable, Sendable {
+        /// The task ended: nothing ran.
+        case ended
+        /// H14: the helper would not take the file the user confirmed and keeps the preview waiting (runs.ts): the
+        /// row says why and waits for another file and another Tab.
+        case fileRefused
+    }
+
     /// The helper refused this task's acceptance (an `error` naming `goalAccept`). It ends the task, since the
-    /// helper never had what it shows or has stopped; earlier groups' writes stay undoable.
-    public mutating func refused(_ message: String) -> Bool {
+    /// helper never had what it shows or has stopped; earlier groups' writes stay undoable. A refusal of the file
+    /// alone gives the preview back instead.
+    public mutating func refused(_ message: String) -> Refusal? {
         let prefix = "goalAccept refused: "
-        guard case .running = stage, current.taskId == nil, message.hasPrefix(prefix) else { return false }
-        for r in groups[groups.count - 1].rows.indices where groups[groups.count - 1].rows[r].state == .writing {
-            groups[groups.count - 1].rows[r].state = .pending
+        guard case .running = stage, current.taskId == nil, message.hasPrefix(prefix) else { return nil }
+        let i = groups.count - 1
+        for r in groups[i].rows.indices where groups[i].rows[r].state == .writing { groups[i].rows[r].state = .pending }
+        let why = String(message.dropFirst(prefix.count))
+        if let line = PageTaskCopy.fileRefusal(why, sent: groups[i].sentFile != nil) {
+            groups[i].accepted = false
+            stage = .preview
+            let step = groups[i].sentFile?.step
+            groups[i].sentFile = nil
+            if let r = groups[i].rows.firstIndex(where: { $0.kind == .attach && ($0.step == step || step == nil) }) {
+                groups[i].rows[r].attach?.confirmed = nil
+                groups[i].rows[r].attach?.problem = line
+            }
+            return .fileRefused
         }
-        end(.notRun(PageTaskCopy.acceptRefused(String(message.dropFirst(prefix.count)))))
-        return true
+        end(.notRun(PageTaskCopy.acceptRefused(why)))
+        return .ended
     }
 
     /// The helper's connection dropped.

@@ -72,19 +72,35 @@ public struct GoalRequest: Codable, Equatable, Sendable {
 /// preview expired, by name, and runs nothing.
 public struct GoalAccept: Codable, Equatable, Sendable {
     public static let type = "goalAccept"
+    /// P3, H14: the file the user confirmed in this preview for attach step `step`: one they chose in the attach
+    /// row's file chooser, or the saved file the row offered and they confirmed with ⌘2 or a click. Never a file Tab
+    /// alone chose (`PageTask.tab`).
+    public struct ConfirmedFile: Codable, Equatable, Sendable {
+        public var step: Int
+        /// Absolute.
+        public var path: String
+
+        public init(step: Int, path: String) {
+            self.step = step
+            self.path = path
+        }
+    }
+
     public var goalId: String
     public var segment: Int
     public var digest: String
     public var at: Int64
+    public var confirmedFile: ConfirmedFile?
 
-    public init(goalId: String, segment: Int, digest: String, at: Int64) {
+    public init(goalId: String, segment: Int, digest: String, at: Int64, confirmedFile: ConfirmedFile? = nil) {
         self.goalId = goalId
         self.segment = segment
         self.digest = digest
         self.at = at
+        self.confirmedFile = confirmedFile
     }
 
-    enum CodingKeys: String, CodingKey { case type, v, goalId, segment, digest, at }
+    enum CodingKeys: String, CodingKey { case type, v, goalId, segment, digest, at, confirmedFile }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -93,7 +109,12 @@ public struct GoalAccept: Codable, Equatable, Sendable {
         segment = try c.decode(Int.self, forKey: .segment)
         digest = try GoalPlans.digest(try c.decode(String.self, forKey: .digest))
         at = try c.decode(Int64.self, forKey: .at)
+        confirmedFile = try c.decodeIfPresent(ConfirmedFile.self, forKey: .confirmedFile)
         guard segment >= 0 else { throw ProtocolError("goalAccept segment is negative") }
+        // protocol.ts AbsolutePath.
+        if let f = confirmedFile, f.step < 0 || !GoalFiles.isAbsolutePath(f.path) {
+            throw ProtocolError("a confirmed file names its attach step and an absolute path")
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -101,6 +122,7 @@ public struct GoalAccept: Codable, Equatable, Sendable {
         try c.encode(Self.type, forKey: .type); try c.encode(Proto.version, forKey: .v)
         try c.encode(goalId, forKey: .goalId); try c.encode(segment, forKey: .segment)
         try c.encode(digest, forKey: .digest); try c.encode(at, forKey: .at)
+        try c.encodeIfPresent(confirmedFile, forKey: .confirmedFile)
     }
 }
 
@@ -218,6 +240,22 @@ public struct GoalProgress: Codable, Equatable, Sendable {
             }
         }
 
+        /// H14 (protocol.ts GoalPageView.files): an attach step's row as the panel shows it.
+        public struct FileRow: Codable, Equatable, Sendable {
+            /// The attach step's index in the goal.
+            public var step: Int
+            /// The file control's name on the page: "Resume", "Or drop your resume here".
+            public var label: String
+            /// The control's accept tokens, lowercased (".pdf", "application/pdf", "image/*"); empty when it takes any file.
+            public var accept: [String]
+
+            public init(step: Int, label: String, accept: [String]) {
+                self.step = step
+                self.label = label
+                self.accept = accept
+            }
+        }
+
         public var windowId: String
         /// The browser the page is in: Tab and Esc for the panel are the keys headed to its pid.
         public var app: AppRef
@@ -228,10 +266,12 @@ public struct GoalProgress: Codable, Equatable, Sendable {
         /// Where the values came from, without "from": "Notes, Robin's details and what you told Caret".
         public var from: String
         public var rows: [Row]
-        /// Empty file inputs the Ask's scope takes, which Caret leaves to the user.
+        /// Empty file inputs the Ask's scope takes, which Caret leaves to the user: those with no attach step.
         public var attach: [String]
+        /// H14: each attach step's row; nil from a helper before H14, or when the segment attaches nothing.
+        public var files: [FileRow]?
 
-        public init(windowId: String, app: AppRef, anchor: Frame?, viewport: Frame?, from: String, rows: [Row], attach: [String]) {
+        public init(windowId: String, app: AppRef, anchor: Frame?, viewport: Frame?, from: String, rows: [Row], attach: [String], files: [FileRow]? = nil) {
             self.windowId = windowId
             self.app = app
             self.anchor = anchor
@@ -239,9 +279,10 @@ public struct GoalProgress: Codable, Equatable, Sendable {
             self.from = from
             self.rows = rows
             self.attach = attach
+            self.files = files
         }
 
-        enum CodingKeys: String, CodingKey { case windowId, app, anchor, viewport, from, rows, attach }
+        enum CodingKeys: String, CodingKey { case windowId, app, anchor, viewport, from, rows, attach, files }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -252,7 +293,13 @@ public struct GoalProgress: Codable, Equatable, Sendable {
             from = try c.decode(String.self, forKey: .from)
             rows = try c.decode([Row].self, forKey: .rows)
             attach = try c.decode([String].self, forKey: .attach)
+            files = try c.decodeIfPresent([FileRow].self, forKey: .files)
             guard !windowId.isEmpty else { throw ProtocolError("a page view names its page window") }
+            if let files {
+                guard files.count <= 8, Set(files.map(\.step)).count == files.count,
+                      files.allSatisfy({ $0.step >= 0 && !$0.label.isEmpty && $0.label.count <= 300 && $0.accept.count <= 20 && $0.accept.allSatisfy { !$0.isEmpty && $0.count <= 100 } })
+                else { throw ProtocolError("a page view has up to 8 file rows, one per attach step, each named") }
+            }
             guard rows.count <= 24, rows.allSatisfy({ $0.step >= 0 }) else { throw ProtocolError("a page view has up to 24 rows, each a step") }
             guard attach.count <= 8, attach.allSatisfy({ !$0.isEmpty }) else { throw ProtocolError("a page view names up to 8 file inputs") }
         }
@@ -261,6 +308,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(windowId, forKey: .windowId); try c.encode(app, forKey: .app); try c.encode(anchor, forKey: .anchor); try c.encode(viewport, forKey: .viewport)
             try c.encode(from, forKey: .from); try c.encode(rows, forKey: .rows); try c.encode(attach, forKey: .attach)
+            try c.encodeIfPresent(files, forKey: .files)
         }
     }
 
@@ -274,7 +322,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
     public struct Step: Equatable, Sendable {
         public enum Kind: String, Codable, Sendable { case write, calendar, press, handoff, attach }
         /// P3 (protocol.ts GoalStepView.file): the file an attach step's row offers. Only a host that declared
-        /// goalFiles gets attach steps; this host shows one as the user's own step until its file chooser exists.
+        /// goalFiles gets attach steps (H14: `PageTask` shows each as an attach row).
         public enum File: Equatable, Sendable {
             case choose
             case saved(savedId: String, path: String, name: String, edited: Int64)
@@ -438,6 +486,9 @@ public struct GoalProgress: Codable, Equatable, Sendable {
             )
             if let page = preview.page, let bad = page.rows.first(where: { r in !steps.contains { $0.index == r.step && $0.kind == .write } }) {
                 throw ProtocolError("page row \(bad.step) is not a write step of the segment")
+            }
+            if let bad = preview.page?.files?.first(where: { r in !steps.contains { $0.index == r.step && $0.kind == .attach } }) {
+                throw ProtocolError("page file row \(bad.step) is not an attach step of the segment")
             }
             guard preview.segment >= 0, preview.segments > preview.segment else { throw ProtocolError("a goal segment's index is under its count") }
             event = .segment(preview)

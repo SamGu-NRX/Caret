@@ -2,6 +2,7 @@ import AppKit
 import CaretHostCore
 import CaretScreenCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The screen side of `PageTaskMachine` (brief H11): draws the page task panel at the form, moves it as the
 /// machine says, and sends what its keys took. Every decision is the machine's and is tested there
@@ -25,6 +26,9 @@ final class PageTaskCoordinator {
         self.drawsOnScreen = drawsOnScreen
         machine = PageTaskMachine(arbiter: arbiter, clock: RunLoopClock())
         machine.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
+        // H14: only a host on screen can show an open panel, so only it may name goalFiles.
+        machine.canChooseFiles = drawsOnScreen
+        model.onAttach = { [weak self] step in self?.machine.attachRequested(step: step) }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
@@ -54,7 +58,69 @@ final class PageTaskCoordinator {
             if client?.send(control) != true { status.increment("pageTask.controlUnsent") }
         case .count(let name): status.increment(name)
         case .toastTaken: onToastTaken?()
+        case .chooseFile(let choice): choose(choice)
         }
+    }
+
+    // MARK: - The open panel (H14)
+
+    /// The panel's frame on screen (global, top-left points) while it shows, else where it last stood: the line
+    /// offering to keep a file stands under it.
+    private(set) var lastFrame: CGRect?
+
+    /// Opens the open panel for an attach row the user asked to fill. Caret comes to the front for it, as any app
+    /// does for its own open panel; the user moves through it with the keys and pointer as anywhere on the Mac.
+    /// Closing it, with a file or without, gives the foreground back to the browser the page is in.
+    private func choose(_ choice: FileChoice) {
+        let open = NSOpenPanel()
+        open.canChooseFiles = true
+        open.canChooseDirectories = false
+        open.allowsMultipleSelection = false
+        open.prompt = "Choose"
+        open.message = "Choose a file for '\(choice.label)'"
+        if let types = Self.contentTypes(choice.accept) { open.allowedContentTypes = types }
+        NSApp.activate(ignoringOtherApps: true)
+        open.begin { [weak self] response in
+            let url = response == .OK ? open.url : nil
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if let url, let file = Self.attachFile(url) {
+                    self.machine.filePicked(step: choice.step, file: file)
+                } else {
+                    self.machine.chooserClosed()
+                }
+                if let browser = NSRunningApplication(processIdentifier: choice.browserPid) {
+                    NSApp.yieldActivation(to: browser)
+                    browser.activate()
+                }
+            }
+        }
+    }
+
+    /// The file as the row shows it: its whole name and when it was last changed. Nothing is read from it.
+    static func attachFile(_ url: URL) -> AttachFile? {
+        guard url.isFileURL else { return nil }
+        let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        return AttachFile(path: url.path, name: url.lastPathComponent, edited: modified.map { Int64(($0.timeIntervalSince1970 * 1000).rounded()) })
+    }
+
+    /// The open panel's types for a control's accept tokens: ".pdf" by extension, "application/pdf" by MIME type,
+    /// "image/*" as the whole family. Nil (any file) when the control names none, or names one the Mac has no type
+    /// for: a chooser that hides a file the page would take is worse than one that shows a file it may refuse.
+    static func contentTypes(_ accept: AcceptTypes) -> [UTType]? {
+        guard !accept.isEmpty else { return nil }
+        var out: [UTType] = []
+        for ext in accept.extensions {
+            guard let t = UTType(filenameExtension: ext) else { return nil }
+            out.append(t)
+        }
+        for mime in accept.mimeTypes {
+            let family: [String: UTType] = ["image/*": .image, "audio/*": .audio, "video/*": .movie, "text/*": .text]
+            // An unknown MIME type comes back as a dynamic type no file on disk carries: the panel would show nothing.
+            guard let t = family[mime] ?? UTType(mimeType: mime), !t.isDynamic else { return nil }
+            out.append(t)
+        }
+        return out
     }
 
     private func draw(_ content: PageTaskPanel, motion: PageTaskMotion, anchor: PageTaskAnchor) {
@@ -74,6 +140,8 @@ final class PageTaskCoordinator {
             }
         }
         panel.text = content.spoken
+        // H14: an attach row takes a click while the preview waits; otherwise the panel is click-through as before.
+        panel.clickableContent = content.sections.contains { $0.lines.contains { $0.kind == .attach } }
         guard drawsOnScreen else { return }
         let character = FigureSettings.shared.character
         let view = PageTaskLiveView(model: model, character: character, animated: !reduce)
@@ -88,6 +156,8 @@ final class PageTaskCoordinator {
         }
         panel.setContent(view)
         if first || motion == .enter { panel.enter(scales: false, rises: true) }
+        let f = panel.contentFrame(size: panel.size)
+        lastFrame = Screen.ax(f)
         // VoiceOver hears the panel's sentence and keys when they change, not each row as it resolves.
         if content.announcement != announced {
             announced = content.announcement

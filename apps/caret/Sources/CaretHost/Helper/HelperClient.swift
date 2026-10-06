@@ -35,6 +35,8 @@ final class HelperClient: @unchecked Sendable {
         var settings: HostSettings?
         /// This connection's hello named `routing` (H6).
         var routing = false
+        /// This connection's hello named `goalFiles` (H14).
+        var goalFiles = false
     }
     private let connection = OSAllocatedUnfairLock(initialState: Link())
     private let running = OSAllocatedUnfairLock(initialState: false)
@@ -46,19 +48,23 @@ final class HelperClient: @unchecked Sendable {
     /// Whether the next hello names `routing`: the user's "Caret decides when to help". Read on the
     /// client thread at each connect; a change takes effect at the next one (`reconnect`).
     private let wantsRouting: @Sendable () -> Bool
+    /// H14: whether the hello names goalFiles: the page task panel can fill attach rows (`PageTaskMachine.filesWired`).
+    private let goalFiles: @Sendable () -> Bool
 
     init(
         path: String = HelperClient.defaultPath,
         onMessage: @escaping @Sendable (HelperInbound) -> Void,
         onLink: @escaping @Sendable (Bool) -> Void = { _ in },
         authority: HostAuthority? = nil,
-        wantsRouting: @escaping @Sendable () -> Bool = { false }
+        wantsRouting: @escaping @Sendable () -> Bool = { false },
+        goalFiles: @escaping @Sendable () -> Bool = { false }
     ) {
         self.path = path
         self.onMessage = onMessage
         self.onLink = onLink
         self.authority = authority
         self.wantsRouting = wantsRouting
+        self.goalFiles = goalFiles
     }
 
     /// When this client last sent work the helper runs for this session (offerAccept, fillAll): until its
@@ -68,6 +74,8 @@ final class HelperClient: @unchecked Sendable {
 
     /// The connection is up and its hello named `routing`, so the helper sends it route decisions.
     var declaresRouting: Bool { connection.withLock { $0.fd >= 0 && $0.routing } }
+    /// The connection is up and its hello named `goalFiles`, so the helper takes `savedFilesRequest` from it.
+    var declaresGoalFiles: Bool { connection.withLock { $0.fd >= 0 && $0.goalFiles } }
 
     func start() {
         let alreadyRunning = running.withLock { r -> Bool in
@@ -231,6 +239,18 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? NDJSON.line(insert))
     }
 
+    /// H14: the user's ⌘1 on the line offering to keep a file; answered with `fileSaveReply` to this connection.
+    @discardableResult
+    func send(_ save: FileSave) -> Bool {
+        sendLine(try? NDJSON.line(save))
+    }
+
+    /// H14: the memory window's Files group: list or forget; answered with `savedFilesReply` to this connection.
+    @discardableResult
+    func send(_ request: SavedFilesRequest) -> Bool {
+        sendLine(try? NDJSON.line(request))
+    }
+
     /// H5: the file the user took for a plan's attach step; answered with `fileConfirmReply` to this connection.
     @discardableResult
     func send(_ confirm: FileConfirm) -> Bool {
@@ -329,7 +349,8 @@ final class HelperClient: @unchecked Sendable {
             return nil
         }
         let routing = wantsRouting()
-        let hello = HostHello.make(pid: Int(getpid()), routing: routing)
+        let files = goalFiles()
+        let hello = HostHello.make(pid: Int(getpid()), routing: routing, goalFiles: files)
         guard let line = try? NDJSON.line(hello), Self.writeAll(fd, line) else {
             close(fd)
             return nil
@@ -339,6 +360,7 @@ final class HelperClient: @unchecked Sendable {
         let settingsSent = connection.withLock { link -> Bool? in
             link.fd = fd
             link.routing = routing
+            link.goalFiles = files
             guard var settings = link.settings else { return nil }
             settings.gate.at = Int64((Date().timeIntervalSince1970 * 1000).rounded())
             link.settings = settings
@@ -410,6 +432,7 @@ final class HelperClient: @unchecked Sendable {
             case .localTextRequest: s.localTextRequests &+= 1
             case .answerSaveOffer, .answerSaveReply: s.answerSaves &+= 1
             case .pageInsertReply: s.pageInserts &+= 1
+            case .fileSaveOffer, .fileSaveReply, .savedFilesReply: s.files &+= 1
             case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1
             }
         }

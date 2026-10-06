@@ -13,6 +13,17 @@ extension EnvironmentValues {
         get { self[OffscreenKey.self] }
         set { self[OffscreenKey.self] = newValue }
     }
+
+    /// Off screen only: draw a `ScrollingColumn` as scrolled to its end, for a render of what sits below the fold
+    /// (H14's Files group, last in the memory list).
+    var offscreenScrolledToEnd: Bool {
+        get { self[ScrolledToEndKey.self] }
+        set { self[ScrolledToEndKey.self] = newValue }
+    }
+}
+
+private struct ScrolledToEndKey: EnvironmentKey {
+    static let defaultValue = false
 }
 
 /// A text field in Caret's own windows: 26 tall, radius 5, the text background, a hairline border,
@@ -121,12 +132,14 @@ struct EntryField: View {
 struct ScrollingColumn<Content: View>: View {
     @ViewBuilder var content: Content
     @Environment(\.rendersOffscreen) private var offscreen
+    @Environment(\.offscreenScrolledToEnd) private var atEnd
 
     var body: some View {
         if offscreen {
-            GeometryReader { _ in
+            GeometryReader { g in
                 VStack(spacing: 0) { content }
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: g.size.width, height: atEnd ? g.size.height : nil, alignment: atEnd ? .bottom : .top)
                     .frame(maxWidth: .infinity, alignment: .top)
             }
             .clipped()

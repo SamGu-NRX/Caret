@@ -39,6 +39,14 @@ enum MemoryAction: Equatable {
     case siteOn(String)
     /// H13: Caret's inline text on or off on a page with its own suggestions (Gmail).
     case pageInline(PageField.OwnSuggestions, Bool)
+    /// H14: "Suggestions in web pages" and "Suggestions in rich editors (Notion, Gmail, Docs)".
+    case pageInlineText(Bool)
+    case pageInlineContentEditable(Bool)
+    /// H14, Memory's Files group: Forget asks first (then Forget or Keep); Show in Finder selects the file.
+    case fileForget(String)
+    case fileConfirmForget
+    case fileKeep
+    case fileShowInFinder(String)
     /// H6: "Caret decides when to help" (true) or "Always suggest as I type".
     case routing(Bool)
     /// H8: the calendar accepted events go to; nil for the default.
@@ -75,6 +83,8 @@ struct MemoryView: View {
 
     var state: MemoryBook.State
     var files = MemoryFiles.State()
+    /// H14: the files the user kept for a question.
+    var savedFiles = SavedFilesBook.State()
     var tab: Tab
     var character: FigureCharacter
     /// The Sites tab: where Caret stays out (H5).
@@ -212,11 +222,48 @@ struct MemoryView: View {
                     }
                 }
             }
+            if savedFiles.loaded { filesGroup }
             if state.unreadable > 0 {
                 Text(state.unreadable == 1 ? "1 entry needs a newer version of Caret to show." : "\(state.unreadable) entries need a newer version of Caret to show.")
                     .font(Tokens.Font.chromeSmall)
                     .foregroundStyle(Color(token: Tokens.ink2))
                     .padding(.top, 10)
+            }
+        }
+    }
+
+    // MARK: - Files (H14)
+
+    /// The files the user kept for a question, newest first: the name in Ink, then what it was kept for and when it
+    /// last changed. Show in Finder and Forget show on the row under the pointer, as a memory row's controls do; a
+    /// file no longer where it was kept says so and has no Show in Finder.
+    private var filesGroup: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            GroupHead(text: SavedFilesCopy.head)
+                .padding(.top, 20)
+                .padding(.bottom, 2)
+            Text(SavedFilesCopy.intro)
+                .font(Tokens.Font.chromeSmall)
+                .foregroundStyle(Color(token: Tokens.ink2))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 6)
+            if let problem = savedFiles.problem { ProblemLine(text: problem) }
+            if savedFiles.files.isEmpty {
+                Text(SavedFilesCopy.empty)
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 9)
+                Hairline()
+            }
+            ForEach(savedFiles.files, id: \.id) { file in
+                SavedFileRow(
+                    file: file, detail: SavedFilesCopy.detail(file, now: now, calendar: calendar),
+                    confirming: savedFiles.confirmingForget == file.id, forgetting: savedFiles.forgetting == file.id,
+                    animated: animated, forceReveal: revealedRow == file.id, send: send
+                )
+                .transition(.opacity.animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil))
+                Hairline()
             }
         }
     }
@@ -249,7 +296,8 @@ struct MemoryView: View {
     // MARK: - Sites (H5, "Not on this site")
 
     /// The page the user was on, with its switch; the sites Caret stays out of, each with Turn back
-    /// on; and a field to add one by address. A site turned off or back on fades its row in or out
+    /// on; a field to add one by address; then the switches for inline text (H14) and the pages with
+    /// their own suggestions (H13). A site turned off or back on fades its row in or out
     /// over 120 ms, as a forgotten fact's row does; nothing moves under Reduce Motion.
     private var sitesList: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -300,7 +348,6 @@ struct MemoryView: View {
                 .transition(.opacity.animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil))
                 Hairline()
             }
-            ownSuggestionsGroup
             VStack(alignment: .leading, spacing: 6) {
                 // The field's name stays on screen: a placeholder alone goes as soon as one letter is typed.
                 Text(SitesPage.addTitle)
@@ -320,8 +367,32 @@ struct MemoryView: View {
                 if let problem = sites.problem { ProblemLine(text: problem) }
             }
             .padding(.top, 18)
+            // H14: the switches for inline text, then the pages with their own suggestions: settings after the list
+            // of sites and the field that adds to it.
+            switchesGroup
+            ownSuggestionsGroup
         }
         .padding(.top, 6)
+    }
+
+    /// H14: inline text in pages, two switches. Web pages first, on at first; rich editors under it, off at first, with
+    /// the one-line reason, and off to the touch while web pages are off (they need both).
+    private var switchesGroup: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            GroupHead(text: PageInlineCopy.switchesHead)
+                .padding(.top, 20)
+                .padding(.bottom, 2)
+            SwitchRow(title: PageInlineCopy.webPages, detail: PageInlineCopy.webPagesDetail, isOn: sites.pageInlineText) { send(.pageInlineText($0)) }
+                .probed("switch.web")
+            Hairline()
+            SwitchRow(
+                title: PageInlineCopy.richEditors,
+                detail: sites.pageInlineText ? PageInlineCopy.richEditorsDetail : PageInlineCopy.richEditorsDetail + " " + PageInlineCopy.richEditorsNeedsWeb,
+                isOn: sites.pageInlineContentEditable, enabled: sites.pageInlineText
+            ) { send(.pageInlineContentEditable($0)) }
+                .probed("switch.rich")
+            Hairline()
+        }
     }
 
     /// H13: pages that offer their own text as the user types, where Caret stays quiet unless turned on. Gmail only:
@@ -556,6 +627,99 @@ private struct DocumentEditor: View {
                     .disabled(editor.saving)
             }
         }
+    }
+}
+
+// MARK: - Switches and files (H14)
+
+/// One setting with a switch: its name in Ink, what it does in Ink 2 under it, and the switch at the trailing edge,
+/// aligned to the name's line. A flip saves at once, through the settings file, with no motion of its own beyond the
+/// switch's.
+struct SwitchRow: View {
+    var title: String
+    var detail: String
+    var isOn: Bool
+    var enabled = true
+    var change: (Bool) -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(Tokens.Font.row)
+                    .foregroundStyle(Color(token: Tokens.ink))
+                Text(detail)
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            SettingSwitch(label: title, isOn: isOn, enabled: enabled, change: change)
+                .padding(.top, 1)
+        }
+        .padding(.vertical, 11)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// A kept file: its name, then what it was kept for and when it last changed. Show in Finder and Forget appear under
+/// the pointer, with keyboard focus, or while Forget waits for its answer, as a memory row's controls do.
+struct SavedFileRow: View {
+    var file: SavedFilesReply.File
+    var detail: String
+    var confirming: Bool
+    var forgetting: Bool
+    var animated: Bool
+    var forceReveal = false
+    var send: (MemoryAction) -> Void
+
+    @State private var hovering = false
+    @FocusState private var focused: Bool
+
+    private var revealed: Bool { forceReveal || hovering || focused || confirming }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(file.name)
+                    .font(Tokens.Font.row)
+                    .foregroundStyle(Color(token: file.edited == nil ? Tokens.ink2 : Tokens.ink))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(confirming ? SavedFilesCopy.forgetQuestion : detail)
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: confirming ? Tokens.ink : Tokens.ink2))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                if confirming {
+                    Button("Keep") { send(.fileKeep) }.buttonStyle(WindowButtonStyle(kind: .key, small: true))
+                    Button(SavedFilesCopy.forget) { send(.fileConfirmForget) }.buttonStyle(WindowButtonStyle(kind: .ink, small: true))
+                } else {
+                    if file.edited != nil {
+                        Button(SavedFilesCopy.showInFinder) { send(.fileShowInFinder(file.id)) }
+                            .buttonStyle(WindowButtonStyle(kind: .key, small: true))
+                            .focused($focused)
+                            .accessibilityLabel("Show \(file.name) in Finder")
+                    }
+                    Button(forgetting ? "Forgetting" : SavedFilesCopy.forget) { send(.fileForget(file.id)) }
+                        .buttonStyle(WindowButtonStyle(kind: .key, small: true))
+                        .disabled(forgetting)
+                        .accessibilityLabel("Forget \(file.name)")
+                }
+            }
+            .opacity(revealed ? 1 : 0)
+            .animation(animated ? MemoryRowView.pointerFade : nil, value: hovering)
+        }
+        .padding(.vertical, 10)
+        .padding(.leading, confirming ? 10 : 0)
+        .background(alignment: .leading) {
+            if confirming { NeedsYouEdge().padding(.vertical, 8) }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(named: Text(SavedFilesCopy.forget)) { send(.fileForget(file.id)) }
     }
 }
 

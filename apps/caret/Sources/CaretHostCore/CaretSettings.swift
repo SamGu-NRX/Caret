@@ -352,6 +352,8 @@ public enum HostGate {
         case .alternatives, .action, .popup, .skillOffer: return !settings.paused
         // S1's offer to keep an answer is an offer too (H11).
         case .answerSaveOffer: return !settings.paused
+        // H14: so is the offer to keep a file the user attached.
+        case .fileSaveOffer: return !settings.paused
         default: return true
         }
     }

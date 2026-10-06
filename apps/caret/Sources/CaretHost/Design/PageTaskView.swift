@@ -14,6 +14,8 @@ struct PageTaskView: View {
     var panel: PageTaskPanel
     var character: FigureCharacter
     var animated = true
+    /// H14: a click on attach row `step`, the same as its ⌘ key.
+    var onAttach: (Int) -> Void = { _ in }
 
     @Environment(\.voiceFace) private var face
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -110,7 +112,11 @@ struct PageTaskView: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(Array(section.lines.enumerated()), id: \.offset) { _, line in
-                    PageTaskRow(line: line, marks: section.marks)
+                    if line.kind == .attach, let a = line.attach {
+                        AttachRow(line: line, attach: a, onAttach: onAttach)
+                    } else {
+                        PageTaskRow(line: line, marks: section.marks)
+                    }
                 }
             }
             .font(Tokens.Font.chrome)
@@ -157,13 +163,25 @@ private struct PageTaskRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             case .yours:
                 Text(line.text).foregroundStyle(Color(token: Tokens.carrotText))
+            case .attach:
+                // Drawn by `AttachRow`; a section never hands one here.
+                value
             }
         }
     }
 
     /// The value with its note beside it, or the note on the line under it when both do not fit: a long pick
     /// ("University of Waterloo") keeps "(picked from the list)" whole rather than cutting it.
-    private var value: some View {
+    @ViewBuilder private var value: some View {
+        if line.wraps {
+            // A file's name and date, whole (H14): the text wraps in its column.
+            valueText
+        } else {
+            fitting
+        }
+    }
+
+    private var fitting: some View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 valueText.fixedSize()
@@ -187,8 +205,9 @@ private struct PageTaskRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 5) {
             Text(line.text)
                 .foregroundStyle(Color(token: line.state == .failed ? Tokens.ink2 : Tokens.ink))
-                .lineLimit(1)
+                .lineLimit(line.wraps ? nil : 1)
                 .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: line.wraps)
                 .overlay(alignment: .bottom) {
                     if line.state == .writing {
                         Rectangle().fill(Color(token: Tokens.carrot)).frame(height: 1.25).offset(y: 2)
@@ -216,6 +235,87 @@ private struct PageTaskRow: View {
     }
 }
 
+/// H14: an attach row in a preview. The control's name in the key column, as a field's label is; then "Choose a
+/// file…" in Carrot text (the next step is the user's), or the file, whole: name and last-edited date wrap rather
+/// than cut, so a stale résumé shows as one. The row's key sits at the trailing edge: "⌘2", "⌘2 Attach" on a saved
+/// file not yet confirmed, "⌘2 Change" once it is the file Tab sends, which a paperclip in the indent marks. Why the
+/// last file was not taken sits under it in Ink.
+///
+/// The row is a button: a click does what its key does. It takes no focus (the panel never becomes key) and shows a
+/// key-fill wash under the pointer (120 ms opacity); nothing moves, since the change a click makes is drawn at once.
+private struct AttachRow: View {
+    var line: PageTaskPanel.Line
+    var attach: PageTaskPanel.Line.Attach
+    var onAttach: (Int) -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button { onAttach(attach.step) } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Group {
+                    if attach.state == .confirmed {
+                        Image(systemName: "paperclip").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(Color(token: Tokens.ink2))
+                    } else {
+                        Color.clear.frame(width: 7, height: 7)
+                    }
+                }
+                .frame(width: PageTaskView.indent, alignment: .leading)
+                // A file control's name tells a file input from a dropzone, so it may take a second line.
+                Text(line.label ?? "")
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: PageTaskView.labelColumn, alignment: .leading)
+                    .padding(.trailing, 8)
+                VStack(alignment: .leading, spacing: 1) {
+                    // The key beside the file when both fit on one line, else under it: the file keeps the width.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            fileText.fixedSize()
+                            Spacer(minLength: 0)
+                            keyHint
+                        }
+                        VStack(alignment: .leading, spacing: 3) {
+                            fileText.fixedSize(horizontal: false, vertical: true)
+                            keyHint
+                        }
+                    }
+                    if let note = line.note {
+                        Text(note)
+                            .font(Tokens.Font.chromeSmall)
+                            .foregroundStyle(Color(token: Tokens.ink))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.vertical, 2)
+            .background {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color(token: Tokens.keyFill))
+                    .padding(.horizontal, -4)
+                    .opacity(hovering ? 1 : 0)
+                    // The memory rows' pointer fade (`MemoryRowView.pointerFade`): opacity only, so it stays under Reduce Motion.
+                    .animation(MemoryRowView.pointerFade, value: hovering)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityLabel([line.label, line.text, line.note].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityHint(attach.state == .offered ? "Attaches this file when you press Tab." : "Opens a file chooser.")
+    }
+
+    private var fileText: some View {
+        Text(line.text).foregroundStyle(Color(token: attach.state == .choose ? Tokens.carrotText : Tokens.ink))
+    }
+
+    @ViewBuilder private var keyHint: some View {
+        if let key = attach.key { HintView(hint: Hint(key: key, label: attach.action)) }
+    }
+}
+
 /// The blur-and-fade a page's content crosses with (UI moment 5).
 private struct BlurFade: ViewModifier {
     var blur: CGFloat
@@ -232,6 +332,8 @@ final class PageTaskModel: ObservableObject {
     @Published var panel: PageTaskPanel?
     /// Off for a change a key made: nothing in the panel moves for Tab, Esc or ⌘Z, the figure included.
     @Published var animated = true
+    /// H14: a click on an attach row.
+    var onAttach: (Int) -> Void = { _ in }
 }
 
 /// The panel as the hosted panel shows it, over the observed model.
@@ -242,7 +344,7 @@ struct PageTaskLiveView: View {
 
     var body: some View {
         if let panel = model.panel {
-            PageTaskView(panel: panel, character: character, animated: animated && model.animated)
+            PageTaskView(panel: panel, character: character, animated: animated && model.animated, onAttach: model.onAttach)
         }
     }
 }

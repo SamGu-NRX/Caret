@@ -126,6 +126,15 @@ final class HostedPanel {
     /// The view last set, unwrapped, so a new anchor corner can re-pin it.
     private var shown: AnyView?
 
+    /// H14: a click-through panel that takes clicks on its content and never on the margin around it, which holds the
+    /// drawn shadow and would otherwise swallow clicks meant for the page under it (the page task panel's attach
+    /// rows). The window takes mouse events only while the pointer is over the content, read from mouse-moved events
+    /// in Caret and in other apps; mouse-moved monitors need no permission.
+    var clickableContent = false {
+        didSet { if clickableContent != oldValue { trackPointer() } }
+    }
+    private var pointerMonitors: [Any] = []
+
     /// `material: false` for decoration drawn straight over the app (the underline, the figure and
     /// ticks after an alternative, Caret's own ghost text), which has no glass, shadow or margin.
     /// `interactive: true` for a panel with buttons: it takes clicks, still never becoming key.
@@ -240,6 +249,32 @@ final class HostedPanel {
         return NSRect(origin: origin, size: size)
     }
 
+    private func trackPointer() {
+        for m in pointerMonitors { NSEvent.removeMonitor(m) }
+        pointerMonitors = []
+        panel.acceptsMouseMovedEvents = clickableContent
+        guard clickableContent else {
+            panel.ignoresMouseEvents = true
+            return
+        }
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
+            MainActor.assumeIsolated { self?.pointerMoved() }
+        }) { pointerMonitors.append(global) }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
+            MainActor.assumeIsolated { self?.pointerMoved() }
+            return event
+        }) { pointerMonitors.append(local) }
+        pointerMoved()
+    }
+
+    /// Takes mouse events while the pointer is over the content of a shown panel; passes them through otherwise.
+    private func pointerMoved() {
+        guard clickableContent else { return }
+        let over = panel.isVisible && !isExiting && contentFrame(size: size).contains(NSEvent.mouseLocation)
+        if panel.ignoresMouseEvents == over { panel.ignoresMouseEvents = !over }
+    }
+
     private func setFrame(size: NSSize) {
         self.size = size
         let content = contentFrame(size: size)
@@ -250,6 +285,7 @@ final class HostedPanel {
         shadow.frame = container.bounds
         shadow.shape = inner
         host.frame = inner
+        pointerMoved()
     }
 
     /// The glass grows from the old height to the new about the pinned edge, with the view's own
@@ -278,6 +314,7 @@ final class HostedPanel {
         isExiting = false
         panel.alphaValue = 0
         panel.orderFrontRegardless()
+        pointerMoved()
         var entrance = Motion.Entrance.panel(popup: popup, reduce: Motion.reduceMotion)
         if !scales, entrance.scale != nil { entrance.scale = 1 }
         NSAnimationContext.runAnimationGroup { context in
@@ -312,9 +349,12 @@ final class HostedPanel {
         guard duration > 0, panel.isVisible else {
             isExiting = false
             panel.orderOut(nil)
+            pointerMoved()
             return
         }
         isExiting = true
+        // A leaving panel takes no click.
+        pointerMoved()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
             context.timingFunction = Motion.caCurve(Motion.easeOut)

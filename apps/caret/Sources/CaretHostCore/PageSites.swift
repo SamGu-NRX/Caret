@@ -201,8 +201,14 @@ public enum SitesPage {
         public var problem: String?
         /// H13: where Caret's inline text is on among pages with their own suggestions.
         public var pageInline = PageInlineSettings()
-        public init(off: [String] = [], here: String? = nil, draft: String = "", problem: String? = nil, pageInline: PageInlineSettings = PageInlineSettings()) {
+        /// H14: the two switches for inline text in pages (`CaretSettings.pageInlineText`, `pageInlineContentEditable`).
+        public var pageInlineText = true
+        public var pageInlineContentEditable = false
+        public init(off: [String] = [], here: String? = nil, draft: String = "", problem: String? = nil, pageInline: PageInlineSettings = PageInlineSettings(),
+                    pageInlineText: Bool = true, pageInlineContentEditable: Bool = false) {
             self.pageInline = pageInline
+            self.pageInlineText = pageInlineText
+            self.pageInlineContentEditable = pageInlineContentEditable
             self.off = off
             self.here = here
             self.draft = draft

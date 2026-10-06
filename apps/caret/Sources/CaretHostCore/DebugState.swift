@@ -235,6 +235,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var answerSaves: UInt64 = 0
         /// H13: answers to this host's pageInsert.
         public var pageInserts: UInt64 = 0
+        /// H14: fileSaveOffer, fileSaveReply and savedFilesReply.
+        public var files: UInt64 = 0
         /// `planRequest` lines written from the ask field, and `planProposal` answers received.
         public var planRequests: UInt64 = 0
         public var planProposals: UInt64 = 0

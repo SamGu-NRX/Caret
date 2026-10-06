@@ -58,6 +58,12 @@ public enum HelperInbound: Equatable, Sendable {
     case answerSaveReply(AnswerSaveReply)
     /// H13: what became of this host's `pageInsert` (`PageInlineMachine`).
     case pageInsertReply(PageInsertReply)
+    /// P3, H14: Caret attached a file the user confirmed and may keep it for the same question (`FileSaveMachine`).
+    case fileSaveOffer(FileSaveOffer)
+    /// P3, H14: what became of this host's `fileSave`.
+    case fileSaveReply(FileSaveReply)
+    /// H14: the files the user kept, for the memory window (`SavedFilesBook`).
+    case savedFilesReply(SavedFilesReply)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -93,6 +99,9 @@ public enum HelperInbound: Equatable, Sendable {
         case .answerSaveOffer: return AnswerSaveOffer.type
         case .answerSaveReply: return AnswerSaveReply.type
         case .pageInsertReply: return PageInsertReply.type
+        case .fileSaveOffer: return FileSaveOffer.type
+        case .fileSaveReply: return FileSaveReply.type
+        case .savedFilesReply: return SavedFilesReply.type
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -177,6 +186,18 @@ public enum HelperInbound: Equatable, Sendable {
             return .answerSaveReply(try JSONDecoder().decode(AnswerSaveReply.self, from: line))
         case PageInsertReply.type:
             return .pageInsertReply(try JSONDecoder().decode(PageInsertReply.self, from: line))
+        case FileSaveOffer.type:
+            return .fileSaveOffer(try JSONDecoder().decode(FileSaveOffer.self, from: line))
+        case FileSaveReply.type:
+            return .fileSaveReply(try JSONDecoder().decode(FileSaveReply.self, from: line))
+        case SavedFilesReply.type:
+            return .savedFilesReply(try JSONDecoder().decode(SavedFilesReply.self, from: line))
+        case FileSave.type:
+            _ = try JSONDecoder().decode(FileSave.self, from: line)
+            return .notForConsumer(type: envelope.type)
+        case SavedFilesRequest.type:
+            _ = try JSONDecoder().decode(SavedFilesRequest.self, from: line)
+            return .notForConsumer(type: envelope.type)
         // The host's own goal, local-text and save messages, echoed back; validated so a malformed line is still counted.
         case GoalRequest.type:
             _ = try JSONDecoder().decode(GoalRequest.self, from: line)
@@ -275,6 +296,10 @@ public struct LineFramer: Sendable {
 ///   on ⌘1 only (`SavedAnswers`, `AnswerSaveMachine`).
 /// - `pageText` (H13): the helper sends the text around a page field's caret and the caret, for inline text, and
 ///   takes `pageInsert`; this host never logs, stores or shows that text on its debug socket (`PageInline`).
+/// - `goalFiles` (P3, H14): a page goal's file controls come as attach rows the user fills with a file they choose or
+///   confirm (⌘2 or a click; never Tab alone), sent as `goalAccept.confirmedFile`; the host shows `fileSaveOffer` and
+///   lists kept files. Declared only when the host has both the file chooser and the save line wired
+///   (`PageTaskMachine.filesWired`); a helper then never sends this host an attach row it cannot show.
 /// - `routing` (D2-02, H6): only while the user's setting "Caret decides when to help" is on. The
 ///   helper then sends route decisions, and its offers wait for them.
 /// A helper from before any of these ignores the names it does not know (its hello schema is not strict).
@@ -282,17 +307,18 @@ public enum HostHello {
     public static let fillAllCapability = "fillAll"
     public static let askChoicesCapability = "askChoices"
 
-    public static func capabilities(routing: Bool) -> [String] {
+    public static func capabilities(routing: Bool, goalFiles: Bool = false) -> [String] {
         // H11: goalPlans, so an Ask about a page comes back as a page goal for the panel at the form; savedAnswers,
         // since the host shows an answer whole before inserting it (`SavedAnswers`), offers to save one on ⌘1 only,
         // and decodes the answers document. No localModel: this host serves no local text (`LocalText`).
         // H13: pageText, so a page field arrives with the text around its caret for inline text.
         [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability, GoalPlans.capability, SavedAnswers.capability, PageInline.capability]
+            + (goalFiles ? [GoalFiles.capability] : [])
             + (routing ? [Routing.capability] : [])
     }
 
-    public static func make(pid: Int, routing: Bool) -> Message {
-        Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: true), capabilities: capabilities(routing: routing))
+    public static func make(pid: Int, routing: Bool, goalFiles: Bool = false) -> Message {
+        Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: true), capabilities: capabilities(routing: routing, goalFiles: goalFiles))
     }
 
     /// CaretScreenCore's `Hello` with the capabilities beside it; that mirror has no such key.

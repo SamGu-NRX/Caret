@@ -128,6 +128,8 @@ public final class HostRuntime {
     private let pageTask: PageTaskCoordinator
     /// H11: the quiet offer to keep an answer the user typed (S1).
     private let answerSave: AnswerSaveCoordinator
+    /// H14: the quiet offer to keep a file the user attached (P3).
+    private let fileSave: FileSaveCoordinator
     /// H13: inline text in web page fields, from the same ghost engine.
     private let pageInline: PageInlineCoordinator
     private let writing: WritingCoordinator
@@ -176,6 +178,9 @@ public final class HostRuntime {
         self.pageTask = pageTask
         let answerSave = AnswerSaveCoordinator(arbiter: arbiter, status: status, drawsOnScreen: !configuration.surfacesHeadless)
         self.answerSave = answerSave
+        let fileSave = FileSaveCoordinator(arbiter: arbiter, status: status, drawsOnScreen: !configuration.surfacesHeadless)
+        self.fileSave = fileSave
+        fileSave.pageFrame = { [weak pageTask] in pageTask?.lastFrame }
         let pageInline = PageInlineCoordinator(arbiter: arbiter, status: status, engine: engine, policy: policy, drawsOnScreen: !configuration.surfacesHeadless)
         self.pageInline = pageInline
         pageInline.wordsAllowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
@@ -228,6 +233,7 @@ public final class HostRuntime {
                 surface.displaced(offer)
                 pageTask.machine.displaced(offer)
                 answerSave.machine.displaced(offer)
+                fileSave.machine.displaced(offer)
                 pageInline.displaced(offer)
                 writing.displaced(offer)
             }
@@ -266,6 +272,7 @@ public final class HostRuntime {
                 return onboarding.knowAvailableChanged(memory.book.state.acceptsAdd)
             }
             if case .memoryDocumentReply(let reply) = message { return memory.receive(reply) }
+            if case .savedFilesReply(let reply) = message { return memory.receive(reply) }
             // A decision is no offer: it says when ambient help may show, which the pause already stops.
             if case .routeDecision(let decision) = message { return routeLink.receive(decision) }
             if case .spend(let spend) = message { return status.update { $0.spend = spend } }
@@ -312,6 +319,9 @@ public final class HostRuntime {
             // S1: keep an answer the user typed; only ⌘1 on the line says yes.
             case .answerSaveOffer(let offer): answerSave.receive(offer)
             case .answerSaveReply(let reply): answerSave.machine.receive(reply)
+            // H14: keep a file the user attached; only ⌘1 on the line under the page task panel says yes.
+            case .fileSaveOffer(let offer): fileSave.machine.receive(offer, place: pageTask.machine.place(forGoal: offer.goalId))
+            case .fileSaveReply(let reply): fileSave.machine.receive(reply)
             case .planProposal(let proposal): perch.ask.receive(proposal)
             case .askQuestion(let question): perch.ask.receive(question)
             case .fileConfirmReply(let reply): perch.ask.receive(reply)
@@ -331,6 +341,8 @@ public final class HostRuntime {
         }
         // The client reads this on its own thread at each connect, for its hello's capabilities.
         let wantsRouting = OSAllocatedUnfairLock(initialState: SettingsStore.shared.settings.routing)
+        // H14: the hello names goalFiles only when this host can fill an attach row both ways (`filesWired`).
+        let filesWired = pageTask.machine.filesWired
         helper = HelperClient(path: configuration.helperSocketPath, onMessage: { message in
             let at = DispatchTime.now().uptimeNanoseconds
             DispatchQueue.main.async {
@@ -350,13 +362,15 @@ public final class HostRuntime {
                     }
                 }
             }
-        }, authority: authority, wantsRouting: { wantsRouting.withLock { $0 } })
+        }, authority: authority, wantsRouting: { wantsRouting.withLock { $0 } }, goalFiles: { filesWired })
         linkedClient.client = helper
         let routeClient = helper
         routeLink.send = { routeClient.send($0) }
         fill.client = helper
         pageTask.client = helper
         answerSave.client = helper
+        fileSave.client = helper
+        fileSave.onSaved = { memory.savedFiles.refresh() }
         pageInline.client = helper
         pageTask.onToastTaken = {
             surface.toastChanged()
@@ -374,6 +388,8 @@ public final class HostRuntime {
         memory.book.sendAnswer = { [weak memoryClient] in memoryClient?.send($0) ?? false }
         memory.sendNotRight = { [weak memoryClient] in memoryClient?.send($0) ?? false }
         memory.sendDocuments = { [weak memoryClient] in memoryClient?.send($0) ?? false }
+        memory.sendSavedFiles = { [weak memoryClient] in memoryClient?.send($0) ?? false }
+        memory.savedFiles.enabled = { [weak memoryClient] in memoryClient?.declaresGoalFiles ?? false }
         surface.sendNotRight = { [weak memory] id, key, correction, answered in
             memory?.book.notRight(memoryId: id, offerKey: key, correction: correction, answered: answered) ?? false
         }
@@ -476,6 +492,7 @@ public final class HostRuntime {
                         surface.claimed(claim)
                         pageTask.machine.claimed(claim)
                         answerSave.machine.claimed(claim)
+                        fileSave.machine.claimed(claim)
                         pageInline.claimed(claim)
                         writing.claimed(claim)
                     }
@@ -489,6 +506,7 @@ public final class HostRuntime {
                         surface.offerChanged(reason)
                         pageTask.machine.offerChanged(reason)
                         answerSave.machine.offerChanged(reason)
+                        fileSave.machine.offerChanged(reason)
                         pageInline.offerChanged(reason)
                         writing.offerChanged(reason)
                     }
@@ -539,6 +557,7 @@ public final class HostRuntime {
                         writing.offerClosed(offerID)
                         pageTask.machine.offerClosed(offerID)
                         answerSave.machine.offerClosed(offerID)
+                        fileSave.machine.offerClosed(offerID)
                         pageInline.offerChanged(.closed)
                     }
                 }
@@ -778,6 +797,7 @@ public final class HostRuntime {
         surface.shutdown()
         pageTask.shutdown()
         answerSave.shutdown()
+        fileSave.shutdown()
         pageInline.shutdown()
         writing.shutdown()
         perch.shutdown()

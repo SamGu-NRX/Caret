@@ -20,10 +20,14 @@ final class MemoryController {
         @Published var routing = false
         /// H8: "Calendar for new events".
         @Published var calendar: CalendarChoiceRow?
+        /// H14: the Files group.
+        @Published var savedFiles = SavedFilesBook.State()
     }
 
     let book: MemoryBook
     let files: MemoryFiles
+    /// H14: the files the user kept for a question.
+    let savedFiles: SavedFilesBook
     private let testHooks: Bool
     private let model = Model()
     private var window: NSWindow?
@@ -38,6 +42,9 @@ final class MemoryController {
     var sendDocuments: (MemoryDocumentRequest) -> Bool = { _ in false } {
         didSet { files.send = { [sendDocuments] in sendDocuments($0) } }
     }
+    var sendSavedFiles: (SavedFilesRequest) -> Bool = { _ in false } {
+        didSet { savedFiles.send = { [sendSavedFiles] in sendSavedFiles($0) } }
+    }
     /// Finder and the user's editor, replaced in tests.
     var workspace: MemoryWorkspace = SystemWorkspace()
 
@@ -45,6 +52,11 @@ final class MemoryController {
         self.testHooks = testHooks
         book = MemoryBook(clock: clock)
         files = MemoryFiles(clock: clock)
+        savedFiles = SavedFilesBook(clock: clock)
+        savedFiles.onChange = { [weak self] in
+            guard let self else { return }
+            self.model.savedFiles = self.savedFiles.state
+        }
         book.onChange = { [weak self] in
             guard let self else { return }
             self.model.state = self.book.state
@@ -58,11 +70,15 @@ final class MemoryController {
         // The sites list lives in the settings file, which the runtime sends to the helper on change.
         model.sites.off = SettingsStore.shared.settings.sitesOff
         model.sites.pageInline = SettingsStore.shared.settings.pageInline
+        model.sites.pageInlineText = SettingsStore.shared.settings.pageInlineText
+        model.sites.pageInlineContentEditable = SettingsStore.shared.settings.pageInlineContentEditable
         model.routing = SettingsStore.shared.settings.routing
         SettingsStore.shared.observe { [weak self] settings in
             MainActor.assumeIsolated {
                 self?.model.sites.off = settings.sitesOff
                 self?.model.sites.pageInline = settings.pageInline
+                self?.model.sites.pageInlineText = settings.pageInlineText
+                self?.model.sites.pageInlineContentEditable = settings.pageInlineContentEditable
                 self?.model.routing = settings.routing
                 self?.readCalendars()
             }
@@ -104,7 +120,10 @@ final class MemoryController {
     func linkChanged(_ up: Bool) {
         book.linkChanged(up)
         files.linkChanged(up)
+        savedFiles.linkChanged(up)
     }
+
+    func receive(_ reply: SavedFilesReply) { savedFiles.receive(reply) }
 
     func receive(_ reply: HelperMemory.Reply) { book.receive(reply) }
 
@@ -126,6 +145,7 @@ final class MemoryController {
         readCalendars()
         book.requestList()
         files.requestList()
+        savedFiles.refresh()
         if let window {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
@@ -166,6 +186,7 @@ final class MemoryController {
         book.cancelEdit()
         book.cancelNotRight()
         book.keep()
+        savedFiles.keep()
         if files.state.editor?.edited != true { files.close() }
     }
 
@@ -177,7 +198,20 @@ final class MemoryController {
         return workspace.editorName(forPath: path)
     }
 
+    /// What a switch on the Sites tab changes in the settings file; nil for every other action. The same change the
+    /// window saves, so a test can read it back from a file of its own (`SettingsStoreTests`).
+    static func settingsChange(for action: MemoryAction) -> ((inout CaretSettings) -> Void)? {
+        switch action {
+        case .pageInlineText(let on): return { $0.pageInlineText = on }
+        case .pageInlineContentEditable(let on): return { $0.pageInlineContentEditable = on }
+        default: return nil
+        }
+    }
+
     func perform(_ action: MemoryAction) {
+        if let change = Self.settingsChange(for: action) {
+            return SettingsStore.shared.update(source: .menu, change)
+        }
         switch action {
         case .tab(let tab):
             model.tab = tab
@@ -209,6 +243,7 @@ final class MemoryController {
         case .retry:
             book.requestList()
             files.requestList()
+            savedFiles.refresh()
         case .washed: book.clearChanged()
         case .correction(let text): book.updateCorrection(text)
         case .sendCorrection(let forget): book.sendCorrection(forget: forget)
@@ -230,6 +265,15 @@ final class MemoryController {
         case .pageInline(let page, let on): SettingsStore.shared.update(source: .menu) { $0.pageInline.set(page, on: on) }
         case .routing(let on): SettingsStore.shared.update(source: .menu) { $0.routing = on }
         case .calendar(let id): SettingsStore.shared.update(source: .menu) { $0.eventCalendar = id }
+        case .pageInlineText, .pageInlineContentEditable: break
+        case .fileForget(let id):
+            book.keep()
+            savedFiles.askForget(id)
+        case .fileConfirmForget: savedFiles.confirmForget()
+        case .fileKeep: savedFiles.keep()
+        case .fileShowInFinder(let id):
+            // Finder selects the file the helper listed; a file that is gone has no button.
+            if let f = savedFiles.state.files.first(where: { $0.id == id }), f.edited != nil { workspace.reveal(path: f.path) }
         }
     }
 
@@ -248,10 +292,14 @@ final class MemoryController {
         var tab: String
         var windowShown: Bool
         var sites: SitesPage.State
+        /// H14: the Files group's ids, names and state; never a path.
+        var savedFiles: [String]
+        var savedFilesLoaded: Bool
     }
 
     func debugInfo() -> DebugInfo {
-        DebugInfo(book: book.debugInfo(), files: files.debugInfo(), tab: model.tab.rawValue, windowShown: windowShown, sites: model.sites)
+        DebugInfo(book: book.debugInfo(), files: files.debugInfo(), tab: model.tab.rawValue, windowShown: windowShown, sites: model.sites,
+                  savedFiles: savedFiles.state.files.map { "\($0.id) \($0.name)" }, savedFilesLoaded: savedFiles.state.loaded)
     }
 
     /// `memory` reads the book and the files. With test hooks, the rest act as the window's controls would:
@@ -280,6 +328,8 @@ final class MemoryController {
     ///   memory site off [<url>]                   Not on this site: the page you were on's button, or the field's
     ///   memory site draft <text...>               type into the Add a site field
     ///   memory site on <origin>                   Turn back on
+    ///   memory switch web|rich on|off             H14: the Sites tab's switches
+    ///   memory files                              H14: read the Files group again; memory fileforget <id>, fileconfirm, filekeep
     func command(_ words: [String]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -350,6 +400,17 @@ final class MemoryController {
             case "on" where rest.count == 3: turnSiteOn(rest[2])
             default: return #"{"error":"usage: memory site off [<url>] | draft <text> | on <origin>"}"#
             }
+        case ("switch", 3):
+            guard ["on", "off"].contains(rest[2]) else { return #"{"error":"usage: memory switch web|rich on|off"}"# }
+            switch rest[1] {
+            case "web": perform(.pageInlineText(rest[2] == "on"))
+            case "rich": perform(.pageInlineContentEditable(rest[2] == "on"))
+            default: return #"{"error":"usage: memory switch web|rich on|off"}"#
+            }
+        case ("files", 1): savedFiles.refresh()
+        case ("fileforget", 2): perform(.fileForget(rest[1]))
+        case ("fileconfirm", 1): return reply(["sent": savedFiles.confirmForget()])
+        case ("filekeep", 1): savedFiles.keep()
         case ("show", 1): open()
         case ("close", 1): close()
         default:
@@ -391,6 +452,6 @@ private struct MemoryRoot: View {
     var send: (MemoryAction) -> Void
 
     var body: some View {
-        MemoryView(state: model.state, files: model.files, tab: model.tab, character: figure.character, sites: model.sites, routing: model.routing, calendarRow: model.calendar, editorApp: editorApp(), send: send)
+        MemoryView(state: model.state, files: model.files, savedFiles: model.savedFiles, tab: model.tab, character: figure.character, sites: model.sites, routing: model.routing, calendarRow: model.calendar, editorApp: editorApp(), send: send)
     }
 }

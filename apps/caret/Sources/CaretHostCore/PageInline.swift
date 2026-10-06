@@ -216,6 +216,16 @@ public enum PageInlineCopy {
     }
 
     // The Sites tab's group (`MemoryView.sitesList`).
+    // H14: the Sites tab's switches for inline text in pages.
+    public static let switchesHead = "Suggestions as you type"
+    public static let webPages = "Suggestions in web pages"
+    public static let webPagesDetail = "Caret's next words in text boxes on web pages. Tab takes them; ⌘Z takes them back."
+    public static let richEditors = "Suggestions in rich editors (Notion, Gmail, Docs)"
+    /// The undo caveat in one line (H13: Chrome joins inserted text to the editor's open typing step, and some rich
+    /// editors keep their own undo, so one ⌘Z there could take back typing as well).
+    public static let richEditorsDetail = "Off at first: some of these editors keep their own undo, where one ⌘Z can also take back what you typed."
+    public static let richEditorsNeedsWeb = "Needs suggestions in web pages on."
+
     public static let sitesHead = "Pages with their own suggestions"
     public static let sitesIntro = "These pages offer their own text as you type, and Tab takes it. Caret stays quiet there unless you turn it on."
     public static func sitesState(_ on: Bool) -> String { on ? "Caret's text is on" : "Caret stays quiet" }

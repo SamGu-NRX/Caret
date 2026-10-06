@@ -214,3 +214,48 @@ struct NeedsYouEdge: View {
         Rectangle().fill(Color(token: Tokens.carrot)).frame(width: 2)
     }
 }
+
+/// H14: an on/off setting as the Mac draws one: a real `NSSwitch` (SwiftUI's switch toggle, small) on screen, so
+/// keyboard, VoiceOver and the system's own motion work as in System Settings. Off screen, where ImageRenderer draws
+/// AppKit controls as placeholders (`rendersOffscreen`), a still drawing of the same switch at the same size.
+struct SettingSwitch: View {
+    /// What VoiceOver reads as the switch's name.
+    var label: String
+    var isOn: Bool
+    var enabled = true
+    var change: (Bool) -> Void
+
+    @Environment(\.rendersOffscreen) private var offscreen
+
+    /// NSSwitch at `.small`.
+    static let size = CGSize(width: 32, height: 18)
+
+    var body: some View {
+        Group {
+            if offscreen {
+                drawn
+            } else {
+                Toggle(label, isOn: Binding(get: { isOn }, set: { change($0) }))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+            }
+        }
+        .disabled(!enabled)
+        .accessibilityLabel(label)
+    }
+
+    private var drawn: some View {
+        let knob = Self.size.height - 4
+        return Capsule()
+            .fill(isOn ? Color(nsColor: .controlAccentColor) : Color(token: Tokens.keyFill))
+            .overlay { Capsule().strokeBorder(Color(token: Tokens.keyEdge), lineWidth: isOn ? 0 : 1) }
+            .overlay(alignment: isOn ? .trailing : .leading) {
+                Circle().fill(Color.white).frame(width: knob, height: knob)
+                    .shadow(color: .black.opacity(0.25), radius: 0.5, y: 0.5)
+                    .padding(2)
+            }
+            .frame(width: Self.size.width, height: Self.size.height)
+            .opacity(enabled ? 1 : 0.5)
+    }
+}

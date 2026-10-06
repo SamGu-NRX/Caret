@@ -38,8 +38,26 @@ public enum PageTaskSend: Equatable, Sendable {
     case control(TaskControl)
 }
 
+/// H14: what the open panel for an attach row needs: which row, what it is called, what the control accepts, and the
+/// browser to give the foreground back to.
+public struct FileChoice: Equatable, Sendable {
+    public var step: Int
+    public var label: String
+    public var accept: AcceptTypes
+    public var browserPid: Int32
+
+    public init(step: Int, label: String, accept: AcceptTypes, browserPid: Int32) {
+        self.step = step
+        self.label = label
+        self.accept = accept
+        self.browserPid = browserPid
+    }
+}
+
 public enum PageTaskCommand: Equatable, Sendable {
     case draw(PageTaskPanel, motion: PageTaskMotion, anchor: PageTaskAnchor)
+    /// H14: open the open panel for an attach row. The user asked for it (⌘2, ⌘3 or a click on the row).
+    case chooseFile(FileChoice)
     case hide(motion: PageTaskMotion)
     case send(PageTaskSend)
     case count(String)
@@ -75,6 +93,14 @@ public final class PageTaskMachine {
     private var stoppable = false
     /// Why the last Tab on the panel sent nothing, for the debug state.
     public private(set) var lastHeld: String?
+    /// H14: the screen can show an open panel for an attach row. Set by the coordinator that draws on screen.
+    public var canChooseFiles = false
+    /// H14: both attach paths work here: a saved file is confirmed in the panel itself (⌘2, a click), and a chosen
+    /// one needs the open panel. Only then may the hello name goalFiles (`HostHello.capabilities`), so a helper never
+    /// sends this host an attach row it cannot fill.
+    public var filesWired: Bool { canChooseFiles }
+    /// H14: the attach row whose open panel is up.
+    public private(set) var choosing: Int?
 
     /// An ending with ⌘Z stays this long. A guess, not measured: DIRECTION.md's toast is 5 s for one
     /// line, and this panel lists every field it wrote, which takes longer to read.
@@ -169,10 +195,24 @@ public final class PageTaskMachine {
 
     /// The helper refused this task's acceptance.
     public func helperError(_ e: HelperError) {
-        guard var t = task, t.refused(e.message) else { return }
+        guard var t = task, let refusal = t.refused(e.message) else { return }
         task = t
-        output(.count("pageTask.acceptRefused"))
-        ended()
+        switch refusal {
+        case .ended:
+            output(.count("pageTask.acceptRefused"))
+            ended()
+        case .fileRefused:
+            // H14: the helper keeps the preview waiting for another file: the working line goes, Tab is the preview's
+            // again, and the row says why.
+            output(.count("pageTask.fileRefused"))
+            cancel("stoppable")
+            stoppable = false
+            if let id = statusID {
+                arbiter.clearStatus(id: id)
+                statusID = nil
+            }
+            showPreview(.update)
+        }
     }
 
     public func linkChanged(up: Bool) {
@@ -184,10 +224,14 @@ public final class PageTaskMachine {
 
     // MARK: - Keys, through the arbiter
 
-    /// Tab took the preview offer.
+    /// Tab, or an attach row's key, took the preview offer.
     public func claimed(_ claim: Claim) {
         guard let id = offerID, claim.offer.id == id, var t = task else { return }
         offerID = nil
+        if let step = Self.attachStep(claim.choice.actionID) {
+            // The row's key, not Tab: the preview keeps waiting (the claim took the offer, so it is published again).
+            return attachRequested(step: step, republish: true)
+        }
         cancel("expire")
         switch t.tab(nowMs: nowMs) {
         case .accept(let accept):
@@ -209,8 +253,57 @@ public final class PageTaskMachine {
             task = t
             lastHeld = why
             output(.count("pageTask.tabHeld"))
-            if case .ended = t.stage { ended() }
+            if case .ended = t.stage { ended() } else {
+                // Still waiting (an attach-only preview with no file): it owns Tab again and says what it needs.
+                showPreview(.none)
+            }
         }
+    }
+
+    // MARK: - Attach rows (H14)
+
+    static let attachPrefix = "attach:"
+
+    static func attachStep(_ actionID: String?) -> Int? {
+        guard let id = actionID, id.hasPrefix(attachPrefix) else { return nil }
+        return Int(id.dropFirst(attachPrefix.count))
+    }
+
+    /// ⌘2, ⌘3 or a click on attach row `step`: a saved file offered and not yet confirmed is confirmed for this Tab;
+    /// otherwise the open panel opens, to choose a file or change the one chosen. Only while the preview waits.
+    public func attachRequested(step: Int, republish: Bool = false) {
+        guard var t = task, case .preview = t.stage, let row = t.current.rows.first(where: { $0.step == step && $0.kind == .attach }), let a = row.attach else {
+            if republish { showPreview(.none) }
+            return
+        }
+        if a.confirmed == nil, a.savedFile != nil {
+            t.confirmSaved(step: step)
+            task = t
+            output(.count("pageTask.savedConfirmed"))
+            // A key or a click made the change: drawn at once.
+            return showPreview(.none)
+        }
+        if republish { showPreview(.none) }
+        guard canChooseFiles, let pid = t.pid else { return output(.count("pageTask.noChooser")) }
+        choosing = step
+        output(.count("pageTask.chooseFile"))
+        output(.chooseFile(FileChoice(step: step, label: a.label, accept: AcceptTypes(a.accept), browserPid: pid)))
+    }
+
+    /// The user picked `file` in the open panel for row `step`. It is that row's file for this Tab; nothing is sent
+    /// until Tab.
+    public func filePicked(step: Int, file: AttachFile) {
+        guard choosing == step else { return }
+        choosing = nil
+        guard var t = task, t.confirm(step: step, file: file) else { return output(.count("pageTask.pickDropped")) }
+        task = t
+        output(.count("pageTask.filePicked"))
+        showPreview(.none)
+    }
+
+    /// The open panel closed with no file.
+    public func chooserClosed() {
+        choosing = nil
     }
 
     /// The arbiter's current offer changed for a reason a key or its age gave. A preview that is no longer
@@ -269,6 +362,13 @@ public final class PageTaskMachine {
             draw(.none)
         }
         return true
+    }
+
+    /// H14: the page a goal of this task ran on, for the line offering to keep the file it attached. Nil for a goal
+    /// this task never showed.
+    public func place(forGoal goalId: String) -> FileSaveMachine.Place? {
+        guard let t = task, t.groups.contains(where: { $0.goalId == goalId }), let pid = t.pid else { return nil }
+        return FileSaveMachine.Place(pid: pid, bundleId: t.app.bundleId, windowId: t.windowId)
     }
 
     /// Whether ⌘Z on a toast for `taskID` is this panel's.
@@ -345,9 +445,13 @@ public final class PageTaskMachine {
         guard let t = task, case .preview = t.stage, !hidden, let pid = t.pid else { return }
         let g = t.current
         let remaining = Double(g.expires - nowMs) / 1000
+        // H14: the first attach rows' keys (⌘2, ⌘3) are the preview's too, so they reach `claimed` like Tab.
+        let attach = zip(g.attachRows, PageTaskCopy.attachKeys).map { row, key in
+            PopupSpec.Action(id: "\(Self.attachPrefix)\(row.step)", label: row.attach?.label ?? PageTaskCopy.choose, key: key.key)
+        }
         let spec = PopupSpec(id: offerKey(g), figure: .offering, blocks: [
             PopupSpec.Block(.header(PopupSpec.Header(title: PopupSpec.Value(PageTaskCopy.title(t), ref: .derived(rule: "pageTask", from: []))))),
-            PopupSpec.Block(.actions(PopupSpec.Actions(items: [PopupSpec.Action(id: "fill", label: PageTaskCopy.tabLabel(g), key: .tab)]))),
+            PopupSpec.Block(.actions(PopupSpec.Actions(items: [PopupSpec.Action(id: "fill", label: PageTaskCopy.tabLabel(g), key: .tab)] + attach))),
         ])
         let target = TargetIdentity(pid: pid, bundleID: t.app.bundleId, windowID: t.windowId, elementID: offerKey(g), elementRevision: g.digest)
         let offer = Offer(text: "", source: .helper, kind: .popup(PopupOffer(offerKey: offerKey(g), spec: spec, pageTask: true)),
@@ -442,6 +546,7 @@ public final class PageTaskMachine {
 
     /// Ends everything this task holds in the arbiter and forgets it.
     private func clear(hide: Bool, motion: PageTaskMotion = .none) {
+        choosing = nil
         for (_, timer) in timers { timer.cancel() }
         timers = [:]
         if let id = offerID { arbiter.invalidate(offerID: id) }
@@ -463,7 +568,7 @@ public final class PageTaskMachine {
     private func draw(_ motion: PageTaskMotion) {
         guard let t = task, !hidden, !resting else { return }
         let anchor = PageTaskAnchor(field: t.anchor.map(Self.rect), viewport: t.viewport.map(Self.rect))
-        output(.draw(PageTaskPanel(task: t, stoppable: stoppable), motion: motion, anchor: anchor))
+        output(.draw(PageTaskPanel(task: t, stoppable: stoppable, now: clock.now), motion: motion, anchor: anchor))
     }
 
     static func rect(_ f: Frame) -> CGRect { CGRect(x: f.x, y: f.y, width: f.width, height: f.height) }

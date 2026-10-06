@@ -19,21 +19,48 @@ public struct PageTaskPanel: Equatable, Sendable {
             case withheld
             /// The user's own step, in accent: a press Caret leaves to them, a file to attach.
             case yours
+            /// H14: an attach row in a preview: the control's name in the key column, then "Choose a file…" or the
+            /// file, and its key at the trailing edge. ⌘2, ⌘3 or a click acts on it.
+            case attach
+        }
+
+        /// H14: an attach row's state and what acting on it does.
+        public struct Attach: Equatable, Sendable {
+            public enum State: String, Codable, Sendable {
+                /// No file yet: acting opens the open panel.
+                case choose
+                /// A saved file offered, not yet confirmed: acting confirms it for this Tab.
+                case offered
+                /// The user's file for this Tab: acting opens the open panel to change it.
+                case confirmed
+            }
+            /// The attach step's index, for a click.
+            public var step: Int
+            public var state: State
+            /// "⌘2", "⌘3"; nil past the third row, which only a click acts on.
+            public var key: String?
+            /// What the key does: "Attach", "Change"; nil when the row's own words say it ("Choose a file…").
+            public var action: String?
         }
 
         public var kind: Kind
         public var label: String?
         public var text: String
-        /// "(picked from the list)", "already so".
+        /// "(picked from the list)", "already so"; on an attach row, why its file was not taken.
         public var note: String?
         public var state: PageTask.Row.State?
+        public var attach: Attach?
+        /// The text wraps rather than being cut: a file's name and date are always shown whole (H14).
+        public var wraps: Bool
 
-        public init(kind: Kind, label: String? = nil, text: String, note: String? = nil, state: PageTask.Row.State? = nil) {
+        public init(kind: Kind, label: String? = nil, text: String, note: String? = nil, state: PageTask.Row.State? = nil, attach: Attach? = nil, wraps: Bool = false) {
             self.kind = kind
             self.label = label
             self.text = text
             self.note = note
             self.state = state
+            self.attach = attach
+            self.wraps = wraps || attach != nil
         }
     }
 
@@ -59,22 +86,27 @@ public struct PageTaskPanel: Equatable, Sendable {
     /// The page the content is for: a change crossfades the content (UI moment 5).
     public var page: Int
 
-    public init(task t: PageTask, stoppable: Bool) {
+    /// `now` dates a file's "edited Tue".
+    public init(task t: PageTask, stoppable: Bool, now: Date = Date(), calendar: Calendar = .current) {
         page = t.page
         let current = t.current
         var sections: [Section] = []
         for (i, g) in t.groups.enumerated() {
-            sections.append(Section(caption: i == 0 ? nil : PageTaskCopy.continuation(g), lines: Self.lines(g), marks: g.accepted))
+            sections.append(Section(caption: i == 0 ? nil : PageTaskCopy.continuation(g), lines: Self.lines(g, now: now, calendar: calendar), marks: g.accepted))
         }
         self.sections = sections
         let presses = t.groups.flatMap { $0.rows.filter(\.yours) }
-        var yours = t.attach.map { Line(kind: .yours, text: PageTaskCopy.attach($0)) } + presses.map { Line(kind: .yours, text: PageTaskCopy.press($0.says)) }
+        // An attach row Tab sent no file for is left to the user, like a file input with no row.
+        let unattached = t.groups.filter(\.accepted).flatMap { g in g.rows.filter { $0.kind == .attach && !$0.runs }.compactMap { $0.attach?.label } }
+        var yours = (t.attach + unattached).map { Line(kind: .yours, text: PageTaskCopy.attach($0)) } + presses.map { Line(kind: .yours, text: PageTaskCopy.press($0.says)) }
         from = t.from.isEmpty ? nil : "from \(t.from)"
         switch t.stage {
         case .preview:
             title = PageTaskCopy.title(t)
             lead = nil
-            hints = [Hint(key: "Tab", label: PageTaskCopy.tabLabel(current)), Hint(key: "Esc")]
+            // A preview that only attaches takes Tab once it has a file; before that its row's key is the next step.
+            let tab = current.writes > 0 || current.confirmedFile != nil
+            hints = (tab ? [Hint(key: "Tab", label: PageTaskCopy.tabLabel(current))] : []) + [Hint(key: "Esc")]
             figure = .offering
         case .running:
             title = PageTaskCopy.title(t)
@@ -107,10 +139,20 @@ public struct PageTaskPanel: Equatable, Sendable {
         self.yours = yours
     }
 
-    static func lines(_ g: PageTask.Group) -> [Line] {
+    static func lines(_ g: PageTask.Group, now: Date, calendar: Calendar) -> [Line] {
         var out: [Line] = []
+        let keys = Dictionary(uniqueKeysWithValues: g.attachRows.prefix(PageTaskCopy.attachKeys.count).enumerated().map { ($1.step, PageTaskCopy.attachKeys[$0]) })
         for r in g.rows where !r.yours {
             let note: String? = r.state == .already ? PageTaskCopy.already : (r.picked ? PageTaskCopy.picked : nil)
+            if r.kind == .attach, let a = r.attach {
+                if !g.accepted {
+                    out.append(Self.attachLine(r.step, a, key: keys[r.step]?.label, now: now, calendar: calendar))
+                } else if let file = a.confirmed {
+                    // Sent with Tab: a row like a field's, with its mark as the run goes.
+                    out.append(Line(kind: .field, label: a.label, text: file.says(now: now, calendar: calendar), state: r.state, wraps: true))
+                }
+                continue
+            }
             if let label = r.label, let value = r.value {
                 out.append(Line(kind: .field, label: label, text: value, note: note, state: r.state))
             } else {
@@ -121,10 +163,29 @@ public struct PageTaskPanel: Equatable, Sendable {
         return out
     }
 
+    static func attachLine(_ step: Int, _ a: PageTask.Row.Attach, key: String?, now: Date, calendar: Calendar) -> Line {
+        let state: Line.Attach.State
+        let text: String
+        let action: String?
+        if let file = a.confirmed {
+            (state, text, action) = (.confirmed, file.says(now: now, calendar: calendar), PageTaskCopy.change)
+        } else if let saved = a.savedFile {
+            (state, text, action) = (.offered, saved.says(now: now, calendar: calendar), PageTaskCopy.attachSaved)
+        } else {
+            (state, text, action) = (.choose, PageTaskCopy.choose, nil)
+        }
+        return Line(kind: .attach, label: a.label, text: text, note: a.problem, attach: Line.Attach(step: step, state: state, key: key, action: action))
+    }
+
     /// What VoiceOver announces when it changes: the sentence and what the keys do.
     public var announcement: String {
         let keys = hints.map { [$0.key == "Esc" ? "Escape" : $0.key == "⌘Z" ? "Command Z" : $0.key, $0.label].compactMap { $0 }.joined(separator: " ") }
-        return ([[lead, title].compactMap { $0 }.joined(separator: " ")] + keys).joined(separator: ". ")
+        // H14: an attach row's key is said with the row it acts on: "Resume: Command 2, Choose a file…".
+        let rows = sections.flatMap(\.lines).compactMap { l -> String? in
+            guard let a = l.attach, let key = a.key else { return nil }
+            return "\(l.label ?? ""): \(PageTaskCopy.spokenKey(key)), \(a.action.map { "\($0) \(l.text)" } ?? l.text)"
+        }
+        return ([[lead, title].compactMap { $0 }.joined(separator: " ")] + rows + keys).joined(separator: ". ")
     }
 
     /// Everything the panel says, for VoiceOver: the title, the source, each line with its state, the keys.
@@ -135,7 +196,8 @@ public struct PageTaskPanel: Equatable, Sendable {
             if let c = s.caption { parts.append(c) }
             for l in s.lines {
                 let state = l.state.map(PageTaskCopy.spokenState) ?? ""
-                parts.append([l.label, l.text, l.note, state].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
+                let key = l.attach.map { a in [a.key.map(PageTaskCopy.spokenKey), a.action].compactMap { $0 }.joined(separator: " ") } ?? ""
+                parts.append([l.label, l.text, l.note, state, key].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
             }
         }
         parts += yours.map(\.text)
@@ -149,9 +211,13 @@ public struct PageTaskPanel: Equatable, Sendable {
 public enum PageTaskCopy {
     public static func fields(_ n: Int) -> String { n == 1 ? "1 field" : "\(n) fields" }
 
-    /// The panel's title while a group waits or runs.
+    /// The panel's title while a group waits or runs. A page with only a file to attach says that.
     public static func title(_ t: PageTask) -> String {
         let first = t.groups[0]
+        if first.writes == 0, !first.attachRows.isEmpty {
+            let what = first.attachRows.count == 1 ? "a file" : "files"
+            return t.page > 1 ? "Next page: attach \(what)" : "Attach \(what) on this page"
+        }
         if t.page > 1 { return "Next page: fill \(fields(first.writes))" }
         return "Fill \(fields(first.writes)) on this page"
     }
@@ -167,7 +233,29 @@ public enum PageTaskCopy {
         }
     }
 
-    public static func tabLabel(_ g: PageTask.Group) -> String { "Fill \(g.writes)" }
+    public static func tabLabel(_ g: PageTask.Group) -> String { g.writes == 0 ? attachSaved : "Fill \(g.writes)" }
+
+    // H14: attach rows.
+    /// The keys the first attach rows take, in order: ⌘1 stays the host's, since ⌘1 means "all" elsewhere in Caret.
+    public static let attachKeys: [(key: PopupSpec.Action.Key, label: String)] = [(.cmd2, "⌘2"), (.cmd3, "⌘3")]
+    public static let choose = "Choose a file…"
+    public static let attachSaved = "Attach"
+    public static let change = "Change"
+    public static let chooseFirst = "Choose a file first, then press Tab."
+
+    /// The row's line when the helper would not take the file the user confirmed and keeps the preview waiting
+    /// (runs.ts: "Caret can't attach the file you chose (a link); nothing ran, so choose another and accept again", or a
+    /// preview of attach rows alone accepted with none). Nil for every other refusal, which ends the task.
+    public static func fileRefusal(_ why: String, sent: Bool) -> String? {
+        if sent, why.hasPrefix("Caret can't attach the file you chose") {
+            let head = why.components(separatedBy: ";").first ?? why
+            return head.trimmingCharacters(in: CharacterSet(charactersIn: ". ")) + ". Choose another file."
+        }
+        if !sent, why.hasPrefix("this preview only attaches files") { return chooseFirst }
+        return nil
+    }
+
+    static func spokenKey(_ key: String) -> String { key.replacingOccurrences(of: "⌘", with: "Command ") }
 
     public static let picked = "(picked from the list)"
     public static let already = "already so"
