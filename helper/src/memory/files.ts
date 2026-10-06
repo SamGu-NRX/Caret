@@ -67,3 +67,22 @@ export function saveFile(store: MemoryDocumentStore, fields: FileFields, replace
   store.put(r, was === null ? null : recordDigest({ id: was.id, kind: "file", status: was.status, noticed: null, fields: was.fields }));
   return r.id;
 }
+
+/** forgetFile's refusal of an id files.md does not hold as a usable file record. */
+export class UnknownFileError extends Error {
+  constructor(id: string) {
+    super(`no saved file ${id} in files.md`);
+    this.name = "UnknownFileError";
+  }
+}
+
+/**
+ * Forgets a saved file (H14, the memory window's Files section): removes its record from files.md only as it is read
+ * here, so an edit between the read and the write is a MemoryConflictError and the user's text stays. Throws for an id
+ * files.md does not hold as a usable file record. The file on disk is never touched.
+ */
+export function forgetFile(store: MemoryDocumentStore, id: string): void {
+  const was = fileNow(store, id);
+  if (was === null) throw new UnknownFileError(id);
+  store.remove(id, "file", recordDigest({ id: was.id, kind: "file", status: was.status, noticed: null, fields: was.fields }));
+}

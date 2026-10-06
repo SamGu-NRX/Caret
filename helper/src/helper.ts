@@ -111,7 +111,7 @@ import { headsIntentMaker } from "./planner/intent-heads.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
 import type { LocalModelPort } from "./writer/local-port.ts";
-import type { FileConfirm, FileConfirmReply, PageInsert, PageInsertReply, PlanErrorCode } from "./protocol.ts";
+import type { FileConfirm, FileConfirmReply, PageInsert, PageInsertReply, PlanErrorCode, SavedFilesReply, SavedFilesRequest } from "./protocol.ts";
 
 /** The planner's failures that mean it could not ground the instruction, after which the code-mode writer is tried. */
 const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
@@ -1477,6 +1477,12 @@ export class Helper {
   handleFileSave(m: FileSave, session?: string): FileSaveReply {
     this.opts.store.count("file.save", 1);
     return this.savedFiles.save(m, session);
+  }
+
+  /** H14: the memory window's Files section (savedFilesRequest), from a host that declared GOAL_FILES_CAPABILITY. To the asker only. */
+  handleSavedFiles(m: SavedFilesRequest): SavedFilesReply {
+    this.opts.store.count(`files.${m.op}`, 1);
+    return this.savedFiles.files(m);
   }
 
   /** P3: whether a goal offered to `session` may show attach rows: its host declared GOAL_FILES_CAPABILITY, or (in process) the options say so. */

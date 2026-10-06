@@ -66,6 +66,8 @@ export const Node = z.object({
   maxLength: z.number().int().nonnegative().optional(),
   /** S1, page text fields only: how the field's text was entered (PageEntry). */
   entry: PageEntry.optional(),
+  /** H14, page file controls only: the accept attribute's tokens, lowercased. */
+  accept: z.array(z.string().min(1).max(100)).max(20).optional(),
 });
 export type Node = z.infer<typeof Node>;
 
@@ -1318,7 +1320,23 @@ export const FileSave = z.object({
 });
 export type FileSave = z.infer<typeof FileSave>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert]);
+/**
+ * H14: the memory window's Files section asks for the files the user kept (files.md), or forgets one. Only for a host
+ * that declared GOAL_FILES_CAPABILITY; answered with savedFilesReply under `requestId`, to the asker only. `forget` names
+ * the file's `id`; `list` names none.
+ */
+export const SavedFilesRequest = z
+  .object({
+    type: z.literal("savedFilesRequest"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string().min(1).max(200),
+    op: z.enum(["list", "forget"]),
+    id: z.string().min(1).max(80).optional(),
+  })
+  .refine((m) => (m.op === "forget") === (m.id !== undefined), { message: "forget names the file's id; list names none", path: ["id"] });
+export type SavedFilesRequest = z.infer<typeof SavedFilesRequest>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -2354,8 +2372,11 @@ export type GoalStopReason = z.infer<typeof GoalStopReason>;
  *   told Caret"); empty when no write has a source.
  * - `rows`: each write step whose value reads as "field: value", by its index in the goal; `picked` for a value chosen
  *   from a list (a select or a combobox). A write with no row (a box to tick) reads from its step's `says`.
- * - `attach`: the labels of the page's empty file inputs the Ask's scope takes. Caret attaches no file yet (memo P3), so
- *   the host names each as the user's.
+ * - `attach`: the labels of the page's empty file inputs the Ask's scope takes that no step of the plan attaches to (for
+ *   a host without GOAL_FILES_CAPABILITY, every one), so the host names each as the user's.
+ * - `files`: H14: each attach step's row as the panel shows it: the control's name and the types its chooser may offer.
+ *   Not under the digest. `accept` is the control's accept tokens (Node.accept), empty when it names none. Absent when
+ *   the segment has no attach step.
  */
 export const GoalPageView = z.object({
   windowId: z.string().min(1),
@@ -2365,6 +2386,11 @@ export const GoalPageView = z.object({
   from: z.string().max(300),
   rows: z.array(z.object({ step: z.number().int().nonnegative(), label: z.string().max(300), value: z.string().max(900), picked: z.boolean() })).max(24),
   attach: z.array(z.string().min(1).max(200)).max(8),
+  files: z
+    .array(z.object({ step: z.number().int().nonnegative(), label: z.string().min(1).max(300), accept: z.array(z.string().min(1).max(100)).max(20) }))
+    .max(8)
+    .refine((f) => new Set(f.map((x) => x.step)).size === f.length, "each attach step has one row")
+    .optional(),
 });
 export type GoalPageView = z.infer<typeof GoalPageView>;
 
@@ -2531,9 +2557,42 @@ export const FileSaveReply = z
   .refine((m) => (m.outcome === "saved") === (m.fileId !== null), { message: "a saved reply names the file; a refused one names none", path: ["fileId"] });
 export type FileSaveReply = z.infer<typeof FileSaveReply>;
 
+/**
+ * H14: one saved file as the memory window's Files section shows it: its record `id`, the `question` and `site` it was
+ * kept for, the file's `name` (the basename of `path`), when it was saved (`savedOn`, from files.md's Saved on), when the
+ * file was last modified (`edited`, by lstat, only for a regular file, never following a link; null when it is gone or
+ * not a regular file), and whether Caret offers it (`status`).
+ */
+export const SavedFileView = z.object({
+  id: z.string().min(1).max(80),
+  question: FileFields.shape.question,
+  site: FileFields.shape.site,
+  name: z.string().min(1).max(255),
+  path: AbsolutePath,
+  savedOn: ms,
+  edited: ms.nullable(),
+  status: z.enum(["active", "paused"]),
+});
+export type SavedFileView = z.infer<typeof SavedFileView>;
+
+/**
+ * H14: the answer to savedFilesRequest, to the asker only. `files` is the list newest saved first: for `list`, as files.md
+ * holds it; for `forget`, after the removal. Forget removes the record from files.md as it was read: an edit since is a
+ * conflict, refused with the reason in `error`. Any refusal (that, an unknown id, memory still in the old encrypted
+ * store) has `error` set and `files` empty; the host asks for the list again.
+ */
+export const SavedFilesReply = z.object({
+  type: z.literal("savedFilesReply"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1).max(200),
+  error: z.string().nullable(),
+  files: z.array(SavedFileView).max(200),
+});
+export type SavedFilesReply = z.infer<typeof SavedFilesReply>;
+
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField, LocalTextRequest, AnswerSaveOffer, AnswerSaveReply, FileSaveOffer, FileSaveReply, PageInsertReply,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField, LocalTextRequest, AnswerSaveOffer, AnswerSaveReply, FileSaveOffer, FileSaveReply, PageInsertReply, SavedFilesReply,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
@@ -2667,6 +2726,8 @@ export const PageControl = z.object({
   maxLength: z.number().int().nonnegative().optional(),
   /** S1: how a text input's or textarea's text was entered since it was last empty (PageEntry); absent when no edit was seen. */
   entry: PageEntry.optional(),
+  /** H14, page file controls only: the accept attribute's tokens, lowercased. */
+  accept: z.array(z.string().min(1).max(100)).max(20).optional(),
 });
 export type PageControl = z.infer<typeof PageControl>;
 

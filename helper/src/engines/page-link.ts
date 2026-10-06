@@ -246,6 +246,8 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         // S1: what saved answers need: the field's maxlength, and whether the user typed its text themselves.
         ...(c.maxLength === undefined ? {} : { maxLength: c.maxLength }),
         ...(c.entry === undefined ? {} : { entry: c.entry }),
+        // H14: the types a file control's chooser may offer, for its attach row.
+        ...(c.accept === undefined ? {} : { accept: c.accept }),
       });
       // A native select's options, as the AXMenuItem children fill reads a select's options from (controls.ts), so a
       // hand-off for it can name one. Chrome's Accessibility shows only the selected one. An option whose value is

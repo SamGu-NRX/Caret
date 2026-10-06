@@ -342,6 +342,14 @@ export class HelperServer {
               if (!s.destroyed) s.write(JSON.stringify(reply) + "\n");
             }
           }
+          // H14: the memory window's Files section names files and paths: only a host that shows attach rows, and to it alone.
+          else if (m.data.type === "savedFilesRequest") {
+            if (!this.goalFiles.has(s)) this.reject(s, `savedFilesRequest needs a host hello with "${GOAL_FILES_CAPABILITY}" in its capabilities`);
+            else {
+              const reply = this.helper().handleSavedFiles(m.data);
+              if (!s.destroyed) s.write(JSON.stringify(reply) + "\n");
+            }
+          }
           else if (m.data.type === "settings") this.helper().handleSettings(m.data, from);
           // The user's Keep makes a skill, which is consent the router acts on (routing/consent.ts): only the host,
           // which shows the question, may answer it.

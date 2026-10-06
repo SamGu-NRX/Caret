@@ -39,6 +39,8 @@ export interface PageControl {
   maxLength?: number;
   /** S1: how a text input's or textarea's text was entered since it was last empty (content/entry.ts); absent when no edit was seen. */
   entry?: "typed" | "pasted" | "other";
+  /** H14, file inputs only: the accept attribute's extensions and MIME types, lowercased (walker.ts acceptOf). */
+  accept?: string[];
 }
 
 export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "notSameElement" | "excluded" | "unsupported" | "error" | "siteOff";
