@@ -42,7 +42,7 @@ describe("an attach row in a page goal's preview (P3)", () => {
     const r = await rig({ goalFiles: true });
     const s = (await r.ask("fill out this form from my note")) as Segment;
     const attach = s.steps.filter((x) => x.kind === "attach");
-    expect(attach).toEqual([{ index: s.steps.length - 1, kind: "attach", says: "Resume: choose a file", file: { source: "choose" } }]);
+    expect(attach).toEqual([{ index: s.steps.length - 1, kind: "attach", says: "Resume: a file you choose", file: { source: "choose" } }]);
     expect(s.steps.slice(0, -1).every((x) => x.kind === "write")).toBe(true);
   });
 
@@ -70,7 +70,7 @@ describe("attaching the file the user confirmed (P3)", () => {
   it("lands by the dropzone when that is the row the user gave the file, and nothing goes to the other", async () => {
     const r = await rig({ goalFiles: true, controls: documents, title: "Apply: step 3" });
     const s = (await r.ask("fill out this form from my note")) as Segment;
-    expect(s.steps.map((x) => x.says)).toEqual(["Full name: Robin Vale", "Resume: choose a file", "Or drop your resume here: choose a file"]);
+    expect(s.steps.map((x) => x.says)).toEqual(["Full name: Robin Vale", "Resume: a file you choose", "Or drop your resume here: a file you choose"]);
     await r.accept(s, { confirmedFile: { step: 2, path: resume() } });
     await settle(r);
     expect(r.page.files.get("r2")?.name).toBe("Robin Vale Resume.pdf");
