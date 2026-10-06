@@ -74,6 +74,8 @@ export interface RigOptions {
   jev?: (inner: AskJev) => AskJev;
   /** The helper's clock (HelperOptions.now); the real one by default. */
   now?: () => number;
+  /** I6: the offers an hour may show (HelperOptions.offersPerHour); the settings' own by default. */
+  offersPerHour?: number;
 }
 
 /** A Helper over one page tab and the note the user just left, with canned picks by field label (fake-page.ts PICKS). */
@@ -110,6 +112,7 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
     pageContext: (id) => host.registry.contextOf(id),
     ...(o.goalFiles === true ? { goalFiles: true } : {}),
     ...(o.now === undefined ? {} : { now: o.now }),
+    ...(o.offersPerHour === undefined ? {} : { offersPerHour: o.offersPerHour }),
   });
   wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
   host.registry.add(page.session);

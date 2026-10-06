@@ -10,6 +10,7 @@ import { readyOnLoad } from "../src/offers/ready-on-load.ts";
 import { field, node, snap, text } from "./builders.ts";
 import { c, chrome, mixedControls, NOTE } from "./fake-page.ts";
 import { closeRigs, rig, type Rig } from "./page-rig.ts";
+import type { Store } from "../src/store.ts";
 
 const NOTE_APP = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
 const PAGE_APP = { pid: 4100, bundleId: "com.google.chrome.for.testing", name: "Google Chrome for Testing" };
@@ -96,8 +97,8 @@ describe("a page load in the helper (P3)", () => {
   }
   const popups = (r: Rig): HelperMessage[] => r.published.filter((m) => m.type === "popup");
 
-  async function ready(): Promise<Rig> {
-    const r = await rig();
+  async function ready(o: Parameters<typeof rig>[0] = {}): Promise<Rig> {
+    const r = await rig(o);
     r.helper.model.frontmostPid = chrome.pid;
     r.asked.length = 0;
     return r;
@@ -143,6 +144,33 @@ describe("a page load in the helper (P3)", () => {
     r.page.session.receive({ type: "pageFocus", v: 1, at: Date.now(), tabId: 7, frameId: 0 });
     for (let i = 0; i < 20; i++) await new Promise((x) => setTimeout(x, 5));
     expect(r.asked).toEqual([]);
+  });
+
+  // I6 item 4: P3's eval read W4's five saved pages 0 of 5. The code check fires on all five (evidence/screen/i6
+  // probe/load-w4.txt); the eval loaded them after four corpus pages had spent the hour's four offers, and the hourly
+  // budget holds a load before the check. The budget is the user's setting and stays; the hold is now counted.
+  // Each page's form is its own (another form id), as each saved page's is: one form's repeat would be covered anyway.
+  const inForm = (i: number, x: PageControl): PageControl => ({ ...x, key: x.key.replace("form[apply]", `form[p${i}]`), form: `form#p${i}` });
+  const five = (i: number) => (): PageControl[] => [inForm(i, c(`p${i}a`, "text", "Full name", { value: "" })), inForm(i, c(`p${i}b`, "email", "Email", { value: "" }))];
+  const counts = (r: Rig): Record<string, number> => {
+    const store = (r.helper as unknown as { opts: { store: Store } }).opts.store;
+    store.flush();
+    return store.counts();
+  };
+
+  it("holds a fifth page's load in the hour before the check, and counts the hold", async () => {
+    const r = await ready();
+    for (let i = 1; i <= 5; i++) await load(r, five(i), `Apply: step ${i}`, `/s${i}`);
+    expect(popups(r)).toHaveLength(4);
+    expect(counts(r)["fill.load_held_hourlyBudget"]).toBe(1);
+    expect(counts(r)["fill.load"]).toBe(4);
+  });
+
+  it("measures every page on its own when the budget is lifted, as the load eval runs", async () => {
+    const r = await ready({ offersPerHour: 1000 });
+    for (let i = 1; i <= 6; i++) await load(r, five(i), `Apply: step ${i}`, `/s${i}`);
+    expect(popups(r)).toHaveLength(6);
+    expect(counts(r)["fill.load_held_hourlyBudget"]).toBeUndefined();
   });
 
   it("leaves a page a carried goal is planning to that goal", async () => {

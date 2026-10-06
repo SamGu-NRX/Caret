@@ -981,7 +981,13 @@ export class Helper {
     const doc = this.opts.pageDocument?.(windowId) ?? null;
     if (doc === null || this.loadAsked.get(windowId) === doc || this.goals.carrying(windowId, doc)) return;
     const now = this.now();
-    if (this.gate.holds("fill", now).length > 0) return;
+    // I6: counted, since a hold ends the load's offer before the code check: W4's five saved pages read 0 of 5 in P3's
+    // eval because the first four corpus pages had spent the hour's four offers (balanced), not because of the check.
+    const held = this.gate.holds("fill", now);
+    if (held.length > 0) {
+      this.opts.store.count(`fill.load_held_${held[0]}`, 1, now);
+      return;
+    }
     const w = this.model.windows.get(windowId);
     if (w === undefined) return;
     const v = readyOnLoad(this.model, w, this.aboutValues(), { excluded: this.opts.pageContext?.(windowId)?.excluded ?? {} });

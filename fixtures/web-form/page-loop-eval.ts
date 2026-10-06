@@ -614,7 +614,10 @@ async function main(): Promise<number> {
   const warnings: string[] = [];
   const host = pageHost({ path: sockPath, secret, reader: noReader, apply: (m) => void helper.handleReader(m), warn: (l) => void warnings.push(l), onTiming: (t) => void timings.push({ ...t, page: page?.id ?? "", stage }) });
   const published: HelperMessage[] = [];
-  helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, pageDocument: (id) => host.registry.documentOf(id), pageContext: (id) => host.registry.contextOf(id), calendar: null, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l), ...(GOAL ? { ask: { maker: "heads" as const } } : {}), ...(JOURNEY !== null ? { goalFiles: true } : {}) });
+  helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, pageDocument: (id) => host.registry.documentOf(id), pageContext: (id) => host.registry.contextOf(id), calendar: null, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l), ...(GOAL ? { ask: { maker: "heads" as const } } : {}), ...(JOURNEY !== null ? { goalFiles: true } : {}),
+    // I6: the load journey measures each page's own verdict, so the hour's offer budget (four, balanced) is lifted: P3's
+    // run read W4's five saved pages 0 of 5 because the first four corpus pages had spent it (helper.ts pageWalked).
+    ...(JOURNEY === "load" ? { offersPerHour: 1000 } : {}) });
   wirePageEngines({ host, helper, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l) });
   await host.server.listen();
   undo.push({ what: "helper", fn: async () => (await host.server.close(), helper.shutdown(), helper.memory.close(), store.close()) });
@@ -1181,13 +1184,18 @@ async function main(): Promise<number> {
       { id: "p3-search", url: `${site.origin}/p3/search.html`, p: null },
       { id: "p3-login", url: `${site.origin}/p3/login.html`, p: null },
     ];
-    const out: { id: string; fired: boolean; requests: number; offerMs: number | null; note: string; check: string }[] = [];
+    const out: { id: string; fired: boolean; requests: number; offerMs: number | null; note: string; check: string; held: string }[] = [];
+    const heldCounts = (): Record<string, number> => {
+      store.flush();
+      return Object.fromEntries(Object.entries(store.counts()).filter(([k]) => k.startsWith("fill.load_held_")));
+    };
     for (const x of list) {
       page = x.p;
       taskFields = null;
       desk(x.p ?? { ...(pages[0] as Page), about: [], sources: [noteWindow("Search jobs: robotics\nSearch location: Denver\nEmail: robin@example.test")] });
       const mark = published.length;
       const c0 = calls.length;
+      const held0 = heldCounts();
       const loads = (helper as unknown as { opts: { store: Store } }).opts.store;
       void loads;
       const t1 = performance.now();
@@ -1206,7 +1214,8 @@ async function main(): Promise<number> {
       const check = v === null ? "not walked" : v.fires ? `fires: ${v.fields.length} fields` : `${v.why}: ${v.fields.length} with a candidate`;
       const fired = published.slice(mark).some((m) => m.type === "popup" || m.type === "fillProposal");
       const errs = published.slice(mark).filter((m) => m.type === "error").map((m) => (m.type === "error" ? m.message : ""));
-      out.push({ id: x.id, fired, requests: calls.length - c0, offerMs, note: errs.join("; ").slice(0, 200), check });
+      const held = Object.entries(heldCounts()).flatMap(([k, n]) => (n > (held0[k] ?? 0) ? [k.slice("fill.load_held_".length)] : [])).join(", ");
+      out.push({ id: x.id, fired, requests: calls.length - c0, offerMs, note: errs.join("; ").slice(0, 200), check, held });
       say(`${x.id}: ${fired ? `fired (${fmt(offerMs)} ms from navigation)` : "no offer"}, ${calls.length - c0} Jev requests${errs.length > 0 ? `; ${errs[0]}` : ""}`);
     }
     page = null;
@@ -1217,11 +1226,11 @@ async function main(): Promise<number> {
     const lines = [
       `# P3 ready on load, ${new Date().toISOString()}`,
       "",
-      "Each page loaded with no Ask and no field in focus, after its sources were put on the desk (the note as the window the user left). Jev canned; a request is any Jev call between the navigation and 3 s after load.",
+      "Each page loaded with no Ask and no field in focus, after its sources were put on the desk (the note as the window the user left). Jev canned; a request is any Jev call between the navigation and 3 s after load. The hour's offer budget is lifted (offersPerHour 1000), so each page is measured on its own; 'held' counts loads a settings rule held before the code check.",
       "",
-      "| page | fired | Jev requests | offer ms from navigation | code check now (no About) | note |",
-      "| --- | --- | --- | --- | --- | --- |",
-      ...out.map((o) => `| ${o.id} | ${o.fired ? "yes" : "no"} | ${o.requests} | ${fmt(o.offerMs)} | ${o.check} | ${cell(o.note || "-")} |`),
+      "| page | fired | Jev requests | offer ms from navigation | code check now (no About) | held | note |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      ...out.map((o) => `| ${o.id} | ${o.fired ? "yes" : "no"} | ${o.requests} | ${fmt(o.offerMs)} | ${o.check} | ${o.held || "-"} | ${cell(o.note || "-")} |`),
       "",
       `- B27 corpus: ${group((id) => corpus.forms.some((f) => f.id === id))}`,
       `- W4 saved pages: ${group((id) => W4_SITES.includes(id))}`,
