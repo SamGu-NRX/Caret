@@ -713,13 +713,10 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
   const line = bareLine(raw);
   const pos = line.indexOf(text);
   if (pos < 0) return null;
-  // A line that warns about something ("Don't give out 555-0112", "Phone: 555-0101 (my old number, no longer works)")
-  // sends the span's clause with it, or not the span: the warning may be about it (C1 review). A label otherwise says
-  // what the span is.
-  if (WARNS.test(line.replace(text, " "))) {
-    const clause = clauseAround(line, pos, text);
-    return clause === null ? null : { clause, required: true };
-  }
+  // A line that warns about something ("Don't give out 555-0112", "Phone: 555-0101; do not use this old number") sends
+  // its whole self with the span, or not the span: the warning may be about it, anywhere in the line, and a clause cut at
+  // a semicolon or to a length lost it (C1 review). A label otherwise says what the span is.
+  if (WARNS.test(line.replace(text, " "))) return line === text ? null : { clause: line, required: true };
   if (labelled) return null;
   const values = lineValues(line);
   const kind = values.find((v) => v.text === text)?.kind;

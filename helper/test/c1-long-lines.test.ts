@@ -80,10 +80,10 @@ describe("what a value inside a line carries, and what it never offers", () => {
     const cs = candidates("- Cell: 555-0147. Don't give out 555-0112, that's Mom and Dad's landline.");
     const cell = cs.find((c) => c.text === "555-0147");
     const landline = cs.find((c) => c.text === "555-0112");
-    // The line warns ("Don't give out"), so the labelled value's own clause goes too; it is the value's sentence alone.
-    expect([cell?.context, cell?.labelled, cell?.line ?? null]).toEqual(["Cell", true, "Cell: 555-0147."]);
-    expect([landline?.context, landline?.labelled, landline?.line]).toEqual([null, false, "Don't give out 555-0112, that's Mom and Dad's landline."]);
-    expect(describeCandidate(landline as NonNullable<typeof landline>)).toContain("in the line 'Don't give out 555-0112, that's Mom and Dad's landline.'");
+    expect([cell?.context, cell?.labelled, cell?.line ?? null]).toEqual(["Cell", true, "Cell: 555-0147. Don't give out 555-0112, that's Mom and Dad's landline."]);
+    // The line warns, so each value goes with the whole line.
+    expect([landline?.context, landline?.labelled, landline?.line]).toEqual([null, false, "Cell: 555-0147. Don't give out 555-0112, that's Mom and Dad's landline."]);
+    expect(describeCandidate(landline as NonNullable<typeof landline>)).toContain("in the line 'Cell: 555-0147. Don't give out 555-0112, that's Mom and Dad's landline.'");
   });
 
   it("offers nothing from a line that shows a card number or is labelled as a secret, however long", () => {
@@ -214,5 +214,9 @@ describe("a labelled value its line warns about", () => {
     m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));
     const c = collectCandidates(m, FORM, { now: 3000 }).candidates.find((x) => x.text === "555-0101");
     expect([c?.context, c?.line]).toEqual(["Phone", "Phone: 555-0101 (my old number, no longer works)"]);
+    m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: "Contact\nPhone: 555-0101; do not use this old number.\nEmail: jo@example.org", editable: true }], { at: 1500, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
+    m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2500, windowId: FORM, focused: true }));
+    const d = collectCandidates(m, FORM, { now: 3000 }).candidates.find((x) => x.text === "555-0101");
+    expect(d?.line).toBe("Phone: 555-0101; do not use this old number.");
   });
 });
