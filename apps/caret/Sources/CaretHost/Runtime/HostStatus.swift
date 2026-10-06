@@ -26,6 +26,9 @@ final class HostStatus: @unchecked Sendable {
         var spend: HelperSpend?
         /// H13: inline text in page fields; lengths and outcomes, never text.
         var pageInline: DebugState.PageInlineInfo?
+        /// H14: the page task panel and the line offering to keep a file.
+        var pageTask: DebugState.PageTaskInfo?
+        var fileSave: DebugState.FileSaveInfo?
     }
 
     struct KeyStamp: Equatable {

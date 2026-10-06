@@ -630,6 +630,23 @@ public final class HostRuntime {
                     return info
                 }
             },
+            pageTask: { json in
+                MainActor.assumeIsolated {
+                    if let json {
+                        guard testHooks else { return #"{"error":"pagetask start is a test hook: start the host with --test-hooks"}"# }
+                        do {
+                            let goal = try JSONDecoder().decode(GoalProgress.self, from: Data(json.utf8))
+                            guard pageTask.machine.start(goal) else { return #"{"error":"not a page goal's preview, or a page task is running"}"# }
+                        } catch {
+                            return "{\"error\":\(Self.jsonString(String(describing: error)))}"
+                        }
+                    }
+                    pageTask.publish()
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.sortedKeys]
+                    return (try? String(decoding: encoder.encode(status.read().pageTask), as: UTF8.self)) ?? "{}"
+                }
+            },
             testHooks: testHooks,
             access: configuration.socketAccess
         )
@@ -857,6 +874,9 @@ public final class HostRuntime {
         let services: @Sendable ([String]) -> String
         /// `pagesight` and `pagesight front <pid>` (H5: "Caret can't see this page yet").
         let pageSight: @Sendable ([String]) -> String
+        /// H14: `pagetask` reads the page task panel; `pagetask start <goalProgress json>` starts it from a preview as the
+        /// desk's Ask would (test hooks), for a run with no model to plan the page.
+        let pageTask: @Sendable (String?) -> String
         /// The host was started with `--test-hooks`.
         let testHooks: Bool
         /// What the socket answers at all; checked before anything else (H12).
@@ -1084,6 +1104,12 @@ public final class HostRuntime {
         case "pagesight":
             let reply = DispatchQueue.main.sync { hooks.pageSight(words) }
             return Data((reply + "\n").utf8)
+        case "pagetask":
+            // `pagetask start <json>` carries JSON with spaces; keep it whole after the verb.
+            let parts = command.split(separator: " ", maxSplits: 2).map(String.init)
+            guard words.count == 1 || (parts.count == 3 && parts[1] == "start") else { return Data("{\"error\":\"usage: pagetask | pagetask start <goalProgress json>\"}\n".utf8) }
+            let reply = DispatchQueue.main.sync { hooks.pageTask(parts.count == 3 ? parts[2] : nil) }
+            return Data((reply + "\n").utf8)
         case "placement-bounds":
             let reply = DispatchQueue.main.sync { hooks.placementBounds(words) }
             return Data((reply + "\n").utf8)
@@ -1175,6 +1201,8 @@ public final class HostRuntime {
         state.routing = fields.routing
         state.spend = fields.spend
         state.pageInline = fields.pageInline
+        state.pageTask = fields.pageTask
+        state.fileSave = fields.fileSave
         state.breakpointLatency = status.breakpointLatency.summary()
         return state
     }

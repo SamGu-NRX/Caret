@@ -30,6 +30,10 @@ final class FileSaveCoordinator {
     func shutdown() { panel.exit(duration: 0) }
 
     private func perform(_ command: FileSaveMachine.Command) {
+        defer {
+            let info = DebugState.FileSaveInfo(phase: machine.phase.rawValue, panel: panel.debugInfo())
+            status.update { $0.fileSave = info }
+        }
         switch command {
         case .draw(let content, let enters, let keyed):
             panel.text = content.text

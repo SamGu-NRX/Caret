@@ -45,6 +45,7 @@ final class PageTaskCoordinator {
     }
 
     private func perform(_ command: PageTaskCommand) {
+        defer { publish() }
         switch command {
         case .draw(let content, let motion, let anchor): draw(content, motion: motion, anchor: anchor)
         case .hide(let motion):
@@ -60,6 +61,12 @@ final class PageTaskCoordinator {
         case .toastTaken: onToastTaken?()
         case .chooseFile(let choice): choose(choice)
         }
+    }
+
+    /// H14: the machine's state and the panel on screen, for the debug socket.
+    func publish() {
+        let info = DebugState.PageTaskInfo(status: machine.status, choosing: machine.choosing, filesWired: machine.filesWired, panel: panel.debugInfo())
+        status.update { $0.pageTask = info }
     }
 
     // MARK: - The open panel (H14)
@@ -89,6 +96,7 @@ final class PageTaskCoordinator {
                 } else {
                     self.machine.chooserClosed()
                 }
+                self.publish()
                 if let browser = NSRunningApplication(processIdentifier: choice.browserPid) {
                     NSApp.yieldActivation(to: browser)
                     browser.activate()

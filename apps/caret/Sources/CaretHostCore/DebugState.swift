@@ -700,6 +700,28 @@ public struct DebugState: Codable, Equatable, Sendable {
     public var spend: HelperSpend?
     /// H13: inline text in page fields. States, lengths and timings only: never the page's text nor the suggestion.
     public var pageInline: PageInlineInfo?
+    /// H14: the page task panel (`PageTaskMachine.Status`), the attach row whose open panel is up, and the panel on screen.
+    public var pageTask: PageTaskInfo?
+    /// H14: the line offering to keep a file, and its panel.
+    public var fileSave: FileSaveInfo?
+
+    public struct PageTaskInfo: Codable, Equatable, Sendable {
+        public var status: PageTaskMachine.Status
+        public var choosing: Int?
+        public var filesWired: Bool
+        public var panel: Panel?
+        public init(status: PageTaskMachine.Status, choosing: Int?, filesWired: Bool, panel: Panel?) {
+            self.status = status; self.choosing = choosing; self.filesWired = filesWired; self.panel = panel
+        }
+    }
+
+    public struct FileSaveInfo: Codable, Equatable, Sendable {
+        public var phase: String
+        public var panel: Panel?
+        public init(phase: String, panel: Panel?) {
+            self.phase = phase; self.panel = panel
+        }
+    }
 
     public struct PageInlineInfo: Codable, Equatable, Sendable {
         /// The machine's last decision (`shown`, `midLine`, `ownSuggestions`, `insert.inserted`...).
