@@ -65,6 +65,7 @@ struct OnboardingView: View {
         case .work: WorkScreen(state: state, send: send)
         case .know: KnowScreen(state: state, send: send)
         case .permissions: PermissionsScreen(state: state, animated: animated, send: send)
+        case .jevKey: JevKeyScreen(state: state, animated: animated, send: send)
         case .tryIt: TryItScreen(state: state, character: character, animated: animated)
         case .firstLook: FirstLookScreen(state: state, character: character, animated: animated, send: send)
         }
@@ -75,16 +76,21 @@ struct OnboardingView: View {
     /// Return and Esc are the window's (`OnboardingController`), so they work from anywhere.
     private var bar: some View {
         ZStack {
-            StepDots(current: state.stepIndex, count: state.steps.count)
+            // A flow of one step (a returning user's permissions, the menu's key item) has no place to show.
+            if state.steps.count > 1 {
+                StepDots(current: state.stepIndex, count: state.steps.count)
+            }
             HStack {
                 if state.canGoBack {
                     Button("Back") { send(.back) }.buttonStyle(QuietButtonStyle(size: 13))
+                        .disabled(state.step == .jevKey && state.jevKey.phase == .checking)
                 }
                 Spacer()
-                if state.step == .know {
+                if state.step == .know || (state.step == .jevKey && !state.jevKey.phase.saved) {
                     Button("Skip") { send(.skip) }.buttonStyle(QuietButtonStyle(size: 13)).padding(.trailing, 8)
+                        .disabled(state.jevKey.phase == .checking)
                 }
-                Button(state.step == .firstLook ? "Done" : "Continue") { send(.next) }
+                Button(state.step == .firstLook || state.only != nil ? "Done" : "Continue") { send(.next) }
                     .buttonStyle(OnboardingButtonStyle(kind: .primary))
                     .disabled(!state.canContinue)
             }
@@ -539,7 +545,7 @@ struct PermissionsScreen: View {
                     // No detail line either: the window's height holds three rows only without one.
                     PermissionRow(
                         title: "Caret for Chrome", optional: true, detail: nil,
-                        granted: false, animated: animated, actionTitle: "Add to Chrome…", announcesState: false
+                        granted: false, animated: animated, actionTitle: "Add to your browser…", announcesState: false
                     ) { send(.addToChrome) }
                 }
             }
@@ -621,6 +627,123 @@ struct PermissionRow: View {
         .padding(.vertical, 10)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(announcesState ? "\(title), \(granted ? "on" : "off")" : title)
+    }
+}
+
+// MARK: - 4b. The Jev key
+
+/// H12: one paste field for the key of Jev, the cloud model that decides what Caret offers, and the answer of the one
+/// request that checks it (`JevKeyCheck`). Skippable: without a key the helper runs without Jev and the menu says so.
+/// The key goes to the login keychain only after Jev's answer shows it authenticates (`Outcome.keepsKey`).
+///
+/// The line under the field states what happened, in place: it enters at 160 ms ease-out with a 2 pt rise (state
+/// indication, as the first look's line does); under Reduce Motion it fades only. VoiceOver hears each new line once.
+struct JevKeyScreen: View {
+    static let title = "Add your Jev key."
+    static let detail = "Jev is the cloud model that decides what Caret offers, like which value goes in a field. Paste your TypeSafe API key to turn it on."
+    static let placeholder = "Paste your key"
+    static let footnote = "Caret keeps the key in your login keychain and checks it with one small request. Without a key, Caret still writes the next words, but filling forms and next steps need Jev."
+    static let storedLine = "Caret has a key saved. Paste a new one to replace it."
+
+    var state: OnboardingFlow.State
+    var animated: Bool
+    var send: (OnboardingFlow.Event) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// What the line under the field says, and whether it is a problem the user has to act on (Ink) or a report (Ink 2).
+    static func line(_ draft: OnboardingFlow.JevKeyDraft) -> (text: String, problem: Bool, done: Bool)? {
+        switch draft.phase {
+        case .editing: return draft.stored && draft.text.isEmpty ? (storedLine, false, false) : nil
+        case .malformed: return ("That isn't a key. A key has no spaces in it.", true, false)
+        case .checking: return ("Checking the key with Jev…", false, false)
+        case .checked(let outcome, let saved):
+            switch outcome {
+            case .works where saved: return ("Jev took the key. It's in your login keychain.", false, true)
+            // The coordinator's words for a key whose account is out of credits (H12, 2026-10-05).
+            case .noCredits where saved: return ("This key works, but its account has no credits. Add credits at console.typesafe.ai.", true, false)
+            case .works, .noCredits: return ("Jev took the key, but your keychain didn't save it. Try again.", true, false)
+            case .rejected: return ("Jev didn't accept this key. Check that you copied all of it.", true, false)
+            case .unreachable: return ("Caret couldn't reach Jev. Check your connection, then try again.", true, false)
+            case .unclear: return ("Jev couldn't check the key just now. Try again in a moment.", true, false)
+            }
+        }
+    }
+
+    var body: some View {
+        let draft = state.jevKey
+        let line = Self.line(draft)
+        VStack(alignment: .leading, spacing: 0) {
+            ScreenTitle(title: Self.title, detail: Self.detail)
+            OnboardingCard {
+                HStack(spacing: 12) {
+                    FieldLabel(text: "Key").frame(width: 44, alignment: .leading)
+                    EntryField(
+                        title: "Jev key", text: draft.text.reveal, placeholder: Self.placeholder,
+                        autofocus: true, showsFocus: draft.phase != .checking && !draft.phase.saved,
+                        // The field is disabled while the check runs, which takes focus away; a problem gives it back,
+                        // and so does each Continue that found one.
+                        focusNow: line?.problem == true && !draft.phase.saved, focusToken: draft.submits,
+                        enabled: draft.phase != .checking, secure: true,
+                        onChange: { send(.setJevKey($0)) }
+                    )
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            }
+            .padding(.top, 18)
+            ZStack(alignment: .topLeading) {
+                if let line {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        if line.done { Check().alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 } }
+                        Text(line.text)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color(token: line.problem ? Tokens.ink : Tokens.secondary))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .id(line.text)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 2)))
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .frame(minHeight: 32, alignment: .topLeading)
+            .padding(.top, 8)
+            .animation(lineMotion(draft.phase), value: line?.text)
+            Text(Self.footnote)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(token: Tokens.secondary))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+        }
+        .padding(.horizontal, OnboardingView.inset)
+        .padding(.top, OnboardingView.top)
+        .onChange(of: line?.text) { _, text in
+            guard animated, let text else { return }
+            AccessibilityNotification.Announcement(text).post()
+        }
+    }
+
+    /// Only Jev's answer, which arrives on its own a moment after Return, enters with motion. A line Return itself
+    /// puts up ("Checking…", "That isn't a key") changes at once: keyboard actions get no animation.
+    private func lineMotion(_ phase: OnboardingFlow.JevKeyDraft.Phase) -> Animation? {
+        guard animated, case .checked = phase else { return nil }
+        return Motion.curve(Motion.easeOut, reduceMotion ? Motion.Duration.reduced : 0.16)
+    }
+
+    /// The same Ink check a granted permission shows, at 14 pt.
+    private struct Check: View {
+        var body: some View {
+            ZStack {
+                Circle().fill(Color(token: Tokens.inkFill))
+                Path { p in
+                    p.move(to: CGPoint(x: 4, y: 7.2))
+                    p.addLine(to: CGPoint(x: 6.1, y: 9.4))
+                    p.addLine(to: CGPoint(x: 10.2, y: 4.8))
+                }
+                .stroke(Color(token: Tokens.onInk), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            }
+            .frame(width: 14, height: 14)
+            .accessibilityHidden(true)
+        }
     }
 }
 

@@ -459,7 +459,8 @@ final class OnboardingFlowTests: XCTestCase {
 
     func testTheKnowScreenSitsBetweenWorkAndPermissions() {
         let rig = atKnow()
-        XCTAssertEqual(OnboardingStep.allCases, [.welcome, .work, .know, .permissions, .tryIt, .firstLook])
+        // H12: the Jev key step comes after permissions; it shows only when Caret has no key (ShipsCoreTests).
+        XCTAssertEqual(OnboardingStep.allCases, [.welcome, .work, .know, .permissions, .jevKey, .tryIt, .firstLook])
         rig.send(.back)
         XCTAssertEqual(rig.step, .work)
         rig.send(.next, .next)

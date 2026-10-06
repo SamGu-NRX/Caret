@@ -35,7 +35,9 @@ Caret.app passes its helper only two variables from its own environment: `TYPESA
 CARET_ENV_FILE=/path/to/.env apps/caret/.build/Caret.app/Contents/MacOS/Caret
 ```
 
-Keep keys out of the command line and out of `defaults`; the helper reads the file when it calls a model. Without either variable the helper runs with `--no-jev` and says so in Caret's log. How people who download Caret get model access is still open.
+Keep keys out of the command line and out of `defaults`; the helper reads the file when it calls a model.
+
+Someone who installed Caret gives it a Jev key in onboarding (H12). Caret checks it with one request, keeps it in the login keychain (service `dev.caret.host.jev`), and at each helper start passes it as `TYPESAFE_API_KEY` in the helper's environment only. Either variable above wins over the keychain. With no key anywhere the helper runs with `--no-jev`, and the menu says "Jev is off. Add a key…". Groq still reaches the helper only through the env file, so Ask's writer has no key in an installed Caret.
 
 ## What v2 keeps
 

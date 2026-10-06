@@ -53,11 +53,13 @@ final class ChromeBridgeInstallerTests: XCTestCase {
 
     func testARunWithItsOwnHomeWritesOnlyWhereItIsTold() throws {
         let test = try CaretHome.resolve(override: "/tmp/caret-x", userHome: "/Users/robin")
-        guard case .refused = ChromeBridgeInstaller.manifestDirectory(home: test, override: nil, userHome: "/Users/robin") else { return XCTFail() }
-        XCTAssertEqual(ChromeBridgeInstaller.manifestDirectory(home: test, override: "/tmp/nmh", userHome: "/Users/robin"), .directory("/tmp/nmh"))
-        guard case .refused = ChromeBridgeInstaller.manifestDirectory(home: test, override: "", userHome: "/Users/robin") else { return XCTFail() }
+        let all: (BridgeBrowser) -> Bool = { _ in true }
+        guard case .refused = ChromeBridgeInstaller.destination(home: test, override: nil, userHome: "/Users/robin", installed: all) else { return XCTFail() }
+        XCTAssertEqual(ChromeBridgeInstaller.destination(home: test, override: "/tmp/nmh", userHome: "/Users/robin", installed: all),
+                       .targets([.init(browser: nil, directory: "/tmp/nmh")]))
+        guard case .refused = ChromeBridgeInstaller.destination(home: test, override: "", userHome: "/Users/robin", installed: all) else { return XCTFail() }
         let user = try CaretHome.resolve(override: nil, userHome: "/Users/robin")
-        XCTAssertEqual(ChromeBridgeInstaller.manifestDirectory(home: user, override: nil, userHome: "/Users/robin"),
-                       .directory("/Users/robin/Library/Application Support/Google/Chrome/NativeMessagingHosts"))
+        XCTAssertEqual(ChromeBridgeInstaller.destination(home: user, override: nil, userHome: "/Users/robin", installed: { $0 == .chrome }),
+                       .targets([.init(browser: .chrome, directory: "/Users/robin/Library/Application Support/Google/Chrome/NativeMessagingHosts")]))
     }
 }

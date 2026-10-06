@@ -64,25 +64,35 @@ public struct NativeMessagingManifest: Codable, Equatable, Sendable {
 }
 
 /// The browsers Caret can add itself to, and where each reads Native Messaging manifests for the user's own profile.
+/// Both run the same build of Caret for Chrome under the same extension id, so one manifest content serves both, and
+/// both are in `BridgeTrust.browserRequirements`, so the bridge accepts either as its parent.
 public enum BridgeBrowser: String, CaseIterable, Sendable {
     case chrome
+    /// Helium (imput), a Chromium browser; it reads manifests from its own Application Support folder (H12).
+    case helium
 
     public var displayName: String {
         switch self {
         case .chrome: return "Google Chrome"
+        case .helium: return "Helium"
         }
     }
 
     public var bundleIdentifier: String {
         switch self {
         case .chrome: return "com.google.Chrome"
+        case .helium: return "net.imput.helium"
         }
     }
 
-    /// `~/Library/Application Support/Google/Chrome/NativeMessagingHosts` for the user `userHome`.
+    /// The page Caret opens so the user can load the extension. Helium is Chromium and takes Chromium's address.
+    public var extensionsPage: URL { URL(string: "chrome://extensions")! }
+
+    /// Where the browser reads Native Messaging manifests for the user `userHome`.
     public func nativeMessagingDirectory(userHome: String) -> String {
         switch self {
         case .chrome: return userHome + "/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+        case .helium: return userHome + "/Library/Application Support/net.imput.helium/NativeMessagingHosts"
         }
     }
 }

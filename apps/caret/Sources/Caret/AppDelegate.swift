@@ -28,6 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let pauseItem = NSMenuItem(title: "Pause Caret", action: nil, keyEquivalent: "")
     private var roleItems: [NSMenuItem] = []
     private var levelItems: [NSMenuItem] = []
+    /// Under the state while the helper runs without Jev because Caret has no key (H12); choosing it opens the key step.
+    private let jevOffItem = NSMenuItem(title: "Jev is off. Add a key…", action: nil, keyEquivalent: "")
 
     private let showsStatusItem: Bool
 
@@ -57,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.refreshGlyph()
         }
         runtime.services = services
+        runtime.useJevKeys(services)
         runtime.onAddToChrome = { [weak self] in
             guard let self else { return }
             ChromeBridgeInstaller.run(home: self.home, manifestOverride: self.manifestDirectory)
@@ -100,6 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let notice = OtherTabOwners.notice(OtherTabOwners.running(in: NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)))
         tabOwnerItem.title = notice ?? ""
         tabOwnerItem.isHidden = notice == nil
+        jevOffItem.isHidden = !services.jevOff
         perchItem.state = runtime.perchHidden ? .off : .on
         let current = FigureSettings.shared.character
         for item in characterItems {
@@ -126,6 +130,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func addToChrome(_ sender: NSMenuItem) {
         ChromeBridgeInstaller.run(home: home, manifestOverride: manifestDirectory)
+    }
+
+    @objc private func addJevKey(_ sender: NSMenuItem) {
+        runtime.openJevKeyStep()
+    }
+
+    /// The login item goes, and with it this process: launchd stops a LaunchAgent it unregisters. Opening Caret again
+    /// registers it again (LaunchRole.handOffToAgent), which the alert says.
+    @objc private func stopOpeningAtLogin(_ sender: NSMenuItem) {
+        let alert = NSAlert()
+        alert.messageText = "Stop opening Caret at login?"
+        alert.informativeText = "Caret quits now and won’t open when you log in. Opening Caret again turns this back on."
+        alert.addButton(withTitle: "Stop Opening at Login")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let result = LoginAgent.unregister(LoginAgent.system())
+        FileHandle.standardError.write(Data("caret: \(result.message)\n".utf8))
+        guard !result.ok else { return }
+        let failed = NSAlert()
+        failed.messageText = "Caret couldn’t remove its login item."
+        failed.informativeText = "Turn Caret off in System Settings › General › Login Items & Extensions. (\(result.message))"
+        failed.runModal()
     }
 
     private func refreshStopped() {
@@ -186,6 +213,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tabOwnerItem.isEnabled = false
         tabOwnerItem.isHidden = true
         menu.addItem(tabOwnerItem)
+        jevOffItem.action = #selector(addJevKey(_:))
+        jevOffItem.target = self
+        jevOffItem.isHidden = !services.jevOff
+        menu.addItem(jevOffItem)
         stoppedItem.action = #selector(restartServices(_:))
         stoppedItem.target = self
         menu.addItem(stoppedItem)
@@ -202,8 +233,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let setUpItem = NSMenuItem(title: "Set Up Caret…", action: #selector(setUp(_:)), keyEquivalent: "")
         setUpItem.target = self
         menu.addItem(setUpItem)
-        // Never at first launch: the user chooses it here or in onboarding (H4).
-        let chromeItem = NSMenuItem(title: "Add to Chrome…", action: #selector(addToChrome(_:)), keyEquivalent: "")
+        // Never at first launch: the user chooses it here or in onboarding (H4). Chrome and Helium since H12.
+        let chromeItem = NSMenuItem(title: "Add to Your Browser…", action: #selector(addToChrome(_:)), keyEquivalent: "")
         chromeItem.target = self
         menu.addItem(chromeItem)
         let activityItem = NSMenuItem(title: "Activity", action: #selector(showActivity(_:)), keyEquivalent: "")
@@ -256,6 +287,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         characterItem.submenu = characterMenu
         menu.addItem(characterItem)
         menu.addItem(.separator())
+        // Only the launchd agent is a login item to remove; a development or test run never offers it (and must not
+        // unregister the developer's own Caret).
+        if services.isLoginAgent {
+            let loginItem = NSMenuItem(title: "Stop Opening at Login", action: #selector(stopOpeningAtLogin(_:)), keyEquivalent: "")
+            loginItem.target = self
+            menu.addItem(loginItem)
+        }
         menu.addItem(NSMenuItem(title: "Quit Caret", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
     }

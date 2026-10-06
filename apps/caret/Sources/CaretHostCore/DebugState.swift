@@ -570,6 +570,15 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// The taken offer's phase (`FirstLookRun.Phase.name`) and its line, as the pebble says it.
         public var firstLookRun: String?
         public var firstLookLine: String?
+        /// H12: the Jev key step is in the flow (no key was available when it opened); the flow shows only one step
+        /// (`OnboardingFlow.State.only`), as a returning user missing a grant or the menu's key item sees it.
+        public var showsJevKey: Bool?
+        public var only: String?
+        /// The key step: its phase (`OnboardingFlow.JevKeyDraft.Phase.name`), how long the pasted text is (never the
+        /// text), and whether a key is saved.
+        public var jevKey: String?
+        public var jevKeyLength: Int?
+        public var jevKeyStored: Bool?
         /// The window is on screen. False on a run with `--onboarding hidden`.
         public var windowShown: Bool?
         /// What a flow without a window did not do (`openSystemSettings.accessibility`).

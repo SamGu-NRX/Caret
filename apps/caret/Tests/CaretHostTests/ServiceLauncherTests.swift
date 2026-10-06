@@ -96,10 +96,10 @@ final class ServiceLauncherTests: XCTestCase {
         let env = ServiceLauncher.childEnvironment([
             "HOME": "/Users/robin", "PATH": "/opt/homebrew/bin:/usr/bin", "NODE_OPTIONS": "--require /tmp/x.js",
             "DYLD_INSERT_LIBRARIES": "/tmp/x.dylib", "CARET_ENV_FILE": "/Users/robin/.env", "TYPESAFE_API_KEY": "",
-        ])
+        ], passesJevKey: true)
         XCTAssertEqual(env, ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": "/Users/robin", "CARET_ENV_FILE": "/Users/robin/.env"])
         XCTAssertTrue(ServiceLauncher.hasJevKey(env))
-        XCTAssertFalse(ServiceLauncher.hasJevKey(ServiceLauncher.childEnvironment(["HOME": "/Users/robin"])))
+        XCTAssertFalse(ServiceLauncher.hasJevKey(ServiceLauncher.childEnvironment(["HOME": "/Users/robin"], passesJevKey: true)))
     }
 
     /// The crash rule end to end: a helper that exits at once is started five more times with the same secret, then
