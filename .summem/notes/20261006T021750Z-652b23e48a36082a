@@ -1,1 +1,0 @@
-P3: a carry lives across pages until a carried goal finishes (runs.ts carryOn); GoalRuns.carrying(windowId, doc) is true only for the document a carry plans, so helper.ts pageWalked leaves that page alone and takes any page the carry planned nothing for.
