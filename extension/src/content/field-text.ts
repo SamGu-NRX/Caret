@@ -34,7 +34,7 @@ export function around(value: string, start: number, end: number): FieldText {
  * An editor's text between two points, as a person reads it: text nodes as they are, a line break for <br> and around
  * each block. Hidden subtrees (display none, aria-hidden) are left out, as the walker leaves them out of a control.
  */
-function serialize(range: Range): string {
+export function serialize(range: Range): string {
   const root = range.commonAncestorContainer;
   const doc = root.ownerDocument ?? document;
   let out = "";

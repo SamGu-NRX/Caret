@@ -57,6 +57,17 @@ interface Held {
   /** The fill, and then the offers, it was read for; only they see it, and it is dropped when the last lets go. */
   owners: Set<string>;
   timer: NodeJS.Timeout;
+  /**
+   * H13: the tab was a Google Docs or Sheets editor whose text for assistive technology was not there (P4 item 6,
+   * docsText "off"), named as the user knows it; null otherwise. Fill then had nothing from it, and says what to turn on.
+   */
+  docsOff: DocsApp | null;
+}
+
+/** H13: the Google editor a tab with docsText "off" was, by its title's suffix ("… - Google Sheets"); Docs otherwise. */
+export type DocsApp = "Google Docs" | "Google Sheets";
+export function docsApp(title: string): DocsApp {
+  return /\bGoogle Sheets\s*$/u.test(title) ? "Google Sheets" : "Google Docs";
 }
 
 export interface TabSourceOptions {
@@ -132,7 +143,7 @@ export class TabSource {
     this.drop();
     const timer = setTimeout(() => this.drop(), until - now);
     timer.unref();
-    this.held = { windowId: left, title: t.title, nodes: readNodes(t, w.nodes.has("f0")), origins: t.frames.map((f) => f.origin), document, until, owners: new Set([owner]), timer };
+    this.held = { windowId: left, title: t.title, nodes: readNodes(t, w.nodes.has("f0")), origins: t.frames.map((f) => f.origin), document, until, owners: new Set([owner]), timer, docsOff: t.docsText === "off" ? docsApp(t.title) : null };
     return { windowId: left };
   }
 
@@ -145,6 +156,12 @@ export class TabSource {
     const h = this.live();
     if (h === null || !h.owners.has(owner)) return this.opts.model;
     return this.opts.model.withNodes(new Map([[h.windowId, { nodes: h.nodes, title: h.title === "" ? null : h.title }]]));
+  }
+
+  /** H13: the Google editor `owner`'s read found with its text for assistive technology off, or null. */
+  docsOff(owner: string): DocsApp | null {
+    const h = this.live();
+    return h !== null && h.owners.has(owner) ? h.docsOff : null;
   }
 
   /** Whether `owner` still holds text it read. */

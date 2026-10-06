@@ -8,6 +8,11 @@
 //
 // --calendar-test answers the helper's calendar verbs through EventKit, in calendars the reader creates
 // on a local source and deletes when it stops (CalendarAdapter). It never asks for Calendar access.
+// --calendar-user SETTINGS answers them in the user's own calendars instead, as the shipped app does (H8):
+// the one chosen in What Caret knows (`eventCalendar` in the host's settings file SETTINGS, read at each
+// add) while it accepts events, else the default calendar for new events. It never creates or deletes a
+// calendar and never asks for access: Caret asks when the user first accepts an event card. Tests keep
+// --calendar-test; the two cannot be combined.
 // --calendar-probe prints the Calendar authorization status and nothing else; --calendar-audit prints,
 // through a store of its own, every event calendar with that title and its source. Both only read.
 //
@@ -75,10 +80,13 @@ let runs = Int(option("--runs") ?? "100") ?? 100
 let interval = TimeInterval(option("--interval") ?? "0.25") ?? 0.25
 let outPath = option("--out")
 let calendarTest = flag("--calendar-test")
+let calendarUser = option("--calendar-user")
 let calendarProbe = flag("--calendar-probe")
 let calendarAudit = option("--calendar-audit")
 let authFd = option("--auth-fd")
 if !args.isEmpty { fail("unknown arguments: \(args.joined(separator: " "))") }
+if calendarTest && calendarUser != nil { fail("--calendar-test and --calendar-user name different calendars; pass one") }
+if calendarUser?.isEmpty == true { fail("--calendar-user needs the host's settings file") }
 // A recording holds screen text, so it is only allowed for processes named explicitly (fixtures).
 if recordPath != nil && onlyPids.isEmpty { fail("--record writes screen text to disk; it needs --only-pids naming fixture processes") }
 if !actPidList.isEmpty && !actPidList.isSubset(of: onlyPids) { fail("--act-pids must be a subset of --only-pids: the executor acts without a grant only in fixture processes") }
@@ -206,7 +214,12 @@ options.eventPids = eventPids
 options.onlyPids = onlyPids
 options.eventBundles = eventBundles
 options.actPids = actPids
-let calendarAdapter = calendarTest ? CalendarAdapter(backend: EventKitBackend()) : nil
+let calendarAdapter: CalendarAdapter?
+if let settings = calendarUser {
+    calendarAdapter = CalendarAdapter(backend: EventKitBackend(userCalendars: true), scope: .user(choice: { try CalendarChoiceFile.read(settings) }))
+} else {
+    calendarAdapter = calendarTest ? CalendarAdapter(backend: EventKitBackend()) : nil
+}
 options.calendar = calendarAdapter
 socket.grants = options.grants
 options.setManualAccessibility = !noManualAX

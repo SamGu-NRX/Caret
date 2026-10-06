@@ -70,6 +70,8 @@ public struct PlanProposal: Codable, Equatable, Sendable {
         case schema, noWindow, unsure, nothingToDo, unsupportedStep, multipleWindows, unknownWindow, ambiguousWindow
         case unknownTarget, ambiguousTarget, notEditable, untracedValue, wrongKind, stepAfterHandoff, riskMismatch, unavailable, jevFailed, privacy, `internal`
         case unseenWindow
+        /// B29: the question an askAnswer names is unknown to this connection, expired or already answered.
+        case questionGone
     }
     public struct Window: Codable, Equatable, Sendable {
         public var pid: Int
@@ -83,10 +85,36 @@ public struct PlanProposal: Codable, Equatable, Sendable {
         public var why: HandoffWhy
         public init(label: String, why: HandoffWhy) { self.label = label; self.why = why }
     }
+    /// H5: the plan attaches a file at `step`, into the file input `field`; `wants` says which file in the user's
+    /// words ("your resume"). Nil when it attaches nothing, and from a helper before H5.
+    public struct Attach: Codable, Equatable, Sendable {
+        public var step: Int
+        public var field: String
+        public var wants: String
+        public init(step: Int, field: String, wants: String) { self.step = step; self.field = field; self.wants = wants }
+        enum CodingKeys: String, CodingKey { case step, field, wants }
+        /// protocol.ts: step a non-negative integer, field non-empty, wants 1 to 80 characters.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            step = try c.decode(Int.self, forKey: .step); field = try c.decode(String.self, forKey: .field); wants = try c.decode(String.self, forKey: .wants)
+            guard step >= 0, !field.isEmpty, (1...80).contains(wants.count) else { throw ProtocolError("attach needs step >= 0, a field and 1 to 80 characters of wants") }
+        }
+    }
     public struct Failure: Codable, Equatable, Sendable {
         public var code: ErrorCode
         public var detail: String
-        public init(code: ErrorCode, detail: String) { self.code = code; self.detail = detail }
+        /// H5: the sentence the user reads (helper/src/planner/says.ts), with no window id or ref. Nil from a helper
+        /// before H5; omitted from the encoding when nil, as protocol.ts's optional is.
+        public var says: String?
+        public init(code: ErrorCode, detail: String, says: String? = nil) { self.code = code; self.detail = detail; self.says = says }
+        enum CodingKeys: String, CodingKey { case code, detail, says }
+        /// protocol.ts: `says` is optional (absent, never null) and 1 to 400 characters.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            code = try c.decode(ErrorCode.self, forKey: .code); detail = try c.decode(String.self, forKey: .detail)
+            says = try c.decodeOptional(String.self, forKey: .says)
+            if let s = says, !(1...400).contains(s.count) { throw ProtocolError("says is 1 to 400 characters") }
+        }
     }
 
     public var requestId: String
@@ -98,10 +126,11 @@ public struct PlanProposal: Codable, Equatable, Sendable {
     public var spec: PopupSpec?
     public var handoff: Handoff?
     public var error: Failure?
+    public var attach: Attach?
 
-    public init(requestId: String, at: Int64, outcome: Outcome, offerKey: String?, window: Window?, spec: PopupSpec?, handoff: Handoff?, error: Failure?) throws {
+    public init(requestId: String, at: Int64, outcome: Outcome, offerKey: String?, window: Window?, spec: PopupSpec?, handoff: Handoff?, error: Failure?, attach: Attach? = nil) throws {
         self.requestId = requestId; self.at = at; self.outcome = outcome; self.offerKey = offerKey
-        self.window = window; self.spec = spec; self.handoff = handoff; self.error = error
+        self.window = window; self.spec = spec; self.handoff = handoff; self.error = error; self.attach = attach
         if let p = problem { throw ProtocolError(p) }
     }
 
@@ -117,7 +146,7 @@ public struct PlanProposal: Codable, Equatable, Sendable {
         }
     }
 
-    enum CodingKeys: String, CodingKey { case requestId, at, outcome, offerKey, window, spec, handoff, error }
+    enum CodingKeys: String, CodingKey { case requestId, at, outcome, offerKey, window, spec, handoff, error, attach }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -130,6 +159,7 @@ public struct PlanProposal: Codable, Equatable, Sendable {
         handoff = try c.decodeNullable(Handoff.self, forKey: .handoff)
         error = try c.decodeNullable(Failure.self, forKey: .error)
         if let e = error, e.detail.isEmpty { throw ProtocolError("an error says what failed") }
+        attach = try c.decodeOptional(Attach.self, forKey: .attach)
         guard at >= 0 else { throw ProtocolError("at is milliseconds since the epoch, never negative") }
         if let p = problem { throw ProtocolError(p) }
     }
@@ -139,5 +169,6 @@ public struct PlanProposal: Codable, Equatable, Sendable {
         try c.encode(requestId, forKey: .requestId); try c.encode(at, forKey: .at); try c.encode(outcome, forKey: .outcome)
         try c.encode(offerKey, forKey: .offerKey); try c.encode(window, forKey: .window); try c.encode(spec, forKey: .spec)
         try c.encode(handoff, forKey: .handoff); try c.encode(error, forKey: .error)
+        try c.encodeIfPresent(attach, forKey: .attach)
     }
 }

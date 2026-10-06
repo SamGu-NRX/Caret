@@ -19,7 +19,7 @@
 // P4 adds one more message the worker may ask, never sent on its own: "text", the frame's visible text, read once
 // for the tab the user just left (content/text.ts). A walk also reports the text around the caret of the focused
 // field it kept (content/field-text.ts), for the host's inline text.
-import type { FocusMoved, FrameReport, FrameSelfAnswer, FrameTextAnswer, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
+import type { FieldLook, FocusMoved, FrameReport, FrameSelfAnswer, FrameTextAnswer, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
 import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
@@ -29,6 +29,8 @@ import { EntryTracker } from "./content/entry.ts";
 import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
 import { docsKind, readFrameText } from "./content/text.ts";
 import { docsFocus, fieldText } from "./content/field-text.ts";
+import { caretRect } from "./content/caret-rect.ts";
+import { trackComposition } from "./content/insert.ts";
 
 declare global {
   // Set once per isolated world, so a script injected again after install (worker onInstalled) does nothing.
@@ -53,6 +55,17 @@ function contentBox(f: HTMLIFrameElement): [number, number] {
   const cs = getComputedStyle(f);
   const px = (v: string): number => Number.parseFloat(v) || 0;
   return [f.clientWidth - px(cs.paddingLeft) - px(cs.paddingRight), f.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom)];
+}
+
+/** The focused field's text geometry (FieldLook): where its text starts, its size, a placeholder showing, light text. */
+function lookOf(el: Element): FieldLook {
+  const cs = getComputedStyle(el);
+  const px = (v: string): number => Number.parseFloat(v) || 0;
+  const t = el as HTMLInputElement;
+  const placeholder = typeof t.placeholder === "string" && t.placeholder !== "" && typeof t.value === "string" && t.value === "";
+  const rgb = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(cs.color);
+  const light = rgb !== null && 0.2126 * Number(rgb[1]) + 0.7152 * Number(rgb[2]) + 0.0722 * Number(rgb[3]) > 140;
+  return { inset: px(cs.paddingLeft) + px(cs.borderLeftWidth), fontSize: px(cs.fontSize), placeholder, dark: light };
 }
 
 /**
@@ -106,7 +119,8 @@ function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): 
       } catch {
         selection = null;
       }
-      focused = { id: c.id, selection, text: caretText ? fieldText(active) : null };
+      // H13: the caret's rect with its text, for the host's inline text; neither on a site on the deny list.
+      focused = { id: c.id, selection, look: lookOf(active), text: caretText ? fieldText(active) : null, caret: caretText ? caretRect(active) : null };
     }
   }
   const docs = window.self === window.top ? docsKind(self.origin, location.pathname) : null;
@@ -120,6 +134,7 @@ function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): 
     controls: out.controls,
     iframes: visibleIframes(),
     viewport: [window.innerWidth, window.innerHeight],
+    screen: [window.screenX, window.screenY, window.outerWidth, window.outerHeight],
     excluded: out.excluded,
     truncated: out.truncated,
     focused,
@@ -172,6 +187,9 @@ if (globalThis.__caretContent === undefined) {
     );
   }
 
+  // H13 review: an inline insert never lands inside an input method's composition (content/insert.ts).
+  trackComposition();
+
   const focus = new FocusReporter({
     inFront: () => document.visibilityState === "visible" && document.hasFocus(),
     later: (f, ms) => void setTimeout(f, ms),
@@ -181,6 +199,31 @@ if (globalThis.__caretContent === undefined) {
     },
   });
   addEventListener("focusin", () => focus.focusIn(), { capture: true, passive: true });
+  // focusout too: focus that leaves a field for no other field (a click on the page's background) sends no focusin, and
+  // the host would keep a fill offer drawn at a field the user left (H10).
+  addEventListener("focusout", () => focus.focusIn(), { capture: true, passive: true });
+  // H13: typing in the field, or moving its caret, is reported too, so the host's inline text follows the text around
+  // the caret. Only while an editable control has focus; nothing about the text travels with the report.
+  const typedIn = (): void => {
+    const el = deepActiveElement();
+    if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement || (el instanceof HTMLElement && el.isContentEditable)) focus.typed();
+  };
+  addEventListener("input", typedIn, { capture: true, passive: true });
+  // H13 review: the document losing focus (the address bar, another window) is reported too; only the window's own
+  // blur, not a field's (blur does not bubble, but a capturing listener would see every element's).
+  window.addEventListener("blur", (e) => {
+    if (e.target === window) focus.left();
+  });
+  document.addEventListener("selectionchange", typedIn, { passive: true });
+  // H10: a scroll moves the focused field on screen, so the host's offer drawn at it must move with it. Only while a
+  // control has focus: a page read with nothing focused has no offer to move.
+  addEventListener(
+    "scroll",
+    () => {
+      if (deepActiveElement() !== null) focus.focusIn();
+    },
+    { capture: true, passive: true },
+  );
 
   chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
     // Only this extension's worker: a content script's own message would carry a tab, and nothing else can reach here.

@@ -1,0 +1,1 @@
+KeyType tokenizes with add_special=false, so Gemma GGUFs need <bos> (apps/caret wraps the runtime in BOSRuntime; packages/ stays untouched). Synthetic HID keys go to LaunchServices' front app, not the frontmost window's owner: check lsappinfo front before typing into a fixture.

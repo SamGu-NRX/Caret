@@ -39,6 +39,8 @@ export interface PageControl {
   maxLength?: number;
   /** S1: how a text input's or textarea's text was entered since it was last empty (content/entry.ts); absent when no edit was seen. */
   entry?: "typed" | "pasted" | "other";
+  /** H14, file inputs only: the accept attribute's extensions and MIME types, lowercased (walker.ts acceptOf). */
+  accept?: string[];
 }
 
 export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "notSameElement" | "excluded" | "unsupported" | "error" | "siteOff";
@@ -100,6 +102,11 @@ export interface ActAnswer {
   attached?: Attached;
   /** With outcome failed only: the press may have landed and the page then changed, so the run stops (B28). */
   pageChanged?: PageChange[];
+  /**
+   * pageInsertText only, with outcome failed (H13 review): `unchanged`, the field reads as it did before the insert;
+   * `unverified`, it changed, but not exactly to its text with the insert at the caret. Nothing is undone.
+   */
+  insert?: "unchanged" | "unverified";
 }
 
 interface TargetFields {
@@ -131,6 +138,18 @@ export type ActVerb =
 
 export type PageVerb = { kind: "pageWalk"; tabId: number | null } | ActVerb;
 
+/**
+ * H10: how the focused field draws its text, so the host can draw a fill value where the user's own typing would go:
+ * the text's left inset (padding and border, CSS pixels), its font size (CSS pixels), whether a placeholder shows now,
+ * and whether its text is light (a dark field). No text of the page travels.
+ */
+export interface FieldLook {
+  inset: number;
+  fontSize: number;
+  placeholder: boolean;
+  dark: boolean;
+}
+
 /** What one frame's content script reports for a walk; the worker adds frame ids, document and navGen. */
 export interface FrameReport {
   origin: string;
@@ -141,10 +160,16 @@ export interface FrameReport {
   iframes: { src: string; rect: Rect; inner: [number, number] }[];
   /** The frame's own viewport, [innerWidth, innerHeight]: 0 by 0 inside an iframe its embedder hides with display:none. */
   viewport: [number, number];
+  /**
+   * H10: the browser window's outer frame as the page sees it, [screenX, screenY, outerWidth, outerHeight], in screen
+   * points with a top-left origin. Measured in the rig VM (evidence/host/h10/probe): Chrome for Testing reported the
+   * window server's own frame for its window here, at 100% and 125% page zoom alike. The worker reads the top frame's.
+   */
+  screen: [number, number, number, number];
   excluded: Partial<Record<PageExclusion, number>>;
   truncated: boolean;
   /** P4 item 7: `text`, the text around the caret of a focused text control (content/field-text.ts); null when it holds none. */
-  focused: { id: string; selection: [number, number] | null; text: FieldText | null } | null;
+  focused: { id: string; selection: [number, number] | null; look?: FieldLook; text: FieldText | null; caret?: [number, number, number, number] | null; hasFocus?: boolean } | null;
   /** P4 items 6 and 7: a Google Docs or Sheets editor's top frame only (content/field-text.ts docsFocus). */
   docs?: { kind: "document" | "spreadsheet"; text: "on" | "off"; field: FieldText | null };
   hasFocus: boolean;

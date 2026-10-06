@@ -65,6 +65,14 @@
                             "type": "integer",
                             "exclusiveMinimum": 0,
                             "maximum": 9007199254740991
+                          },
+                          "page": {
+                            "type": "boolean",
+                            "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -129,6 +137,14 @@
                             "type": "integer",
                             "exclusiveMinimum": 0,
                             "maximum": 9007199254740991
+                          },
+                          "page": {
+                            "type": "boolean",
+                            "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -189,6 +205,14 @@
                             "type": "integer",
                             "exclusiveMinimum": 0,
                             "maximum": 9007199254740991
+                          },
+                          "page": {
+                            "type": "boolean",
+                            "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -249,6 +273,14 @@
                             "type": "integer",
                             "exclusiveMinimum": 0,
                             "maximum": 9007199254740991
+                          },
+                          "page": {
+                            "type": "boolean",
+                            "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -309,6 +341,14 @@
                             "type": "integer",
                             "exclusiveMinimum": 0,
                             "maximum": 9007199254740991
+                          },
+                          "page": {
+                            "type": "boolean",
+                            "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -347,6 +387,14 @@
                             "type": "integer",
                             "exclusiveMinimum": 0,
                             "maximum": 9007199254740991
+                          },
+                          "page": {
+                            "type": "boolean",
+                            "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -381,6 +429,14 @@
                             "type": "integer",
                             "exclusiveMinimum": 0,
                             "maximum": 9007199254740991
+                          },
+                          "page": {
+                            "type": "boolean",
+                            "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -452,6 +508,14 @@
                             "type": "integer",
                             "exclusiveMinimum": 0,
                             "maximum": 9007199254740991
+                          },
+                          "page": {
+                            "type": "boolean",
+                            "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -518,6 +582,14 @@
                             "type": "integer",
                             "exclusiveMinimum": 0,
                             "maximum": 9007199254740991
+                          },
+                          "page": {
+                            "type": "boolean",
+                            "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -698,6 +770,14 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
+                },
+                "page": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -762,6 +842,14 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
+                },
+                "page": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -822,6 +910,14 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
+                },
+                "page": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -882,6 +978,14 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
+                },
+                "page": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -942,6 +1046,14 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
+                },
+                "page": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -980,6 +1092,14 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
+                },
+                "page": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -1014,6 +1134,14 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
+                },
+                "page": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -1085,6 +1213,14 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
+                },
+                "page": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -1151,6 +1287,14 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
+                },
+                "page": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false

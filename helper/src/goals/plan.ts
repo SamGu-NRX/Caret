@@ -47,7 +47,8 @@ export interface ValueBinding {
   ref: string;
   text: string;
   display: string;
-  origin: ValueOrigin;
+  /** `you` (H9): text the user typed over a draft in the preview (runs.ts edit); its digest is the text's. */
+  origin: ValueOrigin | { kind: "you"; digest: string };
   /** The window and node it was read from, and the window's revision then; null for the instruction and memory. */
   source: { windowId: string; key: string; revision: string } | null;
   /** The memory entry it was copied from (Step.memory), or null. */
@@ -73,6 +74,9 @@ export interface ValueBinding {
    */
   fill?: { span: string; context: string | null; control: string; memoryLabel?: string };
 }
+
+/** A value code read or derived for a planning snapshot: never the user's edit, so its origin is one the sandbox knows. */
+export type ReadValue = ValueBinding & { origin: ValueOrigin };
 
 /** Everything a program's refs may stand for, kept on the host side of the sandbox. */
 export interface GoalInventory {
@@ -128,10 +132,11 @@ export interface GoalStep {
    * with the answered message's sender, an event inventory.ts derived), which passed the code checks without Jev. "fill"
    * (P2) for a value proposeFill chose for that very field, its two wordings agreeing at FILL_CUTOFF with the owner veto
    * (goals/page-planner.ts), which skips Jev's second question and keeps the code checks; only an object lowering marked
-   * (gates.ts markFilled) may carry it. Null for presses and hand-offs. GoalRuns.propose refuses a write or calendar step that has none, and a "derived" step
+   * (gates.ts markFilled) may carry it. "you" for the user's own words typed over a draft in the preview (H9, runs.ts
+   * edit), which pass the draft's field and never-typed checks and no fact check. Null for presses and hand-offs. GoalRuns.propose refuses a write or calendar step that has none, and a "derived" step
    * gates.ts did not mark (isDerived).
    */
-  gate: "jev" | "fill" | "draft" | "derived" | null;
+  gate: "jev" | "fill" | "draft" | "derived" | "you" | null;
   /** P3: on an attach step only, the file its row offers. */
   file?: AttachOffer;
   /**

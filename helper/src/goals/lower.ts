@@ -497,11 +497,16 @@ function cut(programHash: string, steps: readonly GoalStep[], warnings: readonly
     }
     groups.push({ domain: s.target.domain, reason: last === undefined ? "start" : nextPart && sameDomain(last.domain, s.target.domain) ? "moreFields" : revealed && sameDomain(last.domain, s.target.domain) ? "afterReveal" : "crossWindow", steps: [s] });
   }
-  return groups.map((g, index) => {
-    const base = { index, domain: g.domain, reason: g.reason, steps: g.steps };
-    const { plan, slots } = executorPlan(`segment-${index}`, base);
-    return { ...base, plan, slots, digest: segmentDigest(programHash, base, warnings, executable({ plan, slots })) };
-  });
+  return groups.map((g, index) => segmentOf(programHash, { index, domain: g.domain, reason: g.reason, steps: g.steps }, warnings));
+}
+
+/**
+ * A segment from its steps: the executor plan and slots made from them, and the digest over both. H9's edit of a draft
+ * (runs.ts edit) rebuilds the one segment it changes here, so an edited segment is lowered exactly as a planned one.
+ */
+export function segmentOf(programHash: string, base: Pick<GoalSegment, "index" | "domain" | "reason" | "steps">, warnings: readonly string[]): GoalSegment {
+  const { plan, slots } = executorPlan(`segment-${base.index}`, base);
+  return { ...base, plan, slots, digest: segmentDigest(programHash, base, warnings, executable({ plan, slots })) };
 }
 
 /**
@@ -519,7 +524,7 @@ function executorPlan(id: string, s: { domain: GoalDomain; steps: readonly GoalS
     return `{{${name}}}`;
   };
   const d = s.domain;
-  const sel: WindowSel | null = d.kind === "window" ? { bundleId: d.bundleId, title: slot("title", d.title, "the window's title", d.windowId), ...(d.number === null ? {} : { number: d.number }) } : null;
+  const sel: WindowSel | null = d.kind === "window" ? { bundleId: d.bundleId, title: slot("title", d.title, "the window's title", d.windowId), ...(d.number === null ? {} : { number: d.number }), ...(d.page ? { page: true as const, windowId: d.windowId } : {}) } : null;
   // I6: a hand-off row is the plan's last step and is never run, so the executor plan stops before it; every other step
   // keeps its index.
   const out: Step[] = s.steps.filter((x) => x.row !== true).map((x, i): Step => {

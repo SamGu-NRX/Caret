@@ -245,6 +245,37 @@ describe("fill pop-up", () => {
     expect(HelperMessage.safeParse(msg).success).toBe(true);
   });
 
+  it("lists a control Caret never writes as a row the user sets, after the rows it fills (H5, as D2-04 lists them)", () => {
+    const m = desk();
+    const size: FillField = {
+      ...nameField,
+      key: FK("popupbutton:pizza size~0"),
+      control: "select",
+      value: null,
+      source: null,
+      choice: "c2",
+      // Its own question; nameField's would quote the name.
+      asks: [],
+      handoff: { value: "Large", display: "Large", source: { pid: 1, bundleId: "b", kind: null, ...mail, nodeKey: MK("statictext:large pizza~0") }, memory: null },
+    };
+    const msg = buildFillPopup(m, writtenFields(proposal([nameField, phoneField, size])));
+    expect(msg.spec.blocks.map((b) => b.type)).toEqual(["header", "source", "fields", "facts", "actions"]);
+    expect(msg.spec.blocks[0]).toMatchObject({ title: { text: "Fill 2 fields" } });
+    const field = { node: `${FORM}/${FK("popupbutton:pizza size~0")}` };
+    expect(msg.spec.blocks[3]).toEqual({
+      type: "facts",
+      id: "yours",
+      rows: [{ label: "You set", value: { text: "Field: Large", ref: { rule: "handoff", derived: [field, { node: `${SRC}/${MK("statictext:large pizza~0")}`, quote: "Large" }] } }, secondary: true }],
+    });
+    // Fields are left to the user, so the action says how many it fills instead of "Fill all".
+    expect(msg.spec.blocks[4]).toEqual({ type: "actions", items: [{ id: "fillAll", label: "Fill 2", key: "tab" }] });
+    expect(parsePopupSpec(msg.spec)).toEqual(msg.spec);
+    expect(HelperMessage.safeParse(msg).success).toBe(true);
+    // A control with no value to set is still the user's: its row names the field alone.
+    const none = buildFillPopup(m, writtenFields(proposal([nameField, phoneField, { ...size, handoff: null }])));
+    expect(none.spec.blocks[3]).toMatchObject({ type: "facts", rows: [{ label: "You set", value: { text: "Field" } }] });
+  });
+
   it("lists five rows and counts the rest, and names every source window when there are several", () => {
     const m = desk();
     const fields = LABELS.map((l, i) =>

@@ -471,7 +471,10 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     }
   }
 
-  if (checked.route === "plan" && o.goals === true) return { route: "goal", intent, maker: use, windowId: w.window.windowId };
+  // H11: a plan intent is a goal only when a writer can plan it. Since L1 there is none by default, and without one a
+  // goal refuses every native plan ("no plan writer") that planTask below would still make; a page fill is a goal
+  // (planPage, below) and needs no writer.
+  if (checked.route === "plan" && o.goals === true && o.writer !== null) return { route: "goal", intent, maker: use, windowId: w.window.windowId };
   if (checked.route === "plan") {
     try {
       const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }) });
@@ -541,7 +544,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     return refused(new SaidError("nothingToDo", `${saysNoValue(checked.fields.map((f) => f.name))}${left === null ? "" : ` ${left}`}`, `no value for ${checked.fields.map((f) => f.name).join(", ")} on screen, in memory or in the instruction`));
   }
 
-  const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }) };
+  const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: w.window.windowId } : {}) };
   const slots: Record<string, string> = {};
   const slotNames: Record<string, string> = {};
   const steps: Step[] = writes.map((f, i) => {

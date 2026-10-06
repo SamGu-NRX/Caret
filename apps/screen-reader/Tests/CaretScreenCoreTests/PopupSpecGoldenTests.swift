@@ -59,6 +59,15 @@ private func data(_ object: Any) throws -> Data {
     }
 
     // CodeRabbit on PR #4: Int(Double) traps on a whole number past Int's range, so a spec like this crashed the reader.
+    /// H5: a control Caret never writes or presses is a row the user sets, with its value.
+    @Test func aRowTheUserSetsDecodesAndRoundTrips() throws {
+        let json = #"{"v":1,"id":"p","figure":"offering","blocks":[{"type":"header","title":{"text":"Over to you","ref":{"rule":"plan","derived":[{"node":"w"}]}}},{"type":"fields","rows":[{"destination":{"text":"Pizza size","ref":{"rule":"fieldLabel","derived":[{"node":"w/size"}]}},"value":{"text":"Large","ref":{"rule":"fieldLabel","derived":[{"node":"w/size"}]}},"state":"yours"}]},{"type":"actions","items":[{"id":"run","label":"Got it","key":"tab"}]}]}"#
+        let spec = try PopupSpec.decode(Data(json.utf8))
+        guard case .fields(let fields) = spec.blocks[1].content else { Issue.record("second block is not fields"); return }
+        #expect(fields.rows.map(\.state) == [.yours])
+        #expect(try PopupSpec.decode(JSONEncoder().encode(spec)) == spec)
+    }
+
     @Test func aWholeNumberPastIntsRangeIsAnErrorNotACrash() {
         let choices = #"{"type":"choices","selected":1e300,"rows":[{"label":{"text":"Dana Reyes","ref":{"memory":"person-reyes"}}}]}"#
         for spec in [#"{"v":1e300,"id":"x","figure":"offering","blocks":[]}"#, #"{"v":1,"id":"x","figure":"offering","blocks":[\#(choices)]}"#] {

@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FillProposal, HelperMessage, PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillField, type HelperToEngine, type OfferPopup, type PageControl, type PageSnapshot, type PageVerb, type TaskProgress, type VerbResult } from "../src/protocol.ts";
+import { FillProposal, HelperMessage, fillFieldTask, PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillField, type HelperToEngine, type OfferPopup, type PageControl, type PageSnapshot, type PageVerb, type TaskProgress, type VerbResult } from "../src/protocol.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
@@ -62,7 +62,7 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     page = new FakePage();
     published = [];
     host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), warn: () => {} });
-    helper = new Helper({ store, askJev: jevPickingText(byLabel, 0.95), shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => void published.push(m), warn: () => {} });
+    helper = new Helper({ store, askJev: jevPickingText(byLabel, 0.95), shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, calendar: null, publish: (m) => void published.push(m), warn: () => {} });
     wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
     host.registry.add(page.session);
     page.session.receive(hello);
@@ -286,6 +286,44 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     expect(await helper.handleFillAll({ type: "fillAll", v: PROTOCOL_VERSION, proposalId: "nope", at: Date.now() })).toBeNull();
     const refusals = published.filter((m): m is TaskProgress => m.type === "taskProgress" && m.stopReason === "refused").map((m) => [m.taskId, m.detail]);
     expect(refusals).toEqual([[p.id, "this proposal was already filled"], ["nope", "no such fill proposal, or it expired"]]);
+  });
+
+  it("keeps a page's pop-up when Accessibility's view of the browser reports an editable focus (H10)", async () => {
+    const { popup } = await offer();
+    await helper.handleReader(snap([node("tb/address", "AXTextField", { label: "Address and search bar", editable: true })], { at: Date.now(), windowId: "4100-1", title: TITLE, app: chrome, number: 35, focused: true }));
+    await helper.handleReader(focus("4100-1", "tb/address", Date.now(), { app: chrome }));
+    expect(published.filter((m) => m.type === "offerWithdrawn").map((m) => (m as { id: string }).id)).not.toContain(popup.offerKey);
+    // An editable field of another app still ends it, as before.
+    await helper.handleReader(snap([field("te/other", "", {})], { at: Date.now(), windowId: "other", title: "Other", focused: true }));
+    await helper.handleReader(focus("other", "te/other", Date.now()));
+    expect(published.filter((m) => m.type === "offerWithdrawn").map((m) => (m as { id: string }).id)).toContain(popup.offerKey);
+  });
+
+  it("writes only the field a host's Tab names, as that field's own task, once, and undoes it alone (H10)", async () => {
+    const p = (await helper.handleConsumer({ type: "fillRequest", v: PROTOCOL_VERSION, windowId: WIN, fieldKey: KEY("e1") })) as FillProposal;
+    // The reader's window of the same browser, with the page's title and a window number, as the real app has it: the
+    // plan must still bind the page window alone (WindowSel.page).
+    await helper.handleReader(snap([node("tb/address", "AXTextField", { label: "Address and search bar" })], { at: Date.now(), windowId: "4100-1", title: TITLE, app: chrome, number: 35 }));
+    // And another tab with the same form and title (H10 review 4): the run binds the proposal's own page alone.
+    await helper.handleReader(toWindowSnapshot({ ...page.snapshot("s9"), tabId: 9 }, page.session, 99));
+    const task = fillFieldTask(p.id, KEY("e2"));
+    const r = await helper.handleFillAll({ type: "fillAll", v: PROTOCOL_VERSION, proposalId: p.id, fieldKey: KEY("e2"), at: Date.now() });
+    expect(r).toMatchObject({ outcome: "done" });
+    expect(everyShown()).toEqual({ ...EMPTY, e2: "robin@example.test" });
+    expect(published.filter((m): m is TaskProgress => m.type === "taskProgress" && m.phase === "done").map((m) => [m.taskId, m.written])).toEqual([[task, 1]]);
+    // The same field again, a field the proposal does not hold, and then the whole form: each refused by name.
+    expect(await helper.handleFillAll({ type: "fillAll", v: PROTOCOL_VERSION, proposalId: p.id, fieldKey: KEY("e2"), at: Date.now() })).toBeNull();
+    expect(await helper.handleFillAll({ type: "fillAll", v: PROTOCOL_VERSION, proposalId: p.id, fieldKey: KEY("e8"), at: Date.now() })).toBeNull();
+    expect(await helper.handleFillAll({ type: "fillAll", v: PROTOCOL_VERSION, proposalId: p.id, at: Date.now() })).toBeNull();
+    const refusals = published.filter((m): m is TaskProgress => m.type === "taskProgress" && m.stopReason === "refused").map((m) => [m.taskId, m.detail]);
+    expect(refusals).toEqual([
+      [task, "this field was already filled"],
+      [fillFieldTask(p.id, KEY("e8")), `Caret writes no field ${KEY("e8")} of this proposal`],
+      [p.id, "a field of this proposal was already filled on its own"],
+    ]);
+    const u = await helper.executor.undo(task);
+    expect(u).toMatchObject({ restored: 1, notRestored: [] });
+    expect(everyShown()).toEqual(EMPTY);
   });
 });
 

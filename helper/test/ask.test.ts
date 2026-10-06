@@ -15,8 +15,22 @@ import { FIELD_FLOOR, HEAD_FLOOR, headsIntentMaker, headsRequest, readHeads, tie
 import { intentResponseFormat, IntentInputSchema } from "../src/writer/intent-prompt.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { SAYS, SaidError } from "../src/planner/says.ts";
+import { proposed } from "../src/planner/proposal.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, node, snap, text, value } from "./builders.ts";
+import { devWriterRoute } from "../src/writer/routes.ts";
+import type { WriterPort } from "../src/writer/port.ts";
+
+/**
+ * H11: a writer that is configured and never called. A plan intent is a goal only when a writer could plan it
+ * (planner/ask.ts), so B30's goal hand-off is tested with one; page-panel-h11.test.ts covers the case with none.
+ */
+const UNCALLED_WRITER: WriterPort = {
+  route: devWriterRoute("gateway:inclusionai/ling-3.1-flash-free"),
+  write: async () => {
+    throw new Error("planAsk asked the writer for something");
+  },
+};
 
 describe("personSpans", () => {
   it.each([
@@ -452,6 +466,12 @@ describe("planAsk", () => {
     expect(d.route).toBe("fill");
     expect(d.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[KEY("email"), "elena.vance@example.com"]]);
     expect(d.controls).toEqual([{ key: `${P}/timefield:delivery time~0`, name: "Delivery time", value: "20:15", display: "8:15 PM" }]);
+    // H5: the proposal lists the write, then the control as a row of its own that the user sets.
+    const fields = (proposed("r1", d, 3000).spec?.blocks ?? []).filter((b) => b.type === "fields");
+    expect(fields.map((b) => b.rows.map((r) => [r.destination.text, r.value?.text, r.state]))).toEqual([
+      [["Email", "elena.vance@example.com", "ready"]],
+      [["Delivery time", "8:15 PM", "yours"]],
+    ]);
   });
 
   it("asks about a time with no am or pm instead of proposing anything", async () => {
@@ -500,6 +520,12 @@ describe("planAsk", () => {
     expect(d.checked.writes).toEqual([]);
     expect(d.checked.handoff?.node.key).toBe(`${P}/timefield:delivery time~0`);
     expect(d.controls?.[0]?.value).toBe("20:15");
+    // H5: no press is handed over, so the proposal names none; its one row says what to set.
+    const p = proposed("r3", d, 3000);
+    expect(p.handoff).toBeNull();
+    expect(p.spec?.blocks.map((b) => b.type)).toEqual(["header", "fields", "actions"]);
+    expect(p.spec?.blocks[1]).toMatchObject({ type: "fields", rows: [{ destination: { text: "Delivery time" }, value: { text: "8:15 PM" }, state: "yours" }] });
+    expect(p.spec?.blocks[2]).toMatchObject({ type: "actions", items: [{ label: "Got it", key: "tab" }] });
     const e = await planAsk("pay for it", desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker({ route: "refuse", why: "payment" }), writer: null, offerKey: "ask-4", windowId: "form", now: 2000 }).catch((x: unknown) => x);
     expect((e as AskRefused).code).toBe("unsupportedStep");
     expect((e as AskRefused).intent?.why).toBe("payment");
@@ -1016,7 +1042,7 @@ describe("a grounded whole-form scope (B28)", () => {
 
 // B30: a host that runs goal plans gets Ask's plan route as a goal, through D2-06's path; the other routes are as they were.
 describe("planAsk for a goal-planning host", () => {
-  const goals = (maker_: IntentMaker, ask: AskJev = jevBy(() => null).ask) => ({ askJev: ask, maker: maker_, writer: null, offerKey: "g-1", windowId: "form", now: 2000, goals: true as const });
+  const goals = (maker_: IntentMaker, ask: AskJev = jevBy(() => null).ask) => ({ askJev: ask, maker: maker_, writer: UNCALLED_WRITER, offerKey: "g-1", windowId: "form", now: 2000, goals: true as const });
 
   it("hands a plan intent to the goal path and plans nothing itself", async () => {
     const j = jevBy(() => null);
@@ -1059,7 +1085,7 @@ describe("planAsk from a window with no field, for a goal-planning host", () => 
     m.apply(snap([text("mail/l0", "From: Priya Raman <priya@example.com>"), text("mail/l1", "Can you come Thursday?")], { at: 1100, windowId: "mail", title: "Thursday", app: { pid: 7003, bundleId: "dev.caret.mailfixture", name: "Mail" }, focused: true }));
     return m;
   };
-  const opts = (intent: Partial<AskIntent>, goals: boolean) => ({ askJev: jevBy(() => null).ask, maker: maker(intent), writer: null, offerKey: "g-2", windowId: "mail", now: 2000, goals });
+  const opts = (intent: Partial<AskIntent>, goals: boolean) => ({ askJev: jevBy(() => null).ask, maker: maker(intent), writer: UNCALLED_WRITER, offerKey: "g-2", windowId: "mail", now: 2000, goals });
 
   it("reads an unsettled or fill intent as a plan, since nothing there can be filled", async () => {
     for (const intent of [{ route: "ask" as const, why: "whichFields" as const, scope: "none" as const }, { route: "fill" as const, scope: "all" as const }]) {

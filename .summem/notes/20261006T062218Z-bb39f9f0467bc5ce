@@ -1,1 +1,0 @@
-I6: page plans end with a GoalStep row:true (kind handoff, 'You press <label>' or 'The rest is yours'); it is always the last step, lower.ts gives it no executor step, so seg.plan.steps is one shorter than seg.steps.

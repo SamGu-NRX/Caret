@@ -20,10 +20,15 @@ import { loadJevKey, makeJevClient } from "./fill/jev.ts";
 import { SocketReaderLink } from "./executor/means.ts";
 import { defaultPageSocket, pageHost, type PageHost } from "./engines/host.ts";
 import { wirePageEngines } from "./engines/wire.ts";
+import { pageFront } from "./engines/front.ts";
 import { pageTabReader } from "./engines/tab-source.ts";
 import { writersOnStart } from "./writer/startup.ts";
 import { HostLocalModel } from "./writer/local-port.ts";
 import { refuseCacheInHelper } from "./engines/decide/cache.ts";
+import { ledgeredJev, ledgeredWriter, SpendLedger, throttledTotals } from "./spend.ts";
+
+/** Every model call this process makes, counted from the providers' usage reports (H8): sent to "spend" consumers. */
+const spend = new SpendLedger();
 
 const DEFAULT_DATA_DIR = join(homedir(), "Library", "Application Support", "CaretV2");
 
@@ -114,7 +119,7 @@ helper = new Helper({
   store,
   memoryDir,
   watchMemory: true,
-  askJev: args["no-jev"] ? null : makeJevClient(loadJevKey),
+  askJev: args["no-jev"] ? null : ledgeredJev(makeJevClient(loadJevKey), spend),
   shadow: args.shadow,
   allowBackgroundFocus: args["allow-background-focus"],
   audit: auditOut !== undefined,
@@ -122,13 +127,13 @@ helper = new Helper({
   ...(args["fill-cutoff"] === undefined ? {} : { fillCutoff: Number(args["fill-cutoff"]) }),
   publish: (m) => server?.publish(m),
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
-  ...(pages === null ? {} : { readerLink: pages.link, readerAnswers: readerSocket, pageCovers: (pid: number) => pages.registry.forBrowser(pid) !== undefined, pageDocument: (id: string) => pages.registry.documentOf(id), pageContext: (id: string) => pages.registry.contextOf(id), tabReader: pageTabReader(pages.registry) }),
+  ...(pages === null ? {} : { readerLink: pages.link, readerAnswers: readerSocket, pageCovers: (pid: number) => pages.registry.forBrowser(pid) !== undefined, pageFront: (pid: number, frame?: readonly [number, number, number, number]) => pageFront(pages.registry, pid, frame), pageDocument: (id: string) => pages.registry.documentOf(id), pageContext: (id: string) => pages.registry.contextOf(id), tabReader: pageTabReader(pages.registry) }),
   // Event cards add to the reader's EventKit adapter, which answers only when started with --calendar-test.
   calendar: "reader",
   // The code-mode plan and goal writer (B24, D2-06): only a developer's --dev-writer route (L1).
-  writer: writers?.plan ?? null,
+  writer: writers?.plan == null ? null : ledgeredWriter(writers.plan, spend),
   // Ask as a scoped fill (B25), its intent from the configured maker.
-  ask: writers?.ask ?? null,
+  ask: writers === null ? null : writers.ask.maker === "writer" ? { maker: "writer", writer: ledgeredWriter(writers.ask.writer, spend) } : writers.ask,
   // D2-02: one router above the producers whenever Jev is on. No host consumes a write decision yet (no routeDecision
   // message on the wire), so write is not a legal outcome: a document with nothing else due costs no model call.
   routing: args["no-jev"] || args.shadow ? null : {},
@@ -138,6 +143,8 @@ helper = new Helper({
 // on it are measured, not offered), so nothing here hands it to the helper.
 const localModel = new HostLocalModel((m) => server?.sendLocalText(m) ?? false);
 server = new HelperServer(args.socket, () => helper, warn, secret, localModel);
+server.spendNow = () => spend.message();
+throttledTotals(spend, (m) => server?.publish(m));
 await server.listen();
 if (pages !== null) {
   wirePageEngines({ host: pages, helper, publish: (m) => server?.publish(m), warn });

@@ -17,6 +17,11 @@ export interface ReaderLink {
    * (engines/page-link.ts attachFile, the one way the helper builds a pageAttachFile); the reader attaches nothing.
    */
   attachFile?(windowId: string, key: string, taskId: string, files: ConfirmedFiles): Promise<{ verb: VerbResult; page: PageResult | null }>;
+  /**
+   * Puts `text` at the caret of the page field `key` names, which must read `expect` before its caret (H13, P4 item 8).
+   * Only a page engine's link has it (engines/page-link.ts insertText); the reader inserts nothing this way.
+   */
+  insertText?(windowId: string, key: string, expect: string, text: string, taskId: string, token?: string): Promise<VerbResult>;
 }
 
 /** Finds the page engine that owns a window (helper/src/engines/registry.ts EngineRegistry). */
@@ -53,6 +58,12 @@ export class RoutedReaderLink implements ReaderLink {
       return Promise.resolve({ verb: { type: "verbResult", v: PROTOCOL_VERSION, id: randomUUID(), at: Date.now(), outcome: "noWindow", detail: `no page engine for ${windowId}` }, page: null });
     }
     return engine.attachFile(windowId, key, taskId, files);
+  }
+
+  insertText(windowId: string, key: string, expect: string, text: string, taskId: string, token?: string): Promise<VerbResult> {
+    const engine = windowId.startsWith("page:") ? this.directory.engineFor(windowId) : null;
+    if (engine?.insertText === undefined) return Promise.resolve({ type: "verbResult", v: PROTOCOL_VERSION, id: randomUUID(), at: Date.now(), outcome: "noWindow", detail: `no page engine for ${windowId}` });
+    return engine.insertText(windowId, key, expect, text, taskId, token);
   }
 
   grant(m: ActGrant | ActRevoke | CalendarGrant): void {

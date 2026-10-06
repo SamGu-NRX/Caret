@@ -1,1 +1,0 @@
-C1: fill reads values inside lines in TS (fill/line-values.ts, candidates.ts windowValues), so the page-loop eval's replayed sources (values: []) now get typed values as the reader would give them; the recheck counts only reader values as typed, code-found ones via lineGives.

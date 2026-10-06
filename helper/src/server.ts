@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, SAVED_ANSWERS_CAPABILITY, type AnswerSaveReply, type MemoryDocumentReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, type AnswerSaveReply, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
 import { carriesAnswer, withoutAnswers } from "./offers/answer-gate.ts";
 import type { Helper } from "./helper.ts";
 import type { HostLocalModel } from "./writer/local-port.ts";
@@ -33,6 +33,10 @@ export class HelperServer {
   private readonly askChoices = new Set<Socket>();
   /** Host connections whose hello listed GOAL_PLANS_CAPABILITY: only they may plan and accept goals, and only they get goalProgress (D2-06). */
   private readonly goalPlans = new Set<Socket>();
+  /** Consumers whose hello listed SPEND_CAPABILITY: only they get `spend` (H8). */
+  private readonly spend = new Set<Socket>();
+  /** The spend totals now, sent to a consumer that asks for them as it connects; null when nothing counts spend. */
+  spendNow: (() => Spend) | null = null;
   /** P3: goal-planning hosts whose hello also listed GOAL_FILES_CAPABILITY: they show attach rows, send confirmedFile and fileSave, and get fileSaveOffer. */
   private readonly goalFiles = new Set<Socket>();
   /** The most recent host whose hello listed LOCAL_MODEL_CAPABILITY: localTextRequest goes there, and only its replies count (L1). */
@@ -45,6 +49,11 @@ export class HelperServer {
    * answerSave is the user's consent. A host that has not said it shows an answer whole never gets one to insert.
    */
   private readonly savedAnswers = new Set<Socket>();
+  /**
+   * H13: hosts whose hello listed PAGE_TEXT_CAPABILITY. Only they get a pageField's text and caret, and only they may
+   * send pageInsert: a host that has not promised to keep the text off its logs and debug socket never sees it.
+   */
+  private readonly pageText = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -109,10 +118,18 @@ export class HelperServer {
       for (const c of this.consumers) if (!this.savedAnswers.has(c)) c.write(stripped);
       return;
     }
+    // H13: the text around a page field's caret goes only to hosts that declared pageText; every other consumer gets
+    // the field without it.
+    if (m.type === "pageField" && (m.text !== undefined || m.caret !== undefined || m.ownSuggestions !== undefined || m.docsText !== undefined || m.token !== undefined || m.pageFocused !== undefined || m.fieldKind !== undefined)) {
+      for (const c of this.pageText) c.write(line);
+      const stripped = JSON.stringify(withoutPageText(m)) + "\n";
+      for (const c of this.consumers) if (!this.pageText.has(c)) c.write(stripped);
+      return;
+    }
     // P3: an offer to keep a file names the file, and only a host that shows attach rows may answer it; a preview with an
     // attach row goes only to such hosts too (a host without the capability could not show the row, nor decode it).
     const files = m.type === "fileSaveOffer" || (m.type === "goalProgress" && m.event === "segment" && m.steps.some((x) => x.kind === "attach"));
-    for (const c of files ? this.goalFiles : m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : this.consumers) c.write(line);
+    for (const c of files ? this.goalFiles : m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : m.type === "spend" ? this.spend : this.consumers) c.write(line);
   }
 
   async listen(): Promise<void> {
@@ -189,9 +206,14 @@ export class HelperServer {
             if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
             if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
+            if (hello.data.capabilities?.includes(SPEND_CAPABILITY) === true) {
+              this.spend.add(s);
+              if (this.spendNow !== null) s.write(JSON.stringify(this.spendNow()) + "\n");
+            }
             const files = hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true && hello.data.capabilities.includes(GOAL_FILES_CAPABILITY);
             if (files) this.goalFiles.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(LOCAL_MODEL_CAPABILITY) === true) this.localModelHost = s;
+            if (hello.data.host === true && hello.data.capabilities?.includes(PAGE_TEXT_CAPABILITY) === true) this.pageText.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(SAVED_ANSWERS_CAPABILITY) === true) {
               this.savedAnswers.add(s);
               this.helper().setAnswerHosts(this.savedAnswers.size);
@@ -247,7 +269,7 @@ export class HelperServer {
             else void this.helper().handleFillAll(m.data, from);
           }
           // D2-06: a goal plan's request (answered to the asker only) and each segment's acceptance, from a goal-planning host only.
-          else if (m.data.type === "goalRequest" || m.data.type === "goalAccept") {
+          else if (m.data.type === "goalRequest" || m.data.type === "goalAccept" || m.data.type === "goalEdit") {
             if (!this.goalPlans.has(s)) {
               this.reject(s, `${m.data.type} needs a host hello with "${GOAL_PLANS_CAPABILITY}" in its capabilities`);
               continue;
@@ -258,6 +280,8 @@ export class HelperServer {
               continue;
             }
             if (m.data.type === "goalAccept") void this.helper().handleGoalAccept(m.data, from, (e) => void (!s.destroyed && s.write(JSON.stringify(e) + "\n")));
+            // H9: the user's words over a draft; the new preview is published to goal hosts, a refusal answered to this one.
+            else if (m.data.type === "goalEdit") this.helper().handleGoalEdit(m.data, from, (e) => void (!s.destroyed && s.write(JSON.stringify(e) + "\n")));
             else {
               const requestId = m.data.requestId;
               void this.helper()
@@ -277,6 +301,23 @@ export class HelperServer {
             else if (this.localModel?.reply(m.data) !== true) this.warn(`localTextReply ${m.data.id}: no request waits for it`);
           }
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
+          // H13: inline text the user accepted with Tab in a page field. Only a host that declared pageText.
+          else if (m.data.type === "pageInsert") {
+            if (!this.pageText.has(s)) this.reject(s, `pageInsert needs a host hello with "${PAGE_TEXT_CAPABILITY}" in its capabilities`);
+            else {
+              const requestId = m.data.requestId;
+              void this.helper()
+                .handlePageInsert(m.data)
+                .catch((e: unknown): PageInsertReply => {
+                  // The error's name only: its message could quote the page.
+                  this.warn(`pageInsert ${requestId} failed: ${e instanceof Error ? e.name : "error"}`);
+                  return { type: "pageInsertReply", v: PROTOCOL_VERSION, requestId, outcome: "unverified", says: "the helper could not tell whether the text went in", at: Date.now() };
+                })
+                .then((r) => {
+                  if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
+                });
+            }
+          }
           // S1: the user's yes to saving an answer. Only a host that shows answers whole speaks for the user here.
           else if (m.data.type === "answerSave") {
             if (!this.savedAnswers.has(s)) this.reject(s, `answerSave needs a host hello with "${SAVED_ANSWERS_CAPABILITY}" in its capabilities`);
@@ -298,6 +339,14 @@ export class HelperServer {
             if (!this.goalFiles.has(s)) this.reject(s, `fileSave needs a host hello with "${GOAL_FILES_CAPABILITY}" in its capabilities`);
             else {
               const reply = this.helper().handleFileSave(m.data, from);
+              if (!s.destroyed) s.write(JSON.stringify(reply) + "\n");
+            }
+          }
+          // H14: the memory window's Files section names files and paths: only a host that shows attach rows, and to it alone.
+          else if (m.data.type === "savedFilesRequest") {
+            if (!this.goalFiles.has(s)) this.reject(s, `savedFilesRequest needs a host hello with "${GOAL_FILES_CAPABILITY}" in its capabilities`);
+            else {
+              const reply = this.helper().handleSavedFiles(m.data);
               if (!s.destroyed) s.write(JSON.stringify(reply) + "\n");
             }
           }
@@ -347,6 +396,8 @@ export class HelperServer {
                 if (p !== null) s.write(JSON.stringify(p) + "\n");
               });
           }
+          // H5: which file the user took for a run names a path, so the answer goes to the asker only.
+          else if (m.data.type === "fileConfirm") s.write(JSON.stringify(this.helper().handleFileConfirm(m.data)) + "\n");
           // Records hold window titles and status lines, so a list goes to the asker only, as memory does.
           else if (m.data.type === "activityRequest") {
             // A task that writes a saved answer is listed only to a host that shows answers (S1): its records quote it.
@@ -399,7 +450,9 @@ export class HelperServer {
       this.fillAll.delete(s);
       this.askChoices.delete(s);
       this.goalPlans.delete(s);
+      this.spend.delete(s);
       this.goalFiles.delete(s);
+      this.pageText.delete(s);
       if (this.localModelHost === s) {
         this.localModelHost = null;
         this.localModel?.hostGone();
@@ -465,4 +518,10 @@ function isAlive(path: string): Promise<boolean> {
     });
     c.once("error", () => resolve(false));
   });
+}
+
+/** H13: a pageField as a consumer without the pageText capability gets it: the field's key and frame, no text. */
+export function withoutPageText(m: PageField): PageField {
+  const { text: _text, caret: _caret, ownSuggestions: _own, docsText: _docs, token: _token, pageFocused: _focused, fieldKind: _kind, ...rest } = m;
+  return rest;
 }

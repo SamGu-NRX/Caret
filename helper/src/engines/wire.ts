@@ -19,7 +19,7 @@ export interface WiredPages {
 
 export function wirePageEngines(opts: { host: PageHost; helper: Helper; publish: (m: HelperMessage) => void; warn: (line: string) => void; allowBackground?: boolean }): WiredPages {
   const { host, helper } = opts;
-  const focus = new PageFocus({ model: helper.model, focus: (m) => void helper.handleReader(m), walked: (id) => helper.pageWalked(id), warn: opts.warn, ...(opts.allowBackground === undefined ? {} : { allowBackground: opts.allowBackground }) });
+  const focus = new PageFocus({ model: helper.model, focus: (m) => void helper.handleReader(m), publish: opts.publish, walked: (id) => helper.pageWalked(id), warn: opts.warn, ...(opts.allowBackground === undefined ? {} : { allowBackground: opts.allowBackground }) });
   const presence = new BrowserPresence({ publish: opts.publish, hasEngine: (pid) => host.registry.forBrowser(pid) !== undefined });
   const attach = (s: EngineSession): void => {
     focus.attach(s);
@@ -34,12 +34,15 @@ export function wirePageEngines(opts: { host: PageHost; helper: Helper; publish:
     onRemove: (s) => presence.engineGone(s.info.browser),
   });
   const untap = helper.onReaderMessage((m) => presence.onReader(m));
+  // The host's "Not on this site" list, from its settings, to every engine (registry.ts sends it after each hello too).
+  const unsites = helper.onSitesOff((origins) => host.registry.setSitesOff(origins));
   return {
     focus,
     presence,
     stop: () => {
       unlisten();
       untap();
+      unsites();
     },
   };
 }

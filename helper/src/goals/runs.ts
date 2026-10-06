@@ -20,20 +20,22 @@
 import type { Change, ScreenModel } from "../model.ts";
 import type { Executor, Revocation, TaskResult } from "../executor/executor.ts";
 import { nodeText } from "../model.ts";
-import { PROTOCOL_VERSION, type GoalAccept, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
+import { PROTOCOL_VERSION, type GoalAccept, type GoalEdit, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
 import { isDerived, isFilled } from "./gates.ts";
 import { sourceHolds } from "../offers/fill-popup.ts";
 import { memoryWrites, parseMemoryRef } from "../fill/fill.ts";
 import { continuationScope, pageInputKeys } from "./page-planner.ts";
+import { pageView } from "./page-view.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { formControls } from "../fill/controls.ts";
 import { fieldName } from "../planner/planner.ts";
 import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
-import { executable, segmentDigest, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
-import { effectKey, type DonePress } from "./lower.ts";
+import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
+import { effectKey, segmentOf, type DonePress } from "./lower.ts";
+import { codeGate } from "./gates.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
 export const ACCEPT_MS = 120_000;
@@ -107,6 +109,8 @@ interface Run {
   task: { id: string; segment: number; pid: number | null; bundleId: string | null; windows: Set<string> } | null;
   /** Why code revoked the running task, when it did: the stop is reported as this, not as the executor's wording. */
   cause: { reason: GoalStopReason; says: string } | null;
+  /** The reason the first segment was previewed with when it was not its own (a fresh plan's), so an edit's preview keeps it. */
+  firstReason: "afterReveal" | "freshPlan" | null;
   /** When the executor first said it was acting on each step, by the step's index in the goal (P1: StepReceipt.ms). */
   acting: Map<number, number>;
   /**
@@ -308,6 +312,7 @@ export class GoalRuns {
       accepted: new Set(),
       task: null,
       cause: null,
+      firstReason: replaces === null ? null : "freshPlan",
       acting: new Map(),
       stepMap: [],
       confirmed: null,
@@ -392,6 +397,46 @@ export class GoalRuns {
       this.stop(run, "error", null, says);
       return { refused: says };
     }
+  }
+
+  /**
+   * H9: the user's own words in place of the text Caret drafted for one step of the segment waiting for acceptance. The
+   * same checks as an acceptance (this goal, this connection, the segment waiting, its digest, unchanged, in time), and
+   * the step must be a drafted write. The words pass the draft's field and never-typed checks (gates.ts codeGate) and no
+   * fact check: they are the user's. The segment is lowered again with them (lower.ts segmentOf) under a new digest and
+   * previewed again; nothing runs, and an acceptance of the old digest is refused from now on.
+   */
+  edit(m: GoalEdit, session: string | undefined): { refused: string } | { preview: GoalProgress } {
+    const run = this.runs.get(m.goalId);
+    if (run === undefined) return { refused: `no goal ${m.goalId}` };
+    if (run.session !== undefined && run.session !== session) return { refused: `goal ${m.goalId} was offered to another connection` };
+    if (run.state !== "awaiting" || run.accepted.has(m.segment)) return { refused: `goal ${m.goalId} is not waiting for segment ${m.segment + 1}; only a preview can be edited` };
+    if (m.segment !== run.cursor.segment) return { refused: `goal ${m.goalId} waits for segment ${run.cursor.segment + 1}, not ${m.segment + 1}` };
+    const at = run.cursor.segment;
+    const seg = run.plan.segments[at] as GoalSegment;
+    if (m.digest !== seg.digest) return { refused: `the edit names another plan than the one shown for segment ${m.segment + 1}` };
+    if (segmentDigest(run.plan.programHash, seg, run.plan.warnings, executable(seg)) !== seg.digest) return { refused: `segment ${m.segment + 1} of goal ${m.goalId} no longer matches its digest` };
+    if (this.deps.now() > run.expires) {
+      this.stop(run, "expired", null, `${SAYS.expired}; nothing was done for it`);
+      return { refused: `segment ${m.segment + 1} of goal ${m.goalId} expired before it was edited` };
+    }
+    const i = seg.steps.findIndex((x) => x.index === m.step);
+    const s = seg.steps[i];
+    if (s === undefined) return { refused: `step ${m.step + 1} is not in segment ${m.segment + 1}` };
+    if (s.kind !== "write" || s.value === null || s.value.draft === null) return { refused: `step ${m.step + 1} is not text Caret drafted; only a draft can be edited` };
+    const text = m.text;
+    if (text.trim() === "") return { refused: "the edit is empty" };
+    const gated = codeGate(s.target, text, text, "draft", run.plan.instruction);
+    if (gated !== null) return { refused: gated };
+    const value: ValueBinding = { ...s.value, text, display: text, origin: { kind: "you", digest: sha256(text) }, source: null, memory: null, event: null, draft: null, owner: "user" };
+    const step: GoalStep = { ...s, value, writes: text, says: `${s.target.label}: ${text}`, gate: "you" };
+    const edited = segmentOf(run.plan.programHash, { index: seg.index, domain: seg.domain, reason: seg.reason, steps: seg.steps.map((x, k) => (k === i ? step : x)) }, run.plan.warnings);
+    deepFreeze(edited);
+    run.plan.segments[at] = edited;
+    run.plan.digest = goalDigest(run.plan.programHash, run.plan.segments.map((x) => x.digest), run.plan.warnings);
+    run.cursor.planDigest = run.plan.digest;
+    run.expires = this.deps.now() + ACCEPT_MS;
+    return { preview: this.segmentMessage(run) };
   }
 
   /**
@@ -872,6 +917,8 @@ export class GoalRuns {
       return null;
     }
     const msg = this.propose(plan, run.session, null, { goalId: run.plan.goalId, carried: completed, pressed: [...run.pressed], owed });
+    const fresh = this.runs.get(plan.goalId);
+    if (fresh !== undefined) fresh.firstReason = reason;
     return msg.event === "segment" ? { ...msg, reason } : msg;
   }
 
@@ -887,13 +934,14 @@ export class GoalRuns {
       event: "segment",
       segment: seg.index,
       segments: run.plan.segments.length,
-      reason: reason ?? seg.reason,
+      reason: reason ?? (run.cursor.segment === 0 ? (run.firstReason ?? seg.reason) : seg.reason),
       replaces: run.cursor.segment === 0 ? run.replaces : null,
       digest: seg.digest,
       expires: run.expires,
       where: d.kind === "window" ? { kind: "window", app: d.appName, title: d.title } : { kind: "calendar", calendar: d.calendar },
       steps: seg.steps.map((s) => ({ index: s.index, kind: s.kind, says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }), ...(s.kind === "attach" && s.file !== undefined ? { file: s.file } : {}) })),
       warnings: run.cursor.segment === 0 ? run.plan.warnings : [],
+      ...pageOf(this.deps.model, run.plan, seg),
     };
   }
 
@@ -1094,6 +1142,12 @@ function sameField(w: WindowState, s: GoalStep): boolean {
   // A control with no label of its own is bound as "" (page-planner.ts); one formControls no longer lists is not the same.
   const c = formControls(w).find((x) => x.node.key === n.key);
   return c !== undefined && (c.label ?? "") === s.target.label;
+}
+
+/** H11: a page segment's view for the host's panel, as a spread: empty for every other segment. */
+function pageOf(model: ScreenModel, plan: GoalPlan, seg: GoalSegment): { page?: NonNullable<ReturnType<typeof pageView>> } {
+  const page = pageView(model, plan, seg);
+  return page === undefined ? {} : { page };
 }
 
 /** The segment step the running task's step `i` is (P3: the task may run fewer steps than the segment lists). */

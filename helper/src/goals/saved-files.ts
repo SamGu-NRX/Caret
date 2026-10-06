@@ -14,10 +14,10 @@ import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { questionExcerpt, type PageContext } from "../fill/answers.ts";
 import { words } from "../fill/kinds.ts";
 import { MemoryDocumentError, type MemoryDocumentStore } from "../memory/documents.ts";
-import { fileFor, fileQuestion, normalizeQuestion, saveFile, savedFiles, type SavedFile } from "../memory/files.ts";
+import { fileFor, fileQuestion, forgetFile, normalizeQuestion, saveFile, savedFiles, UnknownFileError, type SavedFile } from "../memory/files.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { SnippetLedger } from "../privacy.ts";
-import { FileFields, PROTOCOL_VERSION, type FileSave, type FileSaveOffer, type FileSaveReply, type Node } from "../protocol.ts";
+import { FileFields, PROTOCOL_VERSION, type FileSave, type FileSaveOffer, type FileSaveReply, type Node, type SavedFilesReply, type SavedFilesRequest, type SavedFileView } from "../protocol.ts";
 import type { AttachOffer } from "./plan.ts";
 
 /**
@@ -240,4 +240,49 @@ export class SavedFiles {
       throw e;
     }
   }
+
+  /**
+   * H14: the memory window's Files section: the saved files newest saved first, or forget one and list what is left. A
+   * refusal (memory in the old store, an unknown id, files.md edited since it was read) says why in `error` and lists
+   * nothing.
+   */
+  files(m: SavedFilesRequest): SavedFilesReply {
+    const reply = (error: string | null, files: SavedFileView[]): SavedFilesReply => ({ type: "savedFilesReply", v: PROTOCOL_VERSION, requestId: m.requestId, error, files });
+    const docs = this.deps.documents();
+    if (docs === null) return reply("Caret's memory is still in its old encrypted store, so it has no saved files yet.", []);
+    try {
+      if (m.op === "forget") {
+        forgetFile(docs, m.id as string);
+        this.deps.count("files.forgotten");
+      }
+      return reply(null, fileViews(savedFiles(docs)));
+    } catch (e) {
+      if (e instanceof UnknownFileError || e instanceof MemoryDocumentError) return reply(e.message, []);
+      throw e;
+    }
+  }
+}
+
+/** The most files a savedFilesReply lists (protocol SavedFilesReply.files). */
+const MAX_FILE_VIEWS = 200;
+
+/** Saved files as the Files section shows them, newest saved first; `edited` by lstat, null unless a regular file. */
+function fileViews(files: SavedFile[]): SavedFileView[] {
+  return files
+    .map((f) => {
+      const st = regularFile(f.fields.path);
+      const name = basename(f.fields.path) || f.fields.path;
+      return {
+        id: f.id,
+        question: f.fields.question,
+        site: f.fields.site,
+        name: name.length <= 255 ? name : `${name.slice(0, 254)}…`,
+        path: f.fields.path,
+        savedOn: Math.max(0, Date.parse(f.fields.savedOn)),
+        edited: st === null ? null : Math.floor(st.mtimeMs),
+        status: f.status,
+      };
+    })
+    .sort((a, b) => b.savedOn - a.savedOn)
+    .slice(0, MAX_FILE_VIEWS);
 }

@@ -1,1 +1,0 @@
-R1: free Laya gives HTTP 422 for a JSON-object state (harness.ts layaState sends JSON text) and for a choice question whose options total over ~300 chars (heads' scope: 634), so Ask-led evals on Laya are mostly rejected (evidence/screen/r1/probe).

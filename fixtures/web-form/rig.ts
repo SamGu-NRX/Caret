@@ -99,8 +99,9 @@ const xml = (s: string): string => s.replaceAll("&", "&amp;").replaceAll("<", "&
  * Starts `program` as a temporary launchd job in this user's GUI domain that owns Mach service `service`, from a plist
  * in this run's private directory; it is booted out at cleanup. Resolves once its log says it is listening.
  */
-export async function launchdJob(dir: string, label: string, service: string, program: string[], log: string): Promise<void> {
+export async function launchdJob(dir: string, label: string, service: string, program: string[], log: string, env: Record<string, string> = {}): Promise<void> {
   const plist = join(dir, `${label}.plist`);
+  const envXml = Object.keys(env).length === 0 ? "" : `<key>EnvironmentVariables</key><dict>${Object.entries(env).map(([k, v]) => `<key>${xml(k)}</key><string>${xml(v)}</string>`).join("")}</dict>\n`;
   writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -109,7 +110,7 @@ export async function launchdJob(dir: string, label: string, service: string, pr
 <key>MachServices</key><dict><key>${xml(service)}</key><true/></dict>
 <key>RunAtLoad</key><true/>
 <key>StandardErrorPath</key><string>${xml(log)}</string>
-</dict></plist>
+${envXml}</dict></plist>
 `, { mode: 0o600 });
   const domain = `gui/${process.getuid?.() ?? 501}`;
   execFileSync("launchctl", ["bootstrap", domain, plist], { stdio: "pipe" });

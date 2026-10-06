@@ -1,0 +1,1 @@
+caret-fixture: an AXMain write makes a bg window key without activation; it ignores pid-posted Cmd-V (host falls back to AXSelectedText). Fill tests: stage a source visit or Jev withholds (0.4-0.7); --gold frames are view frames, AX fields 1 pt larger, match by AX frame.

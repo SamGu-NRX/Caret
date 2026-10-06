@@ -35,6 +35,11 @@
 // --electron DIR   an Electron installed by helper/scripts/electron-setup.sh: the reader check then also starts a
 //              windowless Electron fixture and expects exactly one AXManualAccessibility attempt, on it.
 // --no-reader  skips the reader check, which builds and runs caret-screen (it needs the Accessibility grant).
+// --host-app APP   runs the checks against Caret.app's own relay instead of the test host (H4): APP is the acceptance
+//              build (apps/caret/scripts/build-app.sh acceptance), started as a temporary launchd job labelled
+//              dev.caret.host that owns the real service, dev.caret.host.page-bridge, with CARET_BRIDGE_SERVICE unset.
+//              It relays to this run's page.sock with this run's secret and trusts Chrome for Testing by cdhash. Chrome
+//              starts APP's own bundled caret-bridge. Refused if a job with that label is already loaded.
 //
 // Batch 2 (W2) adds: react-select and an ARIA combobox picked and verified, a filter that matches two options
 // stopping with both names, a file attached through the input and through the dropzone from a file this run owns
@@ -104,6 +109,7 @@ const { values: args } = parseArgs({
     "dump-walk": { type: "boolean", default: false },
     electron: { type: "string" },
     "no-reader": { type: "boolean", default: false },
+    "host-app": { type: "string" },
     evidence: { type: "string", default: join(homedir(), ".caret-run", "evidence", "browser", "w3") },
   },
 });
@@ -136,9 +142,19 @@ function build(): void {
   if (!args["no-reader"]) swift("the reader (debug)", ["swift", "build", "--package-path", READER_PKG, "--product", "caret-screen"]);
 }
 
+/** Caret.app's service; a bridge needs no CARET_BRIDGE_SERVICE to reach it. */
+const REAL_SERVICE = "dev.caret.host.page-bridge";
+
+/** This process's environment with CARET_BRIDGE_SERVICE naming `service`, or without it for the real service. */
+function bridgeEnv(service: string): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.CARET_BRIDGE_SERVICE;
+  return service === REAL_SERVICE ? env : { ...env, CARET_BRIDGE_SERVICE: service };
+}
+
 /** Runs a bridge by itself, as a process that is not a browser would, until it exits (15 s at most). */
 async function bridgeAlone(bridge: string, service: string, extensionId: string): Promise<{ code: number | null; err: string }> {
-  const p = spawn(bridge, [`chrome-extension://${extensionId}/`], { env: { ...process.env, CARET_BRIDGE_SERVICE: service }, stdio: ["pipe", "pipe", "pipe"] });
+  const p = spawn(bridge, [`chrome-extension://${extensionId}/`], { env: bridgeEnv(service), stdio: ["pipe", "pipe", "pipe"] });
   undo.push({ what: `bridge pid ${p.pid}`, fn: () => void p.kill("SIGKILL") });
   let err = "";
   p.stderr?.setEncoding("utf8").on("data", (d: string) => (err += d));
@@ -180,6 +196,8 @@ interface Engine {
   session: EngineSession;
   tabId: number;
   cdp: Cdp | null;
+  /** The reader inside the routed link: in fixture mode it answers every verb noWindow (there is no caret-screen here). */
+  reader?: ReaderLink;
 }
 
 async function walk(e: Engine): Promise<PageSnapshot> {
@@ -1003,6 +1021,35 @@ async function batch4(e: Engine, site: FixtureSite, tmp: string): Promise<void> 
     const other = await text(site, "#cover_letter-filename");
     expect(shown === fileName && other === "", `the page shows '${shown}' for the resume and '${other}' for the cover letter`);
     return `${detail}; the page shows '${shown}'`;
+  });
+
+  await check("H5: a confirm-file run: 'attach my resume' plans the Greenhouse replica's resume input, the user confirms the file for that run, and the executor attaches it, verified by files[0] and the page's own file name", async () => {
+    await openPage(e, site, "/replica/greenhouse", "Resume/CV*");
+    await link.run({ kind: "walk", pid, windowId });
+    const p = await e.helper.handlePlanRequest({ type: "planRequest", v: 1, requestId: "h5-ask", at: Date.now(), instruction: "attach my resume", windowId });
+    expect(p.outcome === "proposed" && p.attach?.field === "Resume/CV*" && p.handoff === null, `proposal ${JSON.stringify({ outcome: p.outcome, attach: p.attach, error: p.error })}`);
+    const taskId = p.offerKey as string;
+    // Before the confirmation the file is no one's: the helper refuses another task's, and nothing reached the page.
+    expect((await text(site, "#resume-filename")) === "", "the page shows a file before any run");
+    const reply = e.helper.handleFileConfirm({ type: "fileConfirm", v: 1, requestId: "h5-file", at: Date.now(), taskId, path: filePath });
+    expect(reply.outcome === "confirmed" && reply.file?.name === fileName && reply.file.size === fileSize, `confirm ${JSON.stringify(reply)}`);
+    // Fixture mode has no caret-screen; the run's input watch is the reader's to answer, and it says yes for this run only.
+    const reader = e.reader as ReaderLink;
+    const was = reader.run;
+    reader.run = async (verb) => (verb.kind === "watchInput" ? { type: "verbResult", v: 1, id: "h5-watch", at: Date.now(), outcome: "ok", detail: null } : was(verb));
+    let done: Awaited<ReturnType<Helper["handleOfferAccept"]>>;
+    try {
+      done = await e.helper.handleOfferAccept({ type: "offerAccept", v: 1, offerId: taskId, actionId: "run", overrides: {}, at: Date.now() });
+    } finally {
+      reader.run = was;
+    }
+    expect(done?.outcome === "done" && done.acted === 1, `run ${JSON.stringify(done)}`);
+    const shown = await text(site, "#resume-filename");
+    const other = await text(site, "#cover_letter-filename");
+    expect(shown === fileName && other === "", `the page shows '${shown}' for the resume and '${other}' for the cover letter`);
+    // Used once: the confirmation went with the run.
+    expect(e.helper.files.confirmed(taskId) === null, "the confirmation outlived its run");
+    return `proposed '${p.attach?.field}' (${p.attach?.wants}); confirmed ${reply.file?.name} ${reply.file?.size} bytes; run ${done?.outcome}, acted ${done?.acted}; the page shows '${shown}'`;
   });
 
   await check("W4 1: Ashby replica: the clipped input under the resume dropzone is named by its visible label and takes the confirmed file, though the label then names the file too", async () => {
@@ -2017,18 +2064,43 @@ async function main(): Promise<number> {
   const sign = args["sign-identity"] as string;
   const bin = join(tmp, "bin");
   mkdirSync(bin, { mode: 0o700 });
-  const bridge = signedCopy(BRIDGE, join(bin, "caret-bridge"), "dev.caret.bridge", sign);
+  const hostApp = args["host-app"];
+  // With --host-app, Chrome starts the app's own bundled bridge, signed by the app's build.
+  const bridge = hostApp === undefined ? signedCopy(BRIDGE, join(bin, "caret-bridge"), "dev.caret.bridge", sign) : join(hostApp, "Contents", "Helpers", "caret-bridge");
+  // The test host is still the foreign host in the "refuses a host signed by another team" check.
   const testHost = signedCopy(TESTHOST, join(bin, "caret-bridge-testhost"), "dev.caret.host", sign);
   const cftApp = exe.slice(0, exe.indexOf(".app/") + 4);
-  const service = `dev.caret.w3test.${randomBytes(4).toString("hex")}`;
+  const service = hostApp === undefined ? `dev.caret.w3test.${randomBytes(4).toString("hex")}` : REAL_SERVICE;
   const hostLog = join(tmp, "testhost.log");
-  // Harness only: the helper runs in this process, so the test host is handed the launch secret in a file in the
-  // private socket directory, which it deletes on start. Caret.app makes the secret itself and never writes it.
+  // Harness only: the helper runs in this process, so the host is handed the launch secret in a file in the private
+  // socket directory, which it deletes on start. Caret.app's launcher makes the secret itself and never writes it.
   const secretFile = join(sockDir, "launch-secret");
   writeFileSync(secretFile, launchSecret.toString("hex"), { mode: 0o600 });
-  await launchdJob(tmp, service, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], hostLog);
-  say(`test host on ${service}: ${designated(testHost)}`);
-  const env = { ...process.env, CARET_BRIDGE_SERVICE: service };
+  if (hostApp === undefined) {
+    await launchdJob(tmp, service, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], hostLog);
+    say(`test host on ${service}: ${designated(testHost)}`);
+  } else {
+    const domain = `gui/${process.getuid?.() ?? 501}`;
+    let loaded = true;
+    try {
+      execFileSync("launchctl", ["print", `${domain}/dev.caret.host`], { stdio: "ignore" });
+    } catch {
+      loaded = false;
+    }
+    if (loaded) throw new Error(`a job labelled dev.caret.host is already loaded in ${domain}; not replacing it`);
+    const caret = join(hostApp, "Contents", "MacOS", "Caret");
+    await launchdJob(tmp, "dev.caret.host", service, [caret, "--acceptance-relay-socket", sockPath, "--acceptance-secret-file", secretFile, "--acceptance-browser-requirement", designated(cftApp)], hostLog, { CARET_LAUNCHD_AGENT: "1" });
+    say(`Caret.app's relay on ${service}: ${designated(caret)}`);
+    await check("H4: launchctl print shows dev.caret.host owning dev.caret.host.page-bridge", async () => {
+      const printed = execFileSync("launchctl", ["print", `${domain}/dev.caret.host`], { encoding: "utf8" });
+      writeFileSync(join(tmp, "launchctl-print.txt"), printed);
+      expect(/endpoints = \{[^}]*"dev\.caret\.host\.page-bridge"/s.test(printed), "dev.caret.host.page-bridge is not among the job's endpoints");
+      const program = /program = (.*)/.exec(printed)?.[1] ?? "";
+      expect(program.endsWith("/Contents/MacOS/Caret"), `the job runs ${program}`);
+      return `program ${program}; ${(/state = (\w+)/.exec(printed)?.[1]) ?? "?"}; endpoint dev.caret.host.page-bridge`;
+    });
+  }
+  const env = bridgeEnv(service);
   const url = `${site.mainOrigin}/form`;
 
   /** Puts the manifest in `nmDir` only, launches on `profile`, and waits for this launch's engine. */
@@ -2095,7 +2167,7 @@ async function main(): Promise<number> {
     results.push({ name: "the active tab can be walked", pass: false, ms: 0, detail: outcome(first.result) });
     return report(front0, { nmProbe, warnings });
   }
-  const e: Engine = { host, helper, session, tabId: first.snapshot.tabId, cdp };
+  const e: Engine = { host, helper, session, tabId: first.snapshot.tabId, cdp, reader: noReader };
   if (args["dump-walk"]) {
     say(JSON.stringify({ frames: first.snapshot.frames.map((f) => ({ frameId: f.frameId, parent: f.parentFrameId, origin: f.origin, path: f.path, iframes: f.iframes, controls: f.controls.length })), missing: first.snapshot.missing }));
     return report(front0);

@@ -16,6 +16,7 @@ import { conversionOf, describeInput, emptyInput, memoryRefOf, memoryValue } fro
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import { offerField } from "./field.ts";
+import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import { ANSWER_SAYS, guardAnswer, pageText, type PageContext } from "../fill/answers.ts";
 import type { SavedAnswer } from "../memory/answers.ts";
 import { SAVED_ANSWER_RULE } from "./answer-gate.ts";
@@ -360,7 +361,7 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory, conversionOf(f.control)) }),
       end: {
         kind: "valueEquals" as const,
-        window: { bundleId: p.bundleId, title: "{{title}}" },
+        window: { bundleId: p.bundleId, title: "{{title}}", ...(w?.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: p.windowId } : {}) },
         target: { key: f.key, describe: `the {{l${i}}} field` },
         value: `{{v${i}}}`,
       },

@@ -1,7 +1,10 @@
-// The real calendar store behind CalendarAdapter. It reads the authorization status, and creates an
-// EKEventStore only once full access is already granted: it never calls a request method, so it can
-// never put a system prompt on the screen. The adapter decides what may be written; this file only
-// translates its calls to EventKit.
+// The real calendar store behind CalendarAdapter. It reads the authorization status, and, while that says
+// notDetermined, whether a store sees calendars (`hasFullAccess`): it never calls a request method, so it can
+// never put a system prompt on the screen (in the shipped app Caret asks, when the user first accepts an
+// event card, and this process inherits Caret's answer). The adapter decides what may be written; this
+// file only translates its calls to EventKit, and refuses a write outside its scope as a second check:
+// with `--calendar-test` only local calendars, with `--calendar-user` any calendar that accepts events
+// but never creating or deleting one.
 import CaretScreenCore
 import EventKit
 import Foundation
@@ -13,8 +16,12 @@ public struct EventKitError: Error, CustomStringConvertible {
 
 public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
     private var storeObj: EKEventStore?
+    /// `--calendar-user` (H8): saves go to the user's calendars; calendars are never created or deleted.
+    private let userCalendars: Bool
 
-    public init() {}
+    public init(userCalendars: Bool = false) {
+        self.userCalendars = userCalendars
+    }
 
     /// The authorization status, by name, without asking for anything.
     public static func statusName() -> String {
@@ -28,8 +35,22 @@ public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
         }
     }
 
+    /// Full access, without asking. The class status is not enough on its own: in the rig guest (evidence/host/h8,
+    /// VM run 5), a process that was running when access was granted read the status as notDetermined, then
+    /// fullAccess, then notDetermined again, while a new store in that process read the calendars throughout. The
+    /// shipped reader starts at launch, before Caret first asks, so while the status says notDetermined a store is
+    /// asked: one that sees calendars means access. Making a store and listing its calendars prompts for nothing;
+    /// only the request methods do, and this file calls none.
     public func hasFullAccess() -> Bool {
-        EKEventStore.authorizationStatus(for: .event) == .fullAccess
+        switch EKEventStore.authorizationStatus(for: .event) {
+        case .fullAccess: return true
+        case .notDetermined:
+            let s = storeObj ?? EKEventStore()
+            guard !s.calendars(for: .event).isEmpty else { return false }
+            storeObj = s
+            return true
+        default: return false
+        }
     }
 
     private func store() throws -> EKEventStore {
@@ -45,6 +66,7 @@ public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
     }
 
     public func createCalendar(title: String, sourceID: String) throws -> String {
+        guard !userCalendars else { throw EventKitError("the user's calendars are never added to by creating one") }
         let s = try store()
         guard let source = s.source(withIdentifier: sourceID), source.sourceType == .local else { throw EventKitError("source \(sourceID) is not a local source") }
         let c = EKCalendar(for: .event, eventStore: s)
@@ -55,6 +77,7 @@ public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
     }
 
     public func deleteCalendar(id: String) throws {
+        guard !userCalendars else { throw EventKitError("a user's calendar is never deleted") }
         let s = try store()
         guard let c = s.calendar(withIdentifier: id) else { return }
         // The adapter only names calendars it created; a non-local one here would be a bug, so it is refused.
@@ -71,7 +94,12 @@ public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
 
     public func saveEvent(calendarID: String, title: String, start: Date, end: Date) throws -> String {
         let s = try store()
-        guard let c = s.calendar(withIdentifier: calendarID), c.source.sourceType == .local else { throw EventKitError("calendar \(calendarID) is not a local calendar") }
+        guard let c = s.calendar(withIdentifier: calendarID) else { throw EventKitError("no calendar \(calendarID)") }
+        if userCalendars {
+            guard c.allowsContentModifications else { throw EventKitError("calendar \(calendarID) does not accept new events") }
+        } else {
+            guard c.source.sourceType == .local else { throw EventKitError("calendar \(calendarID) is not a local calendar") }
+        }
         let e = EKEvent(eventStore: s)
         e.calendar = c
         e.title = title
@@ -87,6 +115,15 @@ public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
         let s = try store()
         guard let e = s.event(withIdentifier: id) else { return nil }
         return Self.backendEvent(e)
+    }
+
+    public func defaultCalendarID() -> String? {
+        guard let c = (try? store())?.defaultCalendarForNewEvents, c.allowsContentModifications else { return nil }
+        return c.calendarIdentifier
+    }
+
+    public func isWritable(calendarID: String) -> Bool {
+        (try? store())?.calendar(withIdentifier: calendarID)?.allowsContentModifications == true
     }
 
     public func removeEvent(id: String) throws {

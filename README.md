@@ -27,6 +27,18 @@ CARET_ENV_FILE=/path/to/.env node src/launch.ts --reader ../apps/screen-reader/.
 
 The launcher starts the helper and the reader with one secret between them, so the reader talks only to that helper. Start the reader from a process that has the Accessibility grant, never through `open`.
 
+### Model keys in the packaged app
+
+Caret.app passes its helper only two variables from its own environment: `TYPESAFE_API_KEY` and `CARET_ENV_FILE` (`ServiceLauncher.childEnvironment`). Jev works with either. The writer's Groq key, `GROQ_API_KEY`, reaches the helper only through the env file, so point `CARET_ENV_FILE` at a `.env` that defines both:
+
+```sh
+CARET_ENV_FILE=/path/to/.env apps/caret/.build/Caret.app/Contents/MacOS/Caret
+```
+
+Keep keys out of the command line and out of `defaults`; the helper reads the file when it calls a model.
+
+Someone who installed Caret gives it a Jev key in onboarding (H12). Caret checks it with one request, keeps it in the login keychain (service `dev.caret.host.jev`), and at each helper start passes it as `TYPESAFE_API_KEY` in the helper's environment only. Either variable above wins over the keychain. With no key anywhere the helper runs with `--no-jev`, and the menu says "Jev is off. Add a key…". Groq still reaches the helper only through the env file, so Ask's writer has no key in an installed Caret.
+
 ## What v2 keeps
 
 - Screen text stays in memory for ten minutes. The store keeps counts, timings and HMAC hashes of values, not the values.

@@ -1,1 +1,0 @@
-P4: headless CfT tab switches that the extension's tabs/windows listeners really see: evaluate chrome.tabs.update + chrome.windows.update in the extension worker over the DevTools pipe (fixtures/web-form/tab-source-journey.ts switchTo).

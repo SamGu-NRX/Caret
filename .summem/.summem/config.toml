@@ -1,0 +1,3 @@
+# SumMem per-store settings. Missing values take the script's defaults.
+# ENTRY_CHARS = 280
+# WAKE_LINES = 32

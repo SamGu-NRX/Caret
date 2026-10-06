@@ -42,6 +42,10 @@ class TwoTabs {
   readonly session: EngineSession;
   form = [ctl("e1", "text", "First name"), ctl("e2", "text", "Last name"), ctl("e3", "email", "Email")];
   left: number | null = null;
+  /** What a read of the tab left finds (H13: a Google editor whose text is off finds none). */
+  tabText: PageTabText = MESSAGE;
+  /** The form field with focus. */
+  focusedId = "e1";
   grantedGen: number | null = null;
   constructor() {
     this.session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m) => {
@@ -62,13 +66,13 @@ class TwoTabs {
       type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: Date.now(), tabId, browserWindowId: 1, active: mail ? this.left !== 3 : true, inFocusedWindow: true, title,
       frames: [{ frameId: 0, parentFrameId: -1, documentId: `D${tabId}`, origin, path: "/", navGen: 1, title, headings: [], iframes: [], excluded: {}, truncated: false, controls: mail ? [ctl("m1", "search", "Search mail")] : structuredClone(this.form) }],
       missing: [],
-      focused: mail ? null : { frameId: 0, id: "e1", selection: [0, 0] },
+      focused: mail ? null : { frameId: 0, id: this.focusedId, selection: [0, 0] },
     };
   }
   private answer(m: HelperToEngine): void {
     if (m.type === "pageReadText") {
       if (this.left !== m.tabId) return this.reply(m.id, { outcome: "notAllowed", detail: "it is not the tab you just left" });
-      return this.reply(m.id, { outcome: "ok", detail: null, text: { ...MESSAGE, leftAt: Date.now() - 1000 } } satisfies Omit<PageResult, "type" | "v" | "id" | "at">);
+      return this.reply(m.id, { outcome: "ok", detail: null, text: { ...this.tabText, leftAt: Date.now() - 1000 } } satisfies Omit<PageResult, "type" | "v" | "id" | "at">);
     }
     if (m.type !== "pageCommand") return;
     const v: PageVerb = m.verb;
@@ -259,7 +263,8 @@ describe("an Ask reads the tab the user just left (I6)", () => {
     it("keeps an ambient Fill all off the page while the goal's preview waits, so the goal keeps its text (review finding 3)", async () => {
       const s = (await askGoal()) as Segment;
       helper.model.frontmostPid = chrome.pid;
-      // The user clicks into the form while reading the preview.
+      // The user clicks into the form's next field while reading the preview (the host passes on a focus only when it moves, H10).
+      tabs.focusedId = "e2";
       tabs.session.onFocus?.({ type: "pageFocus", v: 1, at: Date.now(), tabId: 7, frameId: 0 }, tabs.session);
       for (let i = 0; i < 20; i++) await new Promise((x) => setTimeout(x, 5));
       await helper.routedSettled;
@@ -287,6 +292,42 @@ describe("an Ask reads the tab the user just left (I6)", () => {
       const stopped = published.find((m): m is Extract<GoalProgress, { event: "stopped" }> => m.type === "goalProgress" && m.event === "stopped" && m.goalId === s.goalId);
       expect(stopped?.reason).toBe("sourceChanged");
       expect(stopped?.says).toMatch(/tab you left/);
+    });
+  });
+
+  // H13 (brief item 3): the tab left is a Google Doc whose text for assistive technology is off, so the read finds
+  // nothing in it. Each path says what to turn on instead of finding nothing silently.
+  describe("a Google Doc whose text is off (H13)", () => {
+    const DOC: PageTabText = { ...MESSAGE, title: "Robin's details - Google Docs", frames: [{ frameId: 0, origin: "https://docs.google.com" }], blocks: [], docsText: "off" };
+    const TURN_ON = "Turn on screen reader and braille support in Google Docs, ⌘⌥Z then ⌘⌥H, so Caret can read it.";
+
+    it("a fill nobody asked for says what to turn on, to the host", async () => {
+      tabs.tabText = DOC;
+      helper.model.frontmostPid = chrome.pid;
+      tabs.focusedId = "e2";
+      tabs.session.onFocus?.({ type: "pageFocus", v: 1, at: Date.now(), tabId: 7, frameId: 0 }, tabs.session);
+      await vi.waitFor(() => expect(published.some((m) => m.type === "error" && m.sourceOff !== undefined)).toBe(true));
+      const e = published.find((m): m is Extract<HelperMessage, { type: "error" }> => m.type === "error" && m.sourceOff !== undefined);
+      expect(e).toMatchObject({ message: TURN_ON, sourceOff: "Google Docs" });
+      expect(warnings.join("\n")).not.toMatch(/Robin's details/);
+    });
+
+    it("an Ask's refusal says what to turn on", async () => {
+      tabs.tabText = DOC;
+      const p = await askFill();
+      expect(p.error?.says).toBe(TURN_ON);
+    });
+
+    it("a page goal's refusal says it too, and a Sheet is named as one", async () => {
+      tabs.tabText = { ...DOC, title: "Budget - Google Sheets" };
+      const g = await askGoal();
+      expect(g).toMatchObject({ event: "stopped", says: "Turn on screen reader and braille support in Google Sheets, ⌘⌥Z then ⌘⌥H, so Caret can read it." });
+    });
+
+    it("a tab whose text is on, or any other page, refuses as before", async () => {
+      tabs.tabText = { ...DOC, docsText: "on" };
+      const p = await askFill();
+      expect(p.error?.says).not.toBe(TURN_ON);
     });
   });
 });

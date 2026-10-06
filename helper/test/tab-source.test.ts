@@ -48,10 +48,13 @@ function tabSnap(tabId: number, title: string, origin: string, controls: PageCon
   };
 }
 
+/** The note's app: another process than the browser, whose own windows fill passes over for a page (H10, model.ts windowBefore). */
+const NOTES_APP = { pid: 7001, bundleId: "com.apple.Notes", name: "Notes" };
+
 /** A model whose focus history is `trail` (window id, focused at), oldest first; each window a page or a note. */
 function modelWith(trail: [string, number][]): ScreenModel {
   const m = new ScreenModel();
-  for (const [id, at] of trail) m.apply(snap([field(`${id}/x`, "", { role: "AXTextField" })], { at, windowId: id, focused: true, ...(id.startsWith("page:") ? { kind: "page" } : {}) }));
+  for (const [id, at] of trail) m.apply(snap([field(`${id}/x`, "", { role: "AXTextField" })], { at, windowId: id, focused: true, ...(id.startsWith("page:") ? { kind: "page" } : { app: NOTES_APP }) }));
   return m;
 }
 
@@ -147,7 +150,7 @@ describe("TabSource: which tab is read (rules 1 and 2)", () => {
     const m = modelWith([[MAIL, 1000], [FORM, 2000]]);
     const s = source(m, {
       readText: async () => {
-        m.apply(snap([], { at: 3000, windowId: NOTES, focused: true }));
+        m.apply(snap([], { at: 3000, windowId: NOTES, focused: true, app: NOTES_APP }));
         m.apply(snap([field(`${FORM}/x`, "")], { at: 3500, windowId: FORM, focused: true, kind: "page" }));
         return ok();
       },

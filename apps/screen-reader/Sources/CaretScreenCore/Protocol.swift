@@ -470,19 +470,32 @@ public struct FillHandoff: Codable, Equatable, Sendable {
     public var display: String
     public var source: FillSource?
     public var memory: FillMemory?
-    public init(value: String, display: String, source: FillSource?, memory: FillMemory?) {
+    /// D2-04: the label of the "Label: value" line the value was read from; absent otherwise.
+    public var context: String?
+    /// D2-04: true when Caret writes this control in a Fill all (a native select, radio group,
+    /// checkbox, date, time or custom dropdown in a window the page engine owns); absent when the
+    /// control stays the user's.
+    public var writes: Bool?
+    public init(value: String, display: String, source: FillSource?, memory: FillMemory?, context: String? = nil, writes: Bool? = nil) {
         self.value = value; self.display = display; self.source = source; self.memory = memory
+        self.context = context; self.writes = writes
     }
-    enum CodingKeys: String, CodingKey { case value, display, source, memory }
+    enum CodingKeys: String, CodingKey { case value, display, source, memory, context, writes }
+    /// protocol.ts: `context` and `writes` are optional (absent, never null); `writes` is only ever true.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         value = try c.decode(String.self, forKey: .value); display = try c.decode(String.self, forKey: .display)
         source = try c.decodeNullable(FillSource.self, forKey: .source); memory = try c.decodeNullable(FillMemory.self, forKey: .memory)
+        context = try c.decodeOptional(String.self, forKey: .context)
+        if context?.isEmpty == true { throw ProtocolError("handoff.context is at least 1 character") }
+        writes = try c.decodeOptional(Bool.self, forKey: .writes)
+        if writes == false { throw ProtocolError("handoff.writes is true or absent") }
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(value, forKey: .value); try c.encode(display, forKey: .display)
         try c.encode(source, forKey: .source); try c.encode(memory, forKey: .memory)
+        try c.encodeIfPresent(context, forKey: .context); try c.encodeIfPresent(writes, forKey: .writes)
     }
 }
 
@@ -499,6 +512,46 @@ public struct FillMemory: Codable, Equatable, Sendable {
         self.label = label
         self.says = says
         self.part = part
+    }
+}
+
+/// S1: a field's value is one of the user's saved answers (answers.md), their own words from an earlier
+/// form, copied whole. Only a consumer whose hello names `savedAnswers` is sent it. `withheld` non-nil: the
+/// answer matched but the helper withheld it, the field has no value, and `says` is the sentence for the user.
+public struct FillAnswer: Codable, Equatable, Sendable {
+    public struct Withheld: Codable, Equatable, Sendable {
+        /// "otherOrganization" or "tooLong" (protocol.ts AnswerWithheld); kept as text so a newer one decodes.
+        public var why: String
+        public var says: String
+    }
+
+    public var id: String
+    /// The question the answer was saved for, as that form asked it.
+    public var question: String
+    public var site: String?
+    public var form: String?
+    /// ISO 8601.
+    public var savedOn: String
+    public var withheld: Withheld?
+
+    enum CodingKeys: String, CodingKey { case id, question, site, form, savedOn, withheld }
+
+    public init(id: String, question: String, site: String?, form: String?, savedOn: String, withheld: Withheld?) {
+        self.id = id; self.question = question; self.site = site; self.form = form; self.savedOn = savedOn; self.withheld = withheld
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); question = try c.decode(String.self, forKey: .question)
+        site = try c.decodeNullable(String.self, forKey: .site); form = try c.decodeNullable(String.self, forKey: .form)
+        savedOn = try c.decode(String.self, forKey: .savedOn); withheld = try c.decodeNullable(Withheld.self, forKey: .withheld)
+        if id.isEmpty || question.isEmpty || savedOn.isEmpty { throw ProtocolError("a saved answer names itself, its question and when it was saved") }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(question, forKey: .question); try c.encode(site, forKey: .site)
+        try c.encode(form, forKey: .form); try c.encode(savedOn, forKey: .savedOn); try c.encode(withheld, forKey: .withheld)
     }
 }
 
@@ -522,7 +575,9 @@ public struct FillField: Codable, Equatable, Sendable {
     /// Two: the first ask, and the second with candidates shuffled and the field reworded. None when the
     /// field was not asked (withheld as sourceCut, or nothing could be offered for it).
     public var asks: [FillAsk]
-    enum CodingKeys: String, CodingKey { case key, control, handoff, frame, descriptor, choice, confidence, value, source, memory, withheld, asks }
+    /// S1: the saved answer the field matched, sent only to a host that shows answers whole. Absent otherwise.
+    public var answer: FillAnswer?
+    enum CodingKeys: String, CodingKey { case key, control, handoff, frame, descriptor, choice, confidence, value, source, memory, withheld, asks, answer }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         key = try c.decode(String.self, forKey: .key); frame = try c.decodeNullable(Frame.self, forKey: .frame)
@@ -534,7 +589,14 @@ public struct FillField: Codable, Equatable, Sendable {
         memory = try c.decodeIfPresent(FillMemory.self, forKey: .memory)
         withheld = try c.decodeNullable(FillWithheld.self, forKey: .withheld)
         asks = try c.decode([FillAsk].self, forKey: .asks)
+        answer = try c.decodeIfPresent(FillAnswer.self, forKey: .answer)
         if asks.count != 2 && asks.count != 0 { throw ProtocolError("asks must hold two entries or none, got \(asks.count)") }
+        // protocol.ts FillField's refine: an offered answer is a text field's value from that answer's memory
+        // entry, and a withheld one gives no value.
+        if let answer {
+            if answer.withheld == nil, !(control == .text && value != nil && memory?.id == answer.id) { throw ProtocolError("an offered answer is a text field's value from that answer's memory entry") }
+            if answer.withheld != nil, value != nil { throw ProtocolError("a withheld answer gives no value") }
+        }
         if source != nil && memory != nil { throw ProtocolError("a fill value comes from a window or from memory, not both") }
         if (value == nil) != (source == nil && memory == nil) { throw ProtocolError("a fill value needs its source or memory entry, and neither comes without a value") }
         if control != .text && value != nil { throw ProtocolError("a \(control.rawValue) is never written: its value comes as a handoff") }
@@ -547,6 +609,7 @@ public struct FillField: Codable, Equatable, Sendable {
         try c.encode(choice, forKey: .choice); try c.encode(confidence, forKey: .confidence)
         try c.encode(value, forKey: .value); try c.encode(source, forKey: .source); try c.encode(memory, forKey: .memory)
         try c.encode(withheld, forKey: .withheld); try c.encode(asks, forKey: .asks)
+        try c.encodeIfPresent(answer, forKey: .answer)
     }
 }
 
@@ -598,16 +661,24 @@ public struct HelperError: Codable, Equatable, Sendable {
     public static let type = "error"
     public var at: Int64
     public var message: String
-    enum CodingKeys: String, CodingKey { case at, message }
+    /// H13: a fill found nothing because the tab the user left is this Google editor ("Google Docs", "Google
+    /// Sheets") with its text for assistive technology off; `message` says what to turn on. Nil for every other error.
+    public var sourceOff: String?
+    enum CodingKeys: String, CodingKey { case at, message, sourceOff }
+    public init(at: Int64, message: String, sourceOff: String? = nil) {
+        self.at = at; self.message = message; self.sourceOff = sourceOff
+    }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         at = try c.decode(Int64.self, forKey: .at); message = try c.decode(String.self, forKey: .message)
+        sourceOff = try c.decodeIfPresent(String.self, forKey: .sourceOff)
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(at, forKey: .at); try c.encode(message, forKey: .message)
+        try c.encodeIfPresent(sourceOff, forKey: .sourceOff)
     }
 }
 

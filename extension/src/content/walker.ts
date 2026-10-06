@@ -340,11 +340,34 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       const entry = entryOf(f.el, f.el.value);
       if (entry !== undefined) c.entry = entry;
     }
+    if (f.kind === "file" && f.el instanceof HTMLInputElement) {
+      const accept = acceptOf(f.el.accept);
+      if (accept !== undefined) c.accept = accept;
+    }
     if (f.shadow !== undefined) c.shadow = f.shadow;
     controls.push(c);
     onKept(f.el, c);
   }
   return { controls, excluded, truncated };
+}
+
+const ACCEPT_EXTENSION = /^\.[a-z0-9][a-z0-9+_-]{0,15}$/;
+const ACCEPT_MIME = /^[a-z0-9.+-]+\/(\*|[a-z0-9.+-]+)$/;
+const MAX_ACCEPT = 20;
+
+/**
+ * H14: the types a file input's accept attribute names, for the host's file chooser: each comma-separated token,
+ * trimmed and lowercased, kept when it is an extension (".pdf") or a MIME type ("application/pdf", "image/*"), once
+ * each in the page's order, at most MAX_ACCEPT. Undefined when none survive, so the control carries no key.
+ */
+export function acceptOf(raw: string): string[] | undefined {
+  const out: string[] = [];
+  for (const part of raw.split(",")) {
+    const t = part.trim().toLowerCase();
+    if ((ACCEPT_EXTENSION.test(t) || ACCEPT_MIME.test(t)) && !out.includes(t)) out.push(t);
+    if (out.length === MAX_ACCEPT) break;
+  }
+  return out.length === 0 ? undefined : out;
 }
 
 /** The element with focus, looking through shadow roots, open or closed. */

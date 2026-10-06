@@ -1,1 +1,0 @@
-C2: a page form over 20 fields is one goal with a segment per part of <=20 (page-planner parts, lower.ts cut, reason moreFields); each part runs only on its own goalAccept and undoes as task goal:sN. Fields past 4 parts are named as the user's.

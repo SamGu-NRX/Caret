@@ -53,7 +53,8 @@ const INPUT_ROLES: ReadonlySet<string> = new Set(["AXTextField", "AXTextArea", "
  * and a checkbox (by checked state) and a date, time or date-and-time input (by value), so a Fill all writes those too
  * (FillHandoff.writes). Through Accessibility they stay hand-offs.
  */
-export const PAGE_WINDOW_KIND = "page";
+export { PAGE_WINDOW_KIND } from "../engines/windows.ts";
+import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 
 /**
  * Whether a value reads as one option's name, as a dropdown would list it: one line of at most six words and 60

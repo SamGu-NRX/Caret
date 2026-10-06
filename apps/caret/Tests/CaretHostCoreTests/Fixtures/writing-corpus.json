@@ -1,0 +1,1484 @@
+{
+  "cases": [
+    {
+      "id": "e001",
+      "text": "I will recieve it tomorrow.",
+      "errors": [
+        {
+          "original": "recieve",
+          "replacement": "receive",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e002",
+      "text": "Thanks for the update. The meeting is definately on Thursday.",
+      "errors": [
+        {
+          "original": "definately",
+          "replacement": "definitely",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e003",
+      "text": "Can you send me the agenda? I want to seperate the budget items from the hiring items.",
+      "errors": [
+        {
+          "original": "seperate",
+          "replacement": "separate",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e004",
+      "text": "We need to acommodate twelve guests at the Halvorsen dinner.",
+      "errors": [
+        {
+          "original": "acommodate",
+          "replacement": "accommodate",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e005",
+      "text": "Noted. The occurence was logged at 3:14 p.m.",
+      "errors": [
+        {
+          "original": "occurence",
+          "replacement": "occurrence",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e006",
+      "text": "Please let me know if any neccessary changes come up.",
+      "errors": [
+        {
+          "original": "neccessary",
+          "replacement": "necessary",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e007",
+      "text": "The new hire starts Monday. She has a lot of experiance with Postgres.",
+      "errors": [
+        {
+          "original": "experiance",
+          "replacement": "experience",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e008",
+      "text": "Same here. The Wi-Fi in this building is wierd today.",
+      "errors": [
+        {
+          "original": "wierd",
+          "replacement": "weird",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e009",
+      "text": "I truely appreciate your help with the Brightwater launch.",
+      "errors": [
+        {
+          "original": "truely",
+          "replacement": "truly",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e010",
+      "text": "Our goverment liaison will join the call at noon.",
+      "errors": [
+        {
+          "original": "goverment",
+          "replacement": "government",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e011",
+      "text": "The report is due Friday. Please make sure the calender invite reflects that.",
+      "errors": [
+        {
+          "original": "calender",
+          "replacement": "calendar",
+          "kind": "spelling"
+        }
+      ],
+      "note": "'calender' is a real word (a pressing machine) but wrong for a meeting invite"
+    },
+    {
+      "id": "e012",
+      "text": "I beleive the vendor already signed the contract.",
+      "errors": [
+        {
+          "original": "beleive",
+          "replacement": "believe",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e013",
+      "text": "Tomorrow works. I'll bring the reciept from the hotel.",
+      "errors": [
+        {
+          "original": "reciept",
+          "replacement": "receipt",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e014",
+      "text": "Our tenative plan is to ship in March.",
+      "errors": [
+        {
+          "original": "tenative",
+          "replacement": "tentative",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e015",
+      "text": "The sensor readings were consistant across all three runs.",
+      "errors": [
+        {
+          "original": "consistant",
+          "replacement": "consistent",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e016",
+      "text": "Sorry about that. It was an embarassing mistake on my part.",
+      "errors": [
+        {
+          "original": "embarassing",
+          "replacement": "embarrassing",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e017",
+      "text": "The office is on the fourth floor. Turn left at the libary and it's the second door.",
+      "errors": [
+        {
+          "original": "libary",
+          "replacement": "library",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e018",
+      "text": "Thanks again. It was a pleasure to finaly meet the team.",
+      "errors": [
+        {
+          "original": "finaly",
+          "replacement": "finally",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e019",
+      "text": "Can you adress the feedback from Marisol before Friday?",
+      "errors": [
+        {
+          "original": "adress",
+          "replacement": "address",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e020",
+      "text": "We are commited to finishing the migration this quarter.",
+      "errors": [
+        {
+          "original": "commited",
+          "replacement": "committed",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e021",
+      "text": "The warrenty covers parts but not labor.",
+      "errors": [
+        {
+          "original": "warrenty",
+          "replacement": "warranty",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e022",
+      "text": "Heads up: the dashbaord still shows yesterday's numbers.",
+      "errors": [
+        {
+          "original": "dashbaord",
+          "replacement": "dashboard",
+          "kind": "spelling"
+        }
+      ],
+      "note": "transposition typo; lowercase after colon is correct"
+    },
+    {
+      "id": "e023",
+      "text": "Pleaes forward the invoice to billing@orchard.example when you can.",
+      "errors": [
+        {
+          "original": "Pleaes",
+          "replacement": "Please",
+          "kind": "spelling"
+        }
+      ],
+      "note": "email address in the same sentence must not be flagged"
+    },
+    {
+      "id": "e024",
+      "text": "The comittee meets on the first Tuesday of each month.",
+      "errors": [
+        {
+          "original": "comittee",
+          "replacement": "committee",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e025",
+      "text": "I recieved the package, but the reciept was missing.",
+      "errors": [
+        {
+          "original": "recieved",
+          "replacement": "received",
+          "kind": "spelling"
+        },
+        {
+          "original": "reciept",
+          "replacement": "receipt",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e026",
+      "text": "Quick question. Did the vendor acknowlege the change order?",
+      "errors": [
+        {
+          "original": "acknowlege",
+          "replacement": "acknowledge",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e027",
+      "text": "The workaround is temporary untill the new release ships.",
+      "errors": [
+        {
+          "original": "untill",
+          "replacement": "until",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e028",
+      "text": "We should check the server logs for any unusal spikes.",
+      "errors": [
+        {
+          "original": "unusal",
+          "replacement": "unusual",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e029",
+      "text": "Let me know your availablity for next week.",
+      "errors": [
+        {
+          "original": "availablity",
+          "replacement": "availability",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e030",
+      "text": "Hi Jun. The prototype is in the cabinet beside the printer, and the documantation is on the wiki.",
+      "errors": [
+        {
+          "original": "documantation",
+          "replacement": "documentation",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e031",
+      "text": "She don't know about the schedule change yet.",
+      "errors": [
+        {
+          "original": "don't",
+          "replacement": "doesn't",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e032",
+      "text": "The list of attendees are in the folder.",
+      "errors": [
+        {
+          "original": "are",
+          "replacement": "is",
+          "kind": "grammar"
+        }
+      ],
+      "note": "subject is 'list', not 'attendees'"
+    },
+    {
+      "id": "e033",
+      "text": "I need a hour to finish the review.",
+      "errors": [
+        {
+          "original": "a hour",
+          "replacement": "an hour",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e034",
+      "text": "It was an unique chance to meet the board.",
+      "errors": [
+        {
+          "original": "an unique",
+          "replacement": "a unique",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e035",
+      "text": "Please send the the slides before noon.",
+      "errors": [
+        {
+          "original": "the the",
+          "replacement": "the",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e036",
+      "text": "Their going to announce the results on Friday.",
+      "errors": [
+        {
+          "original": "Their",
+          "replacement": "They're",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e037",
+      "text": "The team updated it's onboarding guide last week.",
+      "errors": [
+        {
+          "original": "it's",
+          "replacement": "its",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e038",
+      "text": "Bring an umbrella. Its going to rain this afternoon.",
+      "errors": [
+        {
+          "original": "Its",
+          "replacement": "It's",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e039",
+      "text": "Your welcome to join us for lunch on Friday.",
+      "errors": [
+        {
+          "original": "Your",
+          "replacement": "You're",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e040",
+      "text": "Is this you're laptop on the desk?",
+      "errors": [
+        {
+          "original": "you're",
+          "replacement": "your",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e041",
+      "text": "The new build is much faster then the old one.",
+      "errors": [
+        {
+          "original": "then",
+          "replacement": "than",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e042",
+      "text": "If the tests pass, than we can merge it.",
+      "errors": [
+        {
+          "original": "than",
+          "replacement": "then",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e043",
+      "text": "He has went to the warehouse already.",
+      "errors": [
+        {
+          "original": "went",
+          "replacement": "gone",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e044",
+      "text": "The results was better than we expected.",
+      "errors": [
+        {
+          "original": "was",
+          "replacement": "were",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e045",
+      "text": "Each of the managers have approved the budget.",
+      "errors": [
+        {
+          "original": "have",
+          "replacement": "has",
+          "kind": "grammar"
+        }
+      ],
+      "note": "subject is 'Each'"
+    },
+    {
+      "id": "e046",
+      "text": "She has wrote three chapters so far.",
+      "errors": [
+        {
+          "original": "wrote",
+          "replacement": "written",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e047",
+      "text": "There going to need more chairs for the workshop.",
+      "errors": [
+        {
+          "original": "There",
+          "replacement": "They're",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e048",
+      "text": "Put the boxes over their by the loading door.",
+      "errors": [
+        {
+          "original": "their",
+          "replacement": "there",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e049",
+      "text": "Who's laptop was left in the conference room?",
+      "errors": [
+        {
+          "original": "Who's",
+          "replacement": "Whose",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e050",
+      "text": "Don't loose the receipt for the rental car.",
+      "errors": [
+        {
+          "original": "loose",
+          "replacement": "lose",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e051",
+      "text": "The affect of the price change was small.",
+      "errors": [
+        {
+          "original": "affect",
+          "replacement": "effect",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e052",
+      "text": "Does she knows the Wi-Fi password?",
+      "errors": [
+        {
+          "original": "knows",
+          "replacement": "know",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e053",
+      "text": "This stays between you and I.",
+      "errors": [
+        {
+          "original": "you and I",
+          "replacement": "you and me",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e054",
+      "text": "Everyone have their badge already.",
+      "errors": [
+        {
+          "original": "have",
+          "replacement": "has",
+          "kind": "grammar"
+        }
+      ],
+      "note": "singular 'their' is correct; only the verb is wrong"
+    },
+    {
+      "id": "e055",
+      "text": "He is a honest broker in these talks.",
+      "errors": [
+        {
+          "original": "a honest",
+          "replacement": "an honest",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e056",
+      "text": "We scheduled an UX review for Thursday.",
+      "errors": [
+        {
+          "original": "an UX",
+          "replacement": "a UX",
+          "kind": "grammar"
+        }
+      ],
+      "note": "UX is read 'you-ex'"
+    },
+    {
+      "id": "e057",
+      "text": "She is applying for a MBA program in the fall.",
+      "errors": [
+        {
+          "original": "a MBA",
+          "replacement": "an MBA",
+          "kind": "grammar"
+        }
+      ],
+      "note": "MBA is read 'em-bee-ay'"
+    },
+    {
+      "id": "e058",
+      "text": "The night crew works a 8-hour shift.",
+      "errors": [
+        {
+          "original": "a 8-hour",
+          "replacement": "an 8-hour",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e059",
+      "text": "The box of old cables are in the supply closet.",
+      "errors": [
+        {
+          "original": "are",
+          "replacement": "is",
+          "kind": "grammar"
+        }
+      ],
+      "note": "subject is 'box'"
+    },
+    {
+      "id": "e060",
+      "text": "One of the servers were down overnight.",
+      "errors": [
+        {
+          "original": "were",
+          "replacement": "was",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e061",
+      "text": "He has ran the migration script twice.",
+      "errors": [
+        {
+          "original": "ran",
+          "replacement": "run",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e062",
+      "text": "Did you finished the quarterly report?",
+      "errors": [
+        {
+          "original": "finished",
+          "replacement": "finish",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e063",
+      "text": "She should have came to the kickoff.",
+      "errors": [
+        {
+          "original": "came",
+          "replacement": "come",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e064",
+      "text": "We will will update the doc after the call.",
+      "errors": [
+        {
+          "original": "will will",
+          "replacement": "will",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e065",
+      "text": "She is more taller than her brother.",
+      "errors": [
+        {
+          "original": "more taller",
+          "replacement": "taller",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e066",
+      "text": "The vendor sent it's invoice seperately.",
+      "errors": [
+        {
+          "original": "it's",
+          "replacement": "its",
+          "kind": "grammar"
+        },
+        {
+          "original": "seperately",
+          "replacement": "separately",
+          "kind": "spelling"
+        }
+      ]
+    },
+    {
+      "id": "e067",
+      "text": "Their is a typo in the the header.",
+      "errors": [
+        {
+          "original": "Their",
+          "replacement": "There",
+          "kind": "grammar"
+        },
+        {
+          "original": "the the",
+          "replacement": "the",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e068",
+      "text": "I think it's a good idea, but we need more time then we have.",
+      "errors": [
+        {
+          "original": "then",
+          "replacement": "than",
+          "kind": "grammar"
+        }
+      ],
+      "note": "'it's' here is correct and must not be flagged"
+    },
+    {
+      "id": "e069",
+      "text": "The coffee machine on the third floor is broken, so use the one by the elevators. It's filter needs replacing.",
+      "errors": [
+        {
+          "original": "It's",
+          "replacement": "Its",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e070",
+      "text": "Most of our clients expects a reply within a day.",
+      "errors": [
+        {
+          "original": "expects",
+          "replacement": "expect",
+          "kind": "grammar"
+        }
+      ]
+    },
+    {
+      "id": "e071",
+      "text": "I'll call you tomorrow , if that works.",
+      "errors": [
+        {
+          "original": " ,",
+          "replacement": ",",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e072",
+      "text": "Thanks for the notes .",
+      "errors": [
+        {
+          "original": " .",
+          "replacement": ".",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e073",
+      "text": "Sounds good. see you at 6.",
+      "errors": [
+        {
+          "original": "see",
+          "replacement": "See",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e074",
+      "text": "The invoice is attached..",
+      "errors": [
+        {
+          "original": "..",
+          "replacement": ".",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e075",
+      "text": "Please review the  draft by Friday.",
+      "errors": [
+        {
+          "original": "  ",
+          "replacement": " ",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e076",
+      "text": "Can you join us at the Larkspur offsite ?",
+      "errors": [
+        {
+          "original": " ?",
+          "replacement": "?",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e077",
+      "text": "We closed the round today !",
+      "errors": [
+        {
+          "original": " !",
+          "replacement": "!",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e078",
+      "text": "After lunch,we can review the slides.",
+      "errors": [
+        {
+          "original": ",we",
+          "replacement": ", we",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e079",
+      "text": "the shipment arrived this morning.",
+      "errors": [
+        {
+          "original": "the",
+          "replacement": "The",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e080",
+      "text": "Yesterday i spoke with Dana about the budget.",
+      "errors": [
+        {
+          "original": " i ",
+          "replacement": " I ",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e081",
+      "text": "The total came to $40 ,which is under budget.",
+      "errors": [
+        {
+          "original": " ,which",
+          "replacement": ", which",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e082",
+      "text": "Did you see the email? yes, I saw it.",
+      "errors": [
+        {
+          "original": "yes",
+          "replacement": "Yes",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e083",
+      "text": "The meeting starts at 9 a.m..",
+      "errors": [
+        {
+          "original": "..",
+          "replacement": ".",
+          "kind": "punctuation"
+        }
+      ],
+      "note": "abbreviation period also ends the sentence, so the second period is extra"
+    },
+    {
+      "id": "e084",
+      "text": "The project, is on track for March.",
+      "errors": [
+        {
+          "original": ",",
+          "replacement": "",
+          "kind": "punctuation"
+        }
+      ],
+      "note": "comma between subject and verb; replacement is the empty string"
+    },
+    {
+      "id": "e085",
+      "text": "We need time , money and patience.",
+      "errors": [
+        {
+          "original": " ,",
+          "replacement": ",",
+          "kind": "punctuation"
+        }
+      ],
+      "note": "no Oxford comma is a style choice and must not be flagged"
+    },
+    {
+      "id": "e086",
+      "text": "Wait,what happened to the staging server?",
+      "errors": [
+        {
+          "original": ",what",
+          "replacement": ", what",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e087",
+      "text": "Thanks , Rosa.",
+      "errors": [
+        {
+          "original": " ,",
+          "replacement": ",",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e088",
+      "text": "I sent the   invoice yesterday.",
+      "errors": [
+        {
+          "original": "   ",
+          "replacement": " ",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e089",
+      "text": "The demo went well. thanks for setting it up.",
+      "errors": [
+        {
+          "original": "thanks",
+          "replacement": "Thanks",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e090",
+      "text": "Can we move the call to 4 ?",
+      "errors": [
+        {
+          "original": " ?",
+          "replacement": "?",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e091",
+      "text": "please send it to Marta .",
+      "errors": [
+        {
+          "original": "please",
+          "replacement": "Please",
+          "kind": "punctuation"
+        },
+        {
+          "original": " .",
+          "replacement": ".",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e092",
+      "text": "i will send the deck  tonight.",
+      "errors": [
+        {
+          "original": "i will",
+          "replacement": "I will",
+          "kind": "punctuation"
+        },
+        {
+          "original": "  ",
+          "replacement": " ",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e093",
+      "text": "Hi Tomas , thanks for the quick reply.",
+      "errors": [
+        {
+          "original": " ,",
+          "replacement": ",",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e094",
+      "text": "The keys are in the drawer ,next to the stapler.",
+      "errors": [
+        {
+          "original": " ,next",
+          "replacement": ", next",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e095",
+      "text": "I definately agree .",
+      "errors": [
+        {
+          "original": "definately",
+          "replacement": "definitely",
+          "kind": "spelling"
+        },
+        {
+          "original": " .",
+          "replacement": ".",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e096",
+      "text": "Got it. we'll send the revised quote by Thursday.",
+      "errors": [
+        {
+          "original": "we'll",
+          "replacement": "We'll",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e097",
+      "text": "Our next sprint starts on the 12th  of May.",
+      "errors": [
+        {
+          "original": "  ",
+          "replacement": " ",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "e098",
+      "text": "Status update: the API is back online , and latency is normal.",
+      "errors": [
+        {
+          "original": " ,",
+          "replacement": ",",
+          "kind": "punctuation"
+        }
+      ]
+    },
+    {
+      "id": "c001",
+      "text": "We met Dana at the Northline office.",
+      "errors": []
+    },
+    {
+      "id": "c002",
+      "text": "Send the deck to priya.raman@kestrel.example by Friday.",
+      "errors": [],
+      "note": "email address"
+    },
+    {
+      "id": "c003",
+      "text": "The setup guide lives at https://docs.halcyon.example/v2/setup.",
+      "errors": [],
+      "note": "URL before the final period"
+    },
+    {
+      "id": "c004",
+      "text": "Our iOS app now supports macOS and iPadOS.",
+      "errors": [],
+      "note": "brand casing"
+    },
+    {
+      "id": "c005",
+      "text": "I'll be there at 9 a.m.",
+      "errors": [],
+      "note": "abbreviation period ends the sentence"
+    },
+    {
+      "id": "c006",
+      "text": "The meeting is with Dr. Okafor at 2 p.m. on Tuesday.",
+      "errors": [],
+      "note": "internal abbreviations are not sentence ends"
+    },
+    {
+      "id": "c007",
+      "text": "We grew revenue 12% in Q3, mostly from the EU.",
+      "errors": []
+    },
+    {
+      "id": "c008",
+      "text": "The rack draws 3.5 kW and weighs 42 kg.",
+      "errors": [],
+      "note": "units"
+    },
+    {
+      "id": "c009",
+      "text": "She said, \"I'll call you back.\"",
+      "errors": [],
+      "note": "ends with closing quote"
+    },
+    {
+      "id": "c010",
+      "text": "Run npm install before you start the dev server.",
+      "errors": [],
+      "note": "lowercase tool name"
+    },
+    {
+      "id": "c011",
+      "text": "He had had enough of the delays.",
+      "errors": [],
+      "note": "legitimate repeated word"
+    },
+    {
+      "id": "c012",
+      "text": "What it is is a scheduling problem.",
+      "errors": [],
+      "note": "legitimate repeated word"
+    },
+    {
+      "id": "c013",
+      "text": "That that plan worked surprised everyone.",
+      "errors": [],
+      "note": "legitimate repeated word"
+    },
+    {
+      "id": "c014",
+      "text": "It was a one-time fee.",
+      "errors": [],
+      "note": "'a' before 'one' (w sound)"
+    },
+    {
+      "id": "c015",
+      "text": "We added an FAQ section to the help center.",
+      "errors": [],
+      "note": "'an' before F (ef)"
+    },
+    {
+      "id": "c016",
+      "text": "He spent a year at a university in Lisbon.",
+      "errors": [],
+      "note": "'a' before 'university'"
+    },
+    {
+      "id": "c017",
+      "text": "It was an honor to host the Veridian team.",
+      "errors": [],
+      "note": "'an' before silent h"
+    },
+    {
+      "id": "c018",
+      "text": "The patient needs an MRI before Thursday.",
+      "errors": [],
+      "note": "'an' before M (em)"
+    },
+    {
+      "id": "c019",
+      "text": "We use a URL shortener for the newsletter.",
+      "errors": [],
+      "note": "'a' before U (you)"
+    },
+    {
+      "id": "c020",
+      "text": "We hired an SRE and a UX researcher.",
+      "errors": [],
+      "note": "'an SRE' and 'a UX' are both correct"
+    },
+    {
+      "id": "c021",
+      "text": "It's an 8-hour drive.",
+      "errors": [],
+      "note": "'an' before 8 (eight)"
+    },
+    {
+      "id": "c022",
+      "text": "Haha, yeah. Same here.",
+      "errors": [],
+      "note": "casual chat"
+    },
+    {
+      "id": "c023",
+      "text": "Sounds good, thx!",
+      "errors": [],
+      "note": "chat abbreviation"
+    },
+    {
+      "id": "c024",
+      "text": "The colour palette was finalised in the London office.",
+      "errors": [],
+      "note": "consistent British spelling"
+    },
+    {
+      "id": "c025",
+      "text": "The data are stored in two regions.",
+      "errors": [],
+      "note": "plural 'data' is correct"
+    },
+    {
+      "id": "c026",
+      "text": "Neither of the reports is ready.",
+      "errors": []
+    },
+    {
+      "id": "c027",
+      "text": "Their latest release fixed a bug in its export tool.",
+      "errors": [],
+      "note": "correct 'their' and 'its'"
+    },
+    {
+      "id": "c028",
+      "text": "You're right that your draft is shorter than mine.",
+      "errors": [],
+      "note": "correct homophones"
+    },
+    {
+      "id": "c029",
+      "text": "It's clear the company changed its policy.",
+      "errors": [],
+      "note": "correct 'it's' and 'its'"
+    },
+    {
+      "id": "c030",
+      "text": "First we tested it, and then we shipped it.",
+      "errors": [],
+      "note": "correct 'then'"
+    },
+    {
+      "id": "c031",
+      "text": "The SDK is fine. Its API is cleaner than the old one.",
+      "errors": [],
+      "note": "sentence-initial possessive 'Its'"
+    },
+    {
+      "id": "c032",
+      "text": "Who's coming to the offsite, and whose car are we taking?",
+      "errors": [],
+      "note": "correct 'who's' and 'whose'"
+    },
+    {
+      "id": "c033",
+      "text": "The CEO of Tannerby Labs, Mira Solberg, will open the session.",
+      "errors": []
+    },
+    {
+      "id": "c034",
+      "text": "Ship it!",
+      "errors": []
+    },
+    {
+      "id": "c035",
+      "text": "Is the 10:30 still on?",
+      "errors": []
+    },
+    {
+      "id": "c036",
+      "text": "The ticket ID is ZX-4471, not ZX-4417.",
+      "errors": [],
+      "note": "identifiers"
+    },
+    {
+      "id": "c037",
+      "text": "Revenue was $1.2M (up from $950K).",
+      "errors": [],
+      "note": "ends with bracket then period"
+    },
+    {
+      "id": "c038",
+      "text": "The word \"recieve\" is a common misspelling.",
+      "errors": [],
+      "note": "mentioned misspelling in quotes"
+    },
+    {
+      "id": "c039",
+      "text": "There, their and they're are easy to confuse.",
+      "errors": [],
+      "note": "words mentioned, not used"
+    },
+    {
+      "id": "c040",
+      "text": "Our tagline is \"Less is more.\"",
+      "errors": [],
+      "note": "ends with closing quote"
+    },
+    {
+      "id": "c041",
+      "text": "Please RSVP by the 14th.",
+      "errors": []
+    },
+    {
+      "id": "c042",
+      "text": "The function returns null if the key isn't found.",
+      "errors": []
+    },
+    {
+      "id": "c043",
+      "text": "I'm not sure. Maybe?",
+      "errors": [],
+      "note": "fragment in casual writing"
+    },
+    {
+      "id": "c044",
+      "text": "Let's grab lunch at Nori & Vine.",
+      "errors": []
+    },
+    {
+      "id": "c045",
+      "text": "The e-mail went to the wrong inbox.",
+      "errors": [],
+      "note": "accepted variant spelling"
+    },
+    {
+      "id": "c046",
+      "text": "Mr. and Mrs. Achterberg arrived early.",
+      "errors": [],
+      "note": "abbreviations at sentence start"
+    },
+    {
+      "id": "c047",
+      "text": "The dog chased its tail, then it fell asleep.",
+      "errors": []
+    },
+    {
+      "id": "c048",
+      "text": "I'd rather walk than drive.",
+      "errors": []
+    },
+    {
+      "id": "c049",
+      "text": "The question is whether the weather will hold.",
+      "errors": [],
+      "note": "whether/weather both correct"
+    },
+    {
+      "id": "c050",
+      "text": "I said what I said.",
+      "errors": [],
+      "note": "legitimate repetition"
+    },
+    {
+      "id": "c051",
+      "text": "Very, very good work on the launch.",
+      "errors": [],
+      "note": "emphatic repetition with comma"
+    },
+    {
+      "id": "c052",
+      "text": "Can you check the k8s cluster before standup?",
+      "errors": [],
+      "note": "tech jargon"
+    },
+    {
+      "id": "c053",
+      "text": "Here's the list: apples, oranges and pears.",
+      "errors": [],
+      "note": "no Oxford comma is a style choice"
+    },
+    {
+      "id": "c054",
+      "text": "Loose cables caused the outage.",
+      "errors": [],
+      "note": "'loose' is correct here"
+    },
+    {
+      "id": "c055",
+      "text": "The new policy will affect every team.",
+      "errors": [],
+      "note": "'affect' is correct here"
+    },
+    {
+      "id": "c056",
+      "text": "Can you ping @lena.ortiz in #release-ops?",
+      "errors": [],
+      "note": "chat handle and channel"
+    },
+    {
+      "id": "c057",
+      "text": "We're aiming for v2.4.1 (build 8812) next week.",
+      "errors": [],
+      "note": "version string"
+    },
+    {
+      "id": "c058",
+      "text": "The Northline team said they'd \"circle back.\"",
+      "errors": []
+    },
+    {
+      "id": "c059",
+      "text": "Is it \"cancelled\" or \"canceled\"? Both are correct.",
+      "errors": [],
+      "note": "both spellings valid"
+    },
+    {
+      "id": "c060",
+      "text": "They're working from the café until the Wi-Fi is fixed.",
+      "errors": [],
+      "note": "accented word"
+    },
+    {
+      "id": "c061",
+      "text": "We use Kafka, gRPC and PostgreSQL in production.",
+      "errors": [],
+      "note": "technical names"
+    },
+    {
+      "id": "c062",
+      "text": "A few of the files were corrupted.",
+      "errors": []
+    }
+  ]
+}

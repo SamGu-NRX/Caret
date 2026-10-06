@@ -44,6 +44,8 @@ function fakeChrome() {
       onReplaced: on("tabs.replaced"),
       onDetached: on("tabs.detached"),
       onZoomChange: on("tabs.zoom"),
+      // H10's walk reads the tab's zoom for the viewport's screen frame.
+      getZoom: async () => 1,
     },
     windows: { WINDOW_ID_NONE: -1, getLastFocused: async () => ({ id: state.focusedWindow, focused: true }), onFocusChanged: on("windows.focus"), onRemoved: on("windows.removed") },
     webNavigation: {
@@ -190,5 +192,36 @@ describe("the worker's read of the tab the user just left", () => {
     expect(f.asked.find((a) => a.op === "walk")?.msg.caretText).toBe(false);
     const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot") as { focused: { text: unknown } } | undefined;
     expect(snap?.focused.text).toBeNull();
+  });
+});
+
+describe("focus and typing reports to the helper (H13)", () => {
+  const typed = (frameId = 0) => f.fire("runtime.message", { caret: 1, op: "focusMoved" }, { id: "x", tab: { id: 1 }, frameId }, () => {});
+  const focusReports = (): Record<string, unknown>[] => f.sentToHelper.filter((m) => m.type === "pageFocus");
+
+  it("sends a report that came within 150 ms of the last one when that time is up, instead of dropping it", async () => {
+    await start([{ frameId: 0, parentFrameId: -1, documentId: "D0", url: "http://127.0.0.1:4310/apply" }]);
+    await typed();
+    for (let i = 0; i < 5; i++) await settle();
+    expect(focusReports()).toHaveLength(1);
+    // Two keystrokes of a burst: neither is sent at once, and the last is not lost.
+    await typed();
+    await typed();
+    for (let i = 0; i < 5; i++) await settle();
+    expect(focusReports()).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 170));
+    for (let i = 0; i < 5; i++) await settle();
+    expect(focusReports()).toHaveLength(2);
+  });
+
+  it("reports the caret with the text on a page, and neither on a site on the deny list", async () => {
+    await start([{ frameId: 0, parentFrameId: -1, documentId: "V0", url: "https://accounts.google.com/signin" }]);
+    f.answers.set("1:0:walk", { origin: "https://accounts.google.com", path: "/signin", title: "t", headings: [], controls: [], iframes: [], viewport: [1280, 900], excluded: {}, truncated: false, focused: { id: "e1", selection: [0, 0], text: { before: "a", after: "", selection: "" }, caret: [10, 10, 1, 16] }, hasFocus: true, walkMs: 1 });
+    await f.fire("port.message", { type: "pageCommand", v: 1, id: "w1", expires: Date.now() + 5000, verb: { kind: "pageWalk", tabId: 1 } });
+    for (let i = 0; i < 20 && !f.sentToHelper.some((m) => m.type === "pageSnapshot"); i++) await settle();
+    const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot") as { focused: { text: unknown; caret: unknown; hasFocus: unknown } } | undefined;
+    expect(snap?.focused.caret).toBeNull();
+    // H13 review: whether the field's document has focus travels with it.
+    expect(snap?.focused.hasFocus).toBe(true);
   });
 });

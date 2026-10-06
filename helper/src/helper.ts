@@ -16,6 +16,7 @@ import {
   HOST_OFFER_TYPES,
   HelperMessage,
   PROTOCOL_VERSION,
+  fillFieldTask,
   type AnswerSave,
   type AnswerSaveReply,
   type AnswerFields,
@@ -25,6 +26,7 @@ import {
   type FileSave,
   type FileSaveReply,
   type GoalAccept,
+  type GoalEdit,
   type HelperError,
   type GoalProgress,
   type GoalRequest,
@@ -101,13 +103,15 @@ import type { AttachOffer, GoalPlan, LeftItem, PageGoal } from "./goals/plan.ts"
 import type { FillScope } from "./fill/fill.ts";
 import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
-import { fillSays, jevFailureSays, SAYS } from "./planner/says.ts";
+import { fillSays, jevFailureSays, SaidError, SAYS, saysFor } from "./planner/says.ts";
+import { planAttach } from "./planner/attach.ts";
+import { isPageWindow } from "./engines/windows.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
 import { headsIntentMaker } from "./planner/intent-heads.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
 import type { LocalModelPort } from "./writer/local-port.ts";
-import type { PlanErrorCode } from "./protocol.ts";
+import type { FileConfirm, FileConfirmReply, PageInsert, PageInsertReply, PlanErrorCode, SavedFilesReply, SavedFilesRequest } from "./protocol.ts";
 
 /** The planner's failures that mean it could not ground the instruction, after which the code-mode writer is tried. */
 const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
@@ -129,7 +133,7 @@ import type { ValueKind } from "./protocol.ts";
 import { OFFER_WHEN, sentences, type EventCandidate, type SentenceSource } from "./offers/event-card.ts";
 import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
-import { TabSource, TabTextExpired, type TabReader } from "./engines/tab-source.ts";
+import { TabSource, TabTextExpired, type DocsApp, type TabReader } from "./engines/tab-source.ts";
 
 /**
  * The router above the producers (routing/coordinator.ts). With it, no producer makes an ambient offer on its own: a
@@ -172,6 +176,13 @@ export interface HelperOptions {
    * such a browser then asks for no fill: that browser's pages are filled from the page engine (engines/page-focus.ts).
    */
   pageCovers?: (pid: number) => boolean;
+  /**
+   * H10: the page window of the tab the user is in, in this browser process, from a walk made now (engines/front.ts):
+   * the active tab of the window the browser last focused. Null when no engine can say: none is connected, the site is
+   * one Caret is off for, no frame answered, or that tab is not active in a focused window. Ask plans in it, never in
+   * Accessibility's view of the browser, which shows no web content (evidence/host/h10/probe).
+   */
+  pageFront?: (pid: number, windowFrame?: readonly [number, number, number, number]) => Promise<string | null>;
   /**
    * Where calendar end states are written: a port, "reader" for the reader's EventKit adapter over the
    * same link the executor acts through (ReaderCalendar), or null for none.
@@ -387,6 +398,8 @@ export class Helper {
   readonly files: ConfirmedFiles;
   /** P3: host sessions that declared GOAL_FILES_CAPABILITY: only their page goals get attach rows (filesFor). */
   private readonly goalFileHosts = new Set<string>();
+  /** H13: inline inserts on pages, for their one-insert grants' task ids. */
+  private inlineSeq = 0;
   /** P3: the page document each page window's load last asked a Fill all for (pageWalked): once per document. */
   private readonly loadAsked = new Map<string, string>();
   /** P3: saved files, offered in attach rows and kept on the user's yes (goals/saved-files.ts). */
@@ -828,8 +841,19 @@ export class Helper {
   }
 
   private readonly readerListeners = new Set<(m: ReaderMessage) => void>();
+  /** Who hears the host's "Not on this site" list (H5): the page engines' registry, once wirePageEngines joins it. */
+  private readonly sitesOffListeners = new Set<(origins: readonly string[]) => void>();
+  /** The last list the host sent; null until a host sends one. */
+  private sitesOffList: readonly string[] | null = null;
 
   /** Sees every reader message before the helper handles it (the page engines' presence signal, main.ts). Returns the way to stop. */
+  /** Hears every "Not on this site" list the host sends, starting with the last one, if any. */
+  onSitesOff(l: (origins: readonly string[]) => void): () => void {
+    this.sitesOffListeners.add(l);
+    if (this.sitesOffList !== null) l(this.sitesOffList);
+    return () => this.sitesOffListeners.delete(l);
+  }
+
   onReaderMessage(l: (m: ReaderMessage) => void): () => void {
     this.readerListeners.add(l);
     return () => this.readerListeners.delete(l);
@@ -890,6 +914,9 @@ export class Helper {
         store.count(`reader.snapshot_${m.reason}`, 1, m.at);
         store.count("reader.nodes", m.nodes.length, m.at);
         if (m.stats.truncated) store.count("reader.truncated", 1, m.at);
+        this.lastWalk.delete(m.window.windowId);
+        this.lastWalk.set(m.window.windowId, { at: m.at, reason: m.reason, root: m.root, truncated: m.stats.truncated, nodes: m.nodes.length });
+        if (this.lastWalk.size > 500) this.lastWalk.delete(this.lastWalk.keys().next().value as string);
         const cleared = this.transfers.onChanges(changes);
         this.patterns.onChanges(changes);
         if (this.mode === "live") this.eventsSettled = this.events.onChanges(changes);
@@ -956,6 +983,8 @@ export class Helper {
         this.routing?.observe();
         return null;
       case "windowClosed": {
+        this.closedAt.set(m.windowId, m.at);
+        if (this.closedAt.size > 500) this.closedAt.delete(this.closedAt.keys().next().value as string);
         this.record(this.transfers.flush(m.windowId));
         // The shadow logger judges an open episode in this window before the window leaves the model,
         // since the judgment reads the window's typed values.
@@ -1062,6 +1091,13 @@ export class Helper {
     this.executor.recheck();
     this.routing?.settingsChanged();
     this.routing?.observe();
+    // "Not on this site": the engines stop reading and acting at these origins (pageSitesOff), now and after every
+    // engine hello. A host before H5 sends no list, and the helper's stays as it was.
+    if (m.sitesOff !== undefined) {
+      this.sitesOffList = [...new Set(m.sitesOff)];
+      this.opts.store.count("settings.sitesOff", 1);
+      for (const l of this.sitesOffListeners) l(this.sitesOffList);
+    }
   }
 
   /** Whether a task id is in use by a run or an activity record: new offer ids skip these (B23). */
@@ -1279,6 +1315,24 @@ export class Helper {
     return r.result;
   }
 
+  /**
+   * H9: the user's own words over a draft in the segment waiting for acceptance. The new preview is published (to goal
+   * hosts, as every later segment is); a refusal goes back as an error naming why, to `reply` when given. Nothing runs.
+   */
+  handleGoalEdit(m: GoalEdit, session?: string, reply?: (e: HelperError) => void): GoalProgress | null {
+    const r = this.goals.edit(m, session);
+    if ("refused" in r) {
+      this.opts.store.count("goal.editRefused", 1);
+      const e: HelperError = { type: "error", v: PROTOCOL_VERSION, at: this.now(), message: `goalEdit refused: ${r.refused}` };
+      if (reply === undefined) this.opts.publish(e);
+      else reply(e);
+      return null;
+    }
+    this.opts.store.count("goal.edited", 1);
+    this.opts.publish(r.preview);
+    return r.preview;
+  }
+
   /** Whether calendar end states have somewhere to go (HelperOptions.calendar). */
   private get executorHasCalendar(): boolean {
     return this.opts.calendar !== undefined && this.opts.calendar !== null;
@@ -1348,10 +1402,13 @@ export class Helper {
     } catch (e) {
       // Read before the release below, which would make any read text look dropped.
       const gone = tab.expired();
+      const docs = e instanceof GoalError && e.code === "nothingToDo" ? (this.tabSource?.docsOff(goalId) ?? null) : null;
       this.pagePlanning.delete(goalId);
       this.tabSource?.release(goalId);
       // Rule 6: a Jev call refused because the text was dropped (askTabRead) is said as that, not as a model failure.
       if (gone) throw new GoalError("nothingToDo", SAYS.tabExpired);
+      // H13: the tab left was a Google editor whose text Caret cannot read yet: say what to turn on.
+      if (docs !== null) throw new GoalError("nothingToDo", docsOffSays(docs));
       if (e instanceof GoalError && tab.windowRead() !== null) e.fromTab = true;
       throw e;
     }
@@ -1422,6 +1479,12 @@ export class Helper {
     return this.savedFiles.save(m, session);
   }
 
+  /** H14: the memory window's Files section (savedFilesRequest), from a host that declared GOAL_FILES_CAPABILITY. To the asker only. */
+  handleSavedFiles(m: SavedFilesRequest): SavedFilesReply {
+    this.opts.store.count(`files.${m.op}`, 1);
+    return this.savedFiles.files(m);
+  }
+
   /** P3: whether a goal offered to `session` may show attach rows: its host declared GOAL_FILES_CAPABILITY, or (in process) the options say so. */
   private filesFor(session: string | undefined): boolean {
     return session === undefined ? this.opts.goalFiles === true : this.goalFileHosts.has(session);
@@ -1472,7 +1535,22 @@ export class Helper {
       windowId = requestedWindow(this.model, m);
     } catch (e) {
       if (!(e instanceof PlannerError)) throw e;
-      return this.planFailed(m.requestId, e.code, e.message);
+      return this.planFailed(m.requestId, e.code, e.message, e instanceof SaidError ? e.message : saysFor(e.code));
+    }
+    // H10: in a browser a page engine covers, Ask reads the page of the tab the user is in, walked now. The reader's
+    // window of the same browser shows only its toolbar, so planning there said "This form has no field for that"
+    // (Q2's VM run); the model's most recent focus could name either, as both belong to the browser's process.
+    // A request that names no window gets the tab walked now even when the model's latest focus is already a page: that
+    // can be a tab the user just left (H10 review). One that names the reader's window of a browser gets the page shown
+    // in that window, matched by the window's frame, or a refusal; never whichever window happens to be focused.
+    const named = m.window !== undefined || m.windowId !== undefined;
+    const browser = named ? (windowId === null ? null : (this.model.windows.get(windowId)?.app.pid ?? null)) : this.model.frontmostPid;
+    if (browser !== null && (!named || (windowId !== null && !isPageWindow(windowId))) && this.opts.pageCovers?.(browser) === true) {
+      const frame = named && windowId !== null ? (this.model.windows.get(windowId)?.window.frame ?? null) : undefined;
+      const page = named && frame === null ? null : ((await this.opts.pageFront?.(browser, frame ?? undefined)) ?? null);
+      if (page === null) return this.planFailed(m.requestId, "noWindow", `the page engine for process ${browser} could not read the tab ${named ? "in the window named" : "the user is in"}`, SAYS.pageUnread);
+      this.opts.store.count("plan.pageWindow", 1);
+      windowId = page;
     }
     return this.planAndPropose(m.requestId, m.instruction, windowId, undefined, from, canAsk, canGoal);
   }
@@ -1503,9 +1581,9 @@ export class Helper {
     return this.planAndPropose(m.requestId, resume.instruction, resume.windowId, resume, from, true, canGoal);
   }
 
-  private planFailed(requestId: string, code: Parameters<typeof planError>[1], detail: string): PlanProposal {
+  private planFailed(requestId: string, code: Parameters<typeof planError>[1], detail: string, says: string = saysFor(code)): PlanProposal {
     this.opts.store.count(`plan.error_${code}`, 1);
-    return planError(requestId, code, detail, this.now());
+    return planError(requestId, code, detail, this.now(), says);
   }
 
   /**
@@ -1525,25 +1603,38 @@ export class Helper {
 
   private async planAndOffer(offerKey: string, requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal: boolean): Promise<PlanProposal | AskQuestion | GoalProgress> {
     const store = this.opts.store;
-    const fail = (code: Parameters<typeof planError>[1], detail: string): PlanProposal => this.planFailed(requestId, code, detail);
+    // Every refusal carries the user's sentence (H5): a SaidError's own, or the one for its code.
+    const fail = (code: Parameters<typeof planError>[1], detail: string, says?: string): PlanProposal => this.planFailed(requestId, code, detail, says);
+    const said = (e: PlannerError): string => (e instanceof SaidError ? e.message : saysFor(e.code));
     const ask = this.ask;
     if (ask === null) return fail("unavailable", "Jev is off");
     if (this.mode !== "live") return fail("unavailable", "the helper is in shadow mode");
-    if (this.gate.settings.paused) return fail("unavailable", "Caret is paused");
-    if (!this.readerConnected) return fail("unavailable", "no reader is connected");
+    if (this.gate.settings.paused) return fail("unavailable", "Caret is paused", SAYS.paused);
+    if (!this.readerConnected) return fail("unavailable", "no reader is connected", SAYS.noReader);
     const session = this.readerSession;
     let draft: PlanDraft;
     const askConfig = this.askConfig;
     // I6: an Ask's fill step may read the tab the user just left (engines/tab-source.ts), held for this offer only: it
     // goes when the Ask ends without an offer, or when the offer is withdrawn or its acceptance has checked it.
     const tab = this.askTabRead(offerKey, ask);
-    if (askConfig !== null) {
+    // "Attach my resume" (H5): code plans it, with no model, when the page holds a file input that fits.
+    let attachDraft: PlanDraft | null = null;
+    try {
+      attachDraft = planAttach(instruction, this.model, windowId, offerKey);
+    } catch (e) {
+      if (!(e instanceof PlannerError)) throw e;
+      return fail(e.code, e.message, said(e));
+    }
+    if (attachDraft !== null) {
+      store.count("plan.attach", 1);
+      draft = attachDraft;
+    } else if (askConfig !== null) {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
         const maker = askConfig.maker === "writer" ? writerIntentMaker(askConfig.writer, () => offerKey) : askConfig.maker === "heads" ? headsIntentMaker(ask) : jevIntentMaker(ask);
         const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: tab.ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, fillModel: tab.fillModel, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...this.opts.plannerHooks });
         // Rule 6: text that was dropped while Jev answered offers nothing made from it.
-        if (tab.expired()) return fail("unseenWindow", SAYS.tabExpired);
+        if (tab.expired()) return fail("unseenWindow", SAYS.tabExpired, SAYS.tabExpired);
         store.count(`plan.ask_${d.route}`, 1);
         this.countAskRoute(d.route === "goal" ? "plan" : d.route);
         if (d.route === "goal") {
@@ -1552,12 +1643,15 @@ export class Helper {
         }
         draft = d;
       } catch (e) {
-        if (tab.expired()) return fail("unseenWindow", SAYS.tabExpired);
+        if (tab.expired()) return fail("unseenWindow", SAYS.tabExpired, SAYS.tabExpired);
         if (!(e instanceof PlannerError)) throw e;
         if (e instanceof AskRefused && e.intent !== null) this.countAskRoute(e.intent.route);
         // B29: a question with choices, to a consumer that said it can answer one; anyone else reads the refusal.
         if (e instanceof AskAsks && canAsk && session === this.readerSession) return this.askQuestion(requestId, e.question, from);
-        return fail(e.code, e.message);
+        // H13: nothing to fill because the tab left was a Google editor whose text Caret cannot read yet.
+        const docs = e.code === "nothingToDo" ? (this.tabSource?.docsOff(offerKey) ?? null) : null;
+        if (docs !== null) return fail(e.code, "the tab left is a Google editor whose text for assistive technology is off", docsOffSays(docs));
+        return fail(e.code, e.message, said(e));
       }
     } else if (resume !== undefined) {
       return fail("questionGone", "Ask is not configured, so no question can be continued");
@@ -1576,7 +1670,7 @@ export class Helper {
       // planner's own error stands, with the writer's reason added.
       const writer = this.writer;
       const codeWindow = CODE_PLAN_AFTER.has(e.code) && writer !== null ? (e.windowId ?? windowId) : null;
-      if (writer === null || codeWindow === null) return fail(e.code, e.message);
+      if (writer === null || codeWindow === null) return fail(e.code, e.message, said(e));
       store.count("plan.codeMode", 1);
       try {
         draft = await planWithCode(instruction, this.model, { values: () => this.plannerMemory() }, { writer, askJev: ask, offerKey, windowId: codeWindow, now: this.now() });
@@ -1584,12 +1678,12 @@ export class Helper {
       } catch (e2) {
         if (!(e2 instanceof PlannerError)) throw e2;
         store.count(`plan.codeMode_${e2.code}`, 1);
-        return fail(e.code, `${e.message}; the plan writer did not help either: ${e2.message}`);
+        return fail(e.code, `${e.message}; the plan writer did not help either: ${e2.message}`, said(e));
       }
     }
     // Window ids start over with a new reader; a plan drafted in the old session names other windows now.
-    if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
-    if (this.mode !== "live" || this.gate.settings.paused) return fail("unavailable", this.mode !== "live" ? "the helper is in shadow mode" : "Caret is paused");
+    if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply", SAYS.windowChanged);
+    if (this.mode !== "live" || this.gate.settings.paused) return fail("unavailable", this.mode !== "live" ? "the helper is in shadow mode" : "Caret is paused", this.mode !== "live" ? undefined : SAYS.paused);
     const reply = proposed(requestId, draft, this.now());
     const w = draft.checked.window;
     const anchor = draft.checked.writes[0]?.node.key ?? draft.checked.handoff?.node.key ?? w.window.windowId;
@@ -1644,6 +1738,31 @@ export class Helper {
     this.askQuestions.set(questionId, { session: from, expires: msg.data.expires, draft: q });
     this.opts.store.count(`plan.asked_${q.part}`, 1);
     return msg.data;
+  }
+
+  /**
+   * The user took the file the slip proposed for a plan offer that attaches one (H5). The helper reads it once now
+   * and keeps it for that task alone; the run reads it again at its attach step and refuses other bytes. The reply
+   * goes to the asker only.
+   */
+  handleFileConfirm(m: FileConfirm): FileConfirmReply {
+    const base = { type: "fileConfirmReply" as const, v: PROTOCOL_VERSION as 1, requestId: m.requestId, taskId: m.taskId };
+    const refuse = (says: string, why: string): FileConfirmReply => {
+      this.opts.store.count("file.confirm_refused", 1);
+      this.opts.warn?.(`fileConfirm for ${m.taskId} refused: ${why}`);
+      return { ...base, outcome: "refused", file: null, says };
+    };
+    const offer = this.planOffers.get(m.taskId);
+    if (offer === undefined || offer.draft.checked.attach === null) return refuse(SAYS.fileNoPlan, "no plan offer under that key attaches a file");
+    // Bound to the offer's own file input: only that field may get the file, whatever else runs under this id.
+    const attach = offer.draft.checked.attach;
+    const r = this.files.confirm(m.taskId, m.path, ConfirmedFiles.target(offer.draft.checked.window.window.windowId, attach.node.key));
+    // ConfirmedFiles words its refusals for logs; the one the user can act on by choosing another file is the size.
+    if ("refused" in r) return refuse(r.refused.startsWith("the file is ") ? SAYS.fileTooBig : SAYS.fileUnreadable, r.refused);
+    const file = this.files.confirmed(m.taskId);
+    if (file === null) return refuse(SAYS.fileUnreadable, "the confirmation was not kept");
+    this.opts.store.count("file.confirmed", 1);
+    return { ...base, outcome: "confirmed", file, says: null };
   }
 
   /**
@@ -1903,21 +2022,51 @@ export class Helper {
    */
   async handleFillAll(m: FillAll, session?: string): Promise<TaskResult | null> {
     if (this.mode !== "live") return this.refuseAccept(m.proposalId, "the helper is in shadow mode and does not act");
+    // H10: with fieldKey, one field of the proposal, as its own task; the proposal's other fields stay for their own Tab.
+    const taskId = m.fieldKey === undefined ? m.proposalId : fillFieldTask(m.proposalId, m.fieldKey);
     const kept = this.proposals.get(m.proposalId);
-    if (kept === undefined) return this.refuseAccept(m.proposalId, "no such fill proposal, or it expired");
-    if (this.executor.has(m.proposalId)) return this.refuseAccept(m.proposalId, "this proposal was already filled");
-    // S1: Command-1 has no preview of its own, so a saved answer is never written from it; the field is the user's.
+    if (kept === undefined) return this.refuseAccept(taskId, "no such fill proposal, or it expired");
+    if (this.executor.has(taskId)) return this.refuseAccept(taskId, m.fieldKey === undefined ? "this proposal was already filled" : "this field was already filled");
+    // A whole Fill all after one field went in would find that field no longer empty; it is refused here by name.
+    if (m.fieldKey === undefined && kept.proposal.fields.some((f) => this.executor.has(fillFieldTask(m.proposalId, f.key)))) return this.refuseAccept(taskId, "a field of this proposal was already filled on its own");
+    // S1: Command-1 and a page field's own Tab show no answer whole, so a saved answer is never written from them; the
+    // field is the user's.
     const all = writtenFields(kept.proposal, this.model.windows.get(kept.windowId), { answers: false });
-    if (all.fields.length === 0) return this.refuseAccept(m.proposalId, "Caret writes none of this proposal's fields");
-    const checked = this.recheckKept(all);
-    if ("refused" in checked) return this.refuseAccept(m.proposalId, checked.refused);
+    const asked = m.fieldKey === undefined ? all : { ...all, fields: all.fields.filter((f) => f.key === m.fieldKey) };
+    if (asked.fields.length === 0) return this.refuseAccept(taskId, m.fieldKey === undefined ? "Caret writes none of this proposal's fields" : `Caret writes no field ${m.fieldKey} of this proposal`);
+    const checked = this.recheckKept(asked);
+    if ("refused" in checked) return this.refuseAccept(taskId, checked.refused);
     const p = checked.p;
-    this.bindNew(m.proposalId, session);
+    this.bindNew(taskId, session);
     const { plan, slots } = fillPlan(this.model, p);
     // P4: the run carries its values as slots; the text they were read from is not needed past this point.
     this.tabSource?.release(m.proposalId);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
-    return this.runFrom("fill", m.proposalId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+    return this.runFrom("fill", taskId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+  }
+
+  /**
+   * H10 diagnosis: for a fill refused because a source is gone, logs whether each source window is still in the model
+   * and which of its node keys hold text: keys and counts only, never a value or a title.
+   */
+  /** H10 diagnosis: the last reader snapshot of the 500 windows most recently walked (whyGone): a full walk cut short replaces the window whole. */
+  private readonly lastWalk = new Map<string, { at: number; reason: string; root: string | null; truncated: boolean; nodes: number }>();
+  /** H10 diagnosis: when the reader said each window closed (whyGone); the oldest of 500 is forgotten. */
+  private readonly closedAt = new Map<string, number>();
+
+  private whyGone(p: { fields: readonly { source: { windowId: string; nodeKey: string } | null }[] }): void {
+    for (const id of new Set(p.fields.flatMap((f) => (f.source === null ? [] : [f.source.windowId])))) {
+      const w = this.model.windows.get(id);
+      const wanted = [...new Set(p.fields.flatMap((f) => (f.source?.windowId === id ? [f.source.nodeKey] : [])))];
+      if (w === undefined) {
+        const closed = this.closedAt.get(id);
+        this.opts.warn?.(`fill recheck: source window ${id} is not in the model (${this.model.windows.size} windows); ${closed === undefined ? "no windowClosed seen for it" : `windowClosed ${this.now() - closed} ms ago`}`);
+        continue;
+      }
+      const texty = [...w.nodes.values()].filter((n) => (n.value ?? "") !== "").map((n) => n.key).slice(0, 8);
+      const last = this.lastWalk.get(id);
+      this.opts.warn?.(`fill recheck: source window ${id} last walk ${last === undefined ? "unknown" : `${last.reason} ${last.root === null ? "full" : "partial"}${last.truncated ? " TRUNCATED" : ""} of ${last.nodes} nodes`}; has ${w.nodes.size} nodes, updated ${this.now() - w.updatedAt} ms ago; wanted ${wanted.join(", ")} (${wanted.map((k) => (w.nodes.has(k) ? "present" : "missing")).join(", ")}); nodes with text: ${texty.join(", ")}`);
+    }
   }
 
   /** Esc on running work: a stop for the task the offer started. */
@@ -2086,6 +2235,49 @@ export class Helper {
    * the same rules as the offer; an offer's text must be what the field still holds. The reply goes to the asker only
    * and says why when nothing was saved.
    */
+  /**
+   * H13: inline text the host's user accepted with Tab in a page field (protocol.ts PageInsert). The page engine inserts
+   * it under a grant for this one insert, which ends as soon as the page answers (engines/page-link.ts insertText): the
+   * page checks that the field still has focus in the tab the user is in and reads exactly `expect` before its caret,
+   * then puts the text in through its own editing, so its Undo takes it back. Neither the text nor the field's is
+   * logged; only the outcome is counted.
+   */
+  async handlePageInsert(m: PageInsert): Promise<PageInsertReply> {
+    const reply = (outcome: PageInsertReply["outcome"], says: string): PageInsertReply => {
+      this.opts.store.count(`page.insert_${outcome}`, 1);
+      return { type: "pageInsertReply", v: PROTOCOL_VERSION, requestId: m.requestId, outcome, says, at: this.now() };
+    };
+    if (this.mode !== "live") return reply("refused", "the helper is in shadow mode");
+    if (this.gate.settings.paused) return reply("refused", "Caret is paused");
+    const link = this.opts.readerLink;
+    if (link?.insertText === undefined || !isPageWindow(m.windowId)) return reply("refused", "no page engine has that window");
+    const taskId = `inline-${++this.inlineSeq}`;
+    const at = this.now();
+    const pid = this.model.windows.get(m.windowId)?.app.pid ?? 0;
+    link.grant?.({ type: "actGrant", v: PROTOCOL_VERSION, taskId, pid, windowId: m.windowId, at, expires: at + INLINE_GRANT_MS });
+    try {
+      const r = await link.insertText(m.windowId, m.key, m.expect, m.text, taskId, m.token);
+      if (r.outcome === "ok") return reply("inserted", "inserted");
+      // H13 review: the write was tried and the field reads as it did before it.
+      if (r.insert === "unchanged") return reply("failed", "the page did not keep the insert; the field reads as before");
+      switch (r.outcome) {
+        case "changed":
+        case "noElement":
+        case "notSameElement":
+        case "noWindow":
+        case "notAllowed":
+        case "secure":
+          // The verb's own outcome only: its detail can name the field.
+          return reply("refused", `the page refused the insert (${r.outcome})`);
+        default:
+          // A field that changed but not to the insert, or an answer that cannot say: the user must look (H13 review).
+          return reply("unverified", `the field changed, or the page could not say whether it did (${r.outcome})`);
+      }
+    } finally {
+      link.grant?.({ type: "actRevoke", v: PROTOCOL_VERSION, taskId, at: this.now() });
+    }
+  }
+
   async handleAnswerSave(m: AnswerSave): Promise<AnswerSaveReply> {
     const refused = (why: AnswerSaveReply["why"] & string, says: string): AnswerSaveReply => {
       this.opts.store.count(`answers.refused_${why}`, 1);
@@ -2272,6 +2464,8 @@ export class Helper {
       if (m.type === "runPlan") {
         // A task id names one piece of work in the activity feed; a run may not take over another's record.
         if (this.tasks.get(m.taskId) !== undefined) throw new Error(`task id ${m.taskId} is already in use`);
+        // Nor take a pending plan offer's key, or one a file was confirmed under (H5 review #1).
+        if (this.planOffers.has(m.taskId) || this.files.confirmed(m.taskId) !== null) throw new Error(`task id ${m.taskId} belongs to a plan offer`);
         this.bindNew(m.taskId, session);
         // No act grant: a consumer's plan is not an offer the user accepted, so the reader acts for it
         // only in --act-pids processes, which only tests start.
@@ -2573,6 +2767,14 @@ export class Helper {
         return null;
       }
       store.count("fill.error", 1, now);
+      // H13: nothing came from the tab the user left because it was a Google editor whose text is off: say what to turn on.
+      const docs = e instanceof FillError && e.why === "nothingToCopy" ? (this.tabSource?.docsOff(reading) ?? null) : null;
+      if (docs !== null) {
+        store.count("fill.docs_off", 1, now);
+        this.opts.warn?.("fill: nothing to copy; the tab left is a Google editor whose text for assistive technology is off");
+        this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: docsOffSays(docs), sourceOff: docs });
+        return null;
+      }
       this.fillFailed(e instanceof Error ? e.message : String(e), e instanceof FillError ? e.why : null, e);
       return null;
     } finally {
@@ -2880,6 +3082,7 @@ export class Helper {
    */
   private recheckKept(p: GroundedProposal): { p: GroundedProposal } | { refused: string } {
     const r = recheckFields(this.fillModel(p.id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    if ("stale" in r || r.dropped.length > 0) this.whyGone(p);
     if ("stale" in r) return { refused: `${r.stale}; nothing was written` };
     if (r.proposal.fields.length === 0) return { refused: `${r.dropped[0]?.log ?? "no field is left to fill"}; nothing was written` };
     if (r.dropped.length > 0) {
@@ -2917,6 +3120,10 @@ export class Helper {
    */
   private onFillFocus(m: Focus): void {
     if (!m.editable || m.key === null || !(m.frontmost || this.opts.allowBackgroundFocus)) return;
+    // H10: Accessibility's view of a browser a page engine covers says nothing about where the user is in the page: the
+    // page engine's focus does (page windows). In the VM runs (evidence/host/h10/vm/runs) a page's Fill all pop-up was
+    // withdrawn as expired 0.3 s after it was offered, with no page focus between, once in each of two runs.
+    if (!isPageWindow(m.windowId) && this.opts.pageCovers?.(m.app.pid) === true) return;
     for (const focuses of this.pendingFills) focuses.push({ windowId: m.windowId, key: m.key });
     for (const [id, { p }] of this.fillPopups) if (!inFillForm(p, m.windowId, m.key)) this.withdrawFill(id, "expired");
   }
@@ -3070,6 +3277,18 @@ export class Helper {
 
 /** I6: page windows remembered as read for a goal's plan (Helper.tabWindows); each is a tab, so few. Assumed. */
 const TAB_WINDOWS = 16;
+
+/** H13: what to turn on so Caret can read a Google editor's text (brief item 3). */
+function docsOffSays(app: DocsApp): string {
+  return app === "Google Sheets" ? SAYS.docsOffSheets : SAYS.docsOffDocs;
+}
+
+/**
+ * H13: how long the grant for one inline insert lasts. The page answers within its command timeout (page-link.ts), and
+ * the grant is revoked as soon as it does; this bounds a grant whose revoke is lost. Assumed, not measured: the walk
+ * and act round trips P1 measured stay well under a second.
+ */
+const INLINE_GRANT_MS = 5_000;
 
 /** Page windows whose last load's document pageWalked remembers; the oldest is forgotten past this. Assumed: tabs a person keeps open. */
 const LOAD_DOCUMENTS = 200;

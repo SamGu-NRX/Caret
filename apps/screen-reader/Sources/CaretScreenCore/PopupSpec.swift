@@ -154,7 +154,8 @@ extension PopupSpec {
 
     /// Destination, value and state, one row per field.
     public struct Fields: Equatable, Sendable {
-        public enum State: String, Codable, Sendable { case ready, kept, unsure, done, failed }
+        /// `yours` (H5): a control Caret never writes or presses, with the value the user sets.
+        public enum State: String, Codable, Sendable { case ready, kept, unsure, done, failed, yours }
         public struct Row: Equatable, Sendable {
             /// The destination field's label as it appears on screen.
             public var destination: Value
@@ -479,7 +480,7 @@ extension PopupSpec {
                 let row = try raw.object(rowPath)
                 let stateName = try row.string("state", at: rowPath)
                 guard let state = Fields.State(rawValue: stateName) else {
-                    throw PopupSpecError.wrongType(path: "\(rowPath).state", expected: "ready, kept, unsure, done or failed")
+                    throw PopupSpecError.wrongType(path: "\(rowPath).state", expected: "ready, kept, unsure, done, failed or yours")
                 }
                 return Fields.Row(
                     destination: try row.value("destination", at: rowPath),

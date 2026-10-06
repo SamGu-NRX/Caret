@@ -1,1 +1,0 @@
-P3: user sentences in planner/says.ts never name Jev (test/says.test.ts plain()); Jev failure sentences say 'Caret's model'. Golden lines must be normalised through their zod schema before freezing: parse writes keys in schema order, so a round trip of a hand-built line differs.
