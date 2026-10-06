@@ -7,7 +7,7 @@ import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { SAYS } from "../src/planner/says.ts";
-import { formFields, formInputs } from "../src/fill/fill.ts";
+import { formFields, formInputs, selectedFormInputs } from "../src/fill/fill.ts";
 import { PROTOCOL_VERSION, type HelperMessage } from "../src/protocol.ts";
 import { field, focus, jevPickingText, MAIL_APP, node, snap, text } from "./builders.ts";
 import { SocketReader } from "./socket-reader.ts";
@@ -93,6 +93,63 @@ describe("in-flight fill review regressions", () => {
     expect(calls).toBe(4);
     expect(sent.filter((m) => m.type === "error").map((m) => m.message)).toContain(SAYS.windowChanged);
     expect(sent.filter((m) => m.type === "fillProposal")).toEqual([]);
+  });
+
+  it("P2 fix-check: a different-trigger request keeps its descriptor identity while waiting", async () => {
+    const fields = emails(3);
+    await show(fields);
+    const loading = ambient();
+    await setImmediate();
+    expect(calls).toBe(2);
+    const explicit = request(OTHER);
+    // Let the request reach the in-flight join or wait before changing only its trigger.
+    await setImmediate();
+    // SAFETY: emails(3) includes index 1, but Node[] does not carry that length.
+    fields[1] = { ...fields[1]!, label: "Alternate email" };
+    await show(fields);
+    latch.resolve();
+    const [first, result] = await Promise.all([loading, explicit]);
+    // SAFETY: emails(3) also includes the unchanged input at index 2.
+    expect(first?.fields.map((f) => f.key)).toEqual([EMAIL, fields[2]!.key]);
+    expect(result).toBeNull();
+    expect(calls).toBe(4);
+    expect(sent.filter((m) => m.type === "error")).toEqual([
+      { type: "error", v: PROTOCOL_VERSION, at: expect.any(Number), message: SAYS.windowChanged },
+    ]);
+    expect(sent.filter((m) => m.type === "fillProposal")).toEqual([]);
+  });
+
+  it("P2 fix-check: a same-trigger request queues when input order changes privacy admission", async () => {
+    const fields = emails(20).map((n, i) => ({ ...n, label: `Email ${String(i).padStart(2, "0")} ${"x".repeat(51)}` }));
+    const keys = fields.map((n) => n.key);
+    expect(fields.every((n) => n.label.length === 60)).toBe(true);
+    await show(fields);
+    expect(selectedFormInputs(helper.model, FORM, EMAIL).map((x) => x.node.key)).toEqual(keys);
+    const loading = ambient();
+    await setImmediate();
+    expect(calls).toBe(2);
+    // The trigger and all descriptors stay the same. Moving the last field changes only input priority,
+    // so a same-trigger guard cannot mask a scope comparison that still sorts its tuples.
+    // SAFETY: emails(20) constructs the twentieth input at index 19.
+    fields[19] = { ...fields[19]!, frame: [0, 20, 200, 24] };
+    await show(fields);
+    const reordered = [keys[0], keys[19], ...keys.slice(1, 19)];
+    expect(selectedFormInputs(helper.model, FORM, EMAIL).map((x) => x.node.key)).toEqual(reordered);
+    let settled = false;
+    const explicit = request().then((p) => { settled = true; return p; });
+    await setImmediate();
+    const beforeRelease = { settled, calls };
+    latch.resolve();
+    const [first, result] = await Promise.all([loading, explicit]);
+    expect(beforeRelease).toEqual({ settled: false, calls: 2 });
+    // The title takes six of 1,200 characters; only 19 distinct 60-character labels are admitted.
+    expect(first?.fields.map((f) => f.key)).toEqual(keys.slice(0, 19));
+    expect(result?.fields.map((f) => f.key)).toEqual(reordered.slice(0, 19));
+    expect(result?.fields.map((f) => f.key)).toContain(keys[19]);
+    expect(result?.fields.map((f) => f.key)).not.toContain(keys[18]);
+    expect(calls).toBe(8);
+    expect(sent.filter((m) => m.type === "error")).toEqual([]);
+    expect(sent.filter((m) => m.type === "fillProposal")).toEqual([result]);
   });
 
   it("P2: queues unequal ranked control scopes even when the capped text keys match", async () => {

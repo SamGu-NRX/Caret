@@ -2432,7 +2432,8 @@ export class Helper {
           this.fillFailed("the original fill target changed before it could join", null, null, SAYS.windowChanged);
           return null;
         }
-        const compatible = this.fillIdentityMatches(windowId, other.identity) && other.scope !== null && this.fillScope(this.fillModel(other.reading), windowId, key) === other.scope;
+        // Publication checks the flight's trigger. A different trigger must wait with its own identity.
+        const compatible = key === other.identity.triggerKey && this.fillIdentityMatches(windowId, other.identity) && other.scope !== null && this.fillScope(this.fillModel(other.reading), windowId, key) === other.scope;
         if (compatible && [...this.inflight.values()].includes(other)) {
           // Keep an ambient result as the explicit proposal handleFillAll accepts, rather than only a pop-up.
           other.explicit = true;
@@ -2474,7 +2475,8 @@ export class Helper {
   private fillScope(model: ScreenModel, windowId: string, key: string): string {
     // SAFETY: selectedFormInputs rejects a missing window before the mapping uses it.
     const w = model.windows.get(windowId)!;
-    return JSON.stringify(selectedFormInputs(model, windowId, key).map((x) => [x.node.key, x.control, describeInput(w, x)] as const).sort((a, b) => a[0].localeCompare(b[0])));
+    // Descriptor admission spends the privacy budget in this order, so equal sets need not serve equal fields.
+    return JSON.stringify(selectedFormInputs(model, windowId, key).map((x) => [x.node.key, x.control, describeInput(w, x)] as const));
   }
 
   private async performFill(windowId: string, key: string, formKey: string, now: number, ask: AskJev, flight: FillFlight): Promise<FillProposal | null> {
