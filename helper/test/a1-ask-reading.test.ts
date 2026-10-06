@@ -310,3 +310,28 @@ describe("what the held-out runs exposed", () => {
     expect(readHeads(s, cannedHeads(s, { reading: "code", scope: "unclear", source: "any", whose: "user" })).person).toBeUndefined();
   });
 });
+
+// The A1 fix-check review's inputs.
+describe("what the A1 fix-check found", () => {
+  it("decides whether a part only says where the fields are after every field word is read", () => {
+    expect(reads("rental-application", "fill only my city in the current residence section")).toEqual(["City"]);
+    expect(reads("rental-application", "fill in what's in the landlord section")).toEqual(["Landlord or property manager name", "Landlord phone"]);
+  });
+
+  it("keeps a name that is a word of the form's title a person, unless a form noun follows it", () => {
+    const either = snapOn("event-rsvp", "fill out the RSVP for Jun or Bea");
+    expect(readHeads(either, cannedHeads(either, { reading: "code" }))).toMatchObject({ route: "ask", open: ["person"] });
+    const jun = snapOn("event-rsvp", "fill in the RSVP for Jun");
+    expect(readHeads(jun, cannedHeads(jun, { reading: "code" }))).toMatchObject({ whose: "p1" });
+  });
+
+  it("never takes a first name for one of two full names that start with it", () => {
+    const d = deskOf("rental-application");
+    d.model.apply(snap([field("te/jones", "Landlord: Gary Jones\n(512) 555-0111", { role: "AXTextArea" })], { at: T0 - 50_000, windowId: "jones-note", title: "Old lease.txt", app: { pid: 7998, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: false }));
+    const form = d.model.windows.get(d.form.window.windowId);
+    if (form === undefined) throw new Error("form window gone");
+    const s = intentSnapshot("put his number in", d.model, form, [...d.memory, { id: "people-1", label: "landlord", text: "Gary", whose: "other" }]);
+    const names = s.others.map((p) => p.name);
+    expect(names).toEqual(expect.arrayContaining(["Gary", "Gary Pruitt", "Gary Jones"]));
+  });
+});

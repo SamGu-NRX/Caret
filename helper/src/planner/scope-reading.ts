@@ -499,6 +499,7 @@ export function readScope(snap: IntentSnapshot): ReadResult {
   // fields over the label prefix's two). Otherwise a part some of whose words are said ("the employment bit" for
   // "Employment and income"), the narrowest of those that nest; a kind word alone ("date") names no part.
   let section: string | null = null;
+  let part: { sec: Sec; qualifier: boolean; before: number } | null = null;
   {
     const s = unread();
     const said = (x: Sec): string[] => x.keys.filter((k) => s.has(k));
@@ -519,28 +520,15 @@ export function readScope(snap: IntentSnapshot): ReadResult {
       // no word of it goes on to name a field (A1 held-out B31: "current" named Current employer).
       const nameStems = new Set(wordsIn(chosen.name).map((w) => stem(w.replace(/'s$/u, ""))));
       const at = [...s.entries()].filter(([w]) => nameStems.has(w)).flatMap(([, is]) => is);
-      // "my email in the applicant section": a part said after "in" or "under", beside fields already read, only says
-      // where those fields are (A1 review: reading it as the whole part filled First and Last name too). Fields read
-      // inside the part beside "only" or "just" are not read either way.
+      // Whether the part is said after "in" or "under": then it may only say where the fields the words name are. That is
+      // decided once every field word is read (after step 4b), so a field named by one label word counts too (A1
+      // fix-check: "fill only my city in the current residence section" read the whole part).
       const before = (i: number): string => {
         let j = i - 1;
         while (j >= 0 && ["the", "this", "that", "my", "your"].includes(toks[j]?.w ?? "")) j--;
         return toks[j]?.w ?? "";
       };
-      const qualifies = picked.length > 0 && at.some((i) => ["in", "under", "within", "inside", "on"].includes(before(i)));
-      const inside = picked.length > 0 && picked.every((f) => chosen.fields.includes(f));
-      if (qualifies) {
-        const kept = picked.filter((f) => chosen.fields.includes(f));
-        if (kept.length === 0) return none(`none of the fields the words name is under '${chosen.name}'`);
-        picked.splice(0, picked.length, ...kept);
-        because.push(`under ${chosen.from} '${chosen.name}'`);
-      } else if (inside && toks.some((t) => t.w === "only" || t.w === "just")) {
-        return none(`the words name fields under '${chosen.name}' and the part too, beside "only"`);
-      } else {
-        const empty = chosen.fields.filter((f) => !f.filled);
-        if (empty.length === 0) return none(`'${chosen.name}' has no empty field`);
-        pick(empty, `${chosen.from} '${chosen.name}'`);
-      }
+      part = { sec: chosen, qualifier: at.some((i) => ["in", "under", "within", "inside", "on"].includes(before(i))), before: picked.length };
       section = chosen.name;
       use(at, "section");
     }
@@ -598,6 +586,26 @@ export function readScope(snap: IntentSnapshot): ReadResult {
 
   // One Ask fills one person's details (FillScope.person): fields read as someone else's beside fields read as the
   // user's, said or by default ("her email and phone", "my name and Simone's email"), are not read (A1 review).
+  // The part the words name: where the named fields are when said after "in" or "under", else fields of its own. A part
+  // beside fields inside it and "only" or "just" is not read either way ("my email in the applicant section" fills Email
+  // alone; A1 review).
+  if (part !== null) {
+    const { sec, qualifier } = part;
+    const named = [...picked];
+    if (qualifier && named.length > 0) {
+      const kept = named.filter((f) => sec.fields.includes(f));
+      if (kept.length === 0) return none(`none of the fields the words name is under '${sec.name}'`);
+      picked.splice(0, picked.length, ...kept);
+      because.push(`under ${sec.from} '${sec.name}'`);
+    } else if (named.length > 0 && named.every((f) => sec.fields.includes(f)) && toks.some((t) => t.w === "only" || t.w === "just")) {
+      return none(`the words name fields under '${sec.name}' and the part too, beside "only"`);
+    } else {
+      const empty = sec.fields.filter((f) => !f.filled);
+      if (empty.length === 0) return none(`'${sec.name}' has no empty field`);
+      pick(empty, `${sec.from} '${sec.name}'`);
+    }
+  }
+
   if (ownersSaid.some((o) => o.other) && ownersSaid.some((o) => !o.other)) return none("the words read some fields as someone else's and others as the user's");
 
   // 5. The values the instruction spells out: a time or a date to the one such field read, else the form's one; any

@@ -34,20 +34,10 @@ export interface PersonCandidate {
 
 /** People in the open windows other than the form (each mail's sender; names on a note's role or relation lines) and in memory. Local only. */
 export function peopleOnScreen(model: ScreenModel, form: WindowState, memory: readonly MemoryValue[]): PersonCandidate[] {
-  const out: PersonCandidate[] = [];
+  const mentions: PersonCandidate[] = [];
   const add = (name: string, from: PersonCandidate["from"], windowId: string | null): void => {
-    const ids = windowId === null ? [] : [windowId];
     const n = name.replace(/\s+/gu, " ").trim();
-    if (n.length < 2 || n.length > 60) return;
-    const lower = n.toLowerCase();
-    // "Ines" and "Ines Lindqvist" are one person: the longer form stands.
-    const same = out.findIndex((p) => p.name.toLowerCase() === lower || p.name.toLowerCase().startsWith(`${lower} `) || lower.startsWith(`${p.name.toLowerCase()} `));
-    if (same >= 0) {
-      const had = out[same] as PersonCandidate;
-      out[same] = { name: had.name.length < n.length ? n : had.name, from: had.name.length < n.length ? from : had.from, windowIds: [...new Set([...had.windowIds, ...ids])] };
-      return;
-    }
-    out.push({ name: n, from, windowIds: ids });
+    if (n.length >= 2 && n.length <= 60) mentions.push({ name: n, from, windowIds: windowId === null ? [] : [windowId] });
   };
   for (const w of model.windows.values()) {
     if (w === form) continue;
@@ -63,6 +53,25 @@ export function peopleOnScreen(model: ScreenModel, form: WindowState, memory: re
     }
   }
   for (const m of memory) if (m.whose === "other" && m.text.trim() !== "") add(m.text, "memory", null);
+  // One person per name, written the same way; a shorter name ("Ines", "Gary") is the longer one it starts only when
+  // exactly one longer name starts with it. Otherwise it stays its own candidate: "Gary" beside Gary Pruitt and Gary
+  // Jones is never either of them (A1 fix-check).
+  const out: PersonCandidate[] = [];
+  const merge = (into: PersonCandidate, m: PersonCandidate): void => {
+    into.windowIds = [...new Set([...into.windowIds, ...m.windowIds])];
+  };
+  for (const m of mentions) {
+    const same = out.find((p) => p.name.toLowerCase() === m.name.toLowerCase());
+    if (same === undefined) out.push({ ...m, windowIds: [...m.windowIds] });
+    else merge(same, m);
+  }
+  const longer = (short: PersonCandidate): PersonCandidate[] => out.filter((p) => p !== short && p.name.toLowerCase().startsWith(`${short.name.toLowerCase()} `));
+  for (const short of [...out]) {
+    const l = longer(short);
+    if (l.length !== 1) continue;
+    merge(l[0] as PersonCandidate, short);
+    out.splice(out.indexOf(short), 1);
+  }
   return out;
 }
 
@@ -85,6 +94,9 @@ export type WhoseReading =
   | { kind: "ask"; candidates: string[]; why: string }
   | { kind: "unread"; why: string };
 
+/** Nouns a form is called by, which a name right before them names ("the Northgate application"). */
+const FORM_NOUN = "form|application|app|order|registration|enrollment|enrolment|request|ticket|booking|reservation|rsvp|signup|survey|questionnaire|checkout|paperwork";
+
 const RELATION_SPAN = /^(?:my|our)\s+(\S+)$/iu;
 /** The user named beside someone else: "for me and Bea", "Bea and I", "both of us". */
 const USER_TOO = /\b(?:me|myself|i)\s+(?:and|&|\+)\s+\S|\S\s+(?:and|&|\+)\s+(?:me|myself|i)\b|\bboth of us\b|\bthe two of us\b|\bus both\b/iu;
@@ -95,9 +107,10 @@ const USER_TOO = /\b(?:me|myself|i)\s+(?:and|&|\+)\s+\S|\S\s+(?:and|&|\+)\s+(?:m
  */
 export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate[], memory: readonly MemoryValue[], someoneElses: boolean): WhoseReading {
   const instruction = snap.instruction;
-  // A capitalized word of the form's own title is the form's name, not a person: "the Northgate application" (A1 held-out B25).
-  const title = new Set((snap.title ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u));
-  const named = snap.persons.filter((p) => !onlyInSources(instruction, p.span) && !p.span.toLowerCase().split(/\s+/u).every((w) => title.has(w)));
+  // A name right before a form noun names the form, not a person: "the Northgate application" (A1 held-out B25). Any other
+  // place keeps it a person, a word of the form's title or not ("the RSVP for Jun or Bea"; A1 fix-check).
+  const formName = (span: string): boolean => new RegExp(`(?<![\\p{L}])${span.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?:['’]s)?\\s+(?:${FORM_NOUN})\\b`, "iu").test(instruction);
+  const named = snap.persons.filter((p) => !onlyInSources(instruction, p.span) && !formName(p.span));
   const relations = named.filter((p) => RELATION_SPAN.test(p.span));
   const names = named.filter((p) => !RELATION_SPAN.test(p.span));
   if (named.length > 0 && USER_TOO.test(fieldWords(instruction))) return { kind: "user", why: "the user is named beside them: each field's own details" };
