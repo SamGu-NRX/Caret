@@ -304,7 +304,9 @@ describe("the heads intent maker (P1)", () => {
   it("asks everything in one request: the heads as choices, one yes/no per field, no section head on a form without sections", () => {
     const s = snapOf("fill this out from my note");
     const req = headsRequest(s);
-    expect(Object.keys(req.questions).sort()).toEqual(["scope", "source", "whose", "why"]);
+    // A1: code reads this as the whole form, so the request also asks whether that reading is right.
+    expect(Object.keys(req.questions).sort()).toEqual(["reading", "scope", "source", "whose", "why"]);
+    expect(Object.keys(req.questions.reading?.criteria ?? {})).toEqual(["code", "some", "none"]);
     expect(Object.keys(req.questions.scope?.criteria ?? {})).toEqual(["all", "fields", "plan", "unclear", "refuse"]);
     expect(Object.keys(req.nouls ?? {})).toEqual(s.fields.map((f) => `n_${f.ref}`));
     expect(req.questions.source?.criteria).toHaveProperty("w1");
@@ -328,29 +330,33 @@ describe("the heads intent maker (P1)", () => {
     expect(read("pay for it", { scope: "refuse", why: "payment" })).toMatchObject({ route: "refuse", why: "payment" });
     // A refusal whose reason is under the floor is said generally; checkIntent still names a never-typed kind itself.
     expect(read("pay for it", { scope: "refuse", why: "payment" }, {}, { why: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "refuse", why: "nothingToFill" });
-    // Under the floor, or unclear: which fields? The other parts that settled stand.
-    expect(read("fill this out from my note", { scope: "all", source: "w1" }, {}, { scope: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"], sources: ["w1"] });
+    // Under the floor, or unclear, with no reading of code's the model agrees with: which fields? The other parts that
+    // settled stand.
+    expect(read("fill this out from my note", { scope: "all", source: "w1", reading: "some" }, {}, { scope: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"], sources: ["w1"] });
     expect(read("do the thing", { scope: "unclear", source: "any" })).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"] });
     // A refuse or plan under the floor is not taken either: it asks.
     expect(read("submit it", { scope: "plan" }, {}, { scope: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "ask", open: ["fields"] });
   });
 
-  // P2: live, Jev chose the whole form for "fill out this form" on all 19 corpus and W4 pages, under the floor on 17.
-  it("settles the whole form under the floor only when Jev chose it and code reads the whole instruction as a whole-form request", () => {
+  // P2: live, Jev chose the whole form for "fill out this form" on all 19 corpus and W4 pages, under the floor on 17. A1:
+  // code reads the instruction first, and the model's choice of that reading settles it whatever the scope head's margin.
+  it("settles code's reading when the model chooses it, under the scope head's floor too, and asks when it does not", () => {
     const low = { scope: HEAD_FLOOR - 0.2 };
-    expect(read("fill out this form", { scope: "all", source: "any", whose: "user" }, {}, low)).toMatchObject({ route: "fill", scope: "all" });
-    // Jev's top choice is something else: still asked.
-    expect(read("fill out this form", { scope: "fields", source: "any" }, {}, low)).toMatchObject({ route: "ask", why: "whichFields" });
-    // Not a whole-form sentence by code's grammar: the floor stands.
-    expect(read("fill this out from my note", { scope: "all", source: "any" }, {}, low)).toMatchObject({ route: "ask", why: "whichFields" });
-    expect(read("just do my contact info up top", { scope: "all", source: "any" }, {}, low)).toMatchObject({ route: "ask", why: "whichFields" });
+    expect(read("fill out this form", { scope: "all", source: "any", whose: "user" }, {}, low)).toMatchObject({ route: "fill", scope: "all", agreed: true });
+    expect(read("fill out this form", { scope: "fields", source: "any", reading: "some" }, {}, low)).toMatchObject({ route: "ask", why: "whichFields" });
+    expect(read("fill this out from my note", { scope: "all", source: "any" }, {}, low)).toMatchObject({ route: "fill", scope: "all", agreed: true });
+    const s = snapOf("just do my contact info up top");
+    expect(read("just do my contact info up top", { scope: "all", source: "any" }, {}, low)).toMatchObject({ route: "fill", scope: "list", fields: [refOf(s, "Full name"), refOf(s, "Email")], agreed: true });
+    expect(read("just do my contact info up top", { scope: "all", source: "any", reading: "other" }, {}, low)).toMatchObject({ route: "ask", why: "whichFields" });
   });
 
   it("lists the fields whose yes/no clears the field floor, and asks when none does", () => {
-    const s = snapOf("the landlord part");
+    // "lease" is a word code does not read (scope-reading.ts), so the heads decide as before A1.
+    const said = "the landlord part of the lease";
+    const s = snapOf(said);
     const ref = (n: string) => refOf(s, n);
-    expect(read("the landlord part", { scope: "fields", source: "any" }, { [`n_${ref("Landlord name")}`]: FIELD_FLOOR, [`n_${ref("Landlord phone")}`]: 0.97, [`n_${ref("Email")}`]: FIELD_FLOOR - 0.01 })).toMatchObject({ route: "fill", scope: "list", fields: [ref("Landlord name"), ref("Landlord phone")] });
-    expect(read("the landlord part", { scope: "fields", source: "any" }, { [`n_${ref("Landlord name")}`]: 0.9 })).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"] });
+    expect(read(said, { scope: "fields", source: "any" }, { [`n_${ref("Landlord name")}`]: FIELD_FLOOR, [`n_${ref("Landlord phone")}`]: 0.97, [`n_${ref("Email")}`]: FIELD_FLOOR - 0.01 })).toMatchObject({ route: "fill", scope: "list", fields: [ref("Landlord name"), ref("Landlord phone")] });
+    expect(read(said, { scope: "fields", source: "any" }, { [`n_${ref("Landlord name")}`]: 0.9 })).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"] });
   });
 
   it("reads an unsettled source by the instruction's words: every source, the windows it names, or a question when it limits them", () => {
@@ -376,10 +382,15 @@ describe("the heads intent maker (P1)", () => {
   });
 
   it("asks whose details for someone unnamed, or for an unsettled answer when someone is named; the user's own otherwise", () => {
-    expect(read("add his number", { scope: "all", source: "any", whose: "unclear" })).toMatchObject({ route: "ask", why: "otherPersonUnnamed", open: ["person"] });
-    expect(read("use Gary for this", { scope: "all", source: "any", whose: "p1" }, {}, { whose: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "ask", why: "whichPerson", open: ["person"] });
-    expect(read("use Gary for this", { scope: "all", source: "any", whose: "p1" })).toMatchObject({ route: "fill", whose: "p1" });
+    // A relation with no memory entry is not code's to settle (people.ts): the head decides, as before A1.
+    expect(read("add my sister's number", { scope: "all", source: "any", whose: "unclear" })).toMatchObject({ route: "ask", why: "otherPersonUnnamed", open: ["person"] });
+    expect(read("add my sister's number", { scope: "all", source: "any", whose: "p1" }, {}, { whose: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "ask", why: "whichPerson", open: ["person"] });
+    expect(read("add my sister's number", { scope: "all", source: "any", whose: "p1" })).toMatchObject({ route: "fill", whose: "p1" });
     expect(read("fill this out", { scope: "all", source: "any", whose: "user" }, {}, { whose: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "fill", whose: "user" });
+    // A1 decision 2: a name the instruction says is whose details go in, whatever the head; a pronoun is the one other
+    // person on screen (the note's landlord line here).
+    expect(read("use Gary for this", { scope: "all", source: "any", whose: "p1" }, {}, { whose: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "fill", whose: "p1" });
+    expect(read("add his number", { scope: "all", source: "any", whose: "unclear" })).toMatchObject({ route: "fill", whose: "user", person: "Gary Pruitt" });
   });
 
   it("ties a spelled-out value to the one field in scope its clause names, and to nothing when two fields tie", () => {

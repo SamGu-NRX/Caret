@@ -415,8 +415,17 @@ describe("Ask asks whose details, with the user and the people on screen (B29)",
     expect(questionOf(e)?.options.map((c) => c.option)).toEqual([{ kind: "you", id: "o1" }, { kind: "person", id: "o2", name: "Gary Pruitt" }]);
   });
 
-  it("refuses as before when no one is named in the instruction or on screen", async () => {
+  // A1 decision 2: a note's line that names someone beside a role ("Landlord: Gary Pruitt") puts them among the options.
+  it("asks with the person a note names beside a role, when no mail names anyone (A1)", async () => {
     const e = await fail(planAsk(instruction, desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ fields: [s.fields.find((f) => f.name === "Landlord phone")?.ref ?? "?"] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
+    expect(e.message).toBe(SAYS.whichPerson);
+    expect(questionOf(e)?.options.map((c) => c.option)).toEqual([{ kind: "you", id: "o1" }, { kind: "person", id: "o2", name: "Gary Pruitt" }]);
+  });
+
+  it("refuses as before when no one is named in the instruction or on screen", async () => {
+    const m = desk();
+    m.close("note", 1500);
+    const e = await fail(planAsk(instruction, m, memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ fields: [s.fields.find((f) => f.name === "Landlord phone")?.ref ?? "?"] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
     expect(questionOf(e)).toBeUndefined();
     expect(e.message).toBe(SAYS.whichPerson);
   });

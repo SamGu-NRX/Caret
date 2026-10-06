@@ -12,6 +12,8 @@
 // writer's (ask.ts confirmScope: Jev, asked twice, confirms fields the instruction does not name and a whole form the
 // instruction does not state). Values the instruction spells out are tied to fields by code (tieLiterals), never by Jev.
 import { asksForWholeForm } from "./scope-words.ts";
+import { readScope, type ScopeReading } from "./scope-reading.ts";
+import { readWhose } from "./people.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { ROUTE_CUTOFF, NOUL_FLOOR } from "./intent-makers.ts";
@@ -43,6 +45,24 @@ const WHY: Record<string, string> = {
 };
 
 const TASK = "Caret reads the user's instruction about the form on screen: what to do, which fields, from where, and for whom. Answer from the instruction; Caret finds the values itself.";
+
+/**
+ * A1: the options of the question that confirms code's reading (scope-reading.ts). The reading is one option; the
+ * others are the ways it could be wrong: the whole form, fewer fields, other fields, or no fill at all. Only a top
+ * choice of "code" acts on the reading (readHeads); any other answer asks which fields, with the reading's fields
+ * among the choices.
+ */
+export function readingCriteria(r: ScopeReading): Record<string, string> {
+  const c: Record<string, string> = { code: r.says };
+  if (r.kind === "all") c.some = "Fill only some particular fields of the form, not all of them.";
+  else {
+    c.all = "Fill every empty field of the form.";
+    if (r.fields.length > 1) c.fewer = "Fill only some of those fields.";
+    c.other = "Fill other fields than those, or more of them.";
+  }
+  c.none = "Fill no field: the instruction asks Caret to press a button, send, pay, write something new, or do something it must refuse.";
+  return c;
+}
 
 /** The one request: the form, sources and people as state, the heads as Choice questions, one Noul per field. */
 export function headsRequest(snap: IntentSnapshot): JevRequest {
@@ -76,6 +96,9 @@ export function headsRequest(snap: IntentSnapshot): JevRequest {
     section.none = "No one heading of the form.";
     questions.section = { type: "choice", instructions: "Which heading's fields does the instruction ask Caret to fill?", criteria: section };
   }
+  // A1: code's reading of the scope, offered as one option among the ways it could be wrong.
+  const code = readScope(snap).reading;
+  if (code !== null) questions.reading = { type: "choice", instructions: "Which of these does the instruction ask Caret to do?", criteria: readingCriteria(code) };
   const nouls: NonNullable<JevRequest["nouls"]> = {};
   for (const f of snap.fields) nouls[`n_${f.ref}`] = { type: "noul", instructions: `Does the instruction ask to fill or change '${f.name}'?` };
   return { state, questions, nouls, snippets: declared.snippets, charged: declared.charged };
@@ -147,14 +170,22 @@ export function readHeads(snap: IntentSnapshot, r: JevResult): AskIntent {
     const why = settled(r, "why");
     return { ...base, route: "refuse", why: why !== null && why in WHY ? (why as AskIntent["why"]) : "nothingToFill", scope: "none" };
   }
-  if (scope === "plan") return { ...base, route: "plan", why: "none", scope: "none" };
+  // A1: code's reading of the scope, which the model's top choice either confirms or does not. A confirmed reading
+  // stands over a plan head (the model chose a fill of those fields in the same answer); a refusal still wins.
+  const reading = readScope(snap).reading;
+  const agreed = reading !== null && r.answers.reading?.choice === "code";
+  if (scope === "plan" && !agreed) return { ...base, route: "plan", why: "none", scope: "none" };
 
   const open: AskPart[] = [];
   // Which fields.
   let kind: "all" | "section" | "list" = "all";
   let section = "none";
   let listed: IntentField[] = [];
-  if (scope === "all") kind = "all";
+  if (reading !== null) {
+    // Agreed: code's fields. Not agreed: asked, with the reading's fields among the choices (choices.ts).
+    if (agreed && reading.kind === "fields") ((kind = "list"), (listed = reading.fields));
+    else if (!agreed) open.push("fields");
+  } else if (scope === "all") kind = "all";
   else if (scope === "section") {
     const s = snap.sections.length === 0 ? null : settled(r, "section");
     if (s !== null && s !== "none" && snap.sections.some((x) => x.ref === s)) ((kind = "section"), (section = s));
@@ -168,7 +199,7 @@ export function readHeads(snap: IntentSnapshot, r: JevResult): AskIntent {
   const sectionName = snap.sections.find((x) => x.ref === section)?.name;
   const empty = snap.fields.filter((f) => !f.filled && f.neverTyped === null);
   const scoped = kind === "all" ? empty : kind === "section" ? empty.filter((f) => f.section === sectionName) : listed.filter((f) => f.neverTyped === null);
-  const literals = open.includes("fields") ? [] : tieLiterals(snap, scoped);
+  const literals = open.includes("fields") ? [] : agreed && reading !== null ? reading.literals : tieLiterals(snap, scoped);
   const fields = kind === "list" ? [...new Set([...listed.map((f) => f.ref), ...literals.map((l) => l.field)])] : [];
   if (kind === "list" && fields.length === 0) open.push("fields");
 
@@ -190,15 +221,27 @@ export function readHeads(snap: IntentSnapshot, r: JevResult): AskIntent {
     else sources = named as string[];
   }
 
-  // Whose. Unsettled with a person named, or someone else unnamed, is a question; unsettled with no one named is the user.
+  // Whose. Code's reading first (A1 decision 2, people.ts): the user, a person the instruction names, the one other person
+  // in its sources or a relation's memory entry, or a question when it finds more than one. When code cannot tell, the
+  // head: unsettled with a person named, or someone else unnamed, is a question; unsettled with no one named is the user.
+  const code = readWhose(snap, snap.others, snap.memoryValues, reading?.because.some((b) => b.endsWith("(someone else's)")) ?? false);
   const whose = settled(r, "whose");
-  const person = whose !== null && snap.persons.some((p) => p.ref === whose) ? whose : null;
-  if (whose === "unclear" || (whose === null && snap.persons.length > 0)) open.push("person");
+  let person: string | null = null;
+  let named: string | undefined;
+  let unnamed = false;
+  if (code.kind === "user") person = null;
+  else if (code.kind === "person") ((person = code.ref), (named = code.name ?? undefined));
+  else if (code.kind === "ask") open.push("person");
+  else {
+    person = whose !== null && snap.persons.some((p) => p.ref === whose) ? whose : null;
+    if (whose === "unclear" || (whose === null && snap.persons.length > 0)) open.push("person");
+    unnamed = whose === "unclear";
+  }
 
-  const parts = { scope: kind, section, fields, sources, whose: person ?? "user", literals };
+  const parts = { scope: kind, section, fields, sources, whose: person ?? "user", literals, ...(named === undefined ? {} : { person: named }), ...(agreed ? { agreed: true as const } : {}) };
   if (open.length > 0) {
     const first = open[0] as AskPart;
-    const why = first === "fields" ? "whichFields" : first === "source" ? "whichSource" : whose === "unclear" ? "otherPersonUnnamed" : "whichPerson";
+    const why = first === "fields" ? "whichFields" : first === "source" ? "whichSource" : unnamed ? "otherPersonUnnamed" : "whichPerson";
     return { route: "ask", why, ...parts, open };
   }
   return { route: "fill", why: "none", ...parts };
