@@ -52,18 +52,19 @@ describe("finding 1: every write passes the gates, drafts, the code-filled To an
     expect(g.warnings).toEqual([`You add the recipient in 'To phone number': '${EMAIL}' is an email address, and the field takes a phone number.`]);
   });
 
-  it("asks Jev about a calendar event, and adds none Jev does not confirm or when Jev is not there", async () => {
+  // G3 lead decision 1: an event code derived skips Jev's value question; the To the program wrote itself does not.
+  it("adds a derived calendar event without Jev's question, with or without Jev, and still asks Jev about a To the program wrote", async () => {
     const steps: CannedStep[] = [
       { fill: { window: "Calendar", target: "Caret", value: "Meet Priya" } },
       { fill: { window: "Re: Order", target: "To", value: EMAIL } },
     ];
-    const doubting = scene({ scripts: [steps], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: standInJev({ belongs: (q) => !q.includes("'the Caret calendar'") }) });
+    const doubting = scene({ scripts: [steps], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: standInJev({ belongs: () => false }) });
     const g = preview(await doubting.request("add this meeting to my calendar and address a reply to Priya"));
-    expect(g.steps.map((s) => s.kind)).toEqual(["write"]);
-    expect(g.warnings).toEqual(["Caret left the event out of your 'Caret' calendar: Jev didn't confirm 'Meet Priya' belongs there."]);
+    expect(g.steps.map((s) => s.kind)).toEqual(["calendar"]);
+    expect(g.warnings).toEqual([`You add the recipient in 'To': Jev didn't confirm '${EMAIL}' belongs there.`]);
     const alone = scene({ scripts: [[steps[0] as CannedStep]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: undefined });
-    const r = await alone.request("add this meeting to my calendar");
-    expect(r.event === "stopped" && r.says).toBe("Caret left the event out of your 'Caret' calendar: Caret couldn't ask Jev whether 'Meet Priya' belongs there");
+    const r = preview(await alone.request("add this meeting to my calendar"));
+    expect(r.steps.map((s) => s.kind)).toEqual(["calendar"]);
   });
 });
 
@@ -137,21 +138,19 @@ describe("finding 7: a field that reads as another after the preview", () => {
 
 // G2 re-check (theo-astra-reviewer ac171c02b28bce62d) of 69df243.
 describe("re-check: what the first fixes left open", () => {
-  it("ends partial when Jev confirms one of two events: each event is its own effect", async () => {
+  it("ends partial when the plan adds one of two asked events: each event is its own effect", async () => {
     const mail: DeskWindow = {
       ...mailWindow(),
       nodes: [...mailWindow().nodes, { key: textKey(MAIL, 5), parent: null, role: "AXStaticText", label: "Can we also meet with Dana on Friday, October 9, 2026 from 1:00 PM to 1:30 PM PT?" }],
       values: [...(mailWindow().values ?? []), { kind: "date", text: "Friday, October 9, 2026", nodeKey: textKey(MAIL, 5) }, { kind: "time", text: "1:00 PM to 1:30 PM PT", nodeKey: textKey(MAIL, 5) }],
     };
-    const steps: CannedStep[] = [
-      { fill: { window: "Calendar", target: "Caret", value: "Meet Priya" } },
-      { fill: { window: "Calendar", target: "Caret", value: "Meet Dana" } },
-    ];
-    const sc = scene({ scripts: [steps], windows: [mail, replyWindow()], userWindow: "6161-2", askJev: standInJev({ belongs: (q) => !q.includes("Meet Dana") }) });
+    // Derived events skip Jev since G3, so the second one is left out by the plan rather than by Jev.
+    const steps: CannedStep[] = [{ fill: { window: "Calendar", target: "Caret", value: "Meet Priya" } }];
+    const sc = scene({ scripts: [steps], windows: [mail, replyWindow()], userWindow: "6161-2", askJev: standInJev() });
     const g = preview(await sc.request("add both meetings to my calendar"));
     expect(g.steps.map((s) => s.says)).toEqual([expect.stringMatching(/^Add 'Meet Priya' to your Caret calendar/)]);
     const end = await runAll(sc);
-    expect(end?.event === "finished" && [end.outcome, end.left]).toEqual(["partial", ["Caret left the event out of your 'Caret' calendar: Jev didn't confirm 'Meet Dana' belongs there"]]);
+    expect(end?.event === "finished" && [end.outcome, end.left]).toEqual(["partial", ["You asked for 2 calendar events, and this plan adds 1 to your 'Caret' calendar"]]);
   });
 
   it("owes a required page control, which arrives editable", async () => {

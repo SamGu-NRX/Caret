@@ -112,6 +112,31 @@ export function mentionedKind(text: string): { kind: SensitiveKind; ssn: boolean
   return null;
 }
 
+/**
+ * The kind of secret a text states: "My password is violet-orchard-seven", "my password for the demo is …", "Password:
+ * …", "my PIN is 7319". A label phrase, owned ("my", "our", "the") and followed by "is", "was", ":" or "=", or bare and
+ * followed by ":" or "=", then a value. A phrase ordinary sentences use for other things ("pin", "secret", "token") counts
+ * only owned by "my" or "our" and with a digit in its value: "the secret is consistency" is no secret. S1 checks a saved
+ * answer with it, on capture, on Caret's write and on the user's own edit of answers.md (parse.ts): prose that only
+ * mentions a kind ("I built a password reset flow") is not one. Written for answers, not measured.
+ */
+export function statedSecret(text: string): SensitiveKind | null {
+  const t = text.toLowerCase();
+  for (const [kind, phrases] of LABEL_PHRASES) {
+    for (const p of phrases) {
+      const common = COMMON_IN_SENTENCES.has(p.join(" "));
+      const phrase = p.map((w) => w.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("[\\s-]+");
+      // "Passport number", "password for the demo": a trailing kind word, and a short phrase saying what it is for.
+      const tail = "s?(?:\\s+(?:number|no|num|nr|code|id))?(?:\\s+(?:for|of|to|on|at)(?:\\s+[\\w'-]+){1,3})?";
+      const value = common ? "\\S*\\d" : "\\S";
+      const owned = new RegExp(`\\b(?:my|our${common ? "" : "|the"})\\s+(?:[\\w'-]+\\s+)?${phrase}${tail}\\s*(?:is|was|:|=)\\s*${value}`, "u");
+      const bare = new RegExp(`(?:^|[\\n.;!?(]\\s*|\\s)${phrase}${tail}\\s*[:=]\\s*${value}`, "u");
+      if (owned.test(t) || (!common && bare.test(t))) return kind;
+    }
+  }
+  return null;
+}
+
 /** The refusal's wording: "Caret doesn't keep card numbers in memory". */
 export const refusal = (kind: SensitiveKind): string => `Caret doesn't keep ${SENSITIVE_SAYS[kind]} in memory`;
 

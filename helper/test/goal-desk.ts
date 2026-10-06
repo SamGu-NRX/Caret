@@ -12,8 +12,9 @@ import { FakeCalendar } from "../src/executor/means.ts";
 import { PROTOCOL_VERSION, isCalendarVerb, type GoalAccept, type GoalProgress, type HelperMessage, type ActGrant, type ActRevoke, type AppRef, type CalendarGrant, type Node, type ReaderMessage, type ReaderVerb, type TypedValue, type VerbResult } from "../src/protocol.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
 import type { PlanningSnapshot } from "../src/codemode/types.ts";
-import { WRITER_ROUTE } from "../src/writer/config.ts";
+import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import type { WriterPort } from "../src/writer/port.ts";
+import type { LocalModelPort } from "../src/writer/local-port.ts";
 import { classifyPress } from "../src/executor/risk.ts";
 import { snap } from "./builders.ts";
 import { FakeGrants } from "./fake-grants.ts";
@@ -271,7 +272,7 @@ export function cannedProgram(snapshots: readonly PlanningSnapshot[], steps: rea
 export function cannedGoalWriter(scripts: CannedStep[][]): WriterPort & { requests: PlanningSnapshot[][] } {
   const requests: PlanningSnapshot[][] = [];
   return {
-    route: WRITER_ROUTE,
+    route: FAKE_WRITER_ROUTE,
     requests,
     async write(req) {
       const input = req.input as { snapshots: PlanningSnapshot[] };
@@ -352,14 +353,16 @@ export function goalScene(o: {
   windows: DeskWindow[];
   pageDocument?: (windowId: string) => string | null;
   userWindow?: string;
-  /** A real writer in place of the canned one (scripts/goal-scenes-eval.ts --writer live). */
-  writer?: WriterPort;
+  /** A real writer in place of the canned one (scripts/goal-scenes-eval.ts --writer live); null for none, as the helper starts by default (L1). */
+  writer?: WriterPort | null;
   /** Jev, for drafts' claim checks and Ask (B30); none by default. */
   askJev?: AskJev;
   /** How an Ask makes its intent (HelperOptions.ask); none by default. */
   ask?: HelperOptions["ask"];
   /** Whether the helper has a calendar to add events to; true by default. */
   calendar?: boolean;
+  /** L1: the local model that writes drafts' words; the program's text by default. */
+  drafter?: LocalModelPort;
 }): GoalScene {
   const dir = mkdtempSync(join(tmpdir(), "caret-goal-"));
   const store = new Store(join(dir, "data"));
@@ -378,7 +381,8 @@ export function goalScene(o: {
     allowBackgroundFocus: false,
     readerLink: desk,
     ...(o.calendar === false ? {} : { calendar }),
-    writer: o.writer ?? writer,
+    writer: o.writer === null ? null : (o.writer ?? writer),
+    ...(o.drafter === undefined ? {} : { drafter: o.drafter }),
     now: () => desk.at,
     publish: (m) => {
       published.push(m);

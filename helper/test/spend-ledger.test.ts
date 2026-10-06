@@ -9,13 +9,16 @@ import { HelperServer } from "../src/server.ts";
 import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, Spend, SPEND_CAPABILITY } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import type { WriterPort, WriterRequest } from "../src/writer/port.ts";
-import { WRITER_ROUTE } from "../src/writer/config.ts";
+import { devWriterRoute } from "../src/writer/routes.ts";
 import { ledgeredJev, ledgeredWriter, SpendLedger, throttledTotals } from "../src/spend.ts";
 import type { Helper } from "../src/helper.ts";
 import { LineClient } from "./socket-reader.ts";
 
 const lines = readFileSync(new URL("../fixtures/golden/spend.ndjson", import.meta.url), "utf8").trim().split("\n");
 const req = {} as JevRequest;
+
+// Since L1 no writer route is configured by default, so the ledger is tested on a route a developer may name.
+const WRITER_ROUTE = devWriterRoute("gateway:inclusionai/ling-3.1-flash-free");
 
 describe("the spend lines", () => {
   it("parses every golden line and writes it back byte for byte", () => {

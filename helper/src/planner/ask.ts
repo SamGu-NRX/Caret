@@ -15,11 +15,11 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { AskOption, FillField, FillProposal, Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
-import { FillError, memoryRefOf, proposeFill } from "../fill/fill.ts";
+import { FillError, memoryRefOf, PAGE_WINDOW_KIND, proposeFill, type FillScope } from "../fill/fill.ts";
 import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
-import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, type PlanDraft, type PlannerMemory } from "./planner.ts";
+import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, wordsOf, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
 import { SAYS, SaidError, Unclear, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure, type AskPart } from "./says.ts";
@@ -28,7 +28,6 @@ import { fieldWords } from "./sources.ts";
 import { asksForWholeForm, exclusionsIn, namedSection } from "./scope-words.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { handoffWhy, PlannerError, validatePlan, type PlanContext } from "./validate.ts";
-import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 
 export interface AskOptions {
   askJev: AskJev;
@@ -109,6 +108,13 @@ export interface AskGoal {
   maker: MakerUse;
   /** The window the Ask was about: the goal reads it first. */
   windowId: string;
+  /**
+   * P2: an Ask about a page window, fill or plan, checked like any fill: the caller plans it with the page planner
+   * (goals/page-planner.ts) under this scope. `kind` is which fields the scope takes (every empty one, a section's, or
+   * the ones named), for the reveal continuation; a scope narrowed by Jev's confirmation is a list. Absent for a goal
+   * about native windows, which the writer plans.
+   */
+  page?: { scope: FillScope; trigger: string; kind: "all" | "section" | "list"; section: string | null };
 }
 
 /**
@@ -319,6 +325,12 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     throw e;
   }
   const use = made.use;
+  // P2: on a page with fields, for a host that runs goals, a fill or a plan is planned by the page planner; a plan is
+  // read as a fill of the whole form, which Jev must confirm the instruction asks for (confirmScope, as an inferred
+  // whole form), and Caret still presses nothing on the page.
+  const pageGoal = o.goals === true && w.window.kind === PAGE_WINDOW_KIND && snap.fields.length > 0;
+  const planAsAll = pageGoal && intent.route === "plan";
+  if (planAsAll) intent = { ...intent, route: "fill", why: "none", scope: "list", fields: [], literals: [] };
   /** The question for an unclear part, when it is not one the user already picked and code can list its candidates. */
   const question = (e: Unclear): AskQuestionDraft | string => {
     if (fixed[e.part] !== undefined) return `the user already picked the ${e.part}`;
@@ -354,18 +366,35 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // The words that may name fields are the instruction without its source phrases (sources.ts): "from my note"
   // never names the form's "Add a gift note" (B25 held-08).
   const words = fieldWords(instruction);
-  const namesField = (f: IntentField): boolean => relevance(words, f.name) > 0 || namesShortLabel(words, f.name);
+  // A field is named by the words that tell it from the form's other fields, not by words it shares with them (P1
+  // review): "fill Work email" names Work email, and Personal email is not named by "email". A field whose every word
+  // another field shares is named by all of them, unless a field with more words is named the same way ("work email"
+  // names Work email, not Email too).
+  const said = new Set(wordsOf(words));
+  const nameWords = new Map(snap.fields.map((f) => [f.key, new Set(wordsOf(f.name))]));
+  const namesField = (f: IntentField): boolean => {
+    if (namesShortLabel(words, f.name)) return true;
+    const own = nameWords.get(f.key) ?? new Set(wordsOf(f.name));
+    const others = snap.fields.filter((g) => g.key !== f.key).map((g) => nameWords.get(g.key) ?? new Set<string>());
+    const distinct = [...own].filter((x) => !others.some((o) => o.has(x)));
+    if (distinct.length > 0) return distinct.some((x) => said.has(x));
+    if (own.size === 0 || ![...own].every((x) => said.has(x))) return false;
+    return !others.some((o) => o.size > own.size && [...own].every((x) => o.has(x)) && [...o].every((x) => said.has(x)));
+  };
   // A writer's fill with an empty list, for an instruction whose field words name no field, is read as the whole form,
   // which Jev must then confirm (confirmScope): B25's writer gave "can you get this enrollment form done from what I
   // jotted down" an empty list, and the Ask refused it as a field the form does not have (held-07).
-  const inferredAll = makerName === "writer" && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && intent.fields.length === 0 && !snap.fields.some(namesField);
+  // The writer's intent and the heads maker's one request are each one answer; the staged Jev maker asked every part
+  // twice and confirmed its fields itself. The checks below hold the first two to Jev's confirmation (P1).
+  const oneAnswer = makerName !== "jev";
+  const inferredAll = (oneAnswer || planAsAll) && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && intent.fields.length === 0 && (planAsAll || !snap.fields.some(namesField));
   // A writer's list of every empty field Caret may type is the whole form, and Jev must confirm it as one question, as
   // for an inferred whole form: B26's held-out-2 run listed all nine fields for "fill out the pizza order from my
   // note", "pizza" named only Pizza Size, and Jev, asked about each other field alone, said no to eight. Taken as a
   // plain "all", it stood without any confirmation when no field word named a field ("fill only the first box"; B26's
   // second review).
   const empties = snap.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
-  const listsAll = makerName === "writer" && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
+  const listsAll = oneAnswer && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
   let checked: ReturnType<typeof checkIntent>;
   try {
     checked = checkIntent(inferredAll || listsAll ? { ...intent, scope: "all" } : intent, snap, fixed);
@@ -388,12 +417,17 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // a Graduation Date). A maker's own section intent is read the same way: the writer's section for "do my contact
   // info" was trusted whole because the instruction names it (B28b review).
   let bySection = false;
+  let sectionName: string | null = null;
+  /** The section's fields before Jev confirmed the ones its phrase does not ask for by meaning (P2: fewer is a list). */
+  let sectionBefore = 0;
   if (checked.route === "fill" && (inferredAll || listsAll || intent.scope === "all" || intent.scope === "section")) {
     try {
       const chosen = !inferredAll && !listsAll && intent.scope === "section" ? (snap.sections.find((x) => x.ref === intent.section)?.name ?? null) : null;
       const n = sectionScope(instruction, checked, snap, chosen);
       if (n !== null) {
         bySection = true;
+        sectionName = n.section;
+        sectionBefore = n.checked.fields.length;
         checked = n.checked;
         if (n.unsure.length > 0) {
           const yes = await jevConfirms(instruction, snap, askJev)(false, n.unsure);
@@ -411,7 +445,9 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // instruction asks for them (B25 review; B28 lead decision 1; the rule the code-mode writer has had since B24,
   // codeplan.ts confirmFields). Jev's own intents confirmed their fields already.
   // Fields the user picked are the scope they asked for (B29): no maker's reading of the instruction is checked there.
-  if (checked.route === "fill" && makerName === "writer" && !bySection && fixed.fields === undefined) {
+  // The fields in scope before Jev's confirmation may narrow them: a scope that loses one is a list (P2's page kind).
+  const scopedBefore = checked.route === "fill" ? checked.fields.length : 0;
+  if (checked.route === "fill" && (oneAnswer || planAsAll) && !bySection && fixed.fields === undefined) {
     try {
       checked = await confirmScope(instruction, checked, inferredAll || listsAll ? "inferred" : intent.scope, intent.section, snap, askJev, namesField);
     } catch (e) {
@@ -444,6 +480,13 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     } catch (e) {
       return refused(e);
     }
+  }
+  if (pageGoal && checked.route === "fill") {
+    const whole = fixed.fields === undefined && !bySection && (inferredAll || listsAll || intent.scope === "all");
+    const section = bySection ? sectionName : intent.scope === "section" && fixed.fields === undefined ? (snap.sections.find((x) => x.ref === intent.section)?.name ?? null) : null;
+    const narrowed = bySection ? checked.fields.length !== sectionBefore : checked.fields.length !== scopedBefore;
+    const kind = narrowed ? "list" : whole ? "all" : section !== null ? "section" : "list";
+    return { route: "goal", intent, maker: use, windowId: w.window.windowId, page: { scope: checked.scope, trigger: checked.trigger, kind, section: kind === "section" ? section : null } };
   }
   let p: FillProposal;
   try {

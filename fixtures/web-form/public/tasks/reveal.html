@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en" data-oracle-page="reveal">
+<head>
+<meta charset="utf-8">
+<title>Apply: Warehouse Systems Analyst</title>
+<link rel="stylesheet" href="/tasks/tasks.css">
+</head>
+<body>
+<!-- F1 dependent reveals: each choice below shows fields that were not there before, the way real forms do.
+       Country (United States or Canada)        -> State or Province
+       Employment type Contractor / Student     -> Agency name / School and graduation year
+       Authorized to work? Yes                  -> Sponsorship radios
+       How did you hear? Employee referral      -> Referrer name and email
+       "My mailing address is different"        -> a mailing address block inside an open shadow root
+     Every name and value is invented. -->
+<h1>Warehouse Systems Analyst</h1>
+<p class="step">Application</p>
+<form id="apply" action="/tasks/submit?page=reveal&amp;via=native" method="post" data-task-submit>
+  <div class="row"><label for="full_name">Full name</label><input id="full_name" name="full_name" autocomplete="name" data-oracle="full_name" data-oracle-kind="text"></div>
+  <div class="row"><label for="email">Email</label><input id="email" name="email" type="email" data-oracle="email" data-oracle-kind="text"></div>
+  <div class="row"><label for="country">Country of residence</label><select id="country" name="country" data-options="countries" data-oracle="country" data-oracle-kind="select"><option value="">Select...</option></select></div>
+  <div class="row" id="region-row"><label for="region" id="region-label">State</label><select id="region" name="region" data-oracle="region" data-oracle-kind="select"><option value="">Select...</option></select></div>
+
+  <fieldset data-oracle="employment_type" data-oracle-kind="radios"><legend>Current employment type</legend>
+    <div class="inline"><label><input type="radio" name="employment_type" value="employee"> Employee</label><label><input type="radio" name="employment_type" value="contractor"> Contractor</label><label><input type="radio" name="employment_type" value="student"> Student</label></div>
+  </fieldset>
+  <div class="row" id="agency-row"><label for="agency">Agency name</label><input id="agency" name="agency" data-oracle="agency" data-oracle-kind="text"></div>
+  <div id="student-rows">
+    <div class="row"><label for="student_school">School</label><input id="student_school" name="student_school" data-oracle="student_school" data-oracle-kind="text"></div>
+    <div class="row"><label for="student_grad_year">Expected graduation year</label><select id="student_grad_year" name="student_grad_year" data-options="years" data-oracle="student_grad_year" data-oracle-kind="select"><option value="">Select...</option></select></div>
+  </div>
+
+  <div class="row"><span class="label" id="authorized-label">Are you authorized to work in your country of residence?</span>
+    <div class="yesno" role="group" aria-labelledby="authorized-label" data-oracle="authorized" data-oracle-kind="pressgroup"><button type="button" aria-pressed="false">Yes</button><button type="button" aria-pressed="false">No</button></div></div>
+  <fieldset id="sponsorship-row" data-oracle="sponsorship" data-oracle-kind="radios"><legend>Will you require visa sponsorship?</legend>
+    <div class="inline"><label><input type="radio" name="sponsorship" value="yes"> Yes</label><label><input type="radio" name="sponsorship" value="no"> No</label></div>
+  </fieldset>
+
+  <div class="row"><label for="heard">How did you hear about this job?</label>
+    <select id="heard" name="heard" data-oracle="heard" data-oracle-kind="select"><option value="">Select...</option><option>Job board</option><option>Employee referral</option><option>Company website</option><option>Other</option></select></div>
+  <div id="referral-rows">
+    <div class="row"><label for="referrer_name">Referrer's name</label><input id="referrer_name" name="referrer_name" data-oracle="referrer_name" data-oracle-kind="text"></div>
+    <div class="row"><label for="referrer_email">Referrer's email</label><input id="referrer_email" name="referrer_email" type="email" data-oracle="referrer_email" data-oracle-kind="text"></div>
+  </div>
+
+  <div class="row"><label for="street">Street address</label><input id="street" name="street" autocomplete="street-address" data-oracle="street" data-oracle-kind="text"></div>
+  <div class="row"><label for="city">City</label><input id="city" name="city" autocomplete="address-level2" data-oracle="city" data-oracle-kind="text"></div>
+  <div class="row"><label><input type="checkbox" id="mailing_differs" name="mailing_differs" data-oracle="mailing_differs" data-oracle-kind="checkbox"> My mailing address is different</label></div>
+  <mailing-address id="mailing" hidden></mailing-address>
+
+  <div class="row"><label for="notes">Anything else we should know?</label><textarea id="notes" name="notes" data-oracle="notes" data-oracle-kind="text"></textarea></div>
+  <div class="actions"><button type="submit" data-oracle-press="submit">Submit application</button></div>
+</form>
+<!-- The mailing address block's shadow content: an open shadow root, so probe.js and the walk can both reach it. -->
+<template id="mailing-template">
+  <link rel="stylesheet" href="/tasks/tasks.css">
+  <fieldset><legend>Mailing address</legend>
+    <div class="row"><label for="mail_street">Mailing street address</label><input id="mail_street" name="mail_street" data-oracle="mail_street" data-oracle-kind="text"></div>
+    <div class="row"><label for="mail_city">Mailing city</label><input id="mail_city" name="mail_city" data-oracle="mail_city" data-oracle-kind="text"></div>
+    <div class="row"><label for="mail_postal">Mailing postal code</label><input id="mail_postal" name="mail_postal" data-oracle="mail_postal" data-oracle-kind="text"></div>
+  </fieldset>
+</template>
+<script src="/tasks/options.js"></script>
+<script>
+  customElements.define("mailing-address", class extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" }).append(document.getElementById("mailing-template").content.cloneNode(true));
+    }
+  });
+</script>
+<script src="/tasks/pages.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const checked = (name) => document.querySelector(`input[name=${name}]:checked`)?.value ?? "";
+  const authorized = document.querySelector('[data-oracle="authorized"]');
+  let lastCountry = null;
+  const update = () => {
+    const country = $("country").value;
+    if (country !== lastCountry) {
+      lastCountry = country;
+      TaskPage.fillSelect($("region"), TASK_OPTIONS.regions[country] ?? []);
+      $("region").value = "";
+      $("region-label").textContent = country === "Canada" ? "Province" : "State";
+    }
+    TaskPage.reveal("region-row", TASK_OPTIONS.regions[country] !== undefined);
+    TaskPage.reveal("agency-row", checked("employment_type") === "contractor");
+    TaskPage.reveal("student-rows", checked("employment_type") === "student");
+    TaskPage.reveal("sponsorship-row", TaskPage.pressed(authorized) === "Yes");
+    TaskPage.reveal("referral-rows", $("heard").value === "Employee referral");
+    TaskPage.reveal("mailing", $("mailing_differs").checked);
+  };
+  $("apply").addEventListener("change", update);
+  update();
+</script>
+<script src="/tasks/probe.js"></script>
+</body>
+</html>

@@ -67,9 +67,10 @@ describe("a reply's recipient", () => {
     expect(end?.event === "finished" && [end.outcome, end.left]).toEqual(["done", []]);
   });
 
-  it("is put to Jev as the sender of the message the reply answers, which code checked it is", async () => {
+  // G3: code's own To skips Jev (goal-derived.test.ts); a To the program wrote is the writer's pick.
+  it("is put to Jev as the sender of the message the reply answers when the program wrote To itself", async () => {
     const jev = standInJev();
-    const sc = scene({ scripts: [[message]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: jev });
+    const sc = scene({ scripts: [[{ fill: { window: "Re: Order", target: "To", value: EMAIL } }, message]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: jev });
     preview(await sc.request("draft a reply to Priya saying I'm in"));
     expect(jev.asked.filter((q) => q.includes(`"${EMAIL}" (the sender of the message this reply answers: the From line of 'Order ORD-2026-48213 arrived damaged')`))).toHaveLength(2);
   });
@@ -88,8 +89,8 @@ describe("a reply's recipient", () => {
     ]);
   });
 
-  it("is the user's to add when Jev does not confirm the sender, with Send still the user's", async () => {
-    const steps: CannedStep[] = [message, { press: { window: "Re: Order", target: "Send", effect: "e:yours" } }];
+  it("is the user's to add when Jev does not confirm the sender the program wrote, with Send still the user's", async () => {
+    const steps: CannedStep[] = [{ fill: { window: "Re: Order", target: "To", value: EMAIL } }, message, { press: { window: "Re: Order", target: "Send", effect: "e:yours" } }];
     const sc = scene({ scripts: [steps], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: standInJev({ belongs: (q) => !q.includes("'To'") }) });
     const g = preview(await sc.request("draft a reply to Priya saying I'm in"));
     expect(g.steps.map((s) => s.says)).toEqual(["Message: I'm in.", "'Send' reads as outbound; you press it"]);

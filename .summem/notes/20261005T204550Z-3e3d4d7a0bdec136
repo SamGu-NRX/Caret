@@ -1,0 +1,1 @@
+Hosts before v2/answers throw on an unknown memoryDocument id, losing the whole memory list; the server lists answers.md only to hosts with the savedAnswers capability.

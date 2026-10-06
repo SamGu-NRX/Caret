@@ -23,11 +23,16 @@ import { nodeText } from "../model.ts";
 import { PROTOCOL_VERSION, type GoalAccept, type GoalEdit, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
+import { isDerived, isFilled } from "./gates.ts";
+import { sourceHolds } from "../offers/fill-popup.ts";
+import { memoryValue, parseMemoryRef } from "../fill/fill.ts";
+import { pageInputKeys } from "./page-planner.ts";
+import { describeField } from "../fill/descriptor.ts";
 import { formControls } from "../fill/controls.ts";
 import { fieldName } from "../planner/planner.ts";
 import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
-import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type ValueBinding } from "./plan.ts";
+import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
 import { effectKey, segmentOf, type DonePress } from "./lower.ts";
 import { codeGate } from "./gates.ts";
 
@@ -47,6 +52,11 @@ export interface StepReceipt {
   before: string;
   after: string;
   at: number;
+  /**
+   * P1: from the executor's "acting" on the step to its receipt, in ms by the runs' clock: the write and its read-back
+   * through the app or the page engine. Null for a step that never acted (already so, or a hand-off).
+   */
+  ms: number | null;
 }
 
 export interface GoalCursor {
@@ -93,6 +103,8 @@ interface Run {
   cause: { reason: GoalStopReason; says: string } | null;
   /** The reason the first segment was previewed with when it was not its own (a fresh plan's), so an edit's preview keeps it. */
   firstReason: "afterReveal" | "freshPlan" | null;
+  /** When the executor first said it was acting on each step, by the step's index in the goal (P1: StepReceipt.ms). */
+  acting: Map<number, number>;
 }
 
 export interface Replan {
@@ -105,6 +117,12 @@ export interface Replan {
   /** Writes the stopped goal meant (dropped, or planned and never made): the fresh plan's preview names those it leaves. */
   owed: readonly LeftItem[];
   why: GoalStopReason;
+  /**
+   * P2: a page goal's continuation context (GoalPlan.page), so the replanner plans the page again (page-planner.ts)
+   * rather than asking a writer; `revealed` names the controls a finished page goal's writes showed, which are then the
+   * fresh plan's only fields.
+   */
+  page?: PageGoal & { revealed?: readonly string[] };
 }
 
 export interface GoalRunDeps {
@@ -121,6 +139,16 @@ export interface GoalRunDeps {
   pageDocument?: (windowId: string) => string | null;
   /** Builds a fresh plan for what remains, from the screen as it is now; null when none can be offered. */
   replan?: (r: Replan) => Promise<GoalPlan | null>;
+  /**
+   * P2: reads a page window again (the executor's walk verb). A page goal's last write is no longer followed by a walk
+   * (engines/page-link.ts act), so the goal reads the page once before it ends, to see what its writes revealed.
+   */
+  walk?: (windowId: string) => Promise<void>;
+  /**
+   * P2: an About entry as a fill may use it now (helper.ts aboutNow), or null when it is gone, paused or not typed. A
+   * page goal's value from memory must still be that entry's under the same label before it runs, as a Fill all's is.
+   */
+  aboutNow?: (id: string) => { value: string; label: string } | null;
 }
 
 const SAYS: Record<GoalStopReason, string> = {
@@ -179,12 +207,23 @@ export class GoalRuns {
     return r === undefined ? null : { state: r.state, cursor: structuredClone(r.cursor) };
   }
 
+  /** A copy of the plan a goal was offered with, for evaluations (P2's disagreement report); a copy is never offered. */
+  planOf(goalId: string): GoalPlan | null {
+    const r = this.runs.get(goalId);
+    return r === undefined ? null : structuredClone(r.plan);
+  }
+
   /** Offers a goal's first segment for acceptance, as the reply to `requestId` (or as a fresh plan replacing another). */
   propose(given: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[]; pressed: DonePress[]; owed: LeftItem[] } | null = null): GoalProgress {
     if (this.runs.has(given.goalId)) throw new Error(`goal ${given.goalId} already exists`);
     // Only lowering's gates (G2, gates.ts) mark a write: a plan built any other way is a bug, never offered.
-    const unchecked = given.segments.flatMap((s) => s.steps).find((s) => (s.kind === "write" || s.kind === "calendar") && s.gate === null);
+    // A "derived" step skipped Jev, so it must be the very object lowering marked (gates.ts isDerived), not a copy.
+    // A "fill" step (P2) skipped Jev because fill agreed on its very value for its very target: only lowering marks one.
+    const unchecked = given.segments.flatMap((s) => s.steps).find((s) => (s.kind === "write" || s.kind === "calendar") && (s.gate === null || (s.gate === "derived" && !isDerived(s)) || (s.gate === "fill" && !isFilled(s))));
     if (unchecked !== undefined) throw new Error(`goal ${given.goalId}: step ${unchecked.ref} writes '${unchecked.target.label}' without passing the value gates`);
+    // Lowering makes no attach step until P3, which also confirms the file: none may be offered before then.
+    const attach = given.segments.flatMap((s) => s.steps).find((s) => s.kind === "attach");
+    if (attach !== undefined) throw new Error(`goal ${given.goalId}: step ${attach.ref} attaches a file, which no goal does yet`);
     // The run owns its own frozen copy: what is shown is what runs, whatever the caller does with its object later.
     const plan = structuredClone(given);
     for (const seg of plan.segments) deepFreeze(seg);
@@ -205,6 +244,7 @@ export class GoalRuns {
       task: null,
       cause: null,
       firstReason: replaces === null ? null : "freshPlan",
+      acting: new Map(),
     };
     this.runs.set(plan.goalId, run);
     return this.segmentMessage(run, replaces === null ? undefined : "freshPlan");
@@ -345,14 +385,33 @@ export class GoalRuns {
         if (reply === undefined || src === undefined || !senderOf(reply.window.title, basisText(src), v.text)) return { reason: "sourceChanged", says: `'${v.text}' is no longer the sender of the message you're answering` };
       }
       if (v.memory !== null && !this.deps.memoryHolds(v.memory, v.text)) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
+      // A page goal's value from memory (P2): the entry must still give it under the label fill offered it by
+      // (offers/fill-popup.ts recheckFill holds a Fill all to the same); no way to read the entry is no entry.
+      if (v.memory !== null && v.fill?.memoryLabel !== undefined) {
+        const ref = parseMemoryRef(v.memory);
+        const now = this.deps.aboutNow?.(ref.id) ?? null;
+        if (now === null || memoryValue(now.value, ref.part) !== v.text || now.label !== v.fill.memoryLabel) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
+      }
       if (v.source === null) continue;
-      const sw = this.deps.model.windows.get(v.source.windowId);
-      const node = sw?.nodes.get(v.source.key);
-      const want = v.event?.sentence ?? v.text;
-      const typed = sw?.values.some((x) => x.nodeKey === v.source?.key && x.text === want) === true;
-      if (sw === undefined || node === undefined || (!nodeText(node).includes(want) && !typed)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
+      if (!this.sourceShows(v)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
     }
     return null;
+  }
+
+  /**
+   * Whether a value's source window still shows it: a value fill read (P2) the way fill read it (offers/fill-popup.ts
+   * sourceHolds, the same rule a Fill all's recheck holds it to), any other the text it copies (an event its sentence).
+   */
+  private sourceShows(v: NonNullable<GoalStep["value"]>): boolean {
+    const src = v.source;
+    if (src === null) return true;
+    const sw = this.deps.model.windows.get(src.windowId);
+    if (sw === undefined) return false;
+    if (v.fill !== undefined) return sourceHolds(sw, src.key, v.fill.span, v.fill.context, v.fill.control);
+    const node = sw.nodes.get(src.key);
+    const want = v.event?.sentence ?? v.text;
+    const typed = sw.values.some((x) => x.nodeKey === src.key && x.text === want);
+    return node !== undefined && (nodeText(node).includes(want) || typed);
   }
 
   /**
@@ -393,6 +452,8 @@ export class GoalRuns {
     // only makes a fresh plan stricter, and one whose answer was lost (it may have landed) is never missed.
     if (m.phase === "acting" && m.step !== null) {
       const s = seg.steps[m.step];
+      // The first "acting" of a step: a fallback means acts again and its time counts from the first try.
+      if (s !== undefined && !run.acting.has(s.index)) run.acting.set(s.index, this.deps.now());
       if (s?.kind === "press" && seg.domain.kind === "window" && !run.pressed.some((p) => p.key === s.target.key && p.effect === s.effect)) run.pressed.push({ windowId: seg.domain.windowId, key: s.target.key, effect: s.effect });
     }
     if ((m.phase === "verified" || m.phase === "skipped") && m.step !== null) {
@@ -432,7 +493,9 @@ export class GoalRuns {
     const w = windowId === null ? undefined : this.deps.model.windows.get(windowId);
     const before = windowId === null ? "calendar" : (run.plan.inventory.revisions.get(windowId) ?? "");
     const after = windowId === null ? "calendar" : w === undefined ? "gone" : windowRevision(w);
-    run.cursor.receipts.push({ goalId: run.plan.goalId, segment: seg.index, step: s.index, stepRef: s.ref, status, target: { windowId, key: effectKey(s.target, s.value) }, effect: s.effect, before, after, at: this.deps.now() });
+    const at = this.deps.now();
+    const acted = status === "verified" ? run.acting.get(s.index) : undefined;
+    run.cursor.receipts.push({ goalId: run.plan.goalId, segment: seg.index, step: s.index, stepRef: s.ref, status, target: { windowId, key: effectKey(s.target, s.value) }, effect: s.effect, before, after, at, ms: acted === undefined ? null : at - acted });
     if (status !== "handoff") run.cursor.nextStep = s.index + 1;
     const total = run.plan.segments.reduce((n, x) => n + x.steps.length, 0);
     this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "step", segment: seg.index, taskId: run.task?.id ?? "", step: s.index, steps: total, phase: status === "verified" ? "verified" : status === "alreadyTrue" ? "skipped" : "handoff", says: s.says });
@@ -454,7 +517,62 @@ export class GoalRuns {
       this.track(this.stopAndReplan(run, "revealed", null, SAYS.revealed, "afterReveal"));
       return;
     }
+    // P2: a page goal reads its page once more before it ends (its writes are no longer each followed by a walk), then
+    // offers a fresh plan for any control its writes revealed in its scope.
+    const page = run.plan.page;
+    if (page !== undefined && this.deps.walk !== undefined) {
+      const walk = this.deps.walk;
+      this.track(
+        (async () => {
+          await walk(page.windowId).catch(() => undefined);
+          this.finish(run, "done", this.notHeld(run));
+          await this.afterReveal(run, page);
+        })(),
+      );
+      return;
+    }
     this.finish(run, "done");
+  }
+
+  /**
+   * A page goal's verified writes its page no longer shows as written, read from the walk at its end (P2 review): the
+   * page link takes a write's own read-back instead of walking after it (engines/page-link.ts), so a page that changed
+   * the value later (its own script, another injector) is seen here, and the goal is not done.
+   */
+  private notHeld(run: Run): LeftItem[] {
+    const out: LeftItem[] = [];
+    for (const s of run.plan.segments.flatMap((x) => x.steps)) {
+      if (s.kind !== "write" || s.writes === null || s.target.domain.kind !== "window") continue;
+      if (!run.cursor.receipts.some((r) => r.step === s.index && r.status === "verified")) continue;
+      const n = this.deps.model.windows.get(s.target.domain.windowId)?.nodes.get(s.target.key);
+      if (n === undefined || (n.value ?? "") === s.writes) continue;
+      out.push({ windowId: s.target.domain.windowId, key: s.target.key, label: s.target.label, why: "planned", says: `'${s.target.label}' no longer holds what Caret wrote` });
+    }
+    return out;
+  }
+
+  /**
+   * The controls a finished page goal's writes revealed (P2): empty controls the page now shows in the goal's scope that
+   * were not on the page when it was planned, on the same document. A list scope takes none (the user named fields that
+   * existed); a section scope, those under the same section. For them, a fresh goal with segment reason afterReveal,
+   * which needs its own acceptance. A new document is P3's (carry), not a reveal.
+   */
+  private async afterReveal(run: Run, page: PageGoal): Promise<void> {
+    if (page.kind === "list" || this.deps.replan === undefined) return;
+    const w = this.deps.model.windows.get(page.windowId);
+    if (w === undefined) return;
+    const doc = run.plan.inventory.documents.get(page.windowId);
+    if (doc === undefined || this.deps.pageDocument?.(page.windowId) !== doc) return;
+    const before = new Set(page.keys);
+    const revealed = pageInputKeys(w).filter((k) => {
+      if (before.has(k)) return false;
+      if (page.kind !== "section") return true;
+      const n = w.nodes.get(k);
+      return n !== undefined && describeField(w, n).section === page.section;
+    });
+    if (revealed.length === 0) return;
+    const next = await this.fresh(run, "revealed", "afterReveal", revealed);
+    if (next !== null) this.deps.publish(next);
   }
 
   /**
@@ -462,12 +580,12 @@ export class GoalRuns {
    * planned ("handoff"). What is still left then decides the outcome (G2): anything besides the recipient makes it
    * partial, a recipient alone makes it a hand-off, and only nothing left is done.
    */
-  private finish(run: Run, reached: "done" | "handoff"): void {
+  private finish(run: Run, reached: "done" | "handoff", notHeld: readonly LeftItem[] = []): void {
     this.endTask(run);
     run.state = "finished";
     const verified = run.cursor.receipts.filter((r) => r.status === "verified").length;
     const skipped = run.cursor.receipts.filter((r) => r.status === "alreadyTrue").length;
-    const left = this.leftNow(run);
+    const left = [...notHeld, ...this.leftNow(run).filter((l) => !notHeld.some((x) => x.windowId === l.windowId && x.key === l.key))];
     const outcome = left.some((l) => l.why !== "recipient") ? "partial" : left.length > 0 ? "handoff" : reached;
     const handoff = reached === "handoff" ? run.plan.segments.flatMap((x) => x.steps).find((x) => x.kind === "handoff") : undefined;
     const tally = `${verified}${skipped > 0 ? `, ${skipped} already so` : ""}`;
@@ -582,7 +700,7 @@ export class GoalRuns {
    * Asks the replanner for what remains and returns its first segment's preview, as a new goal that needs its own
    * acceptance; null when there is no replanner or it offers nothing.
    */
-  private async fresh(run: Run, why: GoalStopReason, reason: "afterReveal" | "freshPlan"): Promise<GoalProgress | null> {
+  private async fresh(run: Run, why: GoalStopReason, reason: "afterReveal" | "freshPlan", revealed?: readonly string[]): Promise<GoalProgress | null> {
     const replan = this.deps.replan;
     if (replan === undefined) return null;
     const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")];
@@ -594,7 +712,8 @@ export class GoalRuns {
     const owed = [...run.owed, ...unmade.filter((u) => !run.owed.some((o) => o.windowId === u.windowId && o.key === u.key))];
     let plan: GoalPlan | null;
     try {
-      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why });
+      const page = run.plan.page === undefined ? undefined : { ...run.plan.page, ...(revealed === undefined ? {} : { revealed }) };
+      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why, ...(page === undefined ? {} : { page }) });
     } catch {
       plan = null;
     }
@@ -617,12 +736,12 @@ export class GoalRuns {
       event: "segment",
       segment: seg.index,
       segments: run.plan.segments.length,
-      reason: reason ?? (run.cursor.segment === 0 ? (run.firstReason ?? seg.reason) : seg.reason),
+      reason: reason ?? (run.cursor.segment === 0 ? (run.firstReason ?? wireReason(seg.reason)) : wireReason(seg.reason)),
       replaces: run.cursor.segment === 0 ? run.replaces : null,
       digest: seg.digest,
       expires: run.expires,
       where: d.kind === "window" ? { kind: "window", app: d.appName, title: d.title } : { kind: "calendar", calendar: d.calendar },
-      steps: seg.steps.map((s) => ({ index: s.index, kind: s.kind, says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }) })),
+      steps: seg.steps.map((s) => ({ index: s.index, kind: viewKind(s), says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }) })),
       warnings: run.cursor.segment === 0 ? run.plan.warnings : [],
     };
   }
@@ -685,13 +804,8 @@ export class GoalRuns {
       }
       const draftMoved = this.draftMoved(run, s);
       if (draftMoved !== null) return draftMoved;
-      const src = s.value?.source;
-      if (src === undefined || src === null) continue;
-      const sw = this.deps.model.windows.get(src.windowId);
-      const node = sw?.nodes.get(src.key);
-      const want = s.value?.event?.sentence ?? s.value?.text ?? "";
-      const typed = sw?.values.some((x) => x.nodeKey === src.key && x.text === want) === true;
-      if (sw === undefined || node === undefined || (!nodeText(node).includes(want) && !typed)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
+      if (s.value === null || s.value.source === null) continue;
+      if (!this.sourceShows(s.value)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
     }
     return null;
   }
@@ -735,8 +849,23 @@ function sameField(w: WindowState, s: GoalStep): boolean {
   if (n === undefined) return false;
   if (s.writes !== null && (n.value ?? "") === s.writes) return true;
   if ((n.placeholder ?? null) !== s.target.placeholder) return false;
-  if (s.target.control === "text") return fieldName(w, n) === s.target.label;
-  return formControls(w).find((c) => c.node.key === n.key)?.label === s.target.label;
+  // A web dropdown (P2) is named as a text field is (page-planner.ts binds it so).
+  if (s.target.control === "text" || s.target.control === "combobox") return fieldName(w, n) === s.target.label;
+  // A control with no label of its own is bound as "" (page-planner.ts); one formControls no longer lists is not the same.
+  const c = formControls(w).find((x) => x.node.key === n.key);
+  return c !== undefined && (c.label ?? "") === s.target.label;
+}
+
+/** A step's kind as goalProgress shows it. propose() refuses an attach step until P3 adds it to the protocol. */
+function viewKind(s: GoalStep): "write" | "calendar" | "press" | "handoff" {
+  if (s.kind === "attach") throw new Error(`step ${s.ref} attaches a file, which goalProgress cannot show yet`);
+  return s.kind;
+}
+
+/** A segment's reason as goalProgress says it: nextPage is P3's, which adds it to the protocol, and nothing makes it yet. */
+function wireReason(r: GoalSegment["reason"]): "start" | "crossWindow" | "afterReveal" {
+  if (r === "nextPage") throw new Error("a nextPage segment cannot be shown before P3");
+  return r;
 }
 
 /**

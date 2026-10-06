@@ -1,0 +1,1 @@
+P2: a fill part derived from one 'Label: value' line carries that label as FillHandoff.context; recheckFields drops a field that fails its recheck and runs the rest; an unlabelled span inside a longer line passes only if derive.ts re-derives it (fill-popup.ts sourceHolds).

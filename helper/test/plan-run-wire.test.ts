@@ -3,6 +3,7 @@
 // progress it starts, a repeated acceptance refused, a goal a dialog stopped with its fresh plan, and a request code
 // refused. Only a host that declared the capability may send the two goal messages or receive goalProgress.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { SAYS } from "../src/planner/says.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -123,9 +124,9 @@ describe("goal messages on the socket", () => {
     other.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 3, version: "watcher" });
     await until(() => helper.hostPresent);
     host.send(request);
-    // No writer is configured here, so the reply is a refusal, to the asker only.
+    // No writer is configured here, as the helper starts since L1, so the reply is a refusal, to the asker only.
     const reply = await host.waitFor((m) => m.type === "goalProgress");
-    expect(reply).toMatchObject({ event: "stopped", reason: "refused", requestId: "r1", says: "No plan writer is configured, so Caret cannot plan this" });
+    expect(reply).toMatchObject({ event: "stopped", reason: "refused", requestId: "r1", says: SAYS.noPlanWriter });
     // A published goalProgress reaches the goal-planning host and no other consumer.
     server.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: 1, goalId: "g", requestId: null, event: "finished", outcome: "done", verified: 1, skipped: 0, left: [], says: "Done: 1 step verified." });
     await host.waitFor((m) => m.type === "goalProgress" && m.goalId === "g");

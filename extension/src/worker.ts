@@ -187,6 +187,8 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 }
 
 async function walk(id: string, tabId: number | null): Promise<void> {
+  // P1: the walk's time in the extension, from the command to the snapshot sent (frames asked in parallel).
+  const t0 = performance.now();
   const tab = tabId === null ? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0] : await chrome.tabs.get(tabId).catch(() => undefined);
   if (tab?.id === undefined) return result(id, { outcome: "noElement", detail: tabId === null ? "no active tab in the focused window" : `no tab ${tabId}` });
   const frames = (await chrome.webNavigation.getAllFrames({ tabId: tab.id })) ?? [];
@@ -267,10 +269,12 @@ async function walk(id: string, tabId: number | null): Promise<void> {
       iframes: r.iframes.map((i) => ({ src: i.src, rect: i.rect })),
       excluded: r.excluded,
       truncated: r.truncated,
+      ...(typeof r.walkMs === "number" ? { walkMs: r.walkMs } : {}),
     })),
     missing: missing.sort((a, b) => a.frameId - b.frameId),
     focused: focusedFrame?.r.focused === undefined || focusedFrame.r.focused === null ? null : { frameId: focusedFrame.f.frameId, ...focusedFrame.r.focused },
     view,
+    walkMs: Math.round((performance.now() - t0) * 10) / 10,
   });
   result(id, { outcome: "ok", detail: null });
 }

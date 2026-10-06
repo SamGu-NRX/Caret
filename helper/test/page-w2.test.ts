@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MAX_ATTACH_BYTES, PROTOCOL_VERSION, type HelperMessage, type HelperToEngine, type PageEngineState, type PageSnapshot, type ReaderMessage, type Snapshot } from "../src/protocol.ts";
 import { ConfirmedFiles } from "../src/engines/attach.ts";
 import { EngineSession } from "../src/engines/session.ts";
-import { PageEngineLink, toVerbOutcome } from "../src/engines/page-link.ts";
+import { PageEngineLink, toVerbOutcome, type VerbTiming } from "../src/engines/page-link.ts";
 import { pageHost } from "../src/engines/host.ts";
 import { BrowserPresence, isChromiumBrowser } from "../src/engines/presence.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
@@ -151,6 +151,38 @@ describe("confirmed files", () => {
   });
 });
 
+describe("page link timings (P1)", () => {
+  it("passes the extension's walk time to the model, and times each command, an act with the walk after it", async () => {
+    const { session } = rig(undefined, (id) => ({ ...snapshot(id), walkMs: 12.5 }));
+    const applied: Snapshot[] = [];
+    const timings: VerbTiming[] = [];
+    const link = new PageEngineLink(session, (s) => applied.push(s), (t) => timings.push(t));
+    await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
+    expect(applied[0]?.stats.walkMs).toBe(12.5);
+    const r = await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f0/form[react-form]/combobox:country of residence~0", role: "AXComboBox", attribute: "value", expect: "", value: "United States", taskId: "t1" });
+    expect(r.outcome).toBe("ok");
+    expect(timings.map((t) => [t.verb, t.control, t.outcome, t.extensionMs, t.rewalk?.extensionMs ?? null])).toEqual([
+      ["pageWalk", null, "ok", 12.5, null],
+      ["pageChooseOption", "combobox", "ok", null, 12.5],
+    ]);
+    expect(timings.every((t) => t.commandMs >= 0 && (t.rewalk === null || t.rewalk.commandMs >= 0))).toBe(true);
+  });
+
+  it("says 0 for a walk from an extension that reports no time, and times a refused act with no walk after it", async () => {
+    const { session } = rig(() => ({ outcome: "notAllowed", detail: "no grant" }));
+    const applied: Snapshot[] = [];
+    const timings: VerbTiming[] = [];
+    const link = new PageEngineLink(session, (s) => applied.push(s), (t) => timings.push(t));
+    await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
+    expect(applied[0]?.stats.walkMs).toBe(0);
+    await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f0/form[react-form]/combobox:country of residence~0", role: "AXComboBox", attribute: "value", expect: "", value: "United States", taskId: "t1" });
+    expect(timings.map((t) => [t.verb, t.outcome, t.extensionMs, t.rewalk])).toEqual([
+      ["pageWalk", "ok", null, null],
+      ["pageChooseOption", "notAllowed", null, null],
+    ]);
+  });
+});
+
 describe("page link: combobox and attach", () => {
   let dir: string;
   beforeEach(() => (dir = mkdtempSync(join(tmpdir(), "caret-attach-"))));
@@ -236,10 +268,10 @@ describe("page link: undo writes only the element its write went to (B23 on page
   it("refuses an undo when the key is now in another document; another registry id goes to the page, which checks the object under the mark (W3)", async () => {
     const changes: { id: string; documentId: string; sent: number }[] = [{ id: "e9", documentId: "D0", sent: 2 }, { id: "e2", documentId: "D1", sent: 1 }];
     for (const change of changes) {
-      let walks = 0;
+      let moved = false;
       const { session, sent } = rig(undefined, (id) => {
         const s = snapshot(id);
-        if (++walks <= 2) return s;
+        if (!moved) return s;
         const f = s.frames[0]!;
         const controls = f.controls.map((c) => (c.id === "e2" ? { ...c, id: change.id } : c));
         return { ...s, frames: [{ ...f, controls, documentId: change.documentId }] };
@@ -247,6 +279,7 @@ describe("page link: undo writes only the element its write went to (B23 on page
       const link = new PageEngineLink(session, () => {});
       await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
       expect((await link.run(write({ mark: "m1" }))).outcome).toBe("ok");
+      moved = true;
       await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
       const r = await link.run(write({ sameAs: "m1" }, "", "robin@example.test"));
       expect(commands(sent).filter((v) => v.kind === "pageWrite"), JSON.stringify(change)).toHaveLength(change.sent);

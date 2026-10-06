@@ -12,7 +12,7 @@ import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import type { AskJev } from "../src/fill/jev.ts";
-import { WRITER_ROUTE } from "../src/writer/config.ts";
+import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import type { WriterRequest } from "../src/writer/port.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { MAIL_APP, snap, text } from "./builders.ts";
@@ -59,7 +59,7 @@ function mailWindow(): ReturnType<typeof snap> {
 
 /** An intent writer that leaves the fields open, and a Jev that picks Austin for a City field and calls it the user's. */
 const openFields = {
-  route: WRITER_ROUTE,
+  route: FAKE_WRITER_ROUTE,
   write: async (_: WriterRequest) => {
     const json = { route: "ask", why: "whichFields", scope: "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] };
     return { model: "fake", provider: "groq", output: { program: null, reply: JSON.stringify(json), json }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };

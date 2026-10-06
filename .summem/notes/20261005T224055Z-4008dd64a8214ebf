@@ -1,0 +1,1 @@
+Headless Chrome for Testing keeps calling Google hosts (google.com, googleapis.com) through a proxy whatever flags it gets; the F1 network sink (fixtures/web-form/oracle.ts) files them under browserService(), not offsite().

@@ -231,7 +231,8 @@ describe("engine session and page link", () => {
     const text = await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f4/textbox:referral~0", role: "AXTextField", attribute: "value", expect: "x", value: "ABC", taskId: "t1" });
     expect(text.outcome).toBe("ok");
     expect(verbs.length).toBe(3);
-    const last = sent.filter((m) => m.type === "pageCommand").at(-2);
+    // A verified text write is not walked after (P2's deferred walk): it is the last command.
+    const last = sent.filter((m) => m.type === "pageCommand").at(-1);
     expect(last?.type === "pageCommand" && last.verb).toMatchObject({ kind: "pageWrite", frameId: 4, documentId: "D4", id: "e1", expect: "x", value: "ABC" });
   });
 

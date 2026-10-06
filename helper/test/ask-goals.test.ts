@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { AskJev } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type GoalProgress } from "../src/protocol.ts";
-import { WRITER_ROUTE } from "../src/writer/config.ts";
+import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import type { WriterPort } from "../src/writer/port.ts";
 import type { PlanningSnapshot } from "../src/codemode/types.ts";
 import { areaKey, cannedProgram, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, SUPPORT, type CannedStep, type GoalScene } from "./goal-desk.ts";
@@ -21,7 +21,7 @@ const INSTRUCTION = "copy the order number from the email into the support case,
 function askAndGoalWriter(route: string): WriterPort & { kinds: string[] } {
   const kinds: string[] = [];
   return {
-    route: WRITER_ROUTE,
+    route: FAKE_WRITER_ROUTE,
     kinds,
     async write(req) {
       kinds.push(req.kind);

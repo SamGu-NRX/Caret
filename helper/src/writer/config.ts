@@ -1,5 +1,7 @@
 // Writer routes and the configured pick. Changing the pick is explicit configuration and needs a fresh run
 // of scripts/writer-eval.ts (plan section 5); there is no automatic fallback to another route.
+// L1 (2026-10-05): Sam turned Groq off ("As for Groq, I currently don't want to."). No route is configured; a developer
+// names one with --dev-writer (writer/routes.ts devWriterRoute, writer/startup.ts).
 import type { ChatRoute } from "./chat.ts";
 
 const GROQ = "https://api.groq.com/openai/v1";
@@ -79,7 +81,7 @@ export const CANDIDATES: readonly ChatRoute[] = [GROQ_GPT_OSS_120B, GROQ_GPT_OSS
  * Limits that matter for the product: Groq's on-demand tier allows qwen3.8-27b 1,000 output tokens a
  * minute (about five plans) and the gpt-oss models 8,000 tokens a minute (about five plans).
  */
-export const WRITER_ROUTE: ChatRoute = GROQ_QWEN_3_8_27B;
+export const WRITER_ROUTE: ChatRoute | null = null; // L1: was GROQ_QWEN_3_8_27B, the pick above
 
 /** Longest qwen3.8 plan in runs 2 and 3 was 400 output tokens; 1,000 also stays under its per-minute limit. */
 export const WRITER_MAX_OUTPUT_TOKENS = 1000;
@@ -125,7 +127,30 @@ export const WRITER_MAX_OUTPUT_TOKENS = 1000;
  * gpt-oss-120b. B26's scoreboards ran on gpt-oss-20b instead, which still had tokens, and say so. A second try two
  * hours later (code at 312cee5) ran out again within a few asks: 120b answered 2 of 20, qwen3.8 4 of 20.
  */
-export const ASK_MAKER: "writer" | "jev" = "writer";
+/*
+ * L1 (2026-10-05, lead decision 2): Jev makes Ask's intents, so no Ask calls Groq. Today's numbers, scripts/realfill-asks.ts
+ * --maker jev on Jev jev-1.13.0, plan-route writer off (evidence/screen/l1 asks-*-jev-1, code at 3e890b3), of 20 each:
+ * | set                | right | partial | asked (option recall) | refused | wrong | after the pick: right, partial, wrong | Jev $  |
+ * | B24 (tuned)        | 0     | 0       | 16 (10/16)            | 4       | 0     | 1, 4, 0                               | 0.0073 |
+ * | B25 held-out       | 0     | 0       | 10 (7/10)             | 10      | 0     | 0, 2, 0                               | 0.0037 |
+ * | B26 held-out-2     | 0     | 0       | 12 (8/12)             | 8       | 0     | 2, 3, 0                               | 0.0047 |
+ */
+/*
+ * P1 (plans/fast-browser.md, "Intent as one request with heads"): "heads" is Jev in one request (planner/intent-heads.ts),
+ * the default since it beat the staged Jev maker above on all three sets. scripts/realfill-asks.ts --maker heads, Jev only,
+ * plan-route writer off, code at 582e458 (evidence/screen/p1 asks-b24-heads-final, asks-heldout-heads-final,
+ * asks-heldout2-heads-final):
+ * | set                | right | partial | asked (option recall) | refused | wrong | after the pick: right, partial, wrong | Jev $  |
+ * | B24 (tuned)        | 1     | 2       | 9 (5/9)               | 8       | 0     | 1, 2, 0                               | 0.0081 |
+ * | B25 held-out       | 0     | 1       | 9 (6/9)               | 10      | 0     | 0, 1, 0                               | 0.0049 |
+ * | B26 held-out-2     | 0     | 2       | 9 (5/9)               | 9       | 0     | 1, 2, 0                               | 0.0051 |
+ * One Jev request per intent in all 60 (the staged maker sends two to four); its latency p50 148 to 207 ms, p95 under
+ * 375 ms. Asks that end in a fill, at once or after the pick: 13 of 60 against the staged maker's 12, with 27 questions
+ * against 38. B24's asked plus refused is 17 against the Groq writer's 14 (evidence/screen/b29/final3-b24-120b): the
+ * scope head's margin stayed under its 0.75 floor on six asks, and on five more the best field answer was 0.69 to 0.93,
+ * under 0.95 (two of those five must be refused anyway). Not tuned to close it.
+ */
+export const ASK_MAKER: "writer" | "jev" | "heads" = "heads";
 /** The writer route for intents; a change is explicit configuration and a fresh scoreboard run, never a fallback. */
-export const INTENT_ROUTE: ChatRoute = GROQ_GPT_OSS_120B;
+export const INTENT_ROUTE: ChatRoute | null = null; // L1: was GROQ_GPT_OSS_120B
 

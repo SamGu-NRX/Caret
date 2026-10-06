@@ -8,8 +8,9 @@
 //   press with a capability    -> the capability's verifier end state, reached by that press (capabilities.ts)
 //   any other press            -> handoff: the user presses it, and the goal ends there
 // A write whose value fails fill's value gates (G2, gates.ts: a kind Caret never types, a kind that does not fit the
-// field, a value Jev does not confirm belongs there) is dropped, and the preview says why. A reply's To is filled
-// with the answered message's sender when the program left it out, or left to the user (left.ts). What the goal
+// field, a value Jev does not confirm belongs there) is dropped, and the preview says why. Jev is not asked about a
+// value the helper derived with nothing to choose (G3: the To below, an event inventory.ts built). A reply's To is
+// filled with the answered message's sender when the program left it out, or left to the user (left.ts). What the goal
 // leaves undone is listed in the plan, so it can never end as done (runs.ts).
 // Everything else is refused here with a reason the user can read, before anything is shown as acceptable: a
 // question (ask), a wait not tied to the press before it, a fill of a box or a native control, a field that already
@@ -24,7 +25,8 @@ import { matchOption } from "../fill/controls.ts";
 import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
-import { codeGate, jevGate, JevUnavailable } from "./gates.ts";
+import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived, markFilled } from "./gates.ts";
+import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
 import { saysPress } from "../planner/says.ts";
@@ -106,9 +108,10 @@ interface Dropped {
 
 /**
  * A fill as the step its control takes, or why its value does not fit the control (dropped, G2). A field that holds
- * other text, a button and a box are refused or handed off as before.
+ * other text, a button and a box are refused or handed off as before. `gated`: the value is the pick fill agreed on for
+ * this very target (P2), whose own control rules (fill.ts controlValue) already decided a box may be ticked.
  */
-function lowerFill(t: TargetBinding, v: ValueBinding): Pick<GoalStep, "kind" | "says" | "writes" | "handoff"> | Dropped {
+function lowerFill(t: TargetBinding, v: ValueBinding, gated: boolean): Pick<GoalStep, "kind" | "says" | "writes" | "handoff"> | Dropped {
   if (t.control === "calendar") {
     if (v.event === null) return { drop: `${clip(v.text)} is not an event Caret can add to a calendar` };
     return { kind: "calendar", says: `Add '${v.event.title}' to your ${t.label} calendar, ${v.event.says}`, writes: null, handoff: null };
@@ -125,19 +128,30 @@ function lowerFill(t: TargetBinding, v: ValueBinding): Pick<GoalStep, "kind" | "
     case "combobox":
     case "radio": {
       if (!page) return { kind: "handoff", says: `Caret leaves setting ${named(t)} to you`, writes: null, handoff: "unverifiable" };
+      // A web dropdown hides its options (B27): fill's pick is an option's name by its own rule (fill.ts optionName), and
+      // the page engine picks only the one option named exactly that, then verifies it (P2).
+      if (t.control === "combobox" && t.options === null && gated) {
+        if (t.value !== "" && t.value !== v.text) throw new GoalError("notEmpty", `${named(t)} already has a choice, so Caret will not change it`, t.ref);
+        return { kind: "write", says: `${t.label}: ${v.text}`, writes: v.text, handoff: null };
+      }
       const option = t.options === null ? null : matchOption(t.options, v.text);
       if (option === null) return { drop: `the field has no choice that is exactly '${clip(v.text)}'` };
       if (t.value !== "" && t.value !== option) throw new GoalError("notEmpty", `${named(t)} already has a choice, so Caret will not change it`, t.ref);
       return { kind: "write", says: `${t.label}: ${option}`, writes: option, handoff: null };
     }
-    case "date": {
+    case "date":
+    case "time": {
       if (!page) return { kind: "handoff", says: `Caret leaves setting ${named(t)} to you`, writes: null, handoff: "unverifiable" };
-      if (v.origin.kind !== "derived" || !/^\d{4}-\d{2}-\d{2}$/.test(v.text)) return { drop: `the field takes a date the value resolver read, and '${clip(v.text)}' is not one` };
-      if (t.value !== "" && t.value !== v.text) throw new GoalError("notEmpty", `${named(t)} already holds a date, so Caret will not change it`, t.ref);
+      // A date input takes YYYY-MM-DD, a date-and-time one YYYY-MM-DDTHH:MM (P2: fill's readDateTime), a time one HH:MM.
+      const shape = t.control === "time" ? /^\d{2}:\d{2}$/ : /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?$/;
+      if (v.origin.kind !== "derived" || !shape.test(v.text)) return { drop: `the field takes a ${t.control} the value resolver read, and '${clip(v.text)}' is not one` };
+      if (t.value !== "" && t.value !== v.text) throw new GoalError("notEmpty", `${named(t)} already holds a ${t.control}, so Caret will not change it`, t.ref);
       return { kind: "write", says: `${t.label}: ${v.text}`, writes: v.text, handoff: null };
     }
     case "checkbox":
-      // Fill's box rules (consent, statements, who states the fact) are not repeated for goals: the box is the user's.
+      // Fill's box rules (consent, statements, who states the fact; fill.ts controlValue) are not repeated for a writer's
+      // goal: the box is the user's. A page plan's box is ticked only as fill would tick it in a Fill all (P2).
+      if (gated && page && v.text === PAGE_CHECKED && t.value === "") return { kind: "write", says: `Tick ${named(t)}`, writes: PAGE_CHECKED, handoff: null };
       return { kind: "handoff", says: `Caret leaves ticking ${named(t)} to you`, writes: null, handoff: "unverifiable" };
     case "button":
       throw new GoalError("schema", `${named(t)} is a button, not a field`, t.ref);
@@ -171,7 +185,16 @@ export interface LowerOptions {
   ledger: SnippetLedger;
   /** Writes a stopped goal this plan replaces meant and did not make (runs.ts): those this plan leaves out are left. */
   carried?: readonly LeftItem[];
+  /**
+   * P2: by target ref, the very value object proposeFill agreed on for that target (goals/page-planner.ts). A fill of
+   * exactly that pair is gate "fill": Jev's question is not asked again, and every code check still runs. A message's
+   * recipient or subject field is dropped for such a value rather than refusing the plan (fill reads no message).
+   */
+  gated?: ReadonlyMap<string, ValueBinding>;
 }
+
+/** Segment warnings a goalProgress carries at most (protocol GoalProgress.warnings). */
+const MAX_WARNINGS = 24;
 
 /**
  * Lowers a sandbox plan against the inventory its snapshots came from. Throws GoalError with the first check that
@@ -204,6 +227,10 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   }
   let steps: GoalStep[] = [];
   const warnings: string[] = [];
+  const asked = eventsAsked(instruction);
+  const soleEvent = asked >= 1 && [...inv.values.values()].filter((v) => v.event !== null).length === 1;
+  /** Words of the labels the targets showed ("To", the calendar's name): an instruction names them, not an event. */
+  const labelWords = new Set([...inv.targets.values()].flatMap((t) => t.label.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "")));
   const left: LeftItem[] = [];
   /** A dropped write is left to the user; in a message's recipient field, as its recipient (left.ts). An event is named by itself. */
   const dropAs = (t: TargetBinding, why: string, v?: ValueBinding | null): void => {
@@ -240,8 +267,18 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         continue;
       }
       if (v.draft !== null) draftCheck(v, frozenBasis(instruction, v, inv));
-      const to = t.control === "calendar" ? false : recipientCheck(t, v, inv);
-      const lowered = lowerFill(t, v);
+      // By identity: the value object fill agreed on for this target, never a look-alike (gates.ts markFilled).
+      const byFill = o.gated?.get(t.ref) === v;
+      // Who a message goes to and its subject are the user's (B30) for fill's values too, but a fill is not a plan of
+      // the message: the field is left, not the plan refused, and only its own label makes it one (on a page, an email
+      // field near a Send button is a contact form's, not a To).
+      const pageRule = byFill ? pageRecipientRule(t) : null;
+      if (pageRule !== null) {
+        dropAs(t, pageRule, v);
+        continue;
+      }
+      const to = t.control === "calendar" || byFill ? false : recipientCheck(t, v, inv);
+      const lowered = lowerFill(t, v, byFill);
       if ("drop" in lowered) {
         dropAs(t, lowered.drop, v);
         continue;
@@ -253,8 +290,14 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         dropAs(t, gated, v);
         continue;
       }
-      const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : "jev";
-      steps.push({ ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered });
+      // An event the helper derived (inventory.ts eventsIn) skips Jev's value question (G3) only when nothing was left
+      // to choose: the instruction asks for an event, the inventory derived exactly one, and the instruction names
+      // nothing that event's sentence lacks (gates.ts eventAsAsked). Otherwise which event is a choice, and Jev answers
+      // whether it is the one asked for. Any other value is the writer's pick.
+      const derived = lowered.kind === "calendar" && v.event !== null && isDerived(v) && soleEvent && eventAsAsked(instruction, v.event, labelWords);
+      const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : derived ? "derived" : byFill ? "fill" : "jev";
+      const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered };
+      steps.push(gate === "derived" ? markDerived(step) : gate === "fill" ? markFilled(step) : step);
       lastPress = null;
       continue;
     }
@@ -278,14 +321,22 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     lastPress = step;
   }
   // A reply's recipient (G2, B30): the program does not write To (goal-prompt.ts), so code puts the answered message's
-  // sender there, through the same gates as any other write; a recipient it cannot find is the user's to add.
+  // sender there, through the never-typed and kind checks; a recipient it cannot find is the user's to add. Code chose
+  // the value (recipientCheck, and runs.ts checks it again right before the write), so it skips Jev's value question
+  // (G3). A To the program wrote itself, the same address included, is the writer's pick and goes to Jev.
   for (const windowId of writesIn) {
     for (const f of inv.owed.get(windowId) ?? []) {
       if (f.why !== "recipient" || !f.empty || steps.some((x) => x.kind === "write" && x.target.domain.kind === "window" && x.target.domain.windowId === windowId && x.target.key === f.key)) continue;
       const t = [...inv.targets.values()].find((x) => x.domain.kind === "window" && x.domain.windowId === windowId && x.key === f.key && x.control === "text");
-      const sender = t === undefined || t.domain.kind !== "window" ? undefined : senderValue(t.domain.title, inv);
+      const senders = t === undefined || t.domain.kind !== "window" ? [] : senderValues(t.domain.title, inv);
+      const sender = senders[0];
       if (t === undefined || sender === undefined) {
         left.push({ windowId, key: f.key, label: f.label, why: "recipient", says: `You add the recipient in '${f.label}': Caret found no sender of a message this one answers` });
+        continue;
+      }
+      // Two answered messages (the same subject) from different people: which sender is a choice code does not make.
+      if (new Set(senders.map((v) => v.text.trim().toLowerCase())).size > 1) {
+        left.push({ windowId, key: f.key, label: f.label, why: "recipient", says: `You add the recipient in '${f.label}': more than one message this one answers has a sender, and Caret doesn't pick between them` });
         continue;
       }
       recipientCheck(t, sender, inv);
@@ -295,11 +346,12 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         continue;
       }
       const at = steps.findIndex((x) => x.target.domain.kind === "window" && x.target.domain.windowId === windowId);
-      const step: GoalStep = { ref: `to:${t.ref}`, index: 0, kind: "write", says: `${t.label}: ${sender.text}`, target: t, value: sender, writes: sender.text, effect: null, handoff: null, to: true, gate: "jev" };
+      const step = markDerived<GoalStep>({ ref: `to:${t.ref}`, index: 0, kind: "write", says: `${t.label}: ${sender.text}`, target: t, value: sender, writes: sender.text, effect: null, handoff: null, to: true, gate: "derived" });
       steps.splice(at < 0 ? steps.length : at, 0, step);
     }
   }
-  // Jev's question for every copied value still in the plan (drafts are drafts.ts's), both wordings, fill's floor.
+  // Jev's question for every copied value still in the plan (drafts are drafts.ts's, derived values code's), both
+  // wordings, fill's floor.
   let unconfirmed: Map<string, string>;
   try {
     unconfirmed = await jevGate(
@@ -331,7 +383,6 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     }
   }
   // Events the instruction asks for that no step adds: the goal cannot be done without them (runs.ts counts receipts).
-  const asked = eventsAsked(instruction);
   const adds = steps.filter((x) => x.kind === "calendar").length;
   // An event a gate dropped is already left, and said; the rest the plan has no step for at all.
   const droppedEvents = left.filter((l) => l.windowId === "calendar").length;
@@ -347,7 +398,15 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     if (!writes && !left.some((l) => l.windowId === c.windowId && l.key === c.key)) left.push(c);
   }
   steps.forEach((x, i) => (x.index = i));
-  warnings.push(...left.map((l) => `${l.says}.`));
+  // A goalProgress carries MAX_WARNINGS sentences (P2: a 40-field form can leave more): the rest are named in one.
+  const said = left.map((l) => `${l.says}.`);
+  const room = MAX_WARNINGS - warnings.length;
+  if (said.length <= room) warnings.push(...said);
+  else {
+    warnings.push(...said.slice(0, Math.max(0, room - 1)));
+    const rest = left.slice(Math.max(0, room - 1));
+    warnings.push(clip(`${rest.length} more are left to you: ${rest.map((l) => `'${l.label}'`).join(", ")}.`, 590));
+  }
   const acting = steps.filter((x) => x.kind !== "handoff");
   if (acting.length === 0) {
     // Every write was dropped: the refusal says why for each, in the preview's words.
@@ -362,9 +421,18 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv };
 }
 
-/** The value the inventory lists that is the From address of the message the window titled `reply` answers. */
-function senderValue(reply: string, inv: GoalInventory): ValueBinding | undefined {
-  return [...inv.values.values()].find((v) => {
+/** Why a fill's value may not go in a page field because the field is a message's recipient or subject (B30), or null. */
+function pageRecipientRule(t: TargetBinding): string | null {
+  if (t.control === "calendar") return null;
+  if (subjectField(t.label)) return "Caret doesn't write subject lines";
+  const r = recipientField(t.label);
+  if (r === "copy") return "Caret doesn't add people to a message. Add them yourself";
+  return r === "to" ? "Caret puts in a message's recipient only from a goal that answers it" : null;
+}
+
+/** The values the inventory lists that are the From address of a message the window titled `reply` answers. */
+function senderValues(reply: string, inv: GoalInventory): ValueBinding[] {
+  return [...inv.values.values()].filter((v) => {
     const src = v.source === null ? undefined : inv.texts.get(v.source.windowId);
     return v.draft === null && v.event === null && src !== undefined && senderOf(reply, src, v.text);
   });

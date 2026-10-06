@@ -5,6 +5,7 @@ import type { Snapshot, WindowClosed } from "../protocol.ts";
 import { RoutedReaderLink, type ReaderLink } from "../executor/means.ts";
 import { EngineRegistry } from "./registry.ts";
 import { EngineServer } from "./server.ts";
+import type { VerbTiming } from "./page-link.ts";
 
 export interface PageHost {
   registry: EngineRegistry;
@@ -19,8 +20,8 @@ export function defaultPageSocket(screenSocket: string): string {
 }
 
 /** `secret` is the launch secret (src/launch.ts); page.sock's key is derived from it (auth.ts pageKey). */
-export function pageHost(opts: { path: string; secret: Buffer; reader: ReaderLink; apply: (m: Snapshot | WindowClosed) => void; warn: (line: string) => void }): PageHost {
-  const registry = new EngineRegistry({ apply: opts.apply });
+export function pageHost(opts: { path: string; secret: Buffer; reader: ReaderLink; apply: (m: Snapshot | WindowClosed) => void; warn: (line: string) => void; onTiming?: (t: VerbTiming) => void }): PageHost {
+  const registry = new EngineRegistry({ apply: opts.apply, ...(opts.onTiming === undefined ? {} : { onTiming: opts.onTiming }) });
   const server = new EngineServer({ path: opts.path, launchSecret: opts.secret, registry, warn: opts.warn });
   return { registry, server, link: new RoutedReaderLink(opts.reader, registry) };
 }

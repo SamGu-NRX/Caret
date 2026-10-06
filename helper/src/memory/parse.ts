@@ -19,10 +19,10 @@
 // heading's title when the user kept Caret's, the record's field lines, nothing else.
 import { createHash } from "node:crypto";
 import * as z from "zod";
-import { AboutFields, OfferKind, PeopleFields, PreferenceFields } from "../protocol.ts";
-import { refusal, sensitiveKind, valueKind, type SensitiveKind } from "./sensitive.ts";
+import { AboutFields, AnswerFields, OfferKind, PeopleFields, PreferenceFields } from "../protocol.ts";
+import { refusal, sensitiveKind, statedSecret, valueKind, type SensitiveKind } from "./sensitive.ts";
 
-export const RECORD_KINDS = ["about", "people", "preference", "skill"] as const;
+export const RECORD_KINDS = ["about", "people", "preference", "skill", "answer"] as const;
 export type RecordKind = (typeof RECORD_KINDS)[number];
 export type RecordStatus = "active" | "noticed" | "paused";
 
@@ -41,13 +41,14 @@ export interface FieldsOf {
   people: z.infer<typeof PeopleFields>;
   preference: z.infer<typeof PreferenceFields>;
   skill: SkillText;
+  answer: AnswerFields;
 }
 
 export type MemoryRecord = { [K in RecordKind]: { id: string; kind: K; status: RecordStatus; noticed: Noticed | null; fields: FieldsOf[K] } }[RecordKind];
 
-/** A document is named by the helper, never by a path: three fixed files and one file per skill. */
-export type DocId = "about-me" | "people" | "preferences" | `skills/${string}`;
-export const ROOT_DOCS = ["about-me", "people", "preferences"] as const;
+/** A document is named by the helper, never by a path: four fixed files and one file per skill. */
+export type DocId = "about-me" | "people" | "preferences" | "answers" | `skills/${string}`;
+export const ROOT_DOCS = ["about-me", "people", "preferences", "answers"] as const;
 
 /** A record id, which is also a skill's file name: letters, digits, "-" and "_", 3 to 80 characters. */
 export const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{2,79}$/;
@@ -66,6 +67,7 @@ export function docKind(doc: DocId): RecordKind {
   if (doc === "about-me") return "about";
   if (doc === "people") return "people";
   if (doc === "preferences") return "preference";
+  if (doc === "answers") return "answer";
   return "skill";
 }
 
@@ -79,6 +81,8 @@ export function docFor(r: Pick<MemoryRecord, "id" | "kind">): DocId {
       return "preferences";
     case "skill":
       return `skills/${r.id}`;
+    case "answer":
+      return "answers";
   }
 }
 
@@ -126,7 +130,7 @@ export interface ParsedDocument {
 
 // MARK: - fields
 
-type Key = "status" | "noticedIn" | "window" | "noticedOn" | "label" | "value" | "source" | "alias" | "name" | "rule" | "valueKind" | "template" | "field" | "use" | "offer" | "app" | "bundleId" | "when";
+type Key = "status" | "noticedIn" | "window" | "noticedOn" | "label" | "value" | "source" | "alias" | "name" | "rule" | "valueKind" | "template" | "field" | "use" | "offer" | "app" | "bundleId" | "when" | "question" | "answer" | "site" | "form" | "savedOn";
 
 /** How each field is written, in the order Caret writes them. */
 const KEY_NAMES: Record<Key, string> = {
@@ -144,6 +148,11 @@ const KEY_NAMES: Record<Key, string> = {
   app: "App",
   bundleId: "Bundle id",
   when: "When",
+  question: "Question",
+  answer: "Answer",
+  site: "Site",
+  form: "Form",
+  savedOn: "Saved on",
   status: "Status",
   noticedIn: "Noticed in",
   window: "Window",
@@ -156,6 +165,8 @@ const KIND_KEYS: Record<RecordKind, Key[]> = {
   people: ["alias", "name", ...COMMON],
   preference: ["rule", "valueKind", "template", "field", "use", "offer", "app", "bundleId", ...COMMON],
   skill: ["name", "when", "status"],
+  // S1: a saved answer is never something Caret noticed on its own, so it has no noticed fields.
+  answer: ["question", "answer", "site", "form", "savedOn", "status"],
 };
 
 /** The record's fields as Caret writes them, in order. Absent optional fields are left out. */
@@ -178,6 +189,12 @@ export function fieldPairs(r: MemoryRecord): [Key, string][] {
     }
     case "skill":
       out.push(["name", r.fields.name], ["when", r.fields.trigger]);
+      break;
+    case "answer":
+      out.push(["question", r.fields.question], ["answer", r.fields.answer]);
+      if (r.fields.site !== null) out.push(["site", r.fields.site]);
+      if (r.fields.form !== null) out.push(["form", r.fields.form]);
+      out.push(["savedOn", r.fields.savedOn]);
       break;
   }
   out.push(["status", r.status]);
@@ -387,9 +404,11 @@ function readRecord(lines: string[], hidden: Set<number>, start: number, end: nu
   // What Caret never keeps is flagged even in a record broken for another reason, on the line that holds it: any
   // field by its value's shape, an unknown field by its own name ("- Password: …"), and a Value under any Label
   // the record carries, a second one included.
-  const labels = seen.filter((x) => x.key === "label").map((x) => x.value);
+  // A saved answer's question is its label (S1).
+  const labels = seen.filter((x) => x.key === "label" || x.key === "question").map((x) => x.value);
   for (const x of seen) {
-    const s = x.key === "value" ? (labels.map((label) => sensitiveKind(label, x.value)).find((k) => k !== null) ?? valueKind(x.value)) : x.key === null ? sensitiveKind(x.name, x.value) : valueKind(x.value);
+    // A saved answer is also refused for a secret its prose states ("my password is …", sensitive.ts statedSecret).
+    const s = x.key === "value" || x.key === "answer" ? (labels.map((label) => sensitiveKind(label, x.value)).find((k) => k !== null) ?? valueKind(x.value) ?? (x.key === "answer" ? statedSecret(x.value) : null)) : x.key === null ? sensitiveKind(x.name, x.value) : valueKind(x.value);
     if (s !== null) err(x.line, x.key === null ? x.name : KEY_NAMES[x.key], `${refusal(s)}, so this record is not used`);
   }
   if (!ok) return null;
@@ -414,8 +433,9 @@ function readRecord(lines: string[], hidden: Set<number>, start: number, end: nu
   };
 
   const status = need("status");
-  if (status !== null && !(kind === "skill" ? ["active", "paused"] : ["active", "noticed", "paused"]).includes(status)) {
-    err(at("status"), "Status", kind === "skill" ? "must be active or paused" : "must be active, noticed or paused");
+  const twoStates = kind === "skill" || kind === "answer";
+  if (status !== null && !(twoStates ? ["active", "paused"] : ["active", "noticed", "paused"]).includes(status)) {
+    err(at("status"), "Status", twoStates ? "must be active or paused" : "must be active, noticed or paused");
   }
   let noticed: Noticed | null = null;
   const on = got.get("noticedOn");
@@ -478,6 +498,13 @@ function readRecord(lines: string[], hidden: Set<number>, start: number, end: nu
       if (fields !== null && CONTROL.test(name)) err(at("name"), "Name", "must be one line of text");
       break;
     }
+    case "answer": {
+      const [question, answer, savedOn] = [need("question"), need("answer"), need("savedOn")];
+      if (question === null || answer === null || savedOn === null) break;
+      const raw = { question, answer, site: emptyToNull(got.get("site")?.value), form: emptyToNull(got.get("form")?.value), savedOn };
+      fields = check(AnswerFields, raw, (p) => ({ question: "question", answer: "answer", site: "site", form: "form", savedOn: "savedOn" })[String(p[0])] as Key | undefined ?? null);
+      break;
+    }
   }
   if (!ok || fields === null || status === null) return null;
   return { id, kind, status: status as RecordStatus, noticed, fields } as MemoryRecord;
@@ -489,7 +516,7 @@ function readRecord(lines: string[], hidden: Set<number>, start: number, end: nu
  */
 export function recordSecret(r: MemoryRecord): { field: string; kind: SensitiveKind } | null {
   for (const [k, v] of fieldPairs(r)) {
-    const s = k === "value" && r.kind === "about" ? sensitiveKind(r.fields.label, v) : valueKind(v);
+    const s = k === "value" && r.kind === "about" ? sensitiveKind(r.fields.label, v) : k === "answer" && r.kind === "answer" ? (sensitiveKind(r.fields.question, v) ?? statedSecret(v)) : valueKind(v);
     if (s !== null) return { field: KEY_NAMES[k], kind: s };
   }
   return null;
@@ -510,7 +537,7 @@ function canonical(v: unknown): unknown {
 
 // MARK: - rendering and patching
 
-const DOC_TITLES: Record<"about" | "people" | "preference", string> = { about: "About me", people: "People", preference: "Preferences" };
+const DOC_TITLES: Record<"about" | "people" | "preference" | "answer", string> = { about: "About me", people: "People", preference: "Preferences", answer: "Saved answers" };
 
 const PREFACE =
   "Caret reads the records below and uses them in what it offers. Change a value, or set Status to paused, and Caret follows. " +
@@ -519,6 +546,10 @@ const PREFACE =
 const SKILL_PREFACE =
   "Caret runs this skill from what it learned, not from this file. Editing the record below puts the skill back on Tab: " +
   "it asks before each run until you let it run on its own again from Caret's memory window.";
+const ANSWERS_PREFACE =
+  "Your own answers to questions on forms, kept when you said yes. When a form asks the same question, Caret shows you the whole answer before it fills it in, and never changes your words. " +
+  "An answer that names another organization, or is longer than the field allows, is not offered. Set Status to paused to stop Caret offering one. " +
+  "Keep each <!-- caret:… --> comment: it is how Caret knows an answer. Other lines are yours; Caret never reads a value from them.";
 
 /** The heading's title for a record, without markdown or comment syntax in it. */
 export function recordTitle(r: MemoryRecord): string {
@@ -536,6 +567,9 @@ export function recordTitle(r: MemoryRecord): string {
     case "skill":
       t = r.fields.name;
       break;
+    case "answer":
+      t = r.fields.question;
+      break;
   }
   const clean = t.replace(/[\p{Cc}\u2028\u2029]/gu, " ").replaceAll("<!--", "").replaceAll("-->", "").replace(/^#+/, "").trim().slice(0, 80);
   return clean === "" ? "Untitled" : clean;
@@ -551,7 +585,7 @@ export function renderRecord(r: MemoryRecord): string[] {
 /** A new document holding these records. */
 export function newDocument(doc: DocId, records: readonly MemoryRecord[]): string {
   const kind = docKind(doc);
-  const head = kind === "skill" ? ["# Skill", "", SKILL_PREFACE] : [`# ${DOC_TITLES[kind]}`, "", PREFACE];
+  const head = kind === "skill" ? ["# Skill", "", SKILL_PREFACE] : [`# ${DOC_TITLES[kind]}`, "", kind === "answer" ? ANSWERS_PREFACE : PREFACE];
   const body = records.flatMap((r, i) => [...(i === 0 ? [] : [""]), ...renderRecord(r)]);
   return [...head, "", ...body, ""].join("\n");
 }

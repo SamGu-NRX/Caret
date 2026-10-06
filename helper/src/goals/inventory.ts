@@ -15,6 +15,7 @@ import type { MemoryValue } from "../planner/trace.ts";
 import { SnippetLedger, WINDOW_CHARS } from "../privacy.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import { allowedEffects } from "./capabilities.ts";
+import { markDerived } from "./gates.ts";
 import { owedFields, type OwedField } from "./left.ts";
 import type { GoalControl, GoalDomain, GoalInventory, ReadValue, TargetBinding, ValueBinding, ValueOrigin } from "./plan.ts";
 
@@ -200,7 +201,8 @@ function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventCl
       const time = c.time.time;
       const ref = nextRef();
       const display = `the event '${c.title}', ${time.says} (read from '${w.window.title}')`.slice(0, 400);
-      out.push({
+      // Derived here from a person and a resolved time, so it skips Jev's value question (gates.ts markDerived).
+      out.push(markDerived({
         ref,
         text: c.title,
         display,
@@ -210,7 +212,7 @@ function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventCl
         event: { title: c.title, start: time.start, end: time.end, says: time.says, sentence },
         draft: null,
         owner: null,
-      });
+      }));
     }
   }
   return out;

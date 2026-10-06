@@ -1,0 +1,1 @@
+P1: the heads Ask maker (planner/intent-heads.ts) is one answer, so planAsk gates it like the writer (oneAnswer = makerName !== 'jev': inferredAll, listsAll, confirmScope); a new maker name must be added to that gate or its scope stands unconfirmed.

@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import type * as z from "zod";
 import type { ValueOriginSchema } from "../codemode/types.ts";
 import type { Plan } from "../executor/schema.ts";
+import type { FillScope } from "../fill/fill.ts";
 import type { HandoffWhy } from "./capabilities.ts";
 import type { OwedField } from "./left.ts";
 
@@ -18,7 +19,7 @@ export type GoalDomain =
   | { kind: "calendar"; calendar: string };
 
 /** What a target looked like as a control: how a fill of it is lowered. */
-export type GoalControl = "text" | "select" | "combobox" | "radio" | "date" | "checkbox" | "button" | "calendar";
+export type GoalControl = "text" | "select" | "combobox" | "radio" | "date" | "time" | "checkbox" | "button" | "calendar";
 
 /** What a target ref stood for when its snapshot was frozen. Code issued it; a program only names it. */
 export interface TargetBinding {
@@ -63,6 +64,15 @@ export interface ValueBinding {
   draft: { windows: string[]; memory: { id: string; text: string }[] } | null;
   /** Whose details the value is when code knows (a memory entry's `whose`); null for a window's value, a draft or an event. */
   owner: "user" | "other" | null;
+  /**
+   * P2: how fill read a value the page planner took from proposeFill (goals/page-planner.ts), which the source must still
+   * show the same way right before the write (offers/fill-popup.ts sourceHolds): the span the pick came from, the label
+   * of the "Label: value" line it was read from, and the control it was read for. `text` is then what the control takes
+   * (an option's name, a resolved date), which need not be a span of the source. `memoryLabel`: for a value from what
+   * the user told Caret, the entry's label then, which decided the fields it was offered to (fill/about.ts), so a
+   * renamed entry no longer stands behind it (P2 review). Absent for every other value.
+   */
+  fill?: { span: string; context: string | null; control: string; memoryLabel?: string };
 }
 
 /** A value code read or derived for a planning snapshot: never the user's edit, so its origin is one the sandbox knows. */
@@ -86,7 +96,8 @@ export interface GoalInventory {
   owed: ReadonlyMap<string, readonly OwedField[]>;
 }
 
-export type GoalStepKind = "write" | "calendar" | "press" | "handoff";
+/** `attach` (P2 adds the kind; P3 lowers it): a file the user confirmed in the preview, put in a page's file control. */
+export type GoalStepKind = "write" | "calendar" | "press" | "handoff" | "attach";
 
 export interface GoalStep {
   /** The program's step ref. */
@@ -109,11 +120,15 @@ export interface GoalStep {
   /**
    * How a write's value passed fill's value gates (G2, goals/gates.ts): "jev" for a value (or a calendar event) Jev
    * confirmed belongs there, "draft" for text Caret composed, whose claims goals/drafts.ts checks instead of Jev's field
-   * question (lead decision 3), "you" for the user's own words typed over a draft in the preview (H9, runs.ts edit),
-   * which pass the draft's field and never-typed checks and no fact check. Null for presses and hand-offs.
-   * GoalRuns.propose refuses a write or calendar step that has none.
+   * question (lead decision 3), "derived" for a value the helper built with nothing to choose (G3: the To lowering adds
+   * with the answered message's sender, an event inventory.ts derived), which passed the code checks without Jev. "fill"
+   * (P2) for a value proposeFill chose for that very field, its two wordings agreeing at FILL_CUTOFF with the owner veto
+   * (goals/page-planner.ts), which skips Jev's second question and keeps the code checks; only an object lowering marked
+   * (gates.ts markFilled) may carry it. "you" for the user's own words typed over a draft in the preview (H9, runs.ts
+   * edit), which pass the draft's field and never-typed checks and no fact check. Null for presses and hand-offs. GoalRuns.propose refuses a write or calendar step that has none, and a "derived" step
+   * gates.ts did not mark (isDerived).
    */
-  gate: "jev" | "draft" | "you" | null;
+  gate: "jev" | "fill" | "draft" | "derived" | "you" | null;
 }
 
 /**
@@ -135,7 +150,11 @@ export interface LeftItem {
   says: string;
 }
 
-export type SegmentReason = "start" | "crossWindow" | "afterReveal";
+/**
+ * Why a segment is separate. `afterReveal` is also a fresh goal for the fields a finished page goal's writes showed
+ * (runs.ts revealed). `nextPage` is P3's (the user's own Next carried the goal to a new document); nothing makes it yet.
+ */
+export type SegmentReason = "start" | "crossWindow" | "afterReveal" | "nextPage";
 
 export interface GoalSegment {
   index: number;
@@ -149,11 +168,31 @@ export interface GoalSegment {
   digest: string;
 }
 
+/**
+ * What a page goal (goals/page-planner.ts) needs to go on after its writes (P2): the page window, the Ask's fill scope
+ * (a fresh plan after a stop asks it again; one for revealed controls keeps only its sources and person), which fields the scope takes ("all": every empty control, "section": those under `section`,
+ * "list": only the ones named, so a reveal adds none), and the keys of every control the page showed when planned, so
+ * a control that appears later reads as revealed and not as one the plan left out.
+ */
+export interface PageGoal {
+  windowId: string;
+  scope: FillScope;
+  kind: "all" | "section" | "list";
+  section: string | null;
+  keys: readonly string[];
+}
+
 export interface GoalPlan {
   goalId: string;
   instruction: string;
-  /** SHA-256 of the program's TypeScript source (codemode DraftPlan.programDigest). */
+  /**
+   * The planning's identity: for a writer's plan, the SHA-256 of the program's TypeScript source (codemode
+   * DraftPlan.programDigest); for a page plan (P2), a hash over the planner, instruction, scope kind, window revision and
+   * page document (page-planner.ts). It is not a program; every digest covers it.
+   */
   programHash: string;
+  /** A page goal's continuation context (P2); absent for a writer's plan. */
+  page?: PageGoal;
   segments: GoalSegment[];
   /** Things the user should know before accepting, shown with the first segment and covered by every digest. */
   warnings: string[];
@@ -197,7 +236,7 @@ export function segmentDigest(programHash: string, s: Omit<GoalSegment, "digest"
         kind: x.kind,
         says: x.says,
         target: { domain: x.target.domain, key: x.target.key, role: x.target.role, label: x.target.label, control: x.target.control, precondition: x.target.value },
-        value: x.value === null ? null : { text: x.value.text, origin: x.value.origin, source: x.value.source, memory: x.value.memory, event: x.value.event, draft: x.value.draft },
+        value: x.value === null ? null : { text: x.value.text, origin: x.value.origin, source: x.value.source, memory: x.value.memory, event: x.value.event, draft: x.value.draft, fill: x.value.fill },
         writes: x.writes,
         effect: x.effect,
         handoff: x.handoff,

@@ -77,6 +77,8 @@ export const SAYS = {
   // H10: the browser is in front, its page engine is connected, and the tab the user is in could not be read.
   pageUnread: "Caret can't read this page. Reload it and ask again.",
   questionGone: "That question has expired. Ask again.",
+  /** L1: a goal needs a program writer, and none is configured until the browser loop replaces it. */
+  noPlanWriter: "Caret can't plan tasks like this yet. Do this one yourself for now.",
 } as const;
 
 /**

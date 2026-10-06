@@ -7,6 +7,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { TaskPages } from "./tasks/site.ts";
 
 const PUBLIC = fileURLToPath(new URL("./public/", import.meta.url));
 const read = (f: string): string => readFileSync(`${PUBLIC}${f}`, "utf8");
@@ -32,6 +33,8 @@ export class FixtureSite {
   /** Tabs of the memory run that finished loading (tab.html posts /tabhello). */
   tabsLoaded = 0;
   state: Record<string, unknown> | null = null;
+  /** F1: the browser task pages under /tasks/ and their oracle (tasks/site.ts). */
+  readonly tasks = new TaskPages();
   readonly loads: { loadId: string; href: string; at: number }[] = [];
   private readonly queue: Command[] = [];
   private readonly pollers: ServerResponse[] = [];
@@ -53,6 +56,7 @@ export class FixtureSite {
 
   async stop(): Promise<void> {
     for (const p of this.pollers.splice(0)) p.writeHead(204).end();
+    this.tasks.close();
     for (const s of [this.main, this.embed]) {
       if (s === null) continue;
       s.closeAllConnections();
@@ -222,6 +226,7 @@ export class FixtureSite {
         return send(res, "application/json", "{}");
       }
       default:
+        if (await this.tasks.handle(req, url, body, res)) return;
         res.writeHead(404).end();
     }
   }

@@ -279,7 +279,7 @@ export interface WalkOutput {
  * Walks the document. `idOf` gives each kept element its registry id (the same element keeps its id across walks);
  * `onKept` sees each kept element with the control it became.
  */
-export function walkControls(idOf: (el: Element) => string, onKept: (el: Element, c: PageControl) => void): WalkOutput {
+export function walkControls(idOf: (el: Element) => string, onKept: (el: Element, c: PageControl) => void, entryOf: (el: Element, value: string) => PageControl["entry"] = () => undefined): WalkOutput {
   const origin = location.origin;
   const forms = [...document.forms];
   const controls: PageControl[] = [];
@@ -334,6 +334,12 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     if ((f.el as HTMLInputElement).disabled === true || f.el.getAttribute("aria-disabled") === "true") c.disabled = true;
     if (f.el.getAttribute("aria-invalid") === "true") c.invalid = true;
     if (f.kind === "text" && /^(numeric|decimal)$/i.test(f.el.getAttribute("inputmode")?.trim() ?? "")) c.numeric = true;
+    // S1: what saved answers need from a text field: its maxlength (-1 when the page sets none) and how its text was entered.
+    if (f.el instanceof HTMLTextAreaElement || (f.el instanceof HTMLInputElement && f.el.getAttribute("role") !== "combobox" && (f.kind === "text" || f.kind === "search" || f.kind === "email" || f.kind === "url" || f.kind === "tel"))) {
+      if (f.el.maxLength >= 0) c.maxLength = f.el.maxLength;
+      const entry = entryOf(f.el, f.el.value);
+      if (entry !== undefined) c.entry = entry;
+    }
     if (f.shadow !== undefined) c.shadow = f.shadow;
     controls.push(c);
     onKept(f.el, c);
