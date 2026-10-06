@@ -11,7 +11,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { HOIST_SHARED_OPTIONS, LAYA_FREE_MODEL, jevSettings, loadJevKey, makeJevClient, wireBody, type AskJev } from "../../fill/jev.ts";
 import { DailySpend } from "./daily-cap.ts";
-import { cachedAsk, cacheFromEnv, checkFixture, refuseShipped, type FixtureSources } from "./cache.ts";
+import { cachedAsk, cacheFromEnv, canonicalRequest, checkFixture, refuseShipped, type FixtureSources } from "./cache.ts";
+import { DEFAULT_PACE_MS, DISK_FLOOR_GIB, fileFailures, fileLog, filePace, HOLD_FILE, PACE_FILE, REAL_CLOCK, runStop, slowAsk, terminateSelf } from "./slow.ts";
 import { calibrated, UNCALIBRATED, type Calibration } from "./confidence.ts";
 import { LLAMA_READING, llamaEngine } from "./llama.ts";
 import type { DecideEngine, EngineName } from "./port.ts";
@@ -85,12 +86,36 @@ function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngi
   }
 }
 
+/**
+ * R1: the slow runner's layer (slow.ts) under the cache, when the runner (scripts/slow-eval.ts) names an events file in
+ * CARET_SLOW_EVAL_EVENTS. It needs the cache on, since a rerun after a limit must not ask again what was answered.
+ */
+function slowFromEnv(engine: DecideEngine, env: NodeJS.ProcessEnv, cacheDir: string | null, variant: string): AskJev {
+  const events = env.CARET_SLOW_EVAL_EVENTS;
+  if (events === undefined || events === "" || engine.name === "canned") return engine.ask;
+  if (cacheDir === null) throw new Error("CARET_SLOW_EVAL_EVENTS needs the replay cache on: a rerun after a rate limit would ask every answered request again");
+  const paceMs = Number(env.CARET_SLOW_EVAL_PACE_MS ?? DEFAULT_PACE_MS);
+  if (!(paceMs >= 0)) throw new Error(`CARET_SLOW_EVAL_PACE_MS is '${env.CARET_SLOW_EVAL_PACE_MS}'; it must be milliseconds, 0 or more`);
+  const where = { holdFile: env.CARET_SLOW_EVAL_HOLD ?? HOLD_FILE, diskPath: homedir(), floorGiB: Number(env.CARET_SLOW_EVAL_DISK_GIB ?? DISK_FLOOR_GIB) };
+  return slowAsk(engine.ask, {
+    clock: REAL_CLOCK,
+    paceMs,
+    pace: filePace(env.CARET_SLOW_EVAL_PACE_FILE ?? PACE_FILE),
+    failures: fileFailures(join(cacheDir, "failures")),
+    keyOf: (req) => canonicalRequest(req, engine.name, engine.model, variant).key,
+    stopCheck: () => runStop(where, Date.now()),
+    log: fileLog(events),
+    endPass: terminateSelf,
+  });
+}
+
 export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   const env = o.env ?? process.env;
   const engine = baseEngine(o, env);
   const cache = engine.name === "canned" ? null : cacheFromEnv(env, HARNESS_CACHE_DIR);
   const variant = engine.reach === "typesafe" || engine.reach === "gateway" ? `provider:${engine.reach};body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}` : engine.name === "llama" ? `prompt:${env.CARET_LLAMA_PROMPT ?? "chat"};thinking:${env.CARET_LLAMA_THINKING ?? "default"};read:${LLAMA_READING}` : "";
-  let ask = cache === null ? engine.ask : cachedAsk(engine.ask, { ...cache, engine: engine.name, model: engine.model, variant, fixture: o.fixture, env });
+  const sent = slowFromEnv(engine, env, cache?.dir ?? null, variant);
+  let ask = cache === null ? sent : cachedAsk(sent, { ...cache, engine: engine.name, model: engine.model, variant, fixture: o.fixture, env });
   if (engine.model === LAYA_FREE_MODEL) {
     // Guard cached answers too: fixture-only Laya is not available in the shipped app.
     refuseShipped(process.env);
