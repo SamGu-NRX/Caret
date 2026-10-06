@@ -1,1 +1,0 @@
-R3: coordinator tests with jev.holding: a stale reply now frees the slot and the next field's call starts at once, so await a flush, not coord.idle(), while a call is held (idle would wait on the held call).

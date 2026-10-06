@@ -1,1 +1,0 @@
-L1: no chat route is a default (WRITER_ROUTE and INTENT_ROUTE null, ASK_MAKER jev); a developer names one as groq:<model> or gateway:<model> (writer/routes.ts) with the helper's --dev-writer or an eval script's writer flag.

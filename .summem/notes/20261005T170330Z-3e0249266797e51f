@@ -1,1 +1,0 @@
-R3: corpus-eval --real-clock settle() does not wait the router cooldown timer, so an incoming line's later context is never scored; run incoming-line moments on the fake clock.

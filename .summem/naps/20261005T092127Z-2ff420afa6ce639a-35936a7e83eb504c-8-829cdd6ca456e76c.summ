@@ -1,1 +1,0 @@
-D2-06/B29/B30: Ask refuses a changed form (ask.ts fieldSeen); page presses are hand-offs; only a digest-bound goalAccept runs goal steps on Target.exact; GoalRuns.blocked is null once a segment ends; goal writes skip Cc/Bcc/Subject, To = answered From.
