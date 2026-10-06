@@ -9,6 +9,7 @@ import { SENSITIVE_SAYS, type SensitiveKind } from "../memory/sensitive.ts";
 import { PlannerError, type HandoffWhy } from "./validate.ts";
 import type { FillErrorWhy } from "../fill/fill.ts";
 import { jevFailureKind, type JevFailureKind } from "../fill/jev.ts";
+import { JevCapError, usd } from "../engines/decide/daily-cap.ts";
 
 /** A PlannerError whose message is a sentence from this file, with what the check found kept apart. */
 export class SaidError extends PlannerError {
@@ -84,6 +85,8 @@ export const SAYS = {
   jevRate: "Caret's model is getting too many requests right now. Wait a minute, then try again.",
   jevNetwork: "Caret couldn't reach its model. Check your internet connection, then try again.",
   jevService: "Caret's model had a problem answering just now. Try again in a minute.",
+  /** J1: the day's spend reached CARET_JEV_DAILY_CAP; saysJevCap names the cap and the spend when they are known. */
+  jevCap: "Caret reached today's limit for its model. It starts again tomorrow, or raise CARET_JEV_DAILY_CAP in Caret's .env file.",
   /** L1: a goal needs a program writer, and none is configured until the browser loop replaces it. */
   noPlanWriter: "Caret can't plan tasks like this yet. Do this one yourself for now.",
 } as const;
@@ -117,10 +120,21 @@ const JEV_SAYS: Record<JevFailureKind, string> = {
   rate: SAYS.jevRate,
   network: SAYS.jevNetwork,
   service: SAYS.jevService,
+  cap: SAYS.jevCap,
 };
+
+/** The daily cap's sentence with its numbers (J1): what was spent today against the cap, both as dollars. */
+export function saysJevCap(capUsd: number, spentUsd: number): string {
+  return `Caret reached today's limit for its model: ${usd(spentUsd)} spent of ${usd(capUsd)} a day. It starts again tomorrow, or raise CARET_JEV_DAILY_CAP in Caret's .env file.`;
+}
 
 /** The sentence for a failed Jev request behind `e` (jev.ts jevFailureKind), or `otherwise` when `e` is something else. */
 export function jevFailureSays(e: unknown, otherwise: string): string {
+  let at: unknown = e;
+  for (let depth = 0; depth < 4 && at instanceof Error; depth++) {
+    if (at instanceof JevCapError) return saysJevCap(at.capUsd, at.spentUsd);
+    at = at.cause;
+  }
   const kind = jevFailureKind(e);
   return kind === null ? otherwise : JEV_SAYS[kind];
 }

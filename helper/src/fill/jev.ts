@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import * as z from "zod";
 import type { Snippet } from "../privacy.ts";
+import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 
 export const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
@@ -17,8 +18,9 @@ export const JEV_USD_PER_INPUT_TOKEN = 0.042 / 1_000_000;
  * - `rate`: HTTP 429 after the client's one retry (or the first 429, for a caller that allows no retry).
  * - `network`: no HTTP answer at all: DNS, a dropped connection, or no answer within the client's timeout.
  * - `service`: any other HTTP error, such as a 500 from the service.
+ * - `cap`: nothing was sent, because the day's spend reached CARET_JEV_DAILY_CAP (engines/decide/daily-cap.ts, J1).
  */
-export type JevFailureKind = "billing" | "auth" | "rate" | "network" | "service";
+export type JevFailureKind = "billing" | "auth" | "rate" | "network" | "service" | "cap";
 
 function httpKind(status: number): JevFailureKind {
   if (status === 402) return "billing";
@@ -58,7 +60,7 @@ export class JevNetworkError extends Error {
 export function jevFailureKind(e: unknown): JevFailureKind | null {
   let at: unknown = e;
   for (let depth = 0; depth < 4 && at instanceof Error; depth++) {
-    if (at instanceof JevHttpError || at instanceof JevNetworkError) return at.kind;
+    if (at instanceof JevHttpError || at instanceof JevNetworkError || at instanceof JevCapError) return at.kind;
     at = at.cause;
   }
   return null;
@@ -107,7 +109,7 @@ export interface JevRequest {
   consented?: readonly string[];
 }
 
-const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number() }).loose();
+const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number(), probabilities: z.record(z.string(), z.number()).optional() }).loose();
 const NoulAnswer = z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) }).loose();
 const JevResponse = z.object({
   model: z.string(),
@@ -120,6 +122,12 @@ export interface JevResult {
   answers: Record<string, { choice: string; confidence: number }>;
   /** The probability of yes for each of the request's `nouls`, by id; absent when it asked none. */
   nouls?: Record<string, number>;
+  /**
+   * Each choice question's probability for every option, by question id, when the engine reports them (Jev does, as
+   * `probabilities`; docs.typesafe.ai/primitives/choice). Engines other than Jev compute `confidence` from these as Jev
+   * documents it (engines/decide/confidence.ts), so a caller's floor means the same for every engine.
+   */
+  probabilities?: Record<string, Record<string, number>>;
   inputTokens: number;
   latencyMs: number;
   costUsd: number;
@@ -144,68 +152,151 @@ export function loadJevKey(env: NodeJS.ProcessEnv = process.env): string {
   throw new Error(`Jev key missing: ${file} has no TYPESAFE_API_KEY line`);
 }
 
-export function makeJevClient(key: () => string, timeoutMs = 10_000): AskJev {
+/** The state key under which a body describes, once, the options several of its questions share (wireBody). */
+export const OPTION_DESCRIPTIONS = "option_descriptions";
+
+/** What the client posts: the request's state, the model, and its choice and yes/no questions in one map. */
+export interface WireBody {
+  state: JevRequest["state"];
+  model: string;
+  questions: Record<string, ChoiceQuestion | NoulQuestion>;
+}
+
+/**
+ * The body posted for `req` (J1 part A2). An option that two or more choice questions list under the same id with the
+ * same description is described once, in the state under OPTION_DESCRIPTIONS, and each of those questions lists it with
+ * no description, as TypeSafe's line-search recipe lists line ids whose text is in the state
+ * (docs.typesafe.ai/cookbooks/semantic_find). A fill asks every field about every candidate, so this carries each
+ * candidate once instead of once per field: on the corpus's fill requests the body is 36% of its old size
+ * (evidence/screen/j1, probe/fill-base.ndjson). Nothing is dropped; expandWireBody gives back the request's questions.
+ * Only a state that is a JSON object takes the key; a string state is sent as it was.
+ *
+ * No evidence yet on how Jev answers in this shape: Jev's credits ran out before it could be asked (HTTP 402 since
+ * 2026-10-06). The first live run after credits return must compare the corpus and W4 runs with the earlier ones
+ * (evidence/screen/p2/goal-live-3, p1/loop-live), wrong 0 first; HOIST_SHARED_OPTIONS = false sends the old body.
+ */
+export const HOIST_SHARED_OPTIONS = true;
+
+export function wireBody(req: JevRequest, model: string = JEV_MODEL): WireBody {
+  const all: Record<string, ChoiceQuestion | NoulQuestion> = { ...req.questions, ...req.nouls };
+  const state = req.state;
+  if (!HOIST_SHARED_OPTIONS || typeof state !== "object" || state === null || Array.isArray(state)) return { state, model, questions: all };
+  if (OPTION_DESCRIPTIONS in state) throw new Error(`a Jev request's state already has a ${OPTION_DESCRIPTIONS} key, which the body uses for shared options`);
+  // Each id's one description across the choice questions, or null when some question gives it none or another one.
+  const described = new Map<string, string | null>();
+  const uses = new Map<string, number>();
+  for (const q of Object.values(req.questions)) {
+    for (const [id, d] of Object.entries(q.criteria)) {
+      const seen = described.get(id);
+      described.set(id, seen === undefined || seen === d ? d : null);
+      uses.set(id, (uses.get(id) ?? 0) + 1);
+    }
+  }
+  const shared: Record<string, string> = {};
+  for (const [id, d] of described) if (d !== null && (uses.get(id) ?? 0) >= 2) shared[id] = d;
+  if (Object.keys(shared).length === 0) return { state, model, questions: all };
+  const questions: Record<string, ChoiceQuestion | NoulQuestion> = {};
+  for (const [k, q] of Object.entries(all)) {
+    questions[k] = q.type === "choice" ? { ...q, criteria: Object.fromEntries(Object.entries(q.criteria).map(([id, d]) => [id, id in shared ? null : d])) } : q;
+  }
+  return { state: { ...state, [OPTION_DESCRIPTIONS]: shared }, model, questions };
+}
+
+/** The questions and state a body says, with shared options described in each question again: the inverse of wireBody. */
+export function expandWireBody(body: WireBody): WireBody {
+  const state = body.state;
+  if (typeof state !== "object" || state === null || Array.isArray(state) || !(OPTION_DESCRIPTIONS in state)) return body;
+  const { [OPTION_DESCRIPTIONS]: shared, ...rest } = state as Record<string, unknown>;
+  const d = shared as Record<string, string>;
+  const questions: Record<string, ChoiceQuestion | NoulQuestion> = {};
+  for (const [k, q] of Object.entries(body.questions)) {
+    questions[k] = q.type === "choice" ? { ...q, criteria: Object.fromEntries(Object.entries(q.criteria).map(([id, x]) => [id, x === null && id in d ? (d[id] as string) : x])) } : q;
+  }
+  return { state: rest, model: body.model, questions };
+}
+
+/**
+ * The Jev client. Every request first takes a hold on the day's budget (engines/decide/daily-cap.ts): past
+ * CARET_JEV_DAILY_CAP it is refused with JevCapError before anything is sent.
+ */
+export function makeJevClient(key: () => string, timeoutMs = 10_000, spend: DailySpend = DailySpend.fromEnv()): AskJev {
   return async (req) => {
     const ids = Object.keys(req.nouls ?? {});
     if (ids.some((id) => id in req.questions)) throw new Error(`Jev request repeats a question id between its choices and its yes/no questions`);
-    const body = JSON.stringify({ state: req.state, model: JEV_MODEL, questions: { ...req.questions, ...req.nouls } });
-    for (let attempt = 0; ; attempt++) {
-      const t0 = performance.now();
-      let res: Response;
-      try {
-        res = await fetch(JEV_URL, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${key()}`, "Content-Type": "application/json" },
-          body,
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-      } catch (e) {
-        const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
-        throw new JevNetworkError(timedOut ? `Jev did not answer within ${timeoutMs} ms` : `Jev could not be reached: ${e instanceof Error ? e.message : String(e)}`, e);
-      }
-      const latencyMs = performance.now() - t0;
-      if (res.status === 429 && attempt === 0 && req.retry429 !== false) {
-        const wait = Number(res.headers.get("retry-after") ?? "1");
-        await new Promise((r) => setTimeout(r, Math.min(5, Number.isFinite(wait) ? wait : 1) * 1000));
+    const body = JSON.stringify(wireBody(req));
+    const hold = spend.reserve(DailySpend.estimateUsd(body.length, JEV_USD_PER_INPUT_TOKEN));
+    let result: JevResult;
+    try {
+      result = await post(key, timeoutMs, req, body, ids);
+    } catch (e) {
+      hold.release();
+      throw e;
+    }
+    hold.settle(result.costUsd, result.inputTokens);
+    return result;
+  };
+}
+
+async function post(key: () => string, timeoutMs: number, req: JevRequest, body: string, ids: string[]): Promise<JevResult> {
+  for (let attempt = 0; ; attempt++) {
+    const t0 = performance.now();
+    let res: Response;
+    try {
+      res = await fetch(JEV_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key()}`, "Content-Type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (e) {
+      const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+      throw new JevNetworkError(timedOut ? `Jev did not answer within ${timeoutMs} ms` : `Jev could not be reached: ${e instanceof Error ? e.message : String(e)}`, e);
+    }
+    const latencyMs = performance.now() - t0;
+    if (res.status === 429 && attempt === 0 && req.retry429 !== false) {
+      const wait = Number(res.headers.get("retry-after") ?? "1");
+      await new Promise((r) => setTimeout(r, Math.min(5, Number.isFinite(wait) ? wait : 1) * 1000));
+      continue;
+    }
+    if (!res.ok) {
+      // The body is the service's own text; the key is cut out in case it is ever echoed back. A body that cannot be read
+      // still leaves the status, which says how the request failed (P3 review).
+      const text = await res.text().catch(() => "(the body could not be read)");
+      throw new JevHttpError(res.status, text.slice(0, 300).split(key()).join("[redacted]"));
+    }
+    let json: unknown;
+    try {
+      json = await res.json();
+    } catch (e) {
+      // The answer stopped arriving (a dropped connection, the timeout) or was not JSON (P3 review).
+      if (e instanceof SyntaxError) throw new JevHttpError(res.status, "the answer was not JSON");
+      throw new JevNetworkError(`Jev's answer did not arrive whole: ${e instanceof Error ? e.message : String(e)}`, e);
+    }
+    const parsed = JevResponse.parse(json);
+    const answers: JevResult["answers"] = {};
+    const nouls: Record<string, number> = {};
+    const probabilities: Record<string, Record<string, number>> = {};
+    for (const [k, a] of Object.entries(parsed.answers)) {
+      const asked = req.nouls?.[k] !== undefined;
+      const yes = NoulAnswer.safeParse(a);
+      if (yes.success) {
+        if (!asked) throw new Error(`Jev answered ${k} with a yes/no, which was asked as a choice`);
+        nouls[k] = yes.data.noul;
         continue;
       }
-      if (!res.ok) {
-        // The body is the service's own text; the key is cut out in case it is ever echoed back. A body that cannot be read
-        // still leaves the status, which says how the request failed (P3 review).
-        const body = await res.text().catch(() => "(the body could not be read)");
-        throw new JevHttpError(res.status, body.slice(0, 300).split(key()).join("[redacted]"));
-      }
-      let json: unknown;
-      try {
-        json = await res.json();
-      } catch (e) {
-        // The answer stopped arriving (a dropped connection, the timeout) or was not JSON (P3 review).
-        if (e instanceof SyntaxError) throw new JevHttpError(res.status, "the answer was not JSON");
-        throw new JevNetworkError(`Jev's answer did not arrive whole: ${e instanceof Error ? e.message : String(e)}`, e);
-      }
-      const parsed = JevResponse.parse(json);
-      const answers: JevResult["answers"] = {};
-      const nouls: Record<string, number> = {};
-      for (const [k, a] of Object.entries(parsed.answers)) {
-        const asked = req.nouls?.[k] !== undefined;
-        const yes = NoulAnswer.safeParse(a);
-        if (yes.success) {
-          if (!asked) throw new Error(`Jev answered ${k} with a yes/no, which was asked as a choice`);
-          nouls[k] = yes.data.noul;
-          continue;
-        }
-        const c = ChoiceAnswer.parse(a);
-        if (asked) throw new Error(`Jev answered ${k} with a choice, which was asked as a yes/no`);
-        answers[k] = { choice: c.choice, confidence: c.confidence };
-      }
-      return {
-        model: parsed.model,
-        answers,
-        ...(ids.length === 0 ? {} : { nouls }),
-        inputTokens: parsed.usage.input_tokens,
-        latencyMs,
-        costUsd: parsed.usage.input_tokens * JEV_USD_PER_INPUT_TOKEN,
-      };
+      const c = ChoiceAnswer.parse(a);
+      if (asked) throw new Error(`Jev answered ${k} with a choice, which was asked as a yes/no`);
+      answers[k] = { choice: c.choice, confidence: c.confidence };
+      if (c.probabilities !== undefined) probabilities[k] = c.probabilities;
     }
-  };
+    return {
+      model: parsed.model,
+      answers,
+      ...(ids.length === 0 ? {} : { nouls }),
+      ...(Object.keys(probabilities).length === 0 ? {} : { probabilities }),
+      inputTokens: parsed.usage.input_tokens,
+      latencyMs,
+      costUsd: parsed.usage.input_tokens * JEV_USD_PER_INPUT_TOKEN,
+    };
+  }
 }
