@@ -156,12 +156,20 @@ describe("the worker's read of the tab the user just left", () => {
     expect(f.asked.filter((a) => a.op === "text")).toEqual([]);
   });
 
-  it("never reads a frame that committed after the user left, nor the tab once its top frame navigated", async () => {
+  it("never reads a frame that committed or appeared after the user left, nor the tab once its top frame navigated", async () => {
     await leaveMail();
     f.frames.set(1, [...MAIL_FRAMES, { frameId: 6, parentFrameId: 0, documentId: "D6", url: `${MAIL}/late` }]);
     await f.fire("nav.committed", { tabId: 1, frameId: 6, documentId: "D6" });
     await read(1);
     expect(f.asked.some((a) => a.frameId === 6)).toBe(false);
+    // A frame that appears with no commit (an initial about:blank) is in no record of the tab as the user left it.
+    f.frames.set(1, [...MAIL_FRAMES, { frameId: 7, parentFrameId: 0, documentId: "D7", url: "about:blank" }]);
+    f.answers.set("1:0:frame", self(MAIL, [1280, 900], [{ src: `${MAIL}/message`, rect: [0, 100, 800, 400], inner: [800, 400] }, { src: "about:", rect: [0, 600, 300, 100], inner: [300, 100] }]));
+    f.answers.set("1:7:frame", self(MAIL, [300, 100]));
+    f.answers.set("1:7:text", text(["Cell: 555-0101"]));
+    const late = await read(1);
+    expect(f.asked.some((a) => a.frameId === 7)).toBe(false);
+    expect((late.text as { blocks: string[] }).blocks.join("\n")).not.toContain("555-0101");
     await f.fire("nav.committed", { tabId: 1, frameId: 0, documentId: "D0b" });
     f.frames.set(1, [{ ...MAIL_FRAMES[0] as Frame, documentId: "D0b" }]);
     expect((await read(1)).outcome).toBe("notAllowed");
