@@ -41,6 +41,9 @@ public struct PageTask: Equatable, Sendable {
         public var state: State
         /// H14: an attach step's row; nil for every other kind.
         public var attach: Attach?
+        /// L1: where the value came from, and the source's lines around it (only from a helper told `sourceExcerpts`).
+        public var source: RowSource?
+        public var excerpt: SourceExcerpt?
 
         /// H14: what an attach row offers and what the user confirmed in it.
         public struct Attach: Equatable, Sendable {
@@ -77,7 +80,8 @@ public struct PageTask: Equatable, Sendable {
         /// row with none is left to the user (runs.ts drops it from the run).
         public var runs: Bool { !yours && (kind != .attach || attach?.confirmed != nil) }
 
-        public init(step: Int, kind: GoalProgress.Step.Kind, says: String, label: String? = nil, value: String? = nil, picked: Bool = false, state: State = .pending, attach: Attach? = nil) {
+        public init(step: Int, kind: GoalProgress.Step.Kind, says: String, label: String? = nil, value: String? = nil, picked: Bool = false, state: State = .pending,
+                    attach: Attach? = nil, source: RowSource? = nil, excerpt: SourceExcerpt? = nil) {
             self.step = step
             self.kind = kind
             self.says = says
@@ -86,6 +90,8 @@ public struct PageTask: Equatable, Sendable {
             self.picked = picked
             self.state = state
             self.attach = attach
+            self.source = source
+            self.excerpt = excerpt
         }
     }
 
@@ -99,6 +105,8 @@ public struct PageTask: Equatable, Sendable {
         public var rows: [Row]
         /// What the helper says the segment leaves to the user, in its words, before Tab.
         public var withheld: [String]
+        /// L1: the fields among those it leaves with a reason the panel draws (a hatch or a dotted blank).
+        public var left: [LeftField] = []
         /// Tab sent this group's acceptance. Never set back.
         public var accepted = false
         /// The executor task it runs in, from its first receipt.
@@ -185,9 +193,11 @@ public struct PageTask: Equatable, Sendable {
                 let row = files[s.index]
                 attach = Row.Attach(label: row?.label ?? Self.attachLabel(s, offered), accept: row?.accept ?? [], offered: offered)
             }
-            return Row(step: s.index, kind: s.kind, says: s.says, label: r?.label, value: r?.value, picked: r?.picked ?? false, attach: attach)
+            return Row(step: s.index, kind: s.kind, says: s.says, label: r?.label, value: r?.value, picked: r?.picked ?? false, attach: attach, source: r?.source, excerpt: r?.excerpt)
         }
-        return Group(goalId: goalId, segment: p.segment, reason: p.reason, digest: p.digest, expires: p.expires, rows: rows, withheld: p.warnings)
+        var g = Group(goalId: goalId, segment: p.segment, reason: p.reason, digest: p.digest, expires: p.expires, rows: rows, withheld: p.warnings)
+        g.left = p.page?.left ?? []
+        return g
     }
 
     /// The control's name in an attach step's words ("Resume: a file you choose", "Resume: Resume.pdf"; lower.ts),

@@ -300,6 +300,9 @@ public struct LineFramer: Sendable {
 ///   confirm (⌘2 or a click; never Tab alone), sent as `goalAccept.confirmedFile`; the host shows `fileSaveOffer` and
 ///   lists kept files. Declared only when the host has both the file chooser and the save line wired
 ///   (`PageTaskMachine.filesWired`); a helper then never sends this host an attach row it cannot show.
+/// - `sourceExcerpts` (L1): each page-goal row may carry the source's lines around its value, which the page task panel
+///   draws in its crop. Declared only by a host that draws on screen (`PageTaskMachine.drawsCrops`); this host never
+///   logs, stores or shows that text on its debug socket (SourceExcerpts.swift).
 /// - `routing` (D2-02, H6): only while the user's setting "Caret decides when to help" is on. The
 ///   helper then sends route decisions, and its offers wait for them.
 /// A helper from before any of these ignores the names it does not know (its hello schema is not strict).
@@ -307,18 +310,20 @@ public enum HostHello {
     public static let fillAllCapability = "fillAll"
     public static let askChoicesCapability = "askChoices"
 
-    public static func capabilities(routing: Bool, goalFiles: Bool = false) -> [String] {
+    public static func capabilities(routing: Bool, goalFiles: Bool = false, sourceExcerpts: Bool = false) -> [String] {
         // H11: goalPlans, so an Ask about a page comes back as a page goal for the panel at the form; savedAnswers,
         // since the host shows an answer whole before inserting it (`SavedAnswers`), offers to save one on ⌘1 only,
         // and decodes the answers document. No localModel: this host serves no local text (`LocalText`).
         // H13: pageText, so a page field arrives with the text around its caret for inline text.
         [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability, GoalPlans.capability, SavedAnswers.capability, PageInline.capability]
             + (goalFiles ? [GoalFiles.capability] : [])
+            + (sourceExcerpts ? [SourceExcerpts.capability] : [])
             + (routing ? [Routing.capability] : [])
     }
 
-    public static func make(pid: Int, routing: Bool, goalFiles: Bool = false) -> Message {
-        Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: true), capabilities: capabilities(routing: routing, goalFiles: goalFiles))
+    public static func make(pid: Int, routing: Bool, goalFiles: Bool = false, sourceExcerpts: Bool = false) -> Message {
+        Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: true),
+                capabilities: capabilities(routing: routing, goalFiles: goalFiles, sourceExcerpts: sourceExcerpts))
     }
 
     /// CaretScreenCore's `Hello` with the capabilities beside it; that mirror has no such key.

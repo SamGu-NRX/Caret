@@ -102,6 +102,9 @@ public final class PageTaskMachine {
     /// one needs the open panel. Only then may the hello name goalFiles (`HostHello.capabilities`), so a helper never
     /// sends this host an attach row it cannot fill.
     public var filesWired: Bool { canChooseFiles }
+    /// L1: the panel draws the source crop beside its rows. Set by the coordinator that draws on screen; only then may
+    /// the hello name sourceExcerpts, so a helper never sends a source's text to a host that would not show it.
+    public var drawsCrops = false
     /// H14: the open panel that is up, bound to the preview it was opened for. Review (H14 astra 1): a chooser bound
     /// only to a step let a pick finished after Tab and the next page confirm a file for a later preview's row at the
     /// same step. Tab, a new preview, the ending and the task's end each drop it, and a newer chooser replaces it.

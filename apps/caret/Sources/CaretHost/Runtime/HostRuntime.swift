@@ -343,6 +343,8 @@ public final class HostRuntime {
         let wantsRouting = OSAllocatedUnfairLock(initialState: SettingsStore.shared.settings.routing)
         // H14: the hello names goalFiles only when this host can fill an attach row both ways (`filesWired`).
         let filesWired = pageTask.machine.filesWired
+        // L1: the hello names sourceExcerpts only when the panel draws the crop.
+        let drawsCrops = pageTask.machine.drawsCrops
         helper = HelperClient(path: configuration.helperSocketPath, onMessage: { message in
             let at = DispatchTime.now().uptimeNanoseconds
             DispatchQueue.main.async {
@@ -362,7 +364,7 @@ public final class HostRuntime {
                     }
                 }
             }
-        }, authority: authority, wantsRouting: { wantsRouting.withLock { $0 } }, goalFiles: { filesWired })
+        }, authority: authority, wantsRouting: { wantsRouting.withLock { $0 } }, goalFiles: { filesWired }, sourceExcerpts: { drawsCrops })
         linkedClient.client = helper
         let routeClient = helper
         routeLink.send = { routeClient.send($0) }

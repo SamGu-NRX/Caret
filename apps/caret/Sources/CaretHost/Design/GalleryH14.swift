@@ -33,11 +33,12 @@ extension Gallery {
                                     place: .window(app: "Google Chrome", title: "Apply: Field Robotics Technician (step 3 of 3)"), steps: steps, warnings: [], page: page)
     }
 
-    static func h14Task(writes: Bool = true, saved: Bool = false) -> PageTask {
-        PageTask(preview: h14Preview(writes: writes, saved: saved), goalId: "goal-3-a1")!
+    static func h14Task(writes: Bool = true, saved: Bool = false, enrich: (GoalProgress.Preview) -> GoalProgress.Preview = { $0 }) -> PageTask {
+        PageTask(preview: enrich(h14Preview(writes: writes, saved: saved)), goalId: "goal-3-a1")!
     }
 
-    static func h14Panels() -> [(String, PageTaskPanel)] {
+    /// `enrich`: as `h11Panels`.
+    static func h14Panels(enrich: (GoalProgress.Preview) -> GoalProgress.Preview = { $0 }) -> [(String, PageTaskPanel)] {
         let chicago: Calendar = {
             var c = Calendar(identifier: .gregorian)
             c.timeZone = TimeZone(identifier: "America/Chicago")!
@@ -45,13 +46,13 @@ extension Gallery {
         }()
         func panel(_ t: PageTask) -> PageTaskPanel { PageTaskPanel(task: t, stoppable: false, now: memoryNow, calendar: chicago) }
 
-        let choose = h14Task()
-        let saved = h14Task(saved: true)
-        var confirmed = h14Task(saved: true)
+        let choose = h14Task(enrich: enrich)
+        let saved = h14Task(saved: true, enrich: enrich)
+        var confirmed = h14Task(saved: true, enrich: enrich)
         confirmed.confirmSaved(step: 2)
-        var only = h14Task(writes: false)
+        var only = h14Task(writes: false, enrich: enrich)
         _ = only.tab(nowMs: 1)
-        var refused = h14Task()
+        var refused = h14Task(enrich: enrich)
         refused.confirm(step: 3, file: AttachFile(path: "/Users/robin/Desktop/resume-link.pdf", name: "resume-link.pdf", edited: h14Edited))
         _ = refused.tab(nowMs: 1)
         _ = refused.refused("goalAccept refused: Caret can't attach the file you chose (it is a link); nothing ran, so choose another and accept again")

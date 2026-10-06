@@ -11,7 +11,8 @@ import UniformTypeIdentifiers
 final class PageTaskCoordinator {
     let machine: PageTaskMachine
     private let status: HostStatus
-    private let panel = HostedPanel(radius: Tokens.Shape.popupRadius, popup: true)
+    /// L1: v41's panel draws its own glass, so its crop can stand beside it in the same window.
+    private let panel = HostedPanel(radius: LookShape.radius, popup: true, selfDrawn: true)
     private let model = PageTaskModel()
     private let drawsOnScreen: Bool
     private var placed = false
@@ -28,10 +29,16 @@ final class PageTaskCoordinator {
         machine.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
         // H14: only a host on screen can show an open panel, so only it may name goalFiles.
         machine.canChooseFiles = drawsOnScreen
+        // L1: and only it draws the source crop, so only it asks for the source's text.
+        machine.drawsCrops = drawsOnScreen
         model.onAttach = { [weak self] step in
             self?.status.increment("pageTask.click")
             self?.machine.attachRequested(step: step)
         }
+        // L1: the crop follows the pointer and VoiceOver. The panel stays click-through; the mouse-moved monitors say where
+        // the pointer is, and the rows' frames say which row is under it.
+        model.onVoiceFocus = { [weak self] step, on in self?.voiceFocus(step: step, on: on) }
+        if drawsOnScreen { panel.onPointer = { [weak self] point in self?.pointer(at: point) } }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
@@ -60,6 +67,10 @@ final class PageTaskCoordinator {
         case .draw(let content, let motion, let anchor): draw(content, motion: motion, anchor: anchor)
         case .hide(let motion):
             placed = false
+            pointerStep = nil
+            voiceStep = nil
+            hideCrop?.cancel()
+            model.crop = nil
             // A panel shown again is announced again, even with the same words (prep-for-prod H11-5).
             announced = ""
             panel.exit(duration: motion == .exit ? Motion.Duration.toastExit : 0)
@@ -87,7 +98,11 @@ final class PageTaskCoordinator {
             openPanel = nil
             open.cancel(nil)
         }
-        let info = DebugState.PageTaskInfo(status: machine.status, choosing: machine.choosing, filesWired: machine.filesWired, panel: panel.debugInfo(), lastAccept: machine.lastAccept)
+        var info = DebugState.PageTaskInfo(status: machine.status, choosing: machine.choosing, filesWired: machine.filesWired, panel: panel.debugInfo(), lastAccept: machine.lastAccept)
+        // L1: which row's crop shows and where; never the excerpt.
+        info.crop = model.crop.map { step in
+            DebugState.PageTaskInfo.Crop(step: step, side: model.side.rawValue, kind: model.panel.flatMap { PageTaskGroupView.line($0, step: step) ?? $0.sections.flatMap(\.lines).first { $0.step == step } }.map { $0.blank?.rawValue ?? $0.sourceKind?.rawValue ?? "none" } ?? "none")
+        }
         status.update { $0.pageTask = info }
     }
 
@@ -164,18 +179,21 @@ final class PageTaskCoordinator {
     private func draw(_ content: PageTaskPanel, motion: PageTaskMotion, anchor: PageTaskAnchor) {
         let reduce = Motion.reduceMotion
         let first = !placed || !panel.isVisible
+        let crop = cropStep(content)
         switch motion {
         case .reveal where !first:
-            withAnimation(Motion.curve(Motion.easeOut, reduce ? Motion.Duration.reduced : Motion.Duration.enter)) { model.animated = true; model.panel = content }
+            withAnimation(Motion.curve(Motion.easeOut, reduce ? Motion.Duration.reduced : Motion.Duration.enter)) { set(content, motion: motion, crop: crop, first: first) }
         case .crossfade where !first:
-            withAnimation(Motion.curve(Motion.easeOut, reduce ? Motion.Duration.reduced : Self.crossfade)) { model.animated = true; model.panel = content }
-        default:
+            withAnimation(Motion.curve(Motion.easeOut, reduce ? Motion.Duration.reduced : Self.crossfade)) { set(content, motion: motion, crop: crop, first: first) }
+        case .none:
+            // A key moved nothing: not the rows, the rules, the crop or the figure (v41 5.4).
             var t = Transaction()
             t.disablesAnimations = true
-            withTransaction(t) {
-                model.animated = motion != .none
-                model.panel = content
-            }
+            withTransaction(t) { set(content, motion: motion, crop: crop, first: first) }
+        default:
+            // The helper's changes (a receipt, the ending) land at once; the rows' own rules, settles and the crop's marks
+            // run their v41 motion (`PageTaskLook.motion`).
+            set(content, motion: motion, crop: crop, first: first)
         }
         panel.text = content.spoken
         // H14: an attach row takes a click while the preview waits; otherwise the panel is click-through as before.
@@ -188,8 +206,13 @@ final class PageTaskCoordinator {
             // Placed once, beside the form's first field or at the page's top edge; it stays there for the task.
             let screen = Screen.axVisibleFrame(around: anchor.field ?? anchor.viewport ?? CGRect(x: 0, y: 0, width: 1, height: 1))
             let spot = PageTaskPlacement.place(size: size, anchor: anchor, screen: screen)
-            let topLeft = Screen.cocoa(CGRect(origin: spot.origin, size: CGSize(width: 1, height: 1)))
-            panel.pin(HostedPanel.Anchor(corner: .topLeft, point: NSPoint(x: topLeft.minX, y: topLeft.maxY)))
+            // L1: the crop's side is chosen with the panel's place, so showing it never moves the panel: pinned at its
+            // left edge when the crop goes right or over the rows, at its right edge when the crop goes left.
+            let side = PageTaskLook.cropSide(panel: CGRect(origin: spot.origin, size: size), screen: screen, field: anchor.field)
+            model.side = side
+            let corner = CGPoint(x: side == .leading ? spot.origin.x + size.width : spot.origin.x, y: spot.origin.y)
+            let pinned = Screen.cocoa(CGRect(origin: corner, size: CGSize(width: 1, height: 1)))
+            panel.pin(HostedPanel.Anchor(corner: side == .leading ? .topRight : .topLeft, point: NSPoint(x: pinned.minX, y: pinned.maxY)))
             placed = true
         }
         panel.setContent(view)
@@ -206,6 +229,92 @@ final class PageTaskCoordinator {
             announced = content.announcement
             AccessibilityNotification.Announcement(content.announcement).post()
         }
+    }
+
+    private func set(_ content: PageTaskPanel, motion: PageTaskMotion, crop: Int?, first: Bool) {
+        model.animated = motion != .none
+        model.cause = PageTaskLook.Cause(motion)
+        model.stagger = first && motion == .enter
+        model.panel = content
+        model.crop = crop
+    }
+
+    // MARK: - The crop (L1)
+
+    /// The row under the pointer, and the row VoiceOver is on.
+    private var pointerStep: Int?
+    private var voiceStep: Int?
+    /// Leaving a row: the crop waits 150 ms before it goes, so moving to the next row keeps it (v41 3.4).
+    private var hideCrop: DispatchWorkItem?
+    static let leaveGrace: TimeInterval = 0.15
+
+    /// The crop for the panel now (`PageTaskLook.cropStep`): the row being written while a group runs, else VoiceOver's
+    /// row, else the pointer's.
+    private func cropStep(_ content: PageTaskPanel) -> Int? {
+        let running = machine.status.stage == "running" || machine.status.stage == "stopping"
+        let writing = content.sections.last?.lines.first { $0.state == .writing }?.step
+        return PageTaskLook.cropStep(running: running, writing: writing, voiceOver: voiceStep, pointer: pointerStep) {
+            PageTaskGroupView.cropContent(content, step: $0) != nil
+        }
+    }
+
+    private func pointer(at point: NSPoint) {
+        guard panel.isVisible, model.panel != nil else { return }
+        let f = panel.contentFrame(size: panel.size)
+        let local = CGPoint(x: point.x - f.minX, y: f.maxY - point.y)
+        let row = model.geometry.rows.first { $0.value.contains(local) }?.key
+        let overCrop = model.geometry.crop.map { $0.contains(local) } ?? false
+        if let row {
+            hideCrop?.cancel()
+            hideCrop = nil
+            if row != pointerStep { pointerStep = row; refreshCrop() }
+        } else if pointerStep != nil, !overCrop, hideCrop == nil {
+            let work = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.hideCrop = nil
+                    self?.pointerStep = nil
+                    self?.refreshCrop()
+                }
+            }
+            hideCrop = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.leaveGrace, execute: work)
+        } else if overCrop {
+            hideCrop?.cancel()
+            hideCrop = nil
+        }
+    }
+
+    private func voiceFocus(step: Int, on: Bool) {
+        if on { voiceStep = step } else if voiceStep == step { voiceStep = nil }
+        refreshCrop()
+    }
+
+    /// Shows, moves or hides the crop for a pointer or VoiceOver change: `appear` from the anchor corner (opacity only
+    /// under Reduce Motion), `leave` 100 ms linear. The window grows at once so the crop has room; it shrinks once the
+    /// crop has left.
+    private func refreshCrop() {
+        guard let content = model.panel else { return }
+        let next = cropStep(content)
+        guard next != model.crop else { return }
+        let was = model.crop
+        let look = PageTaskLook.motion(.pointer, reduceMotion: Motion.reduceMotion)
+        model.cause = .pointer
+        if next != nil {
+            withAnimation(was == nil ? CaretMotion.out(look.appear) : nil) { model.crop = next }
+            remeasure()
+        } else {
+            withAnimation(CaretMotion.fade(100)) { model.crop = nil }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.11) { [weak self] in
+                MainActor.assumeIsolated { if self?.model.crop == nil { self?.remeasure() } }
+            }
+        }
+        publish()
+    }
+
+    private func remeasure() {
+        guard drawsOnScreen, panel.isVisible else { return }
+        panel.setContent(PageTaskLiveView(model: model, character: FigureSettings.shared.character, animated: !Motion.reduceMotion))
+        lastFrame = Screen.ax(panel.contentFrame(size: panel.size))
     }
 
     /// UI moment 5: the next page's content crosses over 200 ms.

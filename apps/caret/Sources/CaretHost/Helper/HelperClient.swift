@@ -50,6 +50,8 @@ final class HelperClient: @unchecked Sendable {
     private let wantsRouting: @Sendable () -> Bool
     /// H14: whether the hello names goalFiles: the page task panel can fill attach rows (`PageTaskMachine.filesWired`).
     private let goalFiles: @Sendable () -> Bool
+    /// L1: whether the hello names sourceExcerpts: the page task panel draws the source crop (`PageTaskMachine.drawsCrops`).
+    private let sourceExcerpts: @Sendable () -> Bool
 
     init(
         path: String = HelperClient.defaultPath,
@@ -57,7 +59,8 @@ final class HelperClient: @unchecked Sendable {
         onLink: @escaping @Sendable (Bool) -> Void = { _ in },
         authority: HostAuthority? = nil,
         wantsRouting: @escaping @Sendable () -> Bool = { false },
-        goalFiles: @escaping @Sendable () -> Bool = { false }
+        goalFiles: @escaping @Sendable () -> Bool = { false },
+        sourceExcerpts: @escaping @Sendable () -> Bool = { false }
     ) {
         self.path = path
         self.onMessage = onMessage
@@ -65,6 +68,7 @@ final class HelperClient: @unchecked Sendable {
         self.authority = authority
         self.wantsRouting = wantsRouting
         self.goalFiles = goalFiles
+        self.sourceExcerpts = sourceExcerpts
     }
 
     /// When this client last sent work the helper runs for this session (offerAccept, fillAll): until its
@@ -350,7 +354,7 @@ final class HelperClient: @unchecked Sendable {
         }
         let routing = wantsRouting()
         let files = goalFiles()
-        let hello = HostHello.make(pid: Int(getpid()), routing: routing, goalFiles: files)
+        let hello = HostHello.make(pid: Int(getpid()), routing: routing, goalFiles: files, sourceExcerpts: sourceExcerpts())
         guard let line = try? NDJSON.line(hello), Self.writeAll(fd, line) else {
             close(fd)
             return nil

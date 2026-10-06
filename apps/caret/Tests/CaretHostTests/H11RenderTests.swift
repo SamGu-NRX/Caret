@@ -18,19 +18,19 @@ final class H11RenderTests: XCTestCase {
         let text = 4.5, mark = 3.0
         let views = Dictionary(uniqueKeysWithValues: Gallery.h11().map { ($0.name, $0.view) })
         let surfaces: [(String, AnyView, [ContrastRenderTests.Probe])] = [
+            // L1: the page task panel draws in v41's tokens (`CaretColor`); a user's own step is Ink in Medium, not Carrot.
             ("Preview", views["page-task-preview"]!, [
-                .init(name: "Ink, title and values", token: Tokens.ink, minimum: text),
-                .init(name: "Ink 2, labels, source, picked, withheld, keys", token: Tokens.ink2, minimum: text),
-                .init(name: "Carrot text, attach yourself", token: Tokens.carrotText, minimum: text),
+                .init(name: "Ink, title, values, attach yourself", token: CaretColor.ink, minimum: text),
+                .init(name: "Ink 2, labels, source, owners, keys", token: CaretColor.ink2, minimum: text),
             ]),
             ("Progress", views["page-task-progress"]!, [
-                .init(name: "Ink 2, checks and already so", token: Tokens.ink2, minimum: text),
-                .init(name: "Ink 3, rings to do", token: Tokens.ink3, minimum: mark),
-                .init(name: "Carrot, the line under the row being written", token: Tokens.carrot, minimum: mark),
+                .init(name: "Ink 2, checks and already so", token: CaretColor.ink2, minimum: text),
+                .init(name: "Ink 3, rings to do", token: CaretColor.ink3, minimum: mark),
+                .init(name: "Carrot, the line under the row being written", token: CaretColor.carrot, minimum: mark),
             ]),
-            ("Reveal", views["page-task-reveal"]!, [.init(name: "Ink, the caption over what appeared", token: Tokens.ink, minimum: text)]),
-            ("Hand-off", views["page-task-handoff"]!, [.init(name: "Carrot text, You press 'Next'", token: Tokens.carrotText, minimum: text)]),
-            ("Partly done", views["page-task-partial"]!, [.init(name: "Carrot text, Partly done", token: Tokens.carrotText, minimum: text)]),
+            ("Reveal", views["page-task-reveal"]!, [.init(name: "Ink 2, the caption over what appeared", token: CaretColor.ink2, minimum: text)]),
+            ("Hand-off", views["page-task-handoff"]!, [.init(name: "Ink, You press 'Next'", token: CaretColor.ink, minimum: text)]),
+            ("Partly done", views["page-task-partial"]!, [.init(name: "Carrot text, Partly done", token: CaretColor.carrotText, minimum: text)]),
             ("Desk at the form", views["desk-preview-at-form"]!, [.init(name: "Ink 2, Preview at the form", token: Tokens.ink2, minimum: text)]),
             ("Save offer", views["answer-save-offer"]!, [.init(name: "Ink, the question", token: Tokens.ink, minimum: text),
                                                          .init(name: "Ink 2, ⌘1 Save and Esc", token: Tokens.ink2, minimum: text)]),

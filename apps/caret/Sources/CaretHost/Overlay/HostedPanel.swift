@@ -133,8 +133,13 @@ final class HostedPanel {
     var clickableContent = false {
         didSet { if clickableContent != oldValue { trackPointer() } }
     }
-    /// The monitors are up only while the panel shows and takes clicks (prep-for-prod H14-5).
-    private var wantsPointer: Bool { clickableContent && panel.isVisible && !isExiting }
+    /// L1: told where the pointer is (Cocoa coordinates) while the panel shows, from the same mouse-moved monitors, so
+    /// the page panel can show a row's crop under the pointer while the panel stays click-through.
+    var onPointer: ((NSPoint) -> Void)? {
+        didSet { trackPointer() }
+    }
+    /// The monitors are up only while the panel shows and takes clicks or follows the pointer (prep-for-prod H14-5).
+    private var wantsPointer: Bool { (clickableContent || onPointer != nil) && panel.isVisible && !isExiting }
     /// Test hook (`pagetask clicks`): false takes every click over the whole window while the content is clickable,
     /// with no pointer gating, to tell a gating fault from a panel that takes no click at all.
     var gatesPointer = true {
@@ -144,14 +149,21 @@ final class HostedPanel {
     /// Mouse moves the monitors have seen, for the debug socket.
     private var pointerMoves = 0
 
+    /// L1: the view draws its own material and shadows (v41's page panel and crop, `lookPanel`), so the window holds no
+    /// material and gives the view the whole window, margin included, to cast its shadows into.
+    let selfDrawn: Bool
+
     /// `material: false` for decoration drawn straight over the app (the underline, the figure and
     /// ticks after an alternative, Caret's own ghost text), which has no glass, shadow or margin.
     /// `interactive: true` for a panel with buttons: it takes clicks, still never becoming key.
-    init(radius: CGFloat, material hasMaterial: Bool = true, interactive: Bool = false, popup: Bool = false) {
+    /// `selfDrawn: true` (L1) for a view that draws its own glass: no material, a margin for its shadows.
+    init(radius: CGFloat, material hasMaterial: Bool = true, interactive: Bool = false, popup: Bool = false, selfDrawn: Bool = false) {
         self.radius = radius
         self.popup = popup
+        self.selfDrawn = selfDrawn
+        let hasMaterial = hasMaterial && !selfDrawn
         let drawsShadow = hasMaterial && !interactive
-        margin = drawsShadow ? Tokens.Shape.shadowMargin : 0
+        margin = selfDrawn ? LookShape.shadowMargin : (drawsShadow ? Tokens.Shape.shadowMargin : 0)
         panel.ignoresMouseEvents = !interactive
         host.sizingOptions = []
         container.wantsLayer = true
@@ -191,7 +203,8 @@ final class HostedPanel {
         AnyView(view
             .environment(\.drawsGlassTint, tints)
             .environment(\.reducesMotion, Motion.reduceMotion)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+            .padding(selfDrawn ? margin : 0))
     }
 
     private var alignment: Alignment {
@@ -286,6 +299,7 @@ final class HostedPanel {
 
     /// Takes mouse events while the pointer is over the content of a shown panel; passes them through otherwise.
     private func pointerMoved() {
+        if let onPointer, panel.isVisible, !isExiting { onPointer(NSEvent.mouseLocation) }
         guard clickableContent else { return }
         let over = panel.isVisible && !isExiting && (!gatesPointer || contentFrame(size: size).contains(NSEvent.mouseLocation))
         if panel.ignoresMouseEvents == over { panel.ignoresMouseEvents = !over }
@@ -300,7 +314,7 @@ final class HostedPanel {
         material?.frame = inner
         shadow.frame = container.bounds
         shadow.shape = inner
-        host.frame = inner
+        host.frame = selfDrawn ? container.bounds : inner
         pointerMoved()
     }
 
@@ -404,8 +418,8 @@ final class HostedPanel {
             isKey: panel.isKeyWindow,
             text: isExiting ? "(exiting) " + text : text,
             takesClicks: clickableContent ? !panel.ignoresMouseEvents : nil,
-            pointerMonitors: clickableContent ? pointerMonitors.count : nil,
-            pointerMoves: clickableContent ? pointerMoves : nil
+            pointerMonitors: clickableContent || onPointer != nil ? pointerMonitors.count : nil,
+            pointerMoves: clickableContent || onPointer != nil ? pointerMoves : nil
         )
     }
 }

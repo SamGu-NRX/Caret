@@ -20,7 +20,8 @@ enum Gallery {
     /// Renders `view` at 2x in one appearance. The tokens are dynamic `NSColor`s, so the drawing
     /// appearance is set as well as SwiftUI's color scheme.
     /// `canvasHex` replaces the canvas, for a render over a host's own document.
-    static func png<V: View>(_ view: V, dark: Bool, padding: CGFloat = 24, canvasHex: UInt32? = nil) -> Data? {
+    /// `backdrop` (L1) replaces the canvas with a drawn page, for a render over a busy one.
+    static func png<V: View>(_ view: V, dark: Bool, padding: CGFloat = 24, canvasHex: UInt32? = nil, backdrop: AnyView? = nil) -> Data? {
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
         var data: Data?
         appearance.performAsCurrentDrawingAppearance {
@@ -29,7 +30,7 @@ enum Gallery {
                 .environment(\.rendersOffscreen, true)
                 .environment(\.colorScheme, dark ? .dark : .light)
                 .padding(padding)
-                .background(canvasHex.map { Color(nsColor: Tokens.srgb($0)) } ?? canvas(dark: dark))
+                .background { backdrop ?? AnyView(canvasHex.map { Color(nsColor: Tokens.srgb($0)) } ?? canvas(dark: dark)) }
             let renderer = ImageRenderer(content: content)
             renderer.scale = 2
             guard let cg = renderer.cgImage else { return }

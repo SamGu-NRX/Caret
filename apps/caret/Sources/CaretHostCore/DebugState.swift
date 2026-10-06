@@ -722,6 +722,17 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var lastAccept: String?
         public var lastAcceptFileStep: Int?
         public var lastAcceptFileName: String?
+        /// L1: the crop beside the panel: which row's, on which side, and what it draws (the source's kind, "hatch" or
+        /// "dotted"). Never the excerpt's text, its name or its span: like page field text, it stays off this socket.
+        public var crop: Crop?
+
+        public struct Crop: Codable, Equatable, Sendable {
+            public var step: Int
+            public var side: String
+            public var kind: String
+            public init(step: Int, side: String, kind: String) { self.step = step; self.side = side; self.kind = kind }
+        }
+
         public init(status: PageTaskMachine.Status, choosing: Int?, filesWired: Bool, panel: Panel?, lastAccept: GoalAccept? = nil) {
             self.status = status; self.choosing = choosing; self.filesWired = filesWired; self.panel = panel
             self.lastAccept = lastAccept.map { "\($0.goalId):\($0.segment)" }

@@ -22,6 +22,28 @@ public struct PageTaskPanel: Equatable, Sendable {
             /// H14: an attach row in a preview: the control's name in the key column, then "Choose a file…" or the
             /// file, and its key at the trailing edge. ⌘2, ⌘3 or a click acts on it.
             case attach
+            /// L1: a field the plan leaves to the user, drawn with a hatch (yours on purpose) or a dotted blank (Caret
+            /// found nothing) where its value would go; `text` is the helper's one sentence about it.
+            case blank
+        }
+
+        /// L1: the blank's two meanings (v41 DIRECTION 4).
+        public enum Blank: String, Equatable, Sendable {
+            /// Yours on purpose: an answer in your words, a question about who you are, a value Caret never types.
+            case hatch
+            /// Caret looked and found nothing.
+            case dotted
+        }
+
+        /// L1: where a row's run of same-source rows puts it, for the owner bracket.
+        public enum Run: String, Equatable, Sendable {
+            /// Alone: the owner word, no bracket.
+            case single
+            /// The first of two or more: the owner word and the bracket's top tick.
+            case first
+            case middle
+            /// The last: the bracket's bottom tick.
+            case last
         }
 
         /// H14: an attach row's state and what acting on it does.
@@ -52,8 +74,25 @@ public struct PageTaskPanel: Equatable, Sendable {
         public var attach: Attach?
         /// The text wraps rather than being cut: a file's name and date are always shown whole (H14).
         public var wraps: Bool
+        /// L1: the goal step the row is, for the crop and VoiceOver.
+        public var step: Int?
+        /// L1: the value came from the page's own list (v41's ▾).
+        public var picked: Bool
+        /// L1: the owner column's words: the source ("Notes", "Memory"), "already so", or a blank's "yours to write".
+        public var owner: String?
+        /// L1: the row's place in a run of rows from one source; nil when it is in none (the owner bracket).
+        public var run: Run?
+        /// L1: a blank row's mark.
+        public var blank: Blank?
+        /// L1: the source's lines around the value. Drawn only in the crop; never in `spoken`, `announcement` or the debug
+        /// state (SourceExcerpts.swift).
+        public var excerpt: SourceExcerpt?
+        /// L1: the source as the crop's caption names it, apart from the excerpt's own name: the app ("Notes"), "what you
+        /// told Caret", or the tab's host.
+        public var sourceKind: RowSource.Kind?
 
-        public init(kind: Kind, label: String? = nil, text: String, note: String? = nil, state: PageTask.Row.State? = nil, attach: Attach? = nil, wraps: Bool = false) {
+        public init(kind: Kind, label: String? = nil, text: String, note: String? = nil, state: PageTask.Row.State? = nil, attach: Attach? = nil, wraps: Bool = false,
+                    step: Int? = nil, picked: Bool = false, owner: String? = nil, blank: Blank? = nil, excerpt: SourceExcerpt? = nil, sourceKind: RowSource.Kind? = nil) {
             self.kind = kind
             self.label = label
             self.text = text
@@ -61,7 +100,16 @@ public struct PageTaskPanel: Equatable, Sendable {
             self.state = state
             self.attach = attach
             self.wraps = wraps || attach != nil
+            self.step = step
+            self.picked = picked
+            self.owner = owner
+            self.blank = blank
+            self.excerpt = excerpt
+            self.sourceKind = sourceKind
         }
+
+        /// The owner word shows on a run's first row and on a row alone; the bracket says the rest are the same source.
+        public var showsOwner: Bool { owner != nil && (run == nil || run == .single || run == .first) }
     }
 
     public struct Section: Equatable, Sendable {
@@ -78,6 +126,8 @@ public struct PageTaskPanel: Equatable, Sendable {
     public var lead: String?
     /// "from Notes and what you told Caret".
     public var from: String?
+    /// L1: "1 is yours", after `from` (v41: the meta breaks at the "·", never mid-phrase).
+    public var yoursCount: String?
     public var sections: [Section]
     /// The user's own steps, last: files to attach, then the press.
     public var yours: [Line]
@@ -92,9 +142,18 @@ public struct PageTaskPanel: Equatable, Sendable {
         let current = t.current
         var sections: [Section] = []
         for (i, g) in t.groups.enumerated() {
-            sections.append(Section(caption: i == 0 ? nil : PageTaskCopy.continuation(g), lines: Self.lines(g, now: now, calendar: calendar), marks: g.accepted))
+            var lines = Self.runs(Self.lines(g, now: now, calendar: calendar))
+            // A blank row is no goal step; it gets an id of its own below zero, so the crop and VoiceOver can name it.
+            var k = 0
+            for j in lines.indices where lines[j].kind == .blank {
+                k += 1
+                lines[j].step = -(i * 1000 + k)
+            }
+            sections.append(Section(caption: i == 0 ? nil : PageTaskCopy.continuation(g), lines: lines, marks: g.accepted))
         }
         self.sections = sections
+        let hatched = current.left.filter { $0.why != .notFound }.count
+        yoursCount = hatched == 0 || t.stage != .preview ? nil : (hatched == 1 ? "1 is yours" : "\(hatched) are yours")
         let presses = t.groups.flatMap { $0.rows.filter(\.yours) }
         // An attach row Tab sent no file for is left to the user, like a file input with no row. So is a waiting row past
         // the ones with a key (prep-for-prod H14-2): a row only a pointer could reach would leave keyboard users out, and
@@ -158,12 +217,38 @@ public struct PageTaskPanel: Equatable, Sendable {
                 continue
             }
             if let label = r.label, let value = r.value {
-                out.append(Line(kind: .field, label: label, text: value, note: note, state: r.state))
+                // L1: the owner column names the source; "already so" takes it when the field had the value.
+                let owner = r.state == .already ? PageTaskCopy.already : r.source.map(PageTaskCopy.owner)
+                out.append(Line(kind: .field, label: label, text: value, note: r.state == .already ? nil : note, state: r.state, step: r.step, picked: r.picked,
+                                owner: owner, excerpt: r.excerpt, sourceKind: r.source?.kind))
             } else {
-                out.append(Line(kind: .step, text: r.says, note: r.state == .already ? PageTaskCopy.already : nil, state: r.state))
+                out.append(Line(kind: .step, text: r.says, note: r.state == .already ? PageTaskCopy.already : nil, state: r.state, step: r.step))
             }
         }
-        out += g.withheld.map { Line(kind: .withheld, text: $0) }
+        // L1: a field left with a reason is a row of its own (label, hatch or dotted blank, owner words); its sentence is
+        // the one the warnings already carry, so that warning is not said twice.
+        for f in g.left {
+            out.append(Line(kind: .blank, label: f.label, text: PageTaskCopy.sentence(f.says), owner: PageTaskCopy.blankOwner(f.why), blank: f.why == .notFound ? .dotted : .hatch))
+        }
+        out += g.withheld.filter { w in !g.left.contains { PageTaskCopy.same($0.says, w) } }.map { Line(kind: .withheld, text: $0) }
+        return out
+    }
+
+    /// L1: the owner bracket (v41 DIRECTION 2.4, the prototype's `rows()`): consecutive field rows from one source form a
+    /// run. Only a row whose owner is its source joins one: "already so", a blank, a step or an attach row breaks it.
+    static func runs(_ lines: [Line]) -> [Line] {
+        var out = lines
+        func key(_ l: Line) -> String? {
+            guard l.kind == .field, l.state != .already, l.state != .failed, let o = l.owner, let k = l.sourceKind else { return nil }
+            return "\(k.rawValue):\(o)"
+        }
+        let keys = lines.map(key)
+        for i in out.indices {
+            guard let k = keys[i] else { continue }
+            let prev = i > 0 && keys[i - 1] == k
+            let next = i + 1 < keys.count && keys[i + 1] == k
+            out[i].run = prev ? (next ? .middle : .last) : (next ? .first : .single)
+        }
         return out
     }
 
@@ -199,15 +284,28 @@ public struct PageTaskPanel: Equatable, Sendable {
         if let from { parts.append(from) }
         for s in sections {
             if let c = s.caption { parts.append(c) }
-            for l in s.lines {
-                let state = l.state.map(PageTaskCopy.spokenState) ?? ""
-                let key = l.attach.map { a in [a.key.map(PageTaskCopy.spokenKey), a.action].compactMap { $0 }.joined(separator: " ") } ?? ""
-                parts.append([l.label, l.text, l.note, state, key].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
-            }
+            for l in s.lines { parts.append(l.spoken) }
         }
         parts += yours.map(\.text)
         parts += hints.map { [$0.key, $0.label].compactMap { $0 }.joined(separator: " ") }
         return parts.joined(separator: ". ")
+    }
+}
+
+extension PageTaskPanel.Line {
+    /// One row as VoiceOver says it: "Phone, 512 555 0142, from Notes", "Why us?, yours to write". Never the excerpt:
+    /// this is also the panel's text on the debug socket.
+    public var spoken: String {
+        let state = self.state.map(PageTaskCopy.spokenState) ?? ""
+        let key = attach.map { a in [a.key.map(PageTaskCopy.spokenKey), a.action].compactMap { $0 }.joined(separator: " ") } ?? ""
+        let from: String?
+        switch kind {
+        case .field: from = owner == PageTaskCopy.already ? owner : owner.map { "from \($0)" }
+        case .blank: from = owner
+        case .step, .withheld, .yours, .attach: from = nil
+        }
+        let words = kind == .blank ? [label, from, text] : [label, text, note, from, state, key]
+        return words.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
     }
 }
 
@@ -263,6 +361,49 @@ public enum PageTaskCopy {
     static func spokenKey(_ key: String) -> String { key.replacingOccurrences(of: "⌘", with: "Command ") }
 
     public static let picked = "(picked from the list)"
+
+    // L1: the owner column and the blanks (v41 DIRECTION 4).
+    /// A source as the owner column names it: the app, "Memory", "You asked".
+    public static func owner(_ s: RowSource) -> String {
+        switch s.kind {
+        case .window, .tab: return s.name.isEmpty ? (s.kind == .tab ? "a tab" : "a window") : s.name
+        case .memory: return "Memory"
+        case .request: return "You asked"
+        }
+    }
+
+    /// A blank's owner words.
+    public static func blankOwner(_ why: LeftField.Why) -> String {
+        switch why {
+        case .answer: return "yours to write"
+        case .identity: return "yours to answer"
+        case .sensitive: return "yours to type"
+        case .notFound: return "not in your sources"
+        }
+    }
+
+    /// The helper's sentence as one sentence: a capital first letter, a final stop.
+    public static func sentence(_ s: String) -> String {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        guard let first = t.first else { return t }
+        let capped = first.isLowercase ? first.uppercased() + t.dropFirst() : t
+        return capped.hasSuffix(".") ? capped : capped + "."
+    }
+
+    /// The crop's caption for a source: what, where, when (v41 3.1), e.g. "About me · Notes · edited Tue". The date is
+    /// whole, never cut.
+    public static func caption(_ e: SourceExcerpt, kind: RowSource.Kind?, app: String?, now: Date, calendar: Calendar) -> (name: String, place: String?, when: String?) {
+        let place: String?
+        switch kind {
+        case .memory?: place = "what you told Caret"
+        // The site, as the address bar shows it: "linkedin.com", not "www.linkedin.com".
+        case .tab?: place = e.tab.map { $0.host.hasPrefix("www.") ? String($0.host.dropFirst(4)) : $0.host } ?? app
+        case .window?, .request?, nil:
+            if let pdf = e.pdf { place = "page \(pdf.page + 1)" } else { place = app.flatMap { $0 == e.name ? nil : $0 } }
+        }
+        let when = e.edited.map { LikelyFile.edited(Date(timeIntervalSince1970: Double($0) / 1000), now: now, calendar: calendar) }
+        return (e.name, place, when)
+    }
     public static let already = "already so"
     public static let stopping = "Stopping"
     public static let expired = "That preview waited too long for Tab, so nothing ran. Ask again."

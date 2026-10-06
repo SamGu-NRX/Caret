@@ -36,8 +36,8 @@ extension Gallery {
 
     static let h11Withheld = ["'Why do you want to work here?' is yours to write: Caret doesn't write answers."]
 
-    static func h11Task() -> PageTask {
-        PageTask(preview: h11Preview(h11Rows, tick: "Do you need visa sponsorship?", warnings: h11Withheld, attach: ["Resume/CV"]), goalId: "goal-1-a1")!
+    static func h11Task(enrich: (GoalProgress.Preview) -> GoalProgress.Preview = { $0 }) -> PageTask {
+        PageTask(preview: enrich(h11Preview(h11Rows, tick: "Do you need visa sponsorship?", warnings: h11Withheld, attach: ["Resume/CV"])), goalId: "goal-1-a1")!
     }
 
     static func h11Receipt(_ goal: String, _ step: Int, _ phase: GoalProgress.Receipt.Phase = .verified) -> GoalProgress {
@@ -48,9 +48,10 @@ extension Gallery {
         GoalProgress(at: 1, goalId: goal, requestId: nil, event: .finished(.init(outcome: outcome, verified: 9, skipped: 0, left: left, says: says)))
     }
 
-    /// The panel's states, each from a PageTask driven as the machine drives it.
-    static func h11Panels() -> [(String, PageTaskPanel)] {
-        var preview = h11Task()
+    /// The panel's states, each from a PageTask driven as the machine drives it. `enrich` (L1) adds to each preview what
+    /// a newer helper sends with it (sources, excerpts, the fields left with a reason).
+    static func h11Panels(enrich: (GoalProgress.Preview) -> GoalProgress.Preview = { $0 }) -> [(String, PageTaskPanel)] {
+        var preview = h11Task(enrich: enrich)
         let previewPanel = PageTaskPanel(task: preview, stoppable: false)
 
         var progress = preview
@@ -62,23 +63,23 @@ extension Gallery {
         var reveal = progress
         for i in 5..<9 { _ = reveal.receive(h11Receipt("goal-1-a1", i)) }
         _ = reveal.receive(h11Finished("goal-1-a1", .partial, "Partly done: 9 fields verified. Left for you: 'Why do you want to work here?'.", left: ["'Why do you want to work here?'"]))
-        let more = h11Preview([("Province", "Ontario", true), ("Postal code", "M5V 2T6", false)], reason: .afterReveal, first: 0)
+        let more = enrich(h11Preview([("Province", "Ontario", true), ("Postal code", "M5V 2T6", false)], reason: .afterReveal, first: 0))
         _ = reveal.receive(GoalProgress(at: 1, goalId: "goal-1-a1~1", requestId: nil, event: .segment(more)))
         let revealPanel = PageTaskPanel(task: reveal, stoppable: false)
 
-        var handoff = PageTask(preview: h11Preview(Array(h11Rows.prefix(4)), press: "Next", attach: ["Resume/CV"]), goalId: "goal-1-a1")!
+        var handoff = PageTask(preview: enrich(h11Preview(Array(h11Rows.prefix(4)), press: "Next", attach: ["Resume/CV"])), goalId: "goal-1-a1")!
         _ = handoff.tab(nowMs: 1)
         for i in 0..<4 { _ = handoff.receive(h11Receipt("goal-1-a1", i)) }
         _ = handoff.receive(h11Finished("goal-1-a1", .handoff, "Ready: 4 done. 'Next' runs the page's own script; you press it."))
         let handoffPanel = PageTaskPanel(task: handoff, stoppable: false)
 
         var next = handoff
-        let page2 = h11Preview([("Employer", "Northwind Robotics", false), ("Title", "Software Engineer", false), ("From", "2023-06", false),
-                                ("To", "2026-08", false), ("Work type", "Full time", true)], reason: .nextPage, segment: 0)
+        let page2 = enrich(h11Preview([("Employer", "Northwind Robotics", false), ("Title", "Software Engineer", false), ("From", "2023-06", false),
+                                       ("To", "2026-08", false), ("Work type", "Full time", true)], reason: .nextPage, segment: 0))
         _ = next.receive(GoalProgress(at: 1, goalId: "goal-2-a1", requestId: nil, event: .segment(page2)))
         let nextPanel = PageTaskPanel(task: next, stoppable: false)
 
-        var done = PageTask(preview: h11Preview(Array(h11Rows.prefix(6))), goalId: "goal-1-a1")!
+        var done = PageTask(preview: enrich(h11Preview(Array(h11Rows.prefix(6)))), goalId: "goal-1-a1")!
         _ = done.tab(nowMs: 1)
         for i in 0..<6 { _ = done.receive(h11Receipt("goal-1-a1", i)) }
         _ = done.receive(h11Finished("goal-1-a1", .done, "Done: 6 fields verified."))
@@ -93,7 +94,7 @@ extension Gallery {
             return PageTaskPanel(task: t, stoppable: false)
         }()
 
-        var stopped = h11Task()
+        var stopped = h11Task(enrich: enrich)
         _ = stopped.tab(nowMs: 1)
         for i in 0..<3 { _ = stopped.receive(h11Receipt("goal-1-a1", i)) }
         _ = stopped.receive(GoalProgress(at: 1, goalId: "goal-1-a1", requestId: nil, event: .stopped(.init(

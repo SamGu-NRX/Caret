@@ -231,12 +231,19 @@ public struct GoalProgress: Codable, Equatable, Sendable {
             public var value: String
             /// Chosen from a list the page offers (a select or a combobox).
             public var picked: Bool
+            /// L1: where the value came from; nil from a helper before L1.
+            public var source: RowSource?
+            /// L1: the source's lines around the value, only to a host that named `sourceExcerpts` (see SourceExcerpts.swift
+            /// for what this host may do with it).
+            public var excerpt: SourceExcerpt?
 
-            public init(step: Int, label: String, value: String, picked: Bool) {
+            public init(step: Int, label: String, value: String, picked: Bool, source: RowSource? = nil, excerpt: SourceExcerpt? = nil) {
                 self.step = step
                 self.label = label
                 self.value = value
                 self.picked = picked
+                self.source = source
+                self.excerpt = excerpt
             }
         }
 
@@ -270,8 +277,10 @@ public struct GoalProgress: Codable, Equatable, Sendable {
         public var attach: [String]
         /// H14: each attach step's row; nil from a helper before H14, or when the segment attaches nothing.
         public var files: [FileRow]?
+        /// L1: the fields the plan leaves to the user with a reason the panel draws (a hatch or a dotted blank).
+        public var left: [LeftField]?
 
-        public init(windowId: String, app: AppRef, anchor: Frame?, viewport: Frame?, from: String, rows: [Row], attach: [String], files: [FileRow]? = nil) {
+        public init(windowId: String, app: AppRef, anchor: Frame?, viewport: Frame?, from: String, rows: [Row], attach: [String], files: [FileRow]? = nil, left: [LeftField]? = nil) {
             self.windowId = windowId
             self.app = app
             self.anchor = anchor
@@ -280,9 +289,10 @@ public struct GoalProgress: Codable, Equatable, Sendable {
             self.rows = rows
             self.attach = attach
             self.files = files
+            self.left = left
         }
 
-        enum CodingKeys: String, CodingKey { case windowId, app, anchor, viewport, from, rows, attach, files }
+        enum CodingKeys: String, CodingKey { case windowId, app, anchor, viewport, from, rows, attach, files, left }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -294,7 +304,14 @@ public struct GoalProgress: Codable, Equatable, Sendable {
             rows = try c.decode([Row].self, forKey: .rows)
             attach = try c.decode([String].self, forKey: .attach)
             files = try c.decodeIfPresent([FileRow].self, forKey: .files)
+            left = try c.decodeIfPresent([LeftField].self, forKey: .left)
             guard !windowId.isEmpty else { throw ProtocolError("a page view names its page window") }
+            if let left {
+                guard left.count <= 24, left.allSatisfy({ !$0.label.isEmpty && $0.label.count <= 300 && !$0.says.isEmpty && $0.says.count <= 600 }) else {
+                    throw ProtocolError("a page view leaves up to 24 fields, each named and said")
+                }
+            }
+            guard rows.allSatisfy({ ($0.source?.name.count ?? 0) <= 120 }) else { throw ProtocolError("a row's source names an app in 120 characters") }
             if let files {
                 guard files.count <= 8, Set(files.map(\.step)).count == files.count,
                       files.allSatisfy({ $0.step >= 0 && !$0.label.isEmpty && $0.label.count <= 300 && $0.accept.count <= 20 && $0.accept.allSatisfy { !$0.isEmpty && $0.count <= 100 } })
@@ -309,6 +326,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
             try c.encode(windowId, forKey: .windowId); try c.encode(app, forKey: .app); try c.encode(anchor, forKey: .anchor); try c.encode(viewport, forKey: .viewport)
             try c.encode(from, forKey: .from); try c.encode(rows, forKey: .rows); try c.encode(attach, forKey: .attach)
             try c.encodeIfPresent(files, forKey: .files)
+            try c.encodeIfPresent(left, forKey: .left)
         }
     }
 

@@ -17,15 +17,16 @@ final class H14RenderTests: XCTestCase {
         let text = 4.5
         let views = Dictionary(uniqueKeysWithValues: Gallery.h14().map { ($0.name, $0.view) })
         let surfaces: [(String, AnyView, [ContrastRenderTests.Probe])] = [
+            // L1: the page task panel draws in v41's tokens (`CaretColor`); a user's own step is Ink in Medium, not Carrot.
             ("Attach, choose", views["page-task-attach-choose"]!, [
-                .init(name: "Ink, title and values", token: Tokens.ink, minimum: text),
-                .init(name: "Ink 2, labels and keys", token: Tokens.ink2, minimum: text),
-                .init(name: "Carrot text, Choose a file…", token: Tokens.carrotText, minimum: text),
+                .init(name: "Ink, title and values", token: CaretColor.ink, minimum: text),
+                .init(name: "Ink 2, labels and keys", token: CaretColor.ink2, minimum: text),
+                .init(name: "Carrot text, Choose a file…", token: CaretColor.carrotText, minimum: text),
             ]),
-            ("Attach, saved offered", views["page-task-attach-saved"]!, [.init(name: "Ink, file name and date", token: Tokens.ink, minimum: text)]),
-            ("Attach, confirmed", views["page-task-attach-confirmed"]!, [.init(name: "Ink 2, paperclip and ⌘2 Change", token: Tokens.ink2, minimum: text)]),
-            ("Attach, refused", views["page-task-attach-refused"]!, [.init(name: "Ink, why the file was not taken", token: Tokens.ink, minimum: text)]),
-            ("Attach, running", views["page-task-attach-running"]!, [.init(name: "Carrot text, attach yourself", token: Tokens.carrotText, minimum: text)]),
+            ("Attach, saved offered", views["page-task-attach-saved"]!, [.init(name: "Ink, file name and date", token: CaretColor.ink, minimum: text)]),
+            ("Attach, confirmed", views["page-task-attach-confirmed"]!, [.init(name: "Ink 2, paperclip and ⌘2 Change", token: CaretColor.ink2, minimum: text)]),
+            ("Attach, refused", views["page-task-attach-refused"]!, [.init(name: "Ink, why the file was not taken", token: CaretColor.ink, minimum: text)]),
+            ("Attach, running", views["page-task-attach-running"]!, [.init(name: "Ink, attach yourself", token: CaretColor.ink, minimum: text)]),
             ("Save line", views["file-save-offer"]!, [.init(name: "Ink, the question", token: Tokens.ink, minimum: text),
                                                       .init(name: "Ink 2, ⌘1 Save and Esc", token: Tokens.ink2, minimum: text)]),
             ("Save line, kept", views["file-save-saved"]!, [.init(name: "Ink, the helper's sentence", token: Tokens.ink, minimum: text)]),
