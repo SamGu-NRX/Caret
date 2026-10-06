@@ -74,9 +74,26 @@ export interface Attached {
  */
 export type PageChange = "navigated" | "navigationStarted" | "documentGone" | "beforeunload" | "pagehide" | "submit";
 
+/**
+ * P4: what a text read of the tab the user just left found (protocol.ts PageTabText). `leftAt`: when the user left the
+ * tab; `frames`: every frame whose text is in it, top first.
+ */
+export interface TabText {
+  tabId: number;
+  leftAt: number;
+  title: string;
+  frames: { frameId: number; origin: string }[];
+  selection: string[];
+  blocks: string[];
+  cut: boolean;
+  docsText: "on" | "off" | null;
+}
+
 export interface ActAnswer {
   outcome: PageOutcome;
   detail: string | null;
+  /** pageReadText only, with outcome ok. */
+  text?: TabText;
   readings?: WriteReadings;
   risk?: HandoffRisk;
   choice?: Choice;
@@ -108,7 +125,9 @@ export type ActVerb =
   /** `question` (W4): for a press-group option, the question the plan names; the content script requires it unchanged. */
   | ({ kind: "pageChooseOption"; expect: string; value: string; question?: string } & TargetFields)
   | ({ kind: "pageSetChecked"; checked: boolean } & TargetFields)
-  | ({ kind: "pageAttachFile"; file: { name: string; type: string; size: number; sha256: string; data: string } } & TargetFields);
+  | ({ kind: "pageAttachFile"; file: { name: string; type: string; size: number; sha256: string; data: string } } & TargetFields)
+  /** P4 item 8: `text` at the caret of the focused field, whose text before the caret must be `expect` (content/insert.ts). */
+  | ({ kind: "pageInsertText"; expect: string; text: string } & TargetFields);
 
 export type PageVerb = { kind: "pageWalk"; tabId: number | null } | ActVerb;
 
@@ -124,7 +143,10 @@ export interface FrameReport {
   viewport: [number, number];
   excluded: Partial<Record<PageExclusion, number>>;
   truncated: boolean;
-  focused: { id: string; selection: [number, number] | null } | null;
+  /** P4 item 7: `text`, the text around the caret of a focused text control (content/field-text.ts); null when it holds none. */
+  focused: { id: string; selection: [number, number] | null; text: FieldText | null } | null;
+  /** P4 items 6 and 7: a Google Docs or Sheets editor's top frame only (content/field-text.ts docsFocus). */
+  docs?: { kind: "document" | "spreadsheet"; text: "on" | "off"; field: FieldText | null };
   hasFocus: boolean;
   /** P1: how long this frame's own walk took in the page, in ms (performance.now, rounded to 0.1). */
   walkMs: number;
@@ -137,10 +159,33 @@ export interface FrameReport {
  */
 export type ToContent =
   | { caret: 1; op: "walk" }
+  /** P4: the frame's visible text, once, for the tab the user just left (content/text.ts). Answered with FrameTextAnswer. */
+  | { caret: 1; op: "text" }
   /** The frame's viewport only, [innerWidth, innerHeight]: asked of a captcha frame, which is never walked (W4). */
   | { caret: 1; op: "viewport" }
   | { caret: 1; op: "act"; verb: ActVerb; deadline: number; guardUntil: number }
   | { caret: 1; op: "guard"; until: number };
+
+/** The text around the caret of the field the user is typing in (P4 item 7; content/field-text.ts). */
+export interface FieldText {
+  before: string;
+  after: string;
+  selection: string;
+}
+
+/**
+ * P4: one frame's answer to a text read: what composition needs to tell whether the frame is visible (its origin,
+ * viewport and visible iframes, as a walk reports them), and its text (content/text.ts FrameTextReport).
+ */
+export interface FrameTextAnswer {
+  origin: string;
+  viewport: [number, number];
+  iframes: { src: string; rect: Rect; inner: [number, number] }[];
+  selection: string[];
+  blocks: string[];
+  cut: boolean;
+  docsText: "on" | "off" | null;
+}
 
 /** Content script to worker, on its own: the document moved in history (pageshow from the back-forward cache, popstate, hashchange). */
 export interface NavChanged {

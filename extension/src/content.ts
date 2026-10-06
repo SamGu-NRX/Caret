@@ -12,13 +12,19 @@
 // S1 adds a passive input listener that sends nothing: per text field, in memory, it notes whether the text came from
 // the user's own typing (content/entry.ts). A walk reports that one word per field, so Caret saves an answer as the
 // user's words only when they typed it.
-import type { FocusMoved, FrameReport, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
+//
+// P4 adds one more message the worker may ask, never sent on its own: "text", the frame's visible text, read once
+// for the tab the user just left (content/text.ts). A walk also reports the text around the caret of the focused
+// field it kept (content/field-text.ts), for the host's inline text.
+import type { FocusMoved, FrameReport, FrameTextAnswer, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
 import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
 import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
 import { EntryTracker } from "./content/entry.ts";
+import { docsKind, readFrameText } from "./content/text.ts";
+import { docsFocus, fieldText } from "./content/field-text.ts";
 
 declare global {
   // Set once per isolated world, so a script injected again after install (worker onInstalled) does nothing.
@@ -45,6 +51,29 @@ function contentBox(f: HTMLIFrameElement): [number, number] {
   return [f.clientWidth - px(cs.paddingLeft) - px(cs.paddingRight), f.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom)];
 }
 
+/**
+ * Each visible iframe with a content box over a pixel each way, and that box's size, which is exactly its child
+ * document's viewport: the worker matches child frames to these (worker/compose.ts). Chrome gives content scripts no
+ * frame id for an element (chrome.runtime.getFrameId is undefined there in Chrome 154).
+ */
+function visibleIframes(): FrameReport["iframes"] {
+  const r = (el: Element): [number, number, number, number] => {
+    const b = el.getBoundingClientRect();
+    return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)];
+  };
+  return [...document.querySelectorAll("iframe")].filter((f) => visible(f) && contentBox(f)[0] > 1 && contentBox(f)[1] > 1).map((f) => ({ src: srcOf(f), rect: r(f), inner: contentBox(f) }));
+}
+
+/**
+ * P4: this frame's visible text, read once on the worker's message for the tab the user just left (content/text.ts),
+ * with what the worker needs to tell whether the frame is visible in its parent.
+ */
+function textOf(): FrameTextAnswer {
+  const path = location.protocol === "about:" ? location.href : location.pathname;
+  const t = readFrameText(self.origin, path, window.self === window.top);
+  return { origin: self.origin, viewport: [window.innerWidth, window.innerHeight], iframes: visibleIframes(), selection: t.selection, blocks: t.blocks, cut: t.cut, docsText: t.docsText };
+}
+
 function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
   const t0 = performance.now();
   const href = location.href;
@@ -66,13 +95,10 @@ function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
       } catch {
         selection = null;
       }
-      focused = { id: c.id, selection };
+      focused = { id: c.id, selection, text: fieldText(active) };
     }
   }
-  const r = (el: Element): [number, number, number, number] => {
-    const b = el.getBoundingClientRect();
-    return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)];
-  };
+  const docs = window.self === window.top ? docsKind(self.origin, location.pathname) : null;
   return {
     // The document's own origin, not its URL's: opaque ("null") for a sandboxed frame, the parent's for an
     // about:blank or srcdoc frame that inherits it (W1 review, round 2, #8).
@@ -81,14 +107,12 @@ function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
     title: clean(document.title, 200),
     headings: [...document.querySelectorAll("h1, h2")].filter((x) => visible(x)).slice(0, 10).map((h) => clean(h.textContent, 120)).filter((t) => t !== ""),
     controls: out.controls,
-    // Each visible iframe with a content box over a pixel each way, and that box's size, which is exactly its child
-    // document's viewport: the worker matches child frames to these (worker.ts walk). Chrome gives content scripts no
-    // frame id for an element (chrome.runtime.getFrameId is undefined there in Chrome 154).
-    iframes: [...document.querySelectorAll("iframe")].filter((f) => visible(f) && contentBox(f)[0] > 1 && contentBox(f)[1] > 1).map((f) => ({ src: srcOf(f), rect: r(f), inner: contentBox(f) })),
+    iframes: visibleIframes(),
     viewport: [window.innerWidth, window.innerHeight],
     excluded: out.excluded,
     truncated: out.truncated,
     focused,
+    ...(docs === null ? {} : { docs: docsFocus(document, docs) }),
     hasFocus: document.hasFocus(),
     walkMs: Math.round((performance.now() - t0) * 10) / 10,
   };
@@ -97,7 +121,7 @@ function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
 function isToContent(m: unknown): m is ToContent {
   if (typeof m !== "object" || m === null) return false;
   const x = m as Record<string, unknown>;
-  return x.caret === 1 && (x.op === "walk" || x.op === "viewport" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number" && typeof x.guardUntil === "number"));
+  return x.caret === 1 && (x.op === "walk" || x.op === "text" || x.op === "viewport" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number" && typeof x.guardUntil === "number"));
 }
 
 if (globalThis.__caretContent === undefined) {
@@ -142,6 +166,10 @@ if (globalThis.__caretContent === undefined) {
     if (sender.id !== chrome.runtime.id || sender.tab !== undefined || !isToContent(m)) return false;
     if (m.op === "walk") {
       reply(walk(reg, entries));
+      return false;
+    }
+    if (m.op === "text") {
+      reply(textOf());
       return false;
     }
     if (m.op === "viewport") {

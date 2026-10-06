@@ -22,6 +22,8 @@ export function parseVerb(x: unknown): PageVerb | null {
       return str(v.expect) && str(v.value) && (v.question === undefined || str(v.question)) ? (v as unknown as ActVerb) : null;
     case "pagePress":
       return v as unknown as ActVerb;
+    case "pageInsertText":
+      return str(v.expect) && str(v.text) && v.text !== "" ? (v as unknown as ActVerb) : null;
     case "pageSetChecked":
       return typeof v.checked === "boolean" ? (v as unknown as ActVerb) : null;
     case "pageAttachFile": {
@@ -42,7 +44,9 @@ export type FromHelper =
   | { type: "actRevoke"; taskId: string }
   | { type: "pagePing"; id: string }
   | { type: "pageChunk"; id: string; index: number; count: number; data: string }
-  | { type: "pageSitesOff"; origins: string[] };
+  | { type: "pageSitesOff"; origins: string[] }
+  /** P4: read the text of the tab the user just left, once (worker.ts readText). */
+  | { type: "pageReadText"; id: string; expires: number; tabId: number };
 
 /** A bridge message the worker understands, or null. */
 export function parseFromHelper(x: unknown): FromHelper | null {
@@ -68,6 +72,8 @@ export function parseFromHelper(x: unknown): FromHelper | null {
       return nonEmpty(m.id) ? { type: "pagePing", id: m.id } : null;
     case "pageChunk":
       return nonEmpty(m.id) && int(m.index) && int(m.count) && m.count >= 2 && m.index < m.count && str(m.data) ? { type: "pageChunk", id: m.id, index: m.index, count: m.count, data: m.data } : null;
+    case "pageReadText":
+      return nonEmpty(m.id) && int(m.expires) && int(m.tabId) ? { type: "pageReadText", id: m.id, expires: m.expires, tabId: m.tabId } : null;
     case "pageSitesOff":
       return Array.isArray(m.origins) && m.origins.every((o) => typeof o === "string" && SITE.test(o)) ? { type: "pageSitesOff", origins: m.origins as string[] } : null;
     default:

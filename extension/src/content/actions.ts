@@ -34,10 +34,11 @@ import { errorText, invalidNow, setterFor, settle } from "./dom.ts";
 import { chooseOption } from "./combobox.ts";
 import { pressOption } from "./press.ts";
 import { attachFile } from "./attach.ts";
+import { insertAtCaret } from "./insert.ts";
 
 const answer = (outcome: ActAnswer["outcome"], detail: string | null, extra: Partial<ActAnswer> = {}): ActAnswer => ({ outcome, detail, ...extra });
 
-type Mutating = Exclude<ActVerb, { kind: "pageChooseOption" | "pageAttachFile" | "pagePress" }>;
+type Mutating = Exclude<ActVerb, { kind: "pageChooseOption" | "pageAttachFile" | "pagePress" | "pageInsertText" }>;
 
 /** Why the act must not go on now, or null. */
 function ineligible(el: Element, verb: ActVerb, entry: Entry | undefined, deadline: number, opts: { name: boolean } = { name: true }): ActAnswer | null {
@@ -63,7 +64,8 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number, alive:
     return answer("handoff", `'${clean(verb.name, 60)}' runs the page's own script, so you press it`, { risk: risk === "safe" || risk === "unclassified" ? "pageScript" : risk });
   }
   const expect = verb.kind === "pageWrite" || verb.kind === "pageSelect" || verb.kind === "pageChooseOption" ? verb.expect : null;
-  const r = reg.resolve(verb.id, expect, verb.rebind !== false);
+  // P4: an insert goes only to the element the walk kept when the offer was made, never to one rebound by its strong key.
+  const r = reg.resolve(verb.id, expect, verb.rebind !== false && verb.kind !== "pageInsertText");
   if ("missing" in r) return answer(r.replaced && verb.rebind === false ? "notSameElement" : "noElement", r.missing);
   // An undo reaches only the object its write reached: the one kept under its mark, alive in this document (W3 review #2).
   if (verb.sameAs !== undefined && reg.marked(verb.sameAs) !== r.el) {
@@ -78,6 +80,8 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number, alive:
   let a: ActAnswer;
   if (verb.kind === "pageChooseOption") {
     a = verb.control === "combobox" ? await chooseOption(r.el, verb, check, alive) : verb.control === "button" ? await pressOption(r.el, verb, check, alive) : answer("unsupported", `a ${verb.control} is not a custom listbox; a native select takes pageSelect`);
+  } else if (verb.kind === "pageInsertText") {
+    a = await insertAtCaret(r.el, verb, gateWith(alive, check));
   } else if (verb.kind === "pageAttachFile") {
     // Once the file is in, an upload widget often writes its name or a status line into the field's label (Lever,
     // Ashby): after that point the name may change and the element is still the one Caret wrote (W4 review #6).
