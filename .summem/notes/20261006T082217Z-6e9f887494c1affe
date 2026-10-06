@@ -1,1 +1,0 @@
-H12: launchd starts the SMAppService agent as relative argv0 'Contents/MacOS/Caret', so pgrep/ps matching on /Applications/Caret.app misses the host; use launchctl print's pid or lsof txt. A fresh VM guest makes no helper Jev request (no transfers), fill or first look.

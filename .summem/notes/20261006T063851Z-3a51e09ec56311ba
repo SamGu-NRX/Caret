@@ -1,1 +1,0 @@
-H11: ~/.caret-run/locks/build.lock is a symlink to ~/.long-run/locks/heavy.lock; wrapping lockf build.lock inside with-heavy.sh (which holds heavy.lock) deadlocks while holding the heavy lease.

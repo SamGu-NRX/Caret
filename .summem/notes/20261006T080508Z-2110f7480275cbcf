@@ -1,1 +1,0 @@
-H13: the bundled helper gets only allowlisted env (ServiceLauncher: HOME, USER, LANG, TYPESAFE_API_KEY, CARET_ENV_FILE...), so a helper-side test switch never reaches it from Caret.app; inject a pageField through the host debug socket instead.

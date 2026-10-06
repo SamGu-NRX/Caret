@@ -1,1 +1,0 @@
-H11: a SwiftUI view under .fixedSize(horizontal: true) is measured at its ideal width, so wrapped text counts as one line and the panel clips its top and bottom; give it an exact .frame(width:) and fixedSize(vertical) only (PopupView PopupWidth).

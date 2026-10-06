@@ -1,1 +1,0 @@
-H12: host.sock moved to <home>/sockets/host.sock (default CaretV2/sockets); release builds answer only state (allowlist) and spend unless CARET_DEBUG_SOCKET=full, so release-build harnesses must setenv it. Onboarding defaults to auto only without --home/--settings.

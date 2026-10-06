@@ -1,1 +1,0 @@
-H13: in helper tests, a non-page window sharing the page's browser pid is passed over as Chrome's toolbar (H10 ScreenModel.windowBefore); give a note window its own app (NOTES_APP) or TabSource reads the wrong tab.
