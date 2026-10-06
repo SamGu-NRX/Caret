@@ -14,6 +14,7 @@ import type { AskJev } from "../fill/jev.ts";
 import { FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
+import { isAnswerField } from "../fill/answers.ts";
 import { asksCountry, fieldPart } from "../fill/derive.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import type { EventClock } from "../offers/event-time.ts";
@@ -243,9 +244,9 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   const byKey = new Map(inputs.map((x) => [x.node.key, x]));
   const sectionOf = (n: Node): string | null => describeField(w, n).section;
   const left: LeftItem[] = [];
-  const leave = (n: Node, says: string, quotes?: LeftItem["quotes"]): void => {
+  const leave = (n: Node, says: string, quotes?: LeftItem["quotes"], whose = "is yours"): void => {
     const label = fieldName(w, n);
-    left.push({ windowId: o.windowId, key: n.key, label, why: "dropped", says: `'${label}' is yours: ${says}`, ...(quotes === undefined ? {} : { quotes }) });
+    left.push({ windowId: o.windowId, key: n.key, label, why: "dropped", says: `'${label}' ${whose}: ${says}`, ...(quotes === undefined ? {} : { quotes }) });
   };
   let wanted: PageInput[];
   if (o.revealed !== undefined) wanted = o.revealed.flatMap((k) => byKey.get(k) ?? []);
@@ -317,7 +318,10 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     if (writes.has(f.key)) continue;
     const n = w.nodes.get(f.key);
     if (n === undefined) continue;
-    if (f.withheld !== null) leave(n, WITHHELD_SAYS[f.withheld] ?? "Caret wasn't sure what goes there");
+    // H13: a field that takes a written answer is the user's by design, whatever Jev made of it: "wasn't sure" would say
+    // Caret tried to write it. A saved answer matched to it but held back (`answer`) keeps that reason instead.
+    if (f.withheld !== null && f.answer === undefined && isAnswerField(n)) leave(n, "Caret doesn't write answers", undefined, "is yours to write");
+    else if (f.withheld !== null) leave(n, WITHHELD_SAYS[f.withheld] ?? "Caret wasn't sure what goes there");
     else if (f.handoff !== null) leave(n, `Caret leaves setting it to you ('${clip(f.handoff.display)}' fits it)`, f.handoff.source === null ? undefined : { windowId: f.handoff.source.windowId, text: clip(f.handoff.display) });
   }
   if (writes.size === 0 && files.length === 0) {
