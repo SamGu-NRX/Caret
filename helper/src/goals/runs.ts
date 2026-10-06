@@ -27,7 +27,6 @@ import { isDerived, isFilled } from "./gates.ts";
 import { sourceHolds } from "../offers/fill-popup.ts";
 import { memoryValue, parseMemoryRef } from "../fill/fill.ts";
 import { pageInputKeys } from "./page-planner.ts";
-import { pageView } from "./page-view.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { formControls } from "../fill/controls.ts";
 import { fieldName } from "../planner/planner.ts";
@@ -698,7 +697,6 @@ export class GoalRuns {
       where: d.kind === "window" ? { kind: "window", app: d.appName, title: d.title } : { kind: "calendar", calendar: d.calendar },
       steps: seg.steps.map((s) => ({ index: s.index, kind: viewKind(s), says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }) })),
       warnings: run.cursor.segment === 0 ? run.plan.warnings : [],
-      ...pageOf(this.deps.model, run.plan, seg),
     };
   }
 
@@ -813,12 +811,6 @@ function sameField(w: WindowState, s: GoalStep): boolean {
 }
 
 /** A step's kind as goalProgress shows it. propose() refuses an attach step until P3 adds it to the protocol. */
-/** H11: a page segment's view for the host's panel, as a spread: empty for every other segment. */
-function pageOf(model: ScreenModel, plan: GoalPlan, seg: GoalSegment): { page?: NonNullable<ReturnType<typeof pageView>> } {
-  const page = pageView(model, plan, seg);
-  return page === undefined ? {} : { page };
-}
-
 function viewKind(s: GoalStep): "write" | "calendar" | "press" | "handoff" {
   if (s.kind === "attach") throw new Error(`step ${s.ref} attaches a file, which goalProgress cannot show yet`);
   return s.kind;

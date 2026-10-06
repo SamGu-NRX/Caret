@@ -13,7 +13,7 @@
 // Nothing here acts.
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { AskOption, FillField, FillProposal, Node } from "../protocol.ts";
-import { jevFailureSays, type AskJev, type JevRequest } from "../fill/jev.ts";
+import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
 import { FillError, memoryRefOf, PAGE_WINDOW_KIND, proposeFill, type FillScope } from "../fill/fill.ts";
 import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
@@ -283,8 +283,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       r = await o.askJev(req);
     } catch (e) {
       // A Jev failure anywhere in an Ask (a timeout, an HTTP error) is reported as the planner reports one.
-      // H11: a 402 is the account's credits, which trying again does not fix; it says so.
-      throw new SaidError("jevFailed", jevFailureSays(e, SAYS.unreachable), `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+      throw new SaidError("jevFailed", SAYS.unreachable, `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
     }
     jev.calls++;
     jev.costUsd += r.costUsd;
@@ -456,10 +455,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     }
   }
 
-  // H11: a plan intent is a goal only when a writer can plan it. Since L1 there is none by default, and without one a
-  // goal refuses every native plan ("no plan writer") that planTask below would still make; a page fill is a goal
-  // (planPage, below) and needs no writer.
-  if (checked.route === "plan" && o.goals === true && o.writer !== null) return { route: "goal", intent, maker: use, windowId: w.window.windowId };
+  if (checked.route === "plan" && o.goals === true) return { route: "goal", intent, maker: use, windowId: w.window.windowId };
   if (checked.route === "plan") {
     try {
       const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }) });
