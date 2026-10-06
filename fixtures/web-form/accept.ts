@@ -485,7 +485,7 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
   await check("a file goes into the file input through DataTransfer: files[0] name and size, and the page shows its name", async () => {
     await link.run({ kind: "walk", pid: e.session.info.browser.pid, windowId });
     grant(e, "t-file");
-    const c = files.confirm("t-file", filePath);
+    const c = files.confirm("t-file", filePath, ConfirmedFiles.target(windowId, nodeKey(e, "Resume")));
     expect("ok" in c, JSON.stringify(c));
     const a = await link.attachFile(windowId, nodeKey(e, "Resume"), "t-file", files);
     const at = a.page?.attached;
@@ -497,7 +497,7 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
 
   await check("the same file dropped on the dropzone: the page shows its name", async () => {
     grant(e, "t-drop");
-    files.confirm("t-drop", filePath);
+    files.confirm("t-drop", filePath, ConfirmedFiles.target(windowId, nodeKey(e, "Drop your resume here")));
     const a = await link.attachFile(windowId, nodeKey(e, "Drop your resume here"), "t-drop", files);
     const at = a.page?.attached;
     expect(a.page?.outcome === "ok" && at?.via === "drop" && at.shown, `${a.page === null ? a.verb.detail : outcome(a.page)} ${JSON.stringify(at)}`);
@@ -517,7 +517,7 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
 
   await check("a file is never dropped on a control that holds no file input of its own", async () => {
     grant(e, "t-notdz");
-    files.confirm("t-notdz", filePath);
+    files.confirm("t-notdz", filePath, ConfirmedFiles.target(windowId, nodeKey(e, "Show more")));
     const a = await link.attachFile(windowId, nodeKey(e, "Show more"), "t-notdz", files);
     expect(a.page?.outcome === "unsupported", `${a.page === null ? `${a.verb.outcome} ${a.verb.detail}` : outcome(a.page)}`);
     return outcome(a.page as PageResult);
@@ -984,7 +984,7 @@ async function batch4(e: Engine, site: FixtureSite, tmp: string): Promise<void> 
   const fileSize = readFileSync(filePath).length;
   const attach = async (taskId: string, name: string): Promise<{ r: PageResult | null; detail: string }> => {
     grant(e, taskId);
-    files.confirm(taskId, filePath);
+    files.confirm(taskId, filePath, ConfirmedFiles.target(windowId, nodeKey(e, name)));
     const a = await link.attachFile(windowId, nodeKey(e, name), taskId, files);
     return { r: a.page, detail: a.page === null ? `${a.verb.outcome} ${a.verb.detail ?? ""}` : `${outcome(a.page)} ${JSON.stringify(a.page.attached)}` };
   };
