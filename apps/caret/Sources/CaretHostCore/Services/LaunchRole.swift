@@ -44,6 +44,8 @@ public enum LaunchRole: Equatable, Sendable {
     /// service; it grants nothing, since launchd hands the service only to the job that lists it and the bridge
     /// still holds whatever answers to the host requirement.
     public static let agentMarker = "CARET_LAUNCHD_AGENT"
+    /// The agent's launchd label (Bundle/dev.caret.host.plist).
+    public static let agentLabel = "dev.caret.host"
     /// The environment variable Info.plist's LSEnvironment sets for a copy LaunchServices opens.
     public static let launchServicesMarker = "CARET_OPENED_BY_LAUNCHSERVICES"
 

@@ -39,6 +39,60 @@ final class ShipsCoreTests: XCTestCase {
         XCTAssertEqual(commands.last, .close)
     }
 
+    // MARK: - The login item actually starts
+
+    /// D1's VM run 4: registered and enabled, but launchd never ran it (2eea5cf). The lines are from that run's
+    /// `launchctl print` and from a run where it started (H12 vm-diag).
+    static let failingPrint = """
+    gui/501/dev.caret.host = {
+    \tactive count = 0
+    \tpath = (submitted by smd.83)
+    \ttype = Submitted
+    \tstate = spawn scheduled
+    \tprogram identifier = Contents/MacOS/Caret (mode: 2)
+    \truns = 6
+    \tlast exit code = 78: EX_CONFIG
+    }
+    """
+    static let runningPrint = """
+    gui/501/dev.caret.host = {
+    \tstate = running
+    \tprogram identifier = Contents/MacOS/Caret (mode: 2)
+    \truns = 1
+    \tpid = 778
+    \tlast exit code = (never exited)
+    \tendpoints = {
+    \t\t"dev.caret.host.page-bridge" = {
+    \t\t\tstate = active
+    \t\t}
+    \t}
+    }
+    """
+
+    func testAJobLaunchdKeepsFailingToStartIsAFailureNotAHandOff() {
+        let job = AgentStart.parse(Self.failingPrint)
+        XCTAssertEqual(job, AgentStart.Job(state: "spawn scheduled", runs: 6, lastExit: "78: EX_CONFIG"))
+        guard case .failed(let why) = AgentStart.verdict(job, elapsed: 3) else { return XCTFail("handed off to a job that never ran") }
+        XCTAssertTrue(why.contains("78: EX_CONFIG"), why)
+    }
+
+    func testARunningJobIsAHandOffAndAnEndpointsStateDoesNotConfuseIt() {
+        let job = AgentStart.parse(Self.runningPrint)
+        XCTAssertEqual(job, AgentStart.Job(state: "running", runs: 1, lastExit: nil))
+        XCTAssertEqual(AgentStart.verdict(job, elapsed: 0.5), .running)
+    }
+
+    func testANewJobGetsTheDeadlineBeforeItCountsAsFailed() {
+        let pending = AgentStart.Job(state: "spawn scheduled", runs: 0, lastExit: nil)
+        XCTAssertEqual(AgentStart.verdict(pending, elapsed: 2), .wait)
+        XCTAssertEqual(AgentStart.verdict(AgentStart.Job(state: "spawn scheduled", runs: 1, lastExit: "1"), elapsed: 2), .wait,
+                       "one exit: launchd restarts a crash")
+        XCTAssertEqual(AgentStart.verdict(nil, elapsed: 2), .wait)
+        guard case .failed = AgentStart.verdict(pending, elapsed: AgentStart.deadline) else { return XCTFail() }
+        guard case .failed = AgentStart.verdict(nil, elapsed: AgentStart.deadline) else { return XCTFail() }
+        XCTAssertNil(AgentStart.parse(""))
+    }
+
     // MARK: - The Jev key step
 
     final class KeyRig {

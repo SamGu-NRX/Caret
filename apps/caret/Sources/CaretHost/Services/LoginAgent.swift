@@ -40,7 +40,7 @@ public enum LoginAgent {
         case .notRegistered, .notFound:
             do {
                 try service.register()
-                return .handedOff("registered \(label); launchd starts it now and at each login")
+                return confirmStarted(after: "registered \(label); launchd starts it now and at each login")
             } catch {
                 return .runHere("could not register \(label): \(error.localizedDescription)")
             }
@@ -84,7 +84,34 @@ public enum LoginAgent {
         } catch {
             return .runHere("could not start \(label): \(error.localizedDescription)")
         }
-        return p.terminationStatus == 0 ? .handedOff("started \(label)") : .runHere("launchctl kickstart \(label) exited \(p.terminationStatus)")
+        return p.terminationStatus == 0 ? confirmStarted(after: "started \(label)") : .runHere("launchctl kickstart \(label) exited \(p.terminationStatus)")
+    }
+
+    /// Waits for launchd to run the job (`AgentStart.verdict`), reading `launchctl print` every half second. When it
+    /// fails, this copy runs Caret itself, without the page bridge, rather than exit and leave nothing running.
+    private static func confirmStarted(after done: String) -> HandOff {
+        let start = Date()
+        while true {
+            switch AgentStart.verdict(AgentStart.parse(printJob()), elapsed: Date().timeIntervalSince(start)) {
+            case .running: return .handedOff(done)
+            case .failed(let why): return .runHere("\(done), but the login item did not start: \(why)")
+            case .wait: usleep(500_000)
+            }
+        }
+    }
+
+    /// `launchctl print gui/<uid>/dev.caret.host`, or "" when launchd has no such job.
+    private static func printJob() -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = ["print", "gui/\(getuid())/\(label)"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return "" }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return p.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : ""
     }
 }
 

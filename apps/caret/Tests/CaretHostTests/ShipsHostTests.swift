@@ -49,6 +49,16 @@ final class ShipsHostTests: XCTestCase {
         XCTAssertEqual(waiting.unregisters, 1, "a login item the user turned off is still registered, and goes too")
     }
 
+    /// The uninstaller finds out whether a build takes --unregister from Info.plist (the flag's text is too short to
+    /// land in the binary's string table), so the list there and the flag main.swift handles must agree.
+    func testInfoPlistListsTheCommandsMainHandles() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../..").standardized
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: Data(contentsOf: root.appendingPathComponent("Bundle/Info.plist")), format: nil) as? [String: Any])
+        XCTAssertEqual(plist["CaretCommands"] as? [String], ["--unregister"])
+        let main = try String(contentsOf: root.appendingPathComponent("Sources/Caret/main.swift"), encoding: .utf8)
+        XCTAssertTrue(main.contains(#"CommandLine.arguments.dropFirst().first == "--unregister""#))
+    }
+
     func testUnregisteringWhatIsNotRegisteredIsDoneAlready() {
         for status in [SMAppService.Status.notRegistered, .notFound] {
             let service = FakeService(status)
