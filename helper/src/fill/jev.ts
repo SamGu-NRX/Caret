@@ -10,6 +10,27 @@ export const JEV_MODEL = "jev-latest";
 /** Sourced: $0.042 per million input tokens, output free (https://docs.typesafe.ai/models.md). */
 export const JEV_USD_PER_INPUT_TOKEN = 0.042 / 1_000_000;
 
+/**
+ * Jev answered with an HTTP error (H11). The message is unchanged ("Jev HTTP <status>: <the service's text>"); `status`
+ * lets a caller tell a billing refusal (402) from a model that is down, which the user fixes differently.
+ */
+export class JevHttpError extends Error {
+  readonly status: number;
+  constructor(status: number, detail: string) {
+    super(`Jev HTTP ${status}: ${detail}`);
+    this.name = "JevHttpError";
+    this.status = status;
+  }
+}
+
+/** What the user reads when Jev failed: a 402 is the account's credits, which trying again does not fix (H11). */
+export function jevFailureSays(e: unknown, otherwise: string): string {
+  return e instanceof JevHttpError && e.status === 402 ? JEV_NO_CREDITS : otherwise;
+}
+
+/** The sentence for a 402 from Jev (H11, lead addendum: never "couldn't reach its model" for a billing error). */
+export const JEV_NO_CREDITS = "Caret's model account is out of credits, so Caret can't do this. Add credits, then try again.";
+
 export interface ChoiceQuestion {
   type: "choice";
   instructions: string | Record<string, unknown>;
@@ -112,7 +133,7 @@ export function makeJevClient(key: () => string, timeoutMs = 10_000): AskJev {
       if (!res.ok) {
         // The body is the service's own text; the key is cut out in case it is ever echoed back.
         const detail = (await res.text()).slice(0, 300).split(key()).join("[redacted]");
-        throw new Error(`Jev HTTP ${res.status}: ${detail}`);
+        throw new JevHttpError(res.status, detail);
       }
       const parsed = JevResponse.parse(await res.json());
       const answers: JevResult["answers"] = {};

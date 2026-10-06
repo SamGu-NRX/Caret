@@ -10,7 +10,7 @@ import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
-import type { AskJev, JevRequest } from "./fill/jev.ts";
+import { JevHttpError, jevFailureSays, type AskJev, type JevRequest } from "./fill/jev.ts";
 import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryValue, parseMemoryRef, proposeFill, type FillErrorWhy } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
@@ -1163,6 +1163,12 @@ export class Helper {
       this.opts.store.count("goal.proposed", 1);
       return this.goals.propose(plan, session, requestId);
     } catch (e) {
+      // H11: Jev failing while a page is planned (fill's round) is said as an Ask's is, not as the planner's own failure.
+      if (e instanceof JevHttpError) {
+        this.opts.store.count("goal.refused_jev", 1);
+        this.opts.warn?.(`goal ${goalId}: ${e.message}`);
+        return refuse(jevFailureSays(e, SAYS.unreachable));
+      }
       if (!(e instanceof GoalError)) throw e;
       this.opts.store.count(`goal.refused_${e.code}`, 1);
       this.opts.warn?.(`goal ${goalId}: ${e.message}`);

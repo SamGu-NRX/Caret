@@ -2131,6 +2131,30 @@ export type GoalStepView = z.infer<typeof GoalStepView>;
 export const GoalStopReason = z.enum(["refused", "dialog", "reload", "sourceChanged", "targetChanged", "timeout", "unexpectedEffect", "handedOff", "revealed", "windowGone", "you", "readerRestarted", "hostGone", "expired", "error"]);
 export type GoalStopReason = z.infer<typeof GoalStopReason>;
 
+/**
+ * H11: what a host's page task panel shows for a segment that writes in a page window, beside `steps`; absent for every
+ * other segment. Nothing here is covered by `digest`: it is how the preview reads, and every value in it is a step's.
+ * - `windowId`: the page window the segment writes in.
+ * - `anchor`: the first field the segment writes, in screen points (top-left origin), when it lies inside `viewport`;
+ *   null otherwise, and the host anchors to `viewport`'s top edge instead.
+ * - `viewport`: the page's visible area on screen (its top frame); null when the walk did not say where it is.
+ * - `from`: where the values came from, worded as the fill pop-up's source line ("Notes, Robin's details and what you
+ *   told Caret"); empty when no write has a source.
+ * - `rows`: each write step whose value reads as "field: value", by its index in the goal; `picked` for a value chosen
+ *   from a list (a select or a combobox). A write with no row (a box to tick) reads from its step's `says`.
+ * - `attach`: the labels of the page's empty file inputs the Ask's scope takes. Caret attaches no file yet (memo P3), so
+ *   the host names each as the user's.
+ */
+export const GoalPageView = z.object({
+  windowId: z.string().min(1),
+  anchor: Frame.nullable(),
+  viewport: Frame.nullable(),
+  from: z.string().max(300),
+  rows: z.array(z.object({ step: z.number().int().nonnegative(), label: z.string().max(300), value: z.string().max(900), picked: z.boolean() })).max(24),
+  attach: z.array(z.string().min(1).max(200)).max(8),
+});
+export type GoalPageView = z.infer<typeof GoalPageView>;
+
 const GoalHead = {
   type: z.literal("goalProgress"),
   v: z.literal(PROTOCOL_VERSION),
@@ -2164,6 +2188,7 @@ export const GoalProgress = z.discriminatedUnion("event", [
     where: z.discriminatedUnion("kind", [z.object({ kind: z.literal("window"), app: z.string(), title: z.string() }), z.object({ kind: z.literal("calendar"), calendar: z.string().min(1) })]),
     steps: z.array(GoalStepView).min(1).max(24),
     warnings: z.array(z.string().min(1).max(600)).max(24),
+    page: GoalPageView.optional(),
   }),
   z.object({
     ...GoalHead,
