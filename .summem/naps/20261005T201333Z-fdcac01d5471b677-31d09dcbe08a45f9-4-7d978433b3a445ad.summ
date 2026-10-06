@@ -1,1 +1,0 @@
-L1/P1: Gemma E2B base model (few-shot local drafts, grammar required, deadlineMs epoch ms); labelTooLong over 80-char focused labels on low-prose pages; old hosts throw on unknown memoryDocument ids; no-groq.ts fails tests reading GROQ_API_KEY.

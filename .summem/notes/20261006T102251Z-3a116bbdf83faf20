@@ -1,0 +1,1 @@
+A1: free Laya (gateway, boundless) 422s any request over ~512 input tokens (489 ok, ~519 not) and allows 5 req/min per team; heads and corpus fill requests are ~2000 tokens, so the Ask path cannot run on Laya as built (evidence/screen/a1/laya-limits.txt).

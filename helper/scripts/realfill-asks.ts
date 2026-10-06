@@ -45,7 +45,7 @@ import { devWriterRoute } from "../src/writer/routes.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
 import { Snapshot } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
-import { buildDesk, loadAsks, loadCorpus, nodesFor, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
+import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: a } = parseArgs({
@@ -91,12 +91,88 @@ const jevModels = new Set<string>();
 let writerSpent = 0;
 /** Windows put on a desk, all from fixture files (buildDesk); the cache and the request log take only their text. */
 const fixtureIds = new Set<string>();
-const decide = harnessEngine({ name: engineName(a.engine), canned: null, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
+/**
+ * A1: `--engine canned` is an oracle, for when no model can run the Ask path (Laya's free tier takes at most 512 input
+ * tokens, and Jev had no credits). It always chooses code's scope reading, settles the heads as the ask's expected fields
+ * say, confirms exactly the expected fields, and answers each value question with the ask's expected value for that
+ * field, else the value corpus.json expects for a whole-form fill. So any field outside the ask's expected fields that
+ * the Ask still puts in scope gets a value and scores wrong: it measures whether code's reading writes a field the user
+ * did not mean when the model always agrees, not how a real model scores.
+ */
+const oracle: AskJev = async (req) => {
+  const ask = asks.find((x) => x.id === current.replace(/\+pick$/u, ""));
+  const form = corpus.forms.find((f) => f.id === ask?.form);
+  const want = ask === undefined || ask.expected === "refuse" ? {} : ask.expected;
+  const valueOf = (label: string): string | null => {
+    const n = normLabel(label);
+    const own = Object.entries(want).find(([l]) => normLabel(l) === n)?.[1];
+    if (own !== undefined) return own;
+    return form?.fields.find((f) => normLabel(f.label) === n)?.expected ?? null;
+  };
+  /** Whether a candidate's quoted text is the value: the same words, the same day, or the same clock time. */
+  const same = (text: string, v: string): boolean => {
+    const flat = (x: string): string => x.toLowerCase().replace(/[^a-z0-9]/gu, "");
+    if (flat(text) === flat(v) && flat(v) !== "") return true;
+    const day = (x: string): string | null => {
+      const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/u.test(x) ? `${x}T00:00:00` : x);
+      return Number.isNaN(t) ? null : new Date(t).toDateString();
+    };
+    const clock = (x: string): string | null => {
+      const m = /^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?$|^(\d{1,2}):(\d{2})$/iu.exec(x.trim());
+      if (m === null) return null;
+      if (m[4] !== undefined) return `${Number(m[4])}:${m[5]}`;
+      return `${(Number(m[1]) % 12) + (m[3]?.toLowerCase() === "p" ? 12 : 0)}:${m[2] ?? "00"}`;
+    };
+    return (day(text) !== null && day(text) === day(v) && /\d{4}/u.test(text)) || (clock(text) !== null && clock(text) === clock(v));
+  };
+  const quoted = (d: string): string => /^"([^"]*)"/u.exec(d)?.[1] ?? d;
+  const wholeForm = new Set((form?.fields ?? []).map((f) => f.expected));
+  const theirs = new Set(Object.entries(want).filter(([l, v]) => form?.fields.find((f) => normLabel(f.label) === normLabel(l))?.expected !== v).map(([, v]) => v));
+  const wanted = (label: string): boolean => Object.keys(want).some((l) => normLabel(l) === normLabel(label) && want[l] !== "none");
+  const labelIn = (ins: string): string | null => /(?:Label|field): '([^']+)'|the field '([^']+)'|fill or change '([^']+)'/u.exec(ins)?.slice(1).find((x) => x !== undefined) ?? null;
+  const answers: Record<string, { choice: string; confidence: number }> = {};
+  for (const [id, q] of Object.entries(req.questions)) {
+    const keys = Object.keys(q.criteria);
+    const ins = String(q.instructions);
+    const pick = (k: string): void => {
+      answers[id] = { choice: keys.includes(k) ? k : (keys.at(-1) ?? "none"), confidence: 0.99 };
+    };
+    if (id === "reading") pick("code");
+    else if (id === "scope") pick("fields");
+    else if (id === "source") pick("any");
+    else if (id === "whose") pick("user");
+    else if (id.endsWith("_whose")) {
+      // A field the ask fills with someone else's value (not the whole-form one) wants that person's details.
+      const label = labelIn(ins);
+      const v = label === null ? null : valueOf(label);
+      pick(v !== null && theirs.has(v) ? "other" : "user");
+    }
+    else if (id === "section") pick("none");
+    else if (id.endsWith("_owner")) {
+      const text = /"([^"]*)"/u.exec(ins)?.[1] ?? "";
+      const mine = [...theirs].some((v) => same(text, v)) ? (keys.includes("person") ? "person" : "other") : [...wholeForm].some((v) => same(text, v)) ? "user" : "unclear";
+      pick(mine);
+    }
+    else if ("yes" in q.criteria) pick(id === "all" ? "no" : wanted(labelIn(ins) ?? "") ? "yes" : "no");
+    else {
+      const label = labelIn(ins);
+      const v = label === null ? null : valueOf(label);
+      const hit = v === null || v === "none" ? undefined : Object.entries(q.criteria).find(([, d]) => typeof d === "string" && (same(quoted(d), v) || d === v));
+      pick(hit?.[0] ?? "none");
+    }
+  }
+  const nouls = Object.fromEntries(Object.entries(req.nouls ?? {}).map(([id, q]) => [id, wanted(labelIn(String(q.instructions)) ?? "") ? 0.99 : 0.01]));
+  return { model: "oracle", answers, nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
+};
+const decide = harnessEngine({ name: engineName(a.engine), canned: oracle, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
 /** Each decision request's latency, for the bake-off's p50 and p95. */
 const requestMs: number[] = [];
 let current = "";
+/** A1: decision requests by the ask (or "<id>+pick" for the simulated picks after a question) that made them. */
+const requestsBy = new Map<string, number>();
 const askJev: AskJev = async (req) => {
   if (jevSpent + writerSpent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
+  requestsBy.set(current, (requestsBy.get(current) ?? 0) + 1);
   const r = await decide.ask(req);
   jevSpent += r.costUsd;
   jevModels.add(r.model);
@@ -171,6 +247,8 @@ interface Row {
   continued: { verdict: Verdict; proposed: Proposed[]; missing: string[]; says: string | null } | null;
   /** B29: for a must-refuse ask that was asked, the picks tried and anything they proposed (all of it wrong). */
   refusePicks: { tried: number; proposed: string[] } | null;
+  /** A1: decision requests the Ask made before any simulated pick. */
+  requests: number;
 }
 
 const rows: Row[] = [];
@@ -253,6 +331,7 @@ for (const [i, ask] of asks.entries()) {
   };
   const askedRows: Row["asked"] = [];
   let continued: Row["continued"] = null;
+  current = `${ask.id}+pick`;
   let q = question;
   for (let depth = 0; q !== null && depth < 3; depth++) {
     const { ids, right } = rightOf(q);
@@ -299,7 +378,7 @@ for (const [i, ask] of asks.entries()) {
   }
   const fill = (draft?.fill?.fields ?? []).map((f) => ({ field: labelOf.get(f.key) ?? f.descriptor, value: f.value ?? f.handoff?.value ?? null, withheld: f.withheld }));
   const sentenceOk = ask.reason === undefined ? null : says !== null && sentenceFor(ask.reason, says);
-  rows.push({ ask, route: draft?.route ?? intent?.route ?? "none", verdict, proposed, missing, error, says, detail, sentenceOk, intent, maker: use, fill, asked: askedRows, continued, refusePicks });
+  rows.push({ ask, route: draft?.route ?? intent?.route ?? "none", verdict, proposed, missing, error, says, detail, sentenceOk, intent, maker: use, fill, asked: askedRows, continued, refusePicks, requests: requestsBy.get(ask.id) ?? 0 });
   process.stderr.write(`${ask.id} (${ask.form}): ${verdict} via ${draft?.route ?? "none"}${error === null ? "" : `; ${error.slice(0, 160)}`}${detail === null || detail === says ? "" : ` [${detail.slice(0, 200)}]`}\n`);
 }
 
@@ -334,6 +413,17 @@ const makerCalls = rows.flatMap((r) => (r.maker === null ? [] : [r.maker.calls])
 const makerMs = rows.flatMap((r) => (r.maker === null ? [] : [r.maker.latencyMs])).sort((x, y) => x - y);
 const pct = (xs: readonly number[], p: number): number => (xs.length === 0 ? 0 : Math.round(xs[Math.min(xs.length - 1, Math.floor(p * xs.length))] as number));
 const mean = (xs: readonly number[]) => (xs.length === 0 ? 0 : Math.round(xs.reduce((s, x) => s + x, 0) / xs.length));
+/**
+ * A1: an ask back is an Ask that ends asking the user instead of acting: a question with choices, or a refusal that
+ * says Caret was unsure ("Which fields do you mean?", "Is 8:15 in the morning or the evening?"). Must-refuse asks and
+ * asks whose right outcome is a question (CorpusAsk.ask) are not counted. A question is useful when its first
+ * options hold the right answer (recall).
+ */
+const askedBack = (r: Row): boolean => r.ask.expected !== "refuse" && r.ask.ask === undefined && (r.verdict === "asked" || (r.verdict === "refused" && r.error?.startsWith("unsure:") === true));
+const back = rows.filter(askedBack);
+const rightAsks = rows.filter((r) => r.ask.ask !== undefined && r.verdict === "asked" && r.asked[0]?.part === r.ask.ask && r.asked[0]?.recall === true);
+const firstRequests = rows.map((r) => r.requests);
+const kinds = [...new Set(rows.flatMap((r) => (r.ask.kind === undefined ? [] : [r.ask.kind])))];
 const md = [
   `# Ask scoreboard (B26): ${a["asks-file"]}, maker ${a.maker}`,
   "",
@@ -347,6 +437,9 @@ const md = [
   `Must-refuse asks that were asked: ${rows.filter((r) => r.refusePicks !== null).length}; every pick tried (${rows.reduce((s2, r) => s2 + (r.refusePicks?.tried ?? 0), 0)} picks) proposed **${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)} values (all wrong)**${rows.flatMap((r) => (r.refusePicks?.proposed ?? []).map((x) => `${r.ask.id}: ${x}`)).map((x) => `; ${x}`).join("")}.`,
   `After the simulated right pick: right ${cont("right")}, partial ${cont("partial")}, asked again with no right option ${cont("asked")}, refused ${cont("refused")}, **wrong ${cont("wrong")}**; not continued (right answer not offered) ${asked.length - recalled.length}.`,
   `Of the ${refuseAsks.length} that should be refused: refused ${n("refused", refuseAsks)}, wrong ${n("wrong", refuseAsks)}; with the right sentence ${named.filter((r) => r.sentenceOk === true).length} of the ${named.length} that name their reason.`,
+  `A1 asks back: ${back.length} (asked with choices ${back.filter((r) => r.verdict === "asked").length}, the right option offered in ${back.filter((r) => r.asked[0]?.recall === true).length}; refused as unsure ${back.filter((r) => r.verdict === "refused").length}). Asks whose right outcome is a question: ${rows.filter((r) => r.ask.ask !== undefined).length}, asked rightly ${rightAsks.length}.`,
+  `A1 decision requests per ask before any pick: mean ${(firstRequests.reduce((x, y) => x + y, 0) / Math.max(1, firstRequests.length)).toFixed(2)}, max ${Math.max(0, ...firstRequests)}; ${requestMs.length} requests in all, with the simulated picks.`,
+  ...(kinds.length === 0 ? [] : ["", "| kind | asks | right | partial | asked | refused | wrong | asked back |", "|---|---|---|---|---|---|---|---|", ...kinds.map((k) => { const xs = rows.filter((r) => r.ask.kind === k); return `| ${k} | ${xs.length} | ${n("right", xs)} | ${n("partial", xs)} | ${n("asked", xs)} | ${n("refused", xs)} | ${n("wrong", xs)} | ${xs.filter(askedBack).length} |`; })]),
   "",
   "| ask | form | instruction | verdict | route | proposed | missing | intent | says | detail | asked (options; right; recall) | after pick |",
   "|---|---|---|---|---|---|---|---|---|---|---|---|",
@@ -364,4 +457,4 @@ function ok2(p: Proposed): boolean {
 }
 writeFileSync(join(OUT, "realfill-asks.md"), md.join("\n") + "\n");
 writeFileSync(join(OUT, "realfill-asks.json"), JSON.stringify({ engine: decide.says, requestMs, maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, null, 1) + "\n");
-process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}\n`);
+process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}; asked back ${back.length}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}\n`);
