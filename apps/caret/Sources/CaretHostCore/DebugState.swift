@@ -233,6 +233,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var goalProgress: UInt64 = 0
         public var localTextRequests: UInt64 = 0
         public var answerSaves: UInt64 = 0
+        /// H13: answers to this host's pageInsert.
+        public var pageInserts: UInt64 = 0
         /// `planRequest` lines written from the ask field, and `planProposal` answers received.
         public var planRequests: UInt64 = 0
         public var planProposals: UInt64 = 0
@@ -685,6 +687,35 @@ public struct DebugState: Codable, Equatable, Sendable {
     public var calendar: CalendarInfo?
     /// H8: the helper's model spend since it started, as it last sent it.
     public var spend: HelperSpend?
+    /// H13: inline text in page fields. States, lengths and timings only: never the page's text nor the suggestion.
+    public var pageInline: PageInlineInfo?
+
+    public struct PageInlineInfo: Codable, Equatable, Sendable {
+        /// The machine's last decision (`shown`, `midLine`, `ownSuggestions`, `insert.inserted`...).
+        public var last: String?
+        /// Inline text is on screen now, and how many characters it has.
+        public var shownLength: Int?
+        /// The quiet line about a page's own suggestions is on screen.
+        public var notice: Bool
+        /// The page field the user is in: its role and the length of the text around its caret. No text.
+        public var fieldRole: String?
+        public var beforeLength: Int?
+        public var afterLength: Int?
+        public var ownSuggestions: String?
+        /// The page's Tab owner the arbiter yields to now (`OtherTabOwners.pages`).
+        public var tabOwner: String?
+        /// Keystroke (seen by the tap) to inline text drawn in a page field.
+        public var latency: LatencyRecorder.Summary
+        /// The engine's generation alone, for the same suggestions.
+        public var generation: LatencyRecorder.Summary
+
+        public init(last: String?, shownLength: Int?, notice: Bool, fieldRole: String?, beforeLength: Int?, afterLength: Int?, ownSuggestions: String?,
+                    tabOwner: String?, latency: LatencyRecorder.Summary, generation: LatencyRecorder.Summary) {
+            self.last = last; self.shownLength = shownLength; self.notice = notice; self.fieldRole = fieldRole
+            self.beforeLength = beforeLength; self.afterLength = afterLength; self.ownSuggestions = ownSuggestions
+            self.tabOwner = tabOwner; self.latency = latency; self.generation = generation
+        }
+    }
 
     public struct CalendarInfo: Codable, Equatable, Sendable {
         /// `CalendarAccess` by name.

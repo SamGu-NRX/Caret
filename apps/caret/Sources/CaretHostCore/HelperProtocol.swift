@@ -56,6 +56,8 @@ public enum HelperInbound: Equatable, Sendable {
     case answerSaveOffer(AnswerSaveOffer)
     /// S1: what became of this host's `answerSave`.
     case answerSaveReply(AnswerSaveReply)
+    /// H13: what became of this host's `pageInsert` (`PageInlineMachine`).
+    case pageInsertReply(PageInsertReply)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -90,6 +92,7 @@ public enum HelperInbound: Equatable, Sendable {
         case .localTextRequest: return LocalTextRequest.type
         case .answerSaveOffer: return AnswerSaveOffer.type
         case .answerSaveReply: return AnswerSaveReply.type
+        case .pageInsertReply: return PageInsertReply.type
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -172,9 +175,14 @@ public enum HelperInbound: Equatable, Sendable {
             return .answerSaveOffer(try JSONDecoder().decode(AnswerSaveOffer.self, from: line))
         case AnswerSaveReply.type:
             return .answerSaveReply(try JSONDecoder().decode(AnswerSaveReply.self, from: line))
+        case PageInsertReply.type:
+            return .pageInsertReply(try JSONDecoder().decode(PageInsertReply.self, from: line))
         // The host's own goal, local-text and save messages, echoed back; validated so a malformed line is still counted.
         case GoalRequest.type:
             _ = try JSONDecoder().decode(GoalRequest.self, from: line)
+            return .notForConsumer(type: envelope.type)
+        case PageInsert.type:
+            _ = try JSONDecoder().decode(PageInsert.self, from: line)
             return .notForConsumer(type: envelope.type)
         case GoalAccept.type:
             _ = try JSONDecoder().decode(GoalAccept.self, from: line)
@@ -265,6 +273,8 @@ public struct LineFramer: Sendable {
 ///   form one segment at a time; each Tab sends `goalAccept` for the segment showing (`PageTaskMachine`).
 /// - `savedAnswers` (S1, H11): the host shows a saved answer whole before inserting it and offers to save one
 ///   on ⌘1 only (`SavedAnswers`, `AnswerSaveMachine`).
+/// - `pageText` (H13): the helper sends the text around a page field's caret and the caret, for inline text, and
+///   takes `pageInsert`; this host never logs, stores or shows that text on its debug socket (`PageInline`).
 /// - `routing` (D2-02, H6): only while the user's setting "Caret decides when to help" is on. The
 ///   helper then sends route decisions, and its offers wait for them.
 /// A helper from before any of these ignores the names it does not know (its hello schema is not strict).
@@ -276,7 +286,8 @@ public enum HostHello {
         // H11: goalPlans, so an Ask about a page comes back as a page goal for the panel at the form; savedAnswers,
         // since the host shows an answer whole before inserting it (`SavedAnswers`), offers to save one on ⌘1 only,
         // and decodes the answers document. No localModel: this host serves no local text (`LocalText`).
-        [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability, GoalPlans.capability, SavedAnswers.capability]
+        // H13: pageText, so a page field arrives with the text around its caret for inline text.
+        [MemoryDocs.capability, fillAllCapability, askChoicesCapability, HelperSpend.capability, GoalPlans.capability, SavedAnswers.capability, PageInline.capability]
             + (routing ? [Routing.capability] : [])
     }
 

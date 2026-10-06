@@ -125,6 +125,9 @@ public final class OfferArbiter: @unchecked Sendable {
         var claimCount: UInt64 = 0
         var refusedPublishCount: UInt64 = 0
         var keptOriginalOfferID: UInt64?
+        /// H13: browsers whose focused page field shows the page's own suggestions, which Tab accepts there
+        /// (`OtherTabOwners.pages`), by pid, with the page's name.
+        var pageTabOwners: [Int32: String] = [:]
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -336,6 +339,13 @@ public final class OfferArbiter: @unchecked Sendable {
                 return .pass(.dismissed)
             }
 
+            // H13: in a page field whose page offers its own suggestions (Gmail, Google Docs), Tab is the page's: no
+            // inline text, fill value or writing fix of Caret's takes it there. The offer goes, as for any key it
+            // does not own; its other keys (Esc, ⌘-digits) are still Caret's.
+            if keyClass == .tab, s.pageTabOwners[offer.target.pid] != nil, PageWindow.isPage(offer.target.windowID), Self.yieldsTab(offer) {
+                Self.clearOffer(&s)
+                return .pass(.dismissed)
+            }
             // H11: one page segment per Tab. A held Tab's autorepeat accepts nothing: a continuation that arrives while
             // the key is still down would otherwise be taken by a press the user made for the segment before. It is
             // consumed with nothing changed, so the page does not move its focus either (review H11-2).
@@ -357,6 +367,20 @@ public final class OfferArbiter: @unchecked Sendable {
                 return .pass(.dismissed)
             }
             return Self.act(keyClass, on: offer, surface: surface, state: &s, now: now)
+        }
+    }
+
+    /// H13: the page's own suggestions take Tab in browser `pid`'s focused page field (`owner` names the page), or
+    /// no longer do (nil). Main thread, on each page field the helper reports.
+    public func setPageTabOwner(pid: Int32, owner: String?) {
+        state.withLock { s in s.pageTabOwners[pid] = owner }
+    }
+
+    /// The offers a page's own suggestions take Tab from: those whose Tab writes into the field.
+    static func yieldsTab(_ offer: Offer) -> Bool {
+        switch offer.kind {
+        case .ghost, .fill, .writing: return true
+        case .action, .popup: return false
         }
     }
 

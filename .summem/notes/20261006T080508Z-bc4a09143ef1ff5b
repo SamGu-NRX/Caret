@@ -1,0 +1,1 @@
+H13: page inline offers use OfferSource.page (never .engine), so HostCoordinator's ghost clears on AX focus changes leave them alone; Claim.insertsText is false for a page ghost and PageInlineMachine sends pageInsert.

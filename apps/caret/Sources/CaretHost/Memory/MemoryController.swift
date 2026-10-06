@@ -57,10 +57,12 @@ final class MemoryController {
         files.onSaved = { [weak self] in self?.book.requestList() }
         // The sites list lives in the settings file, which the runtime sends to the helper on change.
         model.sites.off = SettingsStore.shared.settings.sitesOff
+        model.sites.pageInline = SettingsStore.shared.settings.pageInline
         model.routing = SettingsStore.shared.settings.routing
         SettingsStore.shared.observe { [weak self] settings in
             MainActor.assumeIsolated {
                 self?.model.sites.off = settings.sitesOff
+                self?.model.sites.pageInline = settings.pageInline
                 self?.model.routing = settings.routing
                 self?.readCalendars()
             }
@@ -225,6 +227,7 @@ final class MemoryController {
             model.sites.problem = nil
         case .siteOff(let origin): turnSiteOff(origin)
         case .siteOn(let origin): turnSiteOn(origin)
+        case .pageInline(let page, let on): SettingsStore.shared.update(source: .menu) { $0.pageInline.set(page, on: on) }
         case .routing(let on): SettingsStore.shared.update(source: .menu) { $0.routing = on }
         case .calendar(let id): SettingsStore.shared.update(source: .menu) { $0.eventCalendar = id }
         }

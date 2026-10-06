@@ -70,7 +70,7 @@ let bundle: string;
 before(async () => {
   const out = await build({
     stdin: {
-      contents: `import * as t from "./text.ts"; import * as f from "./field-text.ts"; import * as i from "./insert.ts"; globalThis.__p4 = { ...t, ...f, ...i };`,
+      contents: `import * as t from "./text.ts"; import * as f from "./field-text.ts"; import * as i from "./insert.ts"; import * as c from "./caret-rect.ts"; globalThis.__p4 = { ...t, ...f, ...i, ...c };`,
       resolveDir: EXT,
       loader: "ts",
     },
@@ -330,6 +330,66 @@ describe("the insert at the caret (item 8)", () => {
     const typedMeanwhile = `__p4.insertAtCaret(document.getElementById("ta"), { expect: "Dear team, ", text: "thanks" }, async () => { const ta = document.getElementById("ta"); ta.setRangeText("I ", 11, 11, "end"); return null; })`;
     assert.equal((await tab.evaluate<{ outcome: string }>(typedMeanwhile)).outcome, "stale");
     assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Dear team, I ");
+    await tab.close();
+  });
+});
+
+// H13: where the caret is, for the host's inline text (extension/src/content/caret-rect.ts), and the insert only into a
+// document the user is looking at.
+describe("the caret of the focused field (H13)", () => {
+  type R = [number, number, number, number];
+
+  test("an input's caret follows its text, from the text's start", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const t = document.getElementById("t"); t.focus(); t.setSelectionRange(0, 0); })()`);
+    const start = await tab.evaluate<R>(`__p4.caretRect(document.getElementById("t"))`);
+    const box = await tab.evaluate<{ left: number; top: number; bottom: number }>(`(() => { const b = document.getElementById("t").getBoundingClientRect(); return { left: b.left, top: b.top, bottom: b.bottom }; })()`);
+    assert.ok(start[0] >= box.left && start[0] <= box.left + 8, `caret at ${start[0]}, field from ${box.left}`);
+    assert.ok(start[1] >= box.top - 1 && start[1] + start[3] <= box.bottom + 1);
+    await tab.evaluate(`document.getElementById("t").setSelectionRange(11, 11)`);
+    const end = await tab.evaluate<R>(`__p4.caretRect(document.getElementById("t"))`);
+    assert.ok(end[0] > start[0] + 40, `"Hello world" moved the caret from ${start[0]} to ${end[0]}`);
+    // A selection is not a caret.
+    await tab.evaluate(`document.getElementById("t").setSelectionRange(0, 5)`);
+    assert.equal(await tab.evaluate(`__p4.caretRect(document.getElementById("t"))`), null);
+    await tab.close();
+  });
+
+  test("a textarea's caret on its second line sits a line lower, at that line's text", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.style.width = "300px"; ta.value = "Dear team,\\nThanks"; ta.focus(); ta.setSelectionRange(10, 10); })()`);
+    const first = await tab.evaluate<R>(`__p4.caretRect(document.getElementById("ta"))`);
+    await tab.evaluate(`document.getElementById("ta").setSelectionRange(17, 17)`);
+    const second = await tab.evaluate<R>(`__p4.caretRect(document.getElementById("ta"))`);
+    assert.ok(second[1] > first[1] + first[3] * 0.5, `second line at ${second[1]}, first at ${first[1]}`);
+    assert.ok(second[0] < first[0], "'Thanks' is shorter than 'Dear team,'");
+    // The measuring copy is gone.
+    assert.equal(await tab.evaluate(`document.documentElement.lastElementChild.tagName`), "BODY");
+    await tab.close();
+  });
+
+  test("a contenteditable's caret is its selection's, also on an empty line", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => {
+      const ce = document.getElementById("ce"); ce.focus();
+      const t = ce.querySelectorAll("div")[1].firstChild; const r = document.createRange(); r.setStart(t, 4); r.collapse(true);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    })()`);
+    const r = await tab.evaluate<R>(`__p4.caretRect(document.getElementById("ce"))`);
+    const line = await tab.evaluate<{ left: number; top: number }>(`(() => { const b = document.getElementById("ce").querySelectorAll("div")[1].getBoundingClientRect(); return { left: b.left, top: b.top }; })()`);
+    assert.ok(r[0] > line.left + 10 && Math.abs(r[1] - line.top) < 4, JSON.stringify({ r, line }));
+    await tab.evaluate(`(() => { const ce = document.getElementById("ce"); ce.innerHTML = "<div><br></div>"; const r = document.createRange(); r.setStart(ce.firstChild, 0); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r); })()`);
+    const empty = await tab.evaluate<R | null>(`__p4.caretRect(document.getElementById("ce"))`);
+    assert.ok(empty !== null && empty[3] > 0, "an empty line still has a caret");
+    await tab.close();
+  });
+
+  test("an insert touches nothing in a document that does not have focus (a tab the user just left)", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.value = "Dear team, "; ta.focus(); ta.setSelectionRange(11, 11); document.hasFocus = () => false; })()`);
+    const r = await tab.evaluate<{ outcome: string }>(`__p4.insertAtCaret(document.getElementById("ta"), { expect: "Dear team, ", text: "thanks" }, async () => null)`);
+    assert.equal(r.outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Dear team, ");
     await tab.close();
   });
 });

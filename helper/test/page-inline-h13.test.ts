@@ -32,10 +32,13 @@ describe("the H13 golden lines (fixtures/golden/page-inline.ndjson), which the h
     }
   });
 
-  it("refuses an insert longer than the text a walk reports, and an empty one", () => {
+  it("refuses an insert longer than the text a walk reports, and an empty one, quoting neither in the refusal", () => {
     const insert = at(2);
     expect(ConsumerMessage.safeParse({ ...insert, text: "" }).success).toBe(false);
-    expect(ConsumerMessage.safeParse({ ...insert, expect: "x".repeat(2001) }).success).toBe(false);
+    const long = ConsumerMessage.safeParse({ ...insert, expect: "PAGETEXT".repeat(300) });
+    expect(long.success).toBe(false);
+    // The server logs and returns this message (server.ts reject): it must not carry the page's text.
+    expect(long.success ? "" : long.error.message).not.toContain("PAGETEXT");
   });
 });
 

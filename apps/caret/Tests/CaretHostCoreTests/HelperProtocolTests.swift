@@ -48,6 +48,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .localTextRequest: return "localTextRequest"
             case .answerSaveOffer: return "answerSaveOffer"
             case .answerSaveReply: return "answerSaveReply"
+            case .pageInsertReply: return "pageInsertReply"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }

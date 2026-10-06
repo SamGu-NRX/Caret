@@ -225,6 +225,12 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? NDJSON.line(save))
     }
 
+    /// H13: inline text the user accepted with Tab in a page field; answered with `pageInsertReply` to this connection.
+    @discardableResult
+    func send(_ insert: PageInsert) -> Bool {
+        sendLine(try? NDJSON.line(insert))
+    }
+
     /// H5: the file the user took for a plan's attach step; answered with `fileConfirmReply` to this connection.
     @discardableResult
     func send(_ confirm: FileConfirm) -> Bool {
@@ -403,6 +409,7 @@ final class HelperClient: @unchecked Sendable {
             case .goalProgress: s.goalProgress &+= 1
             case .localTextRequest: s.localTextRequests &+= 1
             case .answerSaveOffer, .answerSaveReply: s.answerSaves &+= 1
+            case .pageInsertReply: s.pageInserts &+= 1
             case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1
             }
         }

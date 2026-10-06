@@ -1,4 +1,5 @@
 import CaretHostCore
+import CaretScreenCore
 import SwiftUI
 
 /// What a click or key in the memory window asks for. `MemoryController` turns each into a
@@ -36,6 +37,8 @@ enum MemoryAction: Equatable {
     case siteDraft(String)
     case siteOff(String?)
     case siteOn(String)
+    /// H13: Caret's inline text on or off on a page with its own suggestions (Gmail).
+    case pageInline(PageField.OwnSuggestions, Bool)
     /// H6: "Caret decides when to help" (true) or "Always suggest as I type".
     case routing(Bool)
     /// H8: the calendar accepted events go to; nil for the default.
@@ -297,6 +300,7 @@ struct MemoryView: View {
                 .transition(.opacity.animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil))
                 Hairline()
             }
+            ownSuggestionsGroup
             VStack(alignment: .leading, spacing: 6) {
                 // The field's name stays on screen: a placeholder alone goes as soon as one letter is typed.
                 Text(SitesPage.addTitle)
@@ -318,6 +322,39 @@ struct MemoryView: View {
             .padding(.top, 18)
         }
         .padding(.top, 6)
+    }
+
+    /// H13: pages that offer their own text as the user types, where Caret stays quiet unless turned on. Gmail only:
+    /// Google Docs stays off until Caret can read the text being typed there, so it has no switch yet.
+    private var ownSuggestionsGroup: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            GroupHead(text: PageInlineCopy.sitesHead)
+                .padding(.top, 20)
+                .padding(.bottom, 2)
+            Text(PageInlineCopy.sitesIntro)
+                .font(Tokens.Font.chromeSmall)
+                .foregroundStyle(Color(token: Tokens.ink2))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 6)
+            let on = sites.pageInline.isOn(.gmail)
+            HStack(alignment: .center, spacing: 14) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(PageInlineCopy.name(.gmail))
+                        .font(Tokens.Font.row)
+                        .foregroundStyle(Color(token: Tokens.ink))
+                    Text(PageInlineCopy.sitesState(on))
+                        .font(Tokens.Font.chromeSmall)
+                        .foregroundStyle(Color(token: Tokens.ink2))
+                }
+                Spacer(minLength: 0)
+                Button(on ? PageInlineCopy.sitesTurnOff : PageInlineCopy.sitesTurnOn) { send(.pageInline(.gmail, !on)) }
+                    .buttonStyle(WindowButtonStyle(kind: on ? .ink : .key, small: true))
+                    .accessibilityLabel(on ? "Turn Caret's text off in Gmail" : "Turn Caret's text on in Gmail")
+            }
+            .padding(.vertical, 10)
+            .accessibilityElement(children: .contain)
+            Hairline()
+        }
     }
 
     /// The limit no setting moves, under the list and outside the scroll, so it is always in the

@@ -1,3 +1,4 @@
+import CaretScreenCore
 import Foundation
 
 /// Other apps that take Tab for completions of their own.
@@ -12,6 +13,19 @@ public enum OtherTabOwners {
     public static let bundleIDs: [String: String] = [
         "app.cotypist.Cotypist": "Cotypist",
     ]
+
+    /// H13: pages that accept their own inline suggestions with Tab (P4 item 9, `PageField.ownSuggestions`): Gmail's
+    /// compose body (Smart Compose) and Google Docs. There Tab stays the page's (`OfferArbiter.setPageTabOwner`),
+    /// unless the user turned Caret's inline text on for that page (`PageInlineSettings`). Nothing detects whether the
+    /// page is showing a suggestion now (GD1 finding 5): Docs draws on a canvas.
+    public static let pages: [PageField.OwnSuggestions: String] = [.gmail: "Gmail", .googleDocs: "Google Docs"]
+
+    /// Who takes Tab in this page field other than Caret: the page's name, or nil.
+    public static func pageOwner(_ field: PageField?, settings: PageInlineSettings) -> String? {
+        guard let own = field?.ownSuggestions, field?.key != nil else { return nil }
+        if own == .gmail, settings.isOn(own) { return nil }
+        return pages[own]
+    }
 
     /// The known Tab owners among `running` bundle ids, by name, sorted.
     public static func running(in running: [String]) -> [String] {

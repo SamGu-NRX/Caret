@@ -439,8 +439,12 @@ struct QuestionRow: View {
 
     /// The words' room: the 520 pt slip less the indent (29), the trailing padding (10) and, with
     /// keys, the 16 pt gap and the keys themselves, measured with their own fonts.
-    private var wrapWidth: CGFloat {
-        let room = Tokens.Shape.slipMaxWidth - (Tokens.Shape.slipLeading + Tokens.FigureSize.line + Tokens.Shape.gap) - Tokens.Shape.slipTrailing
+    private var room: CGFloat {
+        Tokens.Shape.slipMaxWidth - (Tokens.Shape.slipLeading + Tokens.FigureSize.line + Tokens.Shape.gap) - Tokens.Shape.slipTrailing
+    }
+
+    /// The words' room beside the keys.
+    private var besideKeys: CGFloat {
         guard !question.hints.isEmpty else { return room }
         func width(_ text: String, _ font: NSFont) -> CGFloat { ceil((text as NSString).size(withAttributes: [.font: font]).width) }
         let keys = question.hints.map { hint in
@@ -448,6 +452,13 @@ struct QuestionRow: View {
         }
         return room - 16 - keys.reduce(0, +) - Tokens.Shape.keysGap * CGFloat(keys.count - 1)
     }
+
+    /// H13: three labelled keys beside the words would leave them a column a few words wide (the line about Gmail's own
+    /// suggestions): then the keys get their own row under the words, which take the whole width.
+    private var keysBelow: Bool { besideKeys < Self.narrowest }
+    static let narrowest: CGFloat = 200
+
+    private var wrapWidth: CGFloat { keysBelow ? room : besideKeys }
 
     /// Wider than its room on one line. The panel is sized from its content's ideal size, which
     /// for text is one line; a column given a width wraps there and reports its full height.
@@ -460,7 +471,29 @@ struct QuestionRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 0) {
+        if keysBelow {
+            VStack(alignment: .leading, spacing: 8) {
+                words
+                keys
+            }
+        } else {
+            HStack(alignment: .center, spacing: 0) {
+                words
+                if !question.hints.isEmpty {
+                    Spacer(minLength: 16)
+                    keys
+                }
+            }
+        }
+    }
+
+    private var keys: some View {
+        HStack(spacing: Tokens.Shape.keysGap) {
+            ForEach(Array(question.hints.enumerated()), id: \.offset) { HintView(hint: $0.element) }
+        }
+    }
+
+    private var words: some View {
             VStack(alignment: .leading, spacing: 1) {
                 // A skill's name runs to 80 characters (memory.ts): the question wraps rather than
                 // cut it, and every word of it is shown.
@@ -478,13 +511,6 @@ struct QuestionRow: View {
                 }
             }
             .frame(width: wraps ? wrapWidth : nil, alignment: .leading)
-            if !question.hints.isEmpty {
-                Spacer(minLength: 16)
-                HStack(spacing: Tokens.Shape.keysGap) {
-                    ForEach(Array(question.hints.enumerated()), id: \.offset) { HintView(hint: $0.element) }
-                }
-            }
-        }
     }
 }
 

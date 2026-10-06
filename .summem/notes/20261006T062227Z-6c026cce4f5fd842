@@ -1,1 +1,0 @@
-I6: page-loop-eval runs every page in one helper; the hourly offer budget (balanced 4) holds pageWalked before the ready-on-load check, so the load journey lifts offersPerHour; fill.load_held_<rule> counts holds.

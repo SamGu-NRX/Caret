@@ -199,7 +199,10 @@ public enum SitesPage {
         public var here: String?
         public var draft = ""
         public var problem: String?
-        public init(off: [String] = [], here: String? = nil, draft: String = "", problem: String? = nil) {
+        /// H13: where Caret's inline text is on among pages with their own suggestions.
+        public var pageInline = PageInlineSettings()
+        public init(off: [String] = [], here: String? = nil, draft: String = "", problem: String? = nil, pageInline: PageInlineSettings = PageInlineSettings()) {
+            self.pageInline = pageInline
             self.off = off
             self.here = here
             self.draft = draft

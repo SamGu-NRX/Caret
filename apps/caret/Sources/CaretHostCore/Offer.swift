@@ -58,6 +58,10 @@ public enum OfferSource: String, Codable, Sendable {
     case helper
     /// The debug socket's `inject` test hook. Never reported to the helper.
     case debug
+    /// H13: inline text in a page field, from the ghost engine in this process (`PageInlineMachine`). Its own
+    /// producer, so the native ghost coordinator's clears, made on Accessibility focus changes the page engine
+    /// does not see, leave it alone.
+    case page
 }
 
 /// What the user took with Tab (or ⌥→, or a Command-digit action).
@@ -112,10 +116,11 @@ public struct Claim: Equatable, Sendable {
 
     /// Ghost text, fill values and writing fixes are written into the field; action lines and
     /// pop-ups are handed to the helper. H10: so is a fill value for a page field, which the host
-    /// cannot see to write or check (`PageWindow`); the helper's page engine writes it.
+    /// cannot see to write or check (`PageWindow`); the helper's page engine writes it. H13: and so
+    /// is inline text in a page field, which goes in through the page (`PageInlineMachine.claimed`).
     public var insertsText: Bool {
         switch offer.kind {
-        case .ghost: return !choice.fillAll
+        case .ghost: return !choice.fillAll && !PageWindow.isPage(offer.target.windowID)
         case .fill(let origin): return !choice.fillAll && !PageWindow.isPage(origin.windowID)
         case .writing: return rangeEdit != nil
         case .action, .popup: return false

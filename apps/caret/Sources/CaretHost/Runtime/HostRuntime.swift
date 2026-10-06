@@ -118,6 +118,8 @@ public final class HostRuntime {
     private let pageTask: PageTaskCoordinator
     /// H11: the quiet offer to keep an answer the user typed (S1).
     private let answerSave: AnswerSaveCoordinator
+    /// H13: inline text in web page fields, from the same ghost engine.
+    private let pageInline: PageInlineCoordinator
     private let writing: WritingCoordinator
     private let helper: HelperClient
     private let activity: ActivityCenter
@@ -164,6 +166,9 @@ public final class HostRuntime {
         self.pageTask = pageTask
         let answerSave = AnswerSaveCoordinator(arbiter: arbiter, status: status, drawsOnScreen: !configuration.surfacesHeadless)
         self.answerSave = answerSave
+        let pageInline = PageInlineCoordinator(arbiter: arbiter, status: status, engine: engine, policy: policy, drawsOnScreen: !configuration.surfacesHeadless)
+        self.pageInline = pageInline
+        pageInline.wordsAllowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
         let writing = WritingCoordinator(arbiter: arbiter, status: status, policy: policy)
         self.writing = writing
         let routeLink = RouteLink(status: status, enabled: SettingsStore.shared.settings.routing)
@@ -211,6 +216,7 @@ public final class HostRuntime {
                 surface.displaced(offer)
                 pageTask.machine.displaced(offer)
                 answerSave.machine.displaced(offer)
+                pageInline.displaced(offer)
                 writing.displaced(offer)
             }
         }
@@ -260,8 +266,11 @@ public final class HostRuntime {
             // fill that opens later finds the field the user is in now.
             if case .pageField(let field) = message {
                 PageFocusSource.book.receive(field)
-                return fill.pageField(field, at: at)
+                fill.pageField(field, at: at)
+                // H13: inline text in the field, which follows its own gate (`PageInlineCoordinator.gate`).
+                return pageInline.pageField(field)
             }
+            if case .pageInsertReply(let reply) = message { return pageInline.replied(reply) }
             // Pause and the roles the host can tell apart (`HostGate`); the perch still
             // hears about work, which the user asked to see.
             guard HostGate.allows(message, SettingsStore.shared.settings) else {
@@ -284,7 +293,10 @@ public final class HostRuntime {
             // later goal message is the panel's.
             case .goalProgress(let goal):
                 if !perch.ask.receive(goal, toForm: { pageTask.machine.start($0) }) { pageTask.machine.receive(goal) }
-            case .error(let e): pageTask.machine.helperError(e)
+            case .error(let e):
+                pageTask.machine.helperError(e)
+                // H13: a fill found nothing because the tab left is a Google editor whose text is off: say so at the field.
+                if let app = e.sourceOff { pageInline.sourceOff(app, says: e.message) }
             // S1: keep an answer the user typed; only ⌘1 on the line says yes.
             case .answerSaveOffer(let offer): answerSave.receive(offer)
             case .answerSaveReply(let reply): answerSave.machine.receive(reply)
@@ -333,6 +345,7 @@ public final class HostRuntime {
         fill.client = helper
         pageTask.client = helper
         answerSave.client = helper
+        pageInline.client = helper
         pageTask.onToastTaken = {
             surface.toastChanged()
             fill.toastChanged()
@@ -405,6 +418,7 @@ public final class HostRuntime {
             if !HostGate.allowsGhostText(settings) {
                 coordinator.gateClosed()
                 writing.gateClosed()
+                pageInline.gateClosed()
             }
             if !settings.gate.allows(family: "fill") { fill.gateClosed() }
             if settings.paused {
@@ -450,6 +464,7 @@ public final class HostRuntime {
                         surface.claimed(claim)
                         pageTask.machine.claimed(claim)
                         answerSave.machine.claimed(claim)
+                        pageInline.claimed(claim)
                         writing.claimed(claim)
                     }
                 }
@@ -462,6 +477,7 @@ public final class HostRuntime {
                         surface.offerChanged(reason)
                         pageTask.machine.offerChanged(reason)
                         answerSave.machine.offerChanged(reason)
+                        pageInline.offerChanged(reason)
                         writing.offerChanged(reason)
                     }
                 }
@@ -511,6 +527,7 @@ public final class HostRuntime {
                         writing.offerClosed(offerID)
                         pageTask.machine.offerClosed(offerID)
                         answerSave.machine.offerClosed(offerID)
+                        pageInline.offerChanged(.closed)
                     }
                 }
             }
@@ -723,6 +740,7 @@ public final class HostRuntime {
         surface.shutdown()
         pageTask.shutdown()
         answerSave.shutdown()
+        pageInline.shutdown()
         writing.shutdown()
         perch.shutdown()
         pageSight.shutdown()
@@ -1013,10 +1031,12 @@ public final class HostRuntime {
         let arbiterState = arbiter.snapshot()
         let tapState = tap.debugState()
         let offer = arbiterState.current.map { offer in
+            // H13: a page field's inline text and what was typed through it are the page's text; never shown here.
+            let shown = PageInline.debugText(offer, typed: arbiterState.typedSinceOffer)
             var info = DebugState.OfferInfo(
                 id: offer.id,
-                text: String(offer.text.dropFirst(arbiterState.typedSinceOffer.count)),
-                typedSinceOffer: arbiterState.typedSinceOffer,
+                text: shown.text,
+                typedSinceOffer: shown.typed,
                 ageMs: Date().timeIntervalSince(offer.createdAt) * 1_000,
                 pid: offer.target.pid,
                 bundleID: offer.target.bundleID,
@@ -1066,6 +1086,7 @@ public final class HostRuntime {
         state.pageSight = fields.pageSight
         state.routing = fields.routing
         state.spend = fields.spend
+        state.pageInline = fields.pageInline
         state.breakpointLatency = status.breakpointLatency.summary()
         return state
     }

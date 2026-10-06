@@ -24,6 +24,8 @@ final class HostStatus: @unchecked Sendable {
         var pageSight: PageSight.DebugInfo?
         var routing: DebugState.RoutingInfo?
         var spend: HelperSpend?
+        /// H13: inline text in page fields; lengths and outcomes, never text.
+        var pageInline: DebugState.PageInlineInfo?
     }
 
     struct KeyStamp: Equatable {

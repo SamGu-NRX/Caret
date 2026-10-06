@@ -661,16 +661,24 @@ public struct HelperError: Codable, Equatable, Sendable {
     public static let type = "error"
     public var at: Int64
     public var message: String
-    enum CodingKeys: String, CodingKey { case at, message }
+    /// H13: a fill found nothing because the tab the user left is this Google editor ("Google Docs", "Google
+    /// Sheets") with its text for assistive technology off; `message` says what to turn on. Nil for every other error.
+    public var sourceOff: String?
+    enum CodingKeys: String, CodingKey { case at, message, sourceOff }
+    public init(at: Int64, message: String, sourceOff: String? = nil) {
+        self.at = at; self.message = message; self.sourceOff = sourceOff
+    }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         at = try c.decode(Int64.self, forKey: .at); message = try c.decode(String.self, forKey: .message)
+        sourceOff = try c.decodeIfPresent(String.self, forKey: .sourceOff)
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(at, forKey: .at); try c.encode(message, forKey: .message)
+        try c.encodeIfPresent(sourceOff, forKey: .sourceOff)
     }
 }
 

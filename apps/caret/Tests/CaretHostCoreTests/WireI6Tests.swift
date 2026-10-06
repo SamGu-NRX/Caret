@@ -7,7 +7,7 @@ import XCTest
 /// Fixtures; attach steps and the nextPage reason decoded; and a finished goal's hand-off sentence shown as the page
 /// panel's last row, never repeated.
 final class WireI6Tests: XCTestCase {
-    static let names = ["goal-files", "goal-handoff", "page", "page-field-text", "page-goal"]
+    static let names = ["goal-files", "goal-handoff", "page", "page-field-text", "page-goal", "page-inline"]
 
     func testTheFixtureCopiesAreTheHelpersGoldenFiles() throws {
         let repo = WireH11Tests.fixtures.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
