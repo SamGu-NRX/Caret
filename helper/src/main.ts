@@ -20,6 +20,7 @@ import { loadJevKey, makeJevClient } from "./fill/jev.ts";
 import { SocketReaderLink } from "./executor/means.ts";
 import { defaultPageSocket, pageHost, type PageHost } from "./engines/host.ts";
 import { wirePageEngines } from "./engines/wire.ts";
+import { pageTabReader } from "./engines/tab-source.ts";
 import { writersOnStart } from "./writer/startup.ts";
 import { HostLocalModel } from "./writer/local-port.ts";
 
@@ -116,7 +117,7 @@ helper = new Helper({
   ...(args["fill-cutoff"] === undefined ? {} : { fillCutoff: Number(args["fill-cutoff"]) }),
   publish: (m) => server?.publish(m),
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
-  ...(pages === null ? {} : { readerLink: pages.link, readerAnswers: readerSocket, pageCovers: (pid: number) => pages.registry.forBrowser(pid) !== undefined, pageDocument: (id: string) => pages.registry.documentOf(id), pageContext: (id: string) => pages.registry.contextOf(id) }),
+  ...(pages === null ? {} : { readerLink: pages.link, readerAnswers: readerSocket, pageCovers: (pid: number) => pages.registry.forBrowser(pid) !== undefined, pageDocument: (id: string) => pages.registry.documentOf(id), pageContext: (id: string) => pages.registry.contextOf(id), tabReader: pageTabReader(pages.registry) }),
   // Event cards add to the reader's EventKit adapter, which answers only when started with --calendar-test.
   calendar: "reader",
   // The code-mode plan and goal writer (B24, D2-06): only a developer's --dev-writer route (L1).

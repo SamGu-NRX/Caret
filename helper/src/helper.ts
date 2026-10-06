@@ -124,6 +124,7 @@ import type { ValueKind } from "./protocol.ts";
 import { OFFER_WHEN, sentences, type EventCandidate, type SentenceSource } from "./offers/event-card.ts";
 import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
+import { TabSource, type TabReader } from "./engines/tab-source.ts";
 
 /**
  * The router above the producers (routing/coordinator.ts). With it, no producer makes an ambient offer on its own: a
@@ -204,6 +205,12 @@ export interface HelperOptions {
    * Saved answers record the address, and the organization guard reads both. Absent: neither is known.
    */
   pageContext?: (windowId: string) => PageContext | null;
+  /**
+   * P4: the page engines' read of the tab the user just left (engines/tab-source.ts pageTabReader). When set, a fill
+   * whose window just left is a page reads that tab's visible text once and holds it for that fill and its offer.
+   * Absent: page windows give fill their controls only, as before.
+   */
+  tabReader?: TabReader;
   /** Fault-injection seam for the planner evaluation; see PlanTaskOptions.beforeCheck. Never set in normal use. */
   plannerHooks?: Pick<PlanTaskOptions, "beforeCheck">;
   /**
@@ -370,6 +377,9 @@ export class Helper {
    * or a source; see checkFills and onFillFocus.
    */
   private readonly fillPopups = new Map<string, { p: GroundedProposal; form: string }>();
+  /** P4: the text of the tab the user just left, held for a fill and its offer (engines/tab-source.ts); null without page engines. */
+  private readonly tabSource: TabSource | null;
+  private fillSeq = 0;
   /**
    * Each fill request in flight, with every focus in an editable field of the app the user is in since
    * it began, so a pop-up whose Jev answer arrives late can see whether one of them left the form.
@@ -439,6 +449,10 @@ export class Helper {
     this.offers = new HostOfferRegistry(this.now);
     this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) }, opts.offersPerHour ?? null);
     this.readerConnected = opts.readerLink !== undefined && opts.readerAnswers === undefined;
+    this.tabSource =
+      opts.tabReader === undefined
+        ? null
+        : new TabSource({ model: this.model, reader: opts.tabReader, now: this.now, count: (m) => opts.store.count(m, 1), dropped: (id) => this.checkFills(id) });
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     const jev = opts.askJev;
     // Recorded once the request has gone and been answered, or as failed: a client that throws before
@@ -763,6 +777,7 @@ export class Helper {
         this.record(this.transfers.flush());
         this.shadowLogger.close();
         this.model.reset();
+        this.tabSource?.drop();
         forgetWindows();
         this.text.clear();
         this.executor.readerRestarted(m.session);
@@ -1654,6 +1669,8 @@ export class Helper {
     const p = checked.p;
     this.bindNew(m.proposalId, session);
     const { plan, slots } = fillPlan(this.model, p);
+    // P4: the run carries its values as slots; the text they were read from is not needed past this point.
+    this.tabSource?.release(m.proposalId);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
     return this.runFrom("fill", m.proposalId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
   }
@@ -2080,6 +2097,7 @@ export class Helper {
   shutdown(): void {
     // First, so nothing a late reply or a producer's answer starts reaches the router after the stores close (R2).
     this.routing?.stop();
+    this.tabSource?.drop();
     this.record(this.transfers.flush());
     this.patterns.shutdown();
     this.pending.shutdown();
@@ -2158,9 +2176,13 @@ export class Helper {
     const session = this.readerSession;
     const focuses: { windowId: string; key: string }[] = [];
     this.pendingFills.add(focuses);
+    // P4: this fill holds the text of the tab the user just left, if it may be read (engines/tab-source.ts), until the
+    // fill ends here or passes it to the offer it made.
+    const reading = `fill:${++this.fillSeq}`;
     try {
+      await this.tabSource?.readFor(windowId, reading);
       const saved = this.answersForFill(windowId);
-      const asked = await proposeFill(this.model, ask, windowId, key, now, {
+      const asked = await proposeFill(this.fillModel(), ask, windowId, key, now, {
         about: this.aboutValues(),
         ...(saved === null ? {} : saved),
         ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
@@ -2197,7 +2219,8 @@ export class Helper {
         // P2: a field that failed its recheck is listed as the user's, with why, and the rest is offered.
         const written = over.p;
         store.count("fill.popup", 1, now);
-        if (this.publish(buildFillPopup(this.model, written), () => this.acceptFill(written))) {
+        if (this.publish(buildFillPopup(this.fillModel(), written), () => this.acceptFill(written))) {
+          this.tabSource?.pass(reading, written.id);
           this.fillPopups.set(written.id, { p: written, form: formKey });
           // The hour runs from when the offer is shown, not from when it was asked for.
           this.gate.spoke(this.now());
@@ -2215,6 +2238,7 @@ export class Helper {
         // For the host's Command-1 (fillAll), which runs the whole proposal as the pop-up's Fill all does.
         proposal: p,
       });
+      this.tabSource?.pass(reading, p.id);
       this.publish(p);
       if (!explicit && p.fields.some((f) => f.value !== null)) this.gate.spoke(this.now());
       return p;
@@ -2223,10 +2247,19 @@ export class Helper {
       this.fillFailed(e instanceof FillError ? e.message : String(e), e instanceof FillError ? e.why : null);
       return null;
     } finally {
+      this.tabSource?.release(reading);
       this.pendingFills.delete(focuses);
       this.inflight.delete(formKey);
       if (this.refillAfter.delete(formKey)) this.refillFocused();
     }
+  }
+
+  /**
+   * The model as fill and its rechecks read it: with the text of the tab the user just left while a fill or its offer
+   * holds it (P4, engines/tab-source.ts), else the model itself. Only fill's paths read this; nothing else ever sees it.
+   */
+  private fillModel(): ScreenModel {
+    return this.tabSource?.view() ?? this.model;
   }
 
   /**
@@ -2497,7 +2530,7 @@ export class Helper {
    * empty for the user, and the log names why.
    */
   private recheckKept(p: GroundedProposal): { p: GroundedProposal } | { refused: string } {
-    const r = recheckFields(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    const r = recheckFields(this.fillModel(), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
     if ("stale" in r) return { refused: `${r.stale}; nothing was written` };
     if (r.proposal.fields.length === 0) return { refused: `${r.dropped[0]?.log ?? "no field is left to fill"}; nothing was written` };
     if (r.dropped.length > 0) {
@@ -2516,7 +2549,7 @@ export class Helper {
     for (const [id, { p, form }] of this.fillPopups) {
       if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;
       const w = this.model.windows.get(p.windowId);
-      let changed = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null) !== null;
+      let changed = recheckFill(this.fillModel(), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null) !== null;
       if (!changed && w !== undefined) {
         try {
           changed = `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form;
@@ -2547,7 +2580,7 @@ export class Helper {
   private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[]): { stale: string } | { p: GroundedProposal } {
     if (focuses.some((f) => !inFillForm(p, f.windowId, f.key))) return { stale: "focus left the form" };
     // P2: a field whose recheck fails is the user's, with why; the pop-up still needs two fields Caret writes (fillPopupEligible).
-    const r = recheckFields(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    const r = recheckFields(this.fillModel(), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
     if ("stale" in r) return r;
     if (r.proposal.fields.length < 2) return { stale: r.dropped[0]?.log ?? "fewer than two fields are left to fill" };
     if (r.dropped.length > 0) this.opts.store.count("fill.recheck_dropped", r.dropped.length);
@@ -2562,6 +2595,8 @@ export class Helper {
 
   private withdrawFill(id: string, reason: "taken" | "stale" | "expired" | "settings"): void {
     this.fillPopups.delete(id);
+    // P4: the offer is over, and with it the text of the tab it was read from, unless another offer holds it.
+    this.tabSource?.release(id);
     this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id, reason });
   }
 
