@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, PageFieldText, PageSnapshot, type PageControl } from "../src/protocol.ts";
-import { ownSuggestions, pageFieldText } from "../src/engines/field-text.ts";
+import { fieldKind, ownSuggestions, pageFieldText } from "../src/engines/field-text.ts";
 
 const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/page-field-text.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as unknown);
 
@@ -55,5 +55,21 @@ describe("pageField's text (item 7)", () => {
   it("has golden lines that parse losslessly", () => {
     for (const g of golden) expect(PageFieldText.parse(g)).toEqual(g);
     expect(PageFieldText.safeParse({ ...(golden[0] as object), text: { before: "a".repeat(2001), after: "", selection: "" } }).success).toBe(false);
+  });
+});
+
+describe("pageField's fieldKind (H13)", () => {
+  const focus = { frameId: 0, id: "e1", selection: [0, 0] as [number, number], text: { before: "", after: "", selection: "" } };
+  it("is input, textarea or contenteditable by the focused control's walked kind", () => {
+    for (const k of ["text", "email", "tel", "url", "number", "search"] as const) expect(fieldKind(snapAt("https://example.test", "/", [ctl("e1", k, "F")], focus)), k).toBe("input");
+    expect(fieldKind(snapAt("https://example.test", "/", [ctl("e1", "textarea", "F")], focus))).toBe("textarea");
+    expect(fieldKind(snapAt("https://example.test", "/", [ctl("e1", "contenteditable", "F")], focus))).toBe("contenteditable");
+  });
+
+  it("is none for a control with no text of the user's, no focus, or a Google Docs editor", () => {
+    expect(fieldKind(snapAt("https://example.test", "/", [ctl("e1", "date", "F")], focus))).toBeNull();
+    expect(fieldKind(snapAt("https://example.test", "/", [ctl("e1", "checkbox", "F")], focus))).toBeNull();
+    expect(fieldKind(snapAt("https://example.test", "/", [], null))).toBeNull();
+    expect(fieldKind(snapAt("https://docs.google.com", "/document/d/abc/edit", [], null, { kind: "document", text: "on", field: { before: "a", after: "", selection: "" } }))).toBeNull();
   });
 });

@@ -303,6 +303,28 @@ describe("the insert at the caret (item 8)", () => {
     await tab.close();
   });
 
+  // The test Mac (runs/20261006T151009Z-37788): after real typing in a contenteditable, one ⌘Z took the insert and the
+  // typed sentence with it. Chrome adds an insertText to the typing's still-open undo step. Here the keys are CDP key
+  // events, under which an input and a textarea join the same way.
+  test("after typing by keys, the page's Undo takes back the insert alone: an input, a textarea, a contenteditable", async () => {
+    const typed = "The garden club meets on the first";
+    for (const id of ["t", "ta", "ce"]) {
+      const tab = await open("/fields");
+      const read = `(() => { const e = document.getElementById("${id}"); return (e.isContentEditable ? e.innerText : e.value).replace(/\\u00a0/g, " "); })()`;
+      await tab.evaluate(`(() => { const e = document.getElementById("${id}"); if (e.isContentEditable) e.textContent = ""; else e.value = ""; e.focus(); })()`);
+      for (const ch of typed) {
+        await tab.send("Input.dispatchKeyEvent", { type: "keyDown", key: ch, text: ch });
+        await tab.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch });
+      }
+      assert.equal(await tab.evaluate(read), typed, id);
+      assert.equal((await tab.evaluate<{ outcome: string }>(insert(`#${id}`, typed, " Saturday of May."))).outcome, "ok", id);
+      assert.equal(await tab.evaluate(read), `${typed} Saturday of May.`, id);
+      await tab.evaluate(`document.execCommand("undo")`);
+      assert.equal(await tab.evaluate(read), typed, `${id}: one Undo leaves what was typed`);
+      await tab.close();
+    }
+  });
+
   test("touches nothing when the text before the caret changed, text is selected, or the field lost focus", async () => {
     const tab = await open("/fields");
     await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.value = "Dear team, "; ta.focus(); ta.setSelectionRange(11, 11); })()`);

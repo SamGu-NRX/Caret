@@ -32,6 +32,8 @@ public struct PageField: Codable, Equatable, Sendable {
     public var token: String?
     /// H13 review: false when the field's document lost focus (the browser's address bar); nil when not said.
     public var pageFocused: Bool?
+    /// H13: what kind of field `text` is from, which decides where inline text may show; nil when the page did not say.
+    public var fieldKind: FieldKind?
 
     /// The text before the caret (at most 2,000 characters), after it (500) and selected.
     public struct Text: Codable, Equatable, Sendable {
@@ -50,6 +52,11 @@ public struct PageField: Codable, Equatable, Sendable {
 
     public enum DocsText: String, Codable, Equatable, Sendable { case on, off }
 
+    /// protocol.ts PageFieldKind: a text input, a textarea, a contenteditable editor.
+    public enum FieldKind: String, Codable, Equatable, Sendable, CaseIterable {
+        case input, textarea, contenteditable
+    }
+
     /// The text's inset from the field's left edge, its font size, whether a placeholder shows, and light text.
     public struct Look: Codable, Equatable, Sendable {
         public var inset: Double
@@ -62,13 +69,13 @@ public struct PageField: Codable, Equatable, Sendable {
     }
 
     public init(at: Int64, app: AppRef, windowId: String, title: String, key: String?, role: String, editable: Bool, empty: Bool, frame: Frame?, look: Look? = nil,
-                text: Text? = nil, ownSuggestions: OwnSuggestions? = nil, docsText: DocsText? = nil, caret: Frame? = nil, token: String? = nil) {
+                text: Text? = nil, ownSuggestions: OwnSuggestions? = nil, docsText: DocsText? = nil, caret: Frame? = nil, token: String? = nil, fieldKind: FieldKind? = nil) {
         self.at = at; self.app = app; self.windowId = windowId; self.title = title; self.key = key
         self.role = role; self.editable = editable; self.empty = empty; self.frame = frame; self.look = look
-        self.text = text; self.ownSuggestions = ownSuggestions; self.docsText = docsText; self.caret = caret; self.token = token
+        self.text = text; self.ownSuggestions = ownSuggestions; self.docsText = docsText; self.caret = caret; self.token = token; self.fieldKind = fieldKind
     }
 
-    enum CodingKeys: String, CodingKey { case at, app, windowId, title, key, role, editable, empty, frame, look, text, ownSuggestions, docsText, caret, token, pageFocused }
+    enum CodingKeys: String, CodingKey { case at, app, windowId, title, key, role, editable, empty, frame, look, text, ownSuggestions, docsText, caret, token, pageFocused, fieldKind }
 
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
@@ -86,6 +93,7 @@ public struct PageField: Codable, Equatable, Sendable {
         caret = try c.decodeIfPresent(Frame.self, forKey: .caret)
         token = try c.decodeIfPresent(String.self, forKey: .token)
         pageFocused = try c.decodeIfPresent(Bool.self, forKey: .pageFocused)
+        fieldKind = try c.decodeIfPresent(FieldKind.self, forKey: .fieldKind)
         if let text, text.before.count > 2000 || text.after.count > 500 || text.selection.count > 2000 {
             throw ProtocolError("pageField's text is longer than a walk reports")
         }
@@ -104,6 +112,7 @@ public struct PageField: Codable, Equatable, Sendable {
         try c.encodeIfPresent(look, forKey: .look)
         try c.encodeIfPresent(text, forKey: .text); try c.encodeIfPresent(ownSuggestions, forKey: .ownSuggestions)
         try c.encodeIfPresent(docsText, forKey: .docsText); try c.encodeIfPresent(caret, forKey: .caret); try c.encodeIfPresent(token, forKey: .token); try c.encodeIfPresent(pageFocused, forKey: .pageFocused)
+        try c.encodeIfPresent(fieldKind, forKey: .fieldKind)
     }
 }
 

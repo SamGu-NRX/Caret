@@ -9309,6 +9309,14 @@
             },
             "pageFocused": {
               "type": "boolean"
+            },
+            "fieldKind": {
+              "type": "string",
+              "enum": [
+                "input",
+                "textarea",
+                "contenteditable"
+              ]
             }
           },
           "required": [

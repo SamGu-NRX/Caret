@@ -259,6 +259,8 @@ describe("the page field the host hears (H13)", () => {
     expect(f?.caret).toEqual([210, 200, 1, 18]);
     // The walked element itself, which an insert must name (H13 review: a key survives a replaced field).
     expect(f?.token).toBe("0:D0:e1");
+    // The host decides by the kind where inline text may show (one ⌘Z after typing behaves per kind).
+    expect(f?.fieldKind).toBe("textarea");
     expect(HelperMessage.safeParse(f).success).toBe(true);
   });
 
@@ -279,6 +281,7 @@ describe("the page field the host hears (H13)", () => {
     await settle();
     const f = fields(published).at(-1);
     expect(f?.ownSuggestions).toBe("gmail");
+    expect(f?.fieldKind).toBe("contenteditable");
     expect(f?.caret).toBeUndefined();
   });
 
@@ -292,6 +295,7 @@ describe("the page field the host hears (H13)", () => {
     expect(f).toBeDefined();
     expect(Object.keys(f as object)).not.toContain("text");
     expect(Object.keys(f as object)).not.toContain("caret");
+    expect(Object.keys(f as object)).not.toContain("fieldKind");
   });
 });
 

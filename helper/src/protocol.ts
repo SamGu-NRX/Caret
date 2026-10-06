@@ -2232,6 +2232,10 @@ export type FieldLook = z.infer<typeof FieldLook>;
  * viewport is. The browser is `app`, the process the bridge was launched by, never one the page names. No value, no
  * label: `empty` says only whether the control holds any text.
  */
+/** H13: the kinds of page field whose text a pageField carries (PageField.fieldKind). */
+export const PageFieldKind = z.enum(["input", "textarea", "contenteditable"]);
+export type PageFieldKind = z.infer<typeof PageFieldKind>;
+
 export const PageField = z.object({
   type: z.literal("pageField"),
   v: z.literal(PROTOCOL_VERSION),
@@ -2266,6 +2270,12 @@ export const PageField = z.object({
    * inline text there, since Tab would go to the browser. With `text`, to the same hosts only; absent before H13.
    */
   pageFocused: z.boolean().optional(),
+  /**
+   * H13: what kind of field `text` is from (engines/field-text.ts fieldKind): a text input, a textarea or a
+   * contenteditable editor. The host decides by it where inline text may show, since one ⌘Z after typing behaves per
+   * kind. With `text`, to the same hosts only; absent before H13 and where the kind is none of these.
+   */
+  fieldKind: PageFieldKind.optional(),
 });
 export type PageField = z.infer<typeof PageField>;
 

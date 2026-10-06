@@ -113,10 +113,21 @@ public enum PageInline {
         offer.source == .page ? ("", "", "") : (String(offer.text.dropFirst(typed.count)), typed, offer.target.elementRevision)
     }
 
-    /// Whether inline text may show in page fields now: the user turned it on (`CaretSettings.pageInlineText`, off by
-    /// default), ghost text is allowed (not paused, the words role on), the engine is ready and the browser allowed.
+    /// Whether inline text may show in page fields now: on (`CaretSettings.pageInlineText`), ghost text allowed (not
+    /// paused, the words role on), the engine ready and the browser allowed. Which fields: `takes`.
     public static func allowed(_ settings: CaretSettings, wordsAllowed: Bool, engineReady: Bool, browserAllowed: Bool) -> Bool {
         settings.pageInlineText && wordsAllowed && engineReady && browserAllowed
+    }
+
+    /// Whether a field of this kind gets inline text: a text input and a textarea do; a contenteditable only when
+    /// `contentEditable` (`CaretSettings.pageInlineContentEditable`, for its ⌘Z); a field whose kind the page did not
+    /// say does not.
+    public static func takes(_ kind: PageField.FieldKind?, contentEditable: Bool) -> Bool {
+        switch kind {
+        case .input, .textarea: true
+        case .contenteditable: contentEditable
+        case nil: false
+        }
     }
 
     /// Text that follows the caret on its own line, where inline text would cover it.
@@ -231,13 +242,16 @@ public final class PageInlineMachine {
         public var appName: String
     }
 
-    /// Whether inline text may show at all now: ghost text allowed by the settings (not paused, the words role on),
-    /// the engine ready, the browser allowed. The coordinator says.
+    /// Whether inline text may show at all now (`PageInline.allowed`), whether contenteditables get it too
+    /// (`CaretSettings.pageInlineContentEditable`), and the choices about pages with their own suggestions. The
+    /// coordinator says.
     public struct Gate: Equatable, Sendable {
         public var allowed: Bool
+        public var contentEditable: Bool
         public var settings: PageInlineSettings
-        public init(allowed: Bool, settings: PageInlineSettings) {
+        public init(allowed: Bool, contentEditable: Bool, settings: PageInlineSettings) {
             self.allowed = allowed
+            self.contentEditable = contentEditable
             self.settings = settings
         }
     }
@@ -259,7 +273,7 @@ public final class PageInlineMachine {
 
     /// The field the user is in, as last said.
     private var current: PageField?
-    private var gate = Gate(allowed: false, settings: PageInlineSettings())
+    private var gate = Gate(allowed: false, contentEditable: false, settings: PageInlineSettings())
     private var requests: UInt64 = 0
     private var pending: Request?
     private struct Shown {
@@ -325,13 +339,16 @@ public final class PageInlineMachine {
             return clear("noField")
         }
         if let n = notice, previous?.key != key || previous?.windowId != f.windowId || f.ownSuggestions != n.page { hideNotice() }
+        let takes = PageInline.takes(f.fieldKind, contentEditable: g.contentEditable)
         if let own = f.ownSuggestions, !(own == .gmail && g.settings.isOn(own)) {
             clear(own == .googleDocs ? "docs" : "ownSuggestions")
-            // Only while inline text on pages may show: Turn Caret on here would otherwise do nothing.
-            if own == .gmail, g.allowed { offerNotice(own, field: f, pid: pid) }
+            // Only where inline text would show once Caret is on there: Turn Caret on here would otherwise do nothing.
+            // Gmail's compose body is a contenteditable.
+            if own == .gmail, g.allowed, takes { offerNotice(own, field: f, pid: pid) }
             return
         }
         guard g.allowed else { return clear("notAllowed") }
+        guard takes else { return clear(f.fieldKind == .contenteditable ? "contentEditableOff" : "noFieldKind") }
         // H13 review: the page's document lost focus (the address bar): Tab goes to the browser, so nothing is on offer.
         if f.pageFocused == false { return clear("pageUnfocused") }
         guard let text = f.text, text.selection.isEmpty, let caretFrame = f.caret, f.frame != nil else { return clear("noText") }

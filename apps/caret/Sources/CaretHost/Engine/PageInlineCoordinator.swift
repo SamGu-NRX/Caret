@@ -77,7 +77,7 @@ final class PageInlineCoordinator {
     /// The user left the browser, or its page has no field: what is shown goes.
     func focusLeft() {
         lastField = nil
-        machine.field(nil, gate: PageInlineMachine.Gate(allowed: false, settings: SettingsStore.shared.settings.pageInline))
+        machine.field(nil, gate: PageInlineMachine.Gate(allowed: false, contentEditable: false, settings: SettingsStore.shared.settings.pageInline))
         publish()
     }
 
@@ -125,7 +125,8 @@ final class PageInlineCoordinator {
     private func gate(pid: Int32) -> PageInlineMachine.Gate {
         let allowed = PageInline.allowed(SettingsStore.shared.settings, wordsAllowed: wordsAllowed(), engineReady: engine.state == .ready,
                                          browserAllowed: drawsOnScreen ? policy.allowsLive(pid: pid) : policy.allows(pid: pid, bundleID: nil))
-        return PageInlineMachine.Gate(allowed: allowed, settings: SettingsStore.shared.settings.pageInline)
+        let settings = SettingsStore.shared.settings
+        return PageInlineMachine.Gate(allowed: allowed, contentEditable: settings.pageInlineContentEditable, settings: settings.pageInline)
     }
 
     // MARK: - Commands

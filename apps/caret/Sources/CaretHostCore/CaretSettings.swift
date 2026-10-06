@@ -108,10 +108,15 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// H13, the Sites tab and the quiet line in Gmail: pages with their own suggestions where Caret's inline text is
     /// on, and those whose line the user asked never to see again.
     public var pageInline = PageInlineSettings()
-    /// H13: inline text in web page fields. Off by default: on the test Mac (runs/20261006T151009Z-37788) one ⌘Z after
-    /// real typing in a contenteditable removed the typed sentence along with the insert (Chrome joins the insert to the
-    /// typing's undo step), which loses the user's words. A textarea undid only the insert. On only by the user's choice.
-    public var pageInlineText = false
+    /// H13: inline text in web page fields, the overall switch. On by default in text inputs and textareas, where one ⌘Z
+    /// after real typing and Tab removed only the insert on the test Mac (4 of 4, runs/20261006T150211Z-73497); in a
+    /// contenteditable only with `pageInlineContentEditable` too.
+    public var pageInlineText = true
+    /// H13: inline text in contenteditable editors as well. Off by default: on the test Mac
+    /// (runs/20261006T151009Z-37788) one ⌘Z after real typing and Tab in a contenteditable removed the typed sentence
+    /// with the insert (4 of 4), which loses the user's words. On by default once the test Mac shows ⌘Z takes the insert
+    /// alone there.
+    public var pageInlineContentEditable = false
 
     public init() {}
 
@@ -123,7 +128,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         sitesOff = set.sorted()
     }
 
-    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText }
+    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar, pageInline, pageInlineText, pageInlineContentEditable }
 
     /// Strict: a file written by a newer host, or a role or level this host does not know, is an
     /// error the caller reports, not a guess.
@@ -158,7 +163,9 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         }
         // Absent from a file written before H13: Caret stays quiet on every page with its own suggestions.
         pageInline = try c.decodeIfPresent(PageInlineSettings.self, forKey: .pageInline) ?? PageInlineSettings()
-        pageInlineText = try c.decodeIfPresent(Bool.self, forKey: .pageInlineText) ?? false
+        // Absent: the defaults, as for a new user.
+        pageInlineText = try c.decodeIfPresent(Bool.self, forKey: .pageInlineText) ?? true
+        pageInlineContentEditable = try c.decodeIfPresent(Bool.self, forKey: .pageInlineContentEditable) ?? false
         let pages = Set(PageField.OwnSuggestions.allCases.map(\.rawValue))
         if let bad = (pageInline.on + pageInline.quiet).first(where: { !pages.contains($0) }) {
             throw DecodingError.dataCorruptedError(forKey: .pageInline, in: c, debugDescription: "\(bad) is not a page with its own suggestions")
@@ -179,7 +186,9 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         try c.encode(routing, forKey: .routing)
         try c.encodeIfPresent(eventCalendar, forKey: .eventCalendar)
         if pageInline != PageInlineSettings() { try c.encode(pageInline, forKey: .pageInline) }
-        if pageInlineText { try c.encode(pageInlineText, forKey: .pageInlineText) }
+        // Written only when the user changed them, so a later default reaches a user who never did.
+        if !pageInlineText { try c.encode(pageInlineText, forKey: .pageInlineText) }
+        if pageInlineContentEditable { try c.encode(pageInlineContentEditable, forKey: .pageInlineContentEditable) }
     }
 
     public var gate: GatePolicy { GatePolicy(self) }

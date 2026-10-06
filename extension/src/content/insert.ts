@@ -2,7 +2,8 @@
 //
 // It goes in through document.execCommand("insertText"), the way the browser puts in the user's own typing: the page
 // sees an ordinary insertText input event, and the field's own Undo takes the insert back in one step. Setting the value
-// (the form write's way, content/actions.ts) would clear the field's undo history and move the caret to the end.
+// (the form write's way, content/actions.ts) would clear the field's undo history and move the caret to the end. Just
+// before it, the caret is set where it already is, which ends the user's typing as an undo step (closeTyping).
 //
 // It goes only into the field that had focus when the offer was made: the verb names the element the walk at that
 // moment kept, which must still be connected, still have focus, still hold no selection, and still read exactly
@@ -29,11 +30,34 @@ function hasFocus(el: Element): boolean {
   // in it behind a non-editable boundary (its own editing host), nor to a form control inside it.
   if (active !== el && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement)) return false;
   const host = editingHost(el);
-  // A shadow root keeps its own selection in Chrome, as field-text.ts reads it.
-  const root = el.getRootNode();
-  const sel = root.nodeType === Node.DOCUMENT_FRAGMENT_NODE && "getSelection" in root ? (root as ShadowRoot & { getSelection(): Selection | null }).getSelection() : el.ownerDocument.getSelection();
+  const sel = selectionOf(el);
   const anchor = sel === null || sel.rangeCount === 0 ? null : sel.getRangeAt(0).startContainer;
   return editingHost(active) === host && anchor !== null && editingHost(anchor) === host;
+}
+
+/** The selection `el` is in: a shadow root keeps its own in Chrome, as field-text.ts reads it. */
+function selectionOf(el: Element): Selection | null {
+  const root = el.getRootNode();
+  return root.nodeType === Node.DOCUMENT_FRAGMENT_NODE && "getSelection" in root ? (root as ShadowRoot & { getSelection(): Selection | null }).getSelection() : el.ownerDocument.getSelection();
+}
+
+/**
+ * Ends the typing the user's keys left open as an undo step, so the page's Undo takes the insert back alone. Chrome adds
+ * an insertText to the typing step still open at the caret: on the test Mac (runs/20261006T151009Z-37788) one ⌘Z after
+ * real typing and Tab in a contenteditable removed the typed sentence with the insert. A caret set by script closes
+ * that step (fixtures/web-form tab-text.test.ts, for an input, a textarea and a contenteditable); it is set where it
+ * already is, so nothing moves. A text control's caret is its own (setSelectionRange); an editor's is the selection's.
+ */
+function closeTyping(el: Element): void {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const at = el.selectionStart;
+    if (at !== null) el.setSelectionRange(at, at);
+    return;
+  }
+  const sel = selectionOf(el);
+  if (sel === null || sel.rangeCount === 0) return;
+  const r = sel.getRangeAt(0);
+  sel.setBaseAndExtent(r.startContainer, r.startOffset, r.startContainer, r.startOffset);
 }
 
 /** The outermost element of the editable region `n` is in: up through editable parents, never past a non-editable one. */
@@ -61,6 +85,7 @@ export async function insertAtCaret(
   // execCommand would replace a selection (P4 review).
   const again = hasFocus(el) ? fieldText(el) : null;
   if (again === null || again.before !== verb.expect || again.selection !== "") return answer("stale", "the field changed while Caret checked its grant");
+  closeTyping(el);
   const went = document.execCommand("insertText", false, verb.text);
   await settle();
   const after = fieldText(el);
