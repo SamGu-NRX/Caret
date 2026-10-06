@@ -46,7 +46,7 @@ export function pageView(model: ScreenModel, plan: GoalPlan, seg: GoalSegment): 
   const rows = writes
     .filter((s) => ROWS.has(s.target.control))
     .map((s) => ({ step: s.index, label: clip(s.target.label, 300), value: clip(s.writes ?? s.value?.text ?? "", 900), picked: PICKED.has(s.target.control) }));
-  return { windowId: d.windowId, anchor, viewport, from, rows: rows.slice(0, 24), attach: w === undefined ? [] : attachLeft(w, plan.page) };
+  return { windowId: d.windowId, app: { pid: d.pid, bundleId: d.bundleId, name: d.appName }, anchor, viewport, from, rows: rows.slice(0, 24), attach: w === undefined ? [] : attachLeft(w, plan.page) };
 }
 
 /** The top frame's visible area on screen: its web area node's frame (engines/page-link.ts). */

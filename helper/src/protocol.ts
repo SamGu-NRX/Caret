@@ -2134,7 +2134,7 @@ export type GoalStopReason = z.infer<typeof GoalStopReason>;
 /**
  * H11: what a host's page task panel shows for a segment that writes in a page window, beside `steps`; absent for every
  * other segment. Nothing here is covered by `digest`: it is how the preview reads, and every value in it is a step's.
- * - `windowId`: the page window the segment writes in.
+ * - `windowId`: the page window the segment writes in; `app`, the browser it is in, whose keys Tab and Esc arrive on.
  * - `anchor`: the first field the segment writes, in screen points (top-left origin), when it lies inside `viewport`;
  *   null otherwise, and the host anchors to `viewport`'s top edge instead.
  * - `viewport`: the page's visible area on screen (its top frame); null when the walk did not say where it is.
@@ -2147,6 +2147,7 @@ export type GoalStopReason = z.infer<typeof GoalStopReason>;
  */
 export const GoalPageView = z.object({
   windowId: z.string().min(1),
+  app: AppRef,
   anchor: Frame.nullable(),
   viewport: Frame.nullable(),
   from: z.string().max(300),
