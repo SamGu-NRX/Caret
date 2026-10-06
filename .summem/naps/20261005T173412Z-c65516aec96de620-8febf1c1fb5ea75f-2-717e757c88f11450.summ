@@ -1,0 +1,1 @@
+G2: every goal write passes goals/gates.ts (never-typed, misfit, verifyWrites); with no Jev a goal writes no copied value (desk tests use goal-desk.ts standInJev). drafts.ts restates() is a closed-frame clause-suffix rule; never widen it by adding words.

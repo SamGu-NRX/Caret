@@ -1,0 +1,1 @@
+J1: makeJevClient holds every request against a per-day spend file (CARET_JEV_DAILY_CAP, default $0.50; CARET_JEV_SPEND_DIR) and throws JevCapError (kind cap) past it; vitest.config.ts points the spend dir at a temp dir.

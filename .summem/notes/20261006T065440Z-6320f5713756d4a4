@@ -1,0 +1,1 @@
+J1: TypeSafe documents Jev's Choice confidence as (p_max - 1/n)/(1 - 1/n) over n options (docs.typesafe.ai/confidence), not the top-two margin routing/judge.ts describes; the two agree only for two options. engines/decide/confidence.ts computes other engines' confidence this way.

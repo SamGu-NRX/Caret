@@ -2,7 +2,7 @@
 // words, and never shows an id. These check the table itself; ask.test.ts checks which sentence each refusal says.
 import { describe, expect, it } from "vitest";
 import { PlanErrorCode } from "../src/protocol.ts";
-import { SAYS, saysAmbiguous, saysFor, saysLeftToYou, saysNeverTyped, saysNoValue, saysPress, saysPressAsked, saysUnsure } from "../src/planner/says.ts";
+import { SAYS, saysAmbiguous, saysFor, saysJevCap, saysLeftToYou, saysNeverTyped, saysNoValue, saysPress, saysPressAsked, saysUnsure } from "../src/planner/says.ts";
 import { mentionedKind } from "../src/memory/sensitive.ts";
 
 /** A sentence as the table must write it: one or two plain sentences, no developer punctuation, no ids. */
@@ -19,6 +19,8 @@ function plain(s: string): string[] {
 const generated = [
   ...Object.values(SAYS),
   ...PlanErrorCode.options.map(saysFor),
+  saysJevCap(0.5, 0.5012),
+  saysJevCap(0.002, 0.0021),
   saysNeverTyped("governmentId", true),
   saysNeverTyped("cardNumber", false),
   saysNeverTyped("oneTimeCode", false),
