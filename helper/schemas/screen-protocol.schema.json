@@ -2110,7 +2110,15 @@
                                     "enum": [
                                       "first",
                                       "middle",
-                                      "last"
+                                      "last",
+                                      "street",
+                                      "unit",
+                                      "city",
+                                      "state",
+                                      "zip",
+                                      "month",
+                                      "day",
+                                      "year"
                                     ]
                                   }
                                 },
@@ -2273,7 +2281,15 @@
                             "enum": [
                               "first",
                               "middle",
-                              "last"
+                              "last",
+                              "street",
+                              "unit",
+                              "city",
+                              "state",
+                              "zip",
+                              "month",
+                              "day",
+                              "year"
                             ]
                           }
                         },

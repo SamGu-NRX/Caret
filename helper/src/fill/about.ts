@@ -338,6 +338,43 @@ export const ABOUT_KIND_SAYS: Record<AboutKind, string> = {
 };
 
 /**
+ * C2 (lead decision 5): the words that name each part of an address in a field's label ("Address line 1", "Apartment,
+ * suite, etc.", "State / Province", "Postal code"). Written for common form labels, not measured.
+ */
+const ADDRESS_PART_WORDS: Record<"street" | "unit" | "city" | "state" | "zip", string[]> = {
+  street: ["street", "address", "line"],
+  unit: ["apt", "apartment", "unit", "suite", "etc", "floor", "address", "line"],
+  city: ["city", "town"],
+  state: ["state", "province", "region"],
+  zip: ["zip", "postal", "postcode", "code"],
+};
+
+/**
+ * C2 (lead decision 5): whether a field asks for one part of exactly the entry's address or date, so the part code
+ * splits from it (fill.ts) is offered there. An address's part: the field's words are that part's and otherwise the
+ * entry's own label's or PLAIN, so "City" and "ZIP code" get the user's Home address's parts and "Emergency contact
+ * city" or "Billing ZIP code" none. A date's part: the field without its "month", "day" or "year" asks for the whole
+ * entry (fieldAsksFor), so "Date of birth month" and "Birth year" get the user's Date of birth's, and a bare "Month"
+ * nothing.
+ */
+export function fieldAsksForPart(a: AboutValue, fieldName: string | null, part: "street" | "unit" | "city" | "state" | "zip" | "month" | "day" | "year", formTitle: string | null = null): boolean {
+  if (fieldName === null || never(fieldName)) return false;
+  if (part === "month" || part === "day" || part === "year") {
+    if (a.kind !== "birthDate" && a.kind !== "gradDate") return false;
+    const all = words(fieldName);
+    const rest = all.filter((w) => w !== part);
+    return rest.length < all.length && fieldAsksFor(a, rest.join(" "), formTitle);
+  }
+  if (a.kind !== "address") return false;
+  const ws = words(fieldName);
+  const own = new Set(words(a.label));
+  const named = ADDRESS_PART_WORDS[part];
+  // The part's own word must be there: "address" or "line" alone names a street, never a unit.
+  const says = ws.some((w) => named.includes(w) && w !== "address" && w !== "line") || (part === "street" && ws.includes("address"));
+  return says && ws.every((w) => named.includes(w) || own.has(w) || PLAIN.has(w));
+}
+
+/**
  * Whether a field asks for one part of the user's name (B24): its words are a name part's ("First name",
  * "Last name / Surname") and otherwise what fieldAsksFor allows, so "Guest first name" and "Emergency contact
  * last name" never see the user's name. Fill offers the part code split from a Name entry (derive.ts).

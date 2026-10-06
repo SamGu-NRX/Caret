@@ -65,6 +65,34 @@ describe("a value from memory written through a control's conversion (C2 decisio
     expect(goalMessages(r).filter((m) => m.event === "stopped")).toEqual([]);
   });
 
+  it("fills street, city, state and ZIP from one address entry, and stops when its ZIP changes before Tab (decision 5)", async () => {
+    const address = (): PageControl[] => [
+      c("e1", "text", "Street address", { value: "" }),
+      c("e2", "text", "City", { value: "" }),
+      c("e3", "select", "State", { options: options(["Ohio", "Oregon", "Texas"]) }),
+      c("e4", "text", "ZIP code", { value: "" }),
+    ];
+    const parts = { "Street address": "2210 Willow Bend Drive", City: "Portland", State: "Oregon", "ZIP code": "97214" };
+    for (const change of [false, true]) {
+      const r = await rig({ controls: address, note: "Volunteer signup", picks: parts });
+      const home = remember(r, "Home address", "2210 Willow Bend Drive, Portland, Oregon 97214");
+      const preview = (await r.ask("fill out this form")) as Segment;
+      expect(preview.steps.map((s) => s.says)).toEqual(["Street address: 2210 Willow Bend Drive", "City: Portland", "State: Oregon", "ZIP code: 97214", "The rest is yours"]);
+      if (change) r.helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "m2", op: "edit", id: home, fields: { label: "Home address", value: "2210 Willow Bend Drive, Portland, Oregon 97215" } });
+      const result = await r.accept(preview);
+      await r.helper.goals.idle();
+      if (change) {
+        expect(result).toBeNull();
+        expect(goalMessages(r).find((m) => m.event === "stopped")).toMatchObject({ reason: "sourceChanged" });
+        expect(r.page.shown("e4")).toBe("");
+      } else {
+        expect(result?.outcome).toBe("done");
+        expect([r.page.shown("e1"), r.page.shown("e2"), r.page.shown("e3"), r.page.shown("e4")]).toEqual(["2210 Willow Bend Drive", "Portland", "Oregon", "97214"]);
+      }
+      closeRigs();
+    }
+  });
+
   it("stops before writing when an entry changed after the preview", async () => {
     const r = await rig({ controls, note: "First name: Jo", picks });
     const diet = remember(r, "diet", "vegetarian");

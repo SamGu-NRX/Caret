@@ -15,10 +15,10 @@ import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCa
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, misfit, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
-import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, type AboutKind, type AboutValue } from "./about.ts";
+import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
-import { asksCountry, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { asksCountry, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -617,13 +617,14 @@ const PART_SAYS: Record<FillPart, string> = {
   zip: "ZIP code",
   country: "country",
   month: "month",
+  day: "day",
   year: "year",
 };
 const ADDRESS_PARTS: ReadonlySet<FillPart> = new Set(["street", "unit", "city", "state", "zip"]);
 /** Parts a place written "City, State, Country" gives (derive.ts splitPlace). */
 const PLACE_PARTS: ReadonlySet<FillPart> = new Set(["city", "state", "country"]);
-/** C1: parts of a date, for a field or a menu that asks only for its month or year (derive.ts splitDate). */
-const DATE_PARTS: ReadonlySet<FillPart> = new Set(["month", "year"]);
+/** C1: parts of a date, for a field or a menu that asks only for its month or year (derive.ts splitDate); C2 adds its day. */
+const DATE_PARTS: ReadonlySet<FillPart> = new Set(["month", "day", "year"]);
 /** C1: the part a menu asks for, if any: a date's month or year, a state, or a country. */
 function menuPart(name: string | null): FillPart | null {
   const d = datePart(name);
@@ -641,6 +642,7 @@ function partOf(part: FillPart, text: string): string | null {
     const d = splitDate(text);
     return d === null ? null : part === "month" ? d.month : d.year;
   }
+  if (part === "day") return dateParts(text)?.day ?? null;
   if (part === "state") return splitAddress(text)?.state ?? splitPlace(text)?.state ?? null;
   if (part === "country") return splitPlace(text)?.country ?? null;
   return null;
@@ -870,6 +872,8 @@ export async function proposeFill(
   type Derived = { key: string; text: string; describe: string; base: Extract<Pick, { from: "derived" }>["base"]; also: Candidate | null };
   const derived = new Map<string, Derived[]>();
   const memoryNames = scope !== undefined && !scope.memory ? [] : (opts.about ?? []).filter((a) => a.kind === "name");
+  // C2 (lead decision 5): one address or date entry gives a part to each field that asks for that part of it.
+  const memoryWhole = scope !== undefined && (!scope.memory || scope.person !== null) ? [] : (opts.about ?? []).filter((a) => a.kind === "address" || a.kind === "birthDate" || a.kind === "gradDate");
   if (derive) {
     for (const f of fields) {
       if (f.part === null) continue;
@@ -915,12 +919,23 @@ export async function proposeFill(
           const v = parts?.[part as "street" | "unit" | "city" | "state" | "zip"] ?? place?.[part as "city" | "state" | "country"] ?? undefined;
           if (v !== undefined && v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
         }
+        if (part !== "country") {
+          for (const a of memoryWhole) {
+            if (!fieldAsksForPart(a, f.name, part as "street" | "unit" | "city" | "state" | "zip", w.window.title)) continue;
+            const v = memoryValue(a.value, part as FillMemoryPart);
+            add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} of ${describeAbout(a)})`, { from: "memory", a });
+          }
+        }
       } else if (DATE_PARTS.has(part)) {
         for (const c of candidates) {
           if (!candidateKinds(model, c).has("date")) continue;
-          const d = splitDate(c.text);
-          const v = d === null ? null : part === "month" ? d.month : d.year;
+          const v = part === "day" ? (dateParts(c.text)?.day ?? null) : partOf(part, c.text);
           if (v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
+        }
+        for (const a of memoryWhole) {
+          if (!fieldAsksForPart(a, f.name, part as "month" | "day" | "year", w.window.title)) continue;
+          const v = memoryValue(a.value, part as FillMemoryPart);
+          add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} of ${describeAbout(a)})`, { from: "memory", a });
         }
       }
       if (list.length > 0) derived.set(f.id, list);
@@ -1054,10 +1069,13 @@ export async function proposeFill(
   const personalCand = (c: Candidate): boolean => [...candidateKinds(model, c)].some((k) => PERSONAL_KINDS.has(k)) || personName(c) !== null || isNameLike(c.text, c.context);
   const ownerCands = owners && personal.size > 0 ? candidates.filter(personalCand).slice(0, MAX_OWNERS) : [];
   const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
+  // C2: a field offered a part of a memory entry is asked whose details it wants, as one offered the whole entry is
+  // (theUsers), a date's month, day or year included, which no other rule makes personal.
+  const whoseAsked = new Set([...personal, ...asked.filter((f) => (derived.get(f.id) ?? []).some((d) => d.base.from === "memory")).map((f) => f.id)]);
   const more = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({
     ...(scope === undefined || plainAsk ? {} : { instruction: scope.instruction, person: scope.person }),
     derived: askDerived(dIds),
-    personal: whose ? personal : new Set(),
+    personal: whose ? whoseAsked : new Set(),
     owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeCandidate({ ...c, id: "" }) })),
     controls: new Map(asked.map((f) => [f.id, f.control])),
   });
@@ -1377,7 +1395,7 @@ export async function proposeFill(
   const memoryRef = (p: Pick, f: Field): FillMemory | null => {
     const a = memoryOf(p);
     if (a === null) return null;
-    const part = p.from === "derived" && (f.part === "first" || f.part === "middle" || f.part === "last") ? f.part : null;
+    const part = p.from === "derived" && f.part !== null && MEMORY_PARTS.has(f.part) ? (f.part as FillMemoryPart) : null;
     return { id: a.id, label: a.label, says: ABOUT_SAYS, ...(part === null ? {} : { part }) };
   };
   // A saved answer's pick (S1): both asks the same answer at the cutoff, then the code guards (fill/answers.ts).
@@ -1510,7 +1528,11 @@ export async function proposeFill(
 
 /** What a memory entry gives a field now: the whole value, or the part of the name the proposal took (FillMemory.part). */
 export function memoryValue(value: string, part: FillMemory["part"]): string | null {
-  return part === undefined ? value : namePart(splitName(value), part);
+  if (part === undefined) return value;
+  if (part === "first" || part === "middle" || part === "last") return namePart(splitName(value), part);
+  // C2: an address's or a date's part, as fill split it to offer it (derive.ts).
+  if (part === "month" || part === "day" || part === "year") return dateParts(value)?.[part] ?? null;
+  return splitAddress(value)?.[part] ?? null;
 }
 
 /**
@@ -1528,7 +1550,10 @@ export function memoryWrites(value: string, part: FillMemory["part"], written: s
   if (norm(gives) === norm(written)) return true;
   const ctx: ResolveContext = { locale: Intl.DateTimeFormat().resolvedOptions().locale, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, referenceInstant: null };
   if (/^\d{4}-\d{2}-\d{2}$/u.test(written) && readDate(gives, ctx)?.value === written) return true;
-  return /^\d{4}-\d{2}$/u.test(written) && readMonth(gives)?.value === written;
+  if (/^\d{4}-\d{2}$/u.test(written) && readMonth(gives)?.value === written) return true;
+  // A month menu's option for the entry's month ("03" or "Mar" for "March"; dateOption, monthOption).
+  const month = (s: string): number | null => (/^\d{1,2}$/u.test(s.trim()) ? Number(s) : monthIndex(s));
+  return part === "month" && month(gives) !== null && month(gives) === month(written);
 }
 
 /** Whether two candidates' "Label: value" lines are next to each other in their node, with no line between. */
@@ -1542,7 +1567,11 @@ function adjacentLines(model: ScreenModel, a: Candidate, b: Candidate): boolean 
   return i >= 0 && j >= 0 && Math.abs(i - j) === 1;
 }
 
-/** A step's memory reference (executor Step.memory): the entry's id, and "#part" for a part of a remembered name. */
+type FillMemoryPart = NonNullable<FillMemory["part"]>;
+/** The parts a value from memory may be (protocol FillMemory.part): a name's (B24), an address's or a date's (C2). */
+const MEMORY_PARTS: ReadonlySet<string> = new Set<FillMemoryPart>(["first", "middle", "last", "street", "unit", "city", "state", "zip", "month", "day", "year"]);
+
+/** A step's memory reference (executor Step.memory): the entry's id, and "#part" for a part of a remembered name, address or date. */
 export function memoryRefOf(m: { id: string; part?: FillMemory["part"] }): string {
   return m.part === undefined ? m.id : `${m.id}#${m.part}`;
 }
@@ -1551,5 +1580,5 @@ export function memoryRefOf(m: { id: string; part?: FillMemory["part"] }): strin
 export function parseMemoryRef(ref: string): { id: string; part: FillMemory["part"] } {
   const at = ref.lastIndexOf("#");
   const part = at < 0 ? "" : ref.slice(at + 1);
-  return part === "first" || part === "middle" || part === "last" ? { id: ref.slice(0, at), part } : { id: ref, part: undefined };
+  return MEMORY_PARTS.has(part) ? { id: ref.slice(0, at), part: part as FillMemoryPart } : { id: ref, part: undefined };
 }

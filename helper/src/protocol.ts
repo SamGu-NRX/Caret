@@ -1167,9 +1167,12 @@ export const FillMemory = z.object({
   says: z.string(),
   /**
    * The part of a remembered name the value is (B24, fill/derive.ts): "first" for "Riley" from Name "Riley
-   * Okafor". Absent: the value is the whole entry. A check that the entry still holds the value splits it again.
+   * Okafor". C2 adds the parts of a remembered address ("zip" for "97214" from Home address "2210 Willow Bend Drive,
+   * Portland, Oregon 97214") and of a remembered date ("month" for "March" from Date of birth "March 14, 1990"). Each
+   * is a substring of the entry. Absent: the value is the whole entry. A check that the entry still holds the value
+   * splits it again.
    */
-  part: z.enum(["first", "middle", "last"]).optional(),
+  part: z.enum(["first", "middle", "last", "street", "unit", "city", "state", "zip", "month", "day", "year"]).optional(),
 });
 export type FillMemory = z.infer<typeof FillMemory>;
 

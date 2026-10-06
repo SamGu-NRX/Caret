@@ -9,8 +9,8 @@ import { words } from "./kinds.ts";
 export type NamePart = "first" | "middle" | "last" | "full";
 export type AddressPart = "street" | "unit" | "city" | "state" | "zip";
 export type FieldPart = NamePart | AddressPart;
-/** A date's month or year, for a field that asks only for that (C1): "Graduation date month", "Start date year". */
-export type DatePart = "month" | "year";
+/** A date's month or year, for a field that asks only for that (C1): "Graduation date month", "Start date year"; C2 adds its day ("Date of birth day"). */
+export type DatePart = "month" | "day" | "year";
 /** A field's part as fill asks for it: fieldPart's parts, (B27) a place's country, which only fill derives, or (C1) a date's month or year. */
 export type FillPart = FieldPart | "country" | DatePart;
 
@@ -163,11 +163,33 @@ export function splitAddress(text: string): Partial<Record<AddressPart, string>>
 export function datePart(label: string | null): DatePart | null {
   if (label === null) return null;
   const ws = new Set(words(label));
-  const month = ws.has("month");
-  const year = ws.has("year");
-  if (month === year) return null;
+  // C2: a day too ("Date of birth day"); exactly one of the three.
+  const named = (["month", "day", "year"] as const).filter((p) => ws.has(p));
+  if (named.length !== 1) return null;
   const dated = ["date", "graduation", "start", "end", "began", "started", "ended", "birth", "from", "to", "completion", "expected"].some((w) => ws.has(w));
-  return dated ? (month ? "month" : "year") : null;
+  return dated ? (named[0] as DatePart) : null;
+}
+
+const NAMED_DAY_FIRST = /^(\d{1,2})(?:st|nd|rd|th)? (?:of )?([A-Za-z]+)\.?,? (\d{4})$/u;
+const NAMED_MONTH_FIRST = /^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,? )?([A-Za-z]+)\.?(?: (\d{1,2})(?:st|nd|rd|th)?)?,? (\d{4})$/u;
+
+/**
+ * C2 (lead decision 5): a date's month, day and year as the date writes them, each a substring of it, for the fields of a
+ * date split over several ("Date of birth month", "... day", "... year"): "March 14, 1990" gives "March", "14" and
+ * "1990"; "1990-03-14" gives "03", "14" and "1990" (an ISO date's order is fixed); "March 1990" has no day. Null when
+ * the text is not one date splitDate reads.
+ */
+export function dateParts(text: string): { month: string | null; day: string | null; year: string } | null {
+  const t = text.trim();
+  const d = splitDate(t);
+  if (d === null) return null;
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(t);
+  if (iso !== null) return { month: iso[2] as string, day: iso[3] as string, year: iso[1] as string };
+  const dayFirst = NAMED_DAY_FIRST.exec(t);
+  if (dayFirst !== null && monthIndex(dayFirst[2] as string) !== null) return { month: d.month, day: dayFirst[1] as string, year: d.year };
+  const monthFirst = NAMED_MONTH_FIRST.exec(t);
+  if (monthFirst !== null && monthIndex(monthFirst[1] as string) !== null) return { month: d.month, day: monthFirst[2] ?? null, year: d.year };
+  return null;
 }
 
 const MONTH_NAME = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b/u;
@@ -306,6 +328,8 @@ export function partFits(part: FillPart, value: string): boolean {
       return true;
     case "month":
       return MONTH_NAME.test(v) && v.split(" ").length === 1;
+    case "day":
+      return /^(?:0?[1-9]|[12]\d|3[01])$/u.test(v);
     case "year":
       return /^(?:1[89]|2\d)\d{2}$/u.test(v);
   }
