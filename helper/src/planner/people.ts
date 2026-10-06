@@ -28,23 +28,26 @@ const PERSON_LINE = /\b(?:landlord|landlady|reference|referred|referee|recruiter
 export interface PersonCandidate {
   name: string;
   from: "sender" | "note" | "memory";
-  windowId: string | null;
+  /** Every window that names them: one person may be in several (A1 review: keeping only the first dropped Gary from the note the instruction named). */
+  windowIds: string[];
 }
 
 /** People in the open windows other than the form (each mail's sender; names on a note's role or relation lines) and in memory. Local only. */
 export function peopleOnScreen(model: ScreenModel, form: WindowState, memory: readonly MemoryValue[]): PersonCandidate[] {
   const out: PersonCandidate[] = [];
   const add = (name: string, from: PersonCandidate["from"], windowId: string | null): void => {
+    const ids = windowId === null ? [] : [windowId];
     const n = name.replace(/\s+/gu, " ").trim();
     if (n.length < 2 || n.length > 60) return;
     const lower = n.toLowerCase();
     // "Ines" and "Ines Lindqvist" are one person: the longer form stands.
     const same = out.findIndex((p) => p.name.toLowerCase() === lower || p.name.toLowerCase().startsWith(`${lower} `) || lower.startsWith(`${p.name.toLowerCase()} `));
     if (same >= 0) {
-      if ((out[same] as PersonCandidate).name.length < n.length) out[same] = { name: n, from, windowId };
+      const had = out[same] as PersonCandidate;
+      out[same] = { name: had.name.length < n.length ? n : had.name, from: had.name.length < n.length ? from : had.from, windowIds: [...new Set([...had.windowIds, ...ids])] };
       return;
     }
-    out.push({ name: n, from, windowId });
+    out.push({ name: n, from, windowIds: ids });
   };
   for (const w of model.windows.values()) {
     if (w === form) continue;
@@ -112,7 +115,7 @@ export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate
   if (!someoneElses && !PRONOUN_DETAILS.test(fw)) return { kind: "unread", why: "a pronoun that may not be about details" };
   if (restrictsSources(instruction)) return { kind: "ask", candidates: [], why: "the instruction keeps Caret to its own words" };
   const sourceIds = new Set(snap.named.map((n) => n.windowId));
-  const inSources = sourceIds.size === 0 ? others : others.filter((p) => p.windowId !== null && sourceIds.has(p.windowId));
+  const inSources = sourceIds.size === 0 ? others : others.filter((p) => p.windowIds.some((id) => sourceIds.has(id)));
   if (inSources.length === 1) return { kind: "person", ref: null, name: (inSources[0] as PersonCandidate).name, why: `the one other person in the instruction's sources is ${inSources[0]?.name}` };
   return { kind: "ask", candidates: (inSources.length > 0 ? inSources : others).map((p) => p.name), why: `${inSources.length} other people are in the instruction's sources` };
 }

@@ -15,7 +15,8 @@ import { headsIntentMaker, headsRequest, readHeads } from "../src/planner/intent
 import { AskAsks, AskRefused, planAsk } from "../src/planner/ask.ts";
 import { SAYS } from "../src/planner/says.ts";
 import type { MemoryValue } from "../src/planner/trace.ts";
-import { buildDesk, loadCorpus, type Desk } from "../scripts/realfill-corpus.ts";
+import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
+import { field, snap } from "./builders.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = loadCorpus(join(here, "../../fixtures/realfill"));
@@ -243,5 +244,45 @@ describe("agreement or ask", () => {
     expect((pay as AskRefused).message).toBe(SAYS.payment);
     // A press has no reading, so the plan route takes it as before A1 (says.ts saysPress).
     expect(reads("job-application", "submit it for me")).toBeNull();
+  });
+});
+
+// The A1 review's inputs, each one a field the user did not mean or a guess between two people before its fix.
+describe("what the A1 review found", () => {
+  it("reads any 'but' as ruling something out unless a time or a new value follows it", () => {
+    expect(reads("rental-application", "fill all fields but my email")).toBeNull();
+    expect(reads("rental-application", "fill everything in the form but my phone")).toBeNull();
+    expect(reads("car-service-booking", "saturday works, but at 9:30")).toEqual(["Preferred date", "Preferred time"]);
+  });
+
+  it("reads a part said after 'in' as where the named fields are, never as the whole part", () => {
+    expect(reads("rental-application", "fill only my email in the applicant section")).toEqual(["Email address"]);
+    expect(reads("rental-application", "fill my phone in the landlord section")).toBeNull();
+    expect(reads("rental-application", "just my email and the applicant section")).toBeNull();
+    // A part and a field outside it are two requests.
+    expect(reads("rental-application", "the landlord section and my email")).toEqual(["Email address", "Landlord or property manager name", "Landlord phone"]);
+  });
+
+  it("does not read one field as someone else's and the next as the user's by default", () => {
+    expect(reads("job-application", "fill her email and phone")).toBeNull();
+    expect(reads("job-application", "fill Simone's name and email")).toBeNull();
+    // One Ask fills one person's details: the user's and someone else's together are not read either.
+    expect(reads("job-application", "fill my name and Simone's email")).toBeNull();
+  });
+
+  it("keeps every window a person is in, so a named source with two people still asks", () => {
+    const d = deskOf("rental-application");
+    const plain = intentSnapshot("put his number in from the rental notes", d.model, d.form, d.memory);
+    expect(readHeads(plain, cannedHeads(plain, { reading: "code" }))).toMatchObject({ route: "ask", open: ["person"] });
+    // An older note that names Gary too, seen before the rental notes (the review's case): reopen the rental notes after it.
+    const rental = snaps.find((x) => x.window.title === "Rental notes.txt");
+    if (rental === undefined) throw new Error("no rental notes");
+    d.model.close(rental.window.windowId, T0 - 40_000);
+    d.model.apply(snap([field("te/old", "Landlord: Gary Pruitt\n(512) 555-0193", { role: "AXTextArea" })], { at: T0 - 35_000, windowId: "old-note", title: "Old lease.txt", app: { pid: 7999, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: false }));
+    d.model.apply({ ...rental, at: T0 - 30_000, focused: true, focusedKey: null });
+    const form = d.model.windows.get(d.form.window.windowId);
+    if (form === undefined) throw new Error("form window gone");
+    const s = intentSnapshot("put his number in from the rental notes", d.model, form, d.memory);
+    expect(readHeads(s, cannedHeads(s, { reading: "code" }))).toMatchObject({ route: "ask", open: ["person"] });
   });
 });

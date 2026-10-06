@@ -178,8 +178,11 @@ function ownerOf(f: IntentField, heading: Map<string, string | null>): { other: 
   return { other: false, role: null };
 }
 
-/** Who a term's fields belong to, by its words: the user, anyone else, or a role ("the landlord's phone"). */
-type Owner = { other: false } | { other: true; role: string | null };
+/**
+ * Who a term's fields belong to, by its words: the user, anyone else, or a role ("the landlord's phone"). `said` is
+ * false for the user by default, when no owner word is near the term.
+ */
+type Owner = { other: false; said: boolean } | { other: true; role: string | null };
 const POSSESSIVE_OTHER = new Set(["his", "her", "their", "hers", "theirs", "him"]);
 const OWNER_SKIP = new Set(["the", "a", "an", "first", "last", "middle", "full", "legal", "given", "family", "best", "contact", "phone", "cell", "mobile", "work", "personal", "home", "office", "school", "primary", "main"]);
 
@@ -191,12 +194,12 @@ function ownerAt(toks: readonly Tok[], first: number, last: number): Owner {
   for (let j = last; j >= Math.max(0, first - 3); j--) {
     const t = toks[j] as Tok;
     if (j < first && !OWNER_SKIP.has(t.w) && t.w !== "my" && t.w !== "our" && !POSSESSIVE_OTHER.has(t.w) && t.w !== "\u0001" && new RegExp(ROLE.source, "u").exec(t.w) === null) break;
-    if (t.w === "my" || t.w === "our" || t.w === "me") return { other: false };
+    if (t.w === "my" || t.w === "our" || t.w === "me") return { other: false, said: true };
     if (POSSESSIVE_OTHER.has(t.w) || (t.w === "\u0001" && t.possessive)) return { other: true, role: null };
     const r = new RegExp(ROLE.source, "u").exec(t.w);
     if (r !== null) return { other: true, role: stem(t.w) };
   }
-  return { other: false };
+  return { other: false, said: false };
 }
 
 const ownerFits = (o: Owner, f: { other: boolean; role: string | null }): boolean => (o.other ? f.other && (o.role === null || f.role === o.role) : !f.other);
@@ -335,12 +338,14 @@ const pressAsked = (instruction: string): boolean => asksPress(instruction.repla
 const COMPOSE = /\bwrite\s+(?:up|a|an|some|something|out)\b|\b(?:draft|compose|summari[sz]e|describe|explain|reword|rephrase|translate|reply|respond)\b/iu;
 
 /**
- * The exclusion words of an instruction that rule a field or part out. Two of scope-words.ts's words often do not:
- * "instead" not followed by "of" replaces a value ("make it 8:15 instead"), and "but" not after a whole-form word
- * contrasts ("the Saturday Chris mentioned, but at 9:30"); "everything but the phone" still rules the phone out.
+ * The exclusion words of an instruction that rule a field or part out. Two of scope-words.ts's words sometimes do not,
+ * and are set aside only then: "instead" not followed by "of" replaces a value ("make it 8:15 instead"), and "but"
+ * followed by a time or a new value ("the Saturday Chris mentioned, but at 9:30", "but make it 7"). Any other "but"
+ * still rules something out: "fill all fields but my email" (A1 review: reading "but" as a contrast unless it followed
+ * a whole-form word read that as Email alone).
  */
 export function readingExclusions(instruction: string): string[] {
-  const kept = instruction.replace(/\binstead\b(?!\s+of\b)/giu, " ").replace(/(?<!\b(?:everything|anything|all|rest|nothing|every\s+\w+)\s+)\bbut\b/giu, " ");
+  const kept = instruction.replace(/\binstead\b(?!\s+of\b)/giu, " ").replace(/\bbut\s+(?=(?:at|around|by)\s+\d|make\s+it\b)/giu, " ");
   return exclusionsIn(kept);
 }
 
@@ -387,6 +392,9 @@ export function readScope(snap: IntentSnapshot): ReadResult {
   const ownerOfField = (f: IntentField): { other: boolean; role: string | null } => owners.get(f.key) ?? { other: false, role: null };
   const picked: IntentField[] = [];
   const because: string[] = [];
+  /** The owners the terms were read for: someone else's beside a user's by default ("her email and phone") is not read. */
+  const ownersSaid: Owner[] = [];
+  const owned = (o: Owner): Owner => (ownersSaid.push(o), o);
   const pick = (fs: readonly IntentField[], why: string): void => {
     for (const f of fs) if (!picked.includes(f)) picked.push(f);
     because.push(why);
@@ -421,9 +429,17 @@ export function readScope(snap: IntentSnapshot): ReadResult {
   // field named within a longer named field's words is that one: "work email" names Work email, not Email too.
   {
     const s = unread();
+    // The words must be said together, small words between allowed: "my phone in the landlord section" says "phone"
+    // and "landlord" for two different things (A1 review).
+    const together = (is: readonly number[]): boolean => {
+      const lo = Math.min(...is);
+      const hi = Math.max(...is);
+      for (let i = lo; i <= hi; i++) if (!is.includes(i) && !["the", "of", "or", "a", "an", "s"].includes(toks[i]?.w ?? "")) return false;
+      return true;
+    };
     const full = snap.fields.filter((f) => {
       const ws = nameWords.get(f.key) ?? [];
-      return ws.length >= 2 && ws.every((w) => s.has(w));
+      return ws.length >= 2 && ws.every((w) => s.has(w)) && together(ws.map((w) => (s.get(w) ?? [])[0] as number));
     });
     const longest = full.filter((f) => {
       const mine = nameWords.get(f.key) ?? [];
@@ -432,7 +448,7 @@ export function readScope(snap: IntentSnapshot): ReadResult {
     for (const f of longest) {
       const is = (nameWords.get(f.key) ?? []).flatMap((w) => s.get(w) ?? []);
       // The owner by the words said, the label's own role word among them ("the landlord's phone").
-      const o = ownerAt(toks, Math.min(...is), Math.max(...is));
+      const o = owned(ownerAt(toks, Math.min(...is), Math.max(...is)));
       if (!ownerFits(o, ownerOfField(f))) return none(`'${f.name}' is said as ${o.other ? "someone else's" : "the user's"}, and the field is not`);
       pick([f], `label '${f.name}'`);
       use(is, "label");
@@ -456,7 +472,7 @@ export function readScope(snap: IntentSnapshot): ReadResult {
       if (term.id === "contact" && before === "emergency") continue;
       // "company name", "school name": not a person's name.
       if (term.id === "name" && m[1] === undefined && /^(?:company|business|organi[sz]ation|school|file|user|pet|account|project|product|team|event|venue|brand|display|domain|street|city|hotel|bank|course|plan|model)$/u.test(before)) continue;
-      const o = ownerAt(toks, first, is[is.length - 1] as number);
+      const o = owned(ownerAt(toks, first, is[is.length - 1] as number));
       const kind = snap.fields.filter((f) => term.is(ctx, f) && ownerFits(o, ownerOfField(f)));
       if (kind.length === 0) return none(`'${m[0]}' means no ${o.other ? "other person's" : "user's"} field of this form`);
       const fs = term.narrow(ctx, kind, m as RegExpExecArray);
@@ -483,11 +499,31 @@ export function readScope(snap: IntentSnapshot): ReadResult {
       const nests = (x: Sec, y: Sec): boolean => y.fields.every((f) => x.fields.includes(f));
       const chosen = full.length > 0 ? top.find((x) => top.every((y) => nests(x, y))) : top.find((x) => top.every((y) => nests(y, x)));
       if (chosen === undefined) return none(`the words name ${top.map((x) => `'${x.name}'`).join(" and ")}, which are different parts of the form`);
-      const empty = chosen.fields.filter((f) => !f.filled);
-      if (empty.length === 0) return none(`'${chosen.name}' has no empty field`);
-      pick(empty, `${chosen.from} '${chosen.name}'`);
+      const at = said(chosen).flatMap((k) => s.get(k) ?? []);
+      // "my email in the applicant section": a part said after "in" or "under", beside fields already read, only says
+      // where those fields are (A1 review: reading it as the whole part filled First and Last name too). Fields read
+      // inside the part beside "only" or "just" are not read either way.
+      const before = (i: number): string => {
+        let j = i - 1;
+        while (j >= 0 && ["the", "this", "that", "my", "your"].includes(toks[j]?.w ?? "")) j--;
+        return toks[j]?.w ?? "";
+      };
+      const qualifies = picked.length > 0 && at.some((i) => ["in", "under", "within", "inside", "on"].includes(before(i)));
+      const inside = picked.length > 0 && picked.every((f) => chosen.fields.includes(f));
+      if (qualifies) {
+        const kept = picked.filter((f) => chosen.fields.includes(f));
+        if (kept.length === 0) return none(`none of the fields the words name is under '${chosen.name}'`);
+        picked.splice(0, picked.length, ...kept);
+        because.push(`under ${chosen.from} '${chosen.name}'`);
+      } else if (inside && toks.some((t) => t.w === "only" || t.w === "just")) {
+        return none(`the words name fields under '${chosen.name}' and the part too, beside "only"`);
+      } else {
+        const empty = chosen.fields.filter((f) => !f.filled);
+        if (empty.length === 0) return none(`'${chosen.name}' has no empty field`);
+        pick(empty, `${chosen.from} '${chosen.name}'`);
+      }
       section = chosen.name;
-      use(said(chosen).flatMap((k) => s.get(k) ?? []), "section");
+      use(at, "section");
     }
     const up = toks.findIndex((t, i) => t.w === "up" && toks[i + 1]?.w === "top" && t.used === null);
     if (up >= 0) {
@@ -518,7 +554,7 @@ export function readScope(snap: IntentSnapshot): ReadResult {
       const own = words.filter((w) => counts.get(w) === 1 && !VALUE_WORD.test(w) && (!FILLER.has(w) || (words.length === 1 && section === null)));
       const is = own.flatMap((w) => s.get(w) ?? []).filter((i) => toks[i]?.used === null);
       if (is.length === 0) continue;
-      const o = ownerAt(toks, Math.min(...is), Math.max(...is));
+      const o = owned(ownerAt(toks, Math.min(...is), Math.max(...is)));
       if (!ownerFits(o, ownerOfField(f))) return none(`'${f.name}' is said as ${o.other ? "someone else's" : "the user's"}, and the field is not`);
       pick([f], `label word of '${f.name}'`);
       use(is, "label");
@@ -533,13 +569,17 @@ export function readScope(snap: IntentSnapshot): ReadResult {
       if (FILLER.has(w) || VALUE_WORD.test(w) || KIND_WORDS.has(w)) continue;
       const withWord = snap.fields.filter((f) => (nameWords.get(f.key) ?? []).includes(w));
       if (withWord.length < 2) continue;
-      const o = ownerAt(toks, Math.min(...is), Math.max(...is));
+      const o = owned(ownerAt(toks, Math.min(...is), Math.max(...is)));
       const fits = withWord.filter((f) => ownerFits(o, ownerOfField(f)));
       if (fits.length !== 1) continue;
       pick(fits, `label word '${w}' (${o.other ? "someone else's" : "the user's"})`);
       use(is, "label");
     }
   }
+
+  // One Ask fills one person's details (FillScope.person): fields read as someone else's beside fields read as the
+  // user's, said or by default ("her email and phone", "my name and Simone's email"), are not read (A1 review).
+  if (ownersSaid.some((o) => o.other) && ownersSaid.some((o) => !o.other)) return none("the words read some fields as someone else's and others as the user's");
 
   // 5. The values the instruction spells out: a time or a date to the one such field read, else the form's one; any
   // other value to the one field read. A value that fits no one field leaves code with no reading.
@@ -569,7 +609,7 @@ export function readScope(snap: IntentSnapshot): ReadResult {
     const free = toks.filter((t) => t.used === null);
     const ws = free.map((t) => t.w);
     const has = (...xs: string[]): boolean => xs.every((x) => ws.includes(x));
-    const verb = toks.some((t) => ["fill", "complete", "finish", "do", "get", "handle", "register", "rsvp", "sign", "sort"].includes(t.w));
+    const verb = toks.some((t) => ["fill", "complete", "finish", "do", "get", "handle", "register", "rsvp", "sort"].includes(t.w));
     const titledPart = free.findIndex((t, j) => PART_NOUNS.has(t.w) && j > 0 && titleWords.has(stem(free[j - 1]?.w ?? "")));
     const object = formNoun || ws.some((w) => ["everything", "anything", "whatever", "rest"].includes(w)) || (has("all") && (has("it") || has("of"))) || has("what", "can") || titledPart >= 0 || (verb && (has("this") || (has("it") && (has("out") || has("in")))));
     if (verb && object) {
