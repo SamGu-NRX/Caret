@@ -141,6 +141,8 @@ final class PageInlineCoordinator {
             shownLength = nil
         case .drawNotice(let content, let field, let enters): drawNotice(content, field: field, enters: enters)
         case .hideNotice: notice.exit(duration: 0)
+        case .drawError(let content, let field): drawNotice(content, field: field, enters: true)
+        case .hideError: notice.exit(duration: 0.22)
         case .send(let insert):
             if client?.send(insert) != true { status.increment("pageInline.insert.unsent") }
         case .settings(let s): SettingsStore.shared.update(source: .menu) { $0.pageInline = s }

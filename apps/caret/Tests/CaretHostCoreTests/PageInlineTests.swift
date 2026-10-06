@@ -33,6 +33,14 @@ final class PageInlineTests: XCTestCase {
         var inserts: [PageInsert] { commands.compactMap { if case .send(let s) = $0 { return s } else { return nil } } }
         var ghosts: [(String, CGRect)] { commands.compactMap { if case .drawGhost(let t, let c, _) = $0 { return (t, c) } else { return nil } } }
         var notices: [LineContent] { commands.compactMap { if case .drawNotice(let l, _, _) = $0 { return l } else { return nil } } }
+        var errors: [LineContent] { commands.compactMap { if case .drawError(let l, _) = $0 { return l } else { return nil } } }
+        var errorHidden: Bool {
+            for c in commands.reversed() {
+                if case .hideError = c { return true }
+                if case .drawError = c { return false }
+            }
+            return true
+        }
         var ghostHidden: Bool {
             for c in commands.reversed() {
                 if case .hideGhost = c { return true }
@@ -419,7 +427,96 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(notNow.notices.count, 1, "once a run")
     }
 
-    func testTypingInGmailPutsTheLineAwayAsNotNow() throws {
+    // MARK: - Follow-ups (coordinator, after H13): a line nobody answered comes back; a refused insert says so
+
+    /// The same field in another place: a focus somewhere else and back.
+    static func elsewhere() throws -> PageField {
+        var f = try field(1)
+        f.key = "f0/form[apply]/textbox:email~0"
+        return f
+    }
+
+    func testAnUnansweredGmailLineComesBackOnTheNextFocusUntilTheUserAnswers() throws {
+        let r = Rig()
+        r.field(try Self.field(7))
+        r.clock.advance(by: PageInlineMachine.noticeLifetime + 0.1)
+        XCTAssertTrue(r.noticeHidden)
+        // The same focus (another report while typing there): not again.
+        r.field(try Self.field(7))
+        XCTAssertEqual(r.notices.count, 1)
+        // The next focus of such a field: again.
+        r.field(try Self.elsewhere())
+        r.field(try Self.field(7))
+        XCTAssertEqual(r.notices.count, 2)
+        // Typed past, it is unanswered too.
+        r.press(.typing("a", to: Self.chrome))
+        r.field(try Self.elsewhere())
+        r.field(try Self.field(7))
+        XCTAssertEqual(r.notices.count, 3)
+        // Not now (Esc) answers it for this run.
+        r.press(KeyStroke(keyCode: KeyStroke.escapeKeyCode, targetPID: Self.chrome))
+        r.field(try Self.elsewhere())
+        r.field(try Self.field(7))
+        XCTAssertEqual(r.notices.count, 3)
+    }
+
+    func testAnUnansweredDocsLineComesBackOnTheNextFocus() throws {
+        let r = Rig()
+        r.field(try Self.field(1))
+        r.machine.sourceOff("Google Docs", says: Self.turnOn)
+        r.clock.advance(by: PageInlineMachine.noticeLifetime + 0.1)
+        XCTAssertTrue(r.noticeHidden)
+        r.machine.sourceOff("Google Docs", says: Self.turnOn)
+        XCTAssertEqual(r.notices.count, 1, "not twice in one focus")
+        r.field(try Self.elsewhere())
+        r.machine.sourceOff("Google Docs", says: Self.turnOn)
+        XCTAssertEqual(r.notices.count, 2, "the next focus, well within two minutes")
+        r.press(KeyStroke(keyCode: KeyStroke.escapeKeyCode, targetPID: Self.chrome))
+        r.field(try Self.field(1))
+        r.machine.sourceOff("Google Docs", says: Self.turnOn)
+        XCTAssertEqual(r.notices.count, 2, "Esc answers it for this run")
+    }
+
+    func testARefusedInsertSaysSoAtTheField() throws {
+        for outcome in [PageInsertReply.Outcome.refused, .failed] {
+            let r = Rig()
+            r.field(try Self.field(1))
+            r.suggest("Field Robotics Technician role")
+            r.press(.tab(to: Self.chrome))
+            r.machine.replied(PageInsertReply(requestId: r.inserts[0].requestId, outcome: outcome, says: "x", at: 1))
+            XCTAssertEqual(r.errors.last, LineContent(figure: .error, text: "The page didn't take it.", emphasis: .plain), "\(outcome)")
+            r.clock.advance(by: PageInlineMachine.errorLifetime + 0.1)
+            XCTAssertTrue(r.errorHidden)
+        }
+        // Never answered: said too.
+        let r = Rig()
+        r.field(try Self.field(1))
+        r.suggest("Field Robotics Technician role")
+        r.press(.tab(to: Self.chrome))
+        r.clock.advance(by: PageInlineMachine.insertWait + 0.1)
+        XCTAssertEqual(r.errors.count, 1)
+        // An insert that went in says nothing.
+        let ok = Rig()
+        ok.field(try Self.field(1))
+        ok.suggest("Field Robotics Technician role")
+        ok.press(.tab(to: Self.chrome))
+        ok.machine.replied(PageInsertReply(requestId: ok.inserts[0].requestId, outcome: .inserted, says: "inserted", at: 1))
+        XCTAssertEqual(ok.errors, [])
+    }
+
+    func testARefusedInsertInGmailNamesGmail() throws {
+        let r = Rig()
+        r.gate.settings.set(.gmail, on: true)
+        var g = try Self.field(7)
+        g.frame = Frame(x: 300, y: 400, width: 600, height: 240)
+        r.field(g)
+        r.suggest("thanks again")
+        r.press(.tab(to: Self.chrome))
+        r.machine.replied(PageInsertReply(requestId: r.inserts[0].requestId, outcome: .refused, says: "x", at: 1))
+        XCTAssertEqual(r.errors.last?.text, "Gmail didn't take it.")
+    }
+
+    func testTypingInGmailPutsTheLineAwayWithoutSavingAnything() throws {
         let r = Rig()
         r.field(try Self.field(7))
         XCTAssertEqual(r.press(.typing("a", to: Self.chrome)), .pass(.dismissed))
@@ -463,10 +560,10 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(r.arbiter.handleKeyDown(.tab(to: Self.chrome), now: r.clock.now), .pass(.dismissed))
         r.machine.offerChanged(.dismissed)
         XCTAssertTrue(r.noticeHidden)
-        // Said once in a while, not on every field the fill asks again for.
+        // Not twice in one focus; again on the next (testAnUnansweredDocsLineComesBackOnTheNextFocus).
         r.machine.sourceOff("Google Docs", says: Self.turnOn)
         XCTAssertEqual(r.notices.count, 1)
-        r.clock.advance(by: PageInlineMachine.sourceOffQuiet + 1)
+        r.field(try Self.elsewhere())
         r.machine.sourceOff("Google Docs", says: Self.turnOn)
         XCTAssertEqual(r.notices.count, 2)
         let id = try XCTUnwrap(r.arbiter.snapshot().current?.id)

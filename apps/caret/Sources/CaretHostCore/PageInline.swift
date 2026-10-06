@@ -15,8 +15,8 @@ import Foundation
 // (with what the user typed through since), still has focus, and is in the tab the user is in.
 //
 // Pages with their own Tab suggestions (Gmail's compose body; Google Docs) get no inline text from Caret by default,
-// and Tab stays theirs (`OtherTabOwners.pages`). In Gmail, a quiet line says so once and lets the user turn Caret on
-// there after turning Smart Compose off. Caret never changes Gmail's or Docs' settings. Docs stays off in this batch:
+// and Tab stays theirs (`OtherTabOwners.pages`). In Gmail, a quiet line says so, again on each new focus of such a field until
+// the user answers it, and lets the user turn Caret on there after turning Smart Compose off. Caret never changes Gmail's or Docs' settings. Docs stays off in this batch:
 // its typing target is an off-screen text box whose text Caret cannot read yet.
 
 /// Host to helper: insert accepted inline text at a page field's caret (helper/src/protocol.ts PageInsert).
@@ -165,6 +165,12 @@ public enum PageInlineCopy {
     public static let gmailDo = "To use Caret's instead, turn off Smart Compose in Gmail's settings, then turn Caret on here."
     public static var gmail: String { "\(gmailSays) \(gmailDo)" }
 
+    /// An insert Tab asked for did not go in: Tab is already taken, so this is never silent. The page's name only for a
+    /// page Caret knows by name; the host has no other name for a page.
+    public static func notTaken(_ page: PageField.OwnSuggestions?) -> LineContent {
+        LineContent(figure: .error, text: "\(page.map(name) ?? "The page") didn't take it.", emphasis: .plain)
+    }
+
     /// A Google editor whose text is off: what happened on the line, the helper's sentence (what to turn on) under it,
     /// with Esc to put it away.
     public static func sourceOff(_ app: String, says: String) -> LineContent {
@@ -203,6 +209,9 @@ public final class PageInlineMachine {
         /// The quiet line under `field`. `enters` on its first draw.
         case drawNotice(LineContent, field: CGRect, enters: Bool)
         case hideNotice
+        /// An error line under `field`, in the slip's error style: an insert Tab asked for did not go in.
+        case drawError(LineContent, field: CGRect)
+        case hideError
         case send(PageInsert)
         case settings(PageInlineSettings)
         case count(String)
@@ -233,6 +242,8 @@ public final class PageInlineMachine {
     public static let noticeLifetime: Double = 20
     /// An insert the helper never answers stops being awaited.
     public static let insertWait: Double = 2
+    /// An error line stays this long (DIRECTION.md 5.3, "Error": 6 s), as the save line's refusal does.
+    public static let errorLifetime: Double = 6
 
     private let arbiter: OfferArbiter
     private let clock: SurfaceClock
@@ -264,9 +275,20 @@ public final class PageInlineMachine {
     /// so a stale offer is never drawn over text that is going in (H13 review).
     private var awaiting: (requestId: String, before: String, after: String, timer: SurfaceTimer)?
     /// The quiet line on screen: about a page's own suggestions (`page`), or a source Caret cannot read (nil).
-    private var notice: (offerID: UInt64, page: PageField.OwnSuggestions?, timer: SurfaceTimer)?
-    /// Pages whose line showed in this run: it shows once a run at most ("Not now" is this run).
-    private var noticed: Set<PageField.OwnSuggestions> = []
+    private var notice: (offerID: UInt64, page: PageField.OwnSuggestions?, key: String, timer: SurfaceTimer)?
+    /// Quiet lines the user answered in this run (Not now, Turn Caret on here, Don't show again): never shown again in
+    /// it. A line that timed out or was typed past is unanswered: it shows again on the next focus of such a field,
+    /// never twice in one focus (`shownIn`). Keys: a page's raw value, or "sourceOff:<app>".
+    private var answered: Set<String> = []
+    private var shownIn: [String: String] = [:]
+    private var errorTimer: SurfaceTimer?
+
+    /// The focus a quiet line is tied to: the field and its window.
+    private static func focusKey(_ f: PageField) -> String { "\(f.windowId)|\(f.key ?? "")" }
+
+    private static func lineKey(_ page: PageField.OwnSuggestions?, app: String?) -> String {
+        page.map(\.rawValue) ?? "sourceOff:\(app ?? "")"
+    }
 
     public init(arbiter: OfferArbiter, clock: SurfaceClock, measure: @escaping (String, CGFloat) -> CGFloat) {
         self.arbiter = arbiter
@@ -287,6 +309,8 @@ public final class PageInlineMachine {
         let previous = current
         current = f
         gate = g
+        // A new focus: every unanswered line may show again (once in it).
+        if previous.map(Self.focusKey) != f.map(Self.focusKey) { shownIn.removeAll() }
         guard let f, let key = f.key, f.editable, let pid = Int32(exactly: f.app.pid), pid > 0 else {
             hideNotice()
             return clear("noField")
@@ -359,7 +383,10 @@ public final class PageInlineMachine {
     /// The arbiter passed a key: typing through redraws the rest at once; anything that removed the offer hides it.
     public func offerChanged(_ reason: OfferArbiter.PassReason) {
         let snap = arbiter.snapshot()
-        if let n = notice, snap.current?.id != n.offerID { hideNotice() }
+        if let n = notice, snap.current?.id != n.offerID {
+            if reason == .closed { answered.insert(n.key) }
+            hideNotice()
+        }
         guard let s = shown else { return }
         guard snap.current?.id == s.offerID else {
             shown = nil
@@ -392,6 +419,7 @@ public final class PageInlineMachine {
                 note("notice.quiet")
             default: return
             }
+            answered.insert(n.key)
             hideNotice()
             gate.settings = settings
             output(.settings(settings))
@@ -404,7 +432,8 @@ public final class PageInlineMachine {
         output(.hideGhost)
         // The field the page last reported must still be the one the offer was made for; the page checks its text.
         guard let f = current, f.windowId == s.target.windowID, f.key == s.target.elementID, f.token == s.token, Int32(exactly: f.app.pid) == s.target.pid else {
-            return note("insert.fieldMoved")
+            note("insert.fieldMoved")
+            return sayNotTaken()
         }
         inserts += 1
         let requestId = "inline-\(inserts)"
@@ -418,6 +447,7 @@ public final class PageInlineMachine {
             guard let self, self.awaiting?.requestId == requestId else { return }
             self.awaiting = nil
             self.note("insert.unanswered")
+            self.sayNotTaken()
         }
         awaiting = (requestId, expect, s.after, timer)
     }
@@ -427,6 +457,18 @@ public final class PageInlineMachine {
         a.timer.cancel()
         awaiting = nil
         note("insert.\(r.outcome.rawValue)")
+        if r.outcome != .inserted { sayNotTaken() }
+    }
+
+    /// One error line at the field the user is in, for the error's time (Tab was taken and nothing went in).
+    private func sayNotTaken() {
+        guard let f = current, let frame = f.frame else { return }
+        errorTimer?.cancel()
+        output(.drawError(PageInlineCopy.notTaken(f.ownSuggestions), field: Self.rect(frame)))
+        errorTimer = clock.schedule(after: Self.errorLifetime, repeats: false) { [weak self] in
+            self?.errorTimer = nil
+            self?.output(.hideError)
+        }
     }
 
     /// Another offer took the browser's keys.
@@ -446,23 +488,20 @@ public final class PageInlineMachine {
 
     // MARK: - A source Caret cannot read (brief item 3)
 
-    /// How long after saying a Google editor's text is off the same is not said again. A guess, not measured: a fill
-    /// asks again on each new field; the sentence once per two minutes, the time Caret may read the tab left, is enough.
-    public static let sourceOffQuiet: Double = 120
-    private var sourceOffSaid: [String: Date] = [:]
 
     /// A fill found nothing because the tab the user left is `app` with its text for assistive technology off. The
     /// helper's sentence says what to turn on; it shows as a quiet line at the page field the user is in (Esc puts it
     /// away, Tab stays the page's), where the fill would have appeared, rather than nothing at all.
     public func sourceOff(_ app: String, says: String) {
         guard notice == nil, let f = current, f.key != nil, let frame = f.frame, let pid = Int32(exactly: f.app.pid), pid > 0 else { return note("sourceOff.noField") }
-        if let said = sourceOffSaid[app], clock.now.timeIntervalSince(said) < Self.sourceOffQuiet { return note("sourceOff.quiet") }
+        let key = Self.lineKey(nil, app: app)
+        if answered.contains(key) || shownIn[key] == Self.focusKey(f) { return note("sourceOff.quiet") }
         if let other = arbiter.snapshot().current, other.target.pid == pid { return note("sourceOff.yielded") }
         let line = ActionLine(offerKey: "pageInline.sourceOff", app: "", endState: PopupSpec.Value(says, ref: .derived(rule: "pageInline", from: [])), actions: [])
         let target = TargetIdentity(pid: pid, bundleID: f.app.bundleId, windowID: f.windowId, elementID: "pageInline.sourceOff", elementRevision: "")
         guard let id = arbiter.publish(Offer(text: "", source: .page, kind: .action(line), target: target, fieldValue: "", caretUTF16: 0,
                                              createdAt: clock.now, maxAgeSeconds: Self.noticeLifetime), shown: false) else { return note("sourceOff.refused") }
-        sourceOffSaid[app] = clock.now
+        shownIn[key] = Self.focusKey(f)
         output(.drawNotice(PageInlineCopy.sourceOff(app, says: says), field: Self.rect(frame), enters: true))
         guard arbiter.reveal(offerID: id) else {
             output(.hideNotice)
@@ -473,14 +512,15 @@ public final class PageInlineMachine {
             self.arbiter.invalidate(offerID: id)
             self.hideNotice()
         }
-        notice = (id, nil, timer)
+        notice = (id, nil, key, timer)
         note("sourceOff.shown")
     }
 
     // MARK: - The quiet line
 
     private func offerNotice(_ page: PageField.OwnSuggestions, field f: PageField, pid: Int32) {
-        guard notice == nil, !noticed.contains(page), !gate.settings.isQuiet(page), let frame = f.frame else { return }
+        let key = Self.lineKey(page, app: nil)
+        guard notice == nil, !answered.contains(key), shownIn[key] != Self.focusKey(f), !gate.settings.isQuiet(page), let frame = f.frame else { return }
         // Never over another offer in the browser.
         if let current = arbiter.snapshot().current, current.target.pid == pid { return }
         let line = ActionLine(offerKey: "pageInline.\(page.rawValue)", app: "", endState: PopupSpec.Value(PageInlineCopy.gmail, ref: .derived(rule: "pageInline", from: [])),
@@ -489,7 +529,7 @@ public final class PageInlineMachine {
         let target = TargetIdentity(pid: pid, bundleID: f.app.bundleId, windowID: f.windowId, elementID: "pageInline.notice", elementRevision: "")
         guard let id = arbiter.publish(Offer(text: "", source: .page, kind: .action(line), target: target, fieldValue: "", caretUTF16: 0,
                                              createdAt: clock.now, maxAgeSeconds: Self.noticeLifetime), shown: false) else { return note("notice.refused") }
-        noticed.insert(page)
+        shownIn[key] = Self.focusKey(f)
         output(.drawNotice(PageInlineCopy.notice(page), field: Self.rect(frame), enters: true))
         guard arbiter.reveal(offerID: id) else {
             output(.hideNotice)
@@ -500,7 +540,7 @@ public final class PageInlineMachine {
             self.arbiter.invalidate(offerID: id)
             self.hideNotice()
         }
-        notice = (id, page, timer)
+        notice = (id, page, key, timer)
         note("notice.shown")
     }
 
