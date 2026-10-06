@@ -95,7 +95,9 @@ const USER_TOO = /\b(?:me|myself|i)\s+(?:and|&|\+)\s+\S|\S\s+(?:and|&|\+)\s+(?:m
  */
 export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate[], memory: readonly MemoryValue[], someoneElses: boolean): WhoseReading {
   const instruction = snap.instruction;
-  const named = snap.persons.filter((p) => !onlyInSources(instruction, p.span));
+  // A capitalized word of the form's own title is the form's name, not a person: "the Northgate application" (A1 held-out B25).
+  const title = new Set((snap.title ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u));
+  const named = snap.persons.filter((p) => !onlyInSources(instruction, p.span) && !p.span.toLowerCase().split(/\s+/u).every((w) => title.has(w)));
   const relations = named.filter((p) => RELATION_SPAN.test(p.span));
   const names = named.filter((p) => !RELATION_SPAN.test(p.span));
   if (named.length > 0 && USER_TOO.test(fieldWords(instruction))) return { kind: "user", why: "the user is named beside them: each field's own details" };

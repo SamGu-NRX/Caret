@@ -94,7 +94,7 @@ const GENERIC = new Set(["current", "your", "my", "our", "the", "and", "or", "of
 const KIND_WORDS = new Set(["date", "time", "name", "email", "phone", "number", "address", "day", "month", "year"]);
 
 /** A word as compared: lower case, a plural's "s" dropped from longer words. */
-const stem = (w: string): string => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") && !w.endsWith("us") ? w.slice(0, -1) : w);
+const stem = (w: string): string => (w.length > 3 && w.endsWith("s") && !/(?:ss|us|is)$/u.test(w) ? w.slice(0, -1) : w);
 /** Words of a text: lower case, apostrophes as "'", "e-mail" as "email", other hyphens as spaces. */
 const wordsIn = (s: string): string[] =>
   s
@@ -437,16 +437,28 @@ export function readScope(snap: IntentSnapshot): ReadResult {
       for (let i = lo; i <= hi; i++) if (!is.includes(i) && !["the", "of", "or", "a", "an", "s"].includes(toks[i]?.w ?? "")) return false;
       return true;
     };
+    // ...and in the label's order: "name + company" is two requests, not Company name.
+    /** Where a label's words are said in its order, each the first said after the one before; null when they are not. */
+    const saidAt = (ws: readonly string[]): number[] | null => {
+      const at: number[] = [];
+      for (const w of ws) {
+        const i = (s.get(w) ?? []).find((x) => x > (at.at(-1) ?? -1));
+        if (i === undefined) return null;
+        at.push(i);
+      }
+      return at;
+    };
     const full = snap.fields.filter((f) => {
       const ws = nameWords.get(f.key) ?? [];
-      return ws.length >= 2 && ws.every((w) => s.has(w)) && together(ws.map((w) => (s.get(w) ?? [])[0] as number));
+      const at = ws.length < 2 ? null : saidAt(ws);
+      return at !== null && together(at);
     });
     const longest = full.filter((f) => {
       const mine = nameWords.get(f.key) ?? [];
       return !full.some((g) => g !== f && (nameWords.get(g.key) ?? []).length > mine.length && mine.every((w) => (nameWords.get(g.key) ?? []).includes(w)));
     });
     for (const f of longest) {
-      const is = (nameWords.get(f.key) ?? []).flatMap((w) => s.get(w) ?? []);
+      const is = saidAt(nameWords.get(f.key) ?? []) ?? [];
       // The owner by the words said, the label's own role word among them ("the landlord's phone").
       const o = owned(ownerAt(toks, Math.min(...is), Math.max(...is)));
       if (!ownerFits(o, ownerOfField(f))) return none(`'${f.name}' is said as ${o.other ? "someone else's" : "the user's"}, and the field is not`);
@@ -491,7 +503,11 @@ export function readScope(snap: IntentSnapshot): ReadResult {
     const s = unread();
     const said = (x: Sec): string[] => x.keys.filter((k) => s.has(k));
     const full = sections.filter((x) => x.keys.length > 0 && said(x).length === x.keys.length);
-    const partial = full.length > 0 ? [] : sections.filter((x) => said(x).some((k) => !KIND_WORDS.has(k)));
+    // A part some of whose words are said is named only by a phrase that says it is a part: the word right before "bit",
+    // "part", "section" and the like ("the employment bit"). "the visa question" does not name "A few questions" (A1
+    // held-out B31).
+    const partPhrase = (k: string): boolean => (s.get(k) ?? []).some((i) => PART_NOUNS.has(toks[i + 1]?.w ?? ""));
+    const partial = full.length > 0 ? [] : sections.filter((x) => said(x).some((k) => !KIND_WORDS.has(k) && partPhrase(k)));
     const hits = full.length > 0 ? full : partial;
     if (hits.length > 0) {
       const best = Math.max(...hits.map((x) => said(x).length));
@@ -499,7 +515,10 @@ export function readScope(snap: IntentSnapshot): ReadResult {
       const nests = (x: Sec, y: Sec): boolean => y.fields.every((f) => x.fields.includes(f));
       const chosen = full.length > 0 ? top.find((x) => top.every((y) => nests(x, y))) : top.find((x) => top.every((y) => nests(y, x)));
       if (chosen === undefined) return none(`the words name ${top.map((x) => `'${x.name}'`).join(" and ")}, which are different parts of the form`);
-      const at = said(chosen).flatMap((k) => s.get(k) ?? []);
+      // Every word of the part's name that is said is the part's, "current" in "the current residence section" too, so
+      // no word of it goes on to name a field (A1 held-out B31: "current" named Current employer).
+      const nameStems = new Set(wordsIn(chosen.name).map((w) => stem(w.replace(/'s$/u, ""))));
+      const at = [...s.entries()].filter(([w]) => nameStems.has(w)).flatMap(([, is]) => is);
       // "my email in the applicant section": a part said after "in" or "under", beside fields already read, only says
       // where those fields are (A1 review: reading it as the whole part filled First and Last name too). Fields read
       // inside the part beside "only" or "just" are not read either way.

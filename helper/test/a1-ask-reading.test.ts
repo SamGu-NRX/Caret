@@ -286,3 +286,27 @@ describe("what the A1 review found", () => {
     expect(readHeads(s, cannedHeads(s, { reading: "code" }))).toMatchObject({ route: "ask", open: ["person"] });
   });
 });
+
+// Safety bugs the held-out runs exposed (reported with their first-run numbers; the inputs here are reworded).
+describe("what the held-out runs exposed", () => {
+  it("reads every word of a part's name as the part's, so none of them names a field", () => {
+    expect(reads("rental-application", "do the current residence part")).toEqual(["Street address", "Apt / Unit (optional)", "City", "State", "ZIP code", "Moved in (MM/YYYY)", "Monthly rent ($)", "Reason for moving (optional)"]);
+  });
+
+  it("names a part by some of its words only beside a part noun", () => {
+    expect(reads("job-application", "add the visa question")).toBeNull();
+    expect(reads("rental-application", "do the employment bit")).toEqual(["Current employer", "Job title", "Gross monthly income ($)", "Vehicle make and model (optional)"]);
+  });
+
+  it("reads a label's words only in its own order", () => {
+    expect(reads("hubspot-contact", "my name + company")).toBeNull();
+    expect(reads("hubspot-contact", "my name and the company name")).toEqual(["First Name", "Last Name", "Company name"]);
+  });
+
+  it("never reads 'this' as a label word, and a form's own name as a person", () => {
+    expect(reads("course-enrollment", "can you get this enrollment form done")).toBe("all");
+    const s = snapOn("job-application", "fill out the Northgate application for me");
+    expect(readHeads(s, cannedHeads(s, { reading: "code", scope: "unclear", source: "any", whose: "user" }))).toMatchObject({ route: "fill", scope: "all", whose: "user" });
+    expect(readHeads(s, cannedHeads(s, { reading: "code", scope: "unclear", source: "any", whose: "user" })).person).toBeUndefined();
+  });
+});
