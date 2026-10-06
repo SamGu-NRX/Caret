@@ -7,6 +7,12 @@
 //
 //   node fixtures/web-form/page-loop-eval.ts --sign-identity SHA1 --out DIR [--jev canned|live] [--spend-limit USD]
 //        [--pages id,id] [--w4-dir DIR] [--w4-key FILE] [--w4-note FILE] [--path fill|goal]
+//        [--engine canned|jev|llama|gemini] [--log-requests FILE]
+//
+// J1: --engine names the decision engine in Jev's place (engines/decide/harness.ts; --jev live is --engine jev). Every
+// engine but canned answers behind the record-and-replay cache (CARET_JEV_CACHE, replay-or-record by default), so a rerun
+// of an unchanged page costs nothing. The cache and --log-requests take only the text of windows this eval put on the
+// desk itself: the fixture page's tab and each page's replayed sources.
 //
 // --path goal (P2): Ask's whole-form instruction from a host that runs goals, planned by the page planner (goals/
 // page-planner.ts): the preview, one acceptance, any reveal continuation (accepted too), and one undo per segment, which
@@ -49,7 +55,9 @@ import { pageWindowId } from "../../helper/src/engines/windows.ts";
 import type { VerbTiming } from "../../helper/src/engines/page-link.ts";
 import type { EngineSession } from "../../helper/src/engines/session.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
-import { loadJevKey, makeJevClient, type AskJev, type JevRequest, type JevResult } from "../../helper/src/fill/jev.ts";
+import type { AskJev, JevRequest, JevResult } from "../../helper/src/fill/jev.ts";
+import { harnessEngine } from "../../helper/src/engines/decide/harness.ts";
+import { engineName } from "../../helper/src/engines/decide/port.ts";
 import { PAGE_CHECKED, PROTOCOL_VERSION, Snapshot, type GoalProgress, type HelperMessage } from "../../helper/src/protocol.ts";
 import type { WindowState } from "../../helper/src/model.ts";
 import { intentSnapshot } from "../../helper/src/planner/intent.ts";
@@ -75,6 +83,10 @@ const { values: args } = parseArgs({
     "sign-identity": { type: "string" },
     out: { type: "string" },
     jev: { type: "string", default: "canned" },
+    /** J1: the decision engine; overrides --jev. */
+    engine: { type: "string" },
+    /** J1: every request's full body, for the token breakdown (fixture text only). */
+    "log-requests": { type: "string" },
     "spend-limit": { type: "string", default: "0.04" },
     pages: { type: "string" },
     corpus: { type: "string", default: join(ROOT, "fixtures", "realfill") },
@@ -116,7 +128,10 @@ const OUT = args.out;
 const JOURNEY = args.journey ?? null;
 if (JOURNEY !== null && !["wizard", "wizard-drop", "load"].includes(JOURNEY)) throw new Error("--journey is wizard, wizard-drop or load");
 if (JOURNEY !== null && JOURNEY !== "load" && !TASKS) throw new Error("--journey wizard runs on --suite tasks");
-const LIVE = args.jev === "live";
+const ENGINE = engineName(args.engine ?? (args.jev === "live" ? "jev" : "canned"));
+/** Spends money: Jev itself. */
+const LIVE = ENGINE === "jev";
+const CANNED = ENGINE === "canned";
 const SPEND_LIMIT = Number(args["spend-limit"]);
 
 const t0 = Date.now();
@@ -487,10 +502,12 @@ const canned: AskJev = async (req: JevRequest): Promise<JevResult> => {
   );
   return { model: "canned", answers, ...(req.nouls === undefined ? {} : { nouls: Object.fromEntries(Object.keys(req.nouls).map((k) => [k, 0])) }), inputTokens: 0, latencyMs: 0, costUsd: 0 };
 };
-const live = LIVE ? makeJevClient(() => loadJevKey()) : null;
+/** Windows this eval put on the desk from fixtures: the fixture page's tab and each page's replayed sources. */
+const fixtureIds = new Set<string>();
+const decide = harnessEngine({ name: ENGINE, canned, fixture: { windows: (id) => fixtureIds.has(id), memory: true }, ...(args["log-requests"] === undefined ? {} : { logRequests: args["log-requests"] }) });
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
-  const r = live === null ? await canned(req) : await live(req);
+  const r = await decide.ask(req);
   spent += r.costUsd;
   if (args["log-jev"] !== undefined) appendFileSync(args["log-jev"], `${JSON.stringify({ page: page?.id ?? "", stage, questions: Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }])), answers: r.answers, nouls: r.nouls ?? {} })}\n`);
   calls.push({ page: page?.id ?? "", stage, inputTokens: r.inputTokens, latencyMs: r.latencyMs, costUsd: r.costUsd });
@@ -651,6 +668,7 @@ async function main(): Promise<number> {
   if (first.snapshot === null) throw new Error(`the blank page was never walked: ${first.result.outcome} ${first.result.detail ?? ""}`);
   const tabId = first.snapshot.tabId;
   const windowId = pageWindowId(session.info.engine, tabId);
+  fixtureIds.add(windowId);
   const pid = session.info.browser.pid;
   const textEdit = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
   /** The slowest frame's own walk in the tab's last snapshot (content.ts), or null from an extension that does not say. */
@@ -779,6 +797,7 @@ async function main(): Promise<number> {
       const added = helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "a", op: "add", kind: "about", fields: { label: a.label, value: a.value, source: "typed" } });
       if (added.error !== null) throw new Error(`About '${a.label}' was not added: ${added.error}`);
     }
+    for (const s of p.sources) fixtureIds.add(s.window.windowId);
     const base = Date.now() - 60_000 * p.sources.length;
     p.sources.forEach((s, i) => void helper.handleReader({ ...s, at: base + i * 60_000, focused: i === p.sources.length - 1 }));
     helper.handleReader({ type: "appSwitch", v: 1, at: Date.now(), from: textEdit, to: session.info.browser });
@@ -1147,7 +1166,7 @@ async function main(): Promise<number> {
     const lines = [
       `# P3 wizard journey (${drop ? "attach by dropzone" : "attach by file input"}), ${new Date().toISOString()}`,
       "",
-      `Jev ${LIVE ? "live" : "canned"}; sources ${LABELLED ? "labelled" : "blind (F1's note, email and memory)"}. One Ask on wizard-1; wizard-2 and wizard-3 reached by the harness's Next and offered by the carried goal. Preview time is from the oracle's first full report of the load.`,
+      `Decisions: ${decide.says}; sources ${LABELLED ? "labelled" : "blind (F1's note, email and memory)"}. One Ask on wizard-1; wizard-2 and wizard-3 reached by the harness's Next and offered by the carried goal. Preview time is from the oracle's first full report of the load.`,
       "",
       "| page | arrived | preview ms | steps | outcome | right / eligible | wrong | missed | attach | note |",
       "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -1364,9 +1383,9 @@ function writeReport(rows: readonly Row[], presses: number): void {
   const rewalks = acts.flatMap((t) => (t.rewalk === null ? [] : [t.rewalk]));
   const hop = [...walks.map((t) => t.commandMs - (t.extensionMs as number)), ...rewalks.flatMap((r) => (r.extensionMs === null ? [] : [r.commandMs - r.extensionMs]))];
   const md = [
-    `# Page loop latency (P1): ${args.jev} Jev`,
+    `# Page loop latency (P1): ${ENGINE}`,
     "",
-    `${rows.length} pages (${rows.filter((r) => r.kind === "corpus").length} corpus, ${rows.filter((r) => r.kind === "w4").length} W4 saved). Chrome for Testing ${CFT_BUILD}, headless, temporary profile; extension, signed bridge and test host as accept.ts runs them. Jev: ${args.jev}${LIVE ? `, ${calls.length} requests, $${spent.toFixed(4)}` : ""}. Wrong ${rows.reduce((n, r) => n + r.wrong.length, 0)}, presses ${presses}, POSTs ${posts}. Times in ms; ready is document.readyState complete.`,
+    `${rows.length} pages (${rows.filter((r) => r.kind === "corpus").length} corpus, ${rows.filter((r) => r.kind === "w4").length} W4 saved). Chrome for Testing ${CFT_BUILD}, headless, temporary profile; extension, signed bridge and test host as accept.ts runs them. Decisions: ${decide.says}, ${calls.length} requests${LIVE ? `, $${spent.toFixed(4)}` : ""}. Wrong ${rows.reduce((n, r) => n + r.wrong.length, 0)}, presses ${presses}, POSTs ${posts}. Times in ms; ready is document.readyState complete.`,
     "",
     "| stage | n | p50 | p95 | max | budget | how measured |",
     "|---|---|---|---|---|---|---|",
@@ -1397,9 +1416,9 @@ function writeReport(rows: readonly Row[], presses: number): void {
     const dis = g.flatMap(({ r, g: x }) => x.disagreements.map((d) => ({ page: r.id, ...d })));
     md.length = 0;
     md.push(
-      `# Page goals (P2): ${args.jev} Jev`,
+      `# Page goals (P2): ${ENGINE}`,
       "",
-      `${rows.length} pages. Ask: "fill out this form", heads maker, page planner. Jev: ${args.jev}${LIVE ? `, ${calls.length} requests, $${spent.toFixed(4)}` : ""}. Wrong ${rows.reduce((n, r) => n + r.wrong.length, 0)}, presses ${presses}, POSTs ${posts}.`,
+      `${rows.length} pages. Ask: "fill out this form", heads maker, page planner. Decisions: ${decide.says}, ${calls.length} requests${LIVE ? `, $${spent.toFixed(4)}` : ""}. Wrong ${rows.reduce((n, r) => n + r.wrong.length, 0)}, presses ${presses}, POSTs ${posts}.`,
       "",
       "| stage | n | p50 | p95 | max | budget | how measured |",
       "|---|---|---|---|---|---|---|",
@@ -1422,7 +1441,7 @@ function writeReport(rows: readonly Row[], presses: number): void {
     );
   }
   writeFileSync(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
-  writeFileSync(join(OUT, "page-loop.json"), `${JSON.stringify({ jev: args.jev, cft: CFT_BUILD, spent, posts, presses, rows, timings, calls }, null, 1)}\n`);
+  writeFileSync(join(OUT, "page-loop.json"), `${JSON.stringify({ jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, posts, presses, rows, timings, calls }, null, 1)}\n`);
   say(`wrote ${join(OUT, "page-loop.md")}`);
 }
 
@@ -1451,11 +1470,11 @@ function writeTaskReport(rows: readonly Row[], presses: number, sum: ReturnType<
     ].filter((x) => x !== "").join(". ");
   };
   const md = [
-    `# Page goals on F1's task pages (P2): ${args.jev} Jev`,
+    `# Page goals on F1's task pages (P2): ${ENGINE}`,
     "",
-    `${rows.length} pages, served by FixtureSite in-process; Chrome for Testing ${CFT_BUILD}, headless, behind F1's network sink; extension, signed bridge and test host as accept.ts runs them. Ask: "${TASK_INSTRUCTION}" (it names no source: "from my notes" would keep Caret to the note, and the expectations also draw on the email and memory), heads maker, page planner. Scored by F1's oracle (oracle.ts), which reads each page through its own probe: right / wrong / missed from oracle.score against tasks/expect/<page>.json; eligible is the fields expected to hold a value. Undo is checked against oracle.values before the Ask. Jev: ${args.jev}${LIVE ? `, ${calls.length} requests, $${spent.toFixed(4)}` : ""}.`,
+    `${rows.length} pages, served by FixtureSite in-process; Chrome for Testing ${CFT_BUILD}, headless, behind F1's network sink; extension, signed bridge and test host as accept.ts runs them. Ask: "${TASK_INSTRUCTION}" (it names no source: "from my notes" would keep Caret to the note, and the expectations also draw on the email and memory), heads maker, page planner. Scored by F1's oracle (oracle.ts), which reads each page through its own probe: right / wrong / missed from oracle.score against tasks/expect/<page>.json; eligible is the fields expected to hold a value. Undo is checked against oracle.values before the Ask. Decisions: ${decide.says}, ${calls.length} requests${LIVE ? `, $${spent.toFixed(4)}` : ""}.`,
     "",
-    ...(LIVE
+    ...(!CANNED
       ? []
       : [
           "Canned Jev's mapping: a fill question names its field by the label, nearest label or placeholder in Caret's descriptor. Canned Jev takes the one data-oracle field whose markup carries that text (label[for], aria-labelledby, aria-label, a wrapping label, a fieldset legend, its row's label, its placeholder), read from the live page through the DevTools pipe, and answers with a candidate that is that field's expected value: exactly; the same day or month for a date or month input; the option as a whole word for a select, radios or Yes/No; for a picker or react-select also two or more words that each start a word of the option. A label no field or several fields carry gets none. It never reads Caret's walk, so a field Caret mislabels is asked about and answered none.",
@@ -1479,14 +1498,14 @@ function writeTaskReport(rows: readonly Row[], presses: number, sum: ReturnType<
       return `| ${r.id} | ${r.controls} | ${fmt(r.goal?.previewMs ?? null)} | ${r.goal?.steps ?? "-"} | ${r.goal?.left ?? "-"} | ${r.goal?.tabs ?? "-"} | ${t === undefined || !t.scored ? "-" : `${t.right} / ${t.eligible}`} | ${r.wrong.length === 0 ? 0 : cell(r.wrong.join("; "))} | ${t === undefined || t.missed.length === 0 ? 0 : cell(`${t.missed.length}: ${t.missed.join("; ")}`)} | ${fmt(r.goal?.revealMs ?? null)} | ${r.goal?.outcome ?? "-"} | ${r.goal === null ? "-" : r.goal.restored ? "restored" : cell(r.goal.notRestored.join("; "), 300)} | ${fmt(r.pageMs)} | ${r.goal?.disagreements.length ?? "-"} | ${cell(notes(r), 900)} |`;
     }),
     "",
-    `Disagreements, verifyWrites against proposeFill: ${dis.length} fill-gated writes would be dropped by verifyWrites (${g.reduce((n, x) => n + x.g.verifyRequests, 0)} extra requests). Scored by the field's expectation: wrong ${dis.filter((d) => d.key === "wrong").length}, right ${dis.filter((d) => d.key === "right").length}, unscored ${dis.filter((d) => d.key === "unscored").length} (a pick, date or number whose written form differs from the oracle's reading, or a label no single field carries).${LIVE ? "" : " Canned Jev answers no to every yes/no question, verifyWrites' included, so under canned Jev every fill-gated write counts as dropped: this table means something only with live Jev."}`,
+    `Disagreements, verifyWrites against proposeFill: ${dis.length} fill-gated writes would be dropped by verifyWrites (${g.reduce((n, x) => n + x.g.verifyRequests, 0)} extra requests). Scored by the field's expectation: wrong ${dis.filter((d) => d.key === "wrong").length}, right ${dis.filter((d) => d.key === "right").length}, unscored ${dis.filter((d) => d.key === "unscored").length} (a pick, date or number whose written form differs from the oracle's reading, or a label no single field carries).${!CANNED ? "" : " Canned Jev answers no to every yes/no question, verifyWrites' included, so under canned Jev every fill-gated write counts as dropped: this table means something only with live Jev."}`,
     "",
     "| page | field | value | verifyWrites | expectation |",
     "|---|---|---|---|---|",
     ...dis.map((d) => `| ${d.page} | ${cell(d.field)} | ${cell(d.value, 60)} | ${d.verify} | ${d.key} |`),
   ];
   writeFileSync(join(OUT, "page-loop.md"), `${md.join("\n")}\n`);
-  writeFileSync(join(OUT, "page-loop.json"), `${JSON.stringify({ suite: "tasks", jev: args.jev, cft: CFT_BUILD, spent, presses, oracle: sum, cannedPicks: Object.fromEntries([...taskAsks].map(([k, a]) => [k, Object.fromEntries(a.picked)])), rows, timings, calls }, null, 1)}\n`);
+  writeFileSync(join(OUT, "page-loop.json"), `${JSON.stringify({ suite: "tasks", jev: args.jev, engine: decide.says, cft: CFT_BUILD, spent, presses, oracle: sum, cannedPicks: Object.fromEntries([...taskAsks].map(([k, a]) => [k, Object.fromEntries(a.picked)])), rows, timings, calls }, null, 1)}\n`);
   say(`wrote ${join(OUT, "page-loop.md")}`);
 }
 

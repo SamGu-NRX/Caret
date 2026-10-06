@@ -160,7 +160,8 @@ interface Entry {
   recordedAt: string;
 }
 
-function checkFixture(req: JevRequest, fixture: FixtureSources): void {
+/** Throws CacheRefused when `req` declares text that is not a fixture's (see the file's header). */
+export function checkFixture(req: JevRequest, fixture: FixtureSources): void {
   for (const s of req.snippets) {
     if (s.windowId === MEMORY_SNIPPETS) {
       if (!fixture.memory) throw new CacheRefused("the decision cache stores request text on disk, and this request carries the user's memory, which this harness did not load from a fixture");

@@ -1,0 +1,201 @@
+// A decision engine on this Mac: an open instruct model in llama-server (llama.cpp), J1 part B.
+//
+// Each request becomes one prompt prefix, the state and every option once with a label, and then one short question
+// per choice or yes/no question, so llama-server's prompt cache evaluates the prefix once per request. The answer is
+// the label the model would write first; its probability for every allowed label is read from the completion's token
+// probabilities and normalized over those labels (confidence.ts turns them into Jev's confidence). A grammar allows
+// only the question's labels. Labels are A to Z for up to 26 options, else fixed-width numbers ("01" to "47"), read
+// digit by digit, since the tokenizers of the models screened here split numbers into digits.
+//
+// A yes/no question is a choice of two labels, A for yes and B for no; its answer is the probability of A.
+import type { AskJev, ChoiceQuestion, JevRequest, JevResult, NoulQuestion } from "../../fill/jev.ts";
+import type { DecideEngine } from "./port.ts";
+
+export interface LlamaOptions {
+  /** llama-server's address, such as http://127.0.0.1:8091. */
+  url: string;
+  /** The model's name for reports and cache keys. */
+  model: string;
+  /**
+   * How the prompt is framed: `chat` through the model's chat template (llama-server /apply-template); `document` for a
+   * base model with no instruction tuning, such as Cotypist's Gemma E2B, as a plain document ending in "Answer:".
+   */
+  prompt: "chat" | "document";
+  /** Variables for the chat template, such as { enable_thinking: false } for a model that thinks unless told not to. */
+  templateKwargs?: Record<string, unknown>;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}
+
+/** Token probabilities read per position; a label's token past these is counted as having none. */
+const N_PROBS = 100;
+/**
+ * The least share of a position's probability the allowed labels must hold for their split to be read. Below it the
+ * model wanted to write something else there, so its split over the labels says little, and the answer is an even split
+ * (confidence 0). Assumed, not measured.
+ */
+const MIN_LABEL_MASS = 0.5;
+/** A first digit at least this likely is read further; the rest share their probability evenly. Assumed. */
+const EXPAND = 0.01;
+
+const SYSTEM =
+  "You make one decision at a time for software that helps a person on their computer. The state below is what the software sees. " +
+  "Each question lists the labels of the options it allows; answer with exactly one of them. Follow the question's own rules, such as choosing none when no option fits.";
+
+interface Option {
+  label: string;
+  text: string;
+}
+
+/** Labels for n options: A to Z, else zero-padded numbers from 1. */
+export function labelsFor(n: number): string[] {
+  if (n <= 26) return Array.from({ length: n }, (_, i) => String.fromCharCode(65 + i));
+  const w = String(n).length;
+  return Array.from({ length: n }, (_, i) => String(i + 1).padStart(w, "0"));
+}
+
+const text = (v: unknown): string => (typeof v === "string" ? v : JSON.stringify(v, null, 1));
+const gbnf = (xs: readonly string[]): string => `root ::= ${[...new Set(xs)].map((x) => JSON.stringify(x)).join(" | ")}`;
+
+/** The labelled option table of a request and each question's options under it (see the file's header). */
+export function layout(req: JevRequest): { table: Option[]; choice: Map<string, Map<string, string>>; prefix: string } {
+  const key = (id: string, d: string | null): string => `${id}\u0000${d ?? ""}`;
+  const order: { id: string; d: string | null }[] = [];
+  const seen = new Set<string>();
+  for (const q of Object.values(req.questions)) {
+    for (const [id, d] of Object.entries(q.criteria)) {
+      if (!seen.has(key(id, d))) order.push({ id, d });
+      seen.add(key(id, d));
+    }
+  }
+  const labels = labelsFor(order.length);
+  const byKey = new Map(order.map((o, i) => [key(o.id, o.d), labels[i] as string]));
+  const table = order.map((o, i) => ({ label: labels[i] as string, text: o.d === null ? o.id : `${o.id}: ${o.d}` }));
+  const choice = new Map<string, Map<string, string>>();
+  for (const [qid, q] of Object.entries(req.questions)) choice.set(qid, new Map(Object.entries(q.criteria).map(([id, d]) => [byKey.get(key(id, d)) as string, id])));
+  const prefix = `State:\n${text(req.state)}${table.length === 0 ? "" : `\n\nOptions, by label:\n${table.map((o) => `${o.label}. ${o.text}`).join("\n")}`}`;
+  return { table, choice, prefix };
+}
+
+function questionText(q: ChoiceQuestion, labels: readonly string[]): string {
+  return `\n\nQuestion: ${text(q.instructions)}\nAnswer with one of these labels: ${labels.join(", ")}.`;
+}
+
+function noulText(q: NoulQuestion): string {
+  const yes = q.criteria?.true === undefined ? "" : ` (${q.criteria.true})`;
+  const no = q.criteria?.false === undefined ? "" : ` (${q.criteria.false})`;
+  return `\n\nQuestion: ${text(q.instructions)}\nA. Yes${yes}\nB. No${no}\nAnswer with one of these labels: A, B.`;
+}
+
+interface Completion {
+  /** Each listed token's probability at the one position predicted. */
+  probs: Map<string, number>;
+  evaluated: number;
+}
+
+class LlamaUnavailable extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "LlamaUnavailable";
+  }
+}
+
+export function llamaEngine(opts: LlamaOptions): DecideEngine {
+  const f = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? 300_000;
+  const post = async (path: string, body: unknown): Promise<Record<string, unknown>> => {
+    let res: Response;
+    try {
+      res = await f(`${opts.url}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+    } catch (e) {
+      throw new LlamaUnavailable(`llama-server at ${opts.url} did not answer ${path}: ${e instanceof Error ? e.message : String(e)}`, e);
+    }
+    if (!res.ok) throw new LlamaUnavailable(`llama-server ${path} answered HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 300)}`);
+    return (await res.json()) as Record<string, unknown>;
+  };
+
+  const frame = async (content: string): Promise<string> => {
+    if (opts.prompt === "document") return `${SYSTEM}\n\n${content}\nAnswer:`;
+    const r = await post("/apply-template", { messages: [{ role: "system", content: SYSTEM }, { role: "user", content }], ...(opts.templateKwargs === undefined ? {} : { chat_template_kwargs: opts.templateKwargs }) });
+    if (typeof r.prompt !== "string") throw new LlamaUnavailable("llama-server /apply-template returned no prompt");
+    return r.prompt;
+  };
+
+  const complete = async (prompt: string, allowed: readonly string[]): Promise<Completion> => {
+    // Temperature below 0 is greedy, and the probabilities are then the plain softmax of the logits over the whole
+    // vocabulary (llama-server README, n_probs), which is what the labels' split is read from.
+    const r = await post("/completion", { prompt, n_predict: 1, n_probs: N_PROBS, temperature: -1, cache_prompt: true, grammar: gbnf(allowed) });
+    const list = (r.completion_probabilities ?? r.probs) as { top_logprobs?: { token: string; logprob: number }[] }[] | undefined;
+    const top = list?.[0]?.top_logprobs;
+    if (top === undefined) throw new LlamaUnavailable("llama-server returned no token probabilities");
+    const probs = new Map<string, number>();
+    for (const t of top) probs.set(t.token, (probs.get(t.token) ?? 0) + Math.exp(t.logprob));
+    return { probs, evaluated: Number(r.tokens_evaluated ?? 0) - Number(r.tokens_cached ?? 0) };
+  };
+
+  /** Every label's probability, normalized over `labels`, read position by position (see the file's header). */
+  const split = async (prompt: string, labels: readonly string[]): Promise<{ p: Map<string, number>; evaluated: number }> => {
+    const width = labels[0]?.length ?? 1;
+    let evaluated = 0;
+    const out = new Map<string, number>();
+    const walk = async (prefix: string, mass: number, under: readonly string[]): Promise<void> => {
+      if (prefix.length === width) {
+        out.set(prefix, (out.get(prefix) ?? 0) + mass);
+        return;
+      }
+      const next = [...new Set(under.map((l) => l[prefix.length] as string))];
+      if (next.length === 1) return walk(prefix + (next[0] as string), mass, under);
+      const c = await complete(prompt + prefix, next);
+      evaluated += c.evaluated;
+      const raw = next.map((ch) => c.probs.get(ch) ?? 0);
+      const held = raw.reduce((a, b) => a + b, 0);
+      const even = held < MIN_LABEL_MASS;
+      for (const [i, ch] of next.entries()) {
+        const p = even ? 1 / next.length : (raw[i] as number) / held;
+        const branch = under.filter((l) => l[prefix.length] === ch);
+        if (prefix.length + 1 < width && p * mass < EXPAND) {
+          for (const l of branch) out.set(l, (out.get(l) ?? 0) + (p * mass) / branch.length);
+        } else await walk(prefix + ch, p * mass, branch);
+      }
+    };
+    await walk("", 1, labels);
+    return { p: out, evaluated };
+  };
+
+  let queue: Promise<unknown> = Promise.resolve();
+  const answer = async (req: JevRequest): Promise<JevResult> => {
+    const t0 = performance.now();
+    const { choice, prefix } = layout(req);
+    const answers: JevResult["answers"] = {};
+    const probabilities: Record<string, Record<string, number>> = {};
+    let evaluated = 0;
+    for (const [qid, q] of Object.entries(req.questions)) {
+      const byLabel = choice.get(qid) as Map<string, string>;
+      const labels = [...byLabel.keys()];
+      const prompt = await frame(prefix + questionText(q, labels));
+      const s = await split(prompt, labels);
+      evaluated += s.evaluated;
+      const p = Object.fromEntries(labels.map((l) => [byLabel.get(l) as string, s.p.get(l) ?? 0]));
+      const best = Object.entries(p).sort(([, x], [, y]) => y - x)[0];
+      if (best === undefined) throw new Error(`question ${qid} lists no options`);
+      probabilities[qid] = p;
+      const n = labels.length;
+      answers[qid] = { choice: best[0], confidence: n < 2 ? 1 : Math.max(0, (best[1] - 1 / n) / (1 - 1 / n)) };
+    }
+    const nouls: Record<string, number> = {};
+    for (const [qid, q] of Object.entries(req.nouls ?? {})) {
+      const s = await split(await frame(prefix + noulText(q)), ["A", "B"]);
+      evaluated += s.evaluated;
+      nouls[qid] = s.p.get("A") ?? 0;
+    }
+    return { model: opts.model, answers, ...(req.nouls === undefined ? {} : { nouls }), probabilities, inputTokens: evaluated, latencyMs: performance.now() - t0, costUsd: 0 };
+  };
+  // One request at a time: two requests in flight would take turns in llama-server's one slot and push each other's
+  // prompt prefix out of its cache, evaluating each prefix again for every question.
+  const ask: AskJev = (req) => {
+    const run = queue.then(() => answer(req));
+    queue = run.catch(() => undefined);
+    return run;
+  };
+  return { name: "llama", model: opts.model, reach: "mac", ask };
+}

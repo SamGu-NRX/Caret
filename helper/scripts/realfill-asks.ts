@@ -5,6 +5,10 @@
 //
 //   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker heads|jev|writer]
 //        [--spend-limit USD] [--gap S] [--writer-model provider:model] [--plan-writer provider:model]
+//        [--engine jev|llama|gemini] [--log-requests FILE]
+// J1: --engine names the decision engine in Jev's place (engines/decide/harness.ts; llama's server and calibration come
+// from CARET_LLAMA_* and CARET_ENGINE_CALIBRATION), behind the record-and-replay cache (CARET_JEV_CACHE, replay-or-record
+// by default), so a rerun of unchanged asks costs nothing. Every window and memory entry here comes from fixture files.
 // L1: the maker is writer/config.ts ASK_MAKER (Jev) and the plan route has no writer unless a flag names a route
 // (writer/routes.ts devWriterRoute); --maker writer needs --writer-model.
 // P1: --maker heads is Jev in one request (planner/intent-heads.ts); the report counts each intent's Jev requests.
@@ -26,7 +30,9 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
+import type { AskJev } from "../src/fill/jev.ts";
+import { harnessEngine } from "../src/engines/decide/harness.ts";
+import { engineName } from "../src/engines/decide/port.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft, type AskQuestionDraft } from "../src/planner/ask.ts";
 import { jevIntentMaker, writerIntentMaker, type IntentMaker, type MakerUse } from "../src/planner/intent-makers.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
@@ -62,6 +68,10 @@ const { values: a } = parseArgs({
     seed: { type: "string", default: "24" },
     /** Writes every Jev question and answer to this NDJSON file (synthetic corpus text only). */
     "log-jev": { type: "string" },
+    /** J1: the decision engine in Jev's place. */
+    engine: { type: "string", default: "jev" },
+    /** J1: every request's full body, for the token breakdown (synthetic corpus text only). */
+    "log-requests": { type: "string" },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
@@ -79,13 +89,18 @@ let jevSpent = 0;
 /** The model ids Jev's replies named, for the report (L1: every number names its model). */
 const jevModels = new Set<string>();
 let writerSpent = 0;
-const live = makeJevClient(() => loadJevKey());
+/** Windows put on a desk, all from fixture files (buildDesk); the cache and the request log take only their text. */
+const fixtureIds = new Set<string>();
+const decide = harnessEngine({ name: engineName(a.engine), canned: null, fixture: { windows: (id) => fixtureIds.has(id), memory: true }, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
+/** Each decision request's latency, for the bake-off's p50 and p95. */
+const requestMs: number[] = [];
 let current = "";
 const askJev: AskJev = async (req) => {
   if (jevSpent + writerSpent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
-  const r = await live(req);
+  const r = await decide.ask(req);
   jevSpent += r.costUsd;
   jevModels.add(r.model);
+  requestMs.push(r.latencyMs);
   if (a["log-jev"] !== undefined) {
     const qs = { ...req.questions, ...req.nouls };
     appendFileSync(a["log-jev"], JSON.stringify({ ask: current, questions: Object.fromEntries(Object.entries(qs).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])), answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
@@ -163,6 +178,7 @@ for (const [i, ask] of asks.entries()) {
   const form = corpus.forms.find((f) => f.id === ask.form);
   if (form === undefined) throw new Error(`no form ${ask.form}`);
   const desk = buildDesk(corpus, snaps, form);
+  for (const id of desk.model.windows.keys()) fixtureIds.add(id);
   const memory = { values: () => desk.memory };
   const r = rng(Number(a.seed) * 1000 + i);
   const offerKey = `realfill-ask-${ask.id}`;
@@ -323,6 +339,7 @@ const md = [
   "",
   `Maker ${a.maker}${route !== null && a.maker === "writer" ? ` (${route.model} on ${route.provider})` : a.maker !== "writer" ? ` (Jev ${jevModels.size === 0 ? "unanswered" : [...jevModels].join(", ")})` : ""}; plan route's writer ${planRoute === null ? "off" : `${planRoute.provider} ${planRoute.model}`}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
   `Maker tokens per intent (input + output, ${a.maker === "writer" ? "the writer's" : "Jev input only"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
+  `Decisions: ${decide.says}; ${requestMs.length} requests, latency per request p50 ${pct([...requestMs].sort((x, y) => x - y), 0.5)} ms, p95 ${pct([...requestMs].sort((x, y) => x - y), 0.95)} ms.`,
   `Maker requests per intent: ${[...new Set(makerCalls)].sort((x, y) => x - y).join(", ") || "none"} (${makerCalls.length} intents made); maker latency p50 ${pct(makerMs, 0.5)} ms, p95 ${pct(makerMs, 0.95)} ms.`,
   "",
   `All ${rows.length}: right ${n("right")}, partial ${n("partial")}, asked with choices ${n("asked")}, refused ${n("refused")}, **wrong ${n("wrong")}**.`,
@@ -346,5 +363,5 @@ function ok2(p: Proposed): boolean {
   return p.expected === p.value;
 }
 writeFileSync(join(OUT, "realfill-asks.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "realfill-asks.json"), JSON.stringify({ maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, null, 1) + "\n");
+writeFileSync(join(OUT, "realfill-asks.json"), JSON.stringify({ engine: decide.says, requestMs, maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, null, 1) + "\n");
 process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}\n`);
