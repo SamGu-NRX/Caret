@@ -1,0 +1,1 @@
+I6: an Ask's tab read happens only at planAsk's fill step (fillModel) or in pagePlan; owners are the offer key or goal id; ambient fill/ready-on-load leave a page with a planning/awaiting/running goal alone (goalOnPage) and TabSource refuses an ambient read over a pinned goal.

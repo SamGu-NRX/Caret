@@ -55,6 +55,7 @@ import type { WindowState } from "../../helper/src/model.ts";
 import { intentSnapshot } from "../../helper/src/planner/intent.ts";
 import { headsIntentMaker } from "../../helper/src/planner/intent-heads.ts";
 import { jevGate } from "../../helper/src/goals/gates.ts";
+import { readyOnLoad } from "../../helper/src/offers/ready-on-load.ts";
 import { SnippetLedger } from "../../helper/src/privacy.ts";
 import { loadAsks, loadCorpus, normLabel, type CorpusForm } from "../../helper/scripts/realfill-corpus.ts";
 import { CFT_BUILD, Cdp, HOST_NAME, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
@@ -93,6 +94,13 @@ const { values: args } = parseArgs({
      * is a value fill can copy; it measures the loop's mechanics (Tabs, reveals, control kinds), not fill's reading.
      */
     sources: { type: "string", default: "blind" },
+    /**
+     * P3. wizard: F1's three-page wizard as one journey: one Ask on page 1, each next page reached by the harness's Next
+     * and offered by the carried goal (reason nextPage), page 3's resume attached by its file input with a file the
+     * eval confirms (wizard-drop: by the dropzone instead). load: every page of the suite loaded with no Ask and no focus,
+     * counting the ready-on-load offers and their Jev requests, plus a search-only and a login page.
+     */
+    journey: { type: "string" },
   },
 });
 if (args["sign-identity"] === undefined || args.out === undefined) throw new Error("--sign-identity and --out are required");
@@ -105,6 +113,9 @@ const TASKS = args.suite === "tasks";
 if (args.sources !== "blind" && args.sources !== "labelled") throw new Error("--sources is blind or labelled");
 const LABELLED = args.sources === "labelled";
 const OUT = args.out;
+const JOURNEY = args.journey ?? null;
+if (JOURNEY !== null && !["wizard", "wizard-drop", "load"].includes(JOURNEY)) throw new Error("--journey is wizard, wizard-drop or load");
+if (JOURNEY !== null && JOURNEY !== "load" && !TASKS) throw new Error("--journey wizard runs on --suite tasks");
 const LIVE = args.jev === "live";
 const SPEND_LIMIT = Number(args["spend-limit"]);
 
@@ -240,6 +251,9 @@ function serve(): Promise<{ server: Server; origin: string }> {
     }
     const html = (body: string): void => void res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": CSP, "cache-control": "no-store" }).end(body);
     if (url.pathname === "/blank.html") return html("<!doctype html><title>blank</title><p>page-loop eval</p>");
+    // P3's load journey: a page whose only field is a search box, and a login page (synthetic).
+    if (url.pathname === "/p3/search.html") return html('<!doctype html><title>Jobs</title><form role="search" action="/s"><label>Search jobs <input type="search" name="q"></label> <label>Search location <input type="search" name="where"></label><button>Search</button></form>');
+    if (url.pathname === "/p3/login.html") return html('<!doctype html><title>Sign in</title><form action="/login"><label>Email <input type="email" name="email"></label> <label>Password <input type="password" name="pw"></label><button>Sign in</button></form>');
     const c = /^\/corpus\/([\w-]+)\.html$/.exec(url.pathname);
     const form = c === null ? undefined : corpus.forms.find((f) => f.id === c[1]);
     if (form !== undefined) return html(readFileSync(join(args.corpus, form.file), "utf8"));
@@ -517,6 +531,11 @@ interface Row {
     outcome: string;
     disagreements: { field: string; value: string; verify: "dropped" | "kept"; key: "right" | "wrong" | "unscored" }[];
     verifyRequests: number;
+    /** C1: what the preview said Caret left, and how each segment ended (a stop's or finish's own words), for diagnosis. */
+    warnings: string[];
+    ended: string[];
+    /** C1: Jev requests this page made outside the disagreement report: the Ask's, and any fill a focus asked for. */
+    jevRequests: number;
   } | null;
   /** A task page, by F1's oracle (--suite tasks only). */
   task?: TaskRow;
@@ -595,7 +614,10 @@ async function main(): Promise<number> {
   const warnings: string[] = [];
   const host = pageHost({ path: sockPath, secret, reader: noReader, apply: (m) => void helper.handleReader(m), warn: (l) => void warnings.push(l), onTiming: (t) => void timings.push({ ...t, page: page?.id ?? "", stage }) });
   const published: HelperMessage[] = [];
-  helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, pageDocument: (id) => host.registry.documentOf(id), calendar: null, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l), ...(GOAL ? { ask: { maker: "heads" as const } } : {}) });
+  helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, pageDocument: (id) => host.registry.documentOf(id), pageContext: (id) => host.registry.contextOf(id), calendar: null, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l), ...(GOAL ? { ask: { maker: "heads" as const } } : {}), ...(JOURNEY !== null ? { goalFiles: true } : {}),
+    // I6: the load journey measures each page's own verdict, so the hour's offer budget (four, balanced) is lifted: P3's
+    // run read W4's five saved pages 0 of 5 because the first four corpus pages had spent it (helper.ts pageWalked).
+    ...(JOURNEY === "load" ? { offersPerHour: 1000 } : {}) });
   wirePageEngines({ host, helper, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l) });
   await host.server.listen();
   undo.push({ what: "helper", fn: async () => (await host.server.close(), helper.shutdown(), helper.memory.close(), store.close()) });
@@ -743,7 +765,10 @@ async function main(): Promise<number> {
       const differ = [...undone.nodes.values()].filter((n) => n.editable === true && (n.value ?? "") !== (before.get(n.key) ?? ""));
       for (const n of differ) notRestored.push(`${n.label ?? n.key} holds '${n.value ?? ""}'`);
     } else notRestored.push(...(await task.unrestored()));
-    row.goal = { previewMs, steps: reply.steps.length, left: reply.warnings.length, tabs, eligible, eligibleWritten, revealMs, restored: notRestored.length === 0, notRestored, outcome, disagreements, verifyRequests };
+    const goalIds = new Set(segments.map((x) => x.goalId));
+    const ended = published.slice(mark).flatMap((m) => (m.type === "goalProgress" && goalIds.has(m.goalId) && (m.event === "stopped" || m.event === "finished") ? [`${m.event}: ${m.says}${m.event === "finished" && m.left.length > 0 ? ` [left: ${m.left.join(" / ")}]` : ""}`] : []));
+    const jevRequests = calls.filter((c) => c.page === p.id && c.stage !== "verify").length;
+    row.goal = { previewMs, steps: reply.steps.length, left: reply.warnings.length, tabs, eligible, eligibleWritten, revealMs, restored: notRestored.length === 0, notRestored, outcome, disagreements, verifyRequests, warnings: reply.warnings, ended, jevRequests };
   };
 
   /** The desk: last page's sources and memory gone, this page's in place, the source focused last and left for the browser. */
@@ -949,6 +974,276 @@ async function main(): Promise<number> {
     say(`pages ${rows.length}, wrong ${wrong}, submits ${sum.submits}, stray presses ${sum.strayPresses.length}, off-site ${sum.offsite.length}, probe errors ${sum.probeErrors.length}, presses ${presses}; ${failed.length === 0 ? "pass" : `FAIL: ${failed.join("; ")}`}`);
     return failed.length === 0 ? 0 : 1;
   };
+  // ---- P3 journeys (--journey) ----
+  /** Every write verb the page link sent, by document and control: a second one for the same pair is a replayed write. */
+  const sent = new Map<string, number>();
+  const command = session.command.bind(session);
+  session.command = ((verb, timeoutMs) => {
+    if (verb.kind !== "pageWalk" && "documentId" in verb && "id" in verb) {
+      const k = `${verb.kind}|${verb.documentId}|${verb.id}`;
+      sent.set(k, (sent.get(k) ?? 0) + 1);
+    }
+    return command(verb, timeoutMs);
+  }) as typeof session.command;
+  const nextSegment = async (after: number, ms0: number): Promise<Segment | null> => {
+    for (let n = 0; n < 250; n++) {
+      const m = published.slice(after).find((x): x is Segment => x.type === "goalProgress" && x.event === "segment" && x.reason === "nextPage");
+      if (m !== undefined) return m;
+      if (performance.now() - ms0 > 5000) return null;
+      await sleep(20);
+    }
+    return null;
+  };
+  const finishedOf = async (goalId: string): Promise<Extract<GoalProgress, { event: "finished" }> | null> => {
+    for (let n = 0; n < 200; n++) {
+      await helper.goals.idle();
+      const f = published.find((x): x is Extract<GoalProgress, { event: "finished" }> => x.type === "goalProgress" && x.event === "finished" && x.goalId === goalId);
+      if (f !== undefined) return f;
+      await sleep(25);
+    }
+    return null;
+  };
+  const runWizard = async (fs: FixtureSite, drop: boolean): Promise<number> => {
+    const oracle = fs.tasks.oracle;
+    // Diagnostics: the worker's focus reports (the content script's ready report among them) and the page walks.
+    let focusReports = 0;
+    const onFocus = session.onFocus;
+    session.onFocus = (m, x) => {
+      focusReports++;
+      onFocus?.(m, x);
+    };
+    readTaskFields = async () => {
+      const v = await evaluate(TASK_FIELDS_JS);
+      if (!Array.isArray(v)) throw new Error(`reading the task page's fields gave ${JSON.stringify(v)?.slice(0, 200)}`);
+      return v as TaskField[];
+    };
+    const settleOracle = async (name: string): Promise<void> => {
+      let prev = JSON.stringify(oracle.values(name));
+      for (let i = 0; i < 20; i++) {
+        await sleep(200);
+        const now = JSON.stringify(oracle.values(name));
+        if (now === prev) break;
+        prev = now;
+      }
+    };
+    const wiz = ["wizard-1", "wizard-2", "wizard-3"].map((n) => pages.find((p) => p.id === n) ?? taskPageOf(n));
+    // In the dropzone journey the user gives the resume to the dropzone's row: that field, not the file input, holds it.
+    if (drop) {
+      const e = wiz[2]?.expected as Record<string, string>;
+      (wiz[2] as Page).expected = { ...e, resume: "none", resume_drop: e.resume ?? "none" };
+    }
+    // --sources labelled: one note of the wizard's three pages, each line a field's own label and F1's value (runTasks
+    // builds one per page; the journey's pages share one person and one note).
+    if (LABELLED) {
+      const all: string[] = [];
+      for (const p of wiz) {
+        const expected = p.expected as Record<string, string>;
+        await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}?show=all` }, sessionId);
+        let fields: TaskField[] = [];
+        for (let n = 0; n < 40; n++) {
+          await sleep(150);
+          const v = await evaluate(TASK_FIELDS_JS);
+          fields = Array.isArray(v) ? (v as TaskField[]) : [];
+          if (Object.keys(expected).every((k) => fields.some((f) => f.name === k))) break;
+        }
+        for (const [k, v] of Object.entries(expected)) {
+          const f = fields.find((x) => x.name === k);
+          const label = f?.names.find((x) => x.trim() !== "")?.trim().replace(/[*:]+$/u, "").trim();
+          if (v === "none" || f === undefined || label === undefined || f.kind === "file") continue;
+          all.push(`${label}: ${f.kind === "checkbox" ? (v === "true" ? "yes" : "no") : v}`);
+        }
+      }
+      for (const p of wiz) {
+        p.sources = [noteWindow(all.join("\n"))];
+        p.about = [];
+      }
+      say(`wizard: labelled note of ${all.length} lines`);
+    }
+    // The resume the user chooses in page 3's attach row: the one the recruiter's email names (tasks/expect/wizard-3.json).
+    const resume = join(tmp, "ines-vandermeer-resume-2026.pdf");
+    writeFileSync(resume, "%PDF-1.4\n% synthetic resume for the P3 wizard journey\n");
+    const out: { page: string; arrived: string; previewMs: number | null; steps: number; attach: string | null; outcome: string; right: number; eligible: number; wrong: string[]; missed: string[]; note: string }[] = [];
+    desk(wiz[0] as Page);
+    let goalId: string | null = null;
+    let lastName: string | null = null;
+    for (const p of wiz) {
+      page = p;
+      taskFields = null;
+      const name = p.id;
+      const expected = p.expected as Record<string, string>;
+      const row = { page: name, arrived: "", previewMs: null as number | null, steps: 0, attach: null as string | null, outcome: "-", right: 0, eligible: Object.values(expected).filter((v) => v !== "none").length, wrong: [] as string[], missed: [] as string[], note: "" };
+      out.push(row);
+      try {
+        stage = "load";
+        const old = new Set(oracle.loads(name));
+        const mark = published.length;
+        if (lastName === null) {
+          await cdp.send("Page.navigate", { url: `${fs.mainOrigin}${p.path}` }, sessionId);
+          row.arrived = "navigated";
+        } else {
+          await fs.tasks.harnessPress(lastName, "next");
+          row.arrived = `harness Next on ${lastName}`;
+        }
+        const frames = taskPage(name).files.length;
+        await oracle.waitFor(() => oracle.currentLoads(name).filter((l) => !old.has(l)).length === frames && Object.keys(expected).every((k) => k in oracle.values(name)), `${name}'s first full report`, 15_000);
+        const ready = performance.now();
+        let seg: Segment | null;
+        if (lastName === null) {
+          // Page 1: the user's Ask. The walk must show a field first (the oracle's report can come before the engine's).
+          for (let n = 0; n < 50; n++) {
+            const walked = await host.link.run({ kind: "walk", pid, windowId });
+            const w = walked.outcome === "ok" ? helper.model.windows.get(windowId) : undefined;
+            if (w !== undefined && [...w.nodes.values()].some((x) => x.editable === true)) break;
+            await sleep(100);
+          }
+          stage = "ask";
+          const r = await askGoal(p, "p3-wizard");
+          seg = typeof r === "string" ? null : r;
+          if (seg === null) row.note = r as string;
+        } else {
+          // Pages 2 and 3: nothing but the page load. The content script's ready report walks the tab; the carried goal plans it.
+          stage = "carry";
+          const f0 = focusReports;
+          seg = await nextSegment(mark, ready);
+          if (seg === null) row.note = `no nextPage preview within 5 s of the load (${focusReports - f0} focus reports from the worker since; document ${host.registry.documentOf(windowId) ?? "?"})`;
+        }
+        row.previewMs = seg === null ? null : ms(ready);
+        if (seg === null) {
+          lastName = name;
+          continue;
+        }
+        row.steps = seg.steps.length;
+        // Page 3: the eval plays the user choosing the resume in an attach row (the input's, or the dropzone's).
+        const rows = seg.steps.filter((x) => x.kind === "attach");
+        const pick = rows.find((x) => (drop ? /drop/i.test(x.says) : !/drop/i.test(x.says)));
+        row.attach = rows.length === 0 ? null : `${rows.map((x) => x.says).join(" | ")}${pick === undefined ? "" : ` -> chose ${pick.says.split(":")[0]}`}`;
+        stage = "writes";
+        await helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: seg.goalId, segment: seg.segment, digest: seg.digest, at: Date.now(), ...(pick === undefined ? {} : { confirmedFile: { step: pick.index, path: resume } }) });
+        const fin = await finishedOf(seg.goalId);
+        const stop = published.find((x): x is Extract<GoalProgress, { event: "stopped" }> => x.type === "goalProgress" && x.event === "stopped" && x.goalId === seg?.goalId);
+        row.outcome = fin?.outcome ?? (stop === undefined ? "not finished" : `stopped (${stop.reason}: ${stop.says.slice(0, 160)})`);
+        if (fin !== null && fin.left.length > 0) row.note = `left: ${fin.left.join(" / ").slice(0, 300)}`;
+        goalId = seg.goalId;
+        const plan = helper.goals.planOf(seg.goalId);
+        row.note = `${row.note === "" ? "" : `${row.note}; `}scope ${plan?.page?.kind ?? "?"}, carrying ${helper.goals.carrying(windowId, null)}`;
+        await settleOracle(name);
+        const sc = oracle.score(name, expected);
+        row.right = sc.right.length;
+        row.wrong = sc.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${x.expected})`);
+        row.missed = sc.missed;
+      } catch (e) {
+        row.note = e instanceof Error ? e.message : String(e);
+      }
+      lastName = name;
+      say(`${name} (${row.arrived}): preview ${fmt(row.previewMs)} ms, ${row.steps} steps, ${row.outcome}, right ${row.right}/${row.eligible}, wrong ${row.wrong.length}${row.wrong.length > 0 ? ` (${row.wrong.join("; ")})` : ""}${row.attach === null ? "" : `; attach ${row.attach}`}${row.note === "" ? "" : `; ${row.note}`}`);
+    }
+    page = null;
+    readTaskFields = null;
+    const sum = oracle.summary();
+    const values3 = oracle.values("wizard-3");
+    const attached = drop ? values3.resume_drop : values3.resume;
+    const replayed = [...sent].filter(([, n]) => n > 1).map(([k, n]) => `${k} x${n}`);
+    const presses = timings.filter((x) => x.verb === "pagePress").length;
+    const lines = [
+      `# P3 wizard journey (${drop ? "attach by dropzone" : "attach by file input"}), ${new Date().toISOString()}`,
+      "",
+      `Jev ${LIVE ? "live" : "canned"}; sources ${LABELLED ? "labelled" : "blind (F1's note, email and memory)"}. One Ask on wizard-1; wizard-2 and wizard-3 reached by the harness's Next and offered by the carried goal. Preview time is from the oracle's first full report of the load.`,
+      "",
+      "| page | arrived | preview ms | steps | outcome | right / eligible | wrong | missed | attach | note |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      ...out.map((r) => `| ${r.page} | ${cell(r.arrived)} | ${fmt(r.previewMs)} | ${r.steps} | ${r.outcome} | ${r.right} / ${r.eligible} | ${cell(r.wrong.join("; ") || "0")} | ${cell(r.missed.join(", ") || "-")} | ${cell(r.attach ?? "-")} | ${cell(r.note || "-")} |`),
+      "",
+      `- wizard-3 ${drop ? "resume_drop" : "resume"} reads: ${attached ?? "(nothing)"}; the other file field: ${(drop ? values3.resume : values3.resume_drop) || "(empty)"}`,
+      `- submits ${sum.submits}, stray presses ${sum.strayPresses.length}, page-link presses ${presses}, off-site ${sum.offsite.length}, probe errors ${sum.probeErrors.length}, POSTs to the blank server ${posts}`,
+      `- write verbs sent ${[...sent.values()].reduce((a, b) => a + b, 0)}, replayed ${replayed.length}${replayed.length > 0 ? `: ${replayed.join(", ")}` : ""}`,
+      `- Jev requests ${calls.length}${LIVE ? `, $${spent.toFixed(4)}` : ""}; last goal ${goalId ?? "-"}`,
+      "",
+      "Helper warnings about goals and fills (synthetic page text only):",
+      "",
+      ...warnings.filter((l) => /^goal |^fill/u.test(l)).slice(-30).map((l) => `- ${cell(l, 300)}`),
+    ];
+    writeFileSync(join(OUT, drop ? "wizard-drop.md" : "wizard.md"), lines.join("\n") + "\n");
+    const wrong = out.reduce((n, r) => n + r.wrong.length, 0);
+    const failed = [
+      ...out.filter((r) => r.previewMs === null || r.previewMs > 2000).map((r) => `${r.page}: preview ${r.previewMs === null ? "none" : `${Math.round(r.previewMs)} ms`}`),
+      wrong > 0 ? `${wrong} wrong` : "",
+      attached !== "ines-vandermeer-resume-2026.pdf" ? `the resume did not land (${attached ?? "nothing"})` : "",
+      sum.submits > 0 ? `${sum.submits} submits` : "",
+      sum.strayPresses.length > 0 ? `${sum.strayPresses.length} stray presses` : "",
+      presses > 0 ? `${presses} presses` : "",
+      replayed.length > 0 ? `${replayed.length} replayed writes` : "",
+      sum.offsite.length > 0 ? `${sum.offsite.length} off-site` : "",
+    ].filter((x) => x !== "");
+    say(`wizard journey: ${failed.length === 0 ? "pass" : `FAIL: ${failed.join("; ")}`}`);
+    return failed.length === 0 ? 0 : 1;
+  };
+  /** P3: every page loaded with no Ask and no field in focus: does the ambient Fill all fire, and what did it cost in Jev requests. */
+  const runLoad = async (fs: FixtureSite | null): Promise<number> => {
+    const list: { id: string; url: string; p: Page | null }[] = [
+      ...pages.map((p) => ({ id: p.id, url: `${p.kind === "task" && fs !== null ? fs.mainOrigin : site.origin}${p.path}`, p })),
+      { id: "p3-search", url: `${site.origin}/p3/search.html`, p: null },
+      { id: "p3-login", url: `${site.origin}/p3/login.html`, p: null },
+    ];
+    const out: { id: string; fired: boolean; requests: number; offerMs: number | null; note: string; check: string; held: string }[] = [];
+    const heldCounts = (): Record<string, number> => {
+      store.flush();
+      return Object.fromEntries(Object.entries(store.counts()).filter(([k]) => k.startsWith("fill.load_held_")));
+    };
+    for (const x of list) {
+      page = x.p;
+      taskFields = null;
+      desk(x.p ?? { ...(pages[0] as Page), about: [], sources: [noteWindow("Search jobs: robotics\nSearch location: Denver\nEmail: robin@example.test")] });
+      const mark = published.length;
+      const c0 = calls.length;
+      const held0 = heldCounts();
+      const loads = (helper as unknown as { opts: { store: Store } }).opts.store;
+      void loads;
+      const t1 = performance.now();
+      await cdp.send("Page.navigate", { url: x.url }, sessionId);
+      for (let i = 0; i < 200 && (await evaluate("document.readyState === 'complete' ? location.href : ''")) !== x.url; i++) await sleep(25);
+      // The late report comes 1 s after load; a fill takes a few hundred ms more.
+      let offerMs: number | null = null;
+      for (let i = 0; i < 100; i++) {
+        await sleep(30);
+        if (offerMs === null && published.slice(mark).some((m) => m.type === "popup" || m.type === "fillProposal")) offerMs = ms(t1);
+      }
+      await helper.routedSettled;
+      // The code check as it reads the page now, with no About entries (they are the corpus's memory forms' only source).
+      const w = helper.model.windows.get(windowId);
+      const v = w === undefined ? null : readyOnLoad(helper.model, w, [], { excluded: host.registry.contextOf(windowId)?.excluded ?? {} });
+      const check = v === null ? "not walked" : v.fires ? `fires: ${v.fields.length} fields` : `${v.why}: ${v.fields.length} with a candidate`;
+      const fired = published.slice(mark).some((m) => m.type === "popup" || m.type === "fillProposal");
+      const errs = published.slice(mark).filter((m) => m.type === "error").map((m) => (m.type === "error" ? m.message : ""));
+      const held = Object.entries(heldCounts()).flatMap(([k, n]) => (n > (held0[k] ?? 0) ? [k.slice("fill.load_held_".length)] : [])).join(", ");
+      out.push({ id: x.id, fired, requests: calls.length - c0, offerMs, note: errs.join("; ").slice(0, 200), check, held });
+      say(`${x.id}: ${fired ? `fired (${fmt(offerMs)} ms from navigation)` : "no offer"}, ${calls.length - c0} Jev requests${errs.length > 0 ? `; ${errs[0]}` : ""}`);
+    }
+    page = null;
+    const group = (pre: (id: string) => boolean): string => {
+      const xs = out.filter((o) => pre(o.id));
+      return `${xs.filter((o) => o.fired).length} of ${xs.length} fired, ${xs.reduce((n, o) => n + o.requests, 0)} Jev requests`;
+    };
+    const lines = [
+      `# P3 ready on load, ${new Date().toISOString()}`,
+      "",
+      "Each page loaded with no Ask and no field in focus, after its sources were put on the desk (the note as the window the user left). Jev canned; a request is any Jev call between the navigation and 3 s after load. The hour's offer budget is lifted (offersPerHour 1000), so each page is measured on its own; 'held' counts loads a settings rule held before the code check.",
+      "",
+      "| page | fired | Jev requests | offer ms from navigation | code check now (no About) | held | note |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      ...out.map((o) => `| ${o.id} | ${o.fired ? "yes" : "no"} | ${o.requests} | ${fmt(o.offerMs)} | ${o.check} | ${o.held || "-"} | ${cell(o.note || "-")} |`),
+      "",
+      `- B27 corpus: ${group((id) => corpus.forms.some((f) => f.id === id))}`,
+      `- W4 saved pages: ${group((id) => W4_SITES.includes(id))}`,
+      `- F1 task pages: ${group((id) => TASK_PAGES.some((t) => t.name === id))}`,
+      `- search-only and login: ${group((id) => id.startsWith("p3-"))}`,
+    ];
+    writeFileSync(join(OUT, "ready-on-load.md"), lines.join("\n") + "\n");
+    const bad = out.filter((o) => o.id.startsWith("p3-") && o.requests > 0);
+    say(`ready on load: ${lines.slice(-4).join("; ")}${bad.length > 0 ? `; FAIL: ${bad.map((o) => o.id).join(", ")} sent Jev requests` : ""}`);
+    return bad.length === 0 ? 0 : 1;
+  };
+  if (JOURNEY === "wizard" || JOURNEY === "wizard-drop") return await runWizard(fixture?.site as FixtureSite, JOURNEY === "wizard-drop");
+  if (JOURNEY === "load") return await runLoad(fixture?.site ?? null);
   if (fixture !== null) return await runTasks(fixture.site);
 
   const rows: Row[] = [];

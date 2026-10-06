@@ -1,0 +1,29 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Inbox – Field Robotics Technician: your details</title>
+<!-- P4: a webmail-like tab holding one message, the source of F1's wizard-1 form in the other tab. Its body sits in a
+     visible iframe, as many webmail apps render it. Every "Cell:" or "Phone:" line here except the one in the message is
+     a decoy a read must never take: outside the main region, in hidden text, in a hidden iframe, or in the reply draft.
+     Synthetic: the person and the numbers are F1's (tasks/expect/wizard-1.json). -->
+<style>
+body { font: 14px system-ui, sans-serif; margin: 0; display: flex; }
+nav { width: 220px; padding: 12px; background: #f3f3f3; }
+main { flex: 1; padding: 16px; }
+iframe.body { border: 0; width: 100%; height: 360px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style></head>
+<body>
+<nav>
+  <input type="search" aria-label="Search mail" placeholder="Search mail">
+  <ul><li>Inbox (3)</li><li>Sent</li><li>Drafts</li></ul>
+  <p>Mom and Dad: Sunday dinner? Cell: 555-0112</p>
+</nav>
+<main role="main">
+  <h1>Field Robotics Technician: your details</h1>
+  <p>From: Gareth Lowe &lt;gareth.lowe@example.net&gt; · To: Ines Vandermeer &lt;ines.vandermeer@example.org&gt;</p>
+  <iframe class="body" src="/tabsource/message" title="Message"></iframe>
+  <div style="display:none">Cell: 555-0199</div>
+  <span class="sr">Phone: 555-0198</span>
+  <iframe src="/tabsource/hidden" style="display:none" title="Tracking"></iframe>
+  <form onsubmit="return false"><textarea aria-label="Reply">Thanks Gareth! New cell: 555-0177</textarea><button type="button">Send</button></form>
+</main>
+</body></html>

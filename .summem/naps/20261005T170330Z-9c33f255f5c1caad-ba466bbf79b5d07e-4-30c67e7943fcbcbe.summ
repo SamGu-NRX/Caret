@@ -1,0 +1,1 @@
+R3/G2: corpus event-card misses are event-card code; 'unknown' selection reads as caret; a goal is done only with left[] empty, owing required and recipient fields; pick goal values by their quoted part, not the display's window title.

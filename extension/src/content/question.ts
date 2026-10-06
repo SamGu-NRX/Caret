@@ -11,7 +11,7 @@
 //
 // The same functions run at the walk and again right before an act (actions.ts), so a name or an owner the walk
 // reported is checked against the page as it is then.
-import { clean, groupNames, named, textOfLabel } from "./names.ts";
+import { accessibleName, clean, groupNames, named, textOfLabel } from "./names.ts";
 import { visible } from "./walker.ts";
 
 /** How far up from a control the question may be looked for. Assumed from the markup: Lever's is 3 levels up, Ashby's 2. */
@@ -154,6 +154,7 @@ export function fileOwner(input: HTMLInputElement): Element | null {
   if (input.type !== "file") return null;
   const labels = [...(input.labels ?? [])];
   for (const l of labels) if (visible(l)) return l;
+  if (labels.length === 0) return dropzoneOwner(input);
   const said = labels.map((l) => textOfLabel(l, input)).filter((t) => t !== "");
   if (said.length === 0) return null;
   let a: Element | null = input.parentElement;
@@ -164,6 +165,27 @@ export function fileOwner(input: HTMLInputElement): Element | null {
     // The button's visible text, not an aria-label that could say something else.
     const text = (b: Element): string => clean(b instanceof HTMLInputElement ? b.value : b.textContent);
     const owners = buttons.filter((b) => ATTACH_WORDS.test(text(b)) && said.some((t) => same(t, text(b))));
+    return owners.length === 1 ? (owners[0] as Element) : null;
+  }
+  return null;
+}
+
+/**
+ * P3: the visible button that owns a dropzone's hidden file input that has no label of its own (F1's wizard page 3, and
+ * react-dropzone's markup): the nearest element around the input, within OWNER_LEVELS, that names itself as a group (a
+ * role=group with an accessible name, or a fieldset with a legend), holds no other file input, and holds exactly one
+ * visible button that says attach or upload. The group's name is the page's own statement of what the input is for,
+ * which W4's second rule required of a label; the input is then named by it (fileName: its group's name).
+ */
+function dropzoneOwner(input: HTMLInputElement): Element | null {
+  let a: Element | null = input.parentElement;
+  for (let level = 0; a !== null && level < OWNER_LEVELS; level++, a = a.parentElement) {
+    if (a.querySelectorAll('input[type="file"]').length !== 1) return null;
+    const role = a.getAttribute("role");
+    const isGroup = role === "group" ? accessibleName(a) !== "" : a instanceof HTMLFieldSetElement && clean(a.querySelector(":scope > legend")?.textContent) !== "";
+    if (!isGroup) continue;
+    const text = (b: Element): string => clean(b instanceof HTMLInputElement ? b.value : b.textContent);
+    const owners = [...a.querySelectorAll("button, [role=button], input[type=button]")].filter((b) => visible(b) && ATTACH_WORDS.test(text(b)));
     return owners.length === 1 ? (owners[0] as Element) : null;
   }
   return null;

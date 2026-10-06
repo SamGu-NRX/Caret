@@ -3,7 +3,7 @@
 // engineFor(windowId) through RoutedReaderLink (executor/means.ts) and otherwise does not change. When a session
 // ends (the worker restarted, the browser quit, the bridge died), its windows close in the screen model and its
 // window ids match nothing again, as the reader's do after readerRestarted(); the worker drops its grants itself.
-import type { Snapshot, WindowClosed } from "../protocol.ts";
+import type { PageExclusion, Snapshot, WindowClosed } from "../protocol.ts";
 import { PROTOCOL_VERSION } from "../protocol.ts";
 import type { EngineDirectory, ReaderLink } from "../executor/means.ts";
 import { PageEngineLink, type VerbTiming } from "./page-link.ts";
@@ -103,14 +103,18 @@ export class EngineRegistry implements EngineDirectory {
   /**
    * S1: where a page window is, as its last walk saw it: the top frame's origin and path (no query or fragment; the
    * walker drops them), and the h1 and h2 headings of every frame. Null for a native window or a tab no engine walked.
+   * P3: and what the walk left out, by count over every frame (a password or card field), for the check before a page
+   * load's Fill all asks Jev (offers/ready-on-load.ts).
    */
-  contextOf(windowId: string): { site: string | null; headings: string[] } | null {
+  contextOf(windowId: string): { site: string | null; headings: string[]; excluded: Partial<Record<PageExclusion, number>> } | null {
     const w = parsePageWindow(windowId);
     const tab = w === null ? undefined : this.sessions.get(w.engine)?.session.tabs.get(w.tabId);
     if (tab === undefined) return null;
     const top = tab.frames.find((f) => f.parentFrameId < 0);
     const site = top === undefined || top.origin === "null" ? null : `${top.origin}${top.path}`;
-    return { site, headings: tab.frames.flatMap((f) => f.headings) };
+    const excluded: Partial<Record<PageExclusion, number>> = {};
+    for (const f of tab.frames) for (const [k, n] of Object.entries(f.excluded) as [PageExclusion, number][]) excluded[k] = (excluded[k] ?? 0) + n;
+    return { site, headings: tab.frames.flatMap((f) => f.headings), excluded };
   }
 
   engineFor(windowId: string): ReaderLink | null {

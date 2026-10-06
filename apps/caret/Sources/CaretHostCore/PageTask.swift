@@ -37,8 +37,9 @@ public struct PageTask: Equatable, Sendable {
         public var picked: Bool
         public var state: State
 
-        /// The user's own step: a hand-off. Caret presses nothing on a page and never marks it done.
-        public var yours: Bool { kind == .handoff || kind == .press }
+        /// The user's own step: a hand-off. Caret presses nothing on a page and never marks it done. An attach step
+        /// (P3) is the user's too: this host declares no goalFiles until its file chooser exists (lead addendum 2).
+        public var yours: Bool { kind == .handoff || kind == .press || kind == .attach }
 
         public init(step: Int, kind: GoalProgress.Step.Kind, says: String, label: String? = nil, value: String? = nil, picked: Bool = false, state: State = .pending) {
             self.step = step

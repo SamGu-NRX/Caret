@@ -13,13 +13,21 @@
 // selected tab is not the user's; and the user's own input in a frame under a grant. The worker arms each frame a
 // grant covers; an armed frame reports a trusted pointer or key press, and the worker then drops every grant of the
 // tasks acting there, at once, before telling the helper (pageInput), which pauses them.
-import type { ActAnswer, ActVerb, FrameReport, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
+//
+// P4 adds one read that is not a walk: the visible text of the tab the user just left, once, when the helper asks
+// because a fill needs its source (readText). The worker alone knows which tab that is (worker/left-tab.ts): it notes
+// the tab, its frames' documents and their navigation generations as the user leaves it, and reads it only within
+// LEFT_TAB_MS, only while every one of those is unchanged, never on a site Caret is off for or denies, and only by one
+// message to each of that tab's own frames. No other tab is touched and no observer is attached.
+import type { ActAnswer, ActVerb, FrameReport, FrameSelfAnswer, FrameTextAnswer, NavChanged, TabText, ToContent, UserActed } from "./shared/messages.ts";
 import { GrantTable } from "./shared/grants.ts";
 import { classifyPress } from "./shared/risk.ts";
-import { NavGens, frameOrigin } from "./worker/frames.ts";
+import { FrameDocs, NavGens, frameOrigin } from "./worker/frames.ts";
 import { composeFrames, isCaptchaUrl, type CaptchaFrame } from "./worker/compose.ts";
 import { judgePress, type FrameMarks } from "./worker/press-guard.ts";
 import { Chunks, parseFromHelper, type FromHelper } from "./worker/wire.ts";
+import { LEFT_TAB_MS, LeftTab, deniedOrigin, type FrameMark } from "./worker/left-tab.ts";
+import { joinFrames } from "./shared/tab-text.ts";
 
 const HOST = "ai.caret.bridge";
 const VERSION = chrome.runtime.getManifest().version;
@@ -105,6 +113,7 @@ function result(id: string, a: ActAnswer): void {
     ...(a.choice === undefined ? {} : { choice: a.choice }),
     ...(a.attached === undefined ? {} : { attached: a.attached }),
     ...(a.pageChanged === undefined ? {} : { pageChanged: a.pageChanged }),
+    ...(a.text === undefined ? {} : { text: a.text }),
   });
 }
 
@@ -146,7 +155,7 @@ async function onHelper(raw: unknown): Promise<void> {
     case "engineReady":
       engine = m.engine;
       retryMs = 2000;
-      send({ type: "pageHello", v: 1, extensionId: chrome.runtime.id, version: VERSION, profile: await profileId(), instance, startedAt, capabilities: ["pageWalk", "pageWrite", "pageSelect", "pageSetChecked", "pagePress", "pageChooseOption", "pageAttachFile", "pageFocus", "pageSitesOff", "pageInput"] });
+      send({ type: "pageHello", v: 1, extensionId: chrome.runtime.id, version: VERSION, profile: await profileId(), instance, startedAt, capabilities: ["pageWalk", "pageWrite", "pageSelect", "pageSetChecked", "pagePress", "pageChooseOption", "pageAttachFile", "pageFocus", "pageSitesOff", "pageInput", "pageReadText", "pageInsertText"] });
       return;
     case "pagePing":
       send({ type: "pagePong", v: 1, id: m.id, at: Date.now(), instance, startedAt });
@@ -170,6 +179,14 @@ async function onHelper(raw: unknown): Promise<void> {
     case "pageSitesOff":
       sitesOff = new Set(m.origins);
       return;
+    case "pageReadText": {
+      if (engine === null) return;
+      if (Date.now() >= m.expires) return result(m.id, { outcome: "error", detail: "the read expired before it arrived" });
+      const a = await readText(m.tabId).catch((e: unknown): ActAnswer => ({ outcome: "error", detail: e instanceof Error ? e.message : String(e) }));
+      // The helper stopped waiting: the text is not sent at all.
+      if (Date.now() >= m.expires) return result(m.id, { outcome: "error", detail: "the read took longer than the helper waits" });
+      return result(m.id, a);
+    }
     case "pageCommand":
       if (engine === null) return;
       if (Date.now() >= m.expires) return result(m.id, { outcome: "error", detail: "the command expired before it arrived" });
@@ -217,7 +234,9 @@ async function walk(id: string, tabId: number | null): Promise<void> {
         return null;
       }
       try {
-        const msg: ToContent = { caret: 1, op: "walk" };
+        // P4: the text around the caret is never taken on a site on the deny list, as no text read is; the frame is
+        // told before it walks, so it never reads it there (P4 review).
+        const msg: ToContent = deniedOrigin(origin) || (top !== null && deniedOrigin(top)) ? { caret: 1, op: "walk", caretText: false } : { caret: 1, op: "walk" };
         const r = (await withTimeout(chrome.tabs.sendMessage(tab.id as number, msg, { frameId: f.frameId, documentId: f.documentId }), FRAME_WALK_MS, `frame ${f.frameId}`)) as FrameReport | undefined;
         if (r === undefined || typeof r !== "object" || !Array.isArray(r.controls)) throw new Error("no report");
         // The worker's own view of the frame wins over what its script says: origin from the URL Chrome reports.
@@ -272,11 +291,96 @@ async function walk(id: string, tabId: number | null): Promise<void> {
       ...(typeof r.walkMs === "number" ? { walkMs: r.walkMs } : {}),
     })),
     missing: missing.sort((a, b) => a.frameId - b.frameId),
-    focused: focusedFrame?.r.focused === undefined || focusedFrame.r.focused === null ? null : { frameId: focusedFrame.f.frameId, ...focusedFrame.r.focused },
+    // P4: and stripped here too, should a frame not have heeded it.
+    focused:
+      focusedFrame?.r.focused === undefined || focusedFrame.r.focused === null
+        ? null
+        : { frameId: focusedFrame.f.frameId, ...focusedFrame.r.focused, ...(deniedOrigin(focusedFrame.origin) || (top !== null && deniedOrigin(top)) ? { text: null } : {}) },
     view,
     walkMs: Math.round((performance.now() - t0) * 10) / 10,
   });
   result(id, { outcome: "ok", detail: null });
+}
+
+/** A frame's answer about itself (no text), checked for the shape composition reads; anything else is no answer. */
+function isFrameSelf(x: unknown): x is FrameSelfAnswer {
+  if (typeof x !== "object" || x === null) return false;
+  const a = x as Record<string, unknown>;
+  return typeof a.origin === "string" && Array.isArray(a.viewport) && a.viewport.length === 2 && Array.isArray(a.iframes);
+}
+
+/** A frame's text, checked for the shape the worker reads; anything else is no answer. */
+function isTextAnswer(x: unknown): x is FrameTextAnswer {
+  if (typeof x !== "object" || x === null) return false;
+  const a = x as Record<string, unknown>;
+  const strings = (v: unknown): boolean => Array.isArray(v) && v.every((s) => typeof s === "string");
+  return strings(a.selection) && strings(a.blocks) && typeof a.cut === "boolean" && (a.docsText === null || a.docsText === "on" || a.docsText === "off");
+}
+
+/**
+ * P4: the visible text of `tabId`, which must be the tab the user just left (rules 1 and 2: worker/left-tab.ts), on no
+ * site Caret is off for or denies (rule 5). Each frame noted when the user left, still the same document, is first
+ * asked about itself only (its viewport and visible iframes, no text); only frames composition shows visible (item 5)
+ * are then asked for their text, once each (rule 3), pinned to that document, so no hidden frame's text ever leaves it.
+ * The tab is checked again after the frames answered, so a navigation during the read discards it. The text is capped
+ * over all frames (rule 4).
+ */
+async function readText(tabId: number): Promise<ActAnswer> {
+  const marksOf = (rows: chrome.webNavigation.GetAllFrameResultDetails[]) => rows.map((f) => ({ frameId: f.frameId, documentId: f.documentId, navGen: navGens.get(tabId, f.frameId) }));
+  const rows = (await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null)) ?? [];
+  const ok = leftTab.check(tabId, Date.now(), marksOf(rows));
+  if (!ok.ok) return { outcome: "notAllowed", detail: ok.why };
+  const record = leftTab.last();
+  if (record === null) return { outcome: "notAllowed", detail: "it is not the tab you just left" };
+  const top = frameOrigin(rows, 0);
+  if (top === null || sitesOff.has(top) || deniedOrigin(top)) return { outcome: "siteOff", detail: "Caret never reads this site" };
+  // A frame refuses to give text after the moment the read may no longer happen (rule 2's LEFT_TAB_MS).
+  const until = record.at + LEFT_TAB_MS;
+  const ask = async (frameId: number, documentId: string, op: "frame" | "text"): Promise<unknown> => {
+    const msg: ToContent = op === "frame" ? { caret: 1, op } : { caret: 1, op, until };
+    return withTimeout(chrome.tabs.sendMessage(tabId, msg, { frameId, documentId }), FRAME_WALK_MS, `frame ${frameId}`).catch(() => null);
+  };
+  const selves = await Promise.all(
+    ok.frames.map(async (m) => {
+      const f = rows.find((r) => r.frameId === m.frameId);
+      const origin = frameOrigin(rows, m.frameId);
+      if (f === undefined || origin === null) return null;
+      // Never asked: a frame on a site that is off or denied, and a captcha's, which is the user's to answer.
+      if (sitesOff.has(origin) || deniedOrigin(origin) || isCaptchaUrl(f.url)) return null;
+      const r = await ask(m.frameId, m.documentId, "frame");
+      return isFrameSelf(r) ? { f, r, origin } : null;
+    }),
+  );
+  const composed = composeFrames(rows, selves.filter((x): x is NonNullable<typeof x> => x !== null), []);
+  if (!composed.kept.some((k) => k.f.frameId === 0)) return { outcome: "noElement", detail: "the tab's top frame did not answer" };
+  // Everything that allowed the read is checked again before any text is asked for: the frames answered over time,
+  // and meanwhile the user may have come back to the tab, it may have moved, or a site may have been turned off.
+  const rowsNow = (await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null)) ?? [];
+  const still = leftTab.check(tabId, Date.now(), marksOf(rowsNow));
+  if (!still.ok) return { outcome: "stale", detail: still.why };
+  const topNow = frameOrigin(rowsNow, 0);
+  if (topNow === null || sitesOff.has(topNow) || deniedOrigin(topNow) || composed.kept.some((k) => sitesOff.has(k.origin))) return { outcome: "siteOff", detail: "Caret never reads this site" };
+  const texts = await Promise.all(composed.kept.filter((k) => still.frames.some((m) => m.frameId === k.f.frameId)).map(async (k) => {
+    const t = await ask(k.f.frameId, k.f.documentId, "text");
+    return isTextAnswer(t) ? { ...k, t } : null;
+  }));
+  const again = leftTab.check(tabId, Date.now(), marksOf((await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null)) ?? []));
+  if (!again.ok) return { outcome: "stale", detail: again.why };
+  const kept = texts.filter((k): k is NonNullable<typeof k> => k !== null && again.frames.some((m) => m.frameId === k.f.frameId));
+  if (!kept.some((k) => k.f.frameId === 0)) return { outcome: "noElement", detail: "the tab's top frame gave no text" };
+  const joined = joinFrames(kept.map((k) => ({ selection: k.t.selection, blocks: k.t.blocks })));
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+  const text: TabText = {
+    tabId,
+    leftAt: record.at,
+    title: tab?.title ?? "",
+    frames: kept.map((k) => ({ frameId: k.f.frameId, origin: k.origin })),
+    selection: joined.selection,
+    blocks: joined.blocks,
+    cut: joined.cut || kept.some((k) => k.t.cut),
+    docsText: kept.find((k) => k.f.frameId === 0)?.t.docsText ?? null,
+  };
+  return { outcome: "ok", detail: null, text };
 }
 
 /** Hex SHA-256 of `bytes`. */
@@ -432,6 +536,74 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
   if (windowId !== chrome.windows.WINDOW_ID_NONE) void frontTabChanged();
 });
 chrome.tabs.onZoomChange.addListener(() => void frontTabChanged());
+
+/**
+ * P4: which tab the user just left (worker/left-tab.ts). The tab the user is in is kept from the events themselves, in
+ * their order: each window's active tab (tabs.onActivated) and the focused window (windows.onFocusChanged). So every
+ * move is seen, a quick Ctrl-Tab through three tabs included, and the tab being left has its time, its frames, their
+ * documents and their navigation generations taken in the very event that left it (rule 2), from the frame registry
+ * webNavigation keeps up to date (FrameDocs). Kept whether or not an engine is connected: it is what
+ * the user did, and nothing is sent.
+ */
+const leftTab = new LeftTab();
+const frameDocs = new FrameDocs();
+let focusedWindow: number | null = null;
+/** Whether a windows.onFocusChanged came before the start-up read; then that read must not overwrite it. */
+let focusSeen = false;
+const activeByWindow = new Map<number, number>();
+/** The frames of a tab as the worker knows them now, each with its document and navigation generation. */
+const framesNow = (tabId: number): FrameMark[] => frameDocs.of(tabId).map((f) => ({ ...f, navGen: navGens.get(tabId, f.frameId) }));
+function frontNow(): void {
+  const tabId = focusedWindow === null ? undefined : activeByWindow.get(focusedWindow);
+  const next = focusedWindow === null || tabId === undefined ? null : { tabId, windowId: focusedWindow };
+  leftTab.moved(next, Date.now(), framesNow);
+}
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  activeByWindow.set(windowId, tabId);
+  if (windowId === focusedWindow) frontNow();
+});
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  focusSeen = true;
+  focusedWindow = windowId === chrome.windows.WINDOW_ID_NONE ? null : windowId;
+  frontNow();
+});
+chrome.windows.onRemoved.addListener((windowId) => {
+  activeByWindow.delete(windowId);
+  if (focusedWindow !== windowId) return;
+  focusedWindow = null;
+  frontNow();
+});
+// A tab dragged out of a window is no longer that window's active tab; the window it lands in reports its own.
+chrome.tabs.onDetached.addListener((tabId, info) => {
+  if (activeByWindow.get(info.oldWindowId) !== tabId) return;
+  activeByWindow.delete(info.oldWindowId);
+  if (info.oldWindowId === focusedWindow) frontNow();
+});
+chrome.tabs.onRemoved.addListener((tabId, info) => {
+  if (activeByWindow.get(info.windowId) === tabId) activeByWindow.delete(info.windowId);
+  leftTab.closed(tabId);
+  frameDocs.forgetTab(tabId);
+});
+chrome.tabs.onReplaced.addListener((_added, removed) => {
+  leftTab.closed(removed);
+  frameDocs.forgetTab(removed);
+});
+chrome.webNavigation.onCommitted.addListener((d) => frameDocs.committed(d.tabId, d.frameId, d.documentId));
+// Where the user is when the worker starts, and the frames already open, merged under what events said first. No
+// move is recorded from it.
+void Promise.all([
+  chrome.windows.getLastFocused().catch(() => undefined),
+  chrome.tabs.query({}).catch(() => [] as chrome.tabs.Tab[]),
+]).then(async ([win, tabs]) => {
+  for (const t of tabs) if (t.active && t.id !== undefined && !activeByWindow.has(t.windowId)) activeByWindow.set(t.windowId, t.id);
+  if (!focusSeen && focusedWindow === null && win?.focused === true && win.id !== undefined) focusedWindow = win.id;
+  frontNow();
+  for (const t of tabs) {
+    if (t.id === undefined) continue;
+    const rows = (await chrome.webNavigation.getAllFrames({ tabId: t.id }).catch(() => null)) ?? [];
+    frameDocs.seed(t.id, rows);
+  }
+});
 
 /**
  * The user pressed a pointer or a key in a frame this worker armed (W3). Accepted only from this extension's content

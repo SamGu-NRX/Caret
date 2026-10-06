@@ -19,7 +19,7 @@ export type GoalDomain =
   | { kind: "calendar"; calendar: string };
 
 /** What a target looked like as a control: how a fill of it is lowered. */
-export type GoalControl = "text" | "select" | "combobox" | "radio" | "date" | "time" | "checkbox" | "button" | "calendar";
+export type GoalControl = "text" | "select" | "combobox" | "radio" | "date" | "time" | "checkbox" | "button" | "calendar" | "file";
 
 /** What a target ref stood for when its snapshot was frozen. Code issued it; a program only names it. */
 export interface TargetBinding {
@@ -99,6 +99,14 @@ export interface GoalInventory {
 /** `attach` (P2 adds the kind; P3 lowers it): a file the user confirmed in the preview, put in a page's file control. */
 export type GoalStepKind = "write" | "calendar" | "press" | "handoff" | "attach";
 
+/**
+ * P3: the file an attach step's row offers (protocol GoalStepView.file). `choose`: none; the user picks one in the
+ * preview. `saved`: a file the user saved for this question (memory/files.ts), matched to the field by a Jev choice;
+ * `edited` is its modification time when planned. Either way the step attaches only the file the acceptance names
+ * (goalAccept.confirmedFile), never this path on its own.
+ */
+export type AttachOffer = { source: "choose" } | { source: "saved"; savedId: string; path: string; name: string; edited: number };
+
 export interface GoalStep {
   /** The program's step ref. */
   ref: string;
@@ -129,6 +137,14 @@ export interface GoalStep {
    * gates.ts did not mark (isDerived).
    */
   gate: "jev" | "fill" | "draft" | "derived" | "you" | null;
+  /** P3: on an attach step only, the file its row offers. */
+  file?: AttachOffer;
+  /**
+   * I6: on a page plan's hand-off row only (page-planner.ts handoffRow): the step the user reads last, "You press Next"
+   * or "The rest is yours". It is a row, never an action: lowering gives it no executor step, a run never reaches it,
+   * and no check reads its target.
+   */
+  row?: true;
 }
 
 /**
@@ -148,11 +164,17 @@ export interface LeftItem {
   /** For "asked": how many distinct events the goal must add before it can be done. */
   count?: number;
   says: string;
+  /**
+   * I6: a value `says` quotes and the window it was read from (a hand-off's "'Canada' fits it"), so a goal that ended can
+   * forget it once that window's text expires (runs.ts forgetSource).
+   */
+  quotes?: { windowId: string; text: string };
 }
 
 /**
  * Why a segment is separate. `afterReveal` is also a fresh goal for the fields a finished page goal's writes showed
- * (runs.ts revealed). `nextPage` is P3's (the user's own Next carried the goal to a new document); nothing makes it yet.
+ * (runs.ts revealed). `nextPage` (P3): the user's own Next carried the goal to a new document (runs.ts carry); like a
+ * reveal's, it is said on the wire for the carried goal's first segment, whose own reason is `start`.
  */
 export type SegmentReason = "start" | "crossWindow" | "afterReveal" | "nextPage";
 
@@ -240,6 +262,10 @@ export function segmentDigest(programHash: string, s: Omit<GoalSegment, "digest"
         writes: x.writes,
         effect: x.effect,
         handoff: x.handoff,
+        // P3: the file an attach row offers, which the user reads before Tab; absent (and so not hashed) on other steps.
+        file: x.file,
+        // I6: a hand-off row (never run), absent on every other step.
+        row: x.row,
       })),
       warnings,
     }),

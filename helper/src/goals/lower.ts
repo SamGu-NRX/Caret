@@ -30,7 +30,7 @@ import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
 import { saysPress } from "../planner/says.ts";
-import { executable, goalDigest, segmentDigest, type GoalDomain, type GoalInventory, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type SegmentReason, type TargetBinding, type ValueBinding } from "./plan.ts";
+import { executable, goalDigest, segmentDigest, type AttachOffer, type GoalDomain, type GoalInventory, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type SegmentReason, type TargetBinding, type ValueBinding } from "./plan.ts";
 
 /** Segments one goal may have. Assumed: the scenes need two or three; more is more acceptances than a user follows. */
 export const MAX_SEGMENTS = 4;
@@ -48,6 +48,11 @@ export interface DonePress {
 export class GoalError extends Error {
   readonly code: GoalRefusal;
   readonly says: string;
+  /**
+   * I6: the plan read the tab the user left, so `says` and the message may quote its text (a hand-off's value): the
+   * user is told, and logs name the code only (P4 rule 6).
+   */
+  fromTab = false;
   constructor(code: GoalRefusal, says: string, detail?: string) {
     super(detail === undefined ? says : `${says} (${detail})`);
     this.code = code;
@@ -155,6 +160,8 @@ function lowerFill(t: TargetBinding, v: ValueBinding, gated: boolean): Pick<Goal
       return { kind: "handoff", says: `Caret leaves ticking ${named(t)} to you`, writes: null, handoff: "unverifiable" };
     case "button":
       throw new GoalError("schema", `${named(t)} is a button, not a field`, t.ref);
+    case "file":
+      throw new GoalError("schema", `${named(t)} takes a file, which only an attach step puts there`, t.ref);
   }
 }
 
@@ -191,6 +198,16 @@ export interface LowerOptions {
    * recipient or subject field is dropped for such a value rather than refusing the plan (fill reads no message).
    */
   gated?: ReadonlyMap<string, ValueBinding>;
+  /**
+   * P3: a page plan's file controls, each with the file its row offers (page-planner.ts). Each becomes an attach step
+   * after every other step, so an attach the user leaves without a file (runs.ts drops it from the run) holds up nothing.
+   */
+  attach?: readonly { target: TargetBinding; file: AttachOffer }[];
+  /**
+   * I6: a page plan's hand-off row (page-planner.ts handoffRow), put after every other step, attach rows included. It
+   * gets no executor step (executorPlan), so nothing ever presses its control.
+   */
+  handoffRow?: { target: TargetBinding; says: string; why: HandoffWhy };
 }
 
 /** Segment warnings a goalProgress carries at most (protocol GoalProgress.warnings). */
@@ -397,6 +414,19 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     const writes = steps.some((x) => (x.kind === "write" || x.kind === "calendar") && whereOf(x.target) === c.windowId && effectKey(x.target, x.value) === c.key);
     if (!writes && !left.some((l) => l.windowId === c.windowId && l.key === c.key)) left.push(c);
   }
+  // P3: the file controls, last. Only a page's file control takes one, and only through the page engine.
+  for (const [i, a] of (o.attach ?? []).entries()) {
+    const t = a.target;
+    if (t.control !== "file" || t.domain.kind !== "window" || !t.domain.page) throw new GoalError("schema", `${named(t)} is not a page's file control`, t.ref);
+    if (steps.some((x) => x.kind === "attach" && x.target.key === t.key)) throw new GoalError("schema", `the plan attaches to ${named(t)} twice`, t.ref);
+    const what = t.label === "" ? "File" : t.label;
+    steps.push({ ref: `a${i + 1}`, index: steps.length, kind: "attach", says: a.file.source === "saved" ? `${what}: ${a.file.name}` : `${what}: a file you choose`, target: t, value: null, writes: null, effect: null, handoff: null, to: false, gate: null, file: a.file });
+  }
+  if (o.handoffRow !== undefined) {
+    const h = o.handoffRow;
+    if (h.target.domain.kind !== "window" || !h.target.domain.page) throw new GoalError("schema", "only a page plan has a hand-off row", h.target.ref);
+    steps.push({ ref: "h1", index: steps.length, kind: "handoff", says: h.says, target: h.target, value: null, writes: null, effect: null, handoff: h.why, to: false, gate: null, row: true });
+  }
   steps.forEach((x, i) => (x.index = i));
   // A goalProgress carries MAX_WARNINGS sentences (P2: a 40-field form can leave more): the rest are named in one.
   const said = left.map((l) => `${l.says}.`);
@@ -478,7 +508,9 @@ function executorPlan(id: string, s: { domain: GoalDomain; steps: readonly GoalS
   };
   const d = s.domain;
   const sel: WindowSel | null = d.kind === "window" ? { bundleId: d.bundleId, title: slot("title", d.title, "the window's title", d.windowId), ...(d.number === null ? {} : { number: d.number }), ...(d.page ? { page: true as const, windowId: d.windowId } : {}) } : null;
-  const out: Step[] = s.steps.map((x, i): Step => {
+  // I6: a hand-off row is the plan's last step and is never run, so the executor plan stops before it; every other step
+  // keeps its index.
+  const out: Step[] = s.steps.filter((x) => x.row !== true).map((x, i): Step => {
     if (x.kind === "calendar") {
       const ev = x.value?.event;
       if (ev == null || d.kind !== "calendar") throw new GoalError("schema", "a calendar step needs an event and the calendar", x.ref);
@@ -491,7 +523,9 @@ function executorPlan(id: string, s: { domain: GoalDomain; steps: readonly GoalS
       role: slot(`r${i}`, x.target.role, `the role of target ${i + 1}`),
       describe: slot(`l${i}`, x.target.label, `the name of target ${i + 1}`, d.kind === "window" ? d.windowId : undefined),
       exact: true as const,
-      ...(x.target.control === "button" ? { label: `{{l${i}}}` } : {}),
+      // A button's own label, and (P3) a file control's, an empty one included: the executor finds the element only while
+      // it still reads so (fix-check: an unlabelled control that gained a label after the precheck was still taken).
+      ...(x.target.control === "button" || x.target.control === "file" ? { label: `{{l${i}}}` } : {}),
     };
     const says = slot(`s${i}`, x.says, `step ${i + 1}`);
     if (x.kind === "write") {
@@ -499,6 +533,8 @@ function executorPlan(id: string, s: { domain: GoalDomain; steps: readonly GoalS
       return { says, end: { kind: "valueEquals", window: sel, target, value }, ...(x.value?.memory == null ? {} : { memory: x.value.memory }) };
     }
     if (x.kind === "press") return { says, end: { kind: "fieldsRevealed", window: sel, target }, via: { kind: "press", target } };
+    // P3: the file the acceptance confirmed for this field, verified by the page's own file list or rendered name.
+    if (x.kind === "attach") return { says, end: { kind: "fileAttached", window: sel, target, wants: slot(`w${i}`, clip(x.target.label === "" ? "a file" : x.target.label, 80), `the file control ${i + 1}`) } };
     return { says, end: { kind: "handoff", window: sel, target, why: x.handoff ?? "unverifiable" } };
   });
   return {

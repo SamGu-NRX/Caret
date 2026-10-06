@@ -404,9 +404,16 @@ export const VerbResult = z
      * pageChanged). Comes with outcome axError: the press may have landed, and the run stops at once.
      */
     pageChanged: z.lazy(() => PageChanges).optional(),
+    /**
+     * Page engines only (C1): a dropdown pick that failed, after which the page closed the list, put the control's text
+     * back and read it as it showed before, with its form value unchanged (engines/page-link.ts restoredPick). Comes with
+     * outcome changed. A goal run may then leave that field to the user and go on (executor RunOptions.leaveFailedToYou).
+     */
+    restored: z.literal(true).optional(),
   })
   .refine((r) => (r.outcome === "blocked") === (r.blocked !== undefined), { message: "blocked comes with outcome blocked, and blocked needs it", path: ["blocked"] })
-  .refine((r) => r.pageChanged === undefined || r.outcome === "axError", { message: "pageChanged comes with outcome axError", path: ["pageChanged"] });
+  .refine((r) => r.pageChanged === undefined || r.outcome === "axError", { message: "pageChanged comes with outcome axError", path: ["pageChanged"] })
+  .refine((r) => r.restored === undefined || r.outcome === "changed", { message: "restored comes with outcome changed", path: ["restored"] });
 export type VerbResult = z.infer<typeof VerbResult>;
 
 /**
@@ -978,6 +985,21 @@ export type AskAnswer = z.infer<typeof AskAnswer>;
  */
 export const GOAL_PLANS_CAPABILITY = "goalPlans";
 
+/**
+ * P3: the hello capability for files in goal plans. A goal-planning host that declares it is offered attach steps (an
+ * attach row with a file chooser, or a saved file), sends goalAccept.confirmedFile, and gets fileSaveOffer. Any other
+ * host's page goals leave every file control to the user, as before P3, so a host that cannot show an attach row never
+ * receives one.
+ */
+export const GOAL_FILES_CAPABILITY = "goalFiles";
+
+/** An absolute path on this Mac, as a file chooser returns it. */
+export const AbsolutePath = z
+  .string()
+  .min(2)
+  .max(4096)
+  .refine((p) => p.startsWith("/") && !p.includes("\0"), "must be an absolute path");
+
 /** Host to helper: plan this goal. The reply is a goalProgress under `requestId`: the first segment's preview, or a stop saying why not. */
 export const GoalRequest = z.object({
   type: z.literal("goalRequest"),
@@ -1003,6 +1025,16 @@ export const GoalAccept = z.object({
   segment: z.number().int().nonnegative(),
   digest: Digest,
   at: ms,
+  /**
+   * P3: the file the user confirmed in this preview for the attach step `step` (its index in the goal, as the segment's
+   * steps list it): one they chose in the attach row's file chooser, or the saved file the row showed. The helper reads
+   * it once now and binds it to that step's field for this run alone (engines/attach.ts); a path it was never sent here
+   * is never attached. An attach step with no confirmed file is left to the user, and the rest of the segment runs. A
+   * file the helper refuses (not a regular file, a link, too large, unreadable) refuses the whole acceptance, so the user
+   * can choose another and press Tab again. `step` is explicit because a page may have two file controls (a file input
+   * and a dropzone), and one file goes to one of them.
+   */
+  confirmedFile: z.object({ step: z.number().int().nonnegative(), path: AbsolutePath }).optional(),
 });
 export type GoalAccept = z.infer<typeof GoalAccept>;
 
@@ -1177,7 +1209,36 @@ export const AnswerSave = z.object({
 });
 export type AnswerSave = z.infer<typeof AnswerSave>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave]);
+/**
+ * P3: a saved file's fields in files.md: the question of the file control it was attached to (`question`, as the page
+ * named the control; `normalized`, lowercased with digits masked and spacing collapsed, what a later field is compared by
+ * before Jev is asked; `site`, the page's address), the file's absolute `path`, and when it was saved (ISO 8601). Saved
+ * only with the user's yes to a fileSaveOffer, after an attach the user confirmed. A saved file is only ever offered in a
+ * preview's attach row; it is attached only when that preview's acceptance names it (goalAccept.confirmedFile).
+ */
+export const FileFields = z.object({
+  question: z
+    .string()
+    .min(1)
+    .max(300)
+    .refine((s) => s.trim() === s && !/[\r\n]/u.test(s), "must be one line of text without spaces around it"),
+  normalized: z.string().min(1).max(300),
+  site: z.string().min(1).max(500).nullable(),
+  path: AbsolutePath,
+  savedOn: z.iso.datetime(),
+});
+export type FileFields = z.infer<typeof FileFields>;
+
+/** P3: the user's yes to a fileSaveOffer, answered with fileSaveReply under `requestId`. */
+export const FileSave = z.object({
+  type: z.literal("fileSave"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1),
+  offerId: z.string().min(1),
+});
+export type FileSave = z.infer<typeof FileSave>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -2110,12 +2171,27 @@ export type PageField = z.infer<typeof PageField>;
  * present only on a write of text Caret composed rather than copied: the whole text, which `says` also holds after the
  * field's name. A host shows it marked as Caret's, with an Edit action; it is written only on acceptance.
  */
-export const GoalStepView = z.object({
-  index: z.number().int().nonnegative(),
-  kind: z.enum(["write", "calendar", "press", "handoff"]),
-  says: z.string().min(1).max(900),
-  drafted: z.string().min(1).max(600).optional(),
-});
+export const GoalStepView = z
+  .object({
+    index: z.number().int().nonnegative(),
+    kind: z.enum(["write", "calendar", "press", "handoff", "attach"]),
+    says: z.string().min(1).max(900),
+    drafted: z.string().min(1).max(600).optional(),
+    /**
+     * P3: on an attach step only, the file its row offers. `choose`: none yet; the host's row says "Choose a file" and
+     * opens a file chooser. `saved`: a file the user saved for this question before (fileSave), which a Jev choice matched
+     * to this field; the row shows its `name` and when it was last `edited` (its modification time, so a stale resume
+     * shows as one), and is confirmed only by the user's Tab on this preview, which sends its path as confirmedFile. Caret
+     * never looks for a file on disk.
+     */
+    file: z
+      .discriminatedUnion("source", [
+        z.object({ source: z.literal("choose") }),
+        z.object({ source: z.literal("saved"), savedId: z.string().min(1).max(80), path: AbsolutePath, name: z.string().min(1).max(255), edited: ms }),
+      ])
+      .optional(),
+  })
+  .refine((v) => (v.kind === "attach") === (v.file !== undefined), { message: "an attach step names its file, and no other step does", path: ["file"] });
 export type GoalStepView = z.infer<typeof GoalStepView>;
 
 /**
@@ -2168,8 +2244,10 @@ const GoalHead = {
 /**
  * Helper to a host that declared GOAL_PLANS_CAPABILITY (D2-06). `segment`: a segment waits for the user's acceptance
  * (goalAccept with this `digest`) until `expires`; `reason` says why it is separate (`start`, `crossWindow`: another
- * window or the calendar, `afterReveal`: a press showed new fields, `freshPlan`: replanned after a stop) and `replaces`
- * names the goal it was replanned from. `step`: one step verified, already true, or handed to the user, with the
+ * window or the calendar, `afterReveal`: a press showed new fields, `freshPlan`: replanned after a stop, `nextPage`
+ * (P3): the user's own Next took the page to a new document, and a goal whose scope was the whole form or a section was
+ * planned again there, its values chosen afresh from the sources as they read now) and `replaces` names the goal it was
+ * replanned from or carried on from. `step`: one step verified, already true, or handed to the user, with the
  * executor task it ran in. `stopped`: the goal stopped; `freshPlan` names the replanned goal offered in its place, or
  * null. `finished`: every segment ran; `outcome` is `done` only when every step Caret makes was verified and nothing is
  * left to the user, `handoff` when what is left is only the user's own part (the press that sends a ready draft, a
@@ -2182,7 +2260,7 @@ export const GoalProgress = z.discriminatedUnion("event", [
     event: z.literal("segment"),
     segment: z.number().int().nonnegative(),
     segments: z.number().int().positive(),
-    reason: z.enum(["start", "crossWindow", "afterReveal", "freshPlan"]),
+    reason: z.enum(["start", "crossWindow", "afterReveal", "freshPlan", "nextPage"]),
     replaces: z.string().min(1).max(240).nullable(),
     digest: Digest,
     expires: ms,
@@ -2281,9 +2359,43 @@ export const AnswerSaveReply = z
   });
 export type AnswerSaveReply = z.infer<typeof AnswerSaveReply>;
 
+/**
+ * P3: Caret attached a file the user confirmed in a goal's preview, and may keep it for the same question next time
+ * ("Use this file for résumés next time?"). Sent once, after the attach step verified, to the host the goal was offered
+ * to, if it declared GOAL_FILES_CAPABILITY. Nothing is saved without fileSave naming `id`; the offer lapses at `expires`.
+ * `replaces`: the saved file for the same question on the same site that a yes would replace.
+ */
+export const FileSaveOffer = z.object({
+  type: z.literal("fileSaveOffer"),
+  v: z.literal(PROTOCOL_VERSION),
+  id: z.string().min(1),
+  at: ms,
+  expires: ms,
+  goalId: z.string().min(1).max(240),
+  question: FileFields.shape.question,
+  site: FileFields.shape.site,
+  file: z.object({ name: z.string().min(1).max(255) }),
+  replaces: z.string().min(1).max(80).nullable(),
+  says: z.string().min(1).max(300),
+});
+export type FileSaveOffer = z.infer<typeof FileSaveOffer>;
+
+/** The answer to fileSave, to the asker only: the saved file's id, or why nothing was saved, in `says`. */
+export const FileSaveReply = z
+  .object({
+    type: z.literal("fileSaveReply"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string().min(1),
+    outcome: z.enum(["saved", "refused"]),
+    fileId: z.string().min(1).max(80).nullable(),
+    says: z.string().min(1).max(300),
+  })
+  .refine((m) => (m.outcome === "saved") === (m.fileId !== null), { message: "a saved reply names the file; a refused one names none", path: ["fileId"] });
+export type FileSaveReply = z.infer<typeof FileSaveReply>;
+
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField, LocalTextRequest, AnswerSaveOffer, AnswerSaveReply,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress, Spend, PageField, LocalTextRequest, AnswerSaveOffer, AnswerSaveReply, FileSaveOffer, FileSaveReply,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
@@ -2360,6 +2472,11 @@ export const PAGE_SUBROLE = {
   number: "CaretNumberInput",
   switch: "AXSwitch",
   pressGroup: "CaretPressGroup",
+  /**
+   * P4 rule 6: text Caret read on demand from the tab the user just left, as static text of that tab's window. Such a
+   * node exists only in the view fill reads (ScreenModel.withNodes, engines/tab-source.ts), never in the model.
+   */
+  readOnDemand: "CaretReadOnDemand",
 } as const;
 
 /**
@@ -2441,6 +2558,52 @@ export const PageFrame = z.object({
 });
 export type PageFrame = z.infer<typeof PageFrame>;
 
+/** P4 item 7: characters of a field's text the walk reports before its caret, after it, and selected. */
+export const FIELD_BEFORE_MAX = 2000;
+export const FIELD_AFTER_MAX = 500;
+export const FIELD_SELECTION_MAX = 2000;
+
+/**
+ * P4 item 7: the text around the caret of the field the user is typing in (extension content/field-text.ts), for the
+ * host's inline text, which had no context in any web page. Only for a control the walk kept, so never for a password,
+ * card, one-time-code or hidden field, a self-identification question, or a frame on a site Caret is off for. Kept
+ * only in the tab's latest snapshot in memory; never logged or stored.
+ */
+export const PageFocusText = z.object({
+  before: z.string().max(FIELD_BEFORE_MAX),
+  after: z.string().max(FIELD_AFTER_MAX),
+  selection: z.string().max(FIELD_SELECTION_MAX),
+});
+export type PageFocusText = z.infer<typeof PageFocusText>;
+
+/**
+ * P4 items 6 and 7: a Google Docs or Sheets editor, whose text is drawn on a canvas. `text`: whether its text for
+ * assistive technology is there ("off" until the user turns on screen reader and braille support); `field`: the text
+ * around the caret there while the user types in it. From the tab's top frame only.
+ */
+export const PageDocs = z.object({
+  kind: z.enum(["document", "spreadsheet"]),
+  text: z.enum(["on", "off"]),
+  field: PageFocusText.nullable(),
+});
+export type PageDocs = z.infer<typeof PageDocs>;
+
+/**
+ * P4 items 7 and 9: what the host's pageField says about the field the user is typing in on a page, beside the field's
+ * key and frame (H10's PageField, on v2/host: spread this shape into it). `text`: the text around its caret
+ * (PageFocusText), null when no field has focus, the control holds no text the user types, or its caret is not exposed.
+ * `ownSuggestions`: the page offers its own inline suggestions there ("gmail": Gmail's compose body; "google-docs": a
+ * Google Doc), decided by origin and path (engines/field-text.ts); the host decides what to do about it. `docsText`: in
+ * a Google Docs or Sheets editor, whether its text for assistive technology is there, so the host can tell the user how
+ * to turn it on ("off"); null elsewhere. Never logged or stored; the host's debug state redacts `text`.
+ */
+export const PageFieldText = z.object({
+  text: PageFocusText.nullable(),
+  ownSuggestions: z.enum(["gmail", "google-docs"]).nullable(),
+  docsText: z.enum(["on", "off"]).nullable(),
+});
+export type PageFieldText = z.infer<typeof PageFieldText>;
+
 /**
  * One tab, composed by the worker from every frame that answered. `id` names the pageWalk it answers; the
  * pageResult for that command follows it. `missing` lists frames that did not answer, with why.
@@ -2464,7 +2627,7 @@ export const PageSnapshot = z.object({
   title: z.string(),
   frames: z.array(PageFrame).min(1),
   missing: z.array(z.object({ frameId: z.number().int().nonnegative(), reason: z.string() })),
-  /** The focused control and its text and selection, when one has focus. */
+  /** The focused control and its text and selection, when one has focus. `text` (P4 item 7): absent from an extension before P4. */
   focused: z
     .object({
       frameId: z.number().int().nonnegative(),
@@ -2472,6 +2635,8 @@ export const PageSnapshot = z.object({
       selection: z.tuple([z.number().int(), z.number().int()]).nullable(),
       /** H10: how the field draws its text, in CSS pixels (FieldLook); absent from a worker before H10. */
       look: FieldLook.optional(),
+      /** P4 item 7: the text around the caret; absent from an extension before P4. */
+      text: PageFocusText.nullable().optional(),
     })
     .nullable(),
   /**
@@ -2488,6 +2653,8 @@ export const PageSnapshot = z.object({
     })
     .nullable()
     .optional(),
+  /** P4 items 6 and 7: present only for a Google Docs or Sheets editor tab. */
+  docs: PageDocs.optional(),
   /**
    * P1: the walk's time in the extension, from the worker's receipt of the command to the snapshot it sends (its frames
    * walked in parallel), in ms; absent from an extension built before P1.
@@ -2561,6 +2728,12 @@ const PageTarget = {
  */
 export const PageVerb = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pageWalk"), tabId: z.number().int().nonnegative().nullable() }),
+  /**
+   * P4 item 8: `text` at the caret of the focused field `id` names, by document.execCommand("insertText"), so the page's
+   * own Undo takes it back. Only while that very element (no strong-key rebind) still has focus, holds no selection and
+   * reads exactly `expect` before its caret (PageFocusText.before); read back afterwards.
+   */
+  z.object({ kind: z.literal("pageInsertText"), ...PageTarget, expect: z.string().max(FIELD_BEFORE_MAX), text: z.string().min(1).max(FIELD_BEFORE_MAX) }),
   z.object({ kind: z.literal("pageWrite"), ...PageTarget, expect: z.string(), value: z.string() }),
   z.object({ kind: z.literal("pagePress"), ...PageTarget }),
   z.object({ kind: z.literal("pageSelect"), ...PageTarget, expect: z.string(), value: z.string() }),
@@ -2660,6 +2833,36 @@ export type PageAttached = z.infer<typeof PageAttached>;
 export const PageChanges = z.array(z.enum(["navigated", "navigationStarted", "documentGone", "beforeunload", "pagehide", "submit"])).min(1).max(6);
 export type PageChanges = z.infer<typeof PageChanges>;
 
+/** P4 rule 4: the most text one read of a tab carries, in UTF-8 bytes, all frames together (extension shared/tab-text.ts). */
+export const TAB_TEXT_BYTES = 16 * 1024;
+/**
+ * P4 rule 2: how long after the user leaves a tab its text may be read, and the longest any read is kept. Two minutes,
+ * the window fill already treats as recent. The extension's worker holds the same bound (worker/left-tab.ts LEFT_TAB_MS).
+ */
+export const LEFT_TAB_MS = 120_000;
+const utf8 = new TextEncoder();
+
+/**
+ * P4: the visible text of the tab the user just left, as one pageReadText found it: paragraphs of what the user had
+ * selected there, then of the page's main region, top frame first, at most TAB_TEXT_BYTES in all (checked again here).
+ * `leftAt`: when the user left the tab, by the worker's clock. `frames`: each frame read, with its origin. `docsText`:
+ * for a Google Docs or Sheets editor, whether its text for assistive technology was there; null on other pages. The
+ * helper holds it in memory for one fill only (engines/tab-source.ts), and never logs or stores it.
+ */
+export const PageTabText = z
+  .object({
+    tabId: z.number().int().nonnegative(),
+    leftAt: ms,
+    title: z.string(),
+    frames: z.array(z.object({ frameId: z.number().int().nonnegative(), origin: z.string().min(1) })).min(1),
+    selection: z.array(z.string().min(1)),
+    blocks: z.array(z.string().min(1)),
+    cut: z.boolean(),
+    docsText: z.enum(["on", "off"]).nullable(),
+  })
+  .refine((t) => [...t.selection, ...t.blocks].reduce((n, p) => n + utf8.encode(p).length + 1, 0) <= TAB_TEXT_BYTES + 1, { message: `more than ${TAB_TEXT_BYTES} bytes of text`, path: ["blocks"] });
+export type PageTabText = z.infer<typeof PageTabText>;
+
 export const PageResult = z
   .object({
     type: z.literal("pageResult"),
@@ -2681,9 +2884,12 @@ export const PageResult = z
     attached: PageAttached.optional(),
     /** A Yes/No press after which the page navigated or submitted (B28): with outcome failed and no readings. */
     pageChanged: PageChanges.optional(),
+    /** P4: pageReadText only, with outcome ok. */
+    text: PageTabText.optional(),
   })
   .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] })
-  .refine((r) => r.pageChanged === undefined || (r.outcome === "failed" && r.readings === undefined), { message: "pageChanged comes with outcome failed and no readings", path: ["pageChanged"] });
+  .refine((r) => r.pageChanged === undefined || (r.outcome === "failed" && r.readings === undefined), { message: "pageChanged comes with outcome failed and no readings", path: ["pageChanged"] })
+  .refine((r) => r.text === undefined || r.outcome === "ok", { message: "text comes with outcome ok", path: ["text"] });
 export type PageResult = z.infer<typeof PageResult>;
 
 /** The worker's first message once the bridge says the engine is ready. One per worker instance and connection. */
@@ -2786,11 +2992,21 @@ export type PageSitesOff = z.infer<typeof PageSitesOff>;
 export const PageInput = z.object({ type: z.literal("pageInput"), v: z.literal(PROTOCOL_VERSION), at: ms, tabId: z.number().int().nonnegative(), frameId: z.number().int().nonnegative(), kind: z.enum(["key", "mouse"]) });
 export type PageInput = z.infer<typeof PageInput>;
 
+/**
+ * P4: the visible text of `tabId`, once, for a fill that needs its source. The worker reads only the tab the user just
+ * left, within LEFT_TAB_MS and unchanged since, on no excluded site (rules 1 to 5; extension worker/left-tab.ts), and
+ * answers with a pageResult of the same id carrying `text`, or notAllowed, stale or siteOff and why. Nothing is acted
+ * on. Its own message, not a PageVerb, whose every verb but the walk names an element; only engines/tab-source.ts
+ * sends it, and the engine must not answer after `expires`.
+ */
+export const PageReadText = z.object({ type: z.literal("pageReadText"), v: z.literal(PROTOCOL_VERSION), id: z.string().min(1), expires: ms, tabId: z.number().int().nonnegative() });
+export type PageReadText = z.infer<typeof PageReadText>;
+
 /** What the extension sends the helper after the handshake. */
 export const EngineMessage = z.discriminatedUnion("type", [PageHello, PageSnapshot, PageResult, PagePong, PageFocusMoved, PageInput]);
 export type EngineMessage = z.infer<typeof EngineMessage>;
 /** What the helper sends the extension after the handshake. ActRevoke is the native one, unchanged. */
-export const HelperToEngine = z.discriminatedUnion("type", [PageCommand, ScopedActGrant, ActRevoke, PagePing, PageSitesOff]);
+export const HelperToEngine = z.discriminatedUnion("type", [PageCommand, ScopedActGrant, ActRevoke, PagePing, PageSitesOff, PageReadText]);
 export type HelperToEngine = z.infer<typeof HelperToEngine>;
 /** Every message on page.sock or the Native Messaging port, handshake included. */
 export const AnyPageMessage = z.union([EngineMessage, HelperToEngine, EngineChallenge, EngineHello, EngineWelcome, EngineReady, PageChunk]);

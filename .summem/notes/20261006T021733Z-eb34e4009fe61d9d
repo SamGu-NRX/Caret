@@ -1,0 +1,1 @@
+P3: page goals get attach rows only for a host with goalFiles (helper.ts filesFor; in process via HelperOptions.goalFiles); goalAccept.confirmedFile names the attach step, and rows given no file are dropped from the run (runs.ts stepMap maps executor steps back to segment steps).

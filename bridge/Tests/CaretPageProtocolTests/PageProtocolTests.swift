@@ -32,6 +32,7 @@ private func goldenLines() throws -> [Data] {
             case .pageFocus: "pageFocus"
             case .pageSitesOff: "pageSitesOff"
             case .pageInput: "pageInput"
+            case .pageReadText: "pageReadText"
             }
         }
         #expect(kinds == ["engineChallenge", "engineHello", "engineWelcome", "engineReady", "pageHello",
@@ -41,7 +42,26 @@ private func goldenLines() throws -> [Data] {
                           "pageResult", "pageResult", "pageFocus", "pageSitesOff", "pageResult",
                           "pageCommand", "pageResult", "pageInput",
                           "pageSnapshot", "pageCommand", "pageResult",
-                          "pageResult"])
+                          "pageResult",
+                          "pageReadText", "pageResult", "pageReadText", "pageResult", "pageCommand", "pageResult", "pageSnapshot"])
+    }
+
+    /// P4: a read of the tab the user just left and its text; a refused read; an insert at the caret.
+    @Test func readsTheP4Messages() throws {
+        let lines = try goldenLines()
+        guard case let .pageReadText(read) = try JSONDecoder().decode(PageMessage.self, from: lines[38]),
+              case let .pageResult(res) = try JSONDecoder().decode(PageMessage.self, from: lines[39]),
+              case let .pageResult(refused) = try JSONDecoder().decode(PageMessage.self, from: lines[41]),
+              case let .pageCommand(ins) = try JSONDecoder().decode(PageMessage.self, from: lines[42]),
+              case let .insertText(t, expect, text) = ins.verb else { Issue.record("lines 39 to 43"); return }
+        #expect(read == PageReadText(v: 1, id: "r1", expires: 1_790_000_016_000, tabId: 3))
+        #expect(res.id == read.id && res.outcome == .ok && res.text?.tabId == 3 && res.text?.selection == ["Cell: 555-0147"])
+        #expect(res.text?.frames.map(\.frameId) == [0, 4] && res.text?.docsText == nil)
+        #expect(refused.outcome == .notAllowed && refused.text == nil)
+        #expect(t.control == .textarea && expect == "I am writing to apply for the " && text == "Field Robotics Technician role")
+        #expect(Direction.toExtension.allowed.contains("pageReadText") && !Direction.toHelper.allowed.contains("pageReadText"))
+        let again = try JSONDecoder().decode(PageVerb.self, from: JSONEncoder().encode(ins.verb))
+        #expect(again == ins.verb)
     }
 
     /// B28: a Yes/No press after which the page left: failed, no readings, and what showed the change.

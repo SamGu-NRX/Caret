@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, type GoalProgress, type PageControl, type PageSnapshot, type PlanProposal } from "../src/protocol.ts";
-import { JEV_NO_CREDITS, makeJevClient, type AskJev } from "../src/fill/jev.ts";
+import { makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
 import { wirePageEngines } from "../src/engines/wire.ts";
 import { Helper } from "../src/helper.ts";
@@ -178,7 +178,7 @@ describe("Jev's 402 (H11)", () => {
     scenes.push(sc);
     const r = (await sc.helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "p1", at: sc.desk.at, instruction: "fill in the order number", windowId: "7171-1" }, sc.session, true, true)) as PlanProposal;
     expect(r.type).toBe("planProposal");
-    expect(r.error?.says).toBe(JEV_NO_CREDITS);
+    expect(r.error?.says).toBe(SAYS.jevBilling);
     expect(JSON.stringify(r)).not.toContain(SAYS.unreachable);
   });
 
@@ -186,7 +186,7 @@ describe("Jev's 402 (H11)", () => {
     unpaid();
     const r = await rig({ jev: makeJevClient(() => "k") });
     const reply = await r.ask("fill out this form from my note");
-    expect(reply).toMatchObject({ type: "goalProgress", event: "stopped", reason: "refused", says: JEV_NO_CREDITS });
+    expect(reply).toMatchObject({ type: "goalProgress", event: "stopped", reason: "refused", says: SAYS.jevBilling });
   });
 });
 
@@ -210,7 +210,7 @@ describe("the page goal golden (fixtures/golden/page-goal.ndjson), the contract 
     for (const p of previews) for (const r of p.page?.rows ?? []) expect(p.steps.find((x) => x.index === r.step)?.kind).toBe("write");
     // The host's ⌘Z undoes every task the page's goals ran, newest first.
     expect(parsed.filter((m) => m.type === "taskControl").map((m) => m.taskId)).toEqual(["goal-2-a1~1:s0", "goal-2-a1:s0"]);
-    expect(parsed.at(-1)).toMatchObject({ event: "stopped", reason: "refused", says: JEV_NO_CREDITS });
+    expect(parsed.at(-1)).toMatchObject({ event: "stopped", reason: "refused", says: SAYS.jevBilling });
   });
 
   it("refuses a page view the contract rules out", () => {

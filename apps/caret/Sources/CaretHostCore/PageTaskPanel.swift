@@ -68,7 +68,7 @@ public struct PageTaskPanel: Equatable, Sendable {
         }
         self.sections = sections
         let presses = t.groups.flatMap { $0.rows.filter(\.yours) }
-        yours = t.attach.map { Line(kind: .yours, text: PageTaskCopy.attach($0)) } + presses.map { Line(kind: .yours, text: PageTaskCopy.press($0.says)) }
+        var yours = t.attach.map { Line(kind: .yours, text: PageTaskCopy.attach($0)) } + presses.map { Line(kind: .yours, text: PageTaskCopy.press($0.says)) }
         from = t.from.isEmpty ? nil : "from \(t.from)"
         switch t.stage {
         case .preview:
@@ -90,6 +90,12 @@ public struct PageTaskPanel: Equatable, Sendable {
             let (l, rest) = PageTaskCopy.ending(e, undo: t.undo)
             lead = l
             title = rest
+            // I6: a finished goal's sentence ends with its hand-off ("Done: 2 steps verified. You press Next."). The
+            // title says the result; the hand-off is the panel's last row, in accent, and a row never repeats it.
+            if case .finished(let end) = e, t.undo == .none || t.undo == .available, let handoff = PageTaskCopy.handoff(end.says),
+               !yours.contains(where: { PageTaskCopy.same($0.text, handoff) }) {
+                yours.append(Line(kind: .yours, text: handoff))
+            }
             hints = t.undo == .available ? [Hint(key: "⌘Z", label: "Undo")] : []
             switch e {
             case .finished(let end): figure = end.outcome == .done ? .done : .stopped
@@ -98,6 +104,7 @@ public struct PageTaskPanel: Equatable, Sendable {
             }
             if case .undone = t.undo { figure = .done }
         }
+        self.yours = yours
     }
 
     static func lines(_ g: PageTask.Group) -> [Line] {
@@ -204,9 +211,9 @@ public enum PageTaskCopy {
         switch e {
         case .finished(let end):
             says = end.says
-            // A hand-off's sentence goes on to name the press, which the panel's last row says in accent ("You
-            // press 'Next'."): the title keeps its first sentence only, so it is said once.
-            if end.outcome == .handoff, let stop = says.range(of: ". ") { says = String(says[..<stop.lowerBound]) + "." }
+            // A finished sentence may go on to name the hand-off ("Done: 2 steps verified. You press Next."), which the
+            // panel's last row says in accent: the title keeps its first sentence only, so it is said once.
+            if end.outcome == .handoff || handoff(end.says) != nil, let stop = says.range(of: ". ") { says = String(says[..<stop.lowerBound]) + "." }
         case .stopped(let stop): says = stop.says
         case .notRun(let line): return (nil, line)
         case .lostTouch: return (nil, lostTouch)
@@ -219,6 +226,22 @@ public enum PageTaskCopy {
             }
         }
         return (nil, says)
+    }
+
+    /// The hand-off a finished sentence ends with, as the panel's last row says it: its second sentence when that
+    /// names what is the user's ("You press Next.", "The rest is yours."); nil otherwise.
+    public static func handoff(_ says: String) -> String? {
+        guard let stop = says.range(of: ". ") else { return nil }
+        let rest = says[stop.upperBound...].trimmingCharacters(in: .whitespaces)
+        guard rest.hasPrefix("You press ") || rest.hasPrefix("The rest is yours") else { return nil }
+        return rest.hasSuffix(".") ? rest : rest + "."
+    }
+
+    /// Two of the panel's sentences say the same thing, quotes and the final stop aside ("You press 'Next'." and
+    /// "You press Next.").
+    static func same(_ a: String, _ b: String) -> Bool {
+        let norm = { (s: String) in s.replacingOccurrences(of: "'", with: "").trimmingCharacters(in: CharacterSet(charactersIn: ". ")).lowercased() }
+        return norm(a) == norm(b)
     }
 
     static func spokenState(_ s: PageTask.Row.State) -> String {

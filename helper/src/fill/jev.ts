@@ -11,25 +11,58 @@ export const JEV_MODEL = "jev-latest";
 export const JEV_USD_PER_INPUT_TOKEN = 0.042 / 1_000_000;
 
 /**
- * Jev answered with an HTTP error (H11). The message is unchanged ("Jev HTTP <status>: <the service's text>"); `status`
- * lets a caller tell a billing refusal (402) from a model that is down, which the user fixes differently.
+ * How a Jev request failed, which decides what the user can do about it (lead addendum, 2026-10-06):
+ * - `billing`: HTTP 402, the account has no credits; trying again does not help until someone adds them.
+ * - `auth`: HTTP 401 or 403, the key is wrong or revoked.
+ * - `rate`: HTTP 429 after the client's one retry (or the first 429, for a caller that allows no retry).
+ * - `network`: no HTTP answer at all: DNS, a dropped connection, or no answer within the client's timeout.
+ * - `service`: any other HTTP error, such as a 500 from the service.
+ */
+export type JevFailureKind = "billing" | "auth" | "rate" | "network" | "service";
+
+function httpKind(status: number): JevFailureKind {
+  if (status === 402) return "billing";
+  if (status === 401 || status === 403) return "auth";
+  if (status === 429) return "rate";
+  return "service";
+}
+
+/**
+ * Jev answered with an HTTP error. The message keeps its old form ("Jev HTTP <status>: <the service's text>") for logs;
+ * `status` and `kind` are for callers that tell the user what to do (planner/says.ts jevFailureSays).
  */
 export class JevHttpError extends Error {
   readonly status: number;
+  readonly kind: JevFailureKind;
   constructor(status: number, detail: string) {
     super(`Jev HTTP ${status}: ${detail}`);
     this.name = "JevHttpError";
     this.status = status;
+    this.kind = httpKind(status);
   }
 }
 
-/** What the user reads when Jev failed: a 402 is the account's credits, which trying again does not fix (H11). */
-export function jevFailureSays(e: unknown, otherwise: string): string {
-  return e instanceof JevHttpError && e.status === 402 ? JEV_NO_CREDITS : otherwise;
+/** The request got no HTTP answer: the connection failed or the client's timeout passed. */
+export class JevNetworkError extends Error {
+  readonly kind = "network" as const;
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = "JevNetworkError";
+  }
 }
 
-/** The sentence for a 402 from Jev (H11, lead addendum: never "couldn't reach its model" for a billing error). */
-export const JEV_NO_CREDITS = "Caret's model account is out of credits, so Caret can't do this. Add credits, then try again.";
+/**
+ * The kind of Jev failure behind `e`, following `cause` links a few deep (a wrapper may keep the client's error as its
+ * cause), or null when `e` is not a Jev client failure.
+ */
+export function jevFailureKind(e: unknown): JevFailureKind | null {
+  let at: unknown = e;
+  for (let depth = 0; depth < 4 && at instanceof Error; depth++) {
+    if (at instanceof JevHttpError || at instanceof JevNetworkError) return at.kind;
+    at = at.cause;
+  }
+  return null;
+}
 
 export interface ChoiceQuestion {
   type: "choice";
@@ -118,12 +151,18 @@ export function makeJevClient(key: () => string, timeoutMs = 10_000): AskJev {
     const body = JSON.stringify({ state: req.state, model: JEV_MODEL, questions: { ...req.questions, ...req.nouls } });
     for (let attempt = 0; ; attempt++) {
       const t0 = performance.now();
-      const res = await fetch(JEV_URL, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${key()}`, "Content-Type": "application/json" },
-        body,
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+      let res: Response;
+      try {
+        res = await fetch(JEV_URL, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${key()}`, "Content-Type": "application/json" },
+          body,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (e) {
+        const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+        throw new JevNetworkError(timedOut ? `Jev did not answer within ${timeoutMs} ms` : `Jev could not be reached: ${e instanceof Error ? e.message : String(e)}`, e);
+      }
       const latencyMs = performance.now() - t0;
       if (res.status === 429 && attempt === 0 && req.retry429 !== false) {
         const wait = Number(res.headers.get("retry-after") ?? "1");
@@ -131,11 +170,20 @@ export function makeJevClient(key: () => string, timeoutMs = 10_000): AskJev {
         continue;
       }
       if (!res.ok) {
-        // The body is the service's own text; the key is cut out in case it is ever echoed back.
-        const detail = (await res.text()).slice(0, 300).split(key()).join("[redacted]");
-        throw new JevHttpError(res.status, detail);
+        // The body is the service's own text; the key is cut out in case it is ever echoed back. A body that cannot be read
+        // still leaves the status, which says how the request failed (P3 review).
+        const body = await res.text().catch(() => "(the body could not be read)");
+        throw new JevHttpError(res.status, body.slice(0, 300).split(key()).join("[redacted]"));
       }
-      const parsed = JevResponse.parse(await res.json());
+      let json: unknown;
+      try {
+        json = await res.json();
+      } catch (e) {
+        // The answer stopped arriving (a dropped connection, the timeout) or was not JSON (P3 review).
+        if (e instanceof SyntaxError) throw new JevHttpError(res.status, "the answer was not JSON");
+        throw new JevNetworkError(`Jev's answer did not arrive whole: ${e instanceof Error ? e.message : String(e)}`, e);
+      }
+      const parsed = JevResponse.parse(json);
       const answers: JevResult["answers"] = {};
       const nouls: Record<string, number> = {};
       for (const [k, a] of Object.entries(parsed.answers)) {

@@ -45,3 +45,31 @@ export function frameOrigin(frames: readonly { frameId: number; parentFrameId: n
   }
   return null;
 }
+
+/**
+ * P4: each tab's frames and the document each holds, kept from webNavigation's committed navigations as they happen, so
+ * the worker knows a tab's frames at the very moment the user leaves it (worker/left-tab.ts). A new top document
+ * forgets the frames of the old one; a frame missing here was never seen to commit, and is never read.
+ */
+export class FrameDocs {
+  private readonly tabs = new Map<number, Map<number, string>>();
+
+  committed(tabId: number, frameId: number, documentId: string): void {
+    if (frameId === 0) this.tabs.set(tabId, new Map([[0, documentId]]));
+    else this.tabs.get(tabId)?.set(frameId, documentId);
+  }
+
+  /** Frames already open when the worker started (webNavigation.getAllFrames), for a tab no navigation has told it of. */
+  seed(tabId: number, frames: readonly { frameId: number; documentId: string }[]): void {
+    if (this.tabs.has(tabId) || !frames.some((f) => f.frameId === 0)) return;
+    this.tabs.set(tabId, new Map(frames.map((f) => [f.frameId, f.documentId])));
+  }
+
+  of(tabId: number): { frameId: number; documentId: string }[] {
+    return [...(this.tabs.get(tabId) ?? [])].map(([frameId, documentId]) => ({ frameId, documentId }));
+  }
+
+  forgetTab(tabId: number): void {
+    this.tabs.delete(tabId);
+  }
+}

@@ -141,13 +141,14 @@ describe("confirmed files", () => {
     expect(new ConfirmedFiles().confirm("t", fifo, T)).toEqual({ refused: "the confirmed path is not a file" });
   });
 
-  it("follows an alias at confirmation and gives the page the name the user saw", () => {
+  // P3 (lead decision) replaced W2's "follows an alias": the preview named the link, and the bytes were another file's.
+  it("refuses a path that is a link to another file, and nothing is confirmed", () => {
     const real = file("Resume-final-v3.pdf", Buffer.from("cv"));
     const alias = join(dir, "Resume.pdf");
     symlinkSync(real, alias);
     const files = new ConfirmedFiles();
-    files.confirm("t", alias, T);
-    expect(files.read("t", T)).toMatchObject({ name: "Resume.pdf", size: 2 });
+    expect(files.confirm("t", alias, T)).toEqual({ refused: "the confirmed path is a link to another file" });
+    expect(files.read("t", T)).toEqual({ refused: "no file was confirmed for task t" });
   });
 });
 

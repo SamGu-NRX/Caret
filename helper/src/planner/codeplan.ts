@@ -29,6 +29,7 @@ import { PlannerError, validatePlan, type PlanContext } from "./validate.ts";
 import type { MemoryValue } from "./trace.ts";
 import type { Snippet } from "../privacy.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
+import { jevFailedError } from "./says.ts";
 
 export interface CodePlanOptions {
   writer: WriterPort;
@@ -281,7 +282,7 @@ async function confirmFields(instruction: string, unnamed: readonly Field[], ask
   try {
     r = await Promise.all([askJev(req(0)), askJev(req(1))]);
   } catch (e) {
-    throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+    throw jevFailedError(e);
   }
   const out = new Set<string>();
   unnamed.forEach((f, i) => {
@@ -340,7 +341,7 @@ export async function verifyWrites(instruction: string, writes: readonly WriteTo
   try {
     r = await Promise.all([askJev(req(0)), askJev(req(1))]);
   } catch (e) {
-    throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+    throw jevFailedError(e);
   }
   const agreed = (id: string, options: object, floor: number): string | null => {
     const [a, b] = [r[0]?.answers[id], r[1]?.answers[id]];

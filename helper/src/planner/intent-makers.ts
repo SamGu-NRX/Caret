@@ -7,13 +7,13 @@
 // Neither makes values. checkIntent checks whatever a maker returns.
 import * as z from "zod";
 import { randomInt } from "node:crypto";
-import { JevHttpError, jevFailureSays, type AskJev, type JevRequest, type JevResult } from "../fill/jev.ts";
-import { SAYS, SaidError } from "./says.ts";
+import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { shuffled } from "../fill/fill.ts";
 import type { WriterPort } from "../writer/port.ts";
 import type { IntentInput } from "../writer/intent-prompt.ts";
 import { REASONS, ROUTES, type AskIntent, type IntentSnapshot } from "./intent.ts";
 import { PlannerError } from "./validate.ts";
+import { jevFailedError } from "./says.ts";
 
 /** What making one intent cost, for the proposal's log and the scoreboard. */
 export interface MakerUse {
@@ -126,9 +126,7 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
         try {
           r = await Promise.all([askJev(a), askJev(b)]);
         } catch (e) {
-          // H11: a 402 is the account's credits, said as such; any other failure keeps the planner's own words.
-        if (e instanceof JevHttpError && e.status === 402) throw new SaidError("jevFailed", jevFailureSays(e, SAYS.unreachable), `the Jev request failed: ${e.message.slice(0, 200)}`);
-        throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+          throw jevFailedError(e);
         }
         use.calls += 2;
         use.model = r[0].model;

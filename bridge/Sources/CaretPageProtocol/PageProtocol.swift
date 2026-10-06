@@ -97,8 +97,10 @@ public enum PageVerb: Codable, Equatable, Sendable {
     case chooseOption(PageTarget, expect: String, value: String, question: String? = nil)
     case setChecked(PageTarget, checked: Bool)
     case attachFile(PageTarget, file: PageFile)
+    /// P4 item 8: `text` at the caret of the focused field, whose text before the caret must be `expect`.
+    case insertText(PageTarget, expect: String, text: String)
 
-    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, rebind, mark, sameAs, expect, value, checked, file, question }
+    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, rebind, mark, sameAs, expect, value, checked, file, question, text }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
         let kind = try c.decode(String.self, forKey: .kind)
@@ -117,6 +119,7 @@ public enum PageVerb: Codable, Equatable, Sendable {
         case "pageChooseOption": self = .chooseOption(t, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value), question: try c.decodeIfPresent(String.self, forKey: .question))
         case "pageSetChecked": self = .setChecked(t, checked: try c.decode(Bool.self, forKey: .checked))
         case "pageAttachFile": self = .attachFile(t, file: try c.decode(PageFile.self, forKey: .file))
+        case "pageInsertText": self = .insertText(t, expect: try c.decode(String.self, forKey: .expect), text: try c.decode(String.self, forKey: .text))
         default: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "unknown page verb \(kind)")
         }
     }
@@ -138,6 +141,7 @@ public enum PageVerb: Codable, Equatable, Sendable {
         case let .chooseOption(t, expect, value, question): try target("pageChooseOption", t); try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value); try c.encodeIfPresent(question, forKey: .question)
         case let .setChecked(t, checked): try target("pageSetChecked", t); try c.encode(checked, forKey: .checked)
         case let .attachFile(t, file): try target("pageAttachFile", t); try c.encode(file, forKey: .file)
+        case let .insertText(t, expect, text): try target("pageInsertText", t); try c.encode(expect, forKey: .expect); try c.encode(text, forKey: .text)
         }
     }
 }
@@ -170,7 +174,18 @@ public struct PageResult: Codable, Equatable, Sendable {
     /// B28: a Yes/No press after which the page navigated or submitted, with outcome failed. The helper's zod schema
     /// (PageChanges) names the values; the bridge only relays them.
     public var pageChanged: [String]?
+    /// P4: pageReadText's answer, with outcome ok. The bridge relays the line as it came; this is for the golden tests.
+    public var text: PageTabText?
 }
+
+/// P4: the visible text of the tab the user just left, as one read found it (protocol.ts PageTabText).
+public struct PageTabText: Codable, Equatable, Sendable {
+    public struct Frame: Codable, Equatable, Sendable { public var frameId: Int, origin: String }
+    public var tabId: Int, leftAt: Int64, title: String, frames: [Frame], selection: [String], blocks: [String], cut: Bool, docsText: String?
+}
+
+/// P4: read the text of the tab the user just left, once; answered by a pageResult of the same id.
+public struct PageReadText: Codable, Equatable, Sendable { public var v: Int, id: String, expires: Int64, tabId: Int }
 
 /// Focus moved in the tab the user is in (W2); nothing about the element.
 public struct PageFocusMoved: Codable, Equatable, Sendable { public var v: Int, at: Int64, tabId: Int, frameId: Int }
@@ -226,7 +241,7 @@ public enum PageMessage: Decodable, Equatable, Sendable {
     case engineChallenge(EngineChallenge), engineHello(EngineHello), engineWelcome(EngineWelcome), engineReady(EngineReady)
     case pageHello(PageHello), pageCommand(PageCommand), pageSnapshot(PageSnapshot), pageResult(PageResult)
     case scopedActGrant(ScopedActGrant), actRevoke(ActRevoke), pagePing(PagePing), pagePong(PagePong), pageChunk(PageChunk)
-    case pageFocus(PageFocusMoved), pageSitesOff(PageSitesOff), pageInput(PageInput)
+    case pageFocus(PageFocusMoved), pageSitesOff(PageSitesOff), pageInput(PageInput), pageReadText(PageReadText)
 
     private enum K: String, CodingKey { case type }
     public init(from d: Decoder) throws {
@@ -248,6 +263,7 @@ public enum PageMessage: Decodable, Equatable, Sendable {
         case "pageFocus": self = .pageFocus(try PageFocusMoved(from: d))
         case "pageSitesOff": self = .pageSitesOff(try PageSitesOff(from: d))
         case "pageInput": self = .pageInput(try PageInput(from: d))
+        case "pageReadText": self = .pageReadText(try PageReadText(from: d))
         default: throw DecodingError.dataCorrupted(.init(codingPath: [K.type], debugDescription: "unknown page message \(type)"))
         }
     }
@@ -263,7 +279,7 @@ public enum Direction: Sendable {
     public var allowed: Set<String> {
         switch self {
         case .toHelper: ["pageHello", "pageSnapshot", "pageResult", "pagePong", "pageFocus", "pageInput"]
-        case .toExtension: ["pageCommand", "scopedActGrant", "actRevoke", "pagePing", "pageSitesOff"]
+        case .toExtension: ["pageCommand", "scopedActGrant", "actRevoke", "pagePing", "pageSitesOff", "pageReadText"]
         }
     }
 }

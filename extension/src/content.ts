@@ -3,7 +3,10 @@
 // with no tab, from this extension's id), never window.postMessage or the page. On its own it tells the worker two
 // things, neither naming an element: that the document moved in history, so the worker bumps the frame's
 // navigation generation at once; and that focus moved while this document is visible and focused, so the helper
-// can walk the tab the user is in (W2). The second is one focusin listener, at most one message per 150 ms.
+// can walk the tab the user is in (W2). The second is one focusin listener, at most one message per 150 ms, and none
+// for a focus change Caret's own act makes (C1, content/own-acts.ts). P3 sends the same focus report when a top-frame
+// document becomes ready (three times at most, the last from one timer a second after load), so the helper can offer a
+// page's fill when it loads.
 //
 // W3 adds a third, only while the worker has armed this frame because a grant covers it: the user pressed a pointer
 // or a key here. Only events the browser marks trusted count, so neither the page's script nor Caret's own synthetic
@@ -12,13 +15,20 @@
 // S1 adds a passive input listener that sends nothing: per text field, in memory, it notes whether the text came from
 // the user's own typing (content/entry.ts). A walk reports that one word per field, so Caret saves an answer as the
 // user's words only when they typed it.
-import type { FieldLook, FocusMoved, FrameReport, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
+//
+// P4 adds one more message the worker may ask, never sent on its own: "text", the frame's visible text, read once
+// for the tab the user just left (content/text.ts). A walk also reports the text around the caret of the focused
+// field it kept (content/field-text.ts), for the host's inline text.
+import type { FieldLook, FocusMoved, FrameReport, FrameSelfAnswer, FrameTextAnswer, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
 import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
 import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
 import { EntryTracker } from "./content/entry.ts";
+import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
+import { docsKind, readFrameText } from "./content/text.ts";
+import { docsFocus, fieldText } from "./content/field-text.ts";
 
 declare global {
   // Set once per isolated world, so a script injected again after install (worker onInstalled) does nothing.
@@ -56,7 +66,37 @@ function lookOf(el: Element): FieldLook {
   return { inset: px(cs.paddingLeft) + px(cs.borderLeftWidth), fontSize: px(cs.fontSize), placeholder, dark: light };
 }
 
-function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
+/**
+ * Each visible iframe with a content box over a pixel each way, and that box's size, which is exactly its child
+ * document's viewport: the worker matches child frames to these (worker/compose.ts). Chrome gives content scripts no
+ * frame id for an element (chrome.runtime.getFrameId is undefined there in Chrome 154).
+ */
+function visibleIframes(): FrameReport["iframes"] {
+  const r = (el: Element): [number, number, number, number] => {
+    const b = el.getBoundingClientRect();
+    return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)];
+  };
+  return [...document.querySelectorAll("iframe")].filter((f) => visible(f) && contentBox(f)[0] > 1 && contentBox(f)[1] > 1).map((f) => ({ src: srcOf(f), rect: r(f), inner: contentBox(f) }));
+}
+
+/** P4: what the worker needs to tell whether this frame is visible in its parent, before it asks for any text. */
+function selfOf(): FrameSelfAnswer {
+  return { origin: self.origin, viewport: [window.innerWidth, window.innerHeight], iframes: visibleIframes() };
+}
+
+/**
+ * P4: this frame's visible text, read once on the worker's message for the tab the user just left (content/text.ts).
+ * None after `until`, or while this frame's own viewport is a pixel or less: its iframe was hidden since the worker
+ * judged it visible.
+ */
+function textOf(until: number): FrameTextAnswer {
+  if (Date.now() > until || window.innerWidth <= 1 || window.innerHeight <= 1) return { selection: [], blocks: [], cut: false, docsText: null };
+  const path = location.protocol === "about:" ? location.href : location.pathname;
+  const t = readFrameText(self.origin, path, window.self === window.top);
+  return { selection: t.selection, blocks: t.blocks, cut: t.cut, docsText: t.docsText };
+}
+
+function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): FrameReport {
   const t0 = performance.now();
   const href = location.href;
   const nav = navigationEntry();
@@ -77,13 +117,10 @@ function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
       } catch {
         selection = null;
       }
-      focused = { id: c.id, selection, look: lookOf(active) };
+      focused = { id: c.id, selection, look: lookOf(active), text: caretText ? fieldText(active) : null };
     }
   }
-  const r = (el: Element): [number, number, number, number] => {
-    const b = el.getBoundingClientRect();
-    return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)];
-  };
+  const docs = window.self === window.top ? docsKind(self.origin, location.pathname) : null;
   return {
     // The document's own origin, not its URL's: opaque ("null") for a sandboxed frame, the parent's for an
     // about:blank or srcdoc frame that inherits it (W1 review, round 2, #8).
@@ -92,15 +129,13 @@ function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
     title: clean(document.title, 200),
     headings: [...document.querySelectorAll("h1, h2")].filter((x) => visible(x)).slice(0, 10).map((h) => clean(h.textContent, 120)).filter((t) => t !== ""),
     controls: out.controls,
-    // Each visible iframe with a content box over a pixel each way, and that box's size, which is exactly its child
-    // document's viewport: the worker matches child frames to these (worker.ts walk). Chrome gives content scripts no
-    // frame id for an element (chrome.runtime.getFrameId is undefined there in Chrome 154).
-    iframes: [...document.querySelectorAll("iframe")].filter((f) => visible(f) && contentBox(f)[0] > 1 && contentBox(f)[1] > 1).map((f) => ({ src: srcOf(f), rect: r(f), inner: contentBox(f) })),
+    iframes: visibleIframes(),
     viewport: [window.innerWidth, window.innerHeight],
     screen: [window.screenX, window.screenY, window.outerWidth, window.outerHeight],
     excluded: out.excluded,
     truncated: out.truncated,
     focused,
+    ...(docs === null ? {} : { docs: docsFocus(document, docs) }),
     hasFocus: document.hasFocus(),
     walkMs: Math.round((performance.now() - t0) * 10) / 10,
   };
@@ -109,7 +144,7 @@ function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
 function isToContent(m: unknown): m is ToContent {
   if (typeof m !== "object" || m === null) return false;
   const x = m as Record<string, unknown>;
-  return x.caret === 1 && (x.op === "walk" || x.op === "viewport" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number" && typeof x.guardUntil === "number"));
+  return x.caret === 1 && (x.op === "walk" || x.op === "frame" || (x.op === "text" && typeof x.until === "number") || x.op === "viewport" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number" && typeof x.guardUntil === "number"));
 }
 
 if (globalThis.__caretContent === undefined) {
@@ -149,11 +184,41 @@ if (globalThis.__caretContent === undefined) {
     );
   }
 
+  const focus = new FocusReporter({
+    inFront: () => document.visibilityState === "visible" && document.hasFocus(),
+    later: (f, ms) => void setTimeout(f, ms),
+    report: () => {
+      const m: FocusMoved = { caret: 1, op: "focusMoved" };
+      chrome.runtime.sendMessage(m).catch(() => {});
+    },
+  });
+  addEventListener("focusin", () => focus.focusIn(), { capture: true, passive: true });
+  // focusout too: focus that leaves a field for no other field (a click on the page's background) sends no focusin, and
+  // the host would keep a fill offer drawn at a field the user left (H10).
+  addEventListener("focusout", () => focus.focusIn(), { capture: true, passive: true });
+  // H10: a scroll moves the focused field on screen, so the host's offer drawn at it must move with it. Only while a
+  // control has focus: a page read with nothing focused has no offer to move.
+  addEventListener(
+    "scroll",
+    () => {
+      if (deepActiveElement() !== null) focus.focusIn();
+    },
+    { capture: true, passive: true },
+  );
+
   chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
     // Only this extension's worker: a content script's own message would carry a tab, and nothing else can reach here.
     if (sender.id !== chrome.runtime.id || sender.tab !== undefined || !isToContent(m)) return false;
     if (m.op === "walk") {
-      reply(walk(reg, entries));
+      reply(walk(reg, entries, m.caretText !== false));
+      return false;
+    }
+    if (m.op === "frame") {
+      reply(selfOf());
+      return false;
+    }
+    if (m.op === "text") {
+      reply(textOf(m.until));
       return false;
     }
     if (m.op === "viewport") {
@@ -179,35 +244,35 @@ if (globalThis.__caretContent === undefined) {
       const ok = await chrome.runtime.sendMessage(q).then((r: unknown) => r === true, () => false);
       return ok && takeovers === start;
     };
-    act(reg, m.verb, m.deadline, alive).then(reply, (e: unknown) => reply({ outcome: "error", detail: e instanceof Error ? e.message : String(e) }));
+    focus.actStarted();
+    act(reg, m.verb, m.deadline, alive)
+      .then(reply, (e: unknown) => reply({ outcome: "error", detail: e instanceof Error ? e.message : String(e) }))
+      .finally(() => focus.actEnded());
     return true;
   });
 
-  /** Assumed: one report per burst of focus changes is enough for the helper to walk once. */
-  const FOCUS_EVERY_MS = 150;
-  let focusTimer: ReturnType<typeof setTimeout> | null = null;
-  const focusMoved = (): void => {
-    if (focusTimer !== null || document.visibilityState !== "visible" || !document.hasFocus()) return;
-    focusTimer = setTimeout(() => {
-      focusTimer = null;
+  /**
+   * P3, ready on load: a top-frame document that became ready is reported the way focus is, so the helper walks the
+   * tab the user is in and may offer its fill with no field in focus (helper.ts pageWalked, which asks at most once per
+   * document). Nothing about the page travels; the worker checks the tab is the active one as for focus. Reported at
+   * DOMContentLoaded, at load, and once more READY_LATE_MS after load for a form the page's own scripts render late.
+   */
+  const READY_LATE_MS = 1000;
+  if (window === window.top) {
+    const ready = (): void => {
       if (document.visibilityState !== "visible" || !document.hasFocus()) return;
       const m: FocusMoved = { caret: 1, op: "focusMoved" };
       chrome.runtime.sendMessage(m).catch(() => {});
-    }, FOCUS_EVERY_MS);
-  };
-  // focusout too: focus that leaves a field for no other field (a click on the page's background) sends no focusin, and
-  // the host would keep a fill offer drawn at a field the user left (H10).
-  addEventListener("focusin", focusMoved, { capture: true, passive: true });
-  addEventListener("focusout", focusMoved, { capture: true, passive: true });
-  // H10: a scroll moves the focused field on screen, so the host's offer drawn at it must move with it. Only while a
-  // control has focus: a page read with nothing focused has no offer to move.
-  addEventListener(
-    "scroll",
-    () => {
-      if (deepActiveElement() !== null) focusMoved();
-    },
-    { capture: true, passive: true },
-  );
+    };
+    const loaded = (): void => {
+      ready();
+      setTimeout(ready, READY_LATE_MS);
+    };
+    if (document.readyState === "loading") addEventListener("DOMContentLoaded", ready, { once: true });
+    else ready();
+    if (document.readyState !== "complete") addEventListener("load", loaded, { once: true });
+    else setTimeout(ready, READY_LATE_MS);
+  }
 
   /**
    * The user's own pointer or key press while a grant covers this frame: the worker drops the frame's grants and the

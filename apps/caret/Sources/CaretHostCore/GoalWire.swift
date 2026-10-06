@@ -169,8 +169,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
 
     /// One segment waiting for its own Tab until `expires`.
     public struct Preview: Equatable, Sendable {
-        /// `nextPage` is P3's (fast-browser.md, "D2-06 changes"): the helper's schema does not have it yet.
-        /// The host takes it now so the page panel's next-page state needs no change when P3 lands.
+        /// `nextPage` (P3): the user's own Next took the page to a new document, and the goal was planned again there.
         public enum Reason: String, Codable, Sendable { case start, crossWindow, afterReveal, freshPlan, nextPage }
         public var segment: Int
         public var segments: Int
@@ -272,17 +271,25 @@ public struct GoalProgress: Codable, Equatable, Sendable {
 
     /// One step as the user reads it. `drafted` is the whole text when Caret composed it (B30).
     public struct Step: Equatable, Sendable {
-        public enum Kind: String, Codable, Sendable { case write, calendar, press, handoff }
+        public enum Kind: String, Codable, Sendable { case write, calendar, press, handoff, attach }
+        /// P3 (protocol.ts GoalStepView.file): the file an attach step's row offers. Only a host that declared
+        /// goalFiles gets attach steps; this host shows one as the user's own step until its file chooser exists.
+        public enum File: Equatable, Sendable {
+            case choose
+            case saved(savedId: String, path: String, name: String, edited: Int64)
+        }
         public var index: Int
         public var kind: Kind
         public var says: String
         public var drafted: String?
+        public var file: File?
 
-        public init(index: Int, kind: Kind, says: String, drafted: String? = nil) {
+        public init(index: Int, kind: Kind, says: String, drafted: String? = nil, file: File? = nil) {
             self.index = index
             self.kind = kind
             self.says = says
             self.drafted = drafted
+            self.file = file
         }
     }
 
@@ -360,7 +367,33 @@ public struct GoalProgress: Codable, Equatable, Sendable {
     }
 
     enum PlaceKeys: String, CodingKey { case kind, app, title, calendar }
-    enum StepKeys: String, CodingKey { case index, kind, says, drafted }
+    enum StepKeys: String, CodingKey { case index, kind, says, drafted, file }
+    enum FileKeys: String, CodingKey { case source, savedId, path, name, edited }
+
+    static func decodeFile(_ s: KeyedDecodingContainer<StepKeys>) throws -> Step.File? {
+        guard s.contains(.file) else { return nil }
+        let f = try s.nestedContainer(keyedBy: FileKeys.self, forKey: .file)
+        switch try f.decode(String.self, forKey: .source) {
+        case "choose": return .choose
+        case "saved":
+            let file = Step.File.saved(savedId: try f.decode(String.self, forKey: .savedId), path: try f.decode(String.self, forKey: .path),
+                                       name: try f.decode(String.self, forKey: .name), edited: try f.decode(Int64.self, forKey: .edited))
+            guard case .saved(let id, let path, let name, let edited) = file, !id.isEmpty, id.count <= 80, path.hasPrefix("/"),
+                  !name.isEmpty, name.count <= 255, edited >= 0 else { throw ProtocolError("a saved file names its id, absolute path and name") }
+            return file
+        case let other: throw ProtocolError("unknown file source \(other)")
+        }
+    }
+
+    static func encodeFile(_ file: Step.File, into e: inout KeyedEncodingContainer<StepKeys>) throws {
+        var f = e.nestedContainer(keyedBy: FileKeys.self, forKey: .file)
+        switch file {
+        case .choose: try f.encode("choose", forKey: .source)
+        case .saved(let id, let path, let name, let edited):
+            try f.encode("saved", forKey: .source); try f.encode(id, forKey: .savedId); try f.encode(path, forKey: .path)
+            try f.encode(name, forKey: .name); try f.encode(edited, forKey: .edited)
+        }
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -386,8 +419,11 @@ public struct GoalProgress: Codable, Equatable, Sendable {
             while !list.isAtEnd {
                 let s = try list.nestedContainer(keyedBy: StepKeys.self)
                 let step = Step(index: try s.decode(Int.self, forKey: .index), kind: try s.decode(Step.Kind.self, forKey: .kind),
-                                says: try s.decode(String.self, forKey: .says), drafted: try s.decodeIfPresent(String.self, forKey: .drafted))
+                                says: try s.decode(String.self, forKey: .says), drafted: try s.decodeIfPresent(String.self, forKey: .drafted),
+                                file: try Self.decodeFile(s))
                 guard step.index >= 0, !step.says.isEmpty else { throw ProtocolError("a goal step has an index and words") }
+                // protocol.ts GoalStepView's refine: an attach step names its file, and no other step does.
+                guard (step.kind == .attach) == (step.file != nil) else { throw ProtocolError("an attach step names its file, and no other step does") }
                 if let d = step.drafted, d.isEmpty || d.count > GoalEdit.maxText { throw ProtocolError("a drafted value is 1 to \(GoalEdit.maxText) characters") }
                 steps.append(step)
             }
@@ -447,6 +483,7 @@ public struct GoalProgress: Codable, Equatable, Sendable {
                 var e = list.nestedContainer(keyedBy: StepKeys.self)
                 try e.encode(s.index, forKey: .index); try e.encode(s.kind, forKey: .kind); try e.encode(s.says, forKey: .says)
                 try e.encodeIfPresent(s.drafted, forKey: .drafted)
+                if let file = s.file { try Self.encodeFile(file, into: &e) }
             }
             try c.encode(p.warnings, forKey: .warnings)
             try c.encodeIfPresent(p.page, forKey: .page)

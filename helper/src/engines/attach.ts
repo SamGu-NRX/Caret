@@ -5,8 +5,8 @@
 // identity (device and inode) and SHA-256, and the read checks both, plus that nothing changed while it read (W2
 // review #6). Nothing here takes a path from memory, a plan or a page: `read` has no path parameter.
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, type Stats } from "node:fs";
-import { basename, extname, isAbsolute } from "node:path";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, type Stats } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import { GRANT_MAX_MS, MAX_ATTACH_BYTES } from "../protocol.ts";
 
 /** Content types for the files job forms take; anything else goes as application/octet-stream. */
@@ -100,10 +100,19 @@ export class ConfirmedFiles {
 
   confirm(taskId: string, path: string, target: string): { ok: true } | { refused: string } {
     if (!isAbsolute(path)) return { refused: "the confirmed file has no absolute path" };
+    // P3 (lead decision): a path that is itself a symlink is refused, not followed. The preview names the link ("Resume.pdf,
+    // edited Tue"), and the bytes would come from whatever file it points at, which the user never saw named. W2 had
+    // followed one. Only the directory is resolved (macOS's /var and /tmp are links); the file itself is opened with
+    // O_NOFOLLOW (readWhole), so a link put at the path after this check is refused at the open, not followed (P3 review:
+    // resolving the whole path after an lstat let a link swapped in between them through). The lstat only words the refusal.
+    try {
+      if (lstatSync(path).isSymbolicLink()) return { refused: "the confirmed path is a link to another file" };
+    } catch {
+      return { refused: "the confirmed file cannot be read" };
+    }
     let real: string;
     try {
-      // The file the user saw, with any alias resolved now; read() then refuses a symlink put in its place later.
-      real = realpathSync(path);
+      real = join(realpathSync(dirname(path)), basename(path));
     } catch {
       return { refused: "the confirmed file cannot be read" };
     }
@@ -113,10 +122,13 @@ export class ConfirmedFiles {
     return { ok: true };
   }
 
-  /** The file confirmed for `taskId`, as the user saw it, without reading it; null when there is none. */
-  confirmed(taskId: string): { name: string; size: number } | null {
+  /**
+   * The file confirmed for `taskId`, as the user saw it, without reading it; null when there is none, or (P3) when
+   * `target` is given and the file was confirmed for another field, so an attach step never spends another's file.
+   */
+  confirmed(taskId: string, target?: string): { name: string; size: number } | null {
     const c = this.byTask.get(taskId);
-    return c === undefined ? null : { name: c.name, size: c.size };
+    return c === undefined || (target !== undefined && c.target !== target) ? null : { name: c.name, size: c.size };
   }
 
   /** Drops the task's confirmation: the run ended, or the user took it back. */

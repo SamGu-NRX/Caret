@@ -65,7 +65,11 @@ export class ScreenModel {
     let nodes: Map<string, Node>;
     let values: TypedValue[];
 
-    if (snap.root === null || prior === undefined) {
+    const unreached = prior === undefined ? null : cutWalkUnreached(prior, snap);
+    if (unreached !== null && prior !== undefined) {
+      nodes = mergeCutWalk(prior.nodes, snap.nodes);
+      values = snap.values.concat(prior.values.filter((v) => unreached.has(v.nodeKey)));
+    } else if (snap.root === null || prior === undefined) {
       nodes = new Map(snap.nodes.map((n) => [n.key, n]));
       values = snap.values;
       if (prior === undefined) {
@@ -98,6 +102,7 @@ export class ScreenModel {
       const replaced = subtreeKeys(prior.nodes, snap.root);
       if (!replaced.has(prior.focusedKey)) focusedKey = prior.focusedKey;
     }
+    if (unreached !== null && focusedKey === null && prior !== undefined && prior.focusedKey !== null && unreached.has(prior.focusedKey)) focusedKey = prior.focusedKey;
     const state: WindowState = {
       app: snap.app,
       window: snap.window,
@@ -188,6 +193,74 @@ export class ScreenModel {
     this.frontmostPid = null;
     this.focusHistory.length = 0;
   }
+
+  /**
+   * P4: when the user last left `windowId`, the moment another window came to the front after its last focus; null
+   * while it is still the window they are in, or if it never had focus.
+   */
+  leftAt(windowId: string): number | null {
+    const i = this.focusHistory.findLastIndex((e) => e.windowId === windowId);
+    return i < 0 ? null : (this.focusHistory[i + 1]?.at ?? null);
+  }
+
+  /**
+   * P4: a read-only view of the model in which the windows `extra` names also hold its nodes (and its title, when given),
+   * for the one reader that may see them: fill, reading the tab the user just left (engines/tab-source.ts). The model
+   * itself never holds them, so no other reader of the screen (the router, event cards, the shadow log, transfers)
+   * can see them, and they go when the view does. A window the model no longer has is not brought back. The view's
+   * change log starts empty: fill does not read it, and the nodes must never enter the model's.
+   */
+  withNodes(extra: ReadonlyMap<string, { nodes: readonly Node[]; title: string | null }>): ScreenModel {
+    const v = new ScreenModel();
+    for (const [id, w] of this.windows) {
+      const add = extra.get(id);
+      if (add === undefined) {
+        v.windows.set(id, w);
+        continue;
+      }
+      const nodes = new Map(w.nodes);
+      for (const n of add.nodes) nodes.set(n.key, n);
+      v.windows.set(id, { ...w, window: add.title === null ? w.window : { ...w.window, title: add.title }, nodes });
+    }
+    v.focusedWindowId = this.focusedWindowId;
+    v.frontmostPid = this.frontmostPid;
+    v.focusHistory.push(...this.focusHistory);
+    return v;
+  }
+}
+
+/**
+ * The prior nodes a full walk cut short did not send, or null when `snap` replaces the window whole.
+ *
+ * The reader walks depth first and stops at its deadline or node budget (Walker.swift), then sends what it read as a
+ * full snapshot (root null) with stats.truncated. Replacing the window with that dropped every node after the cut:
+ * H10's TextEdit note lost its text area until the next background walk 30 s later, and a fill whose source was that
+ * text was refused as "source gone". A cut walk cannot say which of the nodes it did not send are gone, so every one of
+ * them is kept until a complete walk replaces the window. (Reading "gone" from the old order failed when a node had
+ * moved ahead of the cut, P3 review: the text area behind it was dropped.) A page is replaced whole: its walk is cut per
+ * frame, not at one point in document order, and after navigation the old document's fields must not survive.
+ */
+function cutWalkUnreached(prior: WindowState, snap: Snapshot): Set<string> | null {
+  if (snap.root !== null || !snap.stats.truncated || snap.window.kind === "page") return null;
+  const sent = new Set(snap.nodes.map((n) => n.key));
+  return new Set([...prior.nodes.keys()].filter((k) => !sent.has(k)));
+}
+
+/**
+ * A cut walk's nodes with every prior node it did not send, in document order as far as both say it: the prior order,
+ * each sent node at its own place in the walk (a node new to the walk goes in before the next node the walk sent).
+ */
+function mergeCutWalk(prior: Map<string, Node>, sent: readonly Node[]): Map<string, Node> {
+  const at = new Map(sent.map((n, i) => [n.key, i]));
+  const out = new Map<string, Node>();
+  let next = 0;
+  for (const [k, n] of prior) {
+    const i = at.get(k);
+    if (i === undefined) out.set(k, n);
+    else for (; next <= i; next++) out.set((sent[next] as Node).key, sent[next] as Node);
+  }
+  for (; next < sent.length; next++) out.set((sent[next] as Node).key, sent[next] as Node);
+  return out;
 }
 
 function subtreeKeys(nodes: Map<string, Node>, root: string): Set<string> {

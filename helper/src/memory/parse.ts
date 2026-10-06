@@ -19,10 +19,10 @@
 // heading's title when the user kept Caret's, the record's field lines, nothing else.
 import { createHash } from "node:crypto";
 import * as z from "zod";
-import { AboutFields, AnswerFields, OfferKind, PeopleFields, PreferenceFields } from "../protocol.ts";
+import { AboutFields, AnswerFields, FileFields, OfferKind, PeopleFields, PreferenceFields } from "../protocol.ts";
 import { refusal, sensitiveKind, statedSecret, valueKind, type SensitiveKind } from "./sensitive.ts";
 
-export const RECORD_KINDS = ["about", "people", "preference", "skill", "answer"] as const;
+export const RECORD_KINDS = ["about", "people", "preference", "skill", "answer", "file"] as const;
 export type RecordKind = (typeof RECORD_KINDS)[number];
 export type RecordStatus = "active" | "noticed" | "paused";
 
@@ -42,13 +42,20 @@ export interface FieldsOf {
   preference: z.infer<typeof PreferenceFields>;
   skill: SkillText;
   answer: AnswerFields;
+  file: FileFields;
 }
 
 export type MemoryRecord = { [K in RecordKind]: { id: string; kind: K; status: RecordStatus; noticed: Noticed | null; fields: FieldsOf[K] } }[RecordKind];
 
-/** A document is named by the helper, never by a path: four fixed files and one file per skill. */
-export type DocId = "about-me" | "people" | "preferences" | "answers" | `skills/${string}`;
+/** A document is named by the helper, never by a path: five fixed files and one file per skill. */
+export type DocId = "about-me" | "people" | "preferences" | "answers" | "files" | `skills/${string}`;
+/** The fixed documents the host's memory window lists and may save (protocol MemoryDocId). */
 export const ROOT_DOCS = ["about-me", "people", "preferences", "answers"] as const;
+/**
+ * Fixed documents only the helper reads and writes: files.md (P3 saved files). Not in ROOT_DOCS, so the memory window
+ * neither lists nor saves it until the host can show it (MemoryDocId has no "files").
+ */
+export const HELPER_DOCS = ["files"] as const;
 
 /** A record id, which is also a skill's file name: letters, digits, "-" and "_", 3 to 80 characters. */
 export const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{2,79}$/;
@@ -68,6 +75,7 @@ export function docKind(doc: DocId): RecordKind {
   if (doc === "people") return "people";
   if (doc === "preferences") return "preference";
   if (doc === "answers") return "answer";
+  if (doc === "files") return "file";
   return "skill";
 }
 
@@ -83,6 +91,8 @@ export function docFor(r: Pick<MemoryRecord, "id" | "kind">): DocId {
       return `skills/${r.id}`;
     case "answer":
       return "answers";
+    case "file":
+      return "files";
   }
 }
 
@@ -130,7 +140,7 @@ export interface ParsedDocument {
 
 // MARK: - fields
 
-type Key = "status" | "noticedIn" | "window" | "noticedOn" | "label" | "value" | "source" | "alias" | "name" | "rule" | "valueKind" | "template" | "field" | "use" | "offer" | "app" | "bundleId" | "when" | "question" | "answer" | "site" | "form" | "savedOn";
+type Key = "status" | "noticedIn" | "window" | "noticedOn" | "label" | "value" | "source" | "alias" | "name" | "rule" | "valueKind" | "template" | "field" | "use" | "offer" | "app" | "bundleId" | "when" | "question" | "answer" | "site" | "form" | "savedOn" | "normalized" | "path";
 
 /** How each field is written, in the order Caret writes them. */
 const KEY_NAMES: Record<Key, string> = {
@@ -152,6 +162,8 @@ const KEY_NAMES: Record<Key, string> = {
   answer: "Answer",
   site: "Site",
   form: "Form",
+  normalized: "Normalized",
+  path: "Path",
   savedOn: "Saved on",
   status: "Status",
   noticedIn: "Noticed in",
@@ -167,6 +179,8 @@ const KIND_KEYS: Record<RecordKind, Key[]> = {
   skill: ["name", "when", "status"],
   // S1: a saved answer is never something Caret noticed on its own, so it has no noticed fields.
   answer: ["question", "answer", "site", "form", "savedOn", "status"],
+  // P3: a saved file, kept only with the user's yes, has no noticed fields either.
+  file: ["question", "normalized", "site", "path", "savedOn", "status"],
 };
 
 /** The record's fields as Caret writes them, in order. Absent optional fields are left out. */
@@ -195,6 +209,11 @@ export function fieldPairs(r: MemoryRecord): [Key, string][] {
       if (r.fields.site !== null) out.push(["site", r.fields.site]);
       if (r.fields.form !== null) out.push(["form", r.fields.form]);
       out.push(["savedOn", r.fields.savedOn]);
+      break;
+    case "file":
+      out.push(["question", r.fields.question], ["normalized", r.fields.normalized]);
+      if (r.fields.site !== null) out.push(["site", r.fields.site]);
+      out.push(["path", r.fields.path], ["savedOn", r.fields.savedOn]);
       break;
   }
   out.push(["status", r.status]);
@@ -433,7 +452,7 @@ function readRecord(lines: string[], hidden: Set<number>, start: number, end: nu
   };
 
   const status = need("status");
-  const twoStates = kind === "skill" || kind === "answer";
+  const twoStates = kind === "skill" || kind === "answer" || kind === "file";
   if (status !== null && !(twoStates ? ["active", "paused"] : ["active", "noticed", "paused"]).includes(status)) {
     err(at("status"), "Status", twoStates ? "must be active or paused" : "must be active, noticed or paused");
   }
@@ -505,6 +524,13 @@ function readRecord(lines: string[], hidden: Set<number>, start: number, end: nu
       fields = check(AnswerFields, raw, (p) => ({ question: "question", answer: "answer", site: "site", form: "form", savedOn: "savedOn" })[String(p[0])] as Key | undefined ?? null);
       break;
     }
+    case "file": {
+      const [question, normalized, path, savedOn] = [need("question"), need("normalized"), need("path"), need("savedOn")];
+      if (question === null || normalized === null || path === null || savedOn === null) break;
+      const raw = { question, normalized, site: emptyToNull(got.get("site")?.value), path, savedOn };
+      fields = check(FileFields, raw, (p) => ({ question: "question", normalized: "normalized", site: "site", path: "path", savedOn: "savedOn" })[String(p[0])] as Key | undefined ?? null);
+      break;
+    }
   }
   if (!ok || fields === null || status === null) return null;
   return { id, kind, status: status as RecordStatus, noticed, fields } as MemoryRecord;
@@ -537,7 +563,7 @@ function canonical(v: unknown): unknown {
 
 // MARK: - rendering and patching
 
-const DOC_TITLES: Record<"about" | "people" | "preference" | "answer", string> = { about: "About me", people: "People", preference: "Preferences", answer: "Saved answers" };
+const DOC_TITLES: Record<"about" | "people" | "preference" | "answer" | "file", string> = { about: "About me", people: "People", preference: "Preferences", answer: "Saved answers", file: "Saved files" };
 
 const PREFACE =
   "Caret reads the records below and uses them in what it offers. Change a value, or set Status to paused, and Caret follows. " +
@@ -550,6 +576,11 @@ const ANSWERS_PREFACE =
   "Your own answers to questions on forms, kept when you said yes. When a form asks the same question, Caret shows you the whole answer before it fills it in, and never changes your words. " +
   "An answer that names another organization, or is longer than the field allows, is not offered. Set Status to paused to stop Caret offering one. " +
   "Keep each <!-- caret:… --> comment: it is how Caret knows an answer. Other lines are yours; Caret never reads a value from them.";
+
+const FILES_PREFACE =
+  "Files you attached to forms and said yes to keeping, with the question each was for. When a form asks the same question, Caret offers the file in its preview, with its name and when it was last edited, and attaches it only when you accept that preview. " +
+  "Caret never looks for files on its own. Set Status to paused to stop Caret offering one. " +
+  "Keep each <!-- caret:… --> comment: it is how Caret knows a file. Other lines are yours; Caret never reads a value from them.";
 
 /** The heading's title for a record, without markdown or comment syntax in it. */
 export function recordTitle(r: MemoryRecord): string {
@@ -568,6 +599,7 @@ export function recordTitle(r: MemoryRecord): string {
       t = r.fields.name;
       break;
     case "answer":
+    case "file":
       t = r.fields.question;
       break;
   }
@@ -585,7 +617,7 @@ export function renderRecord(r: MemoryRecord): string[] {
 /** A new document holding these records. */
 export function newDocument(doc: DocId, records: readonly MemoryRecord[]): string {
   const kind = docKind(doc);
-  const head = kind === "skill" ? ["# Skill", "", SKILL_PREFACE] : [`# ${DOC_TITLES[kind]}`, "", kind === "answer" ? ANSWERS_PREFACE : PREFACE];
+  const head = kind === "skill" ? ["# Skill", "", SKILL_PREFACE] : [`# ${DOC_TITLES[kind]}`, "", kind === "answer" ? ANSWERS_PREFACE : kind === "file" ? FILES_PREFACE : PREFACE];
   const body = records.flatMap((r, i) => [...(i === 0 ? [] : [""]), ...renderRecord(r)]);
   return [...head, "", ...body, ""].join("\n");
 }

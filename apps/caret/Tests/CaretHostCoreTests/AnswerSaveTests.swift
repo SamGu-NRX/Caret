@@ -198,7 +198,7 @@ final class AnswerSaveTests: XCTestCase {
         guard case .stopped(let stop) = g.refused.event else { return XCTFail() }
         let reply = GoalProgress(at: 1, goalId: "goal-3-a2", requestId: request.requestId, event: .stopped(stop))
         XCTAssertTrue(ask.receive(reply, toForm: { _ in XCTFail("a stop is not a preview"); return true }))
-        XCTAssertEqual(ask.phase, .failed("Caret's model account is out of credits, so Caret can't do this. Add credits, then try again."))
+        XCTAssertEqual(ask.phase, .failed("Caret's model account is out of credits. Add credits at console.typesafe.ai, then try again."))
     }
 
     func testAGoalThatAnswersAnotherRequestIsNotTheDesks() throws {

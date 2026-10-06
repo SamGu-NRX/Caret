@@ -31,6 +31,12 @@ export const FILE_INPUT_SUBROLE = PAGE_SUBROLE.file;
 /** Kinds a pageWrite sets. A contenteditable is a hand-off in v1 (memo section 1, write path). */
 export const TEXT_KINDS: ReadonlySet<PageControlKind> = new Set(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea"]);
 
+/**
+ * P4 item 8: kinds pageInsertText types into: those whose caret Chrome exposes (an email or number input has none) and a
+ * contenteditable editor (extension content/field-text.ts).
+ */
+export const INSERT_KINDS: ReadonlySet<PageControlKind> = new Set(["text", "search", "url", "tel", "textarea", "contenteditable"]);
+
 /** Kinds the executor may write a value to: text, a native select (by option label) and a custom listbox (by option name). */
 export const VALUE_KINDS: ReadonlySet<PageControlKind> = new Set([...TEXT_KINDS, "select", "combobox"]);
 
@@ -327,6 +333,18 @@ export function toVerbOutcome(r: PageResult): VerbResult {
 }
 
 /**
+ * Whether a failed dropdown pick was put back, by the page's own readings (C1, lead decision for item 4): the combobox
+ * handler stopped (content/combobox.ts stopped) with the control showing what it showed before, the list closed by
+ * aria-expanded=false, and react-select's form value unchanged. Anything else (no readings: it may have landed; other
+ * text; a list still open or a control that says nothing about it; a form value that moved; a Yes/No press) is not.
+ */
+export function restoredPick(verb: PageVerb, r: PageResult): boolean {
+  if (verb.kind !== "pageChooseOption" || verb.control !== "combobox") return false;
+  if (r.outcome !== "failed" || r.pageChanged !== undefined || r.readings === undefined || r.choice === undefined) return false;
+  return r.readings.afterBlur === r.readings.before && r.choice.expanded === false && r.choice.hiddenInput !== "set";
+}
+
+/**
  * The reader role a key's node has in a tab's last walk, as toWindowSnapshot projects it: AXGroup for a radio or press
  * group, the control's ROLE otherwise; null when no control has the key. A verb whose role is not this one was resolved
  * against another kind of control (D2-06 re-check: a select replaced by a combobox at the same key), and is refused.
@@ -550,6 +568,23 @@ export class PageEngineLink implements ReaderLink {
     return { verb: toVerbOutcome(a.result), page: a.result };
   }
 
+  /**
+   * P4 item 8: `text` at the caret of the field `key` names, which must be the field that had focus in the tab's last
+   * walk (the one the offer was made for); the content script inserts only while that very element still has focus and
+   * reads exactly `expect` before its caret, by execCommand("insertText"), so the page's own Undo takes it back. Under
+   * the task's grant, as every act. Only an accepted inline offer on a page calls this (the host's half, H13).
+   */
+  async insertText(windowId: string, key: string, expect: string, text: string, taskId: string): Promise<VerbResult> {
+    const w = parsePageWindow(windowId);
+    if (w === null || w.engine !== this.session.info.engine) return verbResult("noWindow", `${windowId} is not a window of engine ${this.session.info.engine}`);
+    const snap = this.session.tabs.get(w.tabId);
+    const t = targetFor(snap, key);
+    if (t === null) return verbResult("noElement", `no element ${key} in the tab's last walk`);
+    if (!INSERT_KINDS.has(t.control.kind)) return verbResult("axError", `'${t.control.name}' is a ${t.control.kind}, which takes no typed text`);
+    if (snap?.focused?.frameId !== t.frameId || snap.focused.id !== t.id) return verbResult("changed", `'${t.control.name}' is not the field that has focus`);
+    return this.act({ kind: "pageInsertText", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId, expect, text }, w.tabId);
+  }
+
   private remember(mark: string, e: MarkedElement): void {
     this.marks.delete(mark);
     this.marks.set(mark, e);
@@ -576,7 +611,7 @@ export class PageEngineLink implements ReaderLink {
   private async act(verb: PageVerb, tabId: number): Promise<VerbResult> {
     await this.trailing.get(tabId)?.running;
     const { answer: a, commandMs } = await this.timed(verb, verb.kind === "pageChooseOption" || verb.kind === "pageAttachFile" ? SLOW_VERB_TIMEOUT_MS : undefined);
-    const out = toVerbOutcome(a.result);
+    const out: VerbResult = restoredPick(verb, a.result) ? { ...toVerbOutcome(a.result), restored: true } : toVerbOutcome(a.result);
     if (a.result.pageChanged !== undefined) {
       // The page is leaving; a trailing walk of it would only wait out its timeout.
       this.cancelTrailingWalks(tabId);

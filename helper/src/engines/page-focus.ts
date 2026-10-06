@@ -22,6 +22,11 @@ export interface PageFocusOptions {
   publish?: (m: PageField) => void;
   /** Tests and evals that play the user without a reader (Helper allowBackgroundFocus): walk whatever the browser's place. */
   allowBackground?: boolean;
+  /**
+   * P3: the active tab of the browser the user is in was walked, whether or not a field has focus: the page may have
+   * just loaded (the content script reports a document that became ready as it reports focus). Helper.pageWalked.
+   */
+  walked?: (windowId: string) => void;
   warn: (line: string) => void;
 }
 
@@ -94,6 +99,7 @@ export class PageFocus {
     // Only the active tab of the focused window counts: the worker sent the report for it, and the walk shows it still is.
     // A background window's selected tab is active too, so the window must be the one Chrome last focused (W3).
     if (!a.snapshot.active || !a.snapshot.inFocusedWindow) return;
+    this.opts.walked?.(windowId);
     const w = this.opts.model.windows.get(windowId);
     const n = w === undefined || w.focusedKey === null ? undefined : w.nodes.get(w.focusedKey);
     const pid = session.info.browser.pid;

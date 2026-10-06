@@ -1454,6 +1454,133 @@ async function trustChecks(o: { bridge: string; service: string; hostLog: string
   });
 }
 
+// ---- C1 item 3: the combobox handler on F1's task pages ----
+
+/** The one combobox of `s` whose name starts with `prefix`, as a page verb's target. */
+function combobox(s: PageSnapshot, prefix: string, taskId: string) {
+  const hits = s.frames.flatMap((frame) => frame.controls.filter((c) => c.kind === "combobox" && c.name.startsWith(prefix)).map((c) => ({ frame, c })));
+  if (hits.length !== 1 || hits[0] === undefined) throw new Error(`${hits.length} comboboxes named '${prefix}…': ${JSON.stringify(s.frames.flatMap((f) => f.controls.filter((c) => c.kind === "combobox").map((c) => c.name)))}`);
+  const { frame, c } = hits[0];
+  return { tabId: s.tabId, frameId: frame.frameId, documentId: frame.documentId, id: c.id, control: c.kind, name: c.name, taskId };
+}
+
+/** Waits until F1's oracle (probe.js, the page's own report) holds `value` for `field` of `page`; says what it holds. */
+async function oracleHolds(site: FixtureSite, page: string, field: string, value: string, ms = 3000): Promise<string> {
+  const end = Date.now() + ms;
+  let now: string | undefined;
+  while (Date.now() < end) {
+    try {
+      now = site.tasks.oracle.values(page)[field];
+    } catch {
+      now = undefined;
+    }
+    if (now === value) return now;
+    await sleep(100);
+  }
+  throw new Error(`the page reports ${page}.${field} as ${JSON.stringify(now)}, not ${JSON.stringify(value)}`);
+}
+
+/**
+ * C1 item 3: the three widgets of F1's task pages the handler failed on, each pick checked by the page's own state (the
+ * oracle's report from probe.js, and the DOM over the DevTools pipe), not by Caret's walk: wizard-2's School picker
+ * (options fetched from the server as you type, its list shown only once the field holds text), Ashby's location
+ * combobox (named only by its placeholder; the same picker), and four react-selects on Greenhouse's one form in its
+ * frame, two of them async. A value that names no option exactly stops, and leaves the page as it was. The tab goes
+ * back to /form at the end, for the checks after it that use the fixture's control channel.
+ */
+async function batchC1(e: Engine, site: FixtureSite): Promise<void> {
+  const cdp = e.cdp;
+  if (cdp === null) {
+    await check("C1: the combobox handler on F1's task pages", async () => {
+      throw new Error("no DevTools pipe, which these checks navigate with");
+    });
+    return;
+  }
+  const here = (await walk(e)).frames.find((f) => f.parentFrameId === -1);
+  const { sessionId } = await cdp.page(here === undefined ? site.mainOrigin : `${here.origin}${here.path}`);
+  const evaluate = async <T>(expression: string): Promise<T> => ((await cdp.send("Runtime.evaluate", { expression, returnByValue: true }, sessionId)) as { result: { value: T } }).result.value;
+  /** Navigates the tab over the pipe (task pages have no control channel) and walks until `ready` holds. */
+  const open = async (path: string, ready: (s: PageSnapshot) => boolean): Promise<PageSnapshot> => {
+    await cdp.send("Page.navigate", { url: `${site.mainOrigin}${path}` }, sessionId);
+    let last: PageSnapshot | null = null;
+    for (let i = 0; i < 40; i++) {
+      await sleep(250);
+      const s = await walk(e).catch(() => null);
+      if (s !== null) last = s;
+      if (s !== null && s.frames.some((f) => f.path === path) && ready(s)) return s;
+    }
+    throw new Error(`${path} did not show its controls; the last walk: ${JSON.stringify(last?.frames.map((f) => ({ path: f.path, comboboxes: f.controls.filter((c) => c.kind === "combobox").map((c) => c.name) })) ?? null)}`);
+  };
+  const hasBox = (prefix: string) => (s: PageSnapshot): boolean => s.frames.some((f) => f.controls.some((c) => c.kind === "combobox" && c.name.startsWith(prefix)));
+  const pickerValue = (oracle: string): Promise<string> => evaluate<string>(`document.querySelector('.picker[data-oracle="${oracle}"]').dataset.oracleValue`);
+  const pickerText = (oracle: string): Promise<string> => evaluate<string>(`document.querySelector('.picker[data-oracle="${oracle}"] input').value`);
+  const listboxes = (): Promise<number> => evaluate<number>(`document.querySelectorAll('[role="listbox"]').length`);
+
+  await check("C1: wizard-2's School picker, whose list shows only once the field holds text and is fetched as you type, is picked and verified by the page", async () => {
+    let s = await open("/tasks/wizard/2", hasBox("School"));
+    grant(e, "t-c1-school");
+    const r = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, "School", "t-c1-school"), expect: "", value: "Northfield State University" });
+    expect(r.outcome === "ok", `${outcome(r)} ${JSON.stringify(r.choice)}`);
+    await oracleHolds(site, "wizard-2", "school", "Northfield State University");
+    const dom = await pickerValue("school");
+    expect(dom === "Northfield State University" && (await listboxes()) === 0, `DOM: picked '${dom}', ${await listboxes()} lists open`);
+    // A value that is only part of an option's name ("Northfield" starts two) is not picked, and the page is as it was.
+    s = await open("/tasks/wizard/2", hasBox("School"));
+    grant(e, "t-c1-school2");
+    const part = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, "School", "t-c1-school2"), expect: "", value: "Northfield" });
+    expect(part.outcome === "failed" && part.readings?.afterBlur === "" && part.choice?.expanded === false, `a partial name: ${outcome(part)} ${JSON.stringify(part.readings)} ${JSON.stringify(part.choice)}`);
+    await oracleHolds(site, "wizard-2", "school", "");
+    expect((await pickerText("school")) === "" && (await pickerValue("school")) === "" && (await listboxes()) === 0, "the partial name left text, a pick or an open list on the page");
+    return `picked: oracle and DOM 'Northfield State University'; 'Northfield': ${part.detail}`;
+  });
+
+  await check("C1: Ashby's location combobox, named only by its placeholder, is picked by its question's name and verified by the page", async () => {
+    let s = await open("/tasks/ashby", hasBox("Where do you plan on working from"));
+    grant(e, "t-c1-ashby");
+    const t = combobox(s, "Where do you plan on working from", "t-c1-ashby");
+    const r = await runSlow(e, { kind: "pageChooseOption", ...t, expect: "", value: "San Diego, California, United States" });
+    expect(r.outcome === "ok", `${outcome(r)} ${JSON.stringify(r.choice)}`);
+    await oracleHolds(site, "ashby", "location", "San Diego, California, United States");
+    expect((await pickerValue("location")) === "San Diego, California, United States", "the DOM holds no pick");
+    // The note's own words ("San Diego, California") find one option whose name is longer: not picked (exact names only).
+    s = await open("/tasks/ashby", hasBox("Where do you plan on working from"));
+    grant(e, "t-c1-ashby2");
+    const short = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, "Where do you plan on working from", "t-c1-ashby2"), expect: "", value: "San Diego, California" });
+    expect(short.outcome === "failed" && short.readings?.afterBlur === "" && short.choice?.expanded === false, `the shorter name: ${outcome(short)}`);
+    await oracleHolds(site, "ashby", "location", "");
+    expect((await pickerText("location")) === "" && (await listboxes()) === 0, "the shorter name left text or an open list on the page");
+    return `'${t.name}' picked, oracle and DOM agree; 'San Diego, California': ${short.detail}`;
+  });
+
+  await check("C1: four react-selects on Greenhouse's one form (in its frame), two of them async, are each picked and verified by the page", async () => {
+    let s = await open("/tasks/greenhouse", (x) => ["Country", "Location (City)", "School", "Degree"].every((n) => hasBox(n)(x)));
+    grant(e, "t-c1-gh");
+    const picks: [string, string, string][] = [
+      ["Country", "country", "United States"],
+      ["Location (City)", "location", "Portland, Maine, United States"],
+      ["School", "school", "Lakeshore Polytechnic Institute"],
+      ["Degree", "degree", "Bachelor's degree"],
+    ];
+    const out: string[] = [];
+    for (const [name, field, value] of picks) {
+      s = await walk(e);
+      const r = await runSlow(e, { kind: "pageChooseOption", ...combobox(s, name, "t-c1-gh"), expect: "", value });
+      expect(r.outcome === "ok", `${name}: ${outcome(r)} ${JSON.stringify(r.choice)}`);
+      await oracleHolds(site, "greenhouse", field, value);
+      out.push(`${name} ${value}`);
+    }
+    // Each pick landed in its own control: none of the others moved.
+    const now = site.tasks.oracle.values("greenhouse");
+    expect(picks.every(([, f, v]) => now[f] === v), `the page reads ${JSON.stringify(Object.fromEntries(picks.map(([, f]) => [f, now[f]])))}`);
+    return out.join("; ");
+  });
+
+  // Back to /form, which has the fixture's control channel the checks after these navigate with.
+  const since = Date.now();
+  await cdp.send("Page.navigate", { url: `${site.mainOrigin}/form` }, sessionId);
+  await site.waitForLoad((h) => h.endsWith("/form"), since);
+}
+
 // ---- batch 3 (W3): the merge review's findings ----
 
 function need<T>(x: T | null, what: string): T {
@@ -2055,6 +2182,7 @@ async function main(): Promise<number> {
   // Batch 3 before the decoy page, which has no control channel to navigate away from.
   await batch3(e, site);
   await batch4(e, site, tmp);
+  await batchC1(e, site);
   await decoyCheck(e, site);
   await lateCheck({ exe, env, bridge, extensionId, tmp, host, helper, site, log });
   if (!args["no-reader"]) await readerCheck(session.info.browser.pid, tmp);

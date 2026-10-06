@@ -19,4 +19,4 @@
 {"type":"taskControl","v":1,"taskId":"goal-2-a1~1:s0","action":"undo"}
 {"type":"taskControl","v":1,"taskId":"goal-2-a1:s0","action":"undo"}
 {"type":"planRequest","v":1,"requestId":"a2","at":1790100004120,"instruction":"fill out this form from my note","windowId":"page:eng1:7"}
-{"type":"goalProgress","v":1,"at":1790100004420,"goalId":"goal-3-a2","requestId":"a2","event":"stopped","segment":null,"step":null,"reason":"refused","says":"Caret's model account is out of credits, so Caret can't do this. Add credits, then try again.","freshPlan":null}
+{"type":"goalProgress","v":1,"at":1790100004420,"goalId":"goal-3-a2","requestId":"a2","event":"stopped","segment":null,"step":null,"reason":"refused","says":"Caret's model account is out of credits. Add credits at console.typesafe.ai, then try again.","freshPlan":null}

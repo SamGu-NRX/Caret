@@ -69,7 +69,7 @@ final class WireH11Tests: XCTestCase {
         XCTAssertEqual(first.rows.first(where: { $0.label == "Country" }), .init(step: 2, label: "Country", value: "Canada", picked: true))
         XCTAssertEqual(first.attach, ["Resume"])
         XCTAssertEqual(previews.last?.page?.rows, [.init(step: 0, label: "Province", value: "Ontario", picked: true)])
-        XCTAssertEqual(stops.map(\.says), ["Caret's model account is out of credits, so Caret can't do this. Add credits, then try again."])
+        XCTAssertEqual(stops.map(\.says), ["Caret's model account is out of credits. Add credits at console.typesafe.ai, then try again."])
     }
 
     func testTheHostsGoalLinesAreTheGoldenOnes() throws {

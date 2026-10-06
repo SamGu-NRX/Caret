@@ -17,12 +17,13 @@ import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type ActionType, type App
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
-import type { ConfirmedFiles } from "../engines/attach.ts";
+import { ConfirmedFiles } from "../engines/attach.ts";
 import { classifyPress, type RiskClass } from "./risk.ts";
 import type { JournalPort, JournalRecord, LedgerEntry, PendingAct } from "./journal.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
+import { dependsOn } from "./dependents.ts";
 
 export interface ExecutorDeps {
   model: ScreenModel;
@@ -117,6 +118,20 @@ export interface RunOptions {
    * it was promoted. Every taskProgress of the task says so, for the host's toast.
    */
   unprompted?: boolean;
+  /**
+   * C1 (lead decision for item 4): a write whose page put the control back after it failed (VerbResult restored), and
+   * which the executor then reads back as it was, is left to the user with its reason (leftToYou) instead of stopping
+   * the run; the later steps that do not depend on it (dependents.ts) still run, in the same task and under the same
+   * undo. Only a caller that lists those fields as the user's sets it (goals/runs.ts); without it such a write stops
+   * the run, as every other failure does.
+   */
+  leaveFailedToYou?: boolean;
+}
+
+/** A step a run left to the user (RunOptions.leaveFailedToYou): its index in the plan, and the sentence that says why. */
+export interface LeftToYou {
+  step: number;
+  says: string;
 }
 
 export type Outcome = "done" | "stopped" | "handoff" | "paused";
@@ -223,6 +238,12 @@ interface Task {
   grant: { pid: number; windowId: string } | null;
   /** The reader holds a calendar grant for this task now (protocol.ts CalendarGrant). */
   calendarGranted: boolean;
+  /** RunOptions.leaveFailedToYou. */
+  leaveFailedToYou: boolean;
+  /** The steps this run left to the user, in order (RunOptions.leaveFailedToYou). */
+  left: LeftToYou[];
+  /** Later steps that depend on a step left to the user, with why each is left too: they are never written. */
+  dependents: Map<number, string>;
   /**
    * The window the user was in when the run started: writes there use "Write where you are", writes to any
    * other window "Reversible write elsewhere". Null when the model knows no frontmost window.
@@ -283,6 +304,21 @@ class FocusMoved extends Error {}
 
 /** A page engine's Yes/No press after which the page navigated or submitted (verbResult pageChanged, B28): it may have landed. */
 class PageChanged extends Error {}
+
+/**
+ * A page engine's failed dropdown pick that the page put back (verbResult restored, C1), with the reader's detail and
+ * every change the model recorded while the verb ran. Thrown with the message a refused act stops with, so a run that
+ * does not leave failed fields to the user stops exactly as before.
+ */
+class Restored extends Error {
+  readonly detail: string | null;
+  readonly seen: Change[];
+  constructor(message: string, detail: string | null, seen: Change[]) {
+    super(message);
+    this.detail = detail;
+    this.seen = seen;
+  }
+}
 
 export class Executor {
   private readonly tasks = new Map<string, Task>();
@@ -376,6 +412,9 @@ export class Executor {
       unprompted: opts.unprompted === true,
       grant: null,
       calendarGranted: false,
+      leaveFailedToYou: opts.leaveFailedToYou === true,
+      left: [],
+      dependents: new Map(),
       userWindow: this.userWindow(),
       reported: new Set(),
       handedOff: null,
@@ -770,7 +809,8 @@ export class Executor {
       task.finished = "done";
       // Fields this run wrote, each once however many writes it took; presses and calendar events are not fields.
       const written = new Set(task.ledger.flatMap((e) => (e.kind === "write" ? [`${e.windowId}\u0000${e.key}`] : []))).size;
-      this.progress(task, "done", null, `${task.acted} acted, ${task.skipped} already true`, null, { written });
+      const yours = task.left.length === 0 ? "" : `; left to you: ${task.left.map((l) => l.says).join(" ")}`;
+      this.progress(task, "done", null, clip(`${task.acted} acted, ${task.skipped} already true${yours}`, 2000), null, { written });
       this.reportUses(task, "done");
       return this.result(task, "done", null, null);
     } catch (e) {
@@ -841,6 +881,12 @@ export class Executor {
     if (await this.holds(task, i, w, end)) {
       task.skipped++;
       this.progress(task, "skipped", i, "already true");
+      return;
+    }
+    // A step that depends on one this run left to the user is left too, never written (RunOptions.leaveFailedToYou).
+    const dependent = task.dependents.get(i);
+    if (dependent !== undefined) {
+      this.leave(task, i, dependent);
       return;
     }
     if (end.kind === "windowFocused") return this.raiseStep(task, i, w, step);
@@ -921,7 +967,13 @@ export class Executor {
         throw e;
       }
     };
-    let seen = await sent(verb);
+    let seen: Change[];
+    try {
+      seen = await sent(verb);
+    } catch (e) {
+      if (e instanceof Restored) return this.leaveRestored(task, i, w, node, before, step, e);
+      throw e;
+    }
     // A field the walk lost right after the write (B15's WebKit window) is read once more before it is judged.
     if (attribute === "value" && this.window(w.window.windowId).nodes.get(node.key) === undefined) seen = [...seen, ...(await this.walk(this.window(w.window.windowId)))];
     // B15, B20: a web view whose window is not key answers a value write with ok and changes nothing. It takes
@@ -934,7 +986,13 @@ export class Executor {
       this.checkUnexpected(seen, node.key);
       this.checkInterrupt(task);
       this.progress(task, "acting", i, `${fallback.name}; the write before it changed nothing, so ${fallback.does}; expect ${prediction}`);
-      seen = [...seen, ...(await sent({ ...verb, attribute: fallback.name }))];
+      try {
+        seen = [...seen, ...(await sent({ ...verb, attribute: fallback.name }))];
+      } catch (e) {
+        // A fallback follows a write that answered ok: one the page then put back is a stop, as before C1.
+        if (e instanceof Restored) throw StepStop.stop("reader", e.message);
+        throw e;
+      }
       // A WebKit window that is not key can leave the field out of the walk right after a write (B15: the
       // field read as gone); one more read tells a field that is back from one that really went.
       if (this.window(w.window.windowId).nodes.get(node.key) === undefined) seen = [...seen, ...(await this.walk(this.window(w.window.windowId)))];
@@ -996,9 +1054,11 @@ export class Executor {
     if (files === undefined || link.attachFile === undefined || !w.window.windowId.startsWith("page:")) {
       throw StepStop.handoff(`Caret attaches files only on a page Caret for Chrome reads, so attaching ${end.wants} to ${what} is yours`);
     }
-    // The name, before the engine reads the confirmation (a read uses it up).
-    const name = files.confirmed(task.id)?.name;
-    if (name === undefined) throw StepStop.handoff(`no file was confirmed for this run, so attaching ${end.wants} to ${what} is yours`);
+    // The name and size, before the engine reads the confirmation (a read uses it up). P3: only a file confirmed for this
+    // very field; one confirmed for another field of the run is never spent here.
+    const confirmed = files.confirmed(task.id, ConfirmedFiles.target(w.window.windowId, node.key));
+    if (confirmed === null) throw StepStop.handoff(`no file was confirmed for ${what} in this run, so attaching ${end.wants} to it is yours`);
+    const name = confirmed.name;
     this.checkSession(task);
     this.checkInterrupt(task);
     this.authorizeAct(task, w.window.windowId);
@@ -1009,12 +1069,54 @@ export class Executor {
     if (r.verb.outcome !== "ok") throw StepStop.stop("reader", `the page did not take the file: ${r.verb.outcome}${r.verb.detail === null ? "" : ` (${r.verb.detail})`}`);
     // Verified by the page: a file input's own file list names the file; a drop shows its name on the page.
     const attached = r.page?.attached;
-    const landed = attached !== undefined && (attached.via === "input" ? attached.file?.name === name : attached.shown);
+    // P3: by name and size for an input (the content script checks both too), by the rendered name for a drop.
+    const landed = attached !== undefined && (attached.via === "input" ? attached.file?.name === name && attached.file.size === confirmed.size : attached.shown);
     if (!landed) {
       throw StepStop.stop("mismatch", "mismatch: the page does not show the attached file");
     }
     task.acted++;
     this.progress(task, "verified", i, null);
+  }
+
+  /**
+   * C1 (lead decision for item 4): a write the page put back after it failed (Restored). The run goes on only when it
+   * leaves failed fields to the user (RunOptions.leaveFailedToYou), every later step is a value write, the planned
+   * hand-off or an attach of a file the user confirmed for its own control (P3; a press may act on the form as it stands), and the executor's own read-back finds the field holding what it
+   * held before and nothing else in the window changed while the verb ran. Then the field is the user's, with the
+   * page's reason; the later steps that depend on it (dependents.ts) are left too; nothing goes in the undo ledger, since
+   * nothing landed. Any other case stops the run with the refusal's own message, as before.
+   */
+  private async leaveRestored(task: Task, i: number, w: WindowState, node: Node, before: string, step: Step, e: Restored): Promise<void> {
+    const later = task.plan.steps.slice(i + 1);
+    if (!task.leaveFailedToYou || later.some((s) => s.via !== undefined || (s.end.kind !== "valueEquals" && s.end.kind !== "handoff" && s.end.kind !== "fileAttached"))) throw StepStop.stop("reader", e.message);
+    // The name the plan gave the field (a goal's preview showed it), else the node's own label.
+    const label = (step.end.kind === "valueEquals" ? step.end.target.describe.trim() : "") || (node.label ?? "").trim() || step.says;
+    const seen = [...e.seen, ...(await this.walk(this.window(w.window.windowId)))];
+    this.checkInterrupt(task);
+    const now = this.window(w.window.windowId).nodes.get(node.key);
+    if (now === undefined || (now.value ?? "") !== before) {
+      throw StepStop.stop("reader", `${e.message}; Caret read '${clip(label)}' back as '${clip(now?.value ?? "(gone)")}', not '${clip(before)}' as before, so it stopped`);
+    }
+    // The control itself may have shown the filter and gone back; any other field that changed means more is at work.
+    this.checkUnexpected(seen, node.key);
+    this.leave(task, i, `'${clip(label)}' is yours: Caret could not set it, and put it back as it was (${clip(e.detail ?? "the page refused the pick", 240)}).`);
+    const window = JSON.stringify(step.end.kind === "valueEquals" ? step.end.window : null);
+    const name = step.end.kind === "valueEquals" ? step.end.target.describe : label;
+    task.plan.steps.forEach((s, j) => {
+      if (j <= i || task.dependents.has(j) || s.end.kind !== "valueEquals" || JSON.stringify(s.end.window) !== window || !dependsOn(name, s.end.target.describe)) return;
+      task.dependents.set(j, `'${clip(s.end.target.describe)}' is yours: it may depend on '${clip(name)}', which Caret left to you, so Caret did not write it.`);
+    });
+  }
+
+  /** Lists step `i` as the user's (RunOptions.leaveFailedToYou); the run goes on with the next step. */
+  private leave(task: Task, i: number, says: string): void {
+    task.left.push({ step: i, says });
+    this.deps.warn?.(`executor: task ${task.id} step ${i}: ${says}`);
+  }
+
+  /** The steps a run left to the user (RunOptions.leaveFailedToYou), in order; none for a task this executor does not hold. */
+  leftToYou(taskId: string): readonly LeftToYou[] {
+    return [...(this.tasks.get(taskId)?.left ?? [])];
   }
 
   private async pressStep(task: Task, i: number, w: WindowState, target: Target, step: Step): Promise<void> {
@@ -1140,6 +1242,7 @@ export class Executor {
       // user asked, not as a reader failure. An axError may follow an act that landed, so it keeps its path.
       if (r.outcome !== "ok" && r.outcome !== "axError" && task.interrupt !== null) throw new Interrupted();
       if (r.outcome === "focusMoved") throw new FocusMoved(r.detail ?? "focus moved");
+      if (r.outcome === "changed" && r.restored === true) throw new Restored(`the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`, r.detail, [...seen]);
       if (r.outcome !== "ok") throw StepStop.stop("reader", `the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
     } finally {
       off();
@@ -1221,6 +1324,9 @@ export class Executor {
       unprompted: r.unprompted,
       grant: null,
       calendarGranted: false,
+      leaveFailedToYou: false,
+      left: [],
+      dependents: new Map(),
       userWindow: null,
       reported: new Set(ledger),
       handedOff: null,
@@ -1626,7 +1732,8 @@ export class Executor {
       says,
       detail,
       cause,
-      remaining: task.plan.steps.slice(from).map((s) => s.says),
+      // Steps the run left to the user (RunOptions.leaveFailedToYou) are not reached, done or not.
+      remaining: [...task.left.map((l) => task.plan.steps[l.step]?.says ?? l.says), ...task.plan.steps.slice(from).map((s) => s.says)],
       undoable: task.finished !== null && task.ledger.some((e) => e.kind !== "press"),
       window: bound === undefined ? null : { app: bound.app, windowId: bound.window.windowId, title: bound.window.title, frame: bound.window.frame },
     });
@@ -1715,6 +1822,6 @@ function names(xs: readonly string[]): string {
   return xs.every((x) => x.startsWith("'")) ? `${xs.length} controls` : `${xs.length} fields`;
 }
 
-function clip(s: string): string {
-  return s.length <= 60 ? s : `${s.slice(0, 59)}…`;
+function clip(s: string, max = 60): string {
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }

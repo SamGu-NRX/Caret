@@ -154,7 +154,7 @@ describe("the confirmed file's run (helper, executor, page engine)", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(verbs(plain.sent).filter((v) => v.kind === "pageAttachFile")).toEqual([]);
     const handed = progress(plain.published, plain.offerKey).find((m) => m.phase === "handoff");
-    expect(handed?.detail).toContain("no file was confirmed for this run");
+    expect(handed?.detail).toContain("no file was confirmed for");
 
     const unseen = await setUp({ via: "input", file: { name: "other.pdf", size: 3 }, shown: false });
     const path = join(dir, "Resume.pdf");

@@ -1,0 +1,1 @@
+I6: helper tests with a page engine must route its apply to their own helper (capture it in a local); a shared 'helper' variable lets an earlier test's trailing walk land in the next test's model.

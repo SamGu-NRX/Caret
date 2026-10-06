@@ -10,7 +10,7 @@ import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
-import { JevHttpError, jevFailureSays, type AskJev, type JevRequest } from "./fill/jev.ts";
+import { jevFailureKind, type AskJev, type JevRequest } from "./fill/jev.ts";
 import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryValue, parseMemoryRef, proposeFill, type FillErrorWhy } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
@@ -23,6 +23,8 @@ import {
   type ActivityReply,
   type ActivityRequest,
   type FillAll,
+  type FileSave,
+  type FileSaveReply,
   type GoalAccept,
   type GoalEdit,
   type HelperError,
@@ -90,17 +92,19 @@ import { offerField } from "./offers/field.ts";
 import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
 import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planWithCode } from "./planner/codeplan.ts";
-import { GoalRuns } from "./goals/runs.ts";
+import { ConfirmedFiles } from "./engines/attach.ts";
+import { SavedFiles, type AttachedFile } from "./goals/saved-files.ts";
+import { readyOnLoad } from "./offers/ready-on-load.ts";
+import { GoalRuns, type Replan } from "./goals/runs.ts";
 import { planGoal } from "./goals/propose.ts";
 import { continuationScope, planPage } from "./goals/page-planner.ts";
 import { GoalError, type DonePress } from "./goals/lower.ts";
-import type { GoalPlan, LeftItem, PageGoal } from "./goals/plan.ts";
+import type { AttachOffer, GoalPlan, LeftItem, PageGoal } from "./goals/plan.ts";
 import type { FillScope } from "./fill/fill.ts";
 import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
-import { fillSays, SaidError, SAYS, saysFor } from "./planner/says.ts";
+import { fillSays, jevFailureSays, SaidError, SAYS, saysFor } from "./planner/says.ts";
 import { planAttach } from "./planner/attach.ts";
-import { ConfirmedFiles } from "./engines/attach.ts";
 import { isPageWindow } from "./engines/windows.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
 import { headsIntentMaker } from "./planner/intent-heads.ts";
@@ -129,6 +133,7 @@ import type { ValueKind } from "./protocol.ts";
 import { OFFER_WHEN, sentences, type EventCandidate, type SentenceSource } from "./offers/event-card.ts";
 import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
+import { TabSource, TabTextExpired, type TabReader } from "./engines/tab-source.ts";
 
 /**
  * The router above the producers (routing/coordinator.ts). With it, no producer makes an ambient offer on its own: a
@@ -212,10 +217,21 @@ export interface HelperOptions {
    */
   pageDocument?: (windowId: string) => string | null;
   /**
+   * P3: in-process callers (no host session: tests, evaluations) play a host that shows attach rows
+   * (GOAL_FILES_CAPABILITY). A host on the socket says so in its hello instead.
+   */
+  goalFiles?: boolean;
+  /**
    * S1: a page window's address (origin and path of its top frame) and its h1 and h2 headings, from the page engines.
    * Saved answers record the address, and the organization guard reads both. Absent: neither is known.
    */
   pageContext?: (windowId: string) => PageContext | null;
+  /**
+   * P4: the page engines' read of the tab the user just left (engines/tab-source.ts pageTabReader). When set, a fill
+   * whose window just left is a page reads that tab's visible text once and holds it for that fill and its offer.
+   * Absent: page windows give fill their controls only, as before.
+   */
+  tabReader?: TabReader;
   /** Fault-injection seam for the planner evaluation; see PlanTaskOptions.beforeCheck. Never set in normal use. */
   plannerHooks?: Pick<PlanTaskOptions, "beforeCheck">;
   /**
@@ -360,6 +376,12 @@ export class Helper {
   readonly executor: Executor;
   /** The file each run may attach, as the user confirmed it in the slip (H5, lead decision 7). */
   readonly files: ConfirmedFiles;
+  /** P3: host sessions that declared GOAL_FILES_CAPABILITY: only their page goals get attach rows (filesFor). */
+  private readonly goalFileHosts = new Set<string>();
+  /** P3: the page document each page window's load last asked a Fill all for (pageWalked): once per document. */
+  private readonly loadAsked = new Map<string, string>();
+  /** P3: saved files, offered in attach rows and kept on the user's yes (goals/saved-files.ts). */
+  private readonly savedFiles: SavedFiles;
   readonly memory: MemoryStore;
   /** Runs saved before each act; what a crash left in it is recovered at start (recoverInterrupted). */
   readonly journal: RecoveryJournal;
@@ -384,6 +406,16 @@ export class Helper {
    * or a source; see checkFills and onFillFocus.
    */
   private readonly fillPopups = new Map<string, { p: GroundedProposal; form: string }>();
+  /** P4: the text of the tab the user just left, held for a fill and its offer (engines/tab-source.ts); null without page engines. */
+  private readonly tabSource: TabSource | null;
+  private fillSeq = 0;
+  /** I6: goals whose page plan is being made, by goal id, with the page window it plans. */
+  private readonly pagePlanning = new Map<string, string>();
+  /**
+   * I6: the page windows any goal's plan read as the tab the user left (the newest TAB_WINDOWS): a goal that ends forgets
+   * the values its plan, or a goal it replaces, took from them (GoalRuns.forgetSource).
+   */
+  private readonly tabWindows = new Set<string>();
   /**
    * Each fill request in flight, with every focus in an editable field of the app the user is in since
    * it began, so a pop-up whose Jev answer arrives late can see whether one of them left the form.
@@ -453,6 +485,10 @@ export class Helper {
     this.offers = new HostOfferRegistry(this.now);
     this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) }, opts.offersPerHour ?? null);
     this.readerConnected = opts.readerLink !== undefined && opts.readerAnswers === undefined;
+    this.tabSource =
+      opts.tabReader === undefined
+        ? null
+        : new TabSource({ model: this.model, reader: opts.tabReader, now: this.now, count: (m) => opts.store.count(m, 1), dropped: (id, owners) => this.tabTextDropped(id, owners), pinned: (owner) => this.goalHolds(owner) });
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     const jev = opts.askJev;
     // Recorded once the request has gone and been answered, or as failed: a client that throws before
@@ -467,6 +503,9 @@ export class Helper {
               return r;
             } catch (e) {
               this.recordRead(req, "failed");
+              // How Jev failed, by kind, for every caller (Ask, fill, goals, routers): the counts the debug view reads.
+              const kind = jevFailureKind(e);
+              if (kind !== null) opts.store.count(`jev.failed_${kind}`, 1);
               throw e;
             }
           };
@@ -555,6 +594,17 @@ export class Helper {
     if (this.memory.migration.outcome === "migrated" || this.memory.migration.outcome === "resumed") opts.store.count("memory.migrated", this.memory.migration.moved);
     // An edit in an editor or the memory window withdraws the offers that used it and revokes tasks that copy it.
     this.memory.onOutsideChange = (changes) => this.memoryChangedOutside(changes);
+    this.savedFiles = new SavedFiles({
+      model: this.model,
+      documents: () => this.memory.files,
+      askJev: () => this.ask,
+      publish: (m) => this.publish(m),
+      pageContext: (id) => this.opts.pageContext?.(id) ?? null,
+      hostShowsFiles: (session) => this.filesFor(session),
+      now: () => this.now(),
+      newId: () => this.opts.newId?.() ?? randomUUID(),
+      count: (metric) => this.opts.store.count(metric, 1),
+    });
     this.goals = new GoalRuns({
       executor: this.executor,
       model: this.model,
@@ -566,8 +616,15 @@ export class Helper {
       bind: (taskId, session) => this.bindNew(taskId, session),
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
-      replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed) : this.replanPage(r.goalId, r.instruction, r.page, r.owed)),
+      replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed) : this.replanPage(r.goalId, r.instruction, r.page, r.owed, r)),
+      // P3: the file the user confirmed in a preview, read once and bound to that attach step's field for that task.
+      confirmFile: (taskId, path, windowId, key) => this.files.confirm(taskId, path, ConfirmedFiles.target(windowId, key)),
+      forgetFile: (taskId) => this.files.forget(taskId),
+      onAttached: (a) => this.offerFileSave(a),
       aboutNow: (id) => this.aboutNow(id),
+      // I6: a page goal's sources may be the tab the user left, which its plan read and holds until the goal ends.
+      sourceModel: (goalId) => this.fillModel(goalId),
+      ended: (goalId) => this.goalEnded(goalId),
       // P2: a page goal's one read of its page before it ends (engines/page-link.ts no longer walks after each write).
       walk: async (windowId) => {
         const w = this.model.windows.get(windowId);
@@ -791,6 +848,7 @@ export class Helper {
         this.record(this.transfers.flush());
         this.shadowLogger.close();
         this.model.reset();
+        this.tabSource?.drop();
         forgetWindows();
         this.text.clear();
         this.executor.readerRestarted(m.session);
@@ -943,6 +1001,42 @@ export class Helper {
     this.audit?.left(windowId, at);
   }
 
+  /**
+   * P3, ready on load (plans/fast-browser.md "Ambient: ready on load"): the page engine walked the active tab of the
+   * browser the user is in (engines/page-focus.ts), which it does when focus moves and when a document becomes ready.
+   * The producer that offers Fill all on focus then runs with no focus, once per document, with the same sources,
+   * settings and privacy as on focus (fill()), from the first field with a candidate. Code checks first that the page
+   * is worth a Jev request (offers/ready-on-load.ts: two fields with a candidate from memory or the window the user
+   * left; never a search box, a login form's credentials or a payment form). A page a carried goal is planning
+   * (runs.ts carry) is left to it.
+   */
+  pageWalked(windowId: string): void {
+    if (this.ask === null || this.mode !== "live") return;
+    const doc = this.opts.pageDocument?.(windowId) ?? null;
+    if (doc === null || this.loadAsked.get(windowId) === doc || this.goals.carrying(windowId, doc)) return;
+    const now = this.now();
+    // I6: counted, since a hold ends the load's offer before the code check: W4's five saved pages read 0 of 5 in P3's
+    // eval because the first four corpus pages had spent the hour's four offers (balanced), not because of the check.
+    const held = this.gate.holds("fill", now);
+    if (held.length > 0) {
+      this.opts.store.count(`fill.load_held_${held[0]}`, 1, now);
+      return;
+    }
+    if (this.goalOnPage(windowId)) {
+      this.opts.store.count("fill.load_held_goal", 1, now);
+      return;
+    }
+    const w = this.model.windows.get(windowId);
+    if (w === undefined) return;
+    const v = readyOnLoad(this.model, w, this.aboutValues(), { excluded: this.opts.pageContext?.(windowId)?.excluded ?? {} });
+    if (!v.fires) return;
+    this.loadAsked.delete(windowId);
+    this.loadAsked.set(windowId, doc);
+    if (this.loadAsked.size > LOAD_DOCUMENTS) this.loadAsked.delete(this.loadAsked.keys().next().value as string);
+    this.opts.store.count("fill.load", 1, now);
+    void this.fill(windowId, v.trigger, false);
+  }
+
   handleConsumer(m: FillRequest): Promise<FillProposal | null> {
     return this.fill(m.windowId, m.fieldKey, true);
   }
@@ -1008,9 +1102,10 @@ export class Helper {
    * A host session connected: a consumer on the socket (HelperServer), or an in-process caller that plays
    * the host, such as an evaluation that answers offers itself. Runs with no Tab start only while one is.
    */
-  hostConnected(session: string, routing = false): void {
+  hostConnected(session: string, routing = false, goalFiles = false): void {
     this.sessions.add(session);
     this.hosts.add(session);
+    if (goalFiles) this.goalFileHosts.add(session);
     if (routing) {
       this.routingHosts.add(session);
       // Write is legal from now: the moment is decided again with it.
@@ -1052,6 +1147,7 @@ export class Helper {
    */
   hostDisconnected(session: string): void {
     this.hosts.delete(session);
+    this.goalFileHosts.delete(session);
     if (this.routingHosts.delete(session)) {
       // What that host said about the field (selection, composing) no longer holds, and write is not legal without it.
       this.routing?.hostEditing(null);
@@ -1158,21 +1254,25 @@ export class Helper {
     if (!this.readerConnected) return refuse("No screen reader is connected");
     const session0 = this.readerSession;
     try {
-      const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page) : await this.goalPlan(goalId, instruction, [], first);
+      const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page, { session }) : await this.goalPlan(goalId, instruction, [], first);
       if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
       this.opts.store.count("goal.proposed", 1);
       return this.goals.propose(plan, session, requestId);
     } catch (e) {
-      // H11: Jev failing while a page is planned (fill's round) is said as an Ask's is, not as the planner's own failure.
-      if (e instanceof JevHttpError) {
-        this.opts.store.count("goal.refused_jev", 1);
-        this.opts.warn?.(`goal ${goalId}: ${e.message}`);
+      // A page goal's Jev round (fill's asks) failing: said as an Ask's Jev failure is, never as the planner's own.
+      const kind = jevFailureKind(e);
+      if (kind !== null) {
+        this.opts.store.count(`goal.refused_jev_${kind}`, 1);
+        this.opts.warn?.(`goal ${goalId}: ${e instanceof Error ? e.message : String(e)}`);
         return refuse(jevFailureSays(e, SAYS.unreachable));
       }
       if (!(e instanceof GoalError)) throw e;
       this.opts.store.count(`goal.refused_${e.code}`, 1);
-      this.opts.warn?.(`goal ${goalId}: ${e.message}`);
+      this.opts.warn?.(`goal ${goalId}: ${e.fromTab ? `refused (${e.code}); not logged, since it may quote the tab you left` : e.message}`);
       return refuse(e.says.charAt(0).toUpperCase() + e.says.slice(1));
+    } finally {
+      // I6: a goal that was never offered lets go of what its plan read of the tab the user left.
+      if (this.goals.get(goalId) === null) this.goalEnded(goalId);
     }
   }
 
@@ -1256,13 +1356,68 @@ export class Helper {
    * A page goal (P2): the page planner over the Ask's scope on that page, fill's picks gated by fill. Throws GoalError
    * when nothing can be offered; with no Jev, no page engine document, or no page, it refuses.
    */
-  private pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[] } = {}): Promise<GoalPlan> {
+  private async pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string> } = {}): Promise<GoalPlan> {
     const ask = this.ask;
     const pageDocument = this.opts.pageDocument;
     if (ask === null) throw new GoalError("unchecked", "Jev is off, so Caret can't choose this page's values");
     if (pageDocument === undefined) throw new GoalError("nothingToDo", "no page engine is connected, so Caret can't tell which page this is");
+    // I6: the page's values may come from the tab the user just left, read now (P4's rules, TabSource.readFor) and held
+    // for this goal alone until it ends (GoalRuns ended); its acceptance and run check those sources in the same view
+    // (GoalRuns sourceModel). A plan that is never offered lets the text go.
+    const tab = this.askTabRead(goalId, ask);
+    this.pagePlanning.set(goalId, windowId);
+    try {
+      const plan = await this.planPageWith(await tab.fillModel(windowId), tab.ask, pageDocument, goalId, instruction, windowId, page, more);
+      if (tab.expired()) throw new GoalError("nothingToDo", SAYS.tabExpired);
+      const from = tab.windowRead();
+      if (from !== null) {
+        this.tabWindows.delete(from);
+        this.tabWindows.add(from);
+        if (this.tabWindows.size > TAB_WINDOWS) this.tabWindows.delete(this.tabWindows.values().next().value as string);
+      }
+      return plan;
+    } catch (e) {
+      // Read before the release below, which would make any read text look dropped.
+      const gone = tab.expired();
+      this.pagePlanning.delete(goalId);
+      this.tabSource?.release(goalId);
+      // Rule 6: a Jev call refused because the text was dropped (askTabRead) is said as that, not as a model failure.
+      if (gone) throw new GoalError("nothingToDo", SAYS.tabExpired);
+      if (e instanceof GoalError && tab.windowRead() !== null) e.fromTab = true;
+      throw e;
+    }
+  }
+
+  /** I6: a page window a goal is planning (pagePlan), or one whose goal waits for its acceptance or runs. */
+  private goalOnPage(windowId: string): boolean {
+    return [...this.pagePlanning].some(([g, w]) => w === windowId && this.goalHolds(g)) || this.goals.previewing(windowId);
+  }
+
+  /** I6: whether `owner` is a goal that is planning, waiting or running: its tab text is pinned (TabSource.pinned). */
+  private goalHolds(owner: string): boolean {
+    const g = this.goals.get(owner);
+    // Planned and not yet offered (pagePlan's entry stays until the goal is offered and ends, or is never offered), or
+    // waiting or running: no gap between planning and the preview in which an ambient read could take the text.
+    if (g === null) return this.pagePlanning.has(owner);
+    return g.state === "awaiting" || g.state === "running";
+  }
+
+  /**
+   * I6: a goal ended (or a plan made for it was never offered). What it held of the tab the user left goes, and once the
+   * goal's own end has been worked out, the values its plan took from that tab are forgotten from the plan it keeps.
+   */
+  private goalEnded(goalId: string): void {
+    this.pagePlanning.delete(goalId);
+    this.tabSource?.release(goalId);
+    if (this.tabWindows.size === 0) return;
+    const windows = new Set(this.tabWindows);
+    queueMicrotask(() => this.goals.forgetSource(goalId, windows));
+  }
+
+  private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string> }): Promise<GoalPlan> {
     return planPage(this.model, {
       goalId,
+      ...(sources === this.model ? {} : { sources }),
       instruction,
       windowId,
       scope: page.scope,
@@ -1277,20 +1432,46 @@ export class Helper {
       ...(more.owed === undefined ? {} : { carried: { owed: more.owed } }),
       ...(more.revealed === undefined ? {} : { revealed: more.revealed }),
       ...(this.opts.newId === undefined ? {} : { fill: { newId: this.opts.newId } }),
+      // P3: attach rows only for a host that shows them; each offers a saved file a Jev choice matched, or a chooser.
+      ...(this.filesFor(more.session) ? { attachOffer: (w: WindowState, n: Node, label: string) => this.attachOffer(w, n, label), attached: more.attached ?? new Set<string>() } : {}),
     });
+  }
+
+  /** P3: what a file control's attach row offers (goals/saved-files.ts). */
+  private attachOffer(w: WindowState, n: Node, label: string): Promise<AttachOffer> {
+    return this.savedFiles.offer(w, n, label);
+  }
+
+  /** P3: an attach of a file the user confirmed verified: the saved-file offers may ask to keep it. */
+  private offerFileSave(a: AttachedFile): void {
+    if (this.mode === "live") this.savedFiles.attached(a);
+  }
+
+  /** P3: the user's yes to keeping a file (fileSave), from a host that declared GOAL_FILES_CAPABILITY. */
+  handleFileSave(m: FileSave, session?: string): FileSaveReply {
+    this.opts.store.count("file.save", 1);
+    return this.savedFiles.save(m, session);
+  }
+
+  /** P3: whether a goal offered to `session` may show attach rows: its host declared GOAL_FILES_CAPABILITY, or (in process) the options say so. */
+  private filesFor(session: string | undefined): boolean {
+    return session === undefined ? this.opts.goalFiles === true : this.goalFileHosts.has(session);
   }
 
   /**
    * A fresh plan for a page goal (P2): after a stop, the same scope on the page as it is now; after its writes revealed
    * controls (runs.ts afterReveal), those controls alone, under the scope's sources and person. Null when none.
    */
-  private async replanPage(goalId: string, instruction: string, page: PageGoal & { revealed?: readonly string[] }, owed: readonly LeftItem[]): Promise<GoalPlan | null> {
+  private async replanPage(goalId: string, instruction: string, page: PageGoal & { revealed?: readonly string[] }, owed: readonly LeftItem[], r: Pick<Replan, "completed" | "session" | "why">): Promise<GoalPlan | null> {
     if (this.mode !== "live" || this.gate.settings.paused) return null;
+    // P3: a file control this goal (or one it replaces) already attached to, on this document, gets no second file. A
+    // carried goal's receipts name the old document's keys (runs.ts keepCarry), so none of them match the new page.
+    const attached = new Set(r.completed.filter((x) => x.target.windowId === page.windowId).map((x) => x.target.key));
     try {
-      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
+      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, session: r.session, attached, ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
     } catch (e) {
       if (!(e instanceof GoalError)) throw e;
-      this.opts.warn?.(`goal ${goalId}: no fresh page plan: ${e.message}`);
+      this.opts.warn?.(`goal ${goalId}: no fresh page plan: ${e.fromTab ? `${e.code}; not logged, since it may quote the tab you left` : e.message}`);
       return null;
     }
   }
@@ -1378,6 +1559,17 @@ export class Helper {
    * and an Ask whose route is plan, asked by a host that runs goal plans (`canGoal`), is offered as a goal (B30).
    */
   private async planAndPropose(requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal = false): Promise<PlanProposal | AskQuestion | GoalProgress> {
+    let offerKey = `plan-${++this.planSeq}-${requestId}`;
+    while (this.idTaken(offerKey)) offerKey = `plan-${++this.planSeq}-${requestId}`;
+    try {
+      return await this.planAndOffer(offerKey, requestId, instruction, windowId, resume, from, canAsk, canGoal);
+    } finally {
+      // I6: only a recorded offer keeps what its Ask read of the tab the user left.
+      if (!this.planOffers.has(offerKey)) this.tabSource?.release(offerKey);
+    }
+  }
+
+  private async planAndOffer(offerKey: string, requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean, canGoal: boolean): Promise<PlanProposal | AskQuestion | GoalProgress> {
     const store = this.opts.store;
     // Every refusal carries the user's sentence (H5): a SaidError's own, or the one for its code.
     const fail = (code: Parameters<typeof planError>[1], detail: string, says?: string): PlanProposal => this.planFailed(requestId, code, detail, says);
@@ -1387,11 +1579,12 @@ export class Helper {
     if (this.mode !== "live") return fail("unavailable", "the helper is in shadow mode");
     if (this.gate.settings.paused) return fail("unavailable", "Caret is paused", SAYS.paused);
     if (!this.readerConnected) return fail("unavailable", "no reader is connected", SAYS.noReader);
-    let offerKey = `plan-${++this.planSeq}-${requestId}`;
-    while (this.idTaken(offerKey)) offerKey = `plan-${++this.planSeq}-${requestId}`;
     const session = this.readerSession;
     let draft: PlanDraft;
     const askConfig = this.askConfig;
+    // I6: an Ask's fill step may read the tab the user just left (engines/tab-source.ts), held for this offer only: it
+    // goes when the Ask ends without an offer, or when the offer is withdrawn or its acceptance has checked it.
+    const tab = this.askTabRead(offerKey, ask);
     // "Attach my resume" (H5): code plans it, with no model, when the page holds a file input that fits.
     let attachDraft: PlanDraft | null = null;
     try {
@@ -1407,7 +1600,9 @@ export class Helper {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
         const maker = askConfig.maker === "writer" ? writerIntentMaker(askConfig.writer, () => offerKey) : askConfig.maker === "heads" ? headsIntentMaker(ask) : jevIntentMaker(ask);
-        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...this.opts.plannerHooks });
+        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: tab.ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, fillModel: tab.fillModel, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...this.opts.plannerHooks });
+        // Rule 6: text that was dropped while Jev answered offers nothing made from it.
+        if (tab.expired()) return fail("unseenWindow", SAYS.tabExpired, SAYS.tabExpired);
         store.count(`plan.ask_${d.route}`, 1);
         this.countAskRoute(d.route === "goal" ? "plan" : d.route);
         if (d.route === "goal") {
@@ -1416,6 +1611,7 @@ export class Helper {
         }
         draft = d;
       } catch (e) {
+        if (tab.expired()) return fail("unseenWindow", SAYS.tabExpired, SAYS.tabExpired);
         if (!(e instanceof PlannerError)) throw e;
         if (e instanceof AskRefused && e.intent !== null) this.countAskRoute(e.intent.route);
         // B29: a question with choices, to a consumer that said it can answer one; anyone else reads the refusal.
@@ -1472,6 +1668,32 @@ export class Helper {
     return reply;
   }
 
+  /**
+   * I6: what an Ask's fill step reads the tab the user just left with, for the offer `offerKey`. `fillModel` reads it,
+   * at most once, when planAsk reaches its fill step for a form, under P4's rules (TabSource.readFor), and returns the
+   * view only this offer sees; a failed read leaves the model as it is. Once it read, `ask` refuses every later Jev call
+   * after the text was dropped (rule 6, as fill's askHere), and `expired` says it was dropped.
+   */
+  private askTabRead(offerKey: string, ask: NonNullable<Helper["ask"]>): { fillModel: (formWindowId: string) => Promise<ScreenModel>; ask: NonNullable<Helper["ask"]>; expired: () => boolean; windowRead: () => string | null } {
+    let tried = false;
+    let read = false;
+    let windowRead: string | null = null;
+    const held = (): boolean => this.tabSource?.holds(offerKey) === true;
+    return {
+      fillModel: async (formWindowId) => {
+        if (tried || this.tabSource === null) return this.fillModel(offerKey);
+        tried = true;
+        const r = await this.tabSource.readFor(formWindowId, offerKey).catch(() => ({ refused: "refused" as const }));
+        read = "windowId" in r;
+        windowRead = "windowId" in r ? r.windowId : null;
+        return this.fillModel(offerKey);
+      },
+      ask: (req) => (!read ? ask(req) : held() ? ask({ ...req, retry429: false }) : Promise.reject(new TabTextExpired())),
+      expired: () => read && !held(),
+      windowRead: () => windowRead,
+    };
+  }
+
   /** Keeps a question for its answer and builds its message; the options carry ids only, never keys or window ids. */
   private askQuestion(requestId: string, q: AskQuestionDraft, from: string | undefined): AskQuestion | PlanProposal {
     const at = this.now();
@@ -1525,9 +1747,13 @@ export class Helper {
   private async acceptPlan(offerKey: string): Promise<AcceptResult> {
     const p = this.planOffers.get(offerKey);
     if (p === undefined) return { refused: "the plan was withdrawn" };
+    // I6: its sources are checked against what this offer read of the tab the user left, while it still holds that text
+    // (a value from text that was dropped is then in no window, so the check refuses it), as fill's recheck is. Taken
+    // here, before the withdrawal lets the text go: the run carries its values as slots.
+    const sources = this.fillModel(offerKey);
     this.withdrawPlan(offerKey, "taken");
     try {
-      const now = validatePlan(p.draft.plan, p.draft.slots, { model: this.model, memory: this.plannerMemory(), instruction: p.instruction });
+      const now = validatePlan(p.draft.plan, p.draft.slots, { model: sources, memory: this.plannerMemory(), instruction: p.instruction });
       // The plan names its window by app and title; a window that replaced the proposed one under the same
       // title is another window, and the destinations' expected values were read from the first.
       const proposed = p.draft.checked.window.window.windowId;
@@ -1541,6 +1767,7 @@ export class Helper {
 
   private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings" | "stale"): void {
     if (!this.planOffers.delete(offerKey)) return;
+    this.tabSource?.release(offerKey);
     this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
   }
 
@@ -1777,6 +2004,8 @@ export class Helper {
     const p = checked.p;
     this.bindNew(taskId, session);
     const { plan, slots } = fillPlan(this.model, p);
+    // P4: the run carries its values as slots; the text they were read from is not needed past this point.
+    this.tabSource?.release(m.proposalId);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
     return this.runFrom("fill", taskId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
   }
@@ -2231,6 +2460,7 @@ export class Helper {
   shutdown(): void {
     // First, so nothing a late reply or a producer's answer starts reaches the router after the stores close (R2).
     this.routing?.stop();
+    this.tabSource?.drop();
     this.record(this.transfers.flush());
     this.patterns.shutdown();
     this.pending.shutdown();
@@ -2296,7 +2526,7 @@ export class Helper {
     try {
       formKey = `${windowId}|${formFields(w, key).map((n) => n.key).sort().join(",")}`;
     } catch (e) {
-      this.fillFailed(e instanceof FillError ? e.message : String(e), e instanceof FillError ? e.why : null);
+      this.fillFailed(e instanceof Error ? e.message : String(e), e instanceof FillError ? e.why : null, e);
       return null;
     }
     if (this.inflight.has(formKey)) {
@@ -2305,19 +2535,34 @@ export class Helper {
       return null;
     }
     if (!explicit && this.fillCovered(formKey, w, key, now)) return null;
+    // I6: a page the user's Ask is planning, previewing or filling as a goal is that goal's: an ambient Fill all would
+    // offer the same fields twice, and its read of the tab the user left would take the text the goal's plan holds.
+    if (!explicit && this.goalOnPage(windowId)) {
+      store.count("fill.held_goal", 1, now);
+      return null;
+    }
     this.inflight.add(formKey);
     const session = this.readerSession;
     const focuses: { windowId: string; key: string }[] = [];
     this.pendingFills.add(focuses);
+    // P4: this fill holds the text of the tab the user just left, if it may be read (engines/tab-source.ts), until the
+    // fill ends here or passes it to the offer it made.
+    const reading = `fill:${++this.fillSeq}`;
     try {
+      const read = await this.tabSource?.readFor(windowId, reading, { ambient: !explicit });
+      const fromTab = read !== undefined && "windowId" in read;
+      // Rule 6: once the text this fill read is dropped (its time ran out, its site was turned off), Jev hears nothing
+      // more of this fill and nothing is offered from it.
+      // The client's own retry after a 429 is off for such a fill: it would send the request again unchecked (P4 review).
+      const askHere: typeof ask = fromTab ? (req) => (this.tabSource?.holds(reading) === true ? ask({ ...req, retry429: false }) : Promise.reject(new TabTextExpired())) : ask;
       const saved = this.answersForFill(windowId);
-      const asked = await proposeFill(this.model, ask, windowId, key, now, {
+      const asked = await proposeFill(this.fillModel(reading), askHere, windowId, key, now, {
         about: this.aboutValues(),
         ...(saved === null ? {} : saved),
         ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
         ...(this.opts.newId === undefined ? {} : { newId: this.opts.newId }),
       });
-      const p = session === this.readerSession ? this.revalidate(asked) : null;
+      const p = session === this.readerSession && (!fromTab || this.tabSource?.holds(reading) === true) ? this.revalidate(asked) : null;
       this.lastFill.set(formKey, now);
       if (p === null) {
         store.count("fill.stale", 1, now);
@@ -2340,7 +2585,7 @@ export class Helper {
       // What it leaves to the user, the pop-up lists.
       const grounded = writtenFields(p, this.model.windows.get(p.windowId));
       if (!explicit && fillPopupEligible(p)) {
-        const over = this.fillOverBeforeShown(grounded, formKey, focuses);
+        const over = this.fillOverBeforeShown(grounded, formKey, focuses, reading);
         if ("stale" in over) {
           store.count("fill.popup_stale", 1, now);
           return p;
@@ -2348,7 +2593,8 @@ export class Helper {
         // P2: a field that failed its recheck is listed as the user's, with why, and the rest is offered.
         const written = over.p;
         store.count("fill.popup", 1, now);
-        if (this.publish(buildFillPopup(this.model, written), () => this.acceptFill(written))) {
+        if (this.publish(buildFillPopup(this.fillModel(reading), written), () => this.acceptFill(written))) {
+          this.tabSource?.pass(reading, written.id);
           this.fillPopups.set(written.id, { p: written, form: formKey });
           // The hour runs from when the offer is shown, not from when it was asked for.
           this.gate.spoke(this.now());
@@ -2366,17 +2612,49 @@ export class Helper {
         // For the host's Command-1 (fillAll), which runs the whole proposal as the pop-up's Fill all does.
         proposal: p,
       });
+      this.tabSource?.pass(reading, p.id);
       this.publish(p);
       if (!explicit && p.fields.some((f) => f.value !== null)) this.gate.spoke(this.now());
       return p;
     } catch (e) {
+      if (e instanceof TabTextExpired) {
+        store.count("fill.tab_text_expired", 1, now);
+        return null;
+      }
       store.count("fill.error", 1, now);
-      this.fillFailed(e instanceof FillError ? e.message : String(e), e instanceof FillError ? e.why : null);
+      this.fillFailed(e instanceof Error ? e.message : String(e), e instanceof FillError ? e.why : null, e);
       return null;
     } finally {
+      this.tabSource?.release(reading);
       this.pendingFills.delete(focuses);
       this.inflight.delete(formKey);
       if (this.refillAfter.delete(formKey)) this.refillFocused();
+    }
+  }
+
+  /**
+   * The model as one fill, or the offer it made (`owner`: the fill's token, or the offer's id), reads it: with the text
+   * of the tab the user just left while that text is held for this owner (P4, engines/tab-source.ts), else the model
+   * itself. Only fill's paths read this, and only for their own owner; nothing else ever sees the text.
+   */
+  private fillModel(owner: string): ScreenModel {
+    return this.tabSource?.viewFor(owner) ?? this.model;
+  }
+
+  /**
+   * P4: the text of a tab the user left was dropped. A pop-up made from it is checked again (and withdrawn, since its
+   * source is gone), and every per-field proposal made by a fill that held it is forgotten whole, whatever its fields'
+   * sources say, since a proposal also keeps the candidates it asked about (P4 review), so no copy outlives it here.
+   */
+  private tabTextDropped(windowId: string, owners: readonly string[]): void {
+    this.checkFills(windowId);
+    for (const id of owners) this.proposals.delete(id);
+    // I6: an Ask's offer made by a fill that held it is withdrawn whole, as such a proposal is: its draft keeps the fill's
+    // proposal, with the candidates it asked about. A goal's preview whose values that text showed stops
+    // (GoalRuns.sourceDropped); the goal's plan keeps only the values and spans fill chose (page-planner.ts sources).
+    for (const id of owners) {
+      if (this.planOffers.has(id)) this.withdrawPlan(id, "stale");
+      this.goals.sourceDropped(id);
     }
   }
 
@@ -2648,7 +2926,7 @@ export class Helper {
    * empty for the user, and the log names why.
    */
   private recheckKept(p: GroundedProposal): { p: GroundedProposal } | { refused: string } {
-    const r = recheckFields(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    const r = recheckFields(this.fillModel(p.id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
     if ("stale" in r || r.dropped.length > 0) this.whyGone(p);
     if ("stale" in r) return { refused: `${r.stale}; nothing was written` };
     if (r.proposal.fields.length === 0) return { refused: `${r.dropped[0]?.log ?? "no field is left to fill"}; nothing was written` };
@@ -2668,7 +2946,7 @@ export class Helper {
     for (const [id, { p, form }] of this.fillPopups) {
       if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;
       const w = this.model.windows.get(p.windowId);
-      let changed = recheckFill(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null) !== null;
+      let changed = recheckFill(this.fillModel(id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null) !== null;
       if (!changed && w !== undefined) {
         try {
           changed = `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form;
@@ -2700,10 +2978,10 @@ export class Helper {
    * the form while Jev answered, a source stopped showing its value, or the form's fields changed. The
    * events that would have ended it came before it existed.
    */
-  private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[]): { stale: string } | { p: GroundedProposal } {
+  private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[], owner: string): { stale: string } | { p: GroundedProposal } {
     if (focuses.some((f) => !inFillForm(p, f.windowId, f.key))) return { stale: "focus left the form" };
     // P2: a field whose recheck fails is the user's, with why; the pop-up still needs two fields Caret writes (fillPopupEligible).
-    const r = recheckFields(this.model, p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    const r = recheckFields(this.fillModel(owner), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
     if ("stale" in r) return r;
     if (r.proposal.fields.length < 2) return { stale: r.dropped[0]?.log ?? "fewer than two fields are left to fill" };
     if (r.dropped.length > 0) this.opts.store.count("fill.recheck_dropped", r.dropped.length);
@@ -2718,6 +2996,8 @@ export class Helper {
 
   private withdrawFill(id: string, reason: "taken" | "stale" | "expired" | "settings"): void {
     this.fillPopups.delete(id);
+    // P4: the offer is over, and with it the text of the tab it was read from, unless another offer holds it.
+    this.tabSource?.release(id);
     this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id, reason });
   }
 
@@ -2773,7 +3053,8 @@ export class Helper {
     const what = parts.length === 0 ? "a question with no screen text" : andList(parts);
     const says = outcome === "done" ? (parts.length === 0 ? `Asked ${to} ${what}` : `Sent ${what} to ${to}`) : `Tried to send ${what} to ${to}; the request failed`;
     const at = this.now();
-    const declared = `${outcome}\u0002${req.snippets.map((x) => `${x.windowId}\u0000${x.text}`).sort().join("\u0001")}`;
+    // A digest, not the text: what a request carried must not stay in memory after its source may no longer be kept (P4 review).
+    const declared = createHash("sha256").update(`${outcome}\u0002${req.snippets.map((x) => `${x.windowId}\u0000${x.text}`).sort().join("\u0001")}`).digest("hex");
     if (this.lastRead !== null && this.lastRead.declared === declared && at - this.lastRead.at < READ_REPEAT_MS) return;
     this.lastRead = { declared, at };
     this.memory.recordUse("read", { at, says, app: apps[0] ?? null, outcome });
@@ -2827,9 +3108,10 @@ export class Helper {
    * A fill that failed: the user reads a plain sentence (planner/says.ts), and what the check found, with its window
    * and field ids, goes to the log (B27; the early exits before proposeFill published the ids until its second review).
    */
-  private fillFailed(detail: string, why: FillErrorWhy | null): void {
+  private fillFailed(detail: string, why: FillErrorWhy | null, cause: unknown = null): void {
     this.opts.warn?.(`fill: ${detail}`);
-    this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: fillSays(why) });
+    // A failed Jev request says how it failed (out of credits, a refused key, too many requests, no connection).
+    this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: jevFailureSays(cause, fillSays(why)) });
   }
 
   private error(message: string): void {
@@ -2837,6 +3119,12 @@ export class Helper {
     this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message });
   }
 }
+
+/** I6: page windows remembered as read for a goal's plan (Helper.tabWindows); each is a tab, so few. Assumed. */
+const TAB_WINDOWS = 16;
+
+/** Page windows whose last load's document pageWalked remembers; the oldest is forgotten past this. Assumed: tabs a person keeps open. */
+const LOAD_DOCUMENTS = 200;
 
 /** A Jev request that declares the same text as the last recorded one within this long is the same use: a question's second ask. Assumed. */
 const READ_REPEAT_MS = 5000;

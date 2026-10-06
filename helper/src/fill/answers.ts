@@ -9,7 +9,7 @@
 // An answer that passes is still never written unseen: the host shows it whole first (SAVED_ANSWERS_CAPABILITY), and
 // the helper's own Fill all writes one only from a pop-up row that shows it (offers/fill-popup.ts).
 import type { WindowState } from "../model.ts";
-import type { AnswerWithheld, FillAnswer, Node } from "../protocol.ts";
+import type { AnswerWithheld, FillAnswer, Node, PageExclusion } from "../protocol.ts";
 import type { SavedAnswer } from "../memory/answers.ts";
 import { fieldLabelText } from "./descriptor.ts";
 import { fieldKinds } from "./kinds.ts";
@@ -87,6 +87,8 @@ export const ANSWER_WORDINGS = [
 export interface PageContext {
   site: string | null;
   headings: readonly string[];
+  /** P3: what the page's walk left out, by count (a password or card field); absent when unknown. */
+  excluded?: Partial<Record<PageExclusion, number>>;
 }
 
 /** The page's words, in order, as the guard compares names against them. */
