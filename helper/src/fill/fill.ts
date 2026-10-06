@@ -754,11 +754,21 @@ export async function proposeFill(
   // The words of the windows fill reads, for formInputs to keep the inputs a long form's cap would cut by what they show.
   const sourceWords = (): ReadonlySet<string> =>
     new Set([...model.windows.values()].filter((x) => x.window.windowId !== windowId && opts.exclude?.has(x.window.windowId) !== true).flatMap((x) => [...x.nodes.values()].flatMap((n) => words(nodeText(n)))));
-  // `only` picks fields from those a fill on focus would ask about, so its rules hold (fix-check: empty fields only, and
-  // no control with `controls` off).
+  // `only` takes, in its order, the fields a fill on focus would ask about (fix-check: an empty, typeable text field or an
+  // empty control, no control with `controls` off), each read as what it is: a part's first field may be a menu, which
+  // formInputs would read as text, since it keeps its trigger whatever it is.
   const onlyInputs = (keys: readonly string[]): FormInput[] => {
-    const all = new Map(formInputs(w, triggerKey, Number.MAX_SAFE_INTEGER, opts.controls !== false).map((x) => [x.node.key, x]));
-    return keys.flatMap((k) => all.get(k) ?? []);
+    const controls = opts.controls === false ? new Map<string, FormControl>() : new Map(formControls(w).map((c) => [c.node.key, c]));
+    return keys.flatMap((k): FormInput[] => {
+      const n = w.nodes.get(k);
+      if (n === undefined) return [];
+      if (FILLABLE_ROLES.has(n.role) && n.editable === true) {
+        if ((n.value ?? "") !== "" || n.states?.includes("secure") === true || neverTypedNode(w, n) !== null) return [];
+        return [opts.controls !== false && n.role === "AXComboBox" && inWebArea(w, n) ? { node: n, control: "combobox", form: { node: n, control: "combobox", label: fieldLabelText(n.label), options: null, members: [] } } : { node: n, control: "text", form: null }];
+      }
+      const c = controls.get(k);
+      return c === undefined ? [] : [{ node: c.node, control: c.control, form: c }];
+    });
   };
   const inputs = scope !== undefined ? scopedInputs(w, scope.fields) : opts.only !== undefined ? onlyInputs(opts.only) : formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords);
   const formHasCity = inputs.some((x) => x.control === "text" && fieldPart(describeField(w, x.node).label, false) === "city");

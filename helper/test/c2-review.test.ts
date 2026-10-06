@@ -211,3 +211,24 @@ describe("fix-check 6: a part's fields keep a fill on focus's rules", () => {
     expect(p.fields.map((f) => f.key)).toEqual(["f0/form[a]/text:name~0"]);
   });
 });
+
+// Second fix-check (astra, foreground) on ee0eb1b: each finding failed there.
+describe("fix-check 2.1: a part that starts with a menu reads it as a menu", () => {
+  it("fills a birth month menu that is a part's first field, from a remembered ISO date", async () => {
+    const m = scene("Signup", [select("e2", "Date of birth month", ["January", "February", "March"]), control("e1", "text", "Name", { value: "" })]);
+    const p = await proposeFill(m, jevPickingText((_id, ins) => (ins.includes("'Date of birth month'") ? "03" : null)), WIN, "f0/form[a]/select:date of birth month~0", Date.UTC(2026, 9, 6), {
+      only: ["f0/form[a]/select:date of birth month~0", "f0/form[a]/text:name~0"],
+      about: aboutValues([{ id: "about-1", fields: { label: "Date of birth", value: "1990-03-14", source: "typed" } }]),
+    });
+    expect(p.fields.find((f) => f.key.includes("date of birth month"))).toMatchObject({ control: "select", handoff: { value: "March", writes: true } });
+    const off = await proposeFill(m, jevPickingText(() => null), WIN, "f0/form[a]/select:date of birth month~0", Date.UTC(2026, 9, 6), { only: ["f0/form[a]/select:date of birth month~0", "f0/form[a]/text:name~0"], controls: false });
+    expect(off.fields.map((f) => f.key)).toEqual(["f0/form[a]/text:name~0"]);
+  });
+});
+
+describe("fix-check 2.2 and 2.3: a statement is no place, and a bonus is no location", () => {
+  it("refuses a place in capitals after 'I', and fields that do not ask where", () => {
+    expect([placeWithCountry("I LOVE TORONTO, ONTARIO"), placeWithCountry("My Toronto, Ontario"), placeWithCountry("Toronto, Ontario")]).toEqual([null, null, "Toronto, Ontario, Canada"]);
+    expect(["Relocation bonus", "Are you willing to relocate?", "Cloud-based platform", "Where are you based?", "Current location"].map(asksPlace)).toEqual([false, false, false, true, true]);
+  });
+});
