@@ -133,6 +133,8 @@ final class HostedPanel {
     var clickableContent = false {
         didSet { if clickableContent != oldValue { trackPointer() } }
     }
+    /// The monitors are up only while the panel shows and takes clicks (prep-for-prod H14-5).
+    private var wantsPointer: Bool { clickableContent && panel.isVisible && !isExiting }
     private var pointerMonitors: [Any] = []
 
     /// `material: false` for decoration drawn straight over the app (the underline, the figure and
@@ -250,10 +252,11 @@ final class HostedPanel {
     }
 
     private func trackPointer() {
+        guard wantsPointer != !pointerMonitors.isEmpty else { return pointerMoved() }
         for m in pointerMonitors { NSEvent.removeMonitor(m) }
         pointerMonitors = []
-        panel.acceptsMouseMovedEvents = clickableContent
-        guard clickableContent else {
+        panel.acceptsMouseMovedEvents = wantsPointer
+        guard wantsPointer else {
             panel.ignoresMouseEvents = true
             return
         }
@@ -314,7 +317,7 @@ final class HostedPanel {
         isExiting = false
         panel.alphaValue = 0
         panel.orderFrontRegardless()
-        pointerMoved()
+        trackPointer()
         var entrance = Motion.Entrance.panel(popup: popup, reduce: Motion.reduceMotion)
         if !scales, entrance.scale != nil { entrance.scale = 1 }
         NSAnimationContext.runAnimationGroup { context in
@@ -342,6 +345,15 @@ final class HostedPanel {
         layer.add(animation, forKey: "enter")
     }
 
+    /// At once, with nothing moving: a panel a key or a click brought back.
+    func show() {
+        isExiting = false
+        container.layer?.removeAnimation(forKey: "enter")
+        panel.alphaValue = 1
+        panel.orderFrontRegardless()
+        trackPointer()
+    }
+
     /// Opacity to 0 with `ease-out`: 100 ms on Esc, 80 ms on typing, 220 ms for a result that
     /// timed out, 0 for at once; 120 ms for any of them under Reduce Motion.
     func exit(duration: TimeInterval) {
@@ -349,12 +361,12 @@ final class HostedPanel {
         guard duration > 0, panel.isVisible else {
             isExiting = false
             panel.orderOut(nil)
-            pointerMoved()
+            trackPointer()
             return
         }
         isExiting = true
         // A leaving panel takes no click.
-        pointerMoved()
+        trackPointer()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
             context.timingFunction = Motion.caCurve(Motion.easeOut)

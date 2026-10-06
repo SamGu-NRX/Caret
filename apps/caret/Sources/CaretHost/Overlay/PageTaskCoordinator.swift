@@ -41,6 +41,8 @@ final class PageTaskCoordinator {
     func shutdown() {
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
         activationObserver = nil
+        openPanel?.cancel(nil)
+        openPanel = nil
         panel.exit(duration: 0)
     }
 
@@ -65,7 +67,13 @@ final class PageTaskCoordinator {
 
     /// H14: the machine's state and the panel on screen, for the debug socket.
     func publish() {
-        let info = DebugState.PageTaskInfo(status: machine.status, choosing: machine.choosing, filesWired: machine.filesWired, panel: panel.debugInfo())
+        // The task let go of the open panel (Tab went out, another preview came, the task ended): it closes, so it can
+        // answer for nothing (prep-for-prod H14-6).
+        if machine.choosing == nil, let open = openPanel {
+            openPanel = nil
+            open.cancel(nil)
+        }
+        let info = DebugState.PageTaskInfo(status: machine.status, choosing: machine.choosing, filesWired: machine.filesWired, panel: panel.debugInfo(), lastAccept: machine.lastAccept)
         status.update { $0.pageTask = info }
     }
 
@@ -74,12 +82,16 @@ final class PageTaskCoordinator {
     /// The panel's frame on screen (global, top-left points) while it shows, else where it last stood: the line
     /// offering to keep a file stands under it.
     private(set) var lastFrame: CGRect?
+    /// The open panel that is up, if any; one at a time.
+    private var openPanel: NSOpenPanel?
 
     /// Opens the open panel for an attach row the user asked to fill. Caret comes to the front for it, as any app
     /// does for its own open panel; the user moves through it with the keys and pointer as anywhere on the Mac.
     /// Closing it, with a file or without, gives the foreground back to the browser the page is in.
     private func choose(_ choice: FileChoice) {
+        openPanel?.cancel(nil)
         let open = NSOpenPanel()
+        openPanel = open
         open.canChooseFiles = true
         open.canChooseDirectories = false
         open.allowsMultipleSelection = false
@@ -91,13 +103,17 @@ final class PageTaskCoordinator {
             let url = response == .OK ? open.url : nil
             MainActor.assumeIsolated {
                 guard let self else { return }
+                if self.openPanel === open { self.openPanel = nil }
+                let current = self.machine.isCurrentChooser(choice.token)
                 if let url, let file = Self.attachFile(url) {
                     self.machine.filePicked(token: choice.token, step: choice.step, file: file)
                 } else {
                     self.machine.chooserClosed(token: choice.token)
                 }
                 self.publish()
-                if let browser = NSRunningApplication(processIdentifier: choice.browserPid) {
+                // The browser gets the foreground back from Caret's own open panel, and only from it: a panel closed
+                // because the task moved on, or while the user is in another app, takes nothing from anyone.
+                if current, NSApp.isActive, let browser = NSRunningApplication(processIdentifier: choice.browserPid) {
                     NSApp.yieldActivation(to: browser)
                     browser.activate()
                 }
@@ -163,7 +179,12 @@ final class PageTaskCoordinator {
             placed = true
         }
         panel.setContent(view)
-        if first || motion == .enter { panel.enter(scales: false, rises: true) }
+        if motion == .none, !panel.isVisible {
+            // A key or a click brought it back (the open panel closing): drawn at once (prep-for-prod H14-4).
+            panel.show()
+        } else if first || motion == .enter {
+            panel.enter(scales: false, rises: true)
+        }
         let f = panel.contentFrame(size: panel.size)
         lastFrame = Screen.ax(f)
         // VoiceOver hears the panel's sentence and keys when they change, not each row as it resolves.

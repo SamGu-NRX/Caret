@@ -96,8 +96,11 @@ public struct PageTaskPanel: Equatable, Sendable {
         }
         self.sections = sections
         let presses = t.groups.flatMap { $0.rows.filter(\.yours) }
-        // An attach row Tab sent no file for is left to the user, like a file input with no row.
+        // An attach row Tab sent no file for is left to the user, like a file input with no row. So is a waiting row past
+        // the ones with a key (prep-for-prod H14-2): a row only a pointer could reach would leave keyboard users out, and
+        // the page's own control is theirs either way.
         let unattached = t.groups.filter(\.accepted).flatMap { g in g.rows.filter { $0.kind == .attach && !$0.runs }.compactMap { $0.attach?.label } }
+            + t.groups.filter { !$0.accepted }.flatMap { $0.attachRows.dropFirst(PageTaskCopy.attachKeys.count).compactMap { $0.attach?.label } }
         var yours = (t.attach + unattached).map { Line(kind: .yours, text: PageTaskCopy.attach($0)) } + presses.map { Line(kind: .yours, text: PageTaskCopy.press($0.says)) }
         from = t.from.isEmpty ? nil : "from \(t.from)"
         switch t.stage {
@@ -146,7 +149,8 @@ public struct PageTaskPanel: Equatable, Sendable {
             let note: String? = r.state == .already ? PageTaskCopy.already : (r.picked ? PageTaskCopy.picked : nil)
             if r.kind == .attach, let a = r.attach {
                 if !g.accepted {
-                    out.append(Self.attachLine(r.step, a, key: keys[r.step]?.label, now: now, calendar: calendar))
+                    // Only a row with a key is drawn as one; the rest are the user's, in the panel's last lines.
+                    if let key = keys[r.step] { out.append(Self.attachLine(r.step, a, key: key.label, now: now, calendar: calendar)) }
                 } else if let file = a.confirmed {
                     // Sent with Tab: a row like a field's, with its mark as the run goes.
                     out.append(Line(kind: .field, label: a.label, text: file.says(now: now, calendar: calendar), state: r.state, wraps: true))
@@ -183,7 +187,8 @@ public struct PageTaskPanel: Equatable, Sendable {
         // H14: an attach row's key is said with the row it acts on: "Resume: Command 2, Choose a file…".
         let rows = sections.flatMap(\.lines).compactMap { l -> String? in
             guard let a = l.attach, let key = a.key else { return nil }
-            return "\(l.label ?? ""): \(PageTaskCopy.spokenKey(key)), \(a.action.map { "\($0) \(l.text)" } ?? l.text)"
+            // The row's note too: "Choose a file first, then press Tab", or why its file was not taken (prep-for-prod H14-3).
+            return "\(l.label ?? ""): \(PageTaskCopy.spokenKey(key)), \(a.action.map { "\($0) \(l.text)" } ?? l.text)" + (l.note.map { ". \($0)" } ?? "")
         }
         return ([[lead, title].compactMap { $0 }.joined(separator: " ")] + rows + keys).joined(separator: ". ")
     }

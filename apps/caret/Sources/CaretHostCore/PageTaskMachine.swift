@@ -116,6 +116,13 @@ public final class PageTaskMachine {
     private var choiceTokens: UInt64 = 0
     /// H14: the attach row whose open panel is up.
     public var choosing: Int? { pendingChoice?.step }
+    /// H14: the browser went behind Caret's own open panel, so its coming back follows a key or a click in that panel
+    /// and draws at once (prep-for-prod H14-4).
+    private var behindChooser = false
+    /// H14: the last acceptance Tab sent, for the debug socket.
+    public private(set) var lastAccept: GoalAccept?
+    /// Whether open panel `token` is the one this task waits on.
+    public func isCurrentChooser(_ token: UInt64) -> Bool { pendingChoice?.token == token }
 
     /// An ending with ⌘Z stays this long. A guess, not measured: DIRECTION.md's toast is 5 s for one
     /// line, and this panel lists every field it wrote, which takes longer to read.
@@ -255,6 +262,7 @@ public final class PageTaskMachine {
         case .accept(let accept):
             // Tab went out: a chooser still open answers for nothing.
             pendingChoice = nil
+            lastAccept = accept
             task = t
             lastHeld = nil
             output(.send(.accept(accept)))
@@ -292,7 +300,9 @@ public final class PageTaskMachine {
     /// ⌘2, ⌘3 or a click on attach row `step`: a saved file offered and not yet confirmed is confirmed for this Tab;
     /// otherwise the open panel opens, to choose a file or change the one chosen. Only while the preview waits.
     public func attachRequested(step: Int, republish: Bool = false) {
-        guard var t = task, case .preview = t.stage, let row = t.current.rows.first(where: { $0.step == step && $0.kind == .attach }), let a = row.attach else {
+        // Only a row with a key is an attach row on screen (`PageTaskPanel`); any other step is the user's.
+        guard var t = task, case .preview = t.stage, t.current.attachRows.prefix(PageTaskCopy.attachKeys.count).contains(where: { $0.step == step }),
+              let row = t.current.rows.first(where: { $0.step == step && $0.kind == .attach }), let a = row.attach else {
             if republish { showPreview(.none) }
             return
         }
@@ -424,6 +434,7 @@ public final class PageTaskMachine {
         if pid != own {
             guard !hidden else { return }
             hidden = true
+            behindChooser = pendingChoice != nil
             if let id = offerID {
                 arbiter.invalidate(offerID: id)
                 offerID = nil
@@ -432,8 +443,10 @@ public final class PageTaskMachine {
             if !resting { output(.hide(motion: .none)) }
         } else if hidden {
             hidden = false
+            let motion: PageTaskMotion = behindChooser ? .none : .enter
+            behindChooser = false
             guard !resting else { return }
-            if case .preview = t.stage { showPreview(.enter) } else { draw(.enter) }
+            if case .preview = t.stage { showPreview(motion) } else { draw(motion) }
         }
     }
 

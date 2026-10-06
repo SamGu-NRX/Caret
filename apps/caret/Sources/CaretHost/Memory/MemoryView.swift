@@ -674,9 +674,11 @@ struct SavedFileRow: View {
     var send: (MemoryAction) -> Void
 
     @State private var hovering = false
-    @FocusState private var focused: Bool
+    /// Every action on the row, so keyboard focus on any of them shows them all (prep-for-prod H14-1).
+    private enum Control: Hashable { case finder, forget, keep, confirm }
+    @FocusState private var focused: Control?
 
-    private var revealed: Bool { forceReveal || hovering || focused || confirming }
+    private var revealed: Bool { forceReveal || hovering || focused != nil || confirming }
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -694,17 +696,20 @@ struct SavedFileRow: View {
             HStack(spacing: 6) {
                 if confirming {
                     Button("Keep") { send(.fileKeep) }.buttonStyle(WindowButtonStyle(kind: .key, small: true))
+                        .focused($focused, equals: .keep)
                     Button(SavedFilesCopy.forget) { send(.fileConfirmForget) }.buttonStyle(WindowButtonStyle(kind: .ink, small: true))
+                        .focused($focused, equals: .confirm)
                 } else {
                     if file.edited != nil {
                         Button(SavedFilesCopy.showInFinder) { send(.fileShowInFinder(file.id)) }
                             .buttonStyle(WindowButtonStyle(kind: .key, small: true))
-                            .focused($focused)
+                            .focused($focused, equals: .finder)
                             .accessibilityLabel("Show \(file.name) in Finder")
                     }
                     Button(forgetting ? "Forgetting" : SavedFilesCopy.forget) { send(.fileForget(file.id)) }
                         .buttonStyle(WindowButtonStyle(kind: .key, small: true))
                         .disabled(forgetting)
+                        .focused($focused, equals: .forget)
                         .accessibilityLabel("Forget \(file.name)")
                 }
             }

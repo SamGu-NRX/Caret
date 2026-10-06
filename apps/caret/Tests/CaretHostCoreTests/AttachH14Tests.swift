@@ -274,6 +274,67 @@ final class AttachH14Tests: XCTestCase {
         XCTAssertEqual(r.accepts.first?.confirmedFile?.path, Self.resume.path)
     }
 
+    /// prep-for-prod H14-2: only rows with a key are drawn as attach rows; a third is the user's, and no click or key
+    /// opens a chooser for it.
+    func testAnAttachRowPastTheKeysIsTheUsers() throws {
+        let r = Rig()
+        r.machine.canChooseFiles = true
+        r.machine.start(try Self.preview { o in
+            var steps = try XCTUnwrap(o["steps"] as? [[String: Any]])
+            steps.insert(["index": 3, "kind": "attach", "says": "Transcript: a file you choose", "file": ["source": "choose"]], at: 3)
+            steps[4]["index"] = 4
+            o["steps"] = steps
+        })
+        let lines = try XCTUnwrap(r.lastPanel?.sections.flatMap(\.lines))
+        XCTAssertEqual(lines.compactMap(\.attach?.step), [1, 2])
+        XCTAssertTrue(r.lastPanel?.yours.map(\.text).contains("Attach 'Transcript' yourself") == true)
+        r.machine.attachRequested(step: 3)
+        XCTAssertTrue(choices(r).isEmpty)
+    }
+
+    /// prep-for-prod H14-3: what Tab needs, or why a file was not taken, is said when it appears.
+    func testTheRowsNoteIsAnnounced() throws {
+        let r = Rig()
+        r.machine.start(try Self.attachOnlyPreview())
+        let before = try XCTUnwrap(r.lastPanel?.announcement)
+        r.tab()
+        let after = try XCTUnwrap(r.lastPanel?.announcement)
+        XCTAssertNotEqual(before, after)
+        XCTAssertTrue(after.contains(PageTaskCopy.chooseFirst), after)
+    }
+
+    /// prep-for-prod H14-4: the browser coming back from Caret's open panel follows a key or a click there: drawn at once.
+    func testThePanelComesBackFromTheChooserAtOnce() throws {
+        let r = Rig()
+        r.machine.canChooseFiles = true
+        r.machine.start(try Self.preview())
+        cmd(r, 2)
+        r.machine.appActivated(pid: 999)
+        XCTAssertTrue(r.hidden)
+        let token = try XCTUnwrap(choices(r).last).token
+        r.machine.filePicked(token: token, step: 1, file: Self.resume)
+        r.machine.appActivated(pid: Self.pid)
+        XCTAssertEqual(r.lastMotion, PageTaskMotion.none)
+        XCTAssertTrue(r.machine.status.ownsTab)
+        // Another app and back, with no chooser: the panel enters as it always has.
+        r.machine.appActivated(pid: 999)
+        r.machine.appActivated(pid: Self.pid)
+        XCTAssertEqual(r.lastMotion, .enter)
+    }
+
+    func testTheLastAcceptanceIsKeptForTheDebugSocket() throws {
+        let r = Rig()
+        r.machine.canChooseFiles = true
+        r.machine.start(try Self.preview())
+        cmd(r, 3)
+        r.machine.filePicked(token: try XCTUnwrap(choices(r).last).token, step: 2, file: Self.resume)
+        r.tab()
+        let info = DebugState.PageTaskInfo(status: r.machine.status, choosing: r.machine.choosing, filesWired: true, panel: nil, lastAccept: r.machine.lastAccept)
+        XCTAssertEqual(info.lastAccept, "goal-3-a1:0")
+        XCTAssertEqual(info.lastAcceptFileStep, 2)
+        XCTAssertEqual(info.lastAcceptFileName, "Robin Vale Resume.pdf")
+    }
+
     func testWithoutAChooserNoOpenPanelIsAskedFor() throws {
         let r = Rig()
         r.machine.start(try Self.preview())

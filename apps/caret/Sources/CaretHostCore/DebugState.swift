@@ -710,8 +710,15 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var choosing: Int?
         public var filesWired: Bool
         public var panel: Panel?
-        public init(status: PageTaskMachine.Status, choosing: Int?, filesWired: Bool, panel: Panel?) {
+        /// The last acceptance Tab sent: its goal and segment, and the confirmed file's step and name (never its folder).
+        public var lastAccept: String?
+        public var lastAcceptFileStep: Int?
+        public var lastAcceptFileName: String?
+        public init(status: PageTaskMachine.Status, choosing: Int?, filesWired: Bool, panel: Panel?, lastAccept: GoalAccept? = nil) {
             self.status = status; self.choosing = choosing; self.filesWired = filesWired; self.panel = panel
+            self.lastAccept = lastAccept.map { "\($0.goalId):\($0.segment)" }
+            lastAcceptFileStep = lastAccept?.confirmedFile?.step
+            lastAcceptFileName = lastAccept?.confirmedFile.map { ($0.path as NSString).lastPathComponent }
         }
     }
 
