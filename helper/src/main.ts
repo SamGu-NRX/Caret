@@ -24,12 +24,17 @@ import { pageFront } from "./engines/front.ts";
 import { pageTabReader } from "./engines/tab-source.ts";
 import { writersOnStart } from "./writer/startup.ts";
 import { HostLocalModel } from "./writer/local-port.ts";
+import { refuseCacheInHelper } from "./engines/decide/cache.ts";
 import { ledgeredJev, ledgeredWriter, SpendLedger, throttledTotals } from "./spend.ts";
 
 /** Every model call this process makes, counted from the providers' usage reports (H8): sent to "spend" consumers. */
 const spend = new SpendLedger();
 
 const DEFAULT_DATA_DIR = join(homedir(), "Library", "Application Support", "CaretV2");
+
+// J1: the decision cache writes request text to disk, and this process's requests carry the user's real screen text,
+// so a CARET_JEV_CACHE meant for a test harness stops the helper here instead of being ignored.
+refuseCacheInHelper();
 
 const { values: args } = parseArgs({
   options: {

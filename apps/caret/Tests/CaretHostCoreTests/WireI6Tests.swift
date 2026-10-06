@@ -1,4 +1,4 @@
-import CaretHostCore
+@testable import CaretHostCore
 import CaretScreenCore
 import XCTest
 
@@ -7,7 +7,7 @@ import XCTest
 /// Fixtures; attach steps and the nextPage reason decoded; and a finished goal's hand-off sentence shown as the page
 /// panel's last row, never repeated.
 final class WireI6Tests: XCTestCase {
-    static let names = ["goal-files", "goal-handoff", "page", "page-field-text", "page-goal", "page-inline"]
+    static let names = ["goal-files", "goal-handoff", "page", "page-field-text", "page-goal", "page-inline", "goal-parts", "fill-memory-parts"]
 
     func testTheFixtureCopiesAreTheHelpersGoldenFiles() throws {
         let repo = WireH11Tests.fixtures.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -82,6 +82,27 @@ final class WireI6Tests: XCTestCase {
         _ = task.tab(nowMs: 1_790_300_000_400)
         _ = task.receive(try JSONDecoder().decode(GoalProgress.self, from: try WireH11Tests.lines("goal-handoff")[3]))
         XCTAssertEqual(PageTaskPanel(task: task, stoppable: false).yours.map(\.text), ["You press Next."])
+    }
+
+    /// C2: a long form in parts. Each part's preview decodes with reason moreFields and reads like a reveal.
+    func testALongFormsNextPartReadsLikeAReveal() throws {
+        var previews: [(String, GoalProgress.Preview)] = []
+        for line in try WireH11Tests.lines("goal-parts") {
+            let m = try JSONDecoder().decode(GoalProgress.self, from: line)
+            try WireH11Tests.assertSameJSON(m, line)
+            if case .segment(let p) = m.event { previews.append((m.goalId, p)) }
+        }
+        XCTAssertEqual(previews.map(\.1.reason), [.start, .moreFields])
+        let group = PageTask.group(previews[1].1, goalId: previews[1].0)
+        XCTAssertGreaterThan(group.writes, 0)
+        XCTAssertEqual(PageTaskCopy.continuation(group), "\(group.writes) more field\(group.writes == 1 ? "" : "s")")
+    }
+
+    /// C2: a remembered address or date fills its parts; the host takes any part name.
+    func testAFillFromMemoryPartsDecodes() throws {
+        let line = try XCTUnwrap(try WireH11Tests.lines("fill-memory-parts").first)
+        guard case .fillProposal(let p) = try HelperInbound.decode(line) else { return XCTFail("not a fill proposal") }
+        XCTAssertTrue(Set(p.fields.compactMap { $0.memory?.part }).isSuperset(of: ["street", "zip"]))
     }
 
     func testTheHandOffSentence() {

@@ -170,7 +170,8 @@ public struct GoalProgress: Codable, Equatable, Sendable {
     /// One segment waiting for its own Tab until `expires`.
     public struct Preview: Equatable, Sendable {
         /// `nextPage` (P3): the user's own Next took the page to a new document, and the goal was planned again there.
-        public enum Reason: String, Codable, Sendable { case start, crossWindow, afterReveal, freshPlan, nextPage }
+        /// `moreFields` (C2): a form over 20 fields fills in parts, each previewed and accepted with its own Tab.
+        public enum Reason: String, Codable, Sendable { case start, crossWindow, afterReveal, freshPlan, nextPage, moreFields }
         public var segment: Int
         public var segments: Int
         public var reason: Reason

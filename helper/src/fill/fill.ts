@@ -15,11 +15,11 @@ import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCa
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, misfit, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
-import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, type AboutKind, type AboutValue } from "./about.ts";
+import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
-import { asksCountry, datePart, fieldPart, joinName, namePart, partFits, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { clockTime, readClock, readDate, readDateTime } from "./when.ts";
+import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 import type { SavedAnswer } from "../memory/answers.ts";
@@ -153,7 +153,7 @@ export function formAsksFor(w: WindowState, triggerKey: string, about: readonly 
   return formFields(w, triggerKey).some((n) => {
     const d = describeField(w, n);
     const name = d.label ?? d.nearest ?? d.placeholder;
-    return about.some((a) => fieldAsksFor(a, name));
+    return about.some((a) => fieldAsksFor(a, name, w.window.title));
   });
 }
 
@@ -546,6 +546,11 @@ export interface FillOptions {
   answers?: readonly SavedAnswer[];
   /** S1: the page's address and headings, which the organization guard reads beside the window's own text. */
   page?: PageContext;
+  /**
+   * C2 review: with no scope, the exact fields to ask about, by node key in order, in place of the nearest MAX_FIELDS to
+   * the trigger: a long page form's part (goals/page-planner.ts). Every other rule is a fill on focus's.
+   */
+  only?: readonly string[];
 }
 
 /**
@@ -618,13 +623,14 @@ const PART_SAYS: Record<FillPart, string> = {
   zip: "ZIP code",
   country: "country",
   month: "month",
+  day: "day",
   year: "year",
 };
 const ADDRESS_PARTS: ReadonlySet<FillPart> = new Set(["street", "unit", "city", "state", "zip"]);
 /** Parts a place written "City, State, Country" gives (derive.ts splitPlace). */
 const PLACE_PARTS: ReadonlySet<FillPart> = new Set(["city", "state", "country"]);
-/** C1: parts of a date, for a field or a menu that asks only for its month or year (derive.ts splitDate). */
-const DATE_PARTS: ReadonlySet<FillPart> = new Set(["month", "year"]);
+/** C1: parts of a date, for a field or a menu that asks only for its month or year (derive.ts splitDate); C2 adds its day. */
+const DATE_PARTS: ReadonlySet<FillPart> = new Set(["month", "day", "year"]);
 /** C1: the part a menu asks for, if any: a date's month or year, a state, or a country. */
 function menuPart(name: string | null): FillPart | null {
   const d = datePart(name);
@@ -642,9 +648,23 @@ function partOf(part: FillPart, text: string): string | null {
     const d = splitDate(text);
     return d === null ? null : part === "month" ? d.month : d.year;
   }
+  if (part === "day") return dateParts(text)?.day ?? null;
   if (part === "state") return splitAddress(text)?.state ?? splitPlace(text)?.state ?? null;
   if (part === "country") return splitPlace(text)?.country ?? null;
   return null;
+}
+/**
+ * C2 (lead decision 1): the option of a month or year menu that the month and year the user wrote name ("Aug '22",
+ * "08/2022", or a month's name alone for a month menu), when its options are not named as written: "August" or "08"
+ * for "Aug '22", "2022" for "Aug '22". Null when none does, or more than one.
+ */
+function dateOption(part: "month" | "year", options: readonly string[], text: string, refYear: number, derived: boolean): string | null {
+  const my = monthYear(text, refYear);
+  if (part === "year") return my === null ? null : matchOption(options, String(my.year));
+  // C2 review: a month code split from an ISO date ("03" from "1990-03-14", dateParts) is that month's number.
+  const number = derived && /^(?:0?[1-9]|1[0-2])$/u.test(text.trim()) ? Number(text) : null;
+  const month = my?.month ?? monthIndex(text) ?? number;
+  return month === null ? null : monthOption(options, month);
 }
 /** Label words that say only a field's kind, so they cannot tie one of a person's phones or emails to the field. */
 const KIND_ONLY_WORDS: ReadonlySet<string> = new Set(["phone", "telephone", "tel", "mobile", "cell", "number", "email", "mail", "address", "contact"]);
@@ -667,7 +687,7 @@ const PERSONAL_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "addre
  * C1: the kind of screen value an About entry stands beside, so a cut that took a window's value of that kind withholds
  * the entry too, as it does an email (pickCut). Kinds with no typed screen value (a school, a yes or no) have none.
  */
-const ABOUT_VALUE_KIND: Partial<Record<AboutKind, ValueKind>> = { email: "email", phone: "phone", address: "address", street: "address", gradDate: "date", linkedin: "url", github: "url", website: "url" };
+const ABOUT_VALUE_KIND: Partial<Record<AboutKind, ValueKind>> = { email: "email", phone: "phone", address: "address", street: "address", gradDate: "date", linkedin: "url", github: "url", website: "url", birthDate: "date", salary: "amount" };
 /** Labels of a message header's sender. */
 const SENDER = /^(?:from|sender|reply-to)$/i;
 /** Owner questions one ask carries at most. Assumed: well above the personal values a few source windows hold. */
@@ -735,7 +755,23 @@ export async function proposeFill(
   // The words of the windows fill reads, for formInputs to keep the inputs a long form's cap would cut by what they show.
   const sourceWords = (): ReadonlySet<string> =>
     new Set([...model.windows.values()].filter((x) => x.window.windowId !== windowId && opts.exclude?.has(x.window.windowId) !== true).flatMap((x) => [...x.nodes.values()].flatMap((n) => words(nodeText(n)))));
-  const inputs = scope === undefined ? formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords) : scopedInputs(w, scope.fields);
+  // `only` takes, in its order, the fields a fill on focus would ask about (fix-check: an empty, typeable text field or an
+  // empty control, no control with `controls` off), each read as what it is: a part's first field may be a menu, which
+  // formInputs would read as text, since it keeps its trigger whatever it is.
+  const onlyInputs = (keys: readonly string[]): FormInput[] => {
+    const controls = opts.controls === false ? new Map<string, FormControl>() : new Map(formControls(w).map((c) => [c.node.key, c]));
+    return keys.flatMap((k): FormInput[] => {
+      const n = w.nodes.get(k);
+      if (n === undefined) return [];
+      if (FILLABLE_ROLES.has(n.role) && n.editable === true) {
+        if ((n.value ?? "") !== "" || n.states?.includes("secure") === true || neverTypedNode(w, n) !== null) return [];
+        return [opts.controls !== false && n.role === "AXComboBox" && inWebArea(w, n) ? { node: n, control: "combobox", form: { node: n, control: "combobox", label: fieldLabelText(n.label), options: null, members: [] } } : { node: n, control: "text", form: null }];
+      }
+      const c = controls.get(k);
+      return c === undefined ? [] : [{ node: c.node, control: c.control, form: c }];
+    });
+  };
+  const inputs = scope !== undefined ? scopedInputs(w, scope.fields) : opts.only !== undefined ? onlyInputs(opts.only) : formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords);
   const formHasCity = inputs.some((x) => x.control === "text" && fieldPart(describeField(w, x.node).label, false) === "city");
   for (const x of inputs) {
     const n = x.node;
@@ -774,7 +810,7 @@ export async function proposeFill(
       ((part !== null && part !== "country" && !DATE_PARTS.has(part)) || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
     // An Ask that names no memory, or names another person for a personal field, is not offered the user's own.
     const memoryOk = scope === undefined || (scope.memory && (scope.person === null || !personal));
-    const about = memoryOk ? (opts.about ?? []).filter((a) => aboutFits(a, x.control) && fieldAsksFor(a, name)) : [];
+    const about = memoryOk ? (opts.about ?? []).filter((a) => aboutFits(a, x.control) && fieldAsksFor(a, name, w.window.title)) : [];
     const descriptor = describeInput(w, x);
     fields.push({ id: `f${fields.length + 1}`, node: n, descriptor, name: name ?? "unnamed field", kinds, terms, texts, about, control: x.control, form: c, part, labelWords, personal });
   }
@@ -860,6 +896,8 @@ export async function proposeFill(
   type Derived = { key: string; text: string; describe: string; base: Extract<Pick, { from: "derived" }>["base"]; also: Candidate | null };
   const derived = new Map<string, Derived[]>();
   const memoryNames = scope !== undefined && !scope.memory ? [] : (opts.about ?? []).filter((a) => a.kind === "name");
+  // C2 (lead decision 5): one address or date entry gives a part to each field that asks for that part of it.
+  const memoryWhole = scope !== undefined && (!scope.memory || scope.person !== null) ? [] : (opts.about ?? []).filter((a) => a.kind === "address" || a.kind === "birthDate" || a.kind === "gradDate");
   if (derive) {
     for (const f of fields) {
       if (f.part === null) continue;
@@ -905,12 +943,23 @@ export async function proposeFill(
           const v = parts?.[part as "street" | "unit" | "city" | "state" | "zip"] ?? place?.[part as "city" | "state" | "country"] ?? undefined;
           if (v !== undefined && v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
         }
+        if (part !== "country") {
+          for (const a of memoryWhole) {
+            if (!fieldAsksForPart(a, f.name, part as "street" | "unit" | "city" | "state" | "zip", w.window.title)) continue;
+            const v = memoryValue(a.value, part as FillMemoryPart);
+            add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} of ${describeAbout(a)})`, { from: "memory", a });
+          }
+        }
       } else if (DATE_PARTS.has(part)) {
         for (const c of candidates) {
           if (!candidateKinds(model, c).has("date")) continue;
-          const d = splitDate(c.text);
-          const v = d === null ? null : part === "month" ? d.month : d.year;
+          const v = part === "day" ? (dateParts(c.text)?.day ?? null) : partOf(part, c.text);
           if (v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
+        }
+        for (const a of memoryWhole) {
+          if (!fieldAsksForPart(a, f.name, part as "month" | "day" | "year", w.window.title)) continue;
+          const v = memoryValue(a.value, part as FillMemoryPart);
+          add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} of ${describeAbout(a)})`, { from: "memory", a });
         }
       }
       if (list.length > 0) derived.set(f.id, list);
@@ -1044,10 +1093,13 @@ export async function proposeFill(
   const personalCand = (c: Candidate): boolean => [...candidateKinds(model, c)].some((k) => PERSONAL_KINDS.has(k)) || personName(c) !== null || isNameLike(c.text, c.context);
   const ownerCands = owners && personal.size > 0 ? candidates.filter(personalCand).slice(0, MAX_OWNERS) : [];
   const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
+  // C2: a field offered a part of a memory entry is asked whose details it wants, as one offered the whole entry is
+  // (theUsers), a date's month, day or year included, which no other rule makes personal.
+  const whoseAsked = new Set([...personal, ...asked.filter((f) => (derived.get(f.id) ?? []).some((d) => d.base.from === "memory")).map((f) => f.id)]);
   const more = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({
     ...(scope === undefined || plainAsk ? {} : { instruction: scope.instruction, person: scope.person }),
     derived: askDerived(dIds),
-    personal: whose ? personal : new Set(),
+    personal: whose ? whoseAsked : new Set(),
     owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeCandidate({ ...c, id: "" }) })),
     controls: new Map(asked.map((f) => [f.id, f.control])),
   });
@@ -1280,6 +1332,8 @@ export async function proposeFill(
   };
   /** Kinds of the user's own values in memory ("email", "name"). */
   const memoryKinds = new Set<string>((opts.about ?? []).map((a) => a.kind));
+  /** C2: the year a two-digit year is read around (derive.ts monthYear). */
+  const refYear = new Date(now).getUTCFullYear();
 
   /**
    * The value a control takes from a pick (the option it names, PAGE_CHECKED, or the input's own date or time format),
@@ -1290,7 +1344,8 @@ export async function proposeFill(
    * - a box: the span states the fact the box asks (controls.ts statesFact) or lists the box's label among others
    *   (namedInList). A box the user speaks in gets no value (boxKind). Written only for a box that asks the user a fact,
    *   from the yes of a "Label: yes" line in the window the user just left, and never an ARIA switch;
-   * - a date, time or date and time: read by the value resolver in that format (when.ts); a month or week is the user's.
+   * - a date, time or date and time: read by the value resolver in that format (when.ts); a month by the month and year
+   *   the user wrote (C2, when.ts readMonth); a week is the user's.
    * A control whose label, nearest label or section reads as consent, certification or a sign-up gets no value at all.
    * A Yes/No question built from toggle buttons (W4) is never written: its press cannot be undone with the rest.
    */
@@ -1310,7 +1365,11 @@ export async function proposeFill(
         // is exactly (partOf).
         const whole = matchOption(options, text);
         const piece = whole === null && f.part !== null ? partOf(f.part, text) : null;
-        const exact = whole ?? (piece === null ? null : matchOption(options, piece));
+        // C2 (lead decision 2): for a field that asks where, the one option that is the user's place with its country
+        // ("Portland, Maine, United States").
+        const placed = asksPlace(f.name) ? placeWithCountry(text) : null;
+        // A month number only as split from a remembered date (dateParts), never one the instruction spells out (fix-check).
+        const exact = whole ?? (piece === null ? null : matchOption(options, piece)) ?? (f.part === "month" || f.part === "year" ? dateOption(f.part, options, text, refYear, p.from === "derived" && p.base.from === "memory") : null) ?? (placed === null ? null : matchOption(options, placed));
         if (exact !== null) return { value: exact, display: exact, writes: page && !press };
         const o = optionInText(options, text);
         return o === null ? { why: "ambiguous" } : { value: o, display: o, writes: false };
@@ -1335,6 +1394,11 @@ export async function proposeFill(
       }
       case "date": {
         const format = f.form?.format ?? "date";
+        // C2 (lead decision 1): a month input takes the month and year the user wrote, converted to its own format.
+        if (format === "month") {
+          const m = readMonth(text, refYear);
+          return m === null ? { why: "ambiguous" } : { ...m, writes: page };
+        }
         if (format === "datetime") {
           const dt = readDateTime(text, resolveCtx);
           return dt === null ? { why: "ambiguous" } : { ...dt, writes: page };
@@ -1352,6 +1416,12 @@ export async function proposeFill(
         // Read as a text field is, then as one option's name: the page engine types it as the list's filter and picks
         // only an option named exactly that (B27).
         if (misfit(text, f.labelWords) !== null || (f.part !== null && !partFits(f.part, text))) return { why: "wrongKind" };
+        // C2 (lead decision 2): in a field that asks where, a place "City, Region" is asked for with its country, as location
+        // lists name it; the page engine types that as the list's filter and picks only the one option named exactly
+        // that, once the list has loaded for it. A place that already names its country, or a bare city, is asked for as
+        // written. placeWithCountry reads the place itself, so a Canadian one passes though optionName reads US ones only.
+        const placed = asksPlace(f.name) ? placeWithCountry(text) : null;
+        if (placed !== null) return { value: placed, display: placed, writes: page };
         return optionName(text) ? { value: text, display: text, writes: page } : { why: "ambiguous" };
       case "text":
         return misfit(text, f.labelWords) === null && (f.part === null || partFits(f.part, text)) ? { value: text, display: text, writes: true } : { why: "wrongKind" };
@@ -1361,7 +1431,7 @@ export async function proposeFill(
   const memoryRef = (p: Pick, f: Field): FillMemory | null => {
     const a = memoryOf(p);
     if (a === null) return null;
-    const part = p.from === "derived" && (f.part === "first" || f.part === "middle" || f.part === "last") ? f.part : null;
+    const part = p.from === "derived" && f.part !== null && MEMORY_PARTS.has(f.part) ? (f.part as FillMemoryPart) : null;
     return { id: a.id, label: a.label, says: ABOUT_SAYS, ...(part === null ? {} : { part }) };
   };
   // A saved answer's pick (S1): both asks the same answer at the cutoff, then the code guards (fill/answers.ts).
@@ -1494,7 +1564,49 @@ export async function proposeFill(
 
 /** What a memory entry gives a field now: the whole value, or the part of the name the proposal took (FillMemory.part). */
 export function memoryValue(value: string, part: FillMemory["part"]): string | null {
-  return part === undefined ? value : namePart(splitName(value), part);
+  if (part === undefined) return value;
+  if (part === "first" || part === "middle" || part === "last") return namePart(splitName(value), part);
+  // C2: an address's or a date's part, as fill split it to offer it (derive.ts).
+  if (part === "month" || part === "day" || part === "year") return dateParts(value)?.[part] ?? null;
+  return splitAddress(value)?.[part] ?? null;
+}
+
+/**
+ * C2: whether memory entry text `value` still gives what a step writes (`written`), right before the write: what the
+ * entry gives (memoryValue) itself, or that read the one way fill reads a control's value from it (controlValue): an
+ * option named the same but for case and spacing ("Yes" for "yes", "Vegetarian" for "vegetarian"), a date or month in
+ * its input's own format ("1990-03-14" for "March 14, 1990"). An entry the user changed gives none of them. Before C2 a
+ * step from memory had to write the entry's text as typed, so a page goal stopped at Tab on any of these.
+ */
+export function memoryWrites(value: string, part: FillMemory["part"], written: string, conv: MemoryConversion = "exact"): boolean {
+  const gives = memoryValue(value, part);
+  if (gives === null) return false;
+  if (gives === written) return true;
+  // C2 review: a text field is written the entry's text exactly, so only an exact match holds there ("…/Profile" is
+  // not "…/profile"); the looser readings are each tied to the control that needs them.
+  if (conv === "option") {
+    const norm = (s: string): string => s.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
+    if (norm(gives) === norm(written)) return true;
+    // A month menu's option for the entry's month ("03" or "Mar" for "March"; dateOption, monthOption).
+    const month = (s: string): number | null => (/^\d{1,2}$/u.test(s.trim()) ? Number(s) : monthIndex(s));
+    return part === "month" && month(gives) !== null && month(gives) === month(written);
+  }
+  if (conv === "date") {
+    const ctx: ResolveContext = { locale: Intl.DateTimeFormat().resolvedOptions().locale, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, referenceInstant: null };
+    if (/^\d{4}-\d{2}-\d{2}$/u.test(written)) return readDate(gives, ctx)?.value === written;
+    return /^\d{4}-\d{2}$/u.test(written) && readMonth(gives)?.value === written;
+  }
+  return false;
+}
+
+/**
+ * C2 review: how a step from memory writes the entry, which says how memoryWrites checks it again: "exact" for a text
+ * field, "option" for a menu, choice or dropdown (its option's name), "date" for a date or month input (its format).
+ */
+export type MemoryConversion = "exact" | "option" | "date";
+/** The conversion a control's write from memory goes through (memoryWrites). */
+export function conversionOf(control: string): MemoryConversion {
+  return control === "text" ? "exact" : control === "date" || control === "time" ? "date" : "option";
 }
 
 /** Whether two candidates' "Label: value" lines are next to each other in their node, with no line between. */
@@ -1508,14 +1620,24 @@ function adjacentLines(model: ScreenModel, a: Candidate, b: Candidate): boolean 
   return i >= 0 && j >= 0 && Math.abs(i - j) === 1;
 }
 
-/** A step's memory reference (executor Step.memory): the entry's id, and "#part" for a part of a remembered name. */
-export function memoryRefOf(m: { id: string; part?: FillMemory["part"] }): string {
-  return m.part === undefined ? m.id : `${m.id}#${m.part}`;
+type FillMemoryPart = NonNullable<FillMemory["part"]>;
+/** The parts a value from memory may be (protocol FillMemory.part): a name's (B24), an address's or a date's (C2). */
+const MEMORY_PARTS: ReadonlySet<string> = new Set<FillMemoryPart>(["first", "middle", "last", "street", "unit", "city", "state", "zip", "month", "day", "year"]);
+
+/**
+ * A step's memory reference (executor Step.memory): the entry's id, "#part" for a part of a remembered name, address or
+ * date, and (C2 review) "~option" or "~date" for a write through a control's conversion (memoryWrites).
+ */
+export function memoryRefOf(m: { id: string; part?: FillMemory["part"] }, conv: MemoryConversion = "exact"): string {
+  return `${m.part === undefined ? m.id : `${m.id}#${m.part}`}${conv === "exact" ? "" : `~${conv}`}`;
 }
 
 /** The entry id and the part a step's memory reference names (memoryRefOf). */
-export function parseMemoryRef(ref: string): { id: string; part: FillMemory["part"] } {
-  const at = ref.lastIndexOf("#");
-  const part = at < 0 ? "" : ref.slice(at + 1);
-  return part === "first" || part === "middle" || part === "last" ? { id: ref.slice(0, at), part } : { id: ref, part: undefined };
+export function parseMemoryRef(ref: string): { id: string; part: FillMemory["part"]; conv: MemoryConversion } {
+  const tail = /~(option|date)$/u.exec(ref);
+  const conv: MemoryConversion = tail === null ? "exact" : (tail[1] as MemoryConversion);
+  const rest = tail === null ? ref : ref.slice(0, tail.index);
+  const at = rest.lastIndexOf("#");
+  const part = at < 0 ? "" : rest.slice(at + 1);
+  return MEMORY_PARTS.has(part) ? { id: rest.slice(0, at), part: part as FillMemoryPart, conv } : { id: rest, part: undefined, conv };
 }

@@ -444,7 +444,8 @@ describe("what a Fill all writes, control by control (D2-04)", () => {
     expect(h("Start")?.handoff).toMatchObject({ value: "2026-10-20", writes: true });
     expect(h("From")?.handoff).toMatchObject({ value: "2026-10-19T09:00", writes: true });
     expect(h("Abroad")).toMatchObject({ handoff: null, withheld: "ambiguous" });
-    expect(h("Month")?.handoff).toEqual({ value: "2026-10-03", display: expect.any(String), source: expect.anything(), memory: null, context: "Month" });
+    // C2 (lead decision 1): a month input takes the month and year of the date the user wrote, in its own format.
+    expect(h("Month")?.handoff).toEqual({ value: "2026-10", display: "October 2026", source: expect.anything(), memory: null, context: "Month", writes: true });
     expect(h("At")?.handoff).toMatchObject({ value: "09:30", writes: true });
     // A zone, or words around the time: the user's, with B24's reading shown to them.
     expect(h("Zoned")?.handoff).toEqual({ value: "15:00", display: "3:00 PM", source: expect.anything(), memory: null, context: "Zoned" });

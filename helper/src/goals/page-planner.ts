@@ -11,7 +11,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { AboutValue } from "../fill/about.ts";
 import type { AskJev } from "../fill/jev.ts";
-import { FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { isAnswerField } from "../fill/answers.ts";
@@ -25,7 +25,7 @@ import { handoffWhy } from "../planner/validate.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import type { DraftPlan } from "../codemode/types.ts";
 import { buildInventory, windowRevision } from "./inventory.ts";
-import { GoalError, lowerGoal } from "./lower.ts";
+import { GoalError, lowerGoal, MAX_SEGMENTS } from "./lower.ts";
 import { canonical, sha256, type AttachOffer, type GoalControl, type GoalInventory, type GoalPlan, type LeftItem, type PageGoal, type TargetBinding, type ValueBinding } from "./plan.ts";
 import type { Replan } from "./runs.ts";
 
@@ -202,6 +202,8 @@ function ordered<T extends { node: Node }>(w: WindowState, xs: readonly T[]): T[
 }
 
 const shortDigest = (s: string): string => sha256(s).slice(0, 16);
+/** The rows one segment's preview shows at most (protocol GoalProgress segment `steps`). */
+const STEP_VIEWS = 24;
 const clip = (s: string, n = 60): string => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
 /**
@@ -283,46 +285,70 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
         });
   if (wanted.length === 0 && files.length === 0) throw new GoalError("nothingToDo", left.length > 0 ? clip(left.map((l) => l.says).join("; "), 590) : "this page has no empty field Caret could fill");
   wanted = ordered(w, wanted);
-  // The size hand-off: one fill asks about MAX_FIELDS fields at most; the rest of the form is named as the user's, in one line.
-  const asked = wanted.slice(0, MAX_FIELDS);
-  const rest = wanted.slice(MAX_FIELDS);
+  // C2 (lead decision 3): a form over MAX_FIELDS is filled in parts of at most MAX_FIELDS, in this order. One fill asks
+  // about one part; each part is its own segment of the goal, previewed and accepted with its own Tab and undone on its
+  // own (lowerGoal `parts`). The goal has at most MAX_SEGMENTS segments, so the fields past that many parts are named
+  // as the user's, in one line (the size hand-off, P2). The segment that ends up last also shows the attach rows and
+  // the hand-off row, and a preview shows at most STEP_VIEWS rows, so with many file controls every part is smaller
+  // (C2 review: 40 fields and four uploads made a last segment of 25 rows, which the protocol refuses).
+  // At most STEP_VIEWS - 2 attach rows, so one write and the hand-off row still fit; the rest are the user's (fix-check).
+  for (const n of files.splice(STEP_VIEWS - 2)) leave(n, `Caret offers at most ${STEP_VIEWS - 2} files to attach at once`);
+  const partSize = Math.max(1, Math.min(MAX_FIELDS, STEP_VIEWS - 1 - files.length));
+  const room = partSize * MAX_SEGMENTS;
+  const asked = wanted.slice(0, room);
+  const rest = wanted.slice(room);
   if (rest.length > 0) {
     const names = rest.map((x) => `'${fieldName(w, x.node)}'`);
-    left.push({ windowId: o.windowId, key: `size:${o.windowId}`, label: `${rest.length} more fields`, why: "dropped", says: clip(`Caret fills ${MAX_FIELDS} fields of a form at once, so ${rest.length} more are yours: ${names.slice(0, 6).join(", ")}${names.length > 6 ? ` and ${names.length - 6} more` : ""}`, 590) });
+    left.push({ windowId: o.windowId, key: `size:${o.windowId}`, label: `${rest.length} more fields`, why: "dropped", says: clip(`Caret fills ${room} fields of a form, ${partSize} at a time, so ${rest.length} more are yours: ${names.slice(0, 6).join(", ")}${names.length > 6 ? ` and ${names.length - 6} more` : ""}`, 590) });
   }
+  const parts: PageInput[][] = [];
+  for (let i = 0; i < asked.length; i += partSize) parts.push(asked.slice(i, i + partSize));
 
-  // 2. Values: fill's one round over exactly those fields, under the Ask's scope.
-  const scope: FillScope | undefined =
-    o.scope === null ? undefined : { ...o.scope, fields: asked.map((x) => x.node.key), literals: new Map([...o.scope.literals].filter(([k]) => asked.some((x) => x.node.key === k))) };
-  let proposal: Awaited<ReturnType<typeof proposeFill>> | null = null;
-  try {
-    // A page whose only controls in scope are file controls asks fill nothing.
-    if (asked.length > 0) proposal = await proposeFill(o.sources ?? model, o.askJev, o.windowId, (asked[0] as PageInput).node.key, o.now, { about: o.about, ...(scope === undefined ? {} : { scope }), ...(o.fill ?? {}) });
-  } catch (e) {
-    // With a file control to attach to, a form fill has nothing for still leaves the attach rows to offer.
-    if (e instanceof FillError && e.why === "nothingToCopy" && files.length > 0) for (const x of asked) leave(x.node, "Caret found nothing on screen or in memory for it");
-    else if (e instanceof FillError) throw new GoalError("nothingToDo", e.why === "nothingToCopy" ? saysNoValue(asked.map((x) => fieldName(w, x.node))) : "Caret couldn't read this form's values", e.message);
-    else throw e;
-  }
+  // 2. Values: fill's one round over exactly each part's fields, under the Ask's scope; the parts' rounds run together.
+  const scopeOf = (part: readonly PageInput[]): FillScope | undefined =>
+    o.scope === null ? undefined : { ...o.scope, fields: part.map((x) => x.node.key), literals: new Map([...o.scope.literals].filter(([k]) => part.some((x) => x.node.key === k))) };
+  const rounds = await Promise.all(
+    parts.map(async (part) => {
+      const scope = scopeOf(part);
+      try {
+        // With no scope, the part's own fields (C2 review: a fill on focus asks about the 20 nearest the trigger, which
+        // on a long form of look-alike fields were not the part's).
+        const which = scope === undefined ? { only: part.map((x) => x.node.key) } : { scope };
+        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}) }), error: null };
+      } catch (e) {
+        if (e instanceof FillError) return { part, scope, proposal: null, error: e };
+        throw e;
+      }
+    }),
+  );
+  // A part fill had nothing for leaves its fields to the user when another part, or a file control's attach row, still
+  // has something to offer (before C2: with a file control only). A fill that failed any other way refuses the plan.
+  const failed = rounds.find((x) => x.error !== null && x.error.why !== "nothingToCopy")?.error;
+  if (failed !== undefined && failed !== null) throw new GoalError("nothingToDo", "Caret couldn't read this form's values", failed.message);
+  if (rounds.every((x) => x.error !== null) && rounds.length > 0 && files.length === 0) throw new GoalError("nothingToDo", saysNoValue(asked.map((x) => fieldName(w, x.node))), rounds[0]?.error?.message);
+  for (const x of rounds) if (x.error !== null) for (const y of x.part) leave(y.node, "Caret found nothing on screen or in memory for it");
   // What a Fill all would write: text values and the controls fill says it writes, each with its span and source; and
   // (an Ask's own) a value the instruction spells out for the field, which both asks chose as written there.
-  const grounded = proposal === null ? { fields: [] } : writtenFields(proposal, undefined, { answers: false });
-  const writes = new Map<string, Written>(grounded.fields.map((f) => [f.key, f]));
-  for (const f of proposal?.fields ?? []) {
-    const said = scope?.literals.get(f.key);
-    if (writes.has(f.key) || said === undefined || f.asks[0]?.value !== said) continue;
-    if (f.control === "text" && f.value === said && f.source === null && f.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: said, display: said, span: said, context: null, source: null, memory: null });
-    else if (f.handoff !== null && f.handoff.writes === true && f.handoff.source === null && f.handoff.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: f.handoff.value, display: f.handoff.display, span: said, context: null, source: null, memory: null });
-  }
-  for (const f of proposal?.fields ?? []) {
-    if (writes.has(f.key)) continue;
-    const n = w.nodes.get(f.key);
-    if (n === undefined) continue;
-    // H13: a field that takes a written answer is the user's by design, whatever Jev made of it: "wasn't sure" would say
-    // Caret tried to write it. A saved answer matched to it but held back (`answer`) keeps that reason instead.
-    if (f.withheld !== null && f.answer === undefined && isAnswerField(n)) leave(n, "Caret doesn't write answers", undefined, "is yours to write");
-    else if (f.withheld !== null) leave(n, WITHHELD_SAYS[f.withheld] ?? "Caret wasn't sure what goes there");
-    else if (f.handoff !== null) leave(n, `Caret leaves setting it to you ('${clip(f.handoff.display)}' fits it)`, f.handoff.source === null ? undefined : { windowId: f.handoff.source.windowId, text: clip(f.handoff.display) });
+  const writes = new Map<string, Written>();
+  for (const { proposal, scope } of rounds) {
+    if (proposal === null) continue;
+    for (const f of writtenFields(proposal, undefined, { answers: false }).fields) writes.set(f.key, f);
+    for (const f of proposal.fields) {
+      const said = scope?.literals.get(f.key);
+      if (writes.has(f.key) || said === undefined || f.asks[0]?.value !== said) continue;
+      if (f.control === "text" && f.value === said && f.source === null && f.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: said, display: said, span: said, context: null, source: null, memory: null });
+      else if (f.handoff !== null && f.handoff.writes === true && f.handoff.source === null && f.handoff.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: f.handoff.value, display: f.handoff.display, span: said, context: null, source: null, memory: null });
+    }
+    for (const f of proposal.fields) {
+      if (writes.has(f.key)) continue;
+      const n = w.nodes.get(f.key);
+      if (n === undefined) continue;
+      // H13: a field that takes a written answer is the user's by design, whatever Jev made of it: "wasn't sure" would say
+      // Caret tried to write it. A saved answer matched to it but held back (`answer`) keeps that reason instead.
+      if (f.withheld !== null && f.answer === undefined && isAnswerField(n)) leave(n, "Caret doesn't write answers", undefined, "is yours to write");
+      else if (f.withheld !== null) leave(n, WITHHELD_SAYS[f.withheld] ?? "Caret wasn't sure what goes there");
+      else if (f.handoff !== null) leave(n, `Caret leaves setting it to you ('${clip(f.handoff.display)}' fits it)`, f.handoff.source === null ? undefined : { windowId: f.handoff.source.windowId, text: clip(f.handoff.display) });
+    }
   }
   if (writes.size === 0 && files.length === 0) {
     const unsure = left.filter((l) => l.key !== `size:${o.windowId}`);
@@ -341,8 +367,12 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   const values = new Map<string, ValueBinding>(inv.inventory.values);
   const gated = new Map<string, ValueBinding>();
   const steps: DraftPlan["steps"] = [];
+  /** C2: each fill step's part, by its ref: lowerGoal starts a segment where the part changes. */
+  const stepParts = new Map<string, number>();
+  const partOf = new Map(parts.flatMap((p, i) => p.map((x) => [x.node.key, i] as const)));
   let ref = 0;
-  for (const x of ordered(w, asked.filter((a) => writes.has(a.node.key)))) {
+  // In the parts' order (document order, a country before what depends on it: `wanted`), so each part's steps are together.
+  for (const x of asked.filter((a) => writes.has(a.node.key))) {
     const f = writes.get(x.node.key);
     if (f === undefined) continue;
     const n = x.node;
@@ -365,7 +395,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
             ? { kind: "derived", inputs: [], resolver: "fill/when", version: RESOLVER_VERSION, parametersDigest: shortDigest(f.span) }
             : { kind: "span", snapshot: "s1", source: f.source?.windowId ?? "instruction", startUTF16: 0, endUTF16: f.span.length, digest: shortDigest(f.span) },
       source: f.source === null || src === undefined ? null : { windowId: f.source.windowId, key: f.source.nodeKey, revision: windowRevision(src) },
-      memory: f.memory === null ? null : memoryRefOf(f.memory),
+      memory: f.memory === null ? null : memoryRefOf(f.memory, conversionOf(f.control)),
       event: null,
       draft: null,
       owner: f.memory !== null ? "user" : null,
@@ -374,6 +404,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     targets.set(t.ref, t);
     values.set(v.ref, v);
     gated.set(t.ref, v);
+    stepParts.set(`s${steps.length + 1}`, partOf.get(n.key) ?? 0);
     steps.push({ ref: `s${steps.length + 1}`, kind: "fill", target: t.ref, value: v.ref });
   }
   // 4. Attach (P3): each file control in scope, with what its row offers. Caret never looks for a file on disk: the row
@@ -390,9 +421,9 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   const row = handoffRow(w, domain, [...[...gated.keys()].map((r) => (targets.get(r) as TargetBinding).key), ...attach.map((a) => a.target.key)]);
 
   // 5. Lowering, with fill's picks gated by fill. 6. The planning's identity.
-  const programHash = sha256(canonical({ planner: PAGE_PLANNER, instruction, scopeKind: o.kind, section: o.section, revealed: o.revealed ?? null, revision: windowRevision(w), document, fields: asked.map((x) => x.node.key), files: files.map((n) => n.key) }));
+  const programHash = sha256(canonical({ planner: PAGE_PLANNER, instruction, scopeKind: o.kind, section: o.section, revealed: o.revealed ?? null, revision: windowRevision(w), document, fields: asked.map((x) => x.node.key), parts: parts.map((p) => p.length), files: files.map((n) => n.key) }));
   const draft: DraftPlan = { basedOn: windowRevision(w), window: o.windowId, steps, choices: [], drafts: [], programDigest: programHash };
-  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, gated, carried: [...(o.carried?.owed ?? []), ...left], attach, handoffRow: row });
+  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, gated, carried: [...(o.carried?.owed ?? []), ...left], attach, handoffRow: row, parts: stepParts });
   const page: PageGoal = {
     windowId: o.windowId,
     scope: o.scope ?? { fields: [], windows: null, memory: true, instruction, person: null, literals: new Map() },

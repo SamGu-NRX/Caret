@@ -12,7 +12,7 @@ import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
 import { labelledLines, lineGives } from "../fill/candidates.ts";
 import { splitAddress, splitPlace } from "../fill/derive.ts";
-import { describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
+import { conversionOf, describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import { offerField } from "./field.ts";
@@ -357,7 +357,8 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       says: control ? `{{l${i}}} set to {{d${i}}}` : saved ? `{{l${i}}} holds your saved answer` : `{{l${i}}} holds {{v${i}}}`,
       // A value from memory is checked against the entry again right before it is written (executor.ts).
       // A part of a remembered name names its part ("about-1#first"), so the check splits the entry the same way.
-      ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory) }),
+      // C2 review: a control's value names the conversion it went through ("~option", "~date"), which the check reads too.
+      ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory, conversionOf(f.control)) }),
       end: {
         kind: "valueEquals" as const,
         window: { bundleId: p.bundleId, title: "{{title}}", ...(w?.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: p.windowId } : {}) },

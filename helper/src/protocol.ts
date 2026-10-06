@@ -1348,9 +1348,12 @@ export const FillMemory = z.object({
   says: z.string(),
   /**
    * The part of a remembered name the value is (B24, fill/derive.ts): "first" for "Riley" from Name "Riley
-   * Okafor". Absent: the value is the whole entry. A check that the entry still holds the value splits it again.
+   * Okafor". C2 adds the parts of a remembered address ("zip" for "97214" from Home address "2210 Willow Bend Drive,
+   * Portland, Oregon 97214") and of a remembered date ("month" for "March" from Date of birth "March 14, 1990"). Each
+   * is a substring of the entry. Absent: the value is the whole entry. A check that the entry still holds the value
+   * splits it again.
    */
-  part: z.enum(["first", "middle", "last"]).optional(),
+  part: z.enum(["first", "middle", "last", "street", "unit", "city", "state", "zip", "month", "day", "year"]).optional(),
 });
 export type FillMemory = z.infer<typeof FillMemory>;
 
@@ -2356,7 +2359,9 @@ const GoalHead = {
  * (goalAccept with this `digest`) until `expires`; `reason` says why it is separate (`start`, `crossWindow`: another
  * window or the calendar, `afterReveal`: a press showed new fields, `freshPlan`: replanned after a stop, `nextPage`
  * (P3): the user's own Next took the page to a new document, and a goal whose scope was the whole form or a section was
- * planned again there, its values chosen afresh from the sources as they read now) and `replaces` names the goal it was
+ * planned again there, its values chosen afresh from the sources as they read now, `moreFields` (C2): the next part of
+ * a page form over 20 fields, at most 20 more of its fields, which the goal planned with the rest and runs only on this
+ * segment's own acceptance) and `replaces` names the goal it was
  * replanned from or carried on from. `step`: one step verified, already true, or handed to the user, with the
  * executor task it ran in. `stopped`: the goal stopped; `freshPlan` names the replanned goal offered in its place, or
  * null. `finished`: every segment ran; `outcome` is `done` only when every step Caret makes was verified and nothing is
@@ -2370,7 +2375,7 @@ export const GoalProgress = z.discriminatedUnion("event", [
     event: z.literal("segment"),
     segment: z.number().int().nonnegative(),
     segments: z.number().int().positive(),
-    reason: z.enum(["start", "crossWindow", "afterReveal", "freshPlan", "nextPage"]),
+    reason: z.enum(["start", "crossWindow", "afterReveal", "freshPlan", "nextPage", "moreFields"]),
     replaces: z.string().min(1).max(240).nullable(),
     digest: Digest,
     expires: ms,

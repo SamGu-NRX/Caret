@@ -73,7 +73,7 @@ function hasPayment(w: WindowState, excluded: Excluded): boolean {
  */
 function hasCandidate(w: WindowState, n: Node, about: readonly AboutValue[], left: WindowState | null): boolean {
   const name = nameOf(w, n);
-  if (about.some((a) => fieldAsksFor(a, name))) return true;
+  if (about.some((a) => fieldAsksFor(a, name, w.window.title))) return true;
   if (left === null) return false;
   const d = describeField(w, n);
   const asked = fieldKinds([d.label, d.nearest, d.placeholder]);

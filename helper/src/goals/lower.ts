@@ -22,6 +22,7 @@ import type { DraftPlan } from "../codemode/types.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { matchOption } from "../fill/controls.ts";
+import { MAX_FIELDS } from "../fill/fill.ts";
 import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
@@ -148,8 +149,10 @@ function lowerFill(t: TargetBinding, v: ValueBinding, gated: boolean): Pick<Goal
     case "time": {
       if (!page) return { kind: "handoff", says: `Caret leaves setting ${named(t)} to you`, writes: null, handoff: "unverifiable" };
       // A date input takes YYYY-MM-DD, a date-and-time one YYYY-MM-DDTHH:MM (P2: fill's readDateTime), a time one HH:MM.
-      const shape = t.control === "time" ? /^\d{2}:\d{2}$/ : /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?$/;
-      if (v.origin.kind !== "derived" || !shape.test(v.text)) return { drop: `the field takes a ${t.control} the value resolver read, and '${clip(v.text)}' is not one` };
+      // C2: a month input YYYY-MM, only as fill's own pick, which read the input's format (fill.ts controlValue).
+      const shape = t.control === "time" ? /^\d{2}:\d{2}$/ : gated ? /^\d{4}-\d{2}(?:-\d{2}(?:T\d{2}:\d{2})?)?$/ : /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?$/;
+      // C2: fill's pick of an About entry (a date of birth) is read by the same resolver, from the entry.
+      if ((v.origin.kind !== "derived" && !(gated && v.origin.kind === "memory")) || !shape.test(v.text)) return { drop: `the field takes a ${t.control} the value resolver read, and '${clip(v.text)}' is not one` };
       if (t.value !== "" && t.value !== v.text) throw new GoalError("notEmpty", `${named(t)} already holds a ${t.control}, so Caret will not change it`, t.ref);
       return { kind: "write", says: `${t.label}: ${v.text}`, writes: v.text, handoff: null };
     }
@@ -208,6 +211,12 @@ export interface LowerOptions {
    * gets no executor step (executorPlan), so nothing ever presses its control.
    */
   handoffRow?: { target: TargetBinding; says: string; why: HandoffWhy };
+  /**
+   * C2 (lead decision 3): a long page form's part of each fill step, by the draft step's ref (page-planner.ts). Each part
+   * is its own segment (reason moreFields), previewed and accepted with its own Tab and undone on its own; attach rows
+   * and the hand-off row go with the last.
+   */
+  parts?: ReadonlyMap<string, number>;
 }
 
 /** Segment warnings a goalProgress carries at most (protocol GoalProgress.warnings). */
@@ -428,6 +437,9 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     steps.push({ ref: "h1", index: steps.length, kind: "handoff", says: h.says, target: h.target, value: null, writes: null, effect: null, handoff: h.why, to: false, gate: null, row: true });
   }
   steps.forEach((x, i) => (x.index = i));
+  // C2: a form filled in parts says so before the first Tab, ahead of what is left (within MAX_WARNINGS, C2 review).
+  const partCount = new Set(steps.flatMap((x) => (o.parts?.has(x.ref) === true ? [o.parts.get(x.ref) as number] : []))).size;
+  if (partCount > 1) warnings.unshift(`Caret fills this form in ${partCount} parts of up to ${MAX_FIELDS} fields, each with its own preview and Tab.`);
   // A goalProgress carries MAX_WARNINGS sentences (P2: a 40-field form can leave more): the rest are named in one.
   const said = left.map((l) => `${l.says}.`);
   const room = MAX_WARNINGS - warnings.length;
@@ -446,7 +458,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     const press = steps.find((x) => x.kind === "handoff" && x.handoff !== null && x.handoff !== "unverifiable" && x.handoff !== "system");
     throw new GoalError("nothingToDo", press?.handoff == null ? "the plan leaves every step to you, so there is nothing for Caret to do" : saysPress(press.handoff, press.target.label));
   }
-  const segments = cut(draft.programDigest, steps, warnings);
+  const segments = cut(draft.programDigest, steps, warnings, o.parts);
   if (segments.length > MAX_SEGMENTS) throw new GoalError("tooManySegments", `the plan needs ${segments.length} separate acceptances; Caret offers at most ${MAX_SEGMENTS}`);
   return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv };
 }
@@ -468,17 +480,22 @@ function senderValues(reply: string, inv: GoalInventory): ValueBinding[] {
   });
 }
 
-function cut(programHash: string, steps: readonly GoalStep[], warnings: readonly string[]): GoalSegment[] {
+function cut(programHash: string, steps: readonly GoalStep[], warnings: readonly string[], parts?: ReadonlyMap<string, number>): GoalSegment[] {
   const groups: { domain: GoalDomain; reason: SegmentReason; steps: GoalStep[] }[] = [];
+  let part: number | undefined;
   for (const s of steps) {
     const last = groups.at(-1);
     const prev = last?.steps.at(-1);
     const revealed = prev?.kind === "press";
-    if (last !== undefined && sameDomain(last.domain, s.target.domain) && !revealed) {
+    // C2: a step of the next part of a long page form starts its own segment.
+    const next = parts?.get(s.ref);
+    const nextPart = next !== undefined && part !== undefined && next !== part;
+    if (next !== undefined) part = next;
+    if (last !== undefined && sameDomain(last.domain, s.target.domain) && !revealed && !nextPart) {
       last.steps.push(s);
       continue;
     }
-    groups.push({ domain: s.target.domain, reason: last === undefined ? "start" : revealed && sameDomain(last.domain, s.target.domain) ? "afterReveal" : "crossWindow", steps: [s] });
+    groups.push({ domain: s.target.domain, reason: last === undefined ? "start" : nextPart && sameDomain(last.domain, s.target.domain) ? "moreFields" : revealed && sameDomain(last.domain, s.target.domain) ? "afterReveal" : "crossWindow", steps: [s] });
   }
   return groups.map((g, index) => segmentOf(programHash, { index, domain: g.domain, reason: g.reason, steps: g.steps }, warnings));
 }

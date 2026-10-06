@@ -1,0 +1,1 @@
+J1: the replay cache (engines/decide/cache.ts) and --log-requests take only fixture text: a harness lists its fixture window ids and says if its memory and plan text (window id 'plan') are fixtures; charged windows are checked too. The helper refuses CARET_JEV_CACHE.

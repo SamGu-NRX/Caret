@@ -432,8 +432,9 @@ describe("B24 fix-check review", () => {
   it("names a remembered name's part in a step's memory reference, and reads it back", () => {
     expect(memoryRefOf({ id: "about-1", part: "first" })).toBe("about-1#first");
     expect(memoryRefOf({ id: "about-1" })).toBe("about-1");
-    expect(parseMemoryRef("about-1#last")).toEqual({ id: "about-1", part: "last" });
-    expect(parseMemoryRef("about#odd")).toEqual({ id: "about#odd", part: undefined });
+    // C2 review: and how the value was written from it ("exact" for text, the default).
+    expect(parseMemoryRef("about-1#last")).toEqual({ id: "about-1", part: "last", conv: "exact" });
+    expect(parseMemoryRef("about#odd")).toEqual({ id: "about#odd", part: undefined, conv: "exact" });
     // A changed name gives its own parts, not any part that happens to match.
     expect(memoryValue("Morgan Riley", "first")).toBe("Morgan");
   });

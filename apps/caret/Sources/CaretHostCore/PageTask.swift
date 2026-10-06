@@ -234,8 +234,9 @@ public struct PageTask: Equatable, Sendable {
             undo = .none
             stage = .preview
             return .nextPage
-        case .start, .crossWindow:
-            // A later segment of this same goal (D2-06): it asks again once the one before it ran.
+        case .start, .crossWindow, .moreFields:
+            // A later segment of this same goal (D2-06), or the next part of a long form (C2): it asks again once the
+            // one before it ran.
             guard goalId == newest.goalId, p.segment == newest.segment + 1, newest.accepted, stage == .running else { return .ignored }
             for r in groups[groups.count - 1].rows.indices where groups[groups.count - 1].rows[r].state == .writing {
                 groups[groups.count - 1].rows[r].state = .pending

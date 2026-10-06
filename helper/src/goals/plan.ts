@@ -174,9 +174,10 @@ export interface LeftItem {
 /**
  * Why a segment is separate. `afterReveal` is also a fresh goal for the fields a finished page goal's writes showed
  * (runs.ts revealed). `nextPage` (P3): the user's own Next carried the goal to a new document (runs.ts carry); like a
- * reveal's, it is said on the wire for the carried goal's first segment, whose own reason is `start`.
+ * reveal's, it is said on the wire for the carried goal's first segment, whose own reason is `start`. `moreFields` (C2): the
+ * next part of a page form over 20 fields (page-planner.ts), with its own preview and Tab.
  */
-export type SegmentReason = "start" | "crossWindow" | "afterReveal" | "nextPage";
+export type SegmentReason = "start" | "crossWindow" | "afterReveal" | "nextPage" | "moreFields";
 
 export interface GoalSegment {
   index: number;

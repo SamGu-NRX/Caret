@@ -160,6 +160,8 @@ public enum PageTaskCopy {
     public static func continuation(_ g: PageTask.Group) -> String {
         switch g.reason {
         case .afterReveal: return g.writes == 1 ? "1 more field appeared" : "\(g.writes) more fields appeared"
+        // C2: the next part of a long form, shown as a reveal is ("20 more fields", then its own Tab).
+        case .moreFields: return g.writes == 1 ? "1 more field" : "\(g.writes) more fields"
         case .freshPlan: return "Ready again: \(fields(g.writes))"
         case .start, .crossWindow, .nextPage: return "Then \(fields(g.writes))"
         }
