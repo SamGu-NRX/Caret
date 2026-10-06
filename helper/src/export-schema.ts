@@ -4,7 +4,7 @@
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as z from "zod";
-import { ConsumerMessage, HelperMessage, HelperToReader, PROTOCOL_VERSION, ReaderMessage } from "./protocol.ts";
+import { ConsumerMessage, HelperMessage, HelperToReader, PROTOCOL_VERSION, PageFieldText, ReaderMessage } from "./protocol.ts";
 import { EndState, Plan } from "./executor/schema.ts";
 
 export const SCHEMA_PATH = fileURLToPath(new URL("../schemas/screen-protocol.schema.json", import.meta.url));
@@ -31,6 +31,8 @@ export function protocolJsonSchema(): Record<string, unknown> {
       ConsumerMessage: z.toJSONSchema(ConsumerMessage),
       HelperMessage: z.toJSONSchema(HelperMessage),
       HelperToReader: z.toJSONSchema(HelperToReader),
+      // P4: the text part of the host's pageField (H10's PageField on v2/host carries it).
+      PageFieldText: z.toJSONSchema(PageFieldText),
     },
   };
 }

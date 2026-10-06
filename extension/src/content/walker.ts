@@ -144,7 +144,7 @@ function length(v: string, size: number): number | null {
  * opposite sides meet (all four sides read, so inset(50% 0 0 0) keeps its lower half), a circle of radius 0, or a
  * polygon whose points are all one point.
  */
-function clipsToNothing(cs: CSSStyleDeclaration, w: number, h: number): boolean {
+export function clipsToNothing(cs: CSSStyleDeclaration, w: number, h: number): boolean {
   const rect = /rect\(\s*(-?[\d.]+)px[ ,]+(-?[\d.]+)px[ ,]+(-?[\d.]+)px[ ,]+(-?[\d.]+)px\s*\)/.exec(cs.clip);
   if (rect !== null) {
     const [top, right, bottom, left] = rect.slice(1, 5).map(Number) as [number, number, number, number];
@@ -178,7 +178,7 @@ function clipsToNothing(cs: CSSStyleDeclaration, w: number, h: number): boolean 
 }
 
 /** The box clip-path and clip resolve against: the layout box before transforms, where the element has one. */
-function clipBox(el: Element): [number, number] {
+export function clipBox(el: Element): [number, number] {
   if (el instanceof HTMLElement) return [el.offsetWidth, el.offsetHeight];
   const r = el.getBoundingClientRect();
   return [r.width, r.height];

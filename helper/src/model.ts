@@ -182,6 +182,40 @@ export class ScreenModel {
     this.frontmostPid = null;
     this.focusHistory.length = 0;
   }
+
+  /**
+   * P4: when the user last left `windowId`, the moment another window came to the front after its last focus; null
+   * while it is still the window they are in, or if it never had focus.
+   */
+  leftAt(windowId: string): number | null {
+    const i = this.focusHistory.findLastIndex((e) => e.windowId === windowId);
+    return i < 0 ? null : (this.focusHistory[i + 1]?.at ?? null);
+  }
+
+  /**
+   * P4: a read-only view of the model in which the windows `extra` names also hold its nodes (and its title, when given),
+   * for the one reader that may see them: fill, reading the tab the user just left (engines/tab-source.ts). The model
+   * itself never holds them, so no other reader of the screen (the router, event cards, the shadow log, transfers)
+   * can see them, and they go when the view does. A window the model no longer has is not brought back. The view's
+   * change log starts empty: fill does not read it, and the nodes must never enter the model's.
+   */
+  withNodes(extra: ReadonlyMap<string, { nodes: readonly Node[]; title: string | null }>): ScreenModel {
+    const v = new ScreenModel();
+    for (const [id, w] of this.windows) {
+      const add = extra.get(id);
+      if (add === undefined) {
+        v.windows.set(id, w);
+        continue;
+      }
+      const nodes = new Map(w.nodes);
+      for (const n of add.nodes) nodes.set(n.key, n);
+      v.windows.set(id, { ...w, window: add.title === null ? w.window : { ...w.window, title: add.title }, nodes });
+    }
+    v.focusedWindowId = this.focusedWindowId;
+    v.frontmostPid = this.frontmostPid;
+    v.focusHistory.push(...this.focusHistory);
+    return v;
+  }
 }
 
 /**

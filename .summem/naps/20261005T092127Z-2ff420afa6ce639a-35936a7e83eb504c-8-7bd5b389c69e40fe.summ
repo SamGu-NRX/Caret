@@ -1,0 +1,1 @@
+B29-B30/D2-06: a continued Ask refuses a changed form (ask.ts fieldSeen); choice questions go only to askChoices consumers; page presses are hand-offs; only a goalAccept with its digest runs goal steps; GoalRuns.blocked is null after a segment; goal writes skip Cc/Bcc/Subject.

@@ -1,0 +1,1 @@
+B30/R2: drafts.ts checks drafted goal text as whole typed facts (every digit lands in a fact; use whole-expression rules, never token allowlists). Typing replays must send a typed value in the same snapshot as its text, or no event card is listed.

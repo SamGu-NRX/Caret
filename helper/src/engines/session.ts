@@ -54,6 +54,19 @@ export class EngineSession {
   }
 
   command(verb: PageVerb, timeoutMs = this.timeoutMs): Promise<CommandAnswer> {
+    return this.request((id, expires) => ({ type: "pageCommand", v: PROTOCOL_VERSION, id, expires, verb }), timeoutMs);
+  }
+
+  /**
+   * P4: the text of the tab the user just left (PageReadText), answered by a pageResult whose `text` holds it. Only
+   * engines/tab-source.ts calls this. The answer is the caller's alone: nothing here keeps it past resolving.
+   */
+  readText(tabId: number, timeoutMs = this.timeoutMs): Promise<PageResult> {
+    return this.request((id, expires) => ({ type: "pageReadText", v: PROTOCOL_VERSION, id, expires, tabId }), timeoutMs).then((a) => a.result);
+  }
+
+  /** Sends one message the engine answers with a pageResult of the same id, and waits for that answer. */
+  private request(message: (id: string, expires: number) => HelperToEngine, timeoutMs: number): Promise<CommandAnswer> {
     const id = randomUUID();
     return new Promise((resolve) => {
       if (this.closed) return resolve({ result: this.failed(id, "the engine is gone"), snapshot: null });
@@ -62,7 +75,7 @@ export class EngineSession {
         resolve({ result: this.failed(id, `no answer from the engine within ${timeoutMs} ms`), snapshot: null });
       }, timeoutMs);
       this.pending.set(id, { resolve, snapshot: null, timer });
-      if (!this.send({ type: "pageCommand", v: PROTOCOL_VERSION, id, expires: Date.now() + timeoutMs, verb })) {
+      if (!this.send(message(id, Date.now() + timeoutMs))) {
         clearTimeout(timer);
         this.pending.delete(id);
         resolve({ result: this.failed(id, "the engine's connection is closed"), snapshot: null });
@@ -130,8 +143,11 @@ export class EngineSession {
         const p = this.pending.get(m.id);
         if (p === undefined) return `a snapshot for command ${m.id}, which nobody is waiting for`;
         p.snapshot = m;
-        this.tabs.set(m.tabId, m);
-        this.onSnapshot?.(m, this);
+        // P4 item 7: the text around the caret goes to the one waiting for this walk only; the tab's kept snapshot holds
+        // none of it, so the field's text is not kept past the walk that read it (P4 review).
+        const kept = withoutFieldText(m);
+        this.tabs.set(m.tabId, kept);
+        this.onSnapshot?.(kept, this);
         return null;
       }
       case "pageResult": {
@@ -174,4 +190,17 @@ export class EngineSession {
     this.pongs.clear();
     for (const w of this.helloWaiters.splice(0)) w(null);
   }
+}
+
+/**
+ * A snapshot without the text around the caret (focused.text, docs.field), as a tab's last walk is kept. Only those
+ * two go: whatever else a walk says about the focused field stays.
+ */
+export function withoutFieldText(s: PageSnapshot): PageSnapshot {
+  let focused = s.focused;
+  if (focused !== null && focused.text !== undefined) {
+    const { text: _dropped, ...rest } = focused;
+    focused = rest;
+  }
+  return { ...s, focused, ...(s.docs === undefined ? {} : { docs: { ...s.docs, field: null } }) };
 }
