@@ -3,7 +3,8 @@
 // with no tab, from this extension's id), never window.postMessage or the page. On its own it tells the worker two
 // things, neither naming an element: that the document moved in history, so the worker bumps the frame's
 // navigation generation at once; and that focus moved while this document is visible and focused, so the helper
-// can walk the tab the user is in (W2). The second is one focusin listener, at most one message per 150 ms.
+// can walk the tab the user is in (W2). The second is one focusin listener, at most one message per 150 ms, and none
+// for a focus change Caret's own act makes (C1, content/own-acts.ts).
 //
 // W3 adds a third, only while the worker has armed this frame because a grant covers it: the user pressed a pointer
 // or a key here. Only events the browser marks trusted count, so neither the page's script nor Caret's own synthetic
@@ -19,6 +20,7 @@ import { clean } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
 import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
 import { EntryTracker } from "./content/entry.ts";
+import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
 
 declare global {
   // Set once per isolated world, so a script injected again after install (worker onInstalled) does nothing.
@@ -137,6 +139,16 @@ if (globalThis.__caretContent === undefined) {
     );
   }
 
+  const focus = new FocusReporter({
+    inFront: () => document.visibilityState === "visible" && document.hasFocus(),
+    later: (f, ms) => void setTimeout(f, ms),
+    report: () => {
+      const m: FocusMoved = { caret: 1, op: "focusMoved" };
+      chrome.runtime.sendMessage(m).catch(() => {});
+    },
+  });
+  addEventListener("focusin", () => focus.focusIn(), { capture: true, passive: true });
+
   chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
     // Only this extension's worker: a content script's own message would carry a tab, and nothing else can reach here.
     if (sender.id !== chrome.runtime.id || sender.tab !== undefined || !isToContent(m)) return false;
@@ -167,26 +179,13 @@ if (globalThis.__caretContent === undefined) {
       const ok = await chrome.runtime.sendMessage(q).then((r: unknown) => r === true, () => false);
       return ok && takeovers === start;
     };
-    act(reg, m.verb, m.deadline, alive).then(reply, (e: unknown) => reply({ outcome: "error", detail: e instanceof Error ? e.message : String(e) }));
+    focus.actStarted();
+    act(reg, m.verb, m.deadline, alive)
+      .then(reply, (e: unknown) => reply({ outcome: "error", detail: e instanceof Error ? e.message : String(e) }))
+      .finally(() => focus.actEnded());
     return true;
   });
 
-  /** Assumed: one report per burst of focus changes is enough for the helper to walk once. */
-  const FOCUS_EVERY_MS = 150;
-  let focusTimer: ReturnType<typeof setTimeout> | null = null;
-  addEventListener(
-    "focusin",
-    () => {
-      if (focusTimer !== null || document.visibilityState !== "visible" || !document.hasFocus()) return;
-      focusTimer = setTimeout(() => {
-        focusTimer = null;
-        if (document.visibilityState !== "visible" || !document.hasFocus()) return;
-        const m: FocusMoved = { caret: 1, op: "focusMoved" };
-        chrome.runtime.sendMessage(m).catch(() => {});
-      }, FOCUS_EVERY_MS);
-    },
-    { capture: true, passive: true },
-  );
 
   /**
    * The user's own pointer or key press while a grant covers this frame: the worker drops the frame's grants and the

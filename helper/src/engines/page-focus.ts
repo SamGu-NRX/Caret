@@ -15,8 +15,6 @@ export interface PageFocusOptions {
   /** Tests and evals that play the user without a reader (Helper allowBackgroundFocus): walk whatever the browser's place. */
   allowBackground?: boolean;
   warn: (line: string) => void;
-  /** C1: told of each focus report dropped as Caret's own (evals count them). */
-  ownFocus?: (tabId: number) => void;
 }
 
 export class PageFocus {
@@ -40,11 +38,6 @@ export class PageFocus {
 
   async moved(m: PageFocusMoved, session: EngineSession): Promise<void> {
     if (!this.inFront(session) && this.opts.allowBackground !== true) return;
-    // C1: a focus Caret's own write caused is not the user's, so it asks for no fill.
-    if (session.actedRecently(m.tabId)) {
-      this.opts.ownFocus?.(m.tabId);
-      return;
-    }
     const k = `${session.info.engine}:${m.tabId}`;
     if (this.walking.has(k)) {
       this.walking.set(k, true);
