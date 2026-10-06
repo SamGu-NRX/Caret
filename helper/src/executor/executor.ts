@@ -1046,7 +1046,8 @@ export class Executor {
   private async leaveRestored(task: Task, i: number, w: WindowState, node: Node, before: string, step: Step, e: Restored): Promise<void> {
     const later = task.plan.steps.slice(i + 1);
     if (!task.leaveFailedToYou || later.some((s) => s.via !== undefined || (s.end.kind !== "valueEquals" && s.end.kind !== "handoff"))) throw StepStop.stop("reader", e.message);
-    const label = (node.label ?? "").trim() || (step.end.kind === "valueEquals" ? step.end.target.describe : step.says);
+    // The name the plan gave the field (a goal's preview showed it), else the node's own label.
+    const label = (step.end.kind === "valueEquals" ? step.end.target.describe.trim() : "") || (node.label ?? "").trim() || step.says;
     const seen = [...e.seen, ...(await this.walk(this.window(w.window.windowId)))];
     this.checkInterrupt(task);
     const now = this.window(w.window.windowId).nodes.get(node.key);
