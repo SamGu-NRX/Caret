@@ -66,7 +66,8 @@ extension Gallery {
     }
 
     static let h14SaveOffer = FileSaveOffer(id: "file-offer-1", at: 1, expires: 2, goalId: "goal-3-a1", question: "Resume", site: "https://jobs.example.com/orbitline/apply",
-                                            file: .init(name: h14Resume.name), replaces: nil, says: "Use \(h14Resume.name) for 'Resume' next time?")
+                                            file: .init(name: "ines-vandermeer-resume-2026.pdf"), replaces: nil,
+                                            says: "Use ines-vandermeer-resume-2026.pdf for 'Resume' next time?")
 
     static let h14SavedFiles: [SavedFilesReply.File] = [
         .init(id: "file-1a2b3c4d", question: "Resume", site: "https://jobs.example.com/orbitline/apply", name: h14Resume.name, path: h14Resume.path,

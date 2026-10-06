@@ -484,8 +484,9 @@ final class FileSaveTests: XCTestCase {
         }
 
         var sent: [FileSave] { commands.compactMap { if case .send(let s) = $0 { return s } else { return nil } } }
+        /// The line's words, the row under it included (`FileSaveCopy.words`).
         var lastText: String? {
-            for c in commands.reversed() { if case .draw(let l, _, _) = c { return l.text } }
+            for c in commands.reversed() { if case .draw(let l, _, _) = c { return l.question?.text ?? l.text } }
             return nil
         }
         var hidden: Bool { if case .hide = commands.last { return true } else { return false } }
@@ -514,8 +515,10 @@ final class FileSaveTests: XCTestCase {
         let r = Rig()
         r.machine.receive(try Self.offer(), place: Self.place)
         guard case .draw(let line, let enters, let keyed)? = r.commands.last(where: { if case .draw = $0 { return true } else { return false } }) else { return XCTFail() }
-        XCTAssertEqual(line.text, "Use Robin Vale Resume.pdf for 'Resume' next time?")
-        XCTAssertEqual(line.hints.map(\.key), ["⌘1", "Esc"])
+        // The helper's question whole, on the row that wraps, with its keys.
+        XCTAssertEqual(line.question?.text, "Use Robin Vale Resume.pdf for 'Resume' next time?")
+        XCTAssertEqual(line.question?.hints.map(\.key), ["⌘1", "Esc"])
+        XCTAssertEqual(line.text, FileSaveCopy.attached)
         XCTAssertTrue(enters)
         XCTAssertFalse(keyed)
         XCTAssertEqual(r.machine.phase, .offered)
@@ -570,7 +573,7 @@ final class FileSaveTests: XCTestCase {
         r.machine.receive(try Self.offer(), place: Self.place)
         r.press(KeyStroke(keyCode: 18, command: true, targetPID: Self.pid))
         r.clock.advance(by: FileSaveMachine.replyWait + 0.01)
-        XCTAssertEqual(r.lastText, FileSaveCopy.unanswered.text)
+        XCTAssertEqual(r.lastText, FileSaveCopy.unanswered.question?.text)
         // A late answer changes nothing.
         r.machine.receive(FileSaveReply(requestId: "file-save-1", outcome: .saved, fileId: "file-1", says: "Kept."))
         XCTAssertFalse(r.commands.contains(.saved))

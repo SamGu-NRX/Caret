@@ -162,19 +162,27 @@ public final class FileSaveMachine {
     }
 }
 
-/// The save line's words: the helper's question, the key's label, and the endings.
+/// The save line's words: a short line, and under it the helper's sentence whole, on the question row that wraps
+/// rather than cut it (as the Gmail line does, `PageInlineCopy.notice`). The helper's sentence names the file and the
+/// question ("Use ines-vandermeer-resume-2026.pdf for 'Resume' next time?"), which one slip line cut on the test Mac.
 public enum FileSaveCopy {
     public static let save = AnswerSaveCopy.save
+    public static let attached = "File attached"
 
     public static func offered(_ o: FileSaveOffer) -> LineContent {
-        LineContent(figure: .offering, text: o.says, emphasis: .plain, hints: [Hint(key: "⌘1", label: save), Hint(key: "Esc")])
+        LineContent(figure: .offering, text: attached, emphasis: .plain, question: .init(text: o.says, hints: [Hint(key: "⌘1", label: save), Hint(key: "Esc")]))
     }
 
     public static let saving = LineContent(figure: .working, text: "Keeping the file for next time", emphasis: .plain)
-    public static let unanswered = LineContent(figure: .error, text: "Caret's helper didn't confirm it kept the file, so it may not be offered next time.", emphasis: .plain)
+    public static let unanswered = LineContent(figure: .error, text: "Not confirmed", emphasis: .plain,
+                                               question: .init(text: "Caret's helper didn't confirm it kept the file, so it may not be offered next time."))
 
     /// The helper's sentence, whole: "Caret will offer Robin Vale Resume.pdf for 'Resume' next time.", or why not.
     public static func replied(_ r: FileSaveReply) -> LineContent {
-        LineContent(figure: r.outcome == .saved ? .done : .still, text: r.says, emphasis: .plain)
+        LineContent(figure: r.outcome == .saved ? .done : .still, text: r.outcome == .saved ? "Kept for next time" : "Not kept", emphasis: .plain,
+                    question: .init(text: r.says))
     }
+
+    /// Everything the line says, the row under it included.
+    public static func words(_ l: LineContent) -> String { [l.text, l.question?.text].compactMap { $0 }.joined(separator: " ") }
 }

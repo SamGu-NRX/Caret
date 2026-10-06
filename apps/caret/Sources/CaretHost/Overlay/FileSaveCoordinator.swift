@@ -36,7 +36,7 @@ final class FileSaveCoordinator {
         }
         switch command {
         case .draw(let content, let enters, let keyed):
-            panel.text = content.text
+            panel.text = FileSaveCopy.words(content)
             guard drawsOnScreen, let page = pageFrame() else { return }
             let view = LineView(content: content, character: FigureSettings.shared.character, animated: !keyed && !Motion.reduceMotion)
             let size = panel.measure(view)
