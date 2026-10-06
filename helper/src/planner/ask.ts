@@ -51,6 +51,14 @@ export interface AskOptions {
    * `fixed`. The maker is not asked again; the window must be the one the question was about.
    */
   resume?: AskResume;
+  /**
+   * I6: the model the fill step reads its sources from, for the form in `formWindowId` (helper.ts: the model with the text
+   * of the tab the user just left, read then and held for this Ask's offer, engines/tab-source.ts). Called once, only when
+   * the Ask reaches its fill step, so no read happens for an Ask that plans, asks a question, refuses or is a page goal;
+   * everything before it (the window, the intent and its scope) reads `model`. The plan's own check reads it too, as the
+   * offer's acceptance does (helper.ts acceptPlan).
+   */
+  fillModel?: (formWindowId: string) => Promise<ScreenModel>;
 }
 
 /** The snapshot refs an intent names, by what they stand for, so it can be read against a later snapshot. */
@@ -488,9 +496,11 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     const kind = narrowed ? "list" : whole ? "all" : section !== null ? "section" : "list";
     return { route: "goal", intent, maker: use, windowId: w.window.windowId, page: { scope: checked.scope, trigger: checked.trigger, kind, section: kind === "section" ? section : null } };
   }
+  // I6: the sources the fill reads, which may hold the tab the user just left, read now that a fill needs them.
+  const sourceModel = o.fillModel === undefined ? model : await o.fillModel(w.window.windowId);
   let p: FillProposal;
   try {
-    p = await proposeFill(model, askJev, w.window.windowId, checked.trigger, now, { about, scope: checked.scope, newId: () => o.offerKey, ...(o.rand === undefined ? {} : { rand: o.rand }) });
+    p = await proposeFill(sourceModel, askJev, w.window.windowId, checked.trigger, now, { about, scope: checked.scope, newId: () => o.offerKey, ...(o.rand === undefined ? {} : { rand: o.rand }) });
   } catch (e) {
     if (e instanceof FillError) return refused(new SaidError("nothingToDo", SAYS.nothingOnScreen, `the fill found nothing: ${e.message}`));
     return refused(e);
@@ -545,7 +555,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   }
   const plan: Plan = { id: o.offerKey, title: instruction.replace(/\s+/g, " ").trim().slice(0, 100), slots: slotNames, steps };
   await o.beforeCheck?.();
-  const ctx: PlanContext = { model, memory: memory.values(), instruction };
+  const ctx: PlanContext = { model: sourceModel, memory: memory.values(), instruction };
   let checkedPlan: ReturnType<typeof validatePlan>;
   try {
     checkedPlan = validatePlan(plan, slots, ctx);

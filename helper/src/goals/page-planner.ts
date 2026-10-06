@@ -32,6 +32,13 @@ export const PAGE_PLANNER = "page/1";
 
 export interface PlanPageOptions {
   goalId: string;
+  /**
+   * I6: the model fill reads the values' sources from, when it is not `model` itself: the model with the text of the tab
+   * the user just left, held for this goal (helper.ts pagePlan, engines/tab-source.ts). Only fill's round and each
+   * value's source binding read it; the page, the inventory and its ledger read `model`, so the plan keeps none of
+   * that tab's text beyond the values and spans fill chose.
+   */
+  sources?: ScreenModel;
   /** The Ask's instruction; null for an ambient "fill this page" (no Ask scopes it). */
   instruction: string | null;
   /** A page window (kind "page"). */
@@ -234,7 +241,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   let proposal: Awaited<ReturnType<typeof proposeFill>> | null = null;
   try {
     // A page whose only controls in scope are file controls asks fill nothing.
-    if (asked.length > 0) proposal = await proposeFill(model, o.askJev, o.windowId, (asked[0] as PageInput).node.key, o.now, { about: o.about, ...(scope === undefined ? {} : { scope }), ...(o.fill ?? {}) });
+    if (asked.length > 0) proposal = await proposeFill(o.sources ?? model, o.askJev, o.windowId, (asked[0] as PageInput).node.key, o.now, { about: o.about, ...(scope === undefined ? {} : { scope }), ...(o.fill ?? {}) });
   } catch (e) {
     // With a file control to attach to, a form fill has nothing for still leaves the attach rows to offer.
     if (e instanceof FillError && e.why === "nothingToCopy" && files.length > 0) for (const x of asked) leave(x.node, "Caret found nothing on screen or in memory for it");
@@ -285,7 +292,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     // other control by formControls' label.
     const named = x.control === "text" || x.control === "combobox";
     const t: TargetBinding = { ref: `t${++ref}`, domain, key: n.key, role: n.role, label: named ? fieldName(w, n) : (x.label ?? ""), own: named ? (d.label ?? d.nearest ?? d.placeholder ?? "") : (x.label ?? ""), placeholder: n.placeholder ?? null, control: x.control, value: "", options: x.options };
-    const src = f.source === null ? undefined : model.windows.get(f.source.windowId);
+    const src = f.source === null ? undefined : (o.sources ?? model).windows.get(f.source.windowId);
     if (f.source !== null && src === undefined) continue;
     const resolved = x.control === "date" || x.control === "time";
     const v: ValueBinding = {

@@ -189,6 +189,14 @@ export interface GoalRunDeps {
   forgetFile?: (taskId: string) => void;
   /** P3: an attach step verified with the file the user confirmed: the helper may offer to keep it for this question. */
   onAttached?: (a: { goalId: string; session: string | undefined; path: string; windowId: string; key: string; label: string }) => void;
+  /**
+   * I6: the model a goal's sources are checked against (at acceptance and while its segment runs): the model with the
+   * text of the tab the user left while this goal holds it (helper.ts fillModel, engines/tab-source.ts), else the model.
+   * Only source checks read it; targets, documents and fields are always the model's own.
+   */
+  sourceModel?: (goalId: string) => ScreenModel;
+  /** I6: a goal ended (finished or stopped), or a plan made for it was never offered: what it held for its plan goes. */
+  ended?: (goalId: string) => void;
 }
 
 const SAYS: Record<GoalStopReason, string> = {
@@ -428,7 +436,7 @@ export class GoalRuns {
         if (now === null || memoryValue(now.value, ref.part) !== v.text || now.label !== v.fill.memoryLabel) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
       }
       if (v.source === null) continue;
-      if (!this.sourceShows(v)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
+      if (!this.sourceShows(run, v)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
     }
     return null;
   }
@@ -437,10 +445,11 @@ export class GoalRuns {
    * Whether a value's source window still shows it: a value fill read (P2) the way fill read it (offers/fill-popup.ts
    * sourceHolds, the same rule a Fill all's recheck holds it to), any other the text it copies (an event its sentence).
    */
-  private sourceShows(v: NonNullable<GoalStep["value"]>): boolean {
+  private sourceShows(run: Run, v: NonNullable<GoalStep["value"]>): boolean {
     const src = v.source;
     if (src === null) return true;
-    const sw = this.deps.model.windows.get(src.windowId);
+    // I6: a value from the tab the user left is shown only while this goal still holds that tab's text.
+    const sw = (this.deps.sourceModel?.(run.plan.goalId) ?? this.deps.model).windows.get(src.windowId);
     if (sw === undefined) return false;
     if (v.fill !== undefined) return sourceHolds(sw, src.key, v.fill.span, v.fill.context, v.fill.control);
     const node = sw.nodes.get(src.key);
@@ -626,6 +635,7 @@ export class GoalRuns {
   private finish(run: Run, reached: "done" | "handoff", notHeld: readonly LeftItem[] = []): void {
     this.endTask(run);
     run.state = "finished";
+    this.deps.ended?.(run.plan.goalId);
     const verified = run.cursor.receipts.filter((r) => r.status === "verified").length;
     const skipped = run.cursor.receipts.filter((r) => r.status === "alreadyTrue").length;
     const left = [...notHeld, ...this.leftNow(run).filter((l) => !notHeld.some((x) => x.windowId === l.windowId && x.key === l.key))];
@@ -702,6 +712,7 @@ export class GoalRuns {
         if (plan === null || !current || this.gone(c.session) || this.runs.has(plan.goalId)) {
           // A page the carry has no plan for is the ambient offer's again (helper.ts pageWalked): P3 review.
           if (this.carried.get(windowId) === document) this.carried.delete(windowId);
+          if (plan !== null && !this.runs.has(plan.goalId)) this.deps.ended?.(plan.goalId);
           return;
         }
         const msg = this.propose(plan, c.session, null, { goalId: c.goalId, carried: c.completed, pressed: [], owed: c.owed });
@@ -801,6 +812,7 @@ export class GoalRuns {
   private async stopAndReplan(run: Run, reason: GoalStopReason, step: number | null, says: string, fresh: "afterReveal" | "freshPlan" = "freshPlan"): Promise<void> {
     if (run.state === "stopped") return;
     run.state = "stopped";
+    this.deps.ended?.(run.plan.goalId);
     const done = run.cursor.receipts.filter((r) => r.status !== "handoff").length;
     const total = run.plan.segments.reduce((n, x) => n + x.steps.length, 0);
     const sentence = `${says.charAt(0).toUpperCase()}${says.slice(1)}, so Caret stopped after ${done} of ${total} steps.`;
@@ -812,6 +824,7 @@ export class GoalRuns {
   private stop(run: Run, reason: GoalStopReason, step: number | null, says: string): void {
     if (run.state === "stopped") return;
     run.state = "stopped";
+    this.deps.ended?.(run.plan.goalId);
     // P3 fix-check: a carried preview that ends untaken (expired, its host gone) gives its page back to the ambient offer.
     const page = run.plan.page;
     const doc = page === undefined ? undefined : run.plan.inventory.documents.get(page.windowId);
@@ -840,10 +853,13 @@ export class GoalRuns {
     } catch {
       plan = null;
     }
-    if (plan === null || this.runs.has(plan.goalId) || this.gone(run.session)) return null;
+    if (plan === null) return null;
     // A reveal's fresh plan is for the document the writes revealed it on: one the user has left by now is not offered.
     const page = run.plan.page;
-    if (reason === "afterReveal" && page !== undefined && this.deps.pageDocument?.(page.windowId) !== run.plan.inventory.documents.get(page.windowId)) return null;
+    if (this.runs.has(plan.goalId) || this.gone(run.session) || (reason === "afterReveal" && page !== undefined && this.deps.pageDocument?.(page.windowId) !== run.plan.inventory.documents.get(page.windowId))) {
+      if (!this.runs.has(plan.goalId)) this.deps.ended?.(plan.goalId);
+      return null;
+    }
     const msg = this.propose(plan, run.session, null, { goalId: run.plan.goalId, carried: completed, pressed: [...run.pressed], owed });
     return msg.event === "segment" ? { ...msg, reason } : msg;
   }
@@ -938,7 +954,7 @@ export class GoalRuns {
       const draftMoved = this.draftMoved(run, s);
       if (draftMoved !== null) return draftMoved;
       if (s.value === null || s.value.source === null) continue;
-      if (!this.sourceShows(s.value)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
+      if (!this.sourceShows(run, s.value)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
     }
     return null;
   }
@@ -947,6 +963,19 @@ export class GoalRuns {
     if (run.task === null) return;
     run.cause ??= { reason, says };
     this.deps.executor.revoke(run.task.id, { why: says, by: "screen" });
+  }
+
+  /**
+   * I6: the text of the tab the user left, which this goal's plan read, was dropped (its time ran out, its site was
+   * turned off, the tab moved on). A preview waiting for its acceptance whose values that text showed stops now, as a
+   * Fill all made from it is withdrawn (helper.ts tabTextDropped); a running segment is revoked by screenMoved.
+   */
+  sourceDropped(goalId: string): void {
+    const run = this.runs.get(goalId);
+    if (run === undefined || run.state !== "awaiting") return;
+    const seg = run.plan.segments[run.cursor.segment] as GoalSegment;
+    const gone = seg.steps.find((s) => s.value !== null && s.value.source !== null && !this.sourceShows(run, s.value));
+    if (gone !== undefined) this.stop(run, "sourceChanged", null, `the text Caret read for '${gone.target.label}' from the tab you left has expired, so this plan can't run`);
   }
 
   /** Previews not accepted in time stop. Called on the helper's tick. */
