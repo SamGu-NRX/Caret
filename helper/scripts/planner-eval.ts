@@ -181,7 +181,7 @@ const fakeJev: AskJev = async (req: JevRequest) => {
   }
   return { model: "jev-fake", answers, inputTokens: 0, latencyMs: 0, costUsd: 0 };
 };
-const realJev = a.jev === "live" ? makeJevClient(() => loadJevKey()) : null;
+const realJev = a.jev === "live" ? makeJevClient(loadJevKey) : null;
 const askJev: AskJev = async (req) => {
   if (realJev === null) {
     jevCalls++;

@@ -86,7 +86,7 @@ const sent: HelperMessage[] = [];
 const log: string[] = [];
 const dataDir = mkdtempSync(join(tmpdir(), "caret-pending-eval-"));
 const store = new Store(dataDir);
-const jev = capJev(makeJevClient(() => loadJevKey()), MAX_USD);
+const jev = capJev(makeJevClient(loadJevKey), MAX_USD);
 let server: HelperServer | null = null;
 const helper = new Helper({
   store,

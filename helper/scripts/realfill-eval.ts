@@ -55,7 +55,7 @@ const SPEND_LIMIT = Number(a["spend-limit"]);
 
 let spent = 0;
 let calls = 0;
-const live = makeJevClient(() => loadJevKey());
+const live = makeJevClient(loadJevKey);
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   const r = await live(req);

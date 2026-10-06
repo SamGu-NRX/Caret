@@ -6,7 +6,7 @@
 import type { AskJev } from "../../fill/jev.ts";
 
 export const ENGINE_NAMES = ["jev", "canned", "llama", "gemini"] as const;
-export type EngineName = (typeof ENGINE_NAMES)[number];
+export type EngineName = (typeof ENGINE_NAMES)[number] | `gateway:${string}`;
 
 /**
  * Where an engine's request text goes, which decides what text may be sent to it:
@@ -15,7 +15,7 @@ export type EngineName = (typeof ENGINE_NAMES)[number];
  * - `google-free-tier`: Google AI Studio's free tier, whose terms let Google use requests to improve its products, so
  *   fixture text only, never the user's screens (brief J1).
  */
-export type EngineReach = "mac" | "typesafe" | "google-free-tier";
+export type EngineReach = "mac" | "typesafe" | "gateway" | "google-free-tier";
 
 export interface DecideEngine {
   readonly name: EngineName;
@@ -26,6 +26,7 @@ export interface DecideEngine {
 }
 
 export function engineName(raw: string): EngineName {
-  if (!(ENGINE_NAMES as readonly string[]).includes(raw)) throw new Error(`--engine is ${ENGINE_NAMES.join(", ")}, not '${raw}'`);
+  if (/^gateway:[^\s:]+\/[^\s:]+$/.test(raw)) return raw as EngineName;
+  if (!(ENGINE_NAMES as readonly string[]).includes(raw)) throw new Error(`--engine is ${ENGINE_NAMES.join(", ")}, or gateway:<model id>, not '${raw}'`);
   return raw as EngineName;
 }

@@ -26,7 +26,7 @@ import { areaKey, button, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, 
 const { values: a } = parseArgs({ options: { out: { type: "string" }, writer: { type: "string", default: "canned" }, drafts: { type: "string", default: "program" }, "local-model": { type: "string", default: fileURLToPath(new URL("../../apps/local-model/.build/release/caret-local-model", import.meta.url)) }, "model-path": { type: "string", default: `${process.env.HOME}/Library/Application Support/app.cotypist.Cotypist/Models/gemma-4-E2B-i1-Q4_K_M.gguf` }, budget: { type: "string", default: "0.15" }, runs: { type: "string", default: "1" }, "space-ms": { type: "string", default: "0" }, jev: { type: "string", default: "none" } } });
 // B30: a live writer may draft text, whose claims Jev checks. G2: every copied value is Jev's to confirm too, so a run
 // without live Jev uses test/goal-desk.ts's stand-in, which confirms every value and claim; its rows say "jev stand-in".
-const jevLive = a.jev === "live" ? makeJevClient(() => loadJevKey()) : null;
+const jevLive = a.jev === "live" ? makeJevClient(loadJevKey) : null;
 if (a.jev !== "live" && a.jev !== "none") throw new Error("--jev is live or none (the stand-in)");
 if (a.out === undefined) throw new Error("usage: node scripts/goal-scenes-eval.ts --out DIR [--writer canned|provider:model] [--budget USD] [--runs N]");
 const OUT = a.out;

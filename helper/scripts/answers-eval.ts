@@ -78,7 +78,7 @@ const fieldOf = (fields: CorpusField[], instructions: string): CorpusField | und
 
 let spent = 0;
 let tokens = 0;
-const live = a.jev === "live" ? makeJevClient(() => loadJevKey()) : null;
+const live = a.jev === "live" ? makeJevClient(loadJevKey) : null;
 const requests: { page: string; pass: number; questions: number; inputTokens: number; costUsd: number }[] = [];
 
 function askFor(fields: CorpusField[], page: string, pass: number): AskJev {
