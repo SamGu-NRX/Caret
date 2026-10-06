@@ -290,6 +290,8 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   // as the user's, in one line (the size hand-off, P2). The segment that ends up last also shows the attach rows and
   // the hand-off row, and a preview shows at most STEP_VIEWS rows, so with many file controls every part is smaller
   // (C2 review: 40 fields and four uploads made a last segment of 25 rows, which the protocol refuses).
+  // At most STEP_VIEWS - 2 attach rows, so one write and the hand-off row still fit; the rest are the user's (fix-check).
+  for (const n of files.splice(STEP_VIEWS - 2)) leave(n, `Caret offers at most ${STEP_VIEWS - 2} files to attach at once`);
   const partSize = Math.max(1, Math.min(MAX_FIELDS, STEP_VIEWS - 1 - files.length));
   const room = partSize * MAX_SEGMENTS;
   const asked = wanted.slice(0, room);

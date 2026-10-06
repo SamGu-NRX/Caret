@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { aboutValues, fieldAsksForPart } from "../src/fill/about.ts";
 import { memoryRefOf, memoryWrites, parseMemoryRef, proposeFill } from "../src/fill/fill.ts";
-import { fieldPart, monthYear, placeWithCountry } from "../src/fill/derive.ts";
+import { asksPlace, fieldPart, monthYear, placeWithCountry } from "../src/fill/derive.ts";
 import { planPage } from "../src/goals/page-planner.ts";
 import { macClock } from "../src/offers/event-time.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
@@ -151,5 +151,63 @@ describe("finding 9: with no Ask scope, each part's fill asks about exactly that
     const r = await rig({ controls: forty, note: Array.from({ length: 40 }, (_, i) => `Name ${i + 1}: ${who(i)}`).join("\n"), picks: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`Name ${i + 1}`, who(i)])) });
     const plan = await planPage(r.helper.model, { goalId: "g-null", instruction: "fill out this form", windowId: RIG_WIN, scope: null, kind: "all", section: null, about: [], askJev: jevPickingText((_, ins) => { const n = /Label: 'Name (\d+)'/u.exec(ins)?.[1]; return n === undefined ? null : who(Number(n) - 1); }, 0.95), now: Date.now(), clock: macClock(new Date()), readerSession: 0, pageDocument: (id) => r.host.registry.documentOf(id) });
     expect(plan.segments.map((s) => s.steps.filter((x) => x.kind === "write").length)).toEqual([20, 20]);
+  });
+});
+
+// Fix-check review (astra, foreground) on 937a731: each finding failed there.
+describe("fix-check 1: Address line #2 is the unit too", () => {
+  it("reads '#2' as the second line", () => {
+    expect([fieldPart("Address line #2"), fieldPart("Address #2")]).toEqual(["unit", "unit"]);
+  });
+});
+
+describe("fix-check 2: a number the instruction spells out is no month", () => {
+  it("leaves a month-name menu to the user for a literal '03'", async () => {
+    const m = scene("Signup", [control("e1", "text", "Name", { value: "" }), select("e2", "Start date month", ["January", "February", "March"])]);
+    const p = await proposeFill(m, jevPickingText((_id, ins) => (ins.includes("'Start date month'") ? "03" : null)), WIN, "f0/form[a]/text:name~0", Date.UTC(2026, 9, 6), {
+      scope: { fields: ["f0/form[a]/text:name~0", "f0/form[a]/select:start date month~0"], windows: null, memory: true, instruction: "put 03 as the start month", person: null, literals: new Map([["f0/form[a]/select:start date month~0", "03"]]) },
+    });
+    expect(p.fields.find((f) => f.key.includes("start date month"))?.handoff).toBeNull();
+  });
+});
+
+describe("fix-check 3: a field asks where only in so many words", () => {
+  it("reads location questions, and not a school, a phone or a code", () => {
+    const table: [string, boolean][] = [
+      ["Location", true],
+      ["Location (City)", true],
+      ["City", true],
+      ["Where are you based?", true],
+      ["Where do you plan on working from (for payroll tax purposes)?", true],
+      ["Where did you go to school?", false],
+      ["Office phone", false],
+      ["Area code", false],
+      ["Full name", false],
+    ];
+    expect(table.map(([l]) => [l, asksPlace(l)])).toEqual(table);
+  });
+});
+
+describe("fix-check 4: a sentence is no place", () => {
+  it("gives no country to 'I used to live in Toronto, Ontario'", () => {
+    expect([placeWithCountry("I used to live in Toronto, Ontario"), placeWithCountry("Sault Ste. Marie, Ontario"), placeWithCountry("St. John's, NL")]).toEqual([null, "Sault Ste. Marie, Ontario, Canada", "St. John's, NL, Canada"]);
+  });
+});
+
+describe("fix-check 5: many file controls never push a preview past 24 rows", () => {
+  it("offers at most 22 attach rows and names the rest as the user's", async () => {
+    const files = (): PageControl[] => [c("t1", "text", "Q1", { value: "" }), ...Array.from({ length: 24 }, (_, i) => c(`f${i + 1}`, "file", `File ${i + 1}`, { value: "" }))];
+    const r = await rig({ controls: files, note: "Q1: a1", picks: { Q1: "a1" }, goalFiles: true });
+    const preview = (await r.ask("fill out this form from my note")) as Segment;
+    expect(GoalProgress.safeParse(preview).success).toBe(true);
+    expect(preview.warnings.some((w) => /File 24/.test(w))).toBe(true);
+  });
+});
+
+describe("fix-check 6: a part's fields keep a fill on focus's rules", () => {
+  it("asks no filled text field and no control with controls off", async () => {
+    const m = scene("Name: Jo\nDegree: PhD", [control("e1", "text", "Name", { value: "" }), control("e2", "text", "Nickname", { value: "Jojo" }), select("e3", "Degree", ["BA", "PhD"])]);
+    const p = await proposeFill(m, jevPickingText(() => null), WIN, "f0/form[a]/text:name~0", Date.UTC(2026, 9, 6), { only: ["f0/form[a]/text:name~0", "f0/form[a]/text:nickname~0", "f0/form[a]/select:degree~0"], controls: false });
+    expect(p.fields.map((f) => f.key)).toEqual(["f0/form[a]/text:name~0"]);
   });
 });

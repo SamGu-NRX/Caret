@@ -48,7 +48,7 @@ export function fieldPart(label: string | null, formHasCity = false): FieldPart 
 }
 
 /** C2 review: a label naming an address's second line ("Address line 2", "Address 2", "Line 2"). */
-export const ADDRESS_LINE_2 = /\b(?:address\s*)?line\s*2\b|\baddress\s*2\b/iu;
+export const ADDRESS_LINE_2 = /\b(?:address\s*)?line\s*#?\s*2\b|\baddress\s*#?\s*2\b/iu;
 
 /** Words that open a surname: "Ana de la Cruz", "Ludwig van der Rohe". Compared without case. */
 const PARTICLES = new Set(["van", "von", "der", "den", "de", "del", "della", "da", "di", "du", "la", "le", "bin", "ibn", "al", "st.", "ter", "ten", "dos", "das"]);
@@ -308,6 +308,8 @@ export function splitPlace(text: string): { city: string; state: string; country
   return { city: parts[0] as string, state: parts[1] as string, country: parts[2] ?? null };
 }
 
+/** Lowercase words a place's name may hold between capitalized ones. */
+const PLACE_JOINERS = new Set(["de", "del", "la", "le", "du", "des", "of", "on", "upon", "the", "sur", "en"]);
 /** C2: Canada's province and territory codes, as Canada Post writes them. */
 const PROVINCE_CODES = new Set("AB BC MB NB NL NS NT NU ON PE QC SK YT".split(" "));
 
@@ -325,6 +327,10 @@ const PROVINCE_CODES = new Set("AB BC MB NB NL NS NT NU ON PE QC SK YT".split(" 
 export function placeWithCountry(text: string): string | null {
   const parts = text.split(",").map((p) => p.trim());
   if (parts.length !== 2 || !parts.every((p) => PLACE_WORDS.test(p) && p.length <= 40)) return null;
+  // A place's name, not a sentence that ends in one (fix-check: "I used to live in Toronto, Ontario"): at most four
+  // words, each capitalized or a joiner place names use ("Sault Ste. Marie", "Stratford upon Avon").
+  const city = (parts[0] as string).split(/\s+/u);
+  if (city.length > 4 || !city.every((w) => /^\p{Lu}/u.test(w) || PLACE_JOINERS.has(w))) return null;
   const region = parts[1] as string;
   if (region.toLowerCase() === "georgia") return null;
   const country = usState(region) ? "United States" : PROVINCE_CODES.has(region) || PROVINCES.has(region.toLowerCase()) ? "Canada" : null;
@@ -338,8 +344,9 @@ export function placeWithCountry(text: string): string | null {
  * measured.
  */
 export function asksPlace(label: string | null): boolean {
-  if (label === null || /\bname\b/iu.test(label) || asksCountry(label)) return false;
-  return /\b(?:location|city|town|where|based|located|relocat\w*|office|metro|area|hometown)\b/iu.test(label);
+  if (label === null || asksCountry(label) || /\b(?:name|school|college|university|degree|phone|code|number|e-?mail|company|employer)\b/iu.test(label)) return false;
+  // "Where" only with a word that says where the user is or works (fix-check: "Where did you go to school?").
+  return /\b(?:location|city|town|based|located|relocat\w*|hometown)\b/iu.test(label) || /\bwhere\b.*\b(?:live|living|based|located|work|working|reside|relocate|from)\b/iu.test(label);
 }
 
 /**

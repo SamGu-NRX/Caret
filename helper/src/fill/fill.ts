@@ -754,7 +754,13 @@ export async function proposeFill(
   // The words of the windows fill reads, for formInputs to keep the inputs a long form's cap would cut by what they show.
   const sourceWords = (): ReadonlySet<string> =>
     new Set([...model.windows.values()].filter((x) => x.window.windowId !== windowId && opts.exclude?.has(x.window.windowId) !== true).flatMap((x) => [...x.nodes.values()].flatMap((n) => words(nodeText(n)))));
-  const inputs = scope !== undefined ? scopedInputs(w, scope.fields) : opts.only !== undefined ? scopedInputs(w, opts.only) : formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords);
+  // `only` picks fields from those a fill on focus would ask about, so its rules hold (fix-check: empty fields only, and
+  // no control with `controls` off).
+  const onlyInputs = (keys: readonly string[]): FormInput[] => {
+    const all = new Map(formInputs(w, triggerKey, Number.MAX_SAFE_INTEGER, opts.controls !== false).map((x) => [x.node.key, x]));
+    return keys.flatMap((k) => all.get(k) ?? []);
+  };
+  const inputs = scope !== undefined ? scopedInputs(w, scope.fields) : opts.only !== undefined ? onlyInputs(opts.only) : formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords);
   const formHasCity = inputs.some((x) => x.control === "text" && fieldPart(describeField(w, x.node).label, false) === "city");
   for (const x of inputs) {
     const n = x.node;
@@ -1351,7 +1357,8 @@ export async function proposeFill(
         // C2 (lead decision 2): for a field that asks where, the one option that is the user's place with its country
         // ("Portland, Maine, United States").
         const placed = asksPlace(f.name) ? placeWithCountry(text) : null;
-        const exact = whole ?? (piece === null ? null : matchOption(options, piece)) ?? (f.part === "month" || f.part === "year" ? dateOption(f.part, options, text, refYear, p.from === "derived") : null) ?? (placed === null ? null : matchOption(options, placed));
+        // A month number only as split from a remembered date (dateParts), never one the instruction spells out (fix-check).
+        const exact = whole ?? (piece === null ? null : matchOption(options, piece)) ?? (f.part === "month" || f.part === "year" ? dateOption(f.part, options, text, refYear, p.from === "derived" && p.base.from === "memory") : null) ?? (placed === null ? null : matchOption(options, placed));
         if (exact !== null) return { value: exact, display: exact, writes: page && !press };
         const o = optionInText(options, text);
         return o === null ? { why: "ambiguous" } : { value: o, display: o, writes: false };
