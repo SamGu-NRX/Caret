@@ -282,6 +282,18 @@ export function toVerbOutcome(r: PageResult): VerbResult {
 }
 
 /**
+ * Whether a failed dropdown pick was put back, by the page's own readings (C1, lead decision for item 4): the combobox
+ * handler stopped (content/combobox.ts stopped) with the control showing what it showed before, the list closed by
+ * aria-expanded=false, and react-select's form value unchanged. Anything else (no readings: it may have landed; other
+ * text; a list still open or a control that says nothing about it; a form value that moved; a Yes/No press) is not.
+ */
+export function restoredPick(verb: PageVerb, r: PageResult): boolean {
+  if (verb.kind !== "pageChooseOption" || verb.control !== "combobox") return false;
+  if (r.outcome !== "failed" || r.pageChanged !== undefined || r.readings === undefined || r.choice === undefined) return false;
+  return r.readings.afterBlur === r.readings.before && r.choice.expanded === false && r.choice.hiddenInput !== "set";
+}
+
+/**
  * The reader role a key's node has in a tab's last walk, as toWindowSnapshot projects it: AXGroup for a radio or press
  * group, the control's ROLE otherwise; null when no control has the key. A verb whose role is not this one was resolved
  * against another kind of control (D2-06 re-check: a select replaced by a combobox at the same key), and is refused.
@@ -531,7 +543,7 @@ export class PageEngineLink implements ReaderLink {
   private async act(verb: PageVerb, tabId: number): Promise<VerbResult> {
     await this.trailing.get(tabId)?.running;
     const { answer: a, commandMs } = await this.timed(verb, verb.kind === "pageChooseOption" || verb.kind === "pageAttachFile" ? SLOW_VERB_TIMEOUT_MS : undefined);
-    const out = toVerbOutcome(a.result);
+    const out: VerbResult = restoredPick(verb, a.result) ? { ...toVerbOutcome(a.result), restored: true } : toVerbOutcome(a.result);
     if (a.result.pageChanged !== undefined) {
       // The page is leaving; a trailing walk of it would only wait out its timeout.
       this.cancelTrailingWalks(tabId);

@@ -1,1 +1,0 @@
-D2-06/B30: GoalRuns.blocked must return null once a segment ends, or undo is refused; a goal host's plan Ask comes back as AskGoal. Keep name patterns case-sensitive; goal writes never touch Cc/Bcc/Subject, and To takes only the answered message's From.
