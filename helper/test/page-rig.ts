@@ -106,6 +106,8 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
     warn: () => {},
     ask: { maker: "writer", writer: intentWriter(o.intent ?? { scope: "all" }) },
     pageDocument: (id) => host.registry.documentOf(id),
+    // As main.ts wires it: the page's address, headings and what its walk left out (a password field).
+    pageContext: (id) => host.registry.contextOf(id),
     ...(o.goalFiles === true ? { goalFiles: true } : {}),
     ...(o.now === undefined ? {} : { now: o.now }),
   });

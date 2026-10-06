@@ -3,7 +3,9 @@
 // with no tab, from this extension's id), never window.postMessage or the page. On its own it tells the worker two
 // things, neither naming an element: that the document moved in history, so the worker bumps the frame's
 // navigation generation at once; and that focus moved while this document is visible and focused, so the helper
-// can walk the tab the user is in (W2). The second is one focusin listener, at most one message per 150 ms.
+// can walk the tab the user is in (W2). The second is one focusin listener, at most one message per 150 ms. P3 sends
+// the same focus report when a top-frame document becomes ready (three times at most, the last from one timer a second
+// after load), so the helper can offer a page's fill when it loads.
 //
 // W3 adds a third, only while the worker has armed this frame because a grant covers it: the user pressed a pointer
 // or a key here. Only events the browser marks trusted count, so neither the page's script nor Caret's own synthetic
@@ -187,6 +189,29 @@ if (globalThis.__caretContent === undefined) {
     },
     { capture: true, passive: true },
   );
+
+  /**
+   * P3, ready on load: a top-frame document that became ready is reported the way focus is, so the helper walks the
+   * tab the user is in and may offer its fill with no field in focus (helper.ts pageWalked, which asks at most once per
+   * document). Nothing about the page travels; the worker checks the tab is the active one as for focus. Reported at
+   * DOMContentLoaded, at load, and once more READY_LATE_MS after load for a form the page's own scripts render late.
+   */
+  const READY_LATE_MS = 1000;
+  if (window === window.top) {
+    const ready = (): void => {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      const m: FocusMoved = { caret: 1, op: "focusMoved" };
+      chrome.runtime.sendMessage(m).catch(() => {});
+    };
+    const loaded = (): void => {
+      ready();
+      setTimeout(ready, READY_LATE_MS);
+    };
+    if (document.readyState === "loading") addEventListener("DOMContentLoaded", ready, { once: true });
+    else ready();
+    if (document.readyState !== "complete") addEventListener("load", loaded, { once: true });
+    else setTimeout(ready, READY_LATE_MS);
+  }
 
   /**
    * The user's own pointer or key press while a grant covers this frame: the worker drops the frame's grants and the

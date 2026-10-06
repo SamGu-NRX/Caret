@@ -87,6 +87,8 @@ export class FakePage {
   readonly files = new Map<string, { name: string; size: number }>();
   /** P3: the page's path, which goTo changes (the wizard's next page). */
   path = "/mixed";
+  /** The control a walk reports focused; null for a page that just loaded with no field in focus (P3). */
+  focusedId: string | null = "e1";
   navGen = 1;
   documentId = "D0";
   /** The navigation generation the task's grant pinned; an act in a later one is refused. */
@@ -109,7 +111,7 @@ export class FakePage {
       type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: Date.now(), tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: this.title,
       frames: [{ frameId: 0, parentFrameId: -1, documentId: this.documentId, origin: "http://127.0.0.1:4310", path: this.path, navGen: this.navGen, title: this.title, headings: [], iframes: [], excluded: {}, truncated: false, controls: structuredClone(this.controls) }],
       missing: [],
-      focused: { frameId: 0, id: "e1", selection: [0, 0] },
+      focused: this.focusedId === null ? null : { frameId: 0, id: this.focusedId, selection: [0, 0] },
     };
   }
 

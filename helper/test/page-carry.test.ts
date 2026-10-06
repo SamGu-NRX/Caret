@@ -37,6 +37,7 @@ describe("a whole-form goal carries across the user's Next (P3)", () => {
   it("offers the next page as a fresh preview with reason nextPage, which one more Tab fills", async () => {
     const r = await rig();
     const first = await fillFirst(r);
+    expect(r.helper.goals.carrying(WIN, null)).toBe(true);
     await r.next(page2, "Apply: step 2", "/two");
     await settle(r);
     const next = segments(r).at(-1) as Segment;
@@ -112,6 +113,9 @@ describe("what does not carry (P3)", () => {
     expect(s.event).toBe("segment");
     await r.accept(s);
     await settle(r);
+    expect(finished(r).length).toBe(1);
+    // Nothing waits for this tab's next page.
+    expect(r.helper.goals.carrying(WIN, null)).toBe(false);
     const count = segments(r).length;
     await r.next(page2, "Apply: step 2", "/two");
     await settle(r);

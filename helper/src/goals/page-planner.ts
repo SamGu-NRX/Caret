@@ -102,6 +102,11 @@ function pageInputs(w: WindowState): { inputs: PageInput[]; neverTyped: Node[] }
   return { inputs, neverTyped };
 }
 
+/** P3: a page window's empty controls Caret could fill, in document order (offers/ready-on-load.ts counts them). */
+export function pageInputNodes(w: WindowState): Node[] {
+  return pageInputs(w).inputs.map((x) => x.node);
+}
+
 /** The keys of a page window's empty controls Caret could fill (runs.ts reads which of them a goal's writes revealed). */
 export function pageInputKeys(w: WindowState): string[] {
   return [...pageInputs(w).inputs.map((x) => x.node.key), ...fileControls(w).map((n) => n.key)];

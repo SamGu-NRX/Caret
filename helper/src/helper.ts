@@ -92,6 +92,7 @@ import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planWithCode } from "./planner/codeplan.ts";
 import { ConfirmedFiles } from "./engines/attach.ts";
 import { SavedFiles, type AttachedFile } from "./goals/saved-files.ts";
+import { readyOnLoad } from "./offers/ready-on-load.ts";
 import { GoalRuns, type Replan } from "./goals/runs.ts";
 import { planGoal } from "./goals/propose.ts";
 import { continuationScope, planPage } from "./goals/page-planner.ts";
@@ -359,6 +360,8 @@ export class Helper {
   readonly files: ConfirmedFiles;
   /** P3: host sessions that declared GOAL_FILES_CAPABILITY: only their page goals get attach rows (filesFor). */
   private readonly goalFileHosts = new Set<string>();
+  /** P3: the page document each page window's load last asked a Fill all for (pageWalked): once per document. */
+  private readonly loadAsked = new Map<string, string>();
   /** P3: saved files, offered in attach rows and kept on the user's yes (goals/saved-files.ts). */
   private readonly savedFiles: SavedFiles;
   readonly memory: MemoryStore;
@@ -944,6 +947,32 @@ export class Helper {
   private left(windowId: string, at: number): void {
     this.pending.left(windowId);
     this.audit?.left(windowId, at);
+  }
+
+  /**
+   * P3, ready on load (plans/fast-browser.md "Ambient: ready on load"): the page engine walked the active tab of the
+   * browser the user is in (engines/page-focus.ts), which it does when focus moves and when a document becomes ready.
+   * The producer that offers Fill all on focus then runs with no focus, once per document, with the same sources,
+   * settings and privacy as on focus (fill()), from the first field with a candidate. Code checks first that the page
+   * is worth a Jev request (offers/ready-on-load.ts: two fields with a candidate from memory or the window the user
+   * left; never a search box, a login form's credentials or a payment form). A page a carried goal is planning
+   * (runs.ts carry) is left to it.
+   */
+  pageWalked(windowId: string): void {
+    if (this.ask === null || this.mode !== "live") return;
+    const doc = this.opts.pageDocument?.(windowId) ?? null;
+    if (doc === null || this.loadAsked.get(windowId) === doc || this.goals.carrying(windowId, doc)) return;
+    const now = this.now();
+    if (this.gate.holds("fill", now).length > 0) return;
+    const w = this.model.windows.get(windowId);
+    if (w === undefined) return;
+    const v = readyOnLoad(this.model, w, this.aboutValues(), { excluded: this.opts.pageContext?.(windowId)?.excluded ?? {} });
+    if (!v.fires) return;
+    this.loadAsked.delete(windowId);
+    this.loadAsked.set(windowId, doc);
+    if (this.loadAsked.size > LOAD_DOCUMENTS) this.loadAsked.delete(this.loadAsked.keys().next().value as string);
+    this.opts.store.count("fill.load", 1, now);
+    void this.fill(windowId, v.trigger, false);
   }
 
   handleConsumer(m: FillRequest): Promise<FillProposal | null> {
@@ -2755,6 +2784,9 @@ export class Helper {
     this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message });
   }
 }
+
+/** Page windows whose last load's document pageWalked remembers; the oldest is forgotten past this. Assumed: tabs a person keeps open. */
+const LOAD_DOCUMENTS = 200;
 
 /** A Jev request that declares the same text as the last recorded one within this long is the same use: a question's second ask. Assumed. */
 const READ_REPEAT_MS = 5000;
