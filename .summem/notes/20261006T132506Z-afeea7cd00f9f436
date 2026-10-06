@@ -1,1 +1,0 @@
-H13: with-heavy refuses unless free disk minus your --est-disk stays >= 8 GiB, so at about 10 GiB free a 2 GiB build waits; ask for the smallest honest estimate (harness build 3 mem / 2 disk), and swap growth on this Mac eats the same disk.
