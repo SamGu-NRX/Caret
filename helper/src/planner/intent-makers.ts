@@ -13,6 +13,7 @@ import type { WriterPort } from "../writer/port.ts";
 import type { IntentInput } from "../writer/intent-prompt.ts";
 import { REASONS, ROUTES, type AskIntent, type IntentSnapshot } from "./intent.ts";
 import { PlannerError } from "./validate.ts";
+import { jevFailedError } from "./says.ts";
 
 /** What making one intent cost, for the proposal's log and the scoreboard. */
 export interface MakerUse {
@@ -125,7 +126,7 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
         try {
           r = await Promise.all([askJev(a), askJev(b)]);
         } catch (e) {
-          throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+          throw jevFailedError(e);
         }
         use.calls += 2;
         use.model = r[0].model;

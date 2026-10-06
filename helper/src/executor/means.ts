@@ -1,7 +1,8 @@
 // The executor's means of acting, each behind an interface so tests and fixture runs never touch a
 // real account: reader verbs over the socket, a calendar, and a URL opener.
 import { randomUUID } from "node:crypto";
-import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarBlock, type CalendarGrant, type HelperToReader, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarBlock, type CalendarGrant, type HelperToReader, type PageResult, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import type { ConfirmedFiles } from "../engines/attach.ts";
 
 /** The reader's verbs. Each resolves with the reader's answer, after any snapshot the verb produced has been applied. */
 export interface ReaderLink {
@@ -11,6 +12,11 @@ export interface ReaderLink {
    * shows up as the next act's notAllowed. A link without it (read-only tests) grants nothing.
    */
   grant?(m: ActGrant | ActRevoke | CalendarGrant): void;
+  /**
+   * Puts the file confirmed for `taskId` into the page control `key` (H5). Only a page engine's link has it
+   * (engines/page-link.ts attachFile, the one way the helper builds a pageAttachFile); the reader attaches nothing.
+   */
+  attachFile?(windowId: string, key: string, taskId: string, files: ConfirmedFiles): Promise<{ verb: VerbResult; page: PageResult | null }>;
 }
 
 /** Finds the page engine that owns a window (helper/src/engines/registry.ts EngineRegistry). */
@@ -39,6 +45,14 @@ export class RoutedReaderLink implements ReaderLink {
     const engine = this.directory.engineFor(verb.windowId);
     if (engine === null) return Promise.resolve({ type: "verbResult", v: PROTOCOL_VERSION, id: randomUUID(), at: Date.now(), outcome: "noWindow", detail: `the engine of ${verb.windowId} is gone` });
     return engine.run(verb);
+  }
+
+  attachFile(windowId: string, key: string, taskId: string, files: ConfirmedFiles): Promise<{ verb: VerbResult; page: PageResult | null }> {
+    const engine = windowId.startsWith("page:") ? this.directory.engineFor(windowId) : null;
+    if (engine?.attachFile === undefined) {
+      return Promise.resolve({ verb: { type: "verbResult", v: PROTOCOL_VERSION, id: randomUUID(), at: Date.now(), outcome: "noWindow", detail: `no page engine for ${windowId}` }, page: null });
+    }
+    return engine.attachFile(windowId, key, taskId, files);
   }
 
   grant(m: ActGrant | ActRevoke | CalendarGrant): void {

@@ -31,6 +31,7 @@ import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { instructionValues } from "./spans.ts";
 import type { MemoryValue } from "./trace.ts";
 import { handoffWhy, PlannerError, validatePlan, type CheckedPlan, type PlanContext } from "./validate.ts";
+import { jevFailedError } from "./says.ts";
 
 /**
  * Lowest agreed confidence at which a value is written. Assumed: it is the fill cutoff (fill.ts), which
@@ -113,7 +114,7 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
     try {
       r = await Promise.all([o.askJev(a), o.askJev(b)]);
     } catch (e) {
-      throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+      throw jevFailedError(e);
     }
     jev.calls += 2;
     jev.costUsd += r[0].costUsd + r[1].costUsd;
@@ -141,7 +142,7 @@ export async function taskWindow(instruction: string, model: ScreenModel, o: Pic
     try {
       r = await Promise.all([o.askJev(a), o.askJev(b)]);
     } catch (e) {
-      throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+      throw jevFailedError(e);
     }
     jev.calls += 2;
     jev.costUsd += r[0].costUsd + r[1].costUsd;

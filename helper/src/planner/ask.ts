@@ -22,7 +22,7 @@ import type { WriterPort } from "../writer/port.ts";
 import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, wordsOf, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
-import { SAYS, SaidError, Unclear, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure, type AskPart } from "./says.ts";
+import { SAYS, SaidError, Unclear, jevFailedError, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure, type AskPart } from "./says.ts";
 import { choicesFor, type Choice } from "./choices.ts";
 import { fieldWords } from "./sources.ts";
 import { asksForWholeForm, exclusionsIn, namedSection } from "./scope-words.ts";
@@ -283,7 +283,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       r = await o.askJev(req);
     } catch (e) {
       // A Jev failure anywhere in an Ask (a timeout, an HTTP error) is reported as the planner reports one.
-      throw new SaidError("jevFailed", SAYS.unreachable, `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+      throw jevFailedError(e);
     }
     jev.calls++;
     jev.costUsd += r.costUsd;

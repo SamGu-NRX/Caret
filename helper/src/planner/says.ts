@@ -8,6 +8,7 @@ import type { PlanErrorCode } from "../protocol.ts";
 import { SENSITIVE_SAYS, type SensitiveKind } from "../memory/sensitive.ts";
 import { PlannerError, type HandoffWhy } from "./validate.ts";
 import type { FillErrorWhy } from "../fill/fill.ts";
+import { jevFailureKind, type JevFailureKind } from "../fill/jev.ts";
 
 /** A PlannerError whose message is a sentence from this file, with what the check found kept apart. */
 export class SaidError extends PlannerError {
@@ -70,6 +71,17 @@ export const SAYS = {
   fillLabelTooLong: "This field's label is too long for Caret to ask about. Fill it yourself.",
   fillFailed: "Caret couldn't fill this form just now. Try again.",
   questionGone: "That question has expired. Ask again.",
+  /**
+   * Jev failed in a way the user can act on (lead addendum, 2026-10-06): before it, a 402 read "couldn't reach its
+   * model just now. Try again.", which was wrong twice: Caret reached Jev, and trying again does not add credits.
+   * None names Jev (B26: no names of Caret's insides, test/says.test.ts plain()), so the lead's example "Jev is out of
+   * credits. Add credits at console.typesafe.ai, then try again." is worded around it.
+   */
+  jevBilling: "Caret's model account is out of credits. Add credits at console.typesafe.ai, then try again.",
+  jevAuth: "Caret's model account turned down its key. Check TYPESAFE_API_KEY in Caret's .env file, then try again.",
+  jevRate: "Caret's model is getting too many requests right now. Wait a minute, then try again.",
+  jevNetwork: "Caret couldn't reach its model. Check your internet connection, then try again.",
+  jevService: "Caret's model had a problem answering just now. Try again in a minute.",
   /** L1: a goal needs a program writer, and none is configured until the browser loop replaces it. */
   noPlanWriter: "Caret can't plan tasks like this yet. Do this one yourself for now.",
 } as const;
@@ -95,6 +107,28 @@ export function fillSays(why: FillErrorWhy | null): string {
     case null:
       return SAYS.fillFailed;
   }
+}
+
+const JEV_SAYS: Record<JevFailureKind, string> = {
+  billing: SAYS.jevBilling,
+  auth: SAYS.jevAuth,
+  rate: SAYS.jevRate,
+  network: SAYS.jevNetwork,
+  service: SAYS.jevService,
+};
+
+/** The sentence for a failed Jev request behind `e` (jev.ts jevFailureKind), or `otherwise` when `e` is something else. */
+export function jevFailureSays(e: unknown, otherwise: string): string {
+  const kind = jevFailureKind(e);
+  return kind === null ? otherwise : JEV_SAYS[kind];
+}
+
+/**
+ * The error a planner or intent maker throws when its Jev request failed: code jevFailed, the user's sentence for how it
+ * failed, and the client's own text kept for the log.
+ */
+export function jevFailedError(e: unknown): SaidError {
+  return new SaidError("jevFailed", jevFailureSays(e, SAYS.unreachable), `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
 }
 
 /** The sentence for an error code when no check gave a more specific one. */

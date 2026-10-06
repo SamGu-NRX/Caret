@@ -10,6 +10,60 @@ export const JEV_MODEL = "jev-latest";
 /** Sourced: $0.042 per million input tokens, output free (https://docs.typesafe.ai/models.md). */
 export const JEV_USD_PER_INPUT_TOKEN = 0.042 / 1_000_000;
 
+/**
+ * How a Jev request failed, which decides what the user can do about it (lead addendum, 2026-10-06):
+ * - `billing`: HTTP 402, the account has no credits; trying again does not help until someone adds them.
+ * - `auth`: HTTP 401 or 403, the key is wrong or revoked.
+ * - `rate`: HTTP 429 after the client's one retry (or the first 429, for a caller that allows no retry).
+ * - `network`: no HTTP answer at all: DNS, a dropped connection, or no answer within the client's timeout.
+ * - `service`: any other HTTP error, such as a 500 from the service.
+ */
+export type JevFailureKind = "billing" | "auth" | "rate" | "network" | "service";
+
+function httpKind(status: number): JevFailureKind {
+  if (status === 402) return "billing";
+  if (status === 401 || status === 403) return "auth";
+  if (status === 429) return "rate";
+  return "service";
+}
+
+/**
+ * Jev answered with an HTTP error. The message keeps its old form ("Jev HTTP <status>: <the service's text>") for logs;
+ * `status` and `kind` are for callers that tell the user what to do (planner/says.ts jevFailureSays).
+ */
+export class JevHttpError extends Error {
+  readonly status: number;
+  readonly kind: JevFailureKind;
+  constructor(status: number, detail: string) {
+    super(`Jev HTTP ${status}: ${detail}`);
+    this.name = "JevHttpError";
+    this.status = status;
+    this.kind = httpKind(status);
+  }
+}
+
+/** The request got no HTTP answer: the connection failed or the client's timeout passed. */
+export class JevNetworkError extends Error {
+  readonly kind = "network" as const;
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = "JevNetworkError";
+  }
+}
+
+/**
+ * The kind of Jev failure behind `e`, following `cause` links a few deep (a wrapper may keep the client's error as its
+ * cause), or null when `e` is not a Jev client failure.
+ */
+export function jevFailureKind(e: unknown): JevFailureKind | null {
+  let at: unknown = e;
+  for (let depth = 0; depth < 4 && at instanceof Error; depth++) {
+    if (at instanceof JevHttpError || at instanceof JevNetworkError) return at.kind;
+    at = at.cause;
+  }
+  return null;
+}
+
 export interface ChoiceQuestion {
   type: "choice";
   instructions: string | Record<string, unknown>;
@@ -97,12 +151,18 @@ export function makeJevClient(key: () => string, timeoutMs = 10_000): AskJev {
     const body = JSON.stringify({ state: req.state, model: JEV_MODEL, questions: { ...req.questions, ...req.nouls } });
     for (let attempt = 0; ; attempt++) {
       const t0 = performance.now();
-      const res = await fetch(JEV_URL, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${key()}`, "Content-Type": "application/json" },
-        body,
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+      let res: Response;
+      try {
+        res = await fetch(JEV_URL, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${key()}`, "Content-Type": "application/json" },
+          body,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (e) {
+        const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+        throw new JevNetworkError(timedOut ? `Jev did not answer within ${timeoutMs} ms` : `Jev could not be reached: ${e instanceof Error ? e.message : String(e)}`, e);
+      }
       const latencyMs = performance.now() - t0;
       if (res.status === 429 && attempt === 0 && req.retry429 !== false) {
         const wait = Number(res.headers.get("retry-after") ?? "1");
@@ -112,7 +172,7 @@ export function makeJevClient(key: () => string, timeoutMs = 10_000): AskJev {
       if (!res.ok) {
         // The body is the service's own text; the key is cut out in case it is ever echoed back.
         const detail = (await res.text()).slice(0, 300).split(key()).join("[redacted]");
-        throw new Error(`Jev HTTP ${res.status}: ${detail}`);
+        throw new JevHttpError(res.status, detail);
       }
       const parsed = JevResponse.parse(await res.json());
       const answers: JevResult["answers"] = {};

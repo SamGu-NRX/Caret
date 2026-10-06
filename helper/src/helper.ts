@@ -10,7 +10,7 @@ import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
-import type { AskJev, JevRequest } from "./fill/jev.ts";
+import { jevFailureKind, type AskJev, type JevRequest } from "./fill/jev.ts";
 import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryValue, parseMemoryRef, proposeFill, type FillErrorWhy } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
@@ -96,7 +96,7 @@ import type { GoalPlan, LeftItem, PageGoal } from "./goals/plan.ts";
 import type { FillScope } from "./fill/fill.ts";
 import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
-import { fillSays, SAYS } from "./planner/says.ts";
+import { fillSays, jevFailureSays, SAYS } from "./planner/says.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
 import { headsIntentMaker } from "./planner/intent-heads.ts";
 import { splitName } from "./fill/derive.ts";
@@ -453,6 +453,9 @@ export class Helper {
               return r;
             } catch (e) {
               this.recordRead(req, "failed");
+              // How Jev failed, by kind, for every caller (Ask, fill, goals, routers): the counts the debug view reads.
+              const kind = jevFailureKind(e);
+              if (kind !== null) opts.store.count(`jev.failed_${kind}`, 1);
               throw e;
             }
           };
@@ -1123,6 +1126,13 @@ export class Helper {
       this.opts.store.count("goal.proposed", 1);
       return this.goals.propose(plan, session, requestId);
     } catch (e) {
+      // A page goal's Jev round (fill's asks) failing: said as an Ask's Jev failure is, never as the planner's own.
+      const kind = jevFailureKind(e);
+      if (kind !== null) {
+        this.opts.store.count(`goal.refused_jev_${kind}`, 1);
+        this.opts.warn?.(`goal ${goalId}: ${e instanceof Error ? e.message : String(e)}`);
+        return refuse(jevFailureSays(e, SAYS.unreachable));
+      }
       if (!(e instanceof GoalError)) throw e;
       this.opts.store.count(`goal.refused_${e.code}`, 1);
       this.opts.warn?.(`goal ${goalId}: ${e.message}`);
@@ -2145,7 +2155,7 @@ export class Helper {
     try {
       formKey = `${windowId}|${formFields(w, key).map((n) => n.key).sort().join(",")}`;
     } catch (e) {
-      this.fillFailed(e instanceof FillError ? e.message : String(e), e instanceof FillError ? e.why : null);
+      this.fillFailed(e instanceof Error ? e.message : String(e), e instanceof FillError ? e.why : null, e);
       return null;
     }
     if (this.inflight.has(formKey)) {
@@ -2220,7 +2230,7 @@ export class Helper {
       return p;
     } catch (e) {
       store.count("fill.error", 1, now);
-      this.fillFailed(e instanceof FillError ? e.message : String(e), e instanceof FillError ? e.why : null);
+      this.fillFailed(e instanceof Error ? e.message : String(e), e instanceof FillError ? e.why : null, e);
       return null;
     } finally {
       this.pendingFills.delete(focuses);
@@ -2671,9 +2681,10 @@ export class Helper {
    * A fill that failed: the user reads a plain sentence (planner/says.ts), and what the check found, with its window
    * and field ids, goes to the log (B27; the early exits before proposeFill published the ids until its second review).
    */
-  private fillFailed(detail: string, why: FillErrorWhy | null): void {
+  private fillFailed(detail: string, why: FillErrorWhy | null, cause: unknown = null): void {
     this.opts.warn?.(`fill: ${detail}`);
-    this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: fillSays(why) });
+    // A failed Jev request says how it failed (out of credits, a refused key, too many requests, no connection).
+    this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message: jevFailureSays(cause, fillSays(why)) });
   }
 
   private error(message: string): void {

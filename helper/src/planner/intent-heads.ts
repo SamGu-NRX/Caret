@@ -19,7 +19,7 @@ import type { AskIntent, IntentField, IntentSnapshot } from "./intent.ts";
 import { relevance } from "./planner.ts";
 import { fieldWords, restrictsSources } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
-import type { AskPart } from "./says.ts";
+import { jevFailedError, type AskPart } from "./says.ts";
 
 /** Lowest confidence for the scope, section, why, source and whose heads: the memo's floors, plan section 3's provisional router floor, not calibrated. */
 export const HEAD_FLOOR = ROUTE_CUTOFF;
@@ -126,7 +126,7 @@ export function headsIntentMaker(askJev: AskJev): IntentMaker {
       try {
         r = await askJev(headsRequest(snap));
       } catch (e) {
-        throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+        throw jevFailedError(e);
       }
       const use: MakerUse = { maker: "heads", model: r.model, calls: 1, inputTokens: r.inputTokens, outputTokens: 0, costUsd: r.costUsd, latencyMs: r.latencyMs };
       return { intent: readHeads(snap, r), use };
