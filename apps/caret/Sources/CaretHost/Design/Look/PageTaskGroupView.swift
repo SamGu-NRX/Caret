@@ -23,6 +23,10 @@ struct PageTaskGroupView: View {
     var animated = true
     var figure: PageTaskLook.Figure = PageTaskLook.figure
     var now = Date()
+    /// Keep the crop's room beside the panel while no crop shows, so the window never resizes under the pointer: on the
+    /// test Mac a hover that grew the window shifted the panel mid-animation (L1 run 1). The room is empty and takes no
+    /// click (`HostedPanel.clickRects`).
+    var reservesCrop = false
     var onAttach: (Int) -> Void = { _ in }
 
     @Environment(\.lookMotion) private var motion
@@ -56,6 +60,12 @@ struct PageTaskGroupView: View {
     }
 
     @ViewBuilder private func cropView(_ content: CropContent?) -> some View {
+        if content == nil, reservesCrop, side != .overlay {
+            Color.clear
+                .frame(width: LookShape.cropWidth, height: LookShape.cropHeight)
+                .alignmentGuide(.rowsTop) { $0[.top] + LookShape.cropCaption }
+                .accessibilityHidden(true)
+        }
         if let content {
             SourceCropView(content: content, now: now)
                 .alignmentGuide(.rowsTop) { $0[.top] + LookShape.cropCaption }

@@ -223,6 +223,7 @@ struct LookBlank: View {
             }
         }
         .frame(maxWidth: maxWidth)
+        .padding(.trailing, maxWidth.isFinite ? 6 : 0)
         .accessibilityHidden(true)
     }
 }
@@ -268,11 +269,16 @@ private struct LookOwner: View {
 
     var body: some View {
         let bracketed = line.run != nil && line.run != .single
+        // The value keeps the room: a long app name ("Google Chrome for Testing") is cut at its end, never laid over the
+        // value (L1 run 1). VoiceOver hears it whole (`Line.spoken`).
         Text(line.showsOwner ? (line.owner ?? "") : "")
             .font(LookFont.meta)
             .foregroundStyle(Color(token: line.state == .failed ? CaretColor.graphite : CaretColor.ink2))
             .lineLimit(1)
-            .fixedSize()
+            .truncationMode(.tail)
+            // At its own width, up to the cap: a capped frame proposed nothing takes its content's width (fixedSize).
+            .frame(maxWidth: line.blank != nil ? 140 : 100, alignment: .trailing)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.trailing, bracketed ? 10 : 0)
             .frame(minWidth: bracketed ? 12 : 0, alignment: .trailing)
     }

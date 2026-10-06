@@ -33,7 +33,8 @@ struct PageTaskLiveView: View {
 
     var body: some View {
         if let panel = model.panel {
-            PageTaskGroupView(panel: panel, crop: model.crop, side: model.side, character: character, animated: animated && model.animated, onAttach: model.onAttach)
+            PageTaskGroupView(panel: panel, crop: model.crop, side: model.side, character: character, animated: animated && model.animated,
+                              reservesCrop: Self.hasCrops(panel), onAttach: model.onAttach)
                 .environment(\.lookMotion, PageTaskLook.motion(model.cause, reduceMotion: reduceMotion || reducesMotion))
                 .environment(\.lookStagger, model.stagger)
                 .environment(\.lookTracksVoiceOver, true)
@@ -42,5 +43,10 @@ struct PageTaskLiveView: View {
                     MainActor.assumeIsolated { model?.geometry = g }
                 }
         }
+    }
+
+    /// Whether any row of the panel has a crop to show (an excerpt, or a blank's sentence).
+    static func hasCrops(_ panel: PageTaskPanel) -> Bool {
+        panel.sections.contains { $0.lines.contains { $0.excerpt != nil || $0.blank != nil } }
     }
 }

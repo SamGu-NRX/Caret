@@ -333,22 +333,13 @@ final class PageTaskCoordinator {
         var t = Transaction()
         t.disablesAnimations = cause == .key
         withTransaction(t) { model.cause = cause }
+        // The window already holds the crop's room (`PageTaskGroupView.reservesCrop`): showing or hiding it resizes nothing.
         if next != nil {
             withTransaction(t) { withAnimation(was == nil ? CaretMotion.out(look.appear) : nil) { model.crop = next } }
-            remeasure()
         } else {
             withTransaction(t) { withAnimation(cause == .key ? nil : CaretMotion.fade(100)) { model.crop = nil } }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.11) { [weak self] in
-                MainActor.assumeIsolated { if self?.model.crop == nil { self?.remeasure() } }
-            }
         }
         publish()
-    }
-
-    private func remeasure() {
-        guard drawsOnScreen, panel.isVisible else { return }
-        panel.setContent(PageTaskLiveView(model: model, character: FigureSettings.shared.character, animated: !Motion.reduceMotion))
-        lastFrame = Screen.ax(panel.contentFrame(size: panel.size))
     }
 
     /// UI moment 5: the next page's content crosses over 200 ms.
