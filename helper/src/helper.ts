@@ -776,6 +776,9 @@ export class Helper {
         store.count(`reader.snapshot_${m.reason}`, 1, m.at);
         store.count("reader.nodes", m.nodes.length, m.at);
         if (m.stats.truncated) store.count("reader.truncated", 1, m.at);
+        this.lastWalk.delete(m.window.windowId);
+        this.lastWalk.set(m.window.windowId, { at: m.at, reason: m.reason, root: m.root, truncated: m.stats.truncated, nodes: m.nodes.length });
+        if (this.lastWalk.size > 500) this.lastWalk.delete(this.lastWalk.keys().next().value as string);
         const cleared = this.transfers.onChanges(changes);
         this.patterns.onChanges(changes);
         if (this.mode === "live") this.eventsSettled = this.events.onChanges(changes);
@@ -842,6 +845,8 @@ export class Helper {
         this.routing?.observe();
         return null;
       case "windowClosed": {
+        this.closedAt.set(m.windowId, m.at);
+        if (this.closedAt.size > 500) this.closedAt.delete(this.closedAt.keys().next().value as string);
         this.record(this.transfers.flush(m.windowId));
         // The shadow logger judges an open episode in this window before the window leaves the model,
         // since the judgment reads the window's typed values.
@@ -1655,16 +1660,23 @@ export class Helper {
    * H10 diagnosis: for a fill refused because a source is gone, logs whether each source window is still in the model
    * and which of its node keys hold text: keys and counts only, never a value or a title.
    */
+  /** H10 diagnosis: the last reader snapshot of the 500 windows most recently walked (whyGone): a full walk cut short replaces the window whole. */
+  private readonly lastWalk = new Map<string, { at: number; reason: string; root: string | null; truncated: boolean; nodes: number }>();
+  /** H10 diagnosis: when the reader said each window closed (whyGone); the oldest of 500 is forgotten. */
+  private readonly closedAt = new Map<string, number>();
+
   private whyGone(p: { fields: readonly { source: { windowId: string; nodeKey: string } | null }[] }): void {
     for (const id of new Set(p.fields.flatMap((f) => (f.source === null ? [] : [f.source.windowId])))) {
       const w = this.model.windows.get(id);
       const wanted = [...new Set(p.fields.flatMap((f) => (f.source?.windowId === id ? [f.source.nodeKey] : [])))];
       if (w === undefined) {
-        this.opts.warn?.(`fill recheck: source window ${id} is not in the model (${this.model.windows.size} windows)`);
+        const closed = this.closedAt.get(id);
+        this.opts.warn?.(`fill recheck: source window ${id} is not in the model (${this.model.windows.size} windows); ${closed === undefined ? "no windowClosed seen for it" : `windowClosed ${this.now() - closed} ms ago`}`);
         continue;
       }
       const texty = [...w.nodes.values()].filter((n) => (n.value ?? "") !== "").map((n) => n.key).slice(0, 8);
-      this.opts.warn?.(`fill recheck: source window ${id} has ${w.nodes.size} nodes, updated ${this.now() - w.updatedAt} ms ago; wanted ${wanted.join(", ")} (${wanted.map((k) => (w.nodes.has(k) ? "present" : "missing")).join(", ")}); nodes with text: ${texty.join(", ")}`);
+      const last = this.lastWalk.get(id);
+      this.opts.warn?.(`fill recheck: source window ${id} last walk ${last === undefined ? "unknown" : `${last.reason} ${last.root === null ? "full" : "partial"}${last.truncated ? " TRUNCATED" : ""} of ${last.nodes} nodes`}; has ${w.nodes.size} nodes, updated ${this.now() - w.updatedAt} ms ago; wanted ${wanted.join(", ")} (${wanted.map((k) => (w.nodes.has(k) ? "present" : "missing")).join(", ")}); nodes with text: ${texty.join(", ")}`);
     }
   }
 
