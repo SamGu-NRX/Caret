@@ -25,7 +25,7 @@ import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
 import { isDerived, isFilled } from "./gates.ts";
 import { sourceHolds } from "../offers/fill-popup.ts";
-import { memoryValue, parseMemoryRef } from "../fill/fill.ts";
+import { memoryWrites, parseMemoryRef } from "../fill/fill.ts";
 import { continuationScope, pageInputKeys } from "./page-planner.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { formControls } from "../fill/controls.ts";
@@ -442,7 +442,7 @@ export class GoalRuns {
       if (v.memory !== null && v.fill?.memoryLabel !== undefined) {
         const ref = parseMemoryRef(v.memory);
         const now = this.deps.aboutNow?.(ref.id) ?? null;
-        if (now === null || memoryValue(now.value, ref.part) !== v.text || now.label !== v.fill.memoryLabel) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
+        if (now === null || !memoryWrites(now.value, ref.part, v.text) || now.label !== v.fill.memoryLabel) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
       }
       if (v.source === null) continue;
       if (!this.sourceShows(run, v)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };

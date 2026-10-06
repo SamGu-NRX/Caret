@@ -51,9 +51,9 @@ describe("which entries are which kind", () => {
     ["Marketing consent", "Yes", null],
     ["Phone password", "555-0101", null],
     ["Card", "4111 1111 1111 1111", null],
-    // Kinds C1 does not add.
-    ["Current job title", "Field Service Technician", null],
-    ["Date of birth", "March 14, 1990", null],
+    // Kinds C2 adds (c2-about-kinds.test.ts).
+    ["Current job title", "Field Service Technician", "jobTitle"],
+    ["Date of birth", "March 14, 1990", "birthDate"],
   ];
   it("reads each kind from the entry's label and checks the value's shape", () => {
     expect(table.map(([l, v]) => [l, v, aboutKind(l, v)])).toEqual(table);

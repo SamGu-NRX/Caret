@@ -152,7 +152,7 @@ export function formAsksFor(w: WindowState, triggerKey: string, about: readonly 
   return formFields(w, triggerKey).some((n) => {
     const d = describeField(w, n);
     const name = d.label ?? d.nearest ?? d.placeholder;
-    return about.some((a) => fieldAsksFor(a, name));
+    return about.some((a) => fieldAsksFor(a, name, w.window.title));
   });
 }
 
@@ -677,7 +677,7 @@ const PERSONAL_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "addre
  * C1: the kind of screen value an About entry stands beside, so a cut that took a window's value of that kind withholds
  * the entry too, as it does an email (pickCut). Kinds with no typed screen value (a school, a yes or no) have none.
  */
-const ABOUT_VALUE_KIND: Partial<Record<AboutKind, ValueKind>> = { email: "email", phone: "phone", address: "address", street: "address", gradDate: "date", linkedin: "url", github: "url", website: "url" };
+const ABOUT_VALUE_KIND: Partial<Record<AboutKind, ValueKind>> = { email: "email", phone: "phone", address: "address", street: "address", gradDate: "date", linkedin: "url", github: "url", website: "url", birthDate: "date", salary: "amount" };
 /** Labels of a message header's sender. */
 const SENDER = /^(?:from|sender|reply-to)$/i;
 /** Owner questions one ask carries at most. Assumed: well above the personal values a few source windows hold. */
@@ -784,7 +784,7 @@ export async function proposeFill(
       ((part !== null && part !== "country" && !DATE_PARTS.has(part)) || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
     // An Ask that names no memory, or names another person for a personal field, is not offered the user's own.
     const memoryOk = scope === undefined || (scope.memory && (scope.person === null || !personal));
-    const about = memoryOk ? (opts.about ?? []).filter((a) => aboutFits(a, x.control) && fieldAsksFor(a, name)) : [];
+    const about = memoryOk ? (opts.about ?? []).filter((a) => aboutFits(a, x.control) && fieldAsksFor(a, name, w.window.title)) : [];
     const descriptor = describeInput(w, x);
     fields.push({ id: `f${fields.length + 1}`, node: n, descriptor, name: name ?? "unnamed field", kinds, terms, texts, about, control: x.control, form: c, part, labelWords, personal });
   }
@@ -1511,6 +1511,24 @@ export async function proposeFill(
 /** What a memory entry gives a field now: the whole value, or the part of the name the proposal took (FillMemory.part). */
 export function memoryValue(value: string, part: FillMemory["part"]): string | null {
   return part === undefined ? value : namePart(splitName(value), part);
+}
+
+/**
+ * C2: whether memory entry text `value` still gives what a step writes (`written`), right before the write: what the
+ * entry gives (memoryValue) itself, or that read the one way fill reads a control's value from it (controlValue): an
+ * option named the same but for case and spacing ("Yes" for "yes", "Vegetarian" for "vegetarian"), a date or month in
+ * its input's own format ("1990-03-14" for "March 14, 1990"). An entry the user changed gives none of them. Before C2 a
+ * step from memory had to write the entry's text as typed, so a page goal stopped at Tab on any of these.
+ */
+export function memoryWrites(value: string, part: FillMemory["part"], written: string): boolean {
+  const gives = memoryValue(value, part);
+  if (gives === null) return false;
+  if (gives === written) return true;
+  const norm = (s: string): string => s.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
+  if (norm(gives) === norm(written)) return true;
+  const ctx: ResolveContext = { locale: Intl.DateTimeFormat().resolvedOptions().locale, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, referenceInstant: null };
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(written) && readDate(gives, ctx)?.value === written) return true;
+  return /^\d{4}-\d{2}$/u.test(written) && readMonth(gives)?.value === written;
 }
 
 /** Whether two candidates' "Label: value" lines are next to each other in their node, with no line between. */

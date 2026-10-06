@@ -4,7 +4,9 @@
 // came from "what you told Caret". C1 adds the other details application forms ask for: a phone, an address
 // and its parts as separate entries (Street, City, State, ZIP code, Country), a school, a degree, a
 // graduation date, LinkedIn, GitHub and website links, and whether the user may work there and needs visa
-// sponsorship, said as yes or no. Each kind is read from the entry's label, with its value's shape checked. An
+// sponsorship, said as yes or no. C2 adds a date of birth, a job title, a T-shirt size, dietary needs, a salary
+// expectation, and how the user heard about a job (only that company's, when the entry names one). Each kind is read
+// from the entry's label, with its value's shape checked. An
 // entry or a field about self-identification (gender, race, ethnicity, veteran status, disability), consent, or a
 // value Caret never types (memory/sensitive.ts) is never matched.
 //
@@ -39,7 +41,13 @@ export type AboutKind =
   | "github"
   | "website"
   | "workAuth"
-  | "sponsorship";
+  | "sponsorship"
+  | "birthDate"
+  | "jobTitle"
+  | "shirtSize"
+  | "diet"
+  | "salary"
+  | "heard";
 
 /** A typed About entry that can fill a field. */
 export interface AboutValue {
@@ -100,6 +108,16 @@ export function aboutKind(label: string, value: string): AboutKind | null {
   if (has(ws, "github")) return url && /github\.com\//iu.test(v) ? "github" : null;
   if (has(ws, "website", "portfolio", "homepage", "blog", "site")) return url && !/(?:linkedin|github)\.com\//iu.test(v) ? "website" : null;
   if (url) return null;
+  // C2 (lead decision 4): each new kind by a label of only its own few words, and the value's shape.
+  const only = (allowed: ReadonlySet<string>): boolean => ws.every((w) => allowed.has(w));
+  if (has(ws, "birth", "birthday", "birthdate", "dob")) return only(BIRTH_LABEL) && splitDate(v) !== null && /^\d{4}-\d{2}-\d{2}$|(?<!\d)\d{1,2}(?!\d)/u.test(v) ? "birthDate" : null;
+  if (has(ws, "title")) {
+    if (has(ws, "job", "position", "role", "current") && only(JOB_TITLE_LABEL)) return JOB_TITLE.test(v) && v.length <= 60 && v.split(/\s+/u).length <= 8 ? "jobTitle" : null;
+  }
+  if (has(ws, "shirt", "tshirt", "tee")) return only(SHIRT_LABEL) && SHIRT_SIZE.test(v) ? "shirtSize" : null;
+  if (has(ws, "diet", "dietary")) return only(DIET_LABEL) && DIET.test(v) && v.length <= 40 && v.split(/\s+/u).length <= 5 ? "diet" : null;
+  if (has(ws, "salary", "compensation", "pay")) return only(SALARY_LABEL) && has(ws, ...SALARY_EXPECTED) && MONEY.test(v) ? "salary" : null;
+  if (has(ws, "heard", "hear")) return has(ws, "how", "where") && v.length <= 60 && v.split(/\s+/u).length <= 8 && !/[@\d]/u.test(v) ? "heard" : null;
   // A label with a word beyond its kind's few ("Sponsorship unnecessary") is no kind: which way it answers is a guess.
   if (has(ws, "sponsorship", "sponsor", "visa")) return YES_NO.test(v) && ws.every((w) => SPONSOR_LABEL.has(w)) ? "sponsorship" : null;
   if (has(ws, "authorization", "authorisation", "authorized", "authorised", "eligibility", "eligible")) return YES_NO.test(v) && ws.every((w) => AUTH_LABEL.has(w)) ? "workAuth" : null;
@@ -168,6 +186,44 @@ const AUTH_LABEL = new Set(["work", "authorization", "authorisation", "authorize
 const SPONSOR_LABEL = new Set(["needs", "need", "requires", "require", "required", "visa", "sponsorship", "sponsor", "for", "work", "employment", "in", "the", "us", "usa", "united", "states", "america", "canada", "uk", "kingdom", "britain", "eu", "europe", "australia", "india", "germany", "france", "mexico", "ireland", "singapore", "japan"]);
 
 /**
+ * C2 (lead decision 4): the only words a label of each new kind may use, so the entry is the user's own of that kind:
+ * "Date of birth" but not "Spouse's date of birth", "Current job title" but not "Title", "Salary expectation" but not
+ * "Current salary" or "Salary range". Written for common labels, not measured.
+ */
+const BIRTH_LABEL = new Set(["date", "birth", "birthday", "birthdate", "dob", "day"]);
+const JOB_TITLE_LABEL = new Set(["job", "title", "current", "position", "role", "work", "present"]);
+const SHIRT_LABEL = new Set(["shirt", "tshirt", "tee", "size"]);
+const DIET_LABEL = new Set(["diet", "dietary", "needs", "need", "restrictions", "restriction", "requirements", "requirement", "preference", "preferences"]);
+const SALARY_EXPECTED = ["expectation", "expectations", "expected", "desired", "requirement", "requirements", "target"];
+const SALARY_LABEL = new Set(["salary", "compensation", "pay", "annual", "yearly", "base", ...SALARY_EXPECTED]);
+/** The words of a question about how the user heard of a job that say nothing of which job (C2): the rest name it. */
+const HEARD_WORDS = new Set(["how", "where", "did", "do", "hear", "heard", "about", "this", "job", "role", "position", "opportunity", "company", "posting", "us", "we", "learn", "learned", "find", "found", "out", "source", "first", "team"]);
+/** A job title as written: letters first, at most eight words; no address, link or sentence. */
+const JOB_TITLE = /^\p{L}[\p{L}\p{N} .,'’&/()+-]*$/u;
+/** A T-shirt size as a size chart names it. */
+const SHIRT_SIZE = /^(?:xxs|xs|s|m|l|xl|xxl|xxxl|[2-5]xl|x-?small|small|medium|large|x-?large|xx-?large|extra[- ]small|extra[- ]large)$/iu;
+/** Dietary needs as named on a form: words only ("vegetarian", "gluten-free", "halal"). */
+const DIET = /^\p{L}[\p{L} ,/'’-]*$/u;
+/** An amount or a range of amounts, as a salary expectation is written ("$185,000", "$120k-$140k", "95000 USD"). */
+const MONEY =
+  /^(?:[$€£]\s?)?\d[\d,]*(?:\.\d{1,2})?\s?[kK]?(?:\s?(?:-|–|to)\s?(?:[$€£]\s?)?\d[\d,]*(?:\.\d{1,2})?\s?[kK]?)?(?:\s?(?:USD|EUR|GBP|CAD))?(?:\s?(?:per year|\/\s?(?:yr|year)|a year|annually|per annum))?$/iu;
+
+/**
+ * C2: for each new kind, the words one of which a field's name must hold (`asks`), one more of which it must also hold
+ * (`also`, when given), and the other words it may hold beside the entry's own label words and PLAIN. "Job title" asks
+ * for a job title; "Title" is a form of address as often, so it does not. "What are your salary expectations?" asks for
+ * a salary expectation; "Salary range" states the job's. Written for common form labels, not measured.
+ */
+const C2_FIELDS: Partial<Record<AboutKind, { asks: string[]; also?: string[]; may: string[] }>> = {
+  birthDate: { asks: ["birth", "birthday", "birthdate", "dob"], may: ["date", "day"] },
+  jobTitle: { asks: ["title"], also: ["job", "position", "role", "current"], may: ["job", "position", "role", "current"] },
+  shirtSize: { asks: ["shirt", "tshirt", "tee"], may: ["size"] },
+  diet: { asks: ["diet", "dietary"], may: ["needs", "need", "restrictions", "restriction", "requirements", "requirement", "preferences", "preference", "any"] },
+  salary: { asks: ["salary", "compensation", "pay"], also: SALARY_EXPECTED, may: ["what", "are", "annual", "yearly", "base", ...SALARY_EXPECTED] },
+  heard: { asks: ["hear", "heard"], may: [...HEARD_WORDS] },
+};
+
+/**
  * C1: whether a yes-or-no question asks exactly what the entry answers: whether the user may work there, or needs
  * sponsorship. Every word of the question must be one such a question uses (WORK_WORDS, SPONSOR_WORDS) or one of the
  * entry's own label, and it must say "work" and "authorized" (or "eligible"), or "sponsorship" and "require" (or
@@ -190,11 +246,23 @@ function questionAsks(a: AboutValue, ws: ReadonlySet<string>): boolean {
  * entry's label or say how the field is filled (PLAIN). A field about self-identification or consent never
  * asks for an entry (C1).
  */
-export function fieldAsksFor(a: AboutValue, fieldName: string | null): boolean {
+export function fieldAsksFor(a: AboutValue, fieldName: string | null, formTitle: string | null = null): boolean {
   const ws = new Set(words(fieldName));
   if (ws.size === 0 || never(fieldName)) return false;
   if (a.kind === "workAuth" || a.kind === "sponsorship") return questionAsks(a, ws);
   const own = new Set(words(a.label));
+  const c2 = C2_FIELDS[a.kind];
+  if (c2 !== undefined) {
+    if (!c2.asks.some((w) => ws.has(w)) || (c2.also !== undefined && !c2.also.some((w) => ws.has(w)))) return false;
+    // How the user heard about one company ("how I heard about Kestrel Robotics") answers only that company's form: the
+    // words naming it must be in the field's name or the form's window title (C2).
+    if (a.kind === "heard") {
+      const named = new Set([...ws, ...words(formTitle)]);
+      if (![...own].every((w) => HEARD_WORDS.has(w) || named.has(w))) return false;
+    }
+    const allowed = new Set([...own, ...c2.asks, ...c2.may]);
+    return [...ws].every((w) => allowed.has(w) || PLAIN.has(w));
+  }
   const table = FIELD_WORDS[a.kind];
   if (table !== undefined) {
     if (!table.asks.some((w) => ws.has(w))) return false;
@@ -223,15 +291,20 @@ export function fieldAsksFor(a: AboutValue, fieldName: string | null): boolean {
 export function aboutFits(a: AboutValue, control: string): boolean {
   const yesNo = a.kind === "workAuth" || a.kind === "sponsorship";
   const option = a.kind === "school" || a.kind === "degree" || a.kind === "city" || a.kind === "state" || a.kind === "country";
+  // C2: a T-shirt size, dietary needs or how the user heard is an option's name as often as typed text.
+  const choice = a.kind === "shirtSize" || a.kind === "diet" || a.kind === "heard";
   switch (control) {
     case "text":
       return !yesNo;
     case "combobox":
-      return option;
+      return option || choice;
     case "select":
-      return option || yesNo;
+      return option || yesNo || choice;
     case "radio":
-      return yesNo;
+      return yesNo || choice;
+    // C2: a date of birth or a graduation date, in the date or month input's own format (fill.ts controlValue).
+    case "date":
+      return a.kind === "birthDate" || a.kind === "gradDate";
     default:
       return false;
   }
@@ -256,6 +329,12 @@ export const ABOUT_KIND_SAYS: Record<AboutKind, string> = {
   website: "website",
   workAuth: "whether the user may work there, yes or no",
   sponsorship: "whether the user needs visa sponsorship, yes or no",
+  birthDate: "date of birth",
+  jobTitle: "job title",
+  shirtSize: "T-shirt size",
+  diet: "dietary needs",
+  salary: "salary expectation",
+  heard: "how the user heard about the job",
 };
 
 /**

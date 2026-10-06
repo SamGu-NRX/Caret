@@ -11,7 +11,7 @@ import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
 import { jevFailureKind, type AskJev, type JevRequest } from "./fill/jev.ts";
-import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryValue, parseMemoryRef, proposeFill, type FillErrorWhy } from "./fill/fill.ts";
+import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryWrites, parseMemoryRef, proposeFill, type FillErrorWhy } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
   HelperMessage,
@@ -1180,7 +1180,7 @@ export class Helper {
     if (text === null || text === undefined) return false;
     // A whole value stays exact; a part is the same part by the same split (fix-check review: a name that
     // changed from "Riley Ade Okafor" to "Morgan Riley" must not still give "Riley" as a first name).
-    return memoryValue(text, part) === value;
+    return memoryWrites(text, part, value);
   }
 
   /** Memory the planner may copy from: About values and people's names, not paused. */
@@ -2752,7 +2752,7 @@ export class Helper {
       }
       if (memory !== null) {
         const now = this.aboutNow(memory.id);
-        return now !== null && memoryValue(now.value, memory.part) === value && now.label === memory.label;
+        return now !== null && value !== null && memoryWrites(now.value, memory.part, value) && now.label === memory.label;
       }
       const source = f.source ?? f.handoff?.source ?? null;
       return source === null || this.model.windows.has(source.windowId);
@@ -3028,7 +3028,7 @@ function fillEvidence(model: ScreenModel, w: WindowState, fields: readonly Node[
     const byKind = [...fieldKinds(lw)].flatMap((k) => [...(kinds.get(k) ?? [])]);
     const byLine = lines.filter((l) => [...own].some((t) => l.words.has(t))).map((l) => l.app);
     const name = d.label ?? d.nearest ?? d.placeholder;
-    const byAbout = unheld.some((a) => fieldAsksFor(a, name));
+    const byAbout = unheld.some((a) => fieldAsksFor(a, name, w.window.title));
     if (byKind.length + byLine.length === 0 && !byAbout) continue;
     fit++;
     if (byAbout) told++;
