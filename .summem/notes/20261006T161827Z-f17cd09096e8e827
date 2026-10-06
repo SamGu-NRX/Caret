@@ -1,1 +1,0 @@
-Chrome joins execCommand('insertText') to the open typing undo step, so one Cmd-Z also removed typed text in a contenteditable. Setting the caret by script where it already is closes the step: extension/src/content/insert.ts closeTyping.

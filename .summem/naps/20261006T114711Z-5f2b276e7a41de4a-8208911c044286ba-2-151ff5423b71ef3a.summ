@@ -1,1 +1,0 @@
-Fill joins need the same trigger and ordered selectedFormInputs. H13: with-heavy refuses unless free disk minus --est-disk stays >= 8 GiB (swap growth counts), so ask the smallest honest estimate (a host build: 3 mem / 2 disk).
