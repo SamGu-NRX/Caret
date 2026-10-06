@@ -93,9 +93,10 @@ let writerSpent = 0;
 const fixtureIds = new Set<string>();
 /**
  * A1: `--engine canned` is an oracle, for when no model can run the Ask path (Laya's free tier takes at most 512 input
- * tokens, and Jev had no credits). It always chooses code's scope reading, settles the heads as the ask's expected fields
- * say, confirms exactly the expected fields, and answers each value question with the ask's expected value for that
- * field, else the value corpus.json expects for a whole-form fill. So any field outside the ask's expected fields that
+ * tokens, and Jev had no credits). It always chooses code's scope reading, leaves its own scope head unclear (a
+ * must-refuse ask's head refuses or plans by the ask's reason), says no to every field yes/no, confirms exactly the
+ * expected fields, and answers each value question with the ask's expected value for that field, else the value
+ * corpus.json expects for a whole-form fill. So any field outside the ask's expected fields that
  * the Ask still puts in scope gets a value and scores wrong: it measures whether code's reading writes a field the user
  * did not mean when the model always agrees, not how a real model scores.
  */
@@ -113,17 +114,20 @@ const oracle: AskJev = async (req) => {
   const same = (text: string, v: string): boolean => {
     const flat = (x: string): string => x.toLowerCase().replace(/[^a-z0-9]/gu, "");
     if (flat(text) === flat(v) && flat(v) !== "") return true;
-    const day = (x: string): string | null => {
-      const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/u.test(x) ? `${x}T00:00:00` : x);
+    // A day as written in a source, its weekday and clock time dropped, in the value's year when it gives none.
+    const day = (x: string, year: string | null): string | null => {
+      const bare = x.replace(/^(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s*/iu, "").replace(/\s+at\s+.*$|,?\s+\d{1,2}:\d{2}.*$/iu, "");
+      const t = Date.parse(/^\d{4}-\d{2}-\d{2}$/u.test(bare) ? `${bare}T00:00:00` : /\d{4}/u.test(bare) || year === null ? bare : `${bare}, ${year}`);
       return Number.isNaN(t) ? null : new Date(t).toDateString();
     };
     const clock = (x: string): string | null => {
-      const m = /^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?$|^(\d{1,2}):(\d{2})$/iu.exec(x.trim());
+      const m = /\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b\.?|^(\d{1,2}):(\d{2})$/iu.exec(x.trim());
       if (m === null) return null;
       if (m[4] !== undefined) return `${Number(m[4])}:${m[5]}`;
       return `${(Number(m[1]) % 12) + (m[3]?.toLowerCase() === "p" ? 12 : 0)}:${m[2] ?? "00"}`;
     };
-    return (day(text) !== null && day(text) === day(v) && /\d{4}/u.test(text)) || (clock(text) !== null && clock(text) === clock(v));
+    const year = /^(\d{4})-/u.exec(v)?.[1] ?? null;
+    return (year !== null && day(text, year) !== null && day(text, year) === day(v, null)) || (/^\d{1,2}:\d{2}$/u.test(v) && clock(text) !== null && (clock(text) === clock(v) || (!/[ap]\.?m/iu.test(text) && clock(`${text} pm`) === clock(v))));
   };
   const quoted = (d: string): string => /^"([^"]*)"/u.exec(d)?.[1] ?? d;
   const wholeForm = new Set((form?.fields ?? []).map((f) => f.expected));
@@ -138,19 +142,25 @@ const oracle: AskJev = async (req) => {
       answers[id] = { choice: keys.includes(k) ? k : (keys.at(-1) ?? "none"), confidence: 0.99 };
     };
     if (id === "reading") pick("code");
-    else if (id === "scope") pick("fields");
+    // The scope head never settles a fill: an ask code has no reading of ends asked, as from a model that cannot tell.
+    // A must-refuse ask's head refuses with its reason, or plans a press, as a model that recognises refusals would; A1
+    // changed nothing on that path.
+    else if (id === "scope") pick(ask?.reason === "submit" || ask?.reason === "send" ? "plan" : ask?.expected === "refuse" && ask.reason !== undefined ? "refuse" : "unclear");
+    else if (id === "why") pick(ask?.reason === "payment" ? "payment" : ask?.reason === "neverTyped" ? "neverTyped" : ask?.reason === "noSuchField" ? "noSuchField" : "nothingToFill");
     else if (id === "source") pick("any");
     else if (id === "whose") pick("user");
     else if (id.endsWith("_whose")) {
       // A field the ask fills with someone else's value (not the whole-form one) wants that person's details.
       const label = labelIn(ins);
       const v = label === null ? null : valueOf(label);
-      pick(v !== null && theirs.has(v) ? "other" : "user");
+      pick((v !== null && theirs.has(v)) || /\b(?:landlord|reference|emergency|guest|referr|relationship|recipient)/iu.test(label ?? "") ? "other" : "user");
     }
     else if (id === "section") pick("none");
     else if (id.endsWith("_owner")) {
       const text = /"([^"]*)"/u.exec(ins)?.[1] ?? "";
-      const mine = [...theirs].some((v) => same(text, v)) ? (keys.includes("person") ? "person" : "other") : [...wholeForm].some((v) => same(text, v)) ? "user" : "unclear";
+      // A value the ask expects for someone else's field is that person's; any other whole-form value is the user's.
+      const forOther = Object.entries(want).some(([l, v]) => same(text, v) && (theirs.has(v) || /\b(?:landlord|reference|emergency|guest|referr|relationship|recipient)/iu.test(l)));
+      const mine = forOther ? (keys.includes("person") ? "person" : "other") : [...wholeForm].some((v) => same(text, v)) ? "user" : "unclear";
       pick(mine);
     }
     else if ("yes" in q.criteria) pick(id === "all" ? "no" : wanted(labelIn(ins) ?? "") ? "yes" : "no");
@@ -161,7 +171,8 @@ const oracle: AskJev = async (req) => {
       pick(hit?.[0] ?? "none");
     }
   }
-  const nouls = Object.fromEntries(Object.entries(req.nouls ?? {}).map(([id, q]) => [id, wanted(labelIn(String(q.instructions)) ?? "") ? 0.99 : 0.01]));
+  // The field yes/no heads say no: only code's reading, confirmed, ever settles fields.
+  const nouls = Object.fromEntries(Object.keys(req.nouls ?? {}).map((id) => [id, 0.01]));
   return { model: "oracle", answers, nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
 };
 const decide = harnessEngine({ name: engineName(a.engine), canned: oracle, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
