@@ -36,7 +36,7 @@ import { ScreenModel } from "../src/model.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { proposeFill } from "../src/fill/fill.ts";
-import { JEV_MODEL, loadJevKey, makeJevClient, type AskJev, type JevRequest } from "../src/fill/jev.ts";
+import { JEV_MODEL, jevSettings, loadJevKey, makeJevClient, type AskJev, type JevRequest } from "../src/fill/jev.ts";
 import { heldAsConversation, setConversationCap } from "../src/privacy.ts";
 import { conversationSign } from "../src/conversation.ts";
 import { PROTOCOL_VERSION, ReaderMessage, Snapshot, type FirstLookReply, type Frame, type ReaderVerb, type ValueKind, type VerbResult } from "../src/protocol.ts";
@@ -82,8 +82,8 @@ const earlier: { fillRows: EarlierRow[] } | null = (() => {
 if (a.out === undefined) throw new Error("--out is required");
 mkdirSync(a.out, { recursive: true });
 
-const key = loadJevKey({ ...process.env, CARET_ENV_FILE: process.env.CARET_ENV_FILE ?? a["env-file"] });
-const jev = makeJevClient(() => key);
+const jevEnv = { ...process.env, CARET_ENV_FILE: process.env.CARET_ENV_FILE ?? a["env-file"] };
+const jev = makeJevClient((provider) => loadJevKey(jevEnv, provider), 10_000, undefined, jevSettings(jevEnv));
 
 interface Call {
   part: "fill" | "firstLook";

@@ -226,6 +226,12 @@ function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot, fi
   };
 }
 
+/** An intent whose scope is no longer code's agreed reading, once planAsk rewrites it. */
+function withoutAgreement(intent: AskIntent): AskIntent {
+  const { agreed: _, ...rest } = intent;
+  return rest;
+}
+
 /** The reason each open part is asked under (intent.ts REASONS). */
 const ASKED_WHY = { fields: "whichFields", source: "whichSource", person: "whichPerson" } as const;
 
@@ -327,7 +333,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     // for a host that runs goals an Ask from it is about other windows: a fill or an unsettled intent is a plan, which
     // checkIntent still refuses for a kind Caret never types or a source no window could be (B30: the Jev maker left
     // four of B30's live asks from an email unsettled, and each was told "Which fields do you mean?").
-    if (o.goals === true && resume === undefined && snap.fields.length === 0 && (intent.route === "fill" || intent.route === "ask")) intent = { ...intent, route: "plan", why: "none", scope: "none", fields: [], literals: [] };
+    if (o.goals === true && resume === undefined && snap.fields.length === 0 && (intent.route === "fill" || intent.route === "ask")) intent = { ...withoutAgreement(intent), route: "plan", why: "none", scope: "none", fields: [], literals: [] };
   } catch (e) {
     if (e instanceof PlannerError) throw new AskRefused(e, null, null);
     throw e;
@@ -338,7 +344,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // whole form), and Caret still presses nothing on the page.
   const pageGoal = o.goals === true && w.window.kind === PAGE_WINDOW_KIND && snap.fields.length > 0;
   const planAsAll = pageGoal && intent.route === "plan";
-  if (planAsAll) intent = { ...intent, route: "fill", why: "none", scope: "list", fields: [], literals: [] };
+  if (planAsAll) intent = { ...withoutAgreement(intent), route: "fill", why: "none", scope: "list", fields: [], literals: [] };
   /** The question for an unclear part, when it is not one the user already picked and code can list its candidates. */
   const question = (e: Unclear): AskQuestionDraft | string => {
     if (fixed[e.part] !== undefined) return `the user already picked the ${e.part}`;
@@ -402,7 +408,9 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // plain "all", it stood without any confirmation when no field word named a field ("fill only the first box"; B26's
   // second review).
   const empties = snap.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
-  const listsAll = oneAnswer && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
+  // A1: a scope the model agreed is code's reading (scope-reading.ts) needs no further confirmation, here or below.
+  const agreed = intent.agreed === true && fixed.fields === undefined;
+  const listsAll = oneAnswer && !agreed && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
   let checked: ReturnType<typeof checkIntent>;
   try {
     checked = checkIntent(inferredAll || listsAll ? { ...intent, scope: "all" } : intent, snap, fixed);
@@ -428,7 +436,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   let sectionName: string | null = null;
   /** The section's fields before Jev confirmed the ones its phrase does not ask for by meaning (P2: fewer is a list). */
   let sectionBefore = 0;
-  if (checked.route === "fill" && (inferredAll || listsAll || intent.scope === "all" || intent.scope === "section")) {
+  if (checked.route === "fill" && !agreed && (inferredAll || listsAll || intent.scope === "all" || intent.scope === "section")) {
     try {
       const chosen = !inferredAll && !listsAll && intent.scope === "section" ? (snap.sections.find((x) => x.ref === intent.section)?.name ?? null) : null;
       const n = sectionScope(instruction, checked, snap, chosen);
@@ -455,7 +463,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // Fields the user picked are the scope they asked for (B29): no maker's reading of the instruction is checked there.
   // The fields in scope before Jev's confirmation may narrow them: a scope that loses one is a list (P2's page kind).
   const scopedBefore = checked.route === "fill" ? checked.fields.length : 0;
-  if (checked.route === "fill" && (oneAnswer || planAsAll) && !bySection && fixed.fields === undefined) {
+  if (checked.route === "fill" && (oneAnswer || planAsAll) && !agreed && !bySection && fixed.fields === undefined) {
     try {
       checked = await confirmScope(instruction, checked, inferredAll || listsAll ? "inferred" : intent.scope, intent.section, snap, askJev, namesField);
     } catch (e) {

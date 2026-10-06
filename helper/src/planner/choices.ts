@@ -23,6 +23,7 @@ import { normalizeInstruction, SECTION_WORDS } from "./scope-words.ts";
 import { fieldWords, restrictsSources } from "./sources.ts";
 import { ASKS, asksPress, type AskPart } from "./says.ts";
 import type { AskFixed, IntentField, IntentSnapshot } from "./intent.ts";
+import { readScope } from "./scope-reading.ts";
 
 /** One option as the host shows it, and what picking it fixes. */
 export interface Choice {
@@ -120,10 +121,20 @@ export function fittingFields(snap: IntentSnapshot): IntentField[] {
   return byKind.length > 0 ? byKind : all;
 }
 
+/**
+ * A1: the options always hold code's reading of the fields (scope-reading.ts) when it names particular ones, so a
+ * question asked because the model did not confirm the reading still offers it; the other fitting fields join while
+ * they fit, and all are listed in the form's order. A whole-form reading cannot be one option, so its question lists
+ * the fitting fields as before.
+ */
 function fieldChoices(snap: IntentSnapshot): ChoicesResult {
-  const fit = fittingFields(snap);
+  const reading = readScope(snap).reading;
+  const first = reading !== null && reading.kind === "fields" ? reading.fields.filter((f) => f.neverTyped === null) : [];
+  if (first.length > MAX_ASK_OPTIONS) return no(`code reads ${first.length} fields, more than one question lists`);
+  const rest = fittingFields(snap).filter((f) => !first.includes(f));
+  if (first.length === 0 && rest.length > MAX_ASK_OPTIONS) return no(`${rest.length} empty fields fit the instruction, more than one question lists`);
+  const fit = [...first, ...rest].slice(0, MAX_ASK_OPTIONS).sort((a, b) => snap.fields.indexOf(a) - snap.fields.indexOf(b));
   if (fit.length === 0) return no("the form has no empty field Caret may fill");
-  if (fit.length > MAX_ASK_OPTIONS) return no(`${fit.length} empty fields fit the instruction, more than one question lists`);
   return {
     choices: {
       part: "fields",
@@ -160,9 +171,12 @@ function sourceChoices(snap: IntentSnapshot, model: ScreenModel, scoped: readonl
   return { choices: { part: "source", text: ASKS.source, pick: "one", options }, why: null };
 }
 
-/** The user, then each person the instruction names, then each sender an open mail shows, once each. */
+/**
+ * The user, then each person the instruction names, then each sender an open mail shows, then (A1) each person a note
+ * names beside a role or a relation and each person the user told Caret about (people.ts), once each.
+ */
 function personChoices(snap: IntentSnapshot): ChoicesResult {
-  const all = [...snap.persons.map((p) => p.span), ...snap.windows.flatMap((w) => (w.from === null ? [] : [w.from]))].map((n) => n.trim()).filter((n) => n !== "");
+  const all = [...snap.persons.map((p) => p.span), ...snap.windows.flatMap((w) => (w.from === null ? [] : [w.from])), ...snap.others.map((p) => p.name)].map((n) => n.trim()).filter((n) => n !== "");
   // "Ines" in the instruction and "Ines Lindqvist" on a mail are one person: a name whose words begin a longer one goes.
   const words = (n: string): string[] => n.toLowerCase().split(/\s+/u);
   const within = (a: string, b: string): boolean => a.length < b.length && words(a).every((w, i) => words(b)[i] === w);

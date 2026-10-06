@@ -81,6 +81,8 @@ export const SAYS = {
    * credits. Add credits at console.typesafe.ai, then try again." is worded around it.
    */
   jevBilling: "Caret's model account is out of credits. Add credits at console.typesafe.ai, then try again.",
+  jevCard: "Caret's model account needs a card on file at Vercel. Add one, then try again.",
+  jevPaidCredits: "Caret's model account needs paid credits at Vercel. Add credits, then try again.",
   jevAuth: "Caret's model account turned down its key. Check TYPESAFE_API_KEY in Caret's .env file, then try again.",
   jevRate: "Caret's model is getting too many requests right now. Wait a minute, then try again.",
   jevNetwork: "Caret couldn't reach its model. Check your internet connection, then try again.",
@@ -116,6 +118,8 @@ export function fillSays(why: FillErrorWhy | null): string {
 
 const JEV_SAYS: Record<JevFailureKind, string> = {
   billing: SAYS.jevBilling,
+  card: SAYS.jevCard,
+  paidCredits: SAYS.jevPaidCredits,
   auth: SAYS.jevAuth,
   rate: SAYS.jevRate,
   network: SAYS.jevNetwork,

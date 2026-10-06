@@ -1,0 +1,1 @@
+GW1: Laya is fixture-only because its boundless endpoint permits training; use harnessEngine fixture provenance even with cache off. Generic clients without fixture provenance refuse it, and shipped-app markers always refuse it. Gateway Jev keeps normal sources.

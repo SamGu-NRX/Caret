@@ -51,7 +51,7 @@ const W = { titleStartsWith: TITLE };
 
 // MARK: - helper in process
 
-const jev = capJev(makeJevClient(() => loadJevKey()), MAX_USD);
+const jev = capJev(makeJevClient(loadJevKey), MAX_USD);
 const askJev: AskJev = jev.ask;
 const calendar = new FakeCalendar();
 const progress: TaskProgress[] = [];

@@ -212,7 +212,7 @@ const scripted =
   };
 let calls = 0;
 let cost = 0;
-const real = a.jev === "live" ? makeJevClient(() => loadJevKey()) : null;
+const real = a.jev === "live" ? makeJevClient(loadJevKey) : null;
 /** Each field's whose-details answers, in ask order, as Jev gave them. */
 const whoseOf = new Map<FormField, { choice: string; confidence: number }[]>();
 const ask: AskJev = async (req) => {

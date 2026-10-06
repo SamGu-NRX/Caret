@@ -75,7 +75,7 @@ let overCap = 0;
 const captured: { recording: string; run: number; request: JevRequest }[] = [];
 let current = { recording: "", run: 0 };
 process.env.CARET_ENV_FILE = a["env-file"];
-const live = MODE === "live" ? makeJevClient(() => loadJevKey()) : null;
+const live = MODE === "live" ? makeJevClient(loadJevKey) : null;
 const askJev: AskJev = async (req) => {
   if (!isRouter(req)) return fake(req);
   routerCalls++;

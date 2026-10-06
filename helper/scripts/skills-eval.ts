@@ -30,7 +30,7 @@ const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
 const MAX_USD = positiveNumber("max-usd", a["max-usd"]);
 
-const live = a.jev === "live" ? makeJevClient(() => loadJevKey()) : null;
+const live = a.jev === "live" ? makeJevClient(loadJevKey) : null;
 let spent = 0;
 let liveCalls = 0;
 

@@ -243,7 +243,7 @@ class Aborted extends Error {}
 
 // MARK: - helper in process
 
-const jev = capJev(makeJevClient(() => loadJevKey()), MAX_USD);
+const jev = capJev(makeJevClient(loadJevKey), MAX_USD);
 const askJev: AskJev = jev.ask;
 const progress: TaskProgress[] = [];
 const errors: string[] = [];
