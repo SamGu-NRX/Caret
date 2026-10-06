@@ -8,6 +8,8 @@ import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
+import { bareLine, clauseAround, LABELLED, lineTexts, lineValues } from "./line-values.ts";
+import { splitDate } from "./derive.ts";
 
 /**
  * A field whose typed value is a candidate, as a line of text is: editable, holding text, not secure, not a kind memory
@@ -29,6 +31,12 @@ export interface Candidate {
    * than text found near it. Fill trusts such a line as naming what the value is (fill.ts anchors).
    */
   labelled?: boolean;
+  /**
+   * C1: the clause of the line a typed or bounded span sits in, when the line says more than a label does: a line over
+   * MAX_LINE characters, which is not offered whole, or one that shows two values of the span's kind ("Cell: 555-0147.
+   * Don't give out 555-0112, …"). Jev reads it to tell the value the line gives from one it warns about.
+   */
+  line?: string | null;
   /** The nearest named container around the span, such as a group box or a section heading. */
   section: string | null;
   /**
@@ -80,7 +88,11 @@ const CLOCK_EVERY = 64;
 const MIN_LINE = 2;
 const MAX_LINE = 80;
 const LINE_ROLES = new Set(["AXStaticText", "AXCell", "AXHeading", "AXLink"]);
-const LABELLED = /^([^:]{1,32}):\s+(.+)$/;
+/**
+ * C1: how much of a node's text code scans for typed values, as the reader scans (TypedValues.swift maxScan): a longer
+ * text is a document, read on its first screenful.
+ */
+const MAX_SCAN = 4000;
 /**
  * Spans of a cut window that are not a conversation read for what they left out (leftOut) before the rest
  * counts as unread. Assumed: far above a note or a mail, below a log the generator should not read whole.
@@ -224,12 +236,14 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   /** The candidate for a span, with every fact about it worked out. */
   const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null): Candidate => {
     const ctx = timed("context", context);
+    const labelled = labelledSpan(node, text, ctx);
     return {
     id: `c${out.length + 1}`,
     text,
     kind,
     context: ctx,
-    labelled: labelledSpan(node, text, ctx),
+    labelled,
+    line: timed("context", () => lineFact(w, node, text, labelled)),
     section: timed("section", () => sectionAround(w, node)),
     blockHead: timed("blockHead", () => blockHead(w, node, text)),
     recency: recency(w),
@@ -251,7 +265,15 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null): void => {
     if (full() || seen.has(text) || closed.has(w.window.windowId)) return;
     const c = build(w, node, text, kind, context);
-    if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
+    // C1: a span's line is a fact it can go without: when the clause does not fit the window's budget, the span goes
+    // as it did before C1, so the clause never costs a value.
+    const fits = (): boolean => o.ledger === undefined || o.ledger.take(w, "candidate", candidateTexts(c));
+    let taken = fits();
+    if (!taken && (c.line ?? null) !== null) {
+      c.line = null;
+      taken = fits();
+    }
+    if (!taken) {
       missed.add(w.window.windowId);
       closed.add(w.window.windowId);
       // What else of a window that is not a conversation was left out is read at the end (leftOut).
@@ -304,7 +326,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    */
   const leftOut = (w: WindowState): void => {
     const valuesOf = new Map<string, TypedValue[]>();
-    for (const v of w.values) valuesOf.set(v.nodeKey, [...(valuesOf.get(v.nodeKey) ?? []), v]);
+    for (const v of windowValues(w)) valuesOf.set(v.nodeKey, [...(valuesOf.get(v.nodeKey) ?? []), v]);
     let n = 0;
     const note = (node: Node, text: string, line: string, kinds: readonly ValueKind[], label: string | null): boolean => {
       if (seen.has(text)) return true;
@@ -320,7 +342,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (kinds.some((k) => CONTACT_KINDS.has(k))) cutNames.push(...namesOutside(line, valuesOf.get(node.key)));
       return true;
     };
-    for (const v of w.values) {
+    for (const v of windowValues(w)) {
       const node = w.nodes.get(v.nodeKey);
       if (secretValue(w, v)) continue;
       if (node !== undefined && !note(node, v.text, lineHolding(nodeText(node), v.text), valueKinds(v), null)) return;
@@ -329,10 +351,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       for (const raw of nodeText(node).split(/\r?\n/)) {
-        const sp = spanOfLine(raw);
-        if (sp === null) continue;
-        const kinds = (valuesOf.get(node.key) ?? []).filter((v) => sp.line.includes(v.text)).flatMap(valueKinds);
-        if (!note(node, sp.text, sp.line, kinds, sp.label ?? (isSourceField ? (node.label ?? null) : null))) return;
+        for (const sp of lineSpans(raw)) {
+          const kinds = (valuesOf.get(node.key) ?? []).filter((v) => sp.line.includes(v.text)).flatMap(valueKinds);
+          if (!note(node, sp.text, sp.line, kinds, sp.label ?? (isSourceField ? (node.label ?? null) : null))) return;
+        }
       }
     }
   };
@@ -378,7 +400,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       return ws;
     };
     const valuesOf = new Map<string, TypedValue[]>();
-    for (const v of w.values) {
+    for (const v of windowValues(w)) {
       const list = valuesOf.get(v.nodeKey);
       if (list === undefined) valuesOf.set(v.nodeKey, [v]);
       else list.push(v);
@@ -388,7 +410,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       for (const k of kinds) t.add(kindTerm(k));
       return t;
     };
-    for (const v of w.values) {
+    for (const v of windowValues(w)) {
       if (outOfTime()) return false;
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
@@ -407,25 +429,25 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
         if (outOfTime()) return false;
-        const s = spanOfLine(raw);
-        if (s === null) continue;
-        const kinds = (valuesOf.get(node.key) ?? []).filter((v) => s.line.includes(v.text)).map((v) => v.kind);
-        const context = s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField);
-        const terms = termsOf(node, s.line, kinds);
-        // A source field's own label says what its value is, as contextFor reads it ("Name" for "dana w.").
-        const name = wantsNames && isNameLike(s.text, s.label ?? (isSourceField ? (node.label ?? null) : null));
-        // A contact line holds a name beside a typed value ("Dana Whitfield <dana@example.com>"): it is not
-        // offered as a name, but its cut can keep the name out. A name a sentence mentions without a typed
-        // value ("Design review with Priya Raman") is not counted: counting those withheld Full name and
-        // Company on every calibration set with the sources as Messages (B14 oracle replay).
-        const names = wantsNames && kinds.some((k) => CONTACT_KINDS.has(k)) ? namesOutside(s.line, valuesOf.get(node.key)) : [];
-        if (name) names.push(s.text);
-        if (names.length > 0) terms.add(NAME_TERM);
-        spans.push({ node, text: s.text, kind: null, group: name ? NAME_TERM : null, context, terms, names });
-        // Each name a contact line holds goes in with the names too, as its own span, copied verbatim from
-        // the line: else "From: Priya Raman <priya.raman@…>" left a name out whenever the line was cut, and
-        // the names spent the budget for nothing (B14 oracle replay, Claim form with the sources as Messages).
-        for (const n of names) if (n !== s.text) spans.push({ node, text: n, kind: null, group: NAME_TERM, context, terms: new Set([...terms]), names: [n] });
+        for (const s of lineSpans(raw)) {
+          const kinds = (valuesOf.get(node.key) ?? []).filter((v) => s.line.includes(v.text)).map((v) => v.kind);
+          const context = s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField);
+          const terms = termsOf(node, s.line, kinds);
+          // A source field's own label says what its value is, as contextFor reads it ("Name" for "dana w.").
+          const name = wantsNames && isNameLike(s.text, s.label ?? (isSourceField ? (node.label ?? null) : null));
+          // A contact line holds a name beside a typed value ("Dana Whitfield <dana@example.com>"): it is not
+          // offered as a name, but its cut can keep the name out. A name a sentence mentions without a typed
+          // value ("Design review with Priya Raman") is not counted: counting those withheld Full name and
+          // Company on every calibration set with the sources as Messages (B14 oracle replay).
+          const names = wantsNames && kinds.some((k) => CONTACT_KINDS.has(k)) ? namesOutside(s.line, valuesOf.get(node.key)) : [];
+          if (name) names.push(s.text);
+          if (names.length > 0) terms.add(NAME_TERM);
+          spans.push({ node, text: s.text, kind: null, group: name ? NAME_TERM : null, context, terms, names });
+          // Each name a contact line holds goes in with the names too, as its own span, copied verbatim from
+          // the line: else "From: Priya Raman <priya.raman@…>" left a name out whenever the line was cut, and
+          // the names spent the budget for nothing (B14 oracle replay, Claim form with the sources as Messages).
+          for (const n of names) if (n !== s.text) spans.push({ node, text: n, kind: null, group: NAME_TERM, context, terms: new Set([...terms]), names: [n] });
+        }
       }
     }
     built.done = true;
@@ -491,7 +513,16 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (full() || outOfTime()) return false;
       let best: { k: string; rate: number } | null = null;
       for (const [k, group] of groups) {
-        const cost = out.length + group.length > max ? null : o.ledger?.cost(w, group.flatMap(candidateTexts));
+        let cost = out.length + group.length > max ? null : o.ledger?.cost(w, group.flatMap(candidateTexts));
+        // C1: a group that does not fit with its spans' lines goes without them (see add).
+        if ((cost === null || cost === undefined) && out.length + group.length <= max && group.some((c) => (c.line ?? null) !== null)) {
+          const bare = group.map((c) => ({ ...c, line: null }));
+          const c2 = o.ledger?.cost(w, bare.flatMap(candidateTexts));
+          if (c2 !== null && c2 !== undefined) {
+            groups.set(k, bare);
+            cost = c2;
+          }
+        }
         if (cost === null || cost === undefined) continue;
         const rate = o.kindsByCost === false ? kindOrder.indexOf(k) : cost / served(k);
         if (best === null || rate < best.rate) best = { k, rate };
@@ -533,7 +564,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (!byRelevance(w, relevance)) return stop();
       continue;
     }
-    for (const v of w.values) {
+    for (const v of windowValues(w)) {
       if (full() || outOfTime()) return stop();
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
@@ -555,9 +586,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       for (const raw of lines) {
         // A node can hold thousands of lines (a log, a transcript), so the cap and the clock apply per line too.
         if (full() || outOfTime()) return stop();
-        const s = spanOfLine(raw);
-        if (s === null) continue;
-        add(w, node, s.text, null, s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField));
+        for (const s of lineSpans(raw)) add(w, node, s.text, null, s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField));
       }
     }
   }
@@ -582,7 +611,7 @@ function secretValue(w: WindowState, v: TypedValue): boolean {
  * line too short or too long to be a value, with no letter or digit, or ending in a colon offers none.
  */
 function spanOfLine(raw: string): { line: string; text: string; label: string | null } | null {
-  const line = raw.replace(/\s+/g, " ").trim();
+  const line = bareLine(raw);
   if (line.length < MIN_LINE || line.length > MAX_LINE || !/[\p{L}\p{N}]/u.test(line)) return null;
   if (line.endsWith(":")) return null; // a label, not a value
   const m = LABELLED.exec(line);
@@ -591,6 +620,94 @@ function spanOfLine(raw: string): { line: string; text: string; label: string | 
   // choose it, and it never goes out in a question (B25 lead decision 2).
   if (m !== null && m[1] !== undefined && m[2] !== undefined) return sensitiveKind(m[1], m[2]) === null ? { line, text: m[2].trim(), label: m[1].trim() } : null;
   return valueKind(line) === null ? { line, text: line, label: null } : null;
+}
+
+/**
+ * Every span a screen line offers (C1): spanOfLine's, then the free text the line bounds (line-values.ts lineTexts), each
+ * under its line's label or none. A line of any length offers the bounded text; only spanOfLine's needs it short. Its
+ * typed values are offered as the window's typed values (windowValues), not here.
+ */
+export function lineSpans(raw: string): { line: string; text: string; label: string | null }[] {
+  const line = bareLine(raw);
+  if (line.length < MIN_LINE) return [];
+  const whole = spanOfLine(raw);
+  const out = whole === null ? [] : [whole];
+  for (const t of lineTexts(line)) if (!out.some((o) => o.text === t.text)) out.push({ line, text: t.text, label: t.label });
+  return out;
+}
+
+/**
+ * C1: a window's typed values: the reader's, and those code finds in each line it reads (line-values.ts lineValues) that
+ * no reader value of the node overlaps. Code finds them in text the reader did not type (a page the engine read, a
+ * replay) and inside lines too long to offer whole. Kept per window state, so the generator, the cut rules and the
+ * recheck read the same list.
+ */
+const valuesCache = new WeakMap<WindowState, readonly TypedValue[]>();
+export function windowValues(w: WindowState): readonly TypedValue[] {
+  const cached = valuesCache.get(w);
+  if (cached !== undefined) return cached;
+  const out: TypedValue[] = [...w.values];
+  const byNode = new Map<string, TypedValue[]>();
+  for (const v of w.values) byNode.set(v.nodeKey, [...(byNode.get(v.nodeKey) ?? []), v]);
+  for (const node of w.nodes.values()) {
+    if (!LINE_ROLES.has(node.role) && !sourceField(node)) continue;
+    const reader = byNode.get(node.key) ?? [];
+    const seen = new Set(reader.map((v) => v.text));
+    for (const raw of nodeText(node).slice(0, MAX_SCAN).split(/\r?\n/)) {
+      const line = bareLine(raw);
+      if (line.length < 3) continue;
+      for (const v of lineValues(line)) {
+        if (seen.has(v.text) || reader.some((r) => r.text.includes(v.text) || v.text.includes(r.text))) continue;
+        seen.add(v.text);
+        out.push({ kind: v.kind, text: v.text, nodeKey: node.key });
+      }
+    }
+  }
+  valuesCache.set(w, out);
+  return out;
+}
+
+/**
+ * C1: whether a line, as it reads now, still gives `span` the way fill read it with no label: on a line with no label,
+ * one of its spans (lineSpans), typed values (lineValues) or a date's month or year (derive.ts splitDate); on a labelled
+ * line, a typed value its label does not name (labelNames), or such a date's part ("School: …, September 2016 to May
+ * 2020." gives "May"). A line that gained a label naming the span gives nothing: "Do not use: 555-0147" is not the line
+ * the value was read from (P2 review). The recheck of a control's value holds the source to this (offers/fill-popup.ts
+ * derivesSpan), so a value is checked by the same code that found it.
+ */
+export function lineGives(raw: string, span: string): boolean {
+  const line = bareLine(raw);
+  const m = LABELLED.exec(line);
+  const value = m?.[2]?.trim() ?? null;
+  if (value === null && lineSpans(raw).some((s) => s.text === span)) return true;
+  for (const v of lineValues(value ?? line)) {
+    if (value !== null && labelNames(value, v.text)) continue;
+    if (v.text === span) return true;
+    const d = v.kind === "date" ? splitDate(v.text) : null;
+    if (d !== null && (d.month === span || d.year === span)) return true;
+  }
+  return false;
+}
+
+/**
+ * C1: the clause a span's description quotes (Candidate.line): for a span on a line over MAX_LINE characters, or on a
+ * line that shows another typed value of its kind, the clause around it; null otherwise, or when the span carries its
+ * line's label (the label says what it is).
+ */
+export function lineFact(w: WindowState, node: Node, text: string, labelled: boolean): string | null {
+  if (labelled) return null;
+  const t = nodeText(node);
+  const at = t.indexOf(text);
+  if (at < 0) return null;
+  const raw = lineHolding(t, text);
+  const line = bareLine(raw);
+  const pos = line.indexOf(text);
+  if (pos < 0) return null;
+  const values = lineValues(line);
+  const kind = values.find((v) => v.text === text)?.kind;
+  const twins = kind !== undefined && values.filter((v) => v.kind === kind).length > 1;
+  if (line.length <= MAX_LINE && !twins) return null;
+  return clauseAround(line, pos, text);
 }
 
 /**
@@ -603,8 +720,12 @@ export function labelledLines(w: WindowState): { label: string; value: string; n
     const isSourceField = sourceField(node);
     if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
     for (const raw of nodeText(node).split(/\r?\n/)) {
-      const s = spanOfLine(raw);
-      if (s !== null && s.label !== null) out.push({ label: s.label, value: s.text, node });
+      // C1: a labelled line of any length, so a value read from a long one ("School: …, September 2016 to May 2020.")
+      // is checked by its label as one from a short one is (offers/fill-popup.ts sourceHolds).
+      const line = bareLine(raw);
+      const m = LABELLED.exec(line);
+      if (m?.[1] === undefined || m[2] === undefined || !/[\p{L}\p{N}]/u.test(m[2]) || sensitiveKind(m[1], m[2]) !== null) continue;
+      out.push({ label: m[1].trim(), value: m[2].trim(), node });
     }
   }
   return out;
@@ -635,7 +756,7 @@ export function labelledSpan(node: Node, text: string, context: string | null): 
   for (let at = t.indexOf(text); at >= 0; at = t.indexOf(text, at + 1)) {
     const start = t.lastIndexOf("\n", at) + 1;
     const nl = t.indexOf("\n", at);
-    const m = LABELLED.exec(t.slice(start, nl < 0 ? t.length : nl).replace(/\s+/g, " ").trim());
+    const m = LABELLED.exec(bareLine(t.slice(start, nl < 0 ? t.length : nl)));
     if (m?.[1]?.trim() === context && m[2]?.includes(text) === true) return true;
   }
   return false;
@@ -675,7 +796,7 @@ export function cutKinds(model: ScreenModel, cut: readonly string[], offered: re
   for (const id of cut) {
     const w = model.windows.get(id);
     if (w === undefined) continue;
-    for (const v of w.values) if (w.nodes.has(v.nodeKey) && !holdsWhole(taken, v.text)) for (const k of valueKinds(v)) out.add(k);
+    for (const v of windowValues(w)) if (w.nodes.has(v.nodeKey) && !holdsWhole(taken, v.text)) for (const k of valueKinds(v)) out.add(k);
   }
   return out;
 }
@@ -718,7 +839,8 @@ function holdsWhole(text: string, value: string): boolean {
 /** The kinds of the reader's typed values a candidate's text holds, its own kind included. */
 export function candidateKinds(model: ScreenModel, c: Candidate): Set<ValueKind> {
   const out = new Set<ValueKind>(c.kind === null ? [] : valueKinds({ kind: c.kind, text: c.text }));
-  for (const v of model.windows.get(c.source.windowId)?.values ?? []) {
+  const sw = model.windows.get(c.source.windowId);
+  for (const v of sw === undefined ? [] : windowValues(sw)) {
     if (c.text.includes(v.text) || (v.nodeKey === c.source.nodeKey && v.text.includes(c.text))) for (const k of valueKinds(v)) out.add(k);
   }
   return out;
@@ -726,7 +848,7 @@ export function candidateKinds(model: ScreenModel, c: Candidate): Set<ValueKind>
 
 /** The screen text describeCandidate puts in a request for this candidate: the span, its facts, and its window's title. */
 export function candidateTexts(c: Candidate): (string | null)[] {
-  return [c.text, c.context, c.blockHead, c.section, c.source.windowTitle];
+  return [c.text, c.context, c.line ?? null, c.blockHead, c.section, c.source.windowTitle];
 }
 
 /**
@@ -738,7 +860,7 @@ export function countSpans(model: ScreenModel, targetWindowId: string): { spans:
   let typed = 0;
   for (const w of model.windows.values()) {
     if (w.window.windowId === targetWindowId) continue;
-    for (const v of w.values) {
+    for (const v of windowValues(w)) {
       if (!w.nodes.has(v.nodeKey) || seen.has(v.text)) continue;
       seen.add(v.text);
       typed++;
@@ -749,12 +871,7 @@ export function countSpans(model: ScreenModel, targetWindowId: string): { spans:
     for (const node of w.nodes.values()) {
       const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
-      for (const raw of nodeText(node).split(/\r?\n/)) {
-        const line = raw.replace(/\s+/g, " ").trim();
-        if (line.length < MIN_LINE || line.length > MAX_LINE || !/[\p{L}\p{N}]/u.test(line) || line.endsWith(":")) continue;
-        const m = LABELLED.exec(line);
-        seen.add(m !== null && m[2] !== undefined ? m[2].trim() : line);
-      }
+      for (const raw of nodeText(node).split(/\r?\n/)) for (const s of lineSpans(raw)) seen.add(s.text);
     }
   }
   return { spans: seen.size, typed };
@@ -771,8 +888,8 @@ function contextFor(w: WindowState, node: Node, span: string): string | null {
   for (let at = text.indexOf(span); at >= 0; ) {
     const start = text.lastIndexOf("\n", at) + 1;
     const nl = text.indexOf("\n", at);
-    const m = LABELLED.exec(text.slice(start, nl < 0 ? text.length : nl).trim());
-    if (m !== null && m[1] !== undefined && m[2]?.includes(span)) return m[1].trim();
+    const m = LABELLED.exec(bareLine(text.slice(start, nl < 0 ? text.length : nl)));
+    if (m !== null && m[1] !== undefined && m[2] !== undefined && m[2].includes(span) && labelNames(m[2].trim(), span)) return m[1].trim();
     if (nl < 0) break;
     at = text.indexOf(span, nl + 1);
   }
@@ -782,6 +899,19 @@ function contextFor(w: WindowState, node: Node, span: string): string | null {
   // no label but its line's.
   if (node.editable === true && text.includes("\n")) return null;
   return nearestText(w, node, true);
+}
+
+/**
+ * C1: whether a "Label: value" line's label names a typed value inside its value: the value starts with it, or it is
+ * the only value of its kind there. "Cell: 555-0147. Don't give out 555-0112, …" labels 555-0147 alone; "From: Elena
+ * Varga <elena.varga@example.org>" still labels the one address. A span that is no typed value of the value is named by
+ * its label as before.
+ */
+function labelNames(value: string, span: string): boolean {
+  if (value.startsWith(span)) return true;
+  const vs = lineValues(value);
+  const kind = vs.find((v) => v.text === span)?.kind;
+  return kind === undefined || vs.filter((v) => v.kind === kind).length === 1;
 }
 
 /** The label of the nearest named ancestor, skipping web areas, whose label is the page title. */
@@ -884,6 +1014,7 @@ export function describeCandidate(c: Candidate): string {
   const facts: string[] = [];
   if (c.kind !== null) facts.push(c.kind);
   if (c.context !== null && c.context !== c.text) facts.push(`labelled '${c.context}'`);
+  if (c.line !== undefined && c.line !== null) facts.push(`in the line '${c.line}'`);
   if (c.blockHead !== null) facts.push(`in a block that starts '${c.blockHead}'`);
   if (c.section !== null && c.section !== c.context) facts.push(`under '${c.section}'`);
   facts.push(`in ${c.source.appName} window '${c.source.windowTitle}', ${RECENCY_TEXT[c.recency]}`);

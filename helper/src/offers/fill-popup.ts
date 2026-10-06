@@ -10,7 +10,7 @@ import { PAGE_SUBROLE, PROTOCOL_VERSION, type FillField, type FillMemory, type F
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
-import { labelledLines } from "../fill/candidates.ts";
+import { labelledLines, lineGives, windowValues } from "../fill/candidates.ts";
 import { splitAddress, splitPlace } from "../fill/derive.ts";
 import { describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
@@ -212,6 +212,8 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
  * (P2 review). A value from a labelled line is checked by its label instead (sourceHolds).
  */
 function derivesSpan(line: string, span: string): boolean {
+  // C1: a span, typed value or date part fill's generator reads in the line (fill/candidates.ts lineGives).
+  if (lineGives(line, span)) return true;
   const t = line.trim();
   const place = splitPlace(t);
   if (place !== null && (place.city === span || place.state === span || place.country === span)) return true;
@@ -233,7 +235,7 @@ function derivesSpan(line: string, span: string): boolean {
 export function sourceHolds(sw: WindowState, nodeKey: string, span: string, context: string | null, control: string): boolean {
   const src = sw.nodes.get(nodeKey);
   if (src === undefined) return false;
-  const typed = sw.values.some((v) => v.nodeKey === nodeKey && v.text === span);
+  const typed = windowValues(sw).some((v) => v.nodeKey === nodeKey && v.text === span);
   if (context !== null) {
     const box = control === "checkbox";
     return labelledLines(sw).some((l) => l.node.key === nodeKey && l.label === context && (box ? l.value === span : l.value.includes(span)));

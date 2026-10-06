@@ -9,8 +9,10 @@ import { words } from "./kinds.ts";
 export type NamePart = "first" | "middle" | "last" | "full";
 export type AddressPart = "street" | "unit" | "city" | "state" | "zip";
 export type FieldPart = NamePart | AddressPart;
-/** A field's part as fill asks for it: fieldPart's parts, or (B27) a place's country, which only fill derives. */
-export type FillPart = FieldPart | "country";
+/** A date's month or year, for a field that asks only for that (C1): "Graduation date month", "Start date year". */
+export type DatePart = "month" | "year";
+/** A field's part as fill asks for it: fieldPart's parts, (B27) a place's country, which only fill derives, or (C1) a date's month or year. */
+export type FillPart = FieldPart | "country" | DatePart;
 
 const FIRST = /\b(?:first|given|forename)\b/;
 const MIDDLE = /\bmiddle\b/;
@@ -99,7 +101,12 @@ const US_STATES = new Set(
     .split(" ")
     .concat(["new hampshire", "new jersey", "new mexico", "new york", "north carolina", "north dakota", "rhode island", "south carolina", "south dakota", "west virginia", "district of columbia"]),
 );
-const isState = (s: string): boolean => /^\p{Lu}{2}$/u.test(s) || US_STATES.has(s.toLowerCase());
+/**
+ * C1: Canada's provinces and territories, so "48 Larchmere Avenue, Toronto, Ontario" splits as a US address does. Only
+ * the names: a two-letter code is already any two capitals.
+ */
+const PROVINCES = new Set(["alberta", "british columbia", "manitoba", "new brunswick", "newfoundland and labrador", "nova scotia", "ontario", "prince edward island", "quebec", "québec", "saskatchewan", "northwest territories", "nunavut", "yukon"]);
+const isState = (s: string): boolean => /^\p{Lu}{2}$/u.test(s) || US_STATES.has(s.toLowerCase()) || PROVINCES.has(s.toLowerCase());
 
 /**
  * The parts of a comma-separated US-style address, each a substring of `text` as written: "4410 Speedway Apt 2,
@@ -146,6 +153,38 @@ export function splitAddress(text: string): Partial<Record<AddressPart, string>>
   if (rest.length === 1 && /^\p{L}[\p{L} .'’-]*$/u.test(rest[0] as string) && (out.state !== undefined || out.zip !== undefined)) out.city = rest[0] as string;
   else if (rest.length > 1) return null;
   return out;
+}
+
+/**
+ * C1: the part of a date a field asks for, by its whole label's words: "month" or "year" as a word of the label, beside
+ * a word that says a date ("Graduation date month", "Start date year", "Year of graduation", "Graduation month"). A
+ * label with both, or with neither, asks for no part. Written for common form labels, not measured.
+ */
+export function datePart(label: string | null): DatePart | null {
+  if (label === null) return null;
+  const ws = new Set(words(label));
+  const month = ws.has("month");
+  const year = ws.has("year");
+  if (month === year) return null;
+  const dated = ["date", "graduation", "start", "end", "began", "started", "ended", "birth", "from", "to", "completion", "expected"].some((w) => ws.has(w));
+  return dated ? (month ? "month" : "year") : null;
+}
+
+const MONTH_NAME = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b/u;
+const YEAR = /(?<!\d)(1[89]\d{2}|2\d{3})(?!\d)/u;
+const DATE_SHAPE = /^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,? )?(?:[A-Z][a-z]+\.? \d{1,2}(?:st|nd|rd|th)?,? \d{4}|\d{1,2}(?:st|nd|rd|th)? (?:of )?[A-Z][a-z]+\.?,? \d{4}|[A-Z][a-z]+\.?,? \d{4}|\d{4}-\d{2}-\d{2})$/u;
+
+/**
+ * C1: a date's month, as its name is written, and its four-digit year, each a substring of `text`: "May 2021" gives
+ * "May" and "2021", "October 18, 2026" "October" and "2026", "2026-11-01" only "2026" (a month number is no option's
+ * name, and its order is the locale's). Null when the text is not one date with a year.
+ */
+export function splitDate(text: string): { month: string | null; year: string } | null {
+  const t = text.trim();
+  if (!DATE_SHAPE.test(t)) return null;
+  const year = YEAR.exec(t)?.[1];
+  if (year === undefined) return null;
+  return { month: MONTH_NAME.exec(t)?.[1] ?? null, year };
 }
 
 /** Whether a field asks for a country ("Country", "Country of residence"), not a country code. Written for common form labels, not measured. */
@@ -205,5 +244,9 @@ export function partFits(part: FillPart, value: string): boolean {
     case "street":
     case "city":
       return true;
+    case "month":
+      return MONTH_NAME.test(v) && v.split(" ").length === 1;
+    case "year":
+      return /^(?:1[89]|2\d)\d{2}$/u.test(v);
   }
 }

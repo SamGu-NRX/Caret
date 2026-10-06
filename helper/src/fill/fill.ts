@@ -18,7 +18,7 @@ import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_SAYS, fieldAsksFor, fieldAsksForNamePart, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
-import { asksCountry, fieldPart, joinName, namePart, partFits, splitAddress, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { asksCountry, datePart, fieldPart, joinName, namePart, partFits, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { clockTime, readClock, readDate, readDateTime } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -614,10 +614,14 @@ const PART_SAYS: Record<FillPart, string> = {
   state: "state",
   zip: "ZIP code",
   country: "country",
+  month: "month",
+  year: "year",
 };
 const ADDRESS_PARTS: ReadonlySet<FillPart> = new Set(["street", "unit", "city", "state", "zip"]);
 /** Parts a place written "City, State, Country" gives (derive.ts splitPlace). */
 const PLACE_PARTS: ReadonlySet<FillPart> = new Set(["city", "state", "country"]);
+/** C1: parts of a date, for a field or a menu that asks only for its month or year (derive.ts splitDate). */
+const DATE_PARTS: ReadonlySet<FillPart> = new Set(["month", "year"]);
 /** Label words that say only a field's kind, so they cannot tie one of a person's phones or emails to the field. */
 const KIND_ONLY_WORDS: ReadonlySet<string> = new Set(["phone", "telephone", "tel", "mobile", "cell", "number", "email", "mail", "address", "contact"]);
 /** Label words that say a value is a link, or nothing about what it is for. */
@@ -713,7 +717,8 @@ export async function proposeFill(
     const kinds = x.control === "date" ? new Set<ValueKind>(["date"]) : x.control === "time" ? new Set<ValueKind>(["time"]) : typed ? fieldKinds(labelWords) : new Set<ValueKind>();
     const terms = fieldTerms(labelWords);
     for (const k of kinds) terms.add(kindTerm(k));
-    const part = typed && derive ? (fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : null;
+    // C1: a field or a menu that asks for a date's month or year takes that part of a date (derive.ts datePart).
+    const part = !derive ? null : typed ? (datePart(name) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : x.control === "select" ? datePart(name) : null;
     // A country is no one's detail, so it asks no whose question. A dropdown that takes a person's details meets the owner
     // veto and the whose gate as a text field does (B27 review: "Your full name" took another person's name otherwise).
     // So does a list of options, read by its label alone: a "Your full name" pop-up menu listing two people was handed
@@ -722,7 +727,7 @@ export async function proposeFill(
     const personKinds = typed ? kinds : listed ? fieldKinds(labelWords) : new Set<ValueKind>();
     const personal =
       (typed || listed) &&
-      ((part !== null && part !== "country") || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
+      ((part !== null && part !== "country" && !DATE_PARTS.has(part)) || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
     // An Ask that names no memory, or names another person for a personal field, is not offered the user's own.
     const memoryOk = scope === undefined || (scope.memory && (scope.person === null || !personal));
     const about = x.control === "text" && memoryOk ? (opts.about ?? []).filter((a) => fieldAsksFor(a, name)) : [];
@@ -854,6 +859,13 @@ export async function proposeFill(
           const place = PLACE_PARTS.has(part) ? splitPlace(c.text) : null;
           const v = parts?.[part as "street" | "unit" | "city" | "state" | "zip"] ?? place?.[part as "city" | "state" | "country"] ?? undefined;
           if (v !== undefined && v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
+        }
+      } else if (DATE_PARTS.has(part)) {
+        for (const c of candidates) {
+          if (!candidateKinds(model, c).has("date")) continue;
+          const d = splitDate(c.text);
+          const v = d === null ? null : part === "month" ? d.month : d.year;
+          if (v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
         }
       }
       if (list.length > 0) derived.set(f.id, list);
