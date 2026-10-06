@@ -1092,11 +1092,18 @@ export async function proposeFill(
     const is = stageOne(ownerId(c.id), ownerId(secondId.get(c.id) ?? ""));
     return wants !== null && is !== null && wants !== "unclear" && is !== "unclear" && wants !== is;
   };
+  /**
+   * J1: a window candidate a text field or combobox would withhold as wrongKind if both asks picked it (controlValue's
+   * own check), which its question therefore leaves out. Half the field-candidate pairs of the corpus's fill requests
+   * were such misfits, and their ids were the largest part of a request once shared options went once (fill/jev.ts
+   * wireBody; evidence/screen/j1/probe/trim-sim.txt). An answer key's pick never misfits, so canned runs fill the same.
+   */
+  const unfit = (f: Field, c: Candidate): boolean => (f.control === "text" || f.control === "combobox") && (misfit(c.text, f.labelWords) !== null || (f.part !== null && !partFits(f.part, c.text)));
   const exclude = (first: boolean): Map<string, Set<string>> =>
-    new Map(asked.map((f) => [f.id, new Set(candidates.filter((c) => opposed(f, c)).map((c) => (first ? c.id : (secondId.get(c.id) ?? ""))))]));
+    new Map(asked.map((f) => [f.id, new Set(candidates.filter((c) => (staged && opposed(f, c)) || unfit(f, c)).map((c) => (first ? c.id : (secondId.get(c.id) ?? ""))))]));
   // Derived values of an excluded candidate go with it.
   if (staged) for (const f of asked) derived.set(f.id, (derived.get(f.id) ?? []).filter((d) => (d.base.from !== "window" || !opposed(f, d.base.c)) && (d.also === null || !opposed(f, d.also))));
-  const valuesMore = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({ ...more(dIds, first), stage: staged ? "values" : undefined, exclude: staged ? exclude(first) : new Map(), answers: askAnswers(first ? savedIds : savedSecond) });
+  const valuesMore = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({ ...more(dIds, first), stage: staged ? "values" : undefined, exclude: exclude(first), answers: askAnswers(first ? savedIds : savedSecond) });
   const [r1, r2] =
     asked.length === 0 && answerAsked.length === 0
       ? [null, null]
