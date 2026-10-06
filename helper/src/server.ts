@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, SAVED_ANSWERS_CAPABILITY, type AnswerSaveReply, type MemoryDocumentReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, SAVED_ANSWERS_CAPABILITY, type AnswerSaveReply, type MemoryDocumentReply } from "./protocol.ts";
 import { carriesAnswer, withoutAnswers } from "./offers/answer-gate.ts";
 import type { Helper } from "./helper.ts";
 import type { HostLocalModel } from "./writer/local-port.ts";
@@ -33,6 +33,8 @@ export class HelperServer {
   private readonly askChoices = new Set<Socket>();
   /** Host connections whose hello listed GOAL_PLANS_CAPABILITY: only they may plan and accept goals, and only they get goalProgress (D2-06). */
   private readonly goalPlans = new Set<Socket>();
+  /** P3: goal-planning hosts whose hello also listed GOAL_FILES_CAPABILITY: they show attach rows, send confirmedFile and fileSave, and get fileSaveOffer. */
+  private readonly goalFiles = new Set<Socket>();
   /** The most recent host whose hello listed LOCAL_MODEL_CAPABILITY: localTextRequest goes there, and only its replies count (L1). */
   private localModelHost: Socket | null = null;
   /** The local model's requests waiting on that host; null when the helper was started without one. */
@@ -107,7 +109,8 @@ export class HelperServer {
       for (const c of this.consumers) if (!this.savedAnswers.has(c)) c.write(stripped);
       return;
     }
-    for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : this.consumers) c.write(line);
+    // P3: an offer to keep a file names the file, and only a host that shows attach rows may answer it.
+    for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : m.type === "routeDecision" ? this.routing : m.type === "goalProgress" ? this.goalPlans : m.type === "fileSaveOffer" ? this.goalFiles : this.consumers) c.write(line);
   }
 
   async listen(): Promise<void> {
@@ -184,12 +187,14 @@ export class HelperServer {
             if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
             if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
+            const files = hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true && hello.data.capabilities.includes(GOAL_FILES_CAPABILITY);
+            if (files) this.goalFiles.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(LOCAL_MODEL_CAPABILITY) === true) this.localModelHost = s;
             if (hello.data.host === true && hello.data.capabilities?.includes(SAVED_ANSWERS_CAPABILITY) === true) {
               this.savedAnswers.add(s);
               this.helper().setAnswerHosts(this.savedAnswers.size);
             }
-            if (hello.data.host === true) this.helper().hostConnected(session, routing);
+            if (hello.data.host === true) this.helper().hostConnected(session, routing, files);
             else this.helper().consumerConnected(session);
           } else {
             // The proof goes first, before any command or grant this connection could carry.
@@ -245,6 +250,11 @@ export class HelperServer {
               this.reject(s, `${m.data.type} needs a host hello with "${GOAL_PLANS_CAPABILITY}" in its capabilities`);
               continue;
             }
+            // P3: a file comes only from a host that shows attach rows, where the user chose or saw it.
+            if (m.data.type === "goalAccept" && m.data.confirmedFile !== undefined && !this.goalFiles.has(s)) {
+              this.reject(s, `goalAccept.confirmedFile needs a host hello with "${GOAL_FILES_CAPABILITY}" in its capabilities`);
+              continue;
+            }
             if (m.data.type === "goalAccept") void this.helper().handleGoalAccept(m.data, from, (e) => void (!s.destroyed && s.write(JSON.stringify(e) + "\n")));
             else {
               const requestId = m.data.requestId;
@@ -279,6 +289,14 @@ export class HelperServer {
                 .then((r) => {
                   if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
                 });
+            }
+          }
+          // P3: the user's yes to keeping a file they attached, from a host that showed the offer.
+          else if (m.data.type === "fileSave") {
+            if (!this.goalFiles.has(s)) this.reject(s, `fileSave needs a host hello with "${GOAL_FILES_CAPABILITY}" in its capabilities`);
+            else {
+              const reply = this.helper().handleFileSave(m.data, from);
+              if (!s.destroyed) s.write(JSON.stringify(reply) + "\n");
             }
           }
           else if (m.data.type === "settings") this.helper().handleSettings(m.data, from);
@@ -379,6 +397,7 @@ export class HelperServer {
       this.fillAll.delete(s);
       this.askChoices.delete(s);
       this.goalPlans.delete(s);
+      this.goalFiles.delete(s);
       if (this.localModelHost === s) {
         this.localModelHost = null;
         this.localModel?.hostGone();

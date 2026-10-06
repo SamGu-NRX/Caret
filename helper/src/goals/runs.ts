@@ -26,7 +26,7 @@ import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
 import { isDerived, isFilled } from "./gates.ts";
 import { sourceHolds } from "../offers/fill-popup.ts";
 import { memoryValue, parseMemoryRef } from "../fill/fill.ts";
-import { pageInputKeys } from "./page-planner.ts";
+import { continuationScope, pageInputKeys } from "./page-planner.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { formControls } from "../fill/controls.ts";
 import { fieldName } from "../planner/planner.ts";
@@ -37,6 +37,13 @@ import { effectKey, type DonePress } from "./lower.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
 export const ACCEPT_MS = 120_000;
+
+/**
+ * How long a finished page goal whose scope was the whole form or a section waits for the user's own Next (P3, memo
+ * "Authority contract"): a new document in its tab within this long gets a fresh preview of that page under the same
+ * instruction and scope. Assumed, not measured: the memo's number, as long as a preview waits for its Tab.
+ */
+export const CARRY_MS = 120_000;
 
 export interface StepReceipt {
   goalId: string;
@@ -102,6 +109,30 @@ interface Run {
   cause: { reason: GoalStopReason; says: string } | null;
   /** When the executor first said it was acting on each step, by the step's index in the goal (P1: StepReceipt.ms). */
   acting: Map<number, number>;
+  /**
+   * P3: for the running segment, the position in its `steps` of each step the executor task runs, by the task's own
+   * step index. The task runs the segment's plan less the attach steps the acceptance gave no file.
+   */
+  stepMap: number[];
+  /** P3: the file the acceptance confirmed, for the attach step at this index in the goal. */
+  confirmed: { step: number; path: string } | null;
+}
+
+/**
+ * P3: a finished page goal waiting for the user's own Next (CARRY_MS). It keeps what the memo's carry keeps and nothing
+ * else: the instruction, the scope kind and section with its sources and person (no field of the old page and no value
+ * the instruction tied to one), the host session, what the goal and those before it did (receipts) and left (owed),
+ * with every key qualified by the old document so no field of the new page can match one. Never a value.
+ */
+interface Carry {
+  goalId: string;
+  instruction: string;
+  page: PageGoal;
+  document: string;
+  session: string | undefined;
+  completed: StepReceipt[];
+  owed: LeftItem[];
+  until: number;
 }
 
 export interface Replan {
@@ -113,7 +144,10 @@ export interface Replan {
   pressed: readonly DonePress[];
   /** Writes the stopped goal meant (dropped, or planned and never made): the fresh plan's preview names those it leaves. */
   owed: readonly LeftItem[];
-  why: GoalStopReason;
+  /** Why a fresh plan is asked for: the stop, or (P3) `nextPage` when the user's own Next carried the goal to a new document. */
+  why: GoalStopReason | "nextPage";
+  /** P3: the host session the goal was offered to: what its previews may show (an attach row needs GOAL_FILES_CAPABILITY). */
+  session: string | undefined;
   /**
    * P2: a page goal's continuation context (GoalPlan.page), so the replanner plans the page again (page-planner.ts)
    * rather than asking a writer; `revealed` names the controls a finished page goal's writes showed, which are then the
@@ -146,6 +180,15 @@ export interface GoalRunDeps {
    * page goal's value from memory must still be that entry's under the same label before it runs, as a Fill all's is.
    */
   aboutNow?: (id: string) => { value: string; label: string } | null;
+  /**
+   * P3: binds the file the user confirmed in a preview to one attach step's field for one task (engines/attach.ts
+   * ConfirmedFiles.confirm), reading it once now. Without it no acceptance may name a file.
+   */
+  confirmFile?: (taskId: string, path: string, windowId: string, key: string) => { ok: true } | { refused: string };
+  /** P3: drops a task's confirmation (a precheck that failed after it was made). */
+  forgetFile?: (taskId: string) => void;
+  /** P3: an attach step verified with the file the user confirmed: the helper may offer to keep it for this question. */
+  onAttached?: (a: { goalId: string; session: string | undefined; path: string; windowId: string; key: string; label: string }) => void;
 }
 
 const SAYS: Record<GoalStopReason, string> = {
@@ -176,6 +219,10 @@ export class GoalRuns {
   /** Every task id a goal ever ran: none of them is resumed or run by any other path (owns). */
   private readonly ever = new Set<string>();
   private replans = 0;
+  /** P3: finished page goals waiting for the user's Next, by page window id (one per window: the latest finished). */
+  private readonly carries = new Map<string, Carry>();
+  /** P3: the document of each page window a carry is planning or planned for, so the ambient offer stays out of its way. */
+  private readonly carried = new Map<string, string>();
   /** Stops and fresh plans under way (each may wait on the writer): idle() waits for them. */
   private readonly pending = new Set<Promise<unknown>>();
   private readonly deps: GoalRunDeps;
@@ -218,9 +265,14 @@ export class GoalRuns {
     // A "fill" step (P2) skipped Jev because fill agreed on its very value for its very target: only lowering marks one.
     const unchecked = given.segments.flatMap((s) => s.steps).find((s) => (s.kind === "write" || s.kind === "calendar") && (s.gate === null || (s.gate === "derived" && !isDerived(s)) || (s.gate === "fill" && !isFilled(s))));
     if (unchecked !== undefined) throw new Error(`goal ${given.goalId}: step ${unchecked.ref} writes '${unchecked.target.label}' without passing the value gates`);
-    // Lowering makes no attach step until P3, which also confirms the file: none may be offered before then.
-    const attach = given.segments.flatMap((s) => s.steps).find((s) => s.kind === "attach");
-    if (attach !== undefined) throw new Error(`goal ${given.goalId}: step ${attach.ref} attaches a file, which no goal does yet`);
+    // P3: an attach step is a page plan's, into a page's file control, with the file its row offers, after every other
+    // step of its segment (runs drop the ones the acceptance gives no file, which must hold up nothing after them).
+    for (const seg of given.segments) {
+      const first = seg.steps.findIndex((s) => s.kind === "attach");
+      if (first < 0) continue;
+      const bad = seg.steps.find((s, i) => (s.kind === "attach") !== (i >= first) || (s.kind === "attach" && (s.file === undefined || s.target.control !== "file" || given.page === undefined || s.target.domain.kind !== "window" || !s.target.domain.page)));
+      if (bad !== undefined) throw new Error(`goal ${given.goalId}: step ${bad.ref} is not an attach a page plan may offer`);
+    }
     // The run owns its own frozen copy: what is shown is what runs, whatever the caller does with its object later.
     const plan = structuredClone(given);
     for (const seg of plan.segments) deepFreeze(seg);
@@ -241,6 +293,8 @@ export class GoalRuns {
       task: null,
       cause: null,
       acting: new Map(),
+      stepMap: [],
+      confirmed: null,
     };
     this.runs.set(plan.goalId, run);
     return this.segmentMessage(run, replaces === null ? undefined : "freshPlan");
@@ -270,13 +324,25 @@ export class GoalRuns {
       this.stop(run, "expired", null, `${SAYS.expired}; nothing was done for it`);
       return { refused: `segment ${m.segment + 1} of goal ${m.goalId} expired before it was accepted` };
     }
+    const taskId = `${run.plan.goalId}:s${seg.index}`;
+    // P3: the file the user confirmed in this preview, for one of its attach rows. Checked and read before the segment
+    // counts as accepted: a file Caret refuses (a link, not a regular file, too large) leaves the preview waiting, so the
+    // user can choose another. Attach rows given no file are dropped from the run below and left to the user.
+    const cf = m.confirmedFile;
+    const attachStep = cf === undefined ? undefined : seg.steps.find((s) => s.index === cf.step);
+    if (cf !== undefined) {
+      if (attachStep === undefined || attachStep.kind !== "attach" || attachStep.target.domain.kind !== "window") return { refused: `step ${cf.step + 1} of segment ${m.segment + 1} is not an attach step; nothing runs` };
+      if (this.deps.confirmFile === undefined) return { refused: "this helper attaches no files; nothing runs" };
+      const r = this.deps.confirmFile(taskId, cf.path, attachStep.target.domain.windowId, attachStep.target.key);
+      if ("refused" in r) return { refused: `Caret can't attach the file you chose (${r.refused}); nothing ran, so choose another and accept again` };
+    }
     run.accepted.add(m.segment);
     const why = this.precheck(run, seg);
     if (why !== null) {
+      this.deps.forgetFile?.(taskId);
       await this.stopAndReplan(run, why.reason, seg.steps[0]?.index ?? null, why.says);
       return { refused: why.says };
     }
-    const taskId = `${run.plan.goalId}:s${seg.index}`;
     const w = seg.domain.kind === "window" ? this.deps.model.windows.get(seg.domain.windowId) : undefined;
     const pid = w?.app.pid ?? null;
     const bundleId = w?.app.bundleId ?? null;
@@ -284,6 +350,12 @@ export class GoalRuns {
     run.task = { id: taskId, segment: seg.index, pid, bundleId, windows: new Set([...this.deps.model.windows.values()].filter(sameApp).map((x) => x.window.windowId)) };
     run.state = "running";
     run.cause = null;
+    // What runs: the previewed plan, less each attach row the acceptance gave no file (a subset of what the digest
+    // covers, never anything it does not).
+    const keep = seg.steps.map((s) => s.kind !== "attach" || s.index === attachStep?.index);
+    run.stepMap = seg.steps.flatMap((_, i) => (keep[i] === true ? [i] : []));
+    run.confirmed = cf === undefined || attachStep === undefined ? null : { step: attachStep.index, path: cf.path };
+    const plan = { ...seg.plan, steps: seg.plan.steps.filter((_, i) => keep[i] === true) };
     this.tasks.set(taskId, run.plan.goalId);
     this.ever.add(taskId);
     this.deps.bind(taskId, session);
@@ -291,7 +363,7 @@ export class GoalRuns {
     const expect: Record<string, Record<string, string>> = {};
     if (w !== undefined) expect[w.window.windowId] = Object.fromEntries(seg.steps.filter((s) => s.kind === "write").map((s) => [s.target.key, w.nodes.get(s.target.key)?.value ?? ""]));
     try {
-      return { result: await this.deps.executor.run(taskId, seg.plan, seg.slots, expect, { grant: true }) };
+      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true }) };
     } catch (e) {
       // The executor refused the plan before its first step (PlanError): nothing was dispatched.
       const says = `${SAYS.error}: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`;
@@ -407,23 +479,31 @@ export class GoalRuns {
     // A press is counted from the moment the executor says it is about to make it: a refused one is counted too, which
     // only makes a fresh plan stricter, and one whose answer was lost (it may have landed) is never missed.
     if (m.phase === "acting" && m.step !== null) {
-      const s = seg.steps[m.step];
+      const s = stepOf(run, seg, m.step);
       // The first "acting" of a step: a fallback means acts again and its time counts from the first try.
       if (s !== undefined && !run.acting.has(s.index)) run.acting.set(s.index, this.deps.now());
       if (s?.kind === "press" && seg.domain.kind === "window" && !run.pressed.some((p) => p.key === s.target.key && p.effect === s.effect)) run.pressed.push({ windowId: seg.domain.windowId, key: s.target.key, effect: s.effect });
     }
     if ((m.phase === "verified" || m.phase === "skipped") && m.step !== null) {
-      const s = seg.steps[m.step];
+      const s = stepOf(run, seg, m.step);
       if (s !== undefined) this.receipt(run, seg, s, m.phase === "verified" ? "verified" : "alreadyTrue");
+      if (s?.kind === "attach" && m.phase === "verified" && run.confirmed?.step === s.index && s.target.domain.kind === "window") {
+        this.deps.onAttached?.({ goalId: run.plan.goalId, session: run.session, path: run.confirmed.path, windowId: s.target.domain.windowId, key: s.target.key, label: s.target.label });
+      }
     }
     if (m.phase === "done") this.segmentDone(run, seg);
     else if (m.phase === "handoff") {
-      const s = m.step === null ? undefined : seg.steps[m.step];
+      const s = m.step === null ? undefined : stepOf(run, seg, m.step);
       // The planned hand-off was reached: the goal is ready for the user's press. Any other hand-off is a step Caret
       // could not do (a write the app did not take, focus that moved): the goal stops there and says so.
       if (s?.kind === "handoff") {
         this.receipt(run, seg, s, "handoff");
         this.finish(run, "handoff");
+      } else if (s?.kind === "attach") {
+        // P3: an attach the page engine refused (the confirmation expired, the file changed since): every write before
+        // it ran, and attach steps come last, so the segment ends here as one whose attach is the user's.
+        this.receipt(run, seg, s, "handoff");
+        this.segmentDone(run, seg);
       } else {
         run.cause = { reason: "handedOff", says: m.detail ?? "Caret could not do a step and left it to you" };
         this.track(this.segmentStopped(run, seg, { step: m.step, stopReason: "error", detail: m.detail }));
@@ -553,6 +633,64 @@ export class GoalRuns {
           ? [`Ready: ${tally} done.`, ...left.map((l) => `You add the recipient in '${l.label}'.`), ...(handoff === undefined ? [] : [`${handoff.says}.`])].join(" ")
           : `Done: ${verified} step${verified === 1 ? "" : "s"} verified${skipped > 0 ? `, ${skipped} already so` : ""}.`;
     this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "finished", outcome, verified, skipped, left: left.slice(0, 24).map((l) => clip(l.says, 300)), says: clip(says, 600) });
+    this.keepCarry(run, left);
+  }
+
+  /**
+   * P3: a finished page goal over the whole form or a section waits CARRY_MS for the user's own Next (memo "Authority
+   * contract"). A list of fields does not carry: the user named fields of a page that will be gone. Nothing is carried
+   * that could stand for a value: the scope keeps its sources and person only (continuationScope, as a reveal's), and
+   * receipts and what was left keep their keys qualified by this document.
+   */
+  private keepCarry(run: Run, left: readonly LeftItem[]): void {
+    const page = run.plan.page;
+    if (page === undefined || page.kind === "list") return;
+    const doc = run.plan.inventory.documents.get(page.windowId);
+    if (doc === undefined) return;
+    const qualify = (windowId: string | null, key: string): string => (windowId === page.windowId && !key.startsWith("doc(") ? `doc(${doc}):${key}` : key);
+    const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")].map((r) => ({ ...r, target: { ...r.target, key: qualify(r.target.windowId, r.target.key) } }));
+    const owed = left.map((l): LeftItem => ({ ...l, key: qualify(l.windowId, l.key), why: "dropped", says: l.key.startsWith("doc(") ? l.says : `On an earlier page, ${l.says.charAt(0).toLowerCase()}${l.says.slice(1)}` }));
+    this.carries.set(page.windowId, { goalId: run.plan.goalId, instruction: run.plan.instruction, page: { ...page, scope: continuationScope(page, true), keys: [] }, document: doc, session: run.session, completed, owed, until: this.deps.now() + CARRY_MS });
+  }
+
+  /**
+   * P3: whether a carried goal is planning (or has planned) the page `windowId` shows as `document`, or still waits for
+   * that window's next page: the ambient offer on load (helper.ts) leaves such a page to it.
+   */
+  carrying(windowId: string, document: string | null): boolean {
+    const c = this.carries.get(windowId);
+    if (c !== undefined && c.until >= this.deps.now()) return true;
+    return document !== null && this.carried.get(windowId) === document;
+  }
+
+  /**
+   * P3: the page a carry waits on showed a new document: a fresh plan of it under the goal's instruction and scope,
+   * with segment reason nextPage. Every value is chosen again from the sources as they read now and goes through every
+   * gate again (helper.ts replanPage, page-planner.ts); the preview needs its own acceptance. A preview of the old
+   * document still waiting for its Tab stops: it could only be refused now.
+   */
+  private carryOn(c: Carry, windowId: string, document: string): void {
+    this.carries.delete(windowId);
+    this.carried.set(windowId, document);
+    if (this.carried.size > 64) this.carried.delete(this.carried.keys().next().value as string);
+    for (const run of this.runs.values()) {
+      if (run.state === "awaiting" && run.plan.page?.windowId === windowId && run.plan.inventory.documents.get(windowId) !== document) this.stop(run, "reload", null, `'${run.plan.segments[0]?.domain.kind === "window" ? run.plan.segments[0].domain.title : "the page"}' went to another page before you accepted`);
+    }
+    const replan = this.deps.replan;
+    if (replan === undefined) return;
+    this.track(
+      (async () => {
+        let plan: GoalPlan | null;
+        try {
+          plan = await replan({ goalId: `${c.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: c.instruction, completed: c.completed, pressed: [], owed: c.owed, why: "nextPage", session: c.session, page: c.page });
+        } catch {
+          plan = null;
+        }
+        if (plan === null || this.runs.has(plan.goalId)) return;
+        const msg = this.propose(plan, c.session, null, { goalId: c.goalId, carried: c.completed, pressed: [], owed: c.owed });
+        this.deps.publish(msg.event === "segment" ? { ...msg, reason: "nextPage" } : msg);
+      })(),
+    );
   }
 
   /**
@@ -598,14 +736,14 @@ export class GoalRuns {
     }
     for (const x of steps) {
       if (x.kind === "handoff" || run.cursor.receipts.some((r) => r.step === x.index && r.status !== "handoff")) continue;
-      add({ windowId: whereOf(x), key: effectKey(x.target, x.value), label: x.target.label, why: "planned", says: `Caret didn't confirm '${x.target.label}'` });
+      add({ windowId: whereOf(x), key: effectKey(x.target, x.value), label: x.target.label, why: "planned", says: x.kind === "attach" ? `Attaching a file to '${x.target.label}' is yours` : `Caret didn't confirm '${x.target.label}'` });
     }
     return out;
   }
 
   private async segmentStopped(run: Run, seg: GoalSegment, m: Pick<Extract<TaskProgress, { phase: "stopped" }>, "step" | "stopReason" | "detail">): Promise<void> {
     const why = run.cause ?? this.classify(run, seg, m.stopReason, m.detail ?? "");
-    const at = m.step === null ? null : (seg.steps[m.step]?.index ?? null);
+    const at = m.step === null ? null : (stepOf(run, seg, m.step)?.index ?? null);
     this.endTask(run);
     await this.stopAndReplan(run, why.reason, at, why.says);
   }
@@ -669,7 +807,7 @@ export class GoalRuns {
     let plan: GoalPlan | null;
     try {
       const page = run.plan.page === undefined ? undefined : { ...run.plan.page, ...(revealed === undefined ? {} : { revealed }) };
-      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why, ...(page === undefined ? {} : { page }) });
+      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why, session: run.session, ...(page === undefined ? {} : { page }) });
     } catch {
       plan = null;
     }
@@ -690,12 +828,12 @@ export class GoalRuns {
       event: "segment",
       segment: seg.index,
       segments: run.plan.segments.length,
-      reason: reason ?? wireReason(seg.reason),
+      reason: reason ?? seg.reason,
       replaces: run.cursor.segment === 0 ? run.replaces : null,
       digest: seg.digest,
       expires: run.expires,
       where: d.kind === "window" ? { kind: "window", app: d.appName, title: d.title } : { kind: "calendar", calendar: d.calendar },
-      steps: seg.steps.map((s) => ({ index: s.index, kind: viewKind(s), says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }) })),
+      steps: seg.steps.map((s) => ({ index: s.index, kind: s.kind, says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }), ...(s.kind === "attach" && s.file !== undefined ? { file: s.file } : {}) })),
       warnings: run.cursor.segment === 0 ? run.plan.warnings : [],
     };
   }
@@ -725,6 +863,15 @@ export class GoalRuns {
    * already queued in the reader is refused there; blocked() catches the same right before the next act.
    */
   onChanges(_changes: readonly Change[]): void {
+    const now = this.deps.now();
+    for (const [windowId, c] of [...this.carries]) {
+      if (c.until < now || !this.deps.model.windows.has(windowId)) {
+        this.carries.delete(windowId);
+        continue;
+      }
+      const doc = this.deps.pageDocument?.(windowId) ?? null;
+      if (doc !== null && doc !== c.document) this.carryOn(c, windowId, doc);
+    }
     for (const run of this.runs.values()) {
       if (run.state !== "running" || run.task === null) continue;
       const why = this.screenMoved(run);
@@ -773,16 +920,20 @@ export class GoalRuns {
   /** Previews not accepted in time stop. Called on the helper's tick. */
   tick(now: number): void {
     for (const run of this.runs.values()) if (run.state === "awaiting" && now > run.expires) this.stop(run, "expired", null, `${SAYS.expired}; nothing more was done`);
+    for (const [windowId, c] of [...this.carries]) if (c.until < now) this.carries.delete(windowId);
   }
 
   /** The host session a goal was offered to left: its previews end. A running segment is revoked by the helper's own binding. */
   hostGone(session: string): void {
     for (const run of this.runs.values()) if (run.session === session && run.state === "awaiting") this.stop(run, "hostGone", null, SAYS.hostGone);
+    for (const [windowId, c] of [...this.carries]) if (c.session === session) this.carries.delete(windowId);
   }
 
   /** A new reader numbers windows from scratch: no preview of the old session can run. */
   readerRestarted(): void {
     for (const run of this.runs.values()) if (run.state === "awaiting") this.stop(run, "readerRestarted", null, `${SAYS.readerRestarted}, so the plan's windows no longer apply`);
+    this.carries.clear();
+    this.carried.clear();
   }
 }
 
@@ -810,16 +961,10 @@ function sameField(w: WindowState, s: GoalStep): boolean {
   return c !== undefined && (c.label ?? "") === s.target.label;
 }
 
-/** A step's kind as goalProgress shows it. propose() refuses an attach step until P3 adds it to the protocol. */
-function viewKind(s: GoalStep): "write" | "calendar" | "press" | "handoff" {
-  if (s.kind === "attach") throw new Error(`step ${s.ref} attaches a file, which goalProgress cannot show yet`);
-  return s.kind;
-}
-
-/** A segment's reason as goalProgress says it: nextPage is P3's, which adds it to the protocol, and nothing makes it yet. */
-function wireReason(r: GoalSegment["reason"]): "start" | "crossWindow" | "afterReveal" {
-  if (r === "nextPage") throw new Error("a nextPage segment cannot be shown before P3");
-  return r;
+/** The segment step the running task's step `i` is (P3: the task may run fewer steps than the segment lists). */
+function stepOf(run: Run, seg: GoalSegment, i: number): GoalStep | undefined {
+  const at = run.task !== null && run.task.segment === seg.index ? run.stepMap[i] : i;
+  return at === undefined ? undefined : seg.steps[at];
 }
 
 /**

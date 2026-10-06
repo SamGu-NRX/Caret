@@ -17,7 +17,7 @@ import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type ActionType, type App
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
-import type { ConfirmedFiles } from "../engines/attach.ts";
+import { ConfirmedFiles } from "../engines/attach.ts";
 import { classifyPress, type RiskClass } from "./risk.ts";
 import type { JournalPort, JournalRecord, LedgerEntry, PendingAct } from "./journal.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
@@ -995,9 +995,11 @@ export class Executor {
     if (files === undefined || link.attachFile === undefined || !w.window.windowId.startsWith("page:")) {
       throw StepStop.handoff(`Caret attaches files only on a page Caret for Chrome reads, so attaching ${end.wants} to ${what} is yours`);
     }
-    // The name, before the engine reads the confirmation (a read uses it up).
-    const name = files.confirmed(task.id)?.name;
-    if (name === undefined) throw StepStop.handoff(`no file was confirmed for this run, so attaching ${end.wants} to ${what} is yours`);
+    // The name and size, before the engine reads the confirmation (a read uses it up). P3: only a file confirmed for this
+    // very field; one confirmed for another field of the run is never spent here.
+    const confirmed = files.confirmed(task.id, ConfirmedFiles.target(w.window.windowId, node.key));
+    if (confirmed === null) throw StepStop.handoff(`no file was confirmed for ${what} in this run, so attaching ${end.wants} to it is yours`);
+    const name = confirmed.name;
     this.checkSession(task);
     this.checkInterrupt(task);
     this.authorizeAct(task, w.window.windowId);
@@ -1008,7 +1010,8 @@ export class Executor {
     if (r.verb.outcome !== "ok") throw StepStop.stop("reader", `the page did not take the file: ${r.verb.outcome}${r.verb.detail === null ? "" : ` (${r.verb.detail})`}`);
     // Verified by the page: a file input's own file list names the file; a drop shows its name on the page.
     const attached = r.page?.attached;
-    const landed = attached !== undefined && (attached.via === "input" ? attached.file?.name === name : attached.shown);
+    // P3: by name and size for an input (the content script checks both too), by the rendered name for a drop.
+    const landed = attached !== undefined && (attached.via === "input" ? attached.file?.name === name && attached.file.size === confirmed.size : attached.shown);
     if (!landed) {
       throw StepStop.stop("mismatch", "mismatch: the page does not show the attached file");
     }

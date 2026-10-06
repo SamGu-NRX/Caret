@@ -22,6 +22,8 @@ import {
   type ActivityReply,
   type ActivityRequest,
   type FillAll,
+  type FileSave,
+  type FileSaveReply,
   type GoalAccept,
   type HelperError,
   type GoalProgress,
@@ -88,11 +90,13 @@ import { offerField } from "./offers/field.ts";
 import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
 import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planWithCode } from "./planner/codeplan.ts";
-import { GoalRuns } from "./goals/runs.ts";
+import { ConfirmedFiles } from "./engines/attach.ts";
+import { SavedFiles, type AttachedFile } from "./goals/saved-files.ts";
+import { GoalRuns, type Replan } from "./goals/runs.ts";
 import { planGoal } from "./goals/propose.ts";
 import { continuationScope, planPage } from "./goals/page-planner.ts";
 import { GoalError, type DonePress } from "./goals/lower.ts";
-import type { GoalPlan, LeftItem, PageGoal } from "./goals/plan.ts";
+import type { AttachOffer, GoalPlan, LeftItem, PageGoal } from "./goals/plan.ts";
 import type { FillScope } from "./fill/fill.ts";
 import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
@@ -199,6 +203,11 @@ export interface HelperOptions {
    * overtook stops as a reload. main.ts reads it from the page engines; absent, a reload stops a goal as a changed field.
    */
   pageDocument?: (windowId: string) => string | null;
+  /**
+   * P3: in-process callers (no host session: tests, evaluations) play a host that shows attach rows
+   * (GOAL_FILES_CAPABILITY). A host on the socket says so in its hello instead.
+   */
+  goalFiles?: boolean;
   /**
    * S1: a page window's address (origin and path of its top frame) and its h1 and h2 headings, from the page engines.
    * Saved answers record the address, and the organization guard reads both. Absent: neither is known.
@@ -346,6 +355,12 @@ export class Helper {
   /** Bumped on each reader hello; a fill whose Jev answer arrives in a later session is dropped. */
   private readerSession = 0;
   readonly executor: Executor;
+  /** The file each run may attach, as the user confirmed it in the slip (H5, lead decision 7). */
+  readonly files: ConfirmedFiles;
+  /** P3: host sessions that declared GOAL_FILES_CAPABILITY: only their page goals get attach rows (filesFor). */
+  private readonly goalFileHosts = new Set<string>();
+  /** P3: saved files, offered in attach rows and kept on the user's yes (goals/saved-files.ts). */
+  private readonly savedFiles: SavedFiles;
   readonly memory: MemoryStore;
   /** Runs saved before each act; what a crash left in it is recovered at start (recoverInterrupted). */
   readonly journal: RecoveryJournal;
@@ -491,6 +506,7 @@ export class Helper {
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
     this.socketLink = opts.readerLink === undefined ? new SocketReaderLink(opts.sendToReader ?? (() => false)) : null;
     this.tasks = new TaskRegistry((m) => this.publish(m), this.now);
+    this.files = new ConfirmedFiles(() => this.now());
     this.executor = new Executor({
       model: this.model,
       reader: opts.readerLink ?? (this.socketLink as SocketReaderLink),
@@ -508,6 +524,8 @@ export class Helper {
       // still give exactly that part, by the same split, not any substring.
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       authorize: (a) => this.authorize(a),
+      // The one file each run may attach: confirmed by the user in the slip (fileConfirm), read once (H5).
+      files: this.files,
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
       // The in-progress skill marker rides on each saved run: the skill it counts for, if any.
       journal: {
@@ -541,6 +559,17 @@ export class Helper {
     if (this.memory.migration.outcome === "migrated" || this.memory.migration.outcome === "resumed") opts.store.count("memory.migrated", this.memory.migration.moved);
     // An edit in an editor or the memory window withdraws the offers that used it and revokes tasks that copy it.
     this.memory.onOutsideChange = (changes) => this.memoryChangedOutside(changes);
+    this.savedFiles = new SavedFiles({
+      model: this.model,
+      documents: () => this.memory.files,
+      askJev: () => this.ask,
+      publish: (m) => this.publish(m),
+      pageContext: (id) => this.opts.pageContext?.(id) ?? null,
+      hostShowsFiles: (session) => this.filesFor(session),
+      now: () => this.now(),
+      newId: () => this.opts.newId?.() ?? randomUUID(),
+      count: (metric) => this.opts.store.count(metric, 1),
+    });
     this.goals = new GoalRuns({
       executor: this.executor,
       model: this.model,
@@ -552,7 +581,11 @@ export class Helper {
       bind: (taskId, session) => this.bindNew(taskId, session),
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
-      replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed) : this.replanPage(r.goalId, r.instruction, r.page, r.owed)),
+      replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed) : this.replanPage(r.goalId, r.instruction, r.page, r.owed, r)),
+      // P3: the file the user confirmed in a preview, read once and bound to that attach step's field for that task.
+      confirmFile: (taskId, path, windowId, key) => this.files.confirm(taskId, path, ConfirmedFiles.target(windowId, key)),
+      forgetFile: (taskId) => this.files.forget(taskId),
+      onAttached: (a) => this.offerFileSave(a),
       aboutNow: (id) => this.aboutNow(id),
       // P2: a page goal's one read of its page before it ends (engines/page-link.ts no longer walks after each write).
       walk: async (windowId) => {
@@ -971,9 +1004,10 @@ export class Helper {
    * A host session connected: a consumer on the socket (HelperServer), or an in-process caller that plays
    * the host, such as an evaluation that answers offers itself. Runs with no Tab start only while one is.
    */
-  hostConnected(session: string, routing = false): void {
+  hostConnected(session: string, routing = false, goalFiles = false): void {
     this.sessions.add(session);
     this.hosts.add(session);
+    if (goalFiles) this.goalFileHosts.add(session);
     if (routing) {
       this.routingHosts.add(session);
       // Write is legal from now: the moment is decided again with it.
@@ -1015,6 +1049,7 @@ export class Helper {
    */
   hostDisconnected(session: string): void {
     this.hosts.delete(session);
+    this.goalFileHosts.delete(session);
     if (this.routingHosts.delete(session)) {
       // What that host said about the field (selection, composing) no longer holds, and write is not legal without it.
       this.routing?.hostEditing(null);
@@ -1121,7 +1156,7 @@ export class Helper {
     if (!this.readerConnected) return refuse("No screen reader is connected");
     const session0 = this.readerSession;
     try {
-      const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page) : await this.goalPlan(goalId, instruction, [], first);
+      const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page, { session }) : await this.goalPlan(goalId, instruction, [], first);
       if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
       this.opts.store.count("goal.proposed", 1);
       return this.goals.propose(plan, session, requestId);
@@ -1202,7 +1237,7 @@ export class Helper {
    * A page goal (P2): the page planner over the Ask's scope on that page, fill's picks gated by fill. Throws GoalError
    * when nothing can be offered; with no Jev, no page engine document, or no page, it refuses.
    */
-  private pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[] } = {}): Promise<GoalPlan> {
+  private pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string> } = {}): Promise<GoalPlan> {
     const ask = this.ask;
     const pageDocument = this.opts.pageDocument;
     if (ask === null) throw new GoalError("unchecked", "Jev is off, so Caret can't choose this page's values");
@@ -1223,17 +1258,43 @@ export class Helper {
       ...(more.owed === undefined ? {} : { carried: { owed: more.owed } }),
       ...(more.revealed === undefined ? {} : { revealed: more.revealed }),
       ...(this.opts.newId === undefined ? {} : { fill: { newId: this.opts.newId } }),
+      // P3: attach rows only for a host that shows them; each offers a saved file a Jev choice matched, or a chooser.
+      ...(this.filesFor(more.session) ? { attachOffer: (w: WindowState, n: Node, label: string) => this.attachOffer(w, n, label), attached: more.attached ?? new Set<string>() } : {}),
     });
+  }
+
+  /** P3: what a file control's attach row offers (goals/saved-files.ts). */
+  private attachOffer(w: WindowState, n: Node, label: string): Promise<AttachOffer> {
+    return this.savedFiles.offer(w, n, label);
+  }
+
+  /** P3: an attach of a file the user confirmed verified: the saved-file offers may ask to keep it. */
+  private offerFileSave(a: AttachedFile): void {
+    if (this.mode === "live") this.savedFiles.attached(a);
+  }
+
+  /** P3: the user's yes to keeping a file (fileSave), from a host that declared GOAL_FILES_CAPABILITY. */
+  handleFileSave(m: FileSave, session?: string): FileSaveReply {
+    this.opts.store.count("file.save", 1);
+    return this.savedFiles.save(m, session);
+  }
+
+  /** P3: whether a goal offered to `session` may show attach rows: its host declared GOAL_FILES_CAPABILITY, or (in process) the options say so. */
+  private filesFor(session: string | undefined): boolean {
+    return session === undefined ? this.opts.goalFiles === true : this.goalFileHosts.has(session);
   }
 
   /**
    * A fresh plan for a page goal (P2): after a stop, the same scope on the page as it is now; after its writes revealed
    * controls (runs.ts afterReveal), those controls alone, under the scope's sources and person. Null when none.
    */
-  private async replanPage(goalId: string, instruction: string, page: PageGoal & { revealed?: readonly string[] }, owed: readonly LeftItem[]): Promise<GoalPlan | null> {
+  private async replanPage(goalId: string, instruction: string, page: PageGoal & { revealed?: readonly string[] }, owed: readonly LeftItem[], r: Pick<Replan, "completed" | "session" | "why">): Promise<GoalPlan | null> {
     if (this.mode !== "live" || this.gate.settings.paused) return null;
+    // P3: a file control this goal (or one it replaces) already attached to, on this document, gets no second file. A
+    // carried goal's receipts name the old document's keys (runs.ts keepCarry), so none of them match the new page.
+    const attached = new Set(r.completed.filter((x) => x.target.windowId === page.windowId).map((x) => x.target.key));
     try {
-      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
+      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, session: r.session, attached, ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
     } catch (e) {
       if (!(e instanceof GoalError)) throw e;
       this.opts.warn?.(`goal ${goalId}: no fresh page plan: ${e.message}`);
@@ -1952,6 +2013,8 @@ export class Helper {
       this.taskHosts.delete(e.taskId);
       this.answerWrites.delete(e.taskId);
       this.taskDeps.delete(e.taskId);
+      // A file confirmed for a run is that run's only: one that ended before reaching its attach step leaves none behind.
+      this.files.forget(e.taskId);
     }
     const cause: TaskCause | null = e.cause ?? (state === "running" ? null : state === "undone" ? "you" : "caret");
     const fields = {

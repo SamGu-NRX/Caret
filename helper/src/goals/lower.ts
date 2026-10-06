@@ -30,7 +30,7 @@ import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
 import { saysPress } from "../planner/says.ts";
-import { executable, goalDigest, segmentDigest, type GoalDomain, type GoalInventory, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type SegmentReason, type TargetBinding, type ValueBinding } from "./plan.ts";
+import { executable, goalDigest, segmentDigest, type AttachOffer, type GoalDomain, type GoalInventory, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type SegmentReason, type TargetBinding, type ValueBinding } from "./plan.ts";
 
 /** Segments one goal may have. Assumed: the scenes need two or three; more is more acceptances than a user follows. */
 export const MAX_SEGMENTS = 4;
@@ -155,6 +155,8 @@ function lowerFill(t: TargetBinding, v: ValueBinding, gated: boolean): Pick<Goal
       return { kind: "handoff", says: `Caret leaves ticking ${named(t)} to you`, writes: null, handoff: "unverifiable" };
     case "button":
       throw new GoalError("schema", `${named(t)} is a button, not a field`, t.ref);
+    case "file":
+      throw new GoalError("schema", `${named(t)} takes a file, which only an attach step puts there`, t.ref);
   }
 }
 
@@ -191,6 +193,11 @@ export interface LowerOptions {
    * recipient or subject field is dropped for such a value rather than refusing the plan (fill reads no message).
    */
   gated?: ReadonlyMap<string, ValueBinding>;
+  /**
+   * P3: a page plan's file controls, each with the file its row offers (page-planner.ts). Each becomes an attach step
+   * after every other step, so an attach the user leaves without a file (runs.ts drops it from the run) holds up nothing.
+   */
+  attach?: readonly { target: TargetBinding; file: AttachOffer }[];
 }
 
 /** Segment warnings a goalProgress carries at most (protocol GoalProgress.warnings). */
@@ -397,6 +404,14 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     const writes = steps.some((x) => (x.kind === "write" || x.kind === "calendar") && whereOf(x.target) === c.windowId && effectKey(x.target, x.value) === c.key);
     if (!writes && !left.some((l) => l.windowId === c.windowId && l.key === c.key)) left.push(c);
   }
+  // P3: the file controls, last. Only a page's file control takes one, and only through the page engine.
+  for (const [i, a] of (o.attach ?? []).entries()) {
+    const t = a.target;
+    if (t.control !== "file" || t.domain.kind !== "window" || !t.domain.page) throw new GoalError("schema", `${named(t)} is not a page's file control`, t.ref);
+    if (steps.some((x) => x.kind === "attach" && x.target.key === t.key)) throw new GoalError("schema", `the plan attaches to ${named(t)} twice`, t.ref);
+    const what = t.label === "" ? "File" : t.label;
+    steps.push({ ref: `a${i + 1}`, index: steps.length, kind: "attach", says: a.file.source === "saved" ? `${what}: ${a.file.name}` : `${what}: choose a file`, target: t, value: null, writes: null, effect: null, handoff: null, to: false, gate: null, file: a.file });
+  }
   steps.forEach((x, i) => (x.index = i));
   // A goalProgress carries MAX_WARNINGS sentences (P2: a 40-field form can leave more): the rest are named in one.
   const said = left.map((l) => `${l.says}.`);
@@ -494,6 +509,8 @@ function executorPlan(id: string, s: { domain: GoalDomain; steps: readonly GoalS
       return { says, end: { kind: "valueEquals", window: sel, target, value }, ...(x.value?.memory == null ? {} : { memory: x.value.memory }) };
     }
     if (x.kind === "press") return { says, end: { kind: "fieldsRevealed", window: sel, target }, via: { kind: "press", target } };
+    // P3: the file the acceptance confirmed for this field, verified by the page's own file list or rendered name.
+    if (x.kind === "attach") return { says, end: { kind: "fileAttached", window: sel, target, wants: slot(`w${i}`, clip(x.target.label === "" ? "a file" : x.target.label, 80), `the file control ${i + 1}`) } };
     return { says, end: { kind: "handoff", window: sel, target, why: x.handoff ?? "unverifiable" } };
   });
   return {

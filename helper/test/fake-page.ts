@@ -82,7 +82,11 @@ export class FakePage {
   controls: PageControl[];
   /** The tab's title, and what a reload puts back (P2: other forms than the mixed one). */
   title: string;
-  private readonly make: () => PageControl[];
+  private make: () => PageControl[];
+  /** P3: the files each file control holds, by control id, as pageAttachFile put them there. */
+  readonly files = new Map<string, { name: string; size: number }>();
+  /** P3: the page's path, which goTo changes (the wizard's next page). */
+  path = "/mixed";
   navGen = 1;
   documentId = "D0";
   /** The navigation generation the task's grant pinned; an act in a later one is refused. */
@@ -103,7 +107,7 @@ export class FakePage {
   snapshot(id: string): PageSnapshot {
     return {
       type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: Date.now(), tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: this.title,
-      frames: [{ frameId: 0, parentFrameId: -1, documentId: this.documentId, origin: "http://127.0.0.1:4310", path: "/mixed", navGen: this.navGen, title: this.title, headings: [], iframes: [], excluded: {}, truncated: false, controls: structuredClone(this.controls) }],
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: this.documentId, origin: "http://127.0.0.1:4310", path: this.path, navGen: this.navGen, title: this.title, headings: [], iframes: [], excluded: {}, truncated: false, controls: structuredClone(this.controls) }],
       missing: [],
       focused: { frameId: 0, id: "e1", selection: [0, 0] },
     };
@@ -127,6 +131,15 @@ export class FakePage {
     this.navGen++;
     this.documentId = `D${this.navGen}`;
     this.controls = this.make();
+    this.files.clear();
+  }
+
+  /** P3: the user's own Next: a new document with another form (`make`), title and path; what reload() puts back from then on. */
+  goTo(make: () => PageControl[], title: string, path: string): void {
+    this.make = make;
+    this.title = title;
+    this.path = path;
+    this.reload();
   }
 
   get verbs(): PageVerb[] {
@@ -162,6 +175,13 @@ export class FakePage {
         if (before !== verb.expect) return this.reply(id, { outcome: "stale", detail: "the select shows another option than when it was walked" });
         x.options = x.options?.map((o) => ({ ...o, selected: o.value === verb.value }));
         return this.reply(id, { outcome: "ok", detail: null, readings: { before, afterInput: verb.value, afterBlur: verb.value, invalid: false, error: null } });
+      }
+      case "pageAttachFile": {
+        // As the content script: a file input takes the file and reports its own file list; a dropzone shows the name.
+        if (x.kind !== "file" && x.kind !== "button") return this.reply(id, { outcome: "unsupported", detail: "takes no file" });
+        this.files.set(x.id, { name: verb.file.name, size: verb.file.size });
+        const attached = x.kind === "file" ? { via: "input", file: { name: verb.file.name, size: verb.file.size }, shown: true } : { via: "drop", file: null, shown: true };
+        return this.reply(id, { outcome: "ok", detail: null, attached });
       }
       case "pageSetChecked": {
         if (x.checked === verb.checked) return this.reply(id, { outcome: "alreadyTrue", detail: null });

@@ -14,6 +14,7 @@ import { jevFailedError, jevFailureSays, SAYS } from "../src/planner/says.ts";
 import { PROTOCOL_VERSION, type HelperMessage } from "../src/protocol.ts";
 import { Store } from "../src/store.ts";
 import { field, snap } from "./builders.ts";
+import { closeRigs, rig } from "./page-rig.ts";
 
 const REQ = { state: "s", questions: { q: { type: "choice" as const, instructions: "i", criteria: { a: null, b: null } } }, snippets: [], charged: {} };
 
@@ -157,5 +158,18 @@ describe("a fill whose Jev request fails says how (lead addendum)", () => {
     expect(store.counts()[`jev.failed_${kind}`]).toBeGreaterThanOrEqual(1);
     helper.memory.close();
     store.close();
+  });
+});
+
+describe("a page goal whose fill round fails says how (lead addendum)", () => {
+  afterEach(closeRigs);
+
+  it.each<[unknown, string]>([
+    [new JevHttpError(402, '{"error_type":"billing_error"}'), SAYS.jevBilling],
+    [new JevNetworkError("down", null), SAYS.jevNetwork],
+  ])("%s", async (err, says) => {
+    const r = await rig({ jev: () => failing(err) });
+    const m = await r.ask("fill out this form from my note");
+    expect(m).toMatchObject({ event: "stopped", reason: "refused", says });
   });
 });

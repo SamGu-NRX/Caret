@@ -121,10 +121,13 @@ export class ConfirmedFiles {
     return { ok: true };
   }
 
-  /** The file confirmed for `taskId`, as the user saw it, without reading it; null when there is none. */
-  confirmed(taskId: string): { name: string; size: number } | null {
+  /**
+   * The file confirmed for `taskId`, as the user saw it, without reading it; null when there is none, or (P3) when
+   * `target` is given and the file was confirmed for another field, so an attach step never spends another's file.
+   */
+  confirmed(taskId: string, target?: string): { name: string; size: number } | null {
     const c = this.byTask.get(taskId);
-    return c === undefined ? null : { name: c.name, size: c.size };
+    return c === undefined || (target !== undefined && c.target !== target) ? null : { name: c.name, size: c.size };
   }
 
   /** Drops the task's confirmation: the run ended, or the user took it back. */
