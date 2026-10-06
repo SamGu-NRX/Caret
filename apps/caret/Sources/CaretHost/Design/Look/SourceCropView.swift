@@ -183,7 +183,8 @@ private struct SourceDrawing: View {
         .background {
             GeometryReader { g in
                 let frame = g.frame(in: .named(LookSpace.group))
-                let mid = lead.flatMap { layout.rects($0.range).first }.map { frame.minY + $0.midY } ?? (frame.minY + LookShape.cropWindow / 2)
+                // The span's line where the window shows it: its place in the drawing less the pan (prep-for-prod L1-S5).
+                let mid = lead.flatMap { layout.rects($0.range).first }.map { frame.minY + $0.midY - pan } ?? (frame.minY + LookShape.cropWindow / 2)
                 Color.clear.preference(key: LookGeometryKey.self, value: LookGeometry(spanY: mid))
             }
         }

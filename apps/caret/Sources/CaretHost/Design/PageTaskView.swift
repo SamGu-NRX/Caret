@@ -29,6 +29,9 @@ struct PageTaskView: View {
             .transition(motion.blurs ? .modifier(active: BlurFade(blur: 2, opacity: 0), identity: BlurFade(blur: 0, opacity: 1)) : .opacity)
             .frame(width: Self.width, alignment: .leading)
             .lookPanel()
+            .background {
+                GeometryReader { g in Color.clear.preference(key: LookGeometryKey.self, value: LookGeometry(panel: g.frame(in: .named(LookSpace.group)))) }
+            }
             .accessibilityElement(children: .contain)
             .accessibilityLabel([panel.lead, panel.title].compactMap { $0 }.joined(separator: " "))
     }
@@ -73,7 +76,7 @@ private struct PageTaskHead: View {
     var body: some View {
         HStack(alignment: .top, spacing: 7) {
             if let slot = LookFigure.slot(figure) {
-                LookFigure(option: figure, character: character, state: state, animated: animated)
+                LookFigure(option: figure, character: character, state: state)
                     .frame(width: slot, height: slot * 13 / 12)
                     .padding(.top, 2)
             }

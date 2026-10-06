@@ -38,7 +38,12 @@ final class PageTaskCoordinator {
         // L1: the crop follows the pointer and VoiceOver. The panel stays click-through; the mouse-moved monitors say where
         // the pointer is, and the rows' frames say which row is under it.
         model.onVoiceFocus = { [weak self] step, on in self?.voiceFocus(step: step, on: on) }
-        if drawsOnScreen { panel.onPointer = { [weak self] point in self?.pointer(at: point) } }
+        if drawsOnScreen {
+            panel.onPointer = { [weak self] point in self?.pointer(at: point) }
+            // H14's attach rows take clicks over the panel; the crop beside it and the gap between never do
+            // (prep-for-prod L1-B3).
+            panel.clickRects = { [weak self] in self?.model.geometry.panel.map { [$0] } ?? [] }
+        }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
@@ -247,7 +252,14 @@ final class PageTaskCoordinator {
         model.cause = PageTaskLook.Cause(motion)
         model.stagger = first && motion == .enter
         model.panel = content
-        model.crop = crop
+        // The crop arriving with the helper's first receipt, or leaving at the end, runs `appear` / `leave`; a key's
+        // change (the machine draws those inside a transaction with animations off) moves nothing (prep-for-prod L1-S2).
+        let look = PageTaskLook.motion(model.cause, reduceMotion: Motion.reduceMotion)
+        if motion != .none, (model.crop == nil) != (crop == nil) {
+            withAnimation(crop == nil ? CaretMotion.fade(100) : CaretMotion.out(look.appear)) { model.crop = crop }
+        } else {
+            model.crop = crop
+        }
     }
 
     // MARK: - The crop (L1)
@@ -278,13 +290,18 @@ final class PageTaskCoordinator {
         if let row {
             hideCrop?.cancel()
             hideCrop = nil
-            if row != pointerStep { pointerStep = row; refreshCrop() }
+            if row != pointerStep {
+                pointerStep = row
+                // The latest way in wins: the pointer on a row takes the crop from VoiceOver's.
+                voiceStep = nil
+                refreshCrop(.pointer)
+            }
         } else if pointerStep != nil, !overCrop, hideCrop == nil {
             let work = DispatchWorkItem { [weak self] in
                 MainActor.assumeIsolated {
                     self?.hideCrop = nil
                     self?.pointerStep = nil
-                    self?.refreshCrop()
+                    self?.refreshCrop(.pointer)
                 }
             }
             hideCrop = work
@@ -295,26 +312,32 @@ final class PageTaskCoordinator {
         }
     }
 
+    /// VoiceOver on a row shows its crop at once: moving through rows with VoiceOver's keys is a key's change (v41 5.4,
+    /// prep-for-prod L1-B2). Leaving the row keeps the crop, so VoiceOver can go on to read it; another row, the pointer
+    /// or the panel leaving replaces it.
     private func voiceFocus(step: Int, on: Bool) {
-        if on { voiceStep = step } else if voiceStep == step { voiceStep = nil }
-        refreshCrop()
+        guard on else { return }
+        voiceStep = step
+        refreshCrop(.key)
     }
 
     /// Shows, moves or hides the crop for a pointer or VoiceOver change: `appear` from the anchor corner (opacity only
     /// under Reduce Motion), `leave` 100 ms linear. The window grows at once so the crop has room; it shrinks once the
     /// crop has left.
-    private func refreshCrop() {
+    private func refreshCrop(_ cause: PageTaskLook.Cause) {
         guard let content = model.panel else { return }
         let next = cropStep(content)
         guard next != model.crop else { return }
         let was = model.crop
-        let look = PageTaskLook.motion(.pointer, reduceMotion: Motion.reduceMotion)
-        model.cause = .pointer
+        let look = PageTaskLook.motion(cause, reduceMotion: Motion.reduceMotion)
+        var t = Transaction()
+        t.disablesAnimations = cause == .key
+        withTransaction(t) { model.cause = cause }
         if next != nil {
-            withAnimation(was == nil ? CaretMotion.out(look.appear) : nil) { model.crop = next }
+            withTransaction(t) { withAnimation(was == nil ? CaretMotion.out(look.appear) : nil) { model.crop = next } }
             remeasure()
         } else {
-            withAnimation(CaretMotion.fade(100)) { model.crop = nil }
+            withTransaction(t) { withAnimation(cause == .key ? nil : CaretMotion.fade(100)) { model.crop = nil } }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.11) { [weak self] in
                 MainActor.assumeIsolated { if self?.model.crop == nil { self?.remeasure() } }
             }

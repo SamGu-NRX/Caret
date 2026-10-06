@@ -49,6 +49,8 @@ struct PageTaskGroupView: View {
         .overlayPreferenceValue(LookGeometryKey.self) { geometry in
             if side != .overlay, let key = content?.key, let row = geometry.rows[key], let crop = geometry.crop {
                 PageTaskThread(row: row, crop: crop, spanY: geometry.spanY, side: side, writing: Self.line(panel, key: key)?.state == .writing)
+                    // A new row, or the same row starting to write, is a new thread: its draw starts on that row's clock.
+                    .id("\(key)-\(Self.line(panel, key: key)?.state == .writing)")
             }
         }
     }

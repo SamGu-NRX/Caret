@@ -7,12 +7,13 @@ struct LookFigure: View {
     var option: PageTaskLook.Figure
     var character: FigureCharacter
     var state: FigureState
-    var animated: Bool
 
     var body: some View {
         switch option {
         case .today:
-            FigureView(character: character, state: state, facing: .right, size: PopupView.figureSize, animated: animated)
+            // Still: v41's vocabulary has no loop (DIRECTION 5.2: the 4 s breath sat in the slow-oscillation band), so the
+            // page panel draws today's character without its breath, blink or glow.
+            FigureView(character: character, state: state, facing: .right, size: PopupView.figureSize, animated: false)
         case .v4Caret:
             V4Caret(lightOut: state == .error || state == .still)
                 .frame(width: LookShape.figure, height: LookShape.figure * 13 / 12)

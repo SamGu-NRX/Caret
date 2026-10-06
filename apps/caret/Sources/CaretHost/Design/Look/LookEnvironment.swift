@@ -45,6 +45,8 @@ struct LookGeometry: Equatable {
     var rows: [Int: CGRect] = [:]
     var crop: CGRect?
     var spanY: CGFloat?
+    /// The panel itself, without the crop: where its attach rows may take clicks.
+    var panel: CGRect?
 }
 
 struct LookGeometryKey: PreferenceKey {
@@ -54,6 +56,7 @@ struct LookGeometryKey: PreferenceKey {
         value.rows.merge(next.rows) { $1 }
         value.crop = next.crop ?? value.crop
         value.spanY = next.spanY ?? value.spanY
+        value.panel = next.panel ?? value.panel
     }
 }
 

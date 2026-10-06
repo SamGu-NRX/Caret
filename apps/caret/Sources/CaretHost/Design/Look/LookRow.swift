@@ -55,8 +55,14 @@ struct LookRow: View {
         // A panel's first rows arrive 30 ms apart, capped at the sixth (v41 5.2 `stagger`); opacity only.
         .opacity(stagger && !arrived ? 0 : 1)
         .onAppear {
-            guard stagger, let step = motion.stagger else { return }
-            withAnimation(CaretMotion.out(160)?.delay(Double(min(index, PageTaskLook.staggerCap)) * step / 1000)) { arrived = true }
+            guard stagger else { return }
+            // Every row ends visible: staggered when the motion has a stagger, else together (Reduce Motion: one fade;
+            // a key: at once). Prep-for-prod L1-B1: under Reduce Motion the rows stayed transparent.
+            if let step = motion.stagger {
+                withAnimation(CaretMotion.out(160)?.delay(Double(min(index, PageTaskLook.staggerCap)) * step / 1000)) { arrived = true }
+            } else {
+                withAnimation(CaretMotion.fade(motion.appear)) { arrived = true }
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(line.spoken)

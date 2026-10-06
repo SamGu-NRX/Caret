@@ -138,6 +138,8 @@ final class HostedPanel {
     var onPointer: ((NSPoint) -> Void)? {
         didSet { trackPointer() }
     }
+    /// L1: where in the content (top-left, content points) a clickable panel takes clicks; nil takes them anywhere over it.
+    var clickRects: (() -> [CGRect])?
     /// The monitors are up only while the panel shows and takes clicks or follows the pointer (prep-for-prod H14-5).
     private var wantsPointer: Bool { (clickableContent || onPointer != nil) && panel.isVisible && !isExiting }
     /// Test hook (`pagetask clicks`): false takes every click over the whole window while the content is clickable,
@@ -301,7 +303,11 @@ final class HostedPanel {
     private func pointerMoved() {
         if let onPointer, panel.isVisible, !isExiting { onPointer(NSEvent.mouseLocation) }
         guard clickableContent else { return }
-        let over = panel.isVisible && !isExiting && (!gatesPointer || contentFrame(size: size).contains(NSEvent.mouseLocation))
+        let frame = contentFrame(size: size)
+        let mouse = NSEvent.mouseLocation
+        let local = CGPoint(x: mouse.x - frame.minX, y: frame.maxY - mouse.y)
+        let inside = frame.contains(mouse) && (clickRects.map { $0().contains { $0.contains(local) } } ?? true)
+        let over = panel.isVisible && !isExiting && (!gatesPointer || inside)
         if panel.ignoresMouseEvents == over { panel.ignoresMouseEvents = !over }
     }
 
