@@ -572,6 +572,8 @@ export interface FillScope {
   consented?: ReadonlySet<string>;
   /** People whose lines go first in the windows the instruction names: the name that named one, and its sender. */
   first?: readonly string[];
+  /** C1: the instruction asks for the whole form (planner/intent.ts scope "all"); see plainAsk in proposeFill. */
+  wholeForm?: boolean;
 }
 
 /** The inputs a scope names, in its order: text fields (filled or not, never one Caret never types) and empty controls. */
@@ -703,8 +705,15 @@ export async function proposeFill(
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
   const scope = opts.scope;
   const ledger = new SnippetLedger(model.windows.values(), scope?.consented === undefined ? {} : { consented: scope.consented });
+  // C1 (item 6): an Ask for the whole form that narrows nothing (every source, memory, no person, no value it spells out)
+  // asks each value as a Fill all does. Live on the same corpus and W4 pages and sources, Ask's wording that quotes the
+  // instruction (B25) agreed on the same values as Fill all's but under FILL_CUTOFF, which was calibrated on Fill all's
+  // wording: 40 such fields, 25 of them the answer key's value word for word, while Fill all wrote no wrong value there
+  // (P1 loop-live, P2 goal-live-3; evidence/screen/c1/ask-vs-fill). Every other Ask rule stands, the owner veto and the
+  // untied rule included.
+  const plainAsk = scope !== undefined && scope.wholeForm === true && scope.windows === null && scope.memory && scope.person === null && scope.literals.size === 0 && (scope.consented?.size ?? 0) === 0;
   // An Ask's instruction is in every question; it may quote a window, which pays for what it quotes.
-  if (scope !== undefined && !ledger.plan([scope.instruction])) throw new FillError("instructionTooLong", "the instruction quotes more of an open window than one question to Jev may carry");
+  if (scope !== undefined && !plainAsk && !ledger.plan([scope.instruction])) throw new FillError("instructionTooLong", "the instruction quotes more of an open window than one question to Jev may carry");
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   type Field = {
     id: string;
@@ -1035,7 +1044,7 @@ export async function proposeFill(
   const ownerCands = owners && personal.size > 0 ? candidates.filter(personalCand).slice(0, MAX_OWNERS) : [];
   const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
   const more = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({
-    ...(scope === undefined ? {} : { instruction: scope.instruction, person: scope.person }),
+    ...(scope === undefined || plainAsk ? {} : { instruction: scope.instruction, person: scope.person }),
     derived: askDerived(dIds),
     personal: whose ? personal : new Set(),
     owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeCandidate({ ...c, id: "" }) })),

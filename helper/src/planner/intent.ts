@@ -366,6 +366,8 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
     literals,
     consented: fixed.source === undefined ? new Set(named) : new Set(fixed.source.kind === "window" ? [fixed.source.windowId] : []),
     first: [...new Set(snap.named.flatMap((n) => n.names))],
+    // C1: a whole-form Ask that narrows nothing asks values as a Fill all does (fill.ts plainAsk).
+    wholeForm: intent.scope === "all",
   };
   // The fill engine's trigger: the focused field when it is in scope, else the first field in scope.
   const focused = snap.window.focusedKey;
