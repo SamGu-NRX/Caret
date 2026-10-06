@@ -218,6 +218,8 @@ public final class HostRuntime {
         surface.executor = executor
         coordinator.onFocus = { identity in surface.focusChanged(identity) }
         coordinator.wordsAllowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
+        // H13 review: a page's inline text takes no key while an input method composes (Pinyin's Tab is its own).
+        arbiter.composing = { InputMethodState.shared.composes }
         // Publishing happens on the main thread, so the displaced offer's owner hears at once.
         arbiter.onDisplaced = { offer in
             MainActor.assumeIsolated {

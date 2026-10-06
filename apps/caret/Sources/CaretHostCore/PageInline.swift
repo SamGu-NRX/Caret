@@ -57,7 +57,9 @@ public struct PageInsert: Codable, Equatable, Sendable {
 /// Helper to host: what became of a `PageInsert`. `says` is for the log and quotes nothing from the page.
 public struct PageInsertReply: Codable, Equatable, Sendable {
     public static let type = "pageInsertReply"
-    public enum Outcome: String, Codable, Sendable { case inserted, refused, failed }
+    /// protocol.ts PageInsertReply: `refused` before any write; `failed`, tried and the field reads as before;
+    /// `unverified`, the field changed but not exactly to the insert, or the page could not say (H13 review).
+    public enum Outcome: String, Codable, Sendable { case inserted, refused, failed, unverified }
     public var requestId: String
     public var outcome: Outcome
     public var says: String
@@ -114,9 +116,10 @@ public enum PageInline {
     }
 
     /// Whether inline text may show in page fields now: on (`CaretSettings.pageInlineText`), ghost text allowed (not
-    /// paused, the words role on), the engine ready and the browser allowed. Which fields: `takes`.
-    public static func allowed(_ settings: CaretSettings, wordsAllowed: Bool, engineReady: Bool, browserAllowed: Bool) -> Bool {
-        settings.pageInlineText && wordsAllowed && engineReady && browserAllowed
+    /// paused, the words role on), the engine ready, the browser allowed, and no input method that composes text
+    /// selected (H13 review: Pinyin's marked text and its Tab are the input method's). Which fields: `takes`.
+    public static func allowed(_ settings: CaretSettings, wordsAllowed: Bool, engineReady: Bool, browserAllowed: Bool, composing: Bool) -> Bool {
+        settings.pageInlineText && wordsAllowed && engineReady && browserAllowed && !composing
     }
 
     /// Whether a field of this kind gets inline text: a text input and a textarea do; a contenteditable only when
@@ -186,6 +189,12 @@ public enum PageInlineCopy {
     /// page Caret knows by name; the host has no other name for a page.
     public static func notTaken(_ page: PageField.OwnSuggestions?) -> LineContent {
         LineContent(figure: .error, text: "\(page.map(name) ?? "The page") didn't take it.", emphasis: .plain)
+    }
+
+    /// An insert after which the field changed, but not to Caret's text, or whose answer never came (H13 review): the
+    /// user's text may have changed too, and Caret undoes nothing it cannot see, so it asks the user to look.
+    public static func unverified(_ page: PageField.OwnSuggestions?) -> LineContent {
+        LineContent(figure: .error, text: "\(page.map(name) ?? "The page") changed the field another way. Check it.", emphasis: .plain)
     }
 
     /// A Google editor whose text is off: what happened on the line, the helper's sentence (what to turn on) under it,
@@ -288,12 +297,29 @@ public final class PageInlineMachine {
         var caret: CGRect
         var reflected: String
         var look: PageField.Look?
+        /// Where the field was and which page it is on, for a line about the insert if the field is gone by then.
+        var frame: CGRect
+        var page: PageField.OwnSuggestions?
     }
     private var shown: Shown?
+    /// A shown offer that was cleared (its field went) after Tab had already claimed it: its claim, still on its way to
+    /// `claimed`, finds it here and says why nothing went in (H13 review).
+    private var claimedAway: Shown?
     private var inserts = 0
     /// An insert on its way: until the page answers, a report of the field as it was before the insert offers nothing,
     /// so a stale offer is never drawn over text that is going in (H13 review).
-    private var awaiting: (requestId: String, before: String, after: String, timer: SurfaceTimer)?
+    private var awaiting: Awaiting?
+    private struct Awaiting {
+        var requestId: String
+        var before: String
+        var after: String
+        var timer: SurfaceTimer
+        /// The accepted field, so a line about the insert can stand at it, or where it was once it is gone.
+        var target: TargetIdentity
+        var token: String
+        var frame: CGRect
+        var page: PageField.OwnSuggestions?
+    }
     /// The quiet line on screen: about a page's own suggestions (`page`), or a source Caret cannot read (nil).
     private var notice: (offerID: UInt64, page: PageField.OwnSuggestions?, key: String, timer: SurfaceTimer)?
     /// Quiet lines the user answered in this run (Not now, Turn Caret on here, Don't show again): never shown again in
@@ -397,7 +423,8 @@ public final class PageInlineMachine {
                           caretUTF16: UTF16Text.length(r.before), createdAt: clock.now, maxAgeSeconds: Self.offerAge)
         // Published unshown, drawn, then revealed: Tab takes only text that is on screen.
         guard let id = arbiter.publish(offer, shown: false) else { return note("refused") }
-        shown = Shown(offerID: id, text: text, before: r.before, after: r.after, target: t, token: token, caret: caret, reflected: "", look: f.look)
+        shown = Shown(offerID: id, text: text, before: r.before, after: r.after, target: t, token: token, caret: caret, reflected: "", look: f.look,
+                      frame: box, page: f.ownSuggestions)
         output(.drawGhost(text, caret: caret, look: f.look))
         guard arbiter.reveal(offerID: id) else {
             shown = nil
@@ -454,13 +481,22 @@ public final class PageInlineMachine {
             field(current, gate: gate)
             return
         }
-        guard let s = shown, claim.offer.id == s.offerID, case .ghost = claim.offer.kind else { return }
-        shown = nil
-        output(.hideGhost)
+        guard case .ghost = claim.offer.kind else { return }
+        let s: Shown
+        if let x = shown, claim.offer.id == x.offerID {
+            s = x
+            shown = nil
+            output(.hideGhost)
+        } else if let x = claimedAway, claim.offer.id == x.offerID {
+            s = x
+        } else {
+            return
+        }
+        claimedAway = nil
         // The field the page last reported must still be the one the offer was made for; the page checks its text.
         guard let f = current, f.windowId == s.target.windowID, f.key == s.target.elementID, f.token == s.token, Int32(exactly: f.app.pid) == s.target.pid else {
             note("insert.fieldMoved")
-            return sayNotTaken()
+            return sayError(PageInlineCopy.notTaken(s.page), at: s.frame)
         }
         inserts += 1
         let requestId = "inline-\(inserts)"
@@ -471,12 +507,13 @@ public final class PageInlineMachine {
         note("insert.sent")
         awaiting?.timer.cancel()
         let timer = clock.schedule(after: Self.insertWait, repeats: false) { [weak self] in
-            guard let self, self.awaiting?.requestId == requestId else { return }
+            guard let self, let a = self.awaiting, a.requestId == requestId else { return }
             self.awaiting = nil
             self.note("insert.unanswered")
-            self.sayNotTaken()
+            // The page may have taken it after all: Caret cannot say it did not (H13 review).
+            self.sayError(PageInlineCopy.unverified(a.page), at: self.place(a))
         }
-        awaiting = (requestId, expect, s.after, timer)
+        awaiting = Awaiting(requestId: requestId, before: expect, after: s.after, timer: timer, target: s.target, token: s.token, frame: s.frame, page: s.page)
     }
 
     public func replied(_ r: PageInsertReply) {
@@ -484,14 +521,24 @@ public final class PageInlineMachine {
         a.timer.cancel()
         awaiting = nil
         note("insert.\(r.outcome.rawValue)")
-        if r.outcome != .inserted { sayNotTaken() }
+        switch r.outcome {
+        case .inserted: return
+        case .refused, .failed: sayError(PageInlineCopy.notTaken(a.page), at: place(a))
+        case .unverified: sayError(PageInlineCopy.unverified(a.page), at: place(a))
+        }
     }
 
-    /// One error line at the field the user is in, for the error's time (Tab was taken and nothing went in).
-    private func sayNotTaken() {
-        guard let f = current, let frame = f.frame else { return }
+    /// Where a line about an insert stands: at its field as the page last placed it, or where the field was when Tab
+    /// took the offer, once it is gone (H13 review: the line is never lost with the field).
+    private func place(_ a: Awaiting) -> CGRect {
+        if let f = current, f.windowId == a.target.windowID, f.key == a.target.elementID, f.token == a.token, let frame = f.frame { return Self.rect(frame) }
+        return a.frame
+    }
+
+    /// One error line at `frame`, for the error's time (Tab was taken).
+    private func sayError(_ line: LineContent, at frame: CGRect) {
         errorTimer?.cancel()
-        output(.drawError(PageInlineCopy.notTaken(f.ownSuggestions), field: Self.rect(frame)))
+        output(.drawError(line, field: frame))
         errorTimer = clock.schedule(after: Self.errorLifetime, repeats: false) { [weak self] in
             self?.errorTimer = nil
             self?.output(.hideError)
@@ -588,7 +635,12 @@ public final class PageInlineMachine {
         }
         if let s = shown {
             shown = nil
-            if arbiter.snapshot().current?.id == s.offerID { arbiter.invalidate(offerID: s.offerID) }
+            let snap = arbiter.snapshot()
+            if snap.current?.id == s.offerID {
+                arbiter.invalidate(offerID: s.offerID)
+            } else if snap.lastClaim?.offerID == s.offerID {
+                claimedAway = s
+            }
             output(.hideGhost)
         }
         lastOutcome = why

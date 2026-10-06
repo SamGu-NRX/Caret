@@ -35,6 +35,7 @@ final class PageInlineCoordinator {
     private var lastField: PageField?
     private var tabOwner: String?
     private var activation: NSObjectProtocol?
+    private var inputMethod: NSObjectProtocol?
 
     init(arbiter: OfferArbiter, status: HostStatus, engine: GhostTextEngine, policy: TargetPolicy, drawsOnScreen: Bool) {
         self.arbiter = arbiter
@@ -47,6 +48,11 @@ final class PageInlineCoordinator {
         }
         machine.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
         SettingsStore.shared.observe { [weak self] _ in MainActor.assumeIsolated { self?.reconsider() } }
+        // H13 review: an input method switched on (Pinyin) or off decides the field again: nothing is offered while one
+        // composes (PageInline.allowed), and what is shown goes.
+        inputMethod = NotificationCenter.default.addObserver(forName: InputMethodState.changed, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reconsider() }
+        }
         // Another app in front: the page field is no longer where typing goes, so its ghost and line go.
         activation = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
@@ -109,6 +115,8 @@ final class PageInlineCoordinator {
     func shutdown() {
         if let activation { NSWorkspace.shared.notificationCenter.removeObserver(activation) }
         activation = nil
+        if let inputMethod { NotificationCenter.default.removeObserver(inputMethod) }
+        inputMethod = nil
         generation?.cancel()
         ghost.exit(duration: 0)
         notice.exit(duration: 0)
@@ -124,7 +132,8 @@ final class PageInlineCoordinator {
 
     private func gate(pid: Int32) -> PageInlineMachine.Gate {
         let allowed = PageInline.allowed(SettingsStore.shared.settings, wordsAllowed: wordsAllowed(), engineReady: engine.state == .ready,
-                                         browserAllowed: drawsOnScreen ? policy.allowsLive(pid: pid) : policy.allows(pid: pid, bundleID: nil))
+                                         browserAllowed: drawsOnScreen ? policy.allowsLive(pid: pid) : policy.allows(pid: pid, bundleID: nil),
+                                         composing: InputMethodState.shared.composes)
         let settings = SettingsStore.shared.settings
         return PageInlineMachine.Gate(allowed: allowed, contentEditable: settings.pageInlineContentEditable, settings: settings.pageInline)
     }

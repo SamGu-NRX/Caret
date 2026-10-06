@@ -2251,9 +2251,10 @@ export class Helper {
     link.grant?.({ type: "actGrant", v: PROTOCOL_VERSION, taskId, pid, windowId: m.windowId, at, expires: at + INLINE_GRANT_MS });
     try {
       const r = await link.insertText(m.windowId, m.key, m.expect, m.text, taskId, m.token);
+      if (r.outcome === "ok") return reply("inserted", "inserted");
+      // H13 review: the write was tried and the field reads as it did before it.
+      if (r.insert === "unchanged") return reply("failed", "the page did not keep the insert; the field reads as before");
       switch (r.outcome) {
-        case "ok":
-          return reply("inserted", "inserted");
         case "changed":
         case "noElement":
         case "notSameElement":
@@ -2263,7 +2264,8 @@ export class Helper {
           // The verb's own outcome only: its detail can name the field.
           return reply("refused", `the page refused the insert (${r.outcome})`);
         default:
-          return reply("failed", `the page did not keep the insert (${r.outcome})`);
+          // A field that changed but not to the insert, or an answer that cannot say: the user must look (H13 review).
+          return reply("unverified", `the field changed, or the page could not say whether it did (${r.outcome})`);
       }
     } finally {
       link.grant?.({ type: "actRevoke", v: PROTOCOL_VERSION, taskId, at: this.now() });

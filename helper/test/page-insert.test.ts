@@ -3,8 +3,8 @@
 // (extension content/insert.ts; in a real browser in fixtures/web-form/tests/tab-text.test.ts).
 import { describe, expect, it } from "vitest";
 import { EngineSession } from "../src/engines/session.ts";
-import { PageEngineLink } from "../src/engines/page-link.ts";
-import { PROTOCOL_VERSION, type HelperToEngine, type PageControl, type PageSnapshot } from "../src/protocol.ts";
+import { PageEngineLink, toVerbOutcome } from "../src/engines/page-link.ts";
+import { PROTOCOL_VERSION, PageResult, VerbResult, type HelperToEngine, type PageControl, type PageSnapshot } from "../src/protocol.ts";
 import { X, chrome, hello } from "./fake-page.ts";
 
 const ctl = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: "textbox", name, form: "form#a", rect: [0, 0, 100, 20], value: "" });
@@ -46,10 +46,21 @@ describe("insert at the caret (item 8)", () => {
   it("sends nothing for a field that does not have focus, one without a caret, or one the walk never kept", async () => {
     const { link: l, sent } = link("e2");
     expect((await l.insertText("page:eng1:7", KEY("e1"), "", "x", "t")).outcome).toBe("changed");
-    expect((await l.insertText("page:eng1:7", KEY("e2"), "", "x", "t")).outcome).toBe("axError");
-    expect((await l.insertText("page:eng1:7", KEY("e3"), "", "x", "t")).outcome).toBe("axError");
+    // Refused before anything is sent: changed, which the helper says as refused (axError would read as unverified).
+    expect((await l.insertText("page:eng1:7", KEY("e2"), "", "x", "t")).outcome).toBe("changed");
+    expect((await l.insertText("page:eng1:7", KEY("e3"), "", "x", "t")).outcome).toBe("changed");
     expect((await l.insertText("page:eng1:7", "f0/password~0", "", "x", "t")).outcome).toBe("noElement");
     expect((await l.insertText("page:other:7", KEY("e1"), "", "x", "t")).outcome).toBe("noWindow");
     expect(sent.filter((m) => m.type === "pageCommand")).toEqual([]);
+  });
+});
+
+describe("an insert's read-back (H13 review)", () => {
+  const result = (extra: object) => ({ type: "pageResult" as const, v: 1 as const, id: "x", at: 1, outcome: "failed" as const, detail: "d", ...extra });
+  it("keeps whether the field was left unchanged or changed unverified", () => {
+    expect(toVerbOutcome(PageResult.parse(result({ insert: "unchanged" })))).toMatchObject({ outcome: "changed", insert: "unchanged" });
+    expect(toVerbOutcome(PageResult.parse(result({ insert: "unverified" })))).toMatchObject({ outcome: "axError", insert: "unverified" });
+    expect(VerbResult.safeParse(toVerbOutcome(PageResult.parse(result({ insert: "unverified" })))).success).toBe(true);
+    expect(PageResult.safeParse({ ...result({ insert: "unchanged" }), outcome: "ok" }).success).toBe(false);
   });
 });

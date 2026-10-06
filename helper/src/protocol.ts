@@ -410,8 +410,14 @@ export const VerbResult = z
      * outcome changed. A goal run may then leave that field to the user and go on (executor RunOptions.leaveFailedToYou).
      */
     restored: z.literal(true).optional(),
+    /**
+     * Page engines only, an inline insert (H13 review; PageResult insert): `unchanged` comes with outcome changed (the
+     * field reads as before the insert), `unverified` with axError (it changed, but not exactly to the insert).
+     */
+    insert: z.enum(["unchanged", "unverified"]).optional(),
   })
   .refine((r) => (r.outcome === "blocked") === (r.blocked !== undefined), { message: "blocked comes with outcome blocked, and blocked needs it", path: ["blocked"] })
+  .refine((r) => r.insert === undefined || (r.insert === "unchanged" ? r.outcome === "changed" : r.outcome === "axError"), { message: "insert unchanged comes with outcome changed, unverified with axError", path: ["insert"] })
   .refine((r) => r.pageChanged === undefined || r.outcome === "axError", { message: "pageChanged comes with outcome axError", path: ["pageChanged"] })
   .refine((r) => r.restored === undefined || r.outcome === "changed", { message: "restored comes with outcome changed", path: ["restored"] });
 export type VerbResult = z.infer<typeof VerbResult>;
@@ -2280,15 +2286,17 @@ export const PageField = z.object({
 export type PageField = z.infer<typeof PageField>;
 
 /**
- * H13: what became of a pageInsert. `inserted`: the page took the text and read it back after the caret. `refused`: the
- * field changed, lost focus or is not the user's, so nothing went in. `failed`: the page did not keep the text as sent.
- * `says` is for the log and names no text from the page.
+ * H13: what became of a pageInsert. `inserted`: the page took the text, and the whole field reads as before with the
+ * text at the caret and the caret after it. `refused`: checked before any write, the field changed, lost focus, has
+ * no single caret, is composing or is not the user's, so nothing went in. `failed`: the write was tried and the field
+ * reads as it did before. `unverified` (H13 review): the field changed, but not exactly to the insert, or the page did
+ * not say (a timeout, an error mid-way); it is left as it is. `says` is for the log and names no text from the page.
  */
 export const PageInsertReply = z.object({
   type: z.literal("pageInsertReply"),
   v: z.literal(PROTOCOL_VERSION),
   requestId: z.string().min(1).max(80),
-  outcome: z.enum(["inserted", "refused", "failed"]),
+  outcome: z.enum(["inserted", "refused", "failed", "unverified"]),
   says: z.string().max(300),
   at: ms,
 });
@@ -2978,10 +2986,17 @@ export const PageResult = z
     pageChanged: PageChanges.optional(),
     /** P4: pageReadText only, with outcome ok. */
     text: PageTabText.optional(),
+    /**
+     * pageInsertText only, with outcome failed (H13 review): `unchanged`, the field reads as it did just before the
+     * insert; `unverified`, it changed, but not exactly to its text with the insert at the caret and the caret after it.
+     * The page leaves either as it is; nothing is undone.
+     */
+    insert: z.enum(["unchanged", "unverified"]).optional(),
   })
   .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] })
   .refine((r) => r.pageChanged === undefined || (r.outcome === "failed" && r.readings === undefined), { message: "pageChanged comes with outcome failed and no readings", path: ["pageChanged"] })
-  .refine((r) => r.text === undefined || r.outcome === "ok", { message: "text comes with outcome ok", path: ["text"] });
+  .refine((r) => r.text === undefined || r.outcome === "ok", { message: "text comes with outcome ok", path: ["text"] })
+  .refine((r) => r.insert === undefined || r.outcome === "failed", { message: "insert comes with outcome failed", path: ["insert"] });
 export type PageResult = z.infer<typeof PageResult>;
 
 /** The worker's first message once the bridge says the engine is ready. One per worker instance and connection. */

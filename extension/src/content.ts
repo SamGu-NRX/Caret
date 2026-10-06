@@ -30,6 +30,7 @@ import { FOCUS_EVERY_MS, FocusReporter } from "./content/own-acts.ts";
 import { docsKind, readFrameText } from "./content/text.ts";
 import { docsFocus, fieldText } from "./content/field-text.ts";
 import { caretRect } from "./content/caret-rect.ts";
+import { trackComposition } from "./content/insert.ts";
 
 declare global {
   // Set once per isolated world, so a script injected again after install (worker onInstalled) does nothing.
@@ -185,6 +186,9 @@ if (globalThis.__caretContent === undefined) {
       { capture: true, passive: true },
     );
   }
+
+  // H13 review: an inline insert never lands inside an input method's composition (content/insert.ts).
+  trackComposition();
 
   const focus = new FocusReporter({
     inFront: () => document.visibilityState === "visible" && document.hasFocus(),

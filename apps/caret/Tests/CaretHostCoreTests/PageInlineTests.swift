@@ -35,6 +35,7 @@ final class PageInlineTests: XCTestCase {
         var inserts: [PageInsert] { commands.compactMap { if case .send(let s) = $0 { return s } else { return nil } } }
         var ghosts: [(String, CGRect)] { commands.compactMap { if case .drawGhost(let t, let c, _) = $0 { return (t, c) } else { return nil } } }
         var notices: [LineContent] { commands.compactMap { if case .drawNotice(let l, _, _) = $0 { return l } else { return nil } } }
+        var errorFields: [CGRect] { commands.compactMap { if case .drawError(_, let f) = $0 { return f } else { return nil } } }
         var errors: [LineContent] { commands.compactMap { if case .drawError(let l, _) = $0 { return l } else { return nil } } }
         var errorHidden: Bool {
             for c in commands.reversed() {
@@ -352,19 +353,20 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(b.requests, [])
     }
 
-    /// The lead's defaults (2026-10-06), by the test Mac's ⌘Z: on by default wherever one ⌘Z after real typing and Tab
-    /// removed only the insert. Inputs and textareas, 4 of 4 each (runs/20261006T160032Z-67799). Contenteditables,
-    /// 4 of 4 once the insert ends the typing's undo step (same run). Before that fix, they lost the typed sentence
-    /// too (runs/20261006T151009Z-37788). `pageInlineContentEditable` still turns contenteditables off alone, and
-    /// then Gmail's line stays away too: turning Caret on there would show nothing.
-    func testInlineTextIsOnByDefaultInInputsTextareasAndContentEditables() throws {
+    /// The lead's defaults (2026-10-06, after the H13 review): on by default in text inputs and textareas, where one ⌘Z
+    /// after real typing and Tab removed only the insert, 4 of 4 each (runs/20261006T161320Z-68498). Off by default in
+    /// contenteditables. Chrome's own undo step now takes the insert alone there too (same run), but a rich editor
+    /// (ProseMirror, Lexical, Draft.js, Notion) keeps its own history groups, which closing Chrome's typing step does
+    /// not close. `pageInlineContentEditable` turns them on, and Gmail's line shows only then: Turn Caret on here would
+    /// otherwise show nothing.
+    func testInlineTextIsOnInInputsAndTextareasAndOffInContentEditablesByDefault() throws {
         let d = CaretSettings()
         XCTAssertTrue(d.pageInlineText)
-        XCTAssertTrue(d.pageInlineContentEditable)
-        XCTAssertTrue(PageInline.allowed(d, wordsAllowed: true, engineReady: true, browserAllowed: true))
+        XCTAssertFalse(d.pageInlineContentEditable)
+        XCTAssertTrue(PageInline.allowed(d, wordsAllowed: true, engineReady: true, browserAllowed: true, composing: false))
         func rig(_ s: CaretSettings) -> Rig {
             let r = Rig()
-            r.gate = PageInlineMachine.Gate(allowed: PageInline.allowed(s, wordsAllowed: true, engineReady: true, browserAllowed: true),
+            r.gate = PageInlineMachine.Gate(allowed: PageInline.allowed(s, wordsAllowed: true, engineReady: true, browserAllowed: true, composing: false),
                                             contentEditable: s.pageInlineContentEditable, settings: s.pageInline)
             return r
         }
@@ -381,25 +383,22 @@ final class PageInlineTests: XCTestCase {
         ce.fieldKind = .contenteditable
         let editor = rig(d)
         editor.field(ce)
-        XCTAssertEqual(editor.requests.count, 1)
+        XCTAssertEqual(editor.requests, [])
+        XCTAssertEqual(editor.machine.lastOutcome, "contentEditableOff")
         let gmail = rig(d)
         XCTAssertEqual(try Self.field(7).fieldKind, .contenteditable)
         gmail.field(try Self.field(7))
         XCTAssertEqual(gmail.requests, [])
-        XCTAssertEqual(gmail.notices.count, 1)
-        // Contenteditables turned off alone: no inline text there, and no Gmail line.
-        var noEditors = d
-        noEditors.pageInlineContentEditable = false
-        let off = rig(noEditors)
-        off.field(ce)
-        XCTAssertEqual(off.requests, [])
-        XCTAssertEqual(off.machine.lastOutcome, "contentEditableOff")
-        let quietGmail = rig(noEditors)
-        quietGmail.field(try Self.field(7))
-        XCTAssertEqual(quietGmail.notices, [], "no Gmail line where Turn Caret on here would show nothing")
-        let stillTextarea = rig(noEditors)
-        stillTextarea.field(try Self.field(1))
-        XCTAssertEqual(stillTextarea.requests.count, 1)
+        XCTAssertEqual(gmail.notices, [], "no Gmail line where Turn Caret on here would show nothing")
+        // Contenteditables turned on by the user: inline text there, and Gmail's line.
+        var editors = d
+        editors.pageInlineContentEditable = true
+        let on = rig(editors)
+        on.field(ce)
+        XCTAssertEqual(on.requests.count, 1)
+        let lineGmail = rig(editors)
+        lineGmail.field(try Self.field(7))
+        XCTAssertEqual(lineGmail.notices.count, 1)
         // A field whose kind the page did not say gets nothing.
         let unknown = rig(d)
         var bare = try Self.field(1)
@@ -413,17 +412,50 @@ final class PageInlineTests: XCTestCase {
         XCTAssertNil(json["pageInlineContentEditable"])
         var chosen = d
         chosen.pageInlineText = false
-        chosen.pageInlineContentEditable = false
+        chosen.pageInlineContentEditable = true
         let back = try JSONDecoder().decode(CaretSettings.self, from: JSONEncoder().encode(chosen))
         XCTAssertFalse(back.pageInlineText)
-        XCTAssertFalse(back.pageInlineContentEditable)
+        XCTAssertTrue(back.pageInlineContentEditable)
+    }
+
+    /// H13 review (P1): while an input method composes (Pinyin, Kotoeri), inline text on pages is neither offered nor
+    /// taken. A ghost already drawn when the input method was switched on goes at the next key, and Tab reaches the
+    /// input method: the arbiter asks at the moment it would claim the key.
+    func testNothingIsOfferedOrTakenWhileAnInputMethodComposes() throws {
+        XCTAssertFalse(PageInline.allowed(CaretSettings(), wordsAllowed: true, engineReady: true, browserAllowed: true, composing: true))
+        let r = Rig()
+        let ime = Composing()
+        r.arbiter.composing = { ime.on }
+        r.field(try Self.field(1))
+        r.suggest("Field Robotics Technician role")
+        XCTAssertNotNil(r.arbiter.snapshot().current)
+        ime.on = true
+        XCTAssertEqual(r.press(.tab(to: Self.chrome)), .pass(.dismissed))
+        XCTAssertEqual(r.inserts, [])
+        XCTAssertTrue(r.ghostHidden)
+        XCTAssertNil(r.arbiter.snapshot().current)
+        // Off again: Tab is Caret's.
+        ime.on = false
+        r.field(try Self.field(4))
+        r.suggest(".")
+        XCTAssertTrue(r.press(.tab(to: Self.chrome)).isConsume)
+        XCTAssertEqual(r.inserts.count, 1)
+    }
+
+    final class Composing: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var on: Bool {
+            get { lock.lock(); defer { lock.unlock() }; return value }
+            set { lock.lock(); value = newValue; lock.unlock() }
+        }
     }
 
     /// The overall switch off: nothing shows in any field, Gmail's line included.
     func testNothingOfInlineTextOnPagesShowsWhileItIsOff() throws {
         var off = CaretSettings()
         off.pageInlineText = false
-        XCTAssertFalse(PageInline.allowed(off, wordsAllowed: true, engineReady: true, browserAllowed: true))
+        XCTAssertFalse(PageInline.allowed(off, wordsAllowed: true, engineReady: true, browserAllowed: true, composing: false))
         let r = Rig()
         r.gate.allowed = false
         r.field(try Self.field(1))
@@ -585,6 +617,7 @@ final class PageInlineTests: XCTestCase {
     }
 
     func testARefusedInsertSaysSoAtTheField() throws {
+        // Refused before any write, or tried and the field reads as before: nothing changed.
         for outcome in [PageInsertReply.Outcome.refused, .failed] {
             let r = Rig()
             r.field(try Self.field(1))
@@ -595,13 +628,13 @@ final class PageInlineTests: XCTestCase {
             r.clock.advance(by: PageInlineMachine.errorLifetime + 0.1)
             XCTAssertTrue(r.errorHidden)
         }
-        // Never answered: said too.
+        // Never answered: said too, as a change Caret cannot vouch for (H13 review).
         let r = Rig()
         r.field(try Self.field(1))
         r.suggest("Field Robotics Technician role")
         r.press(.tab(to: Self.chrome))
         r.clock.advance(by: PageInlineMachine.insertWait + 0.1)
-        XCTAssertEqual(r.errors.count, 1)
+        XCTAssertEqual(r.errors, [PageInlineCopy.unverified(nil)])
         // An insert that went in says nothing.
         let ok = Rig()
         ok.field(try Self.field(1))
@@ -609,6 +642,46 @@ final class PageInlineTests: XCTestCase {
         ok.press(.tab(to: Self.chrome))
         ok.machine.replied(PageInsertReply(requestId: ok.inserts[0].requestId, outcome: .inserted, says: "inserted", at: 1))
         XCTAssertEqual(ok.errors, [])
+    }
+
+    /// H13 review (P1/P2): a field that changed, but not to the insert, is told apart from one that took nothing: the user
+    /// is asked to check it, and nothing is undone.
+    func testAnUnverifiedInsertAsksTheUserToCheckTheField() throws {
+        let r = Rig()
+        r.field(try Self.field(1))
+        r.suggest("Field Robotics Technician role")
+        r.press(.tab(to: Self.chrome))
+        r.machine.replied(PageInsertReply(requestId: r.inserts[0].requestId, outcome: .unverified, says: "x", at: 1))
+        XCTAssertEqual(r.machine.lastOutcome, "insert.unverified")
+        XCTAssertEqual(r.errors.last, LineContent(figure: .error, text: "The page changed the field another way. Check it.", emphasis: .plain))
+        XCTAssertNotEqual(PageInlineCopy.unverified(nil), PageInlineCopy.notTaken(nil))
+    }
+
+    /// H13 review (P2): the field the insert was for can be gone when the answer comes (the page replaced it, the user
+    /// moved on). The line still shows, where that field was: its context goes with the insert.
+    func testAFailedOrUnverifiedInsertStillSaysSoWhenItsFieldIsGone() throws {
+        let frame = try XCTUnwrap(try Self.field(1).frame)
+        let at = CGRect(x: frame.x, y: frame.y, width: frame.width, height: frame.height)
+        for (outcome, line) in [(PageInsertReply.Outcome.failed, PageInlineCopy.notTaken(nil)), (.unverified, PageInlineCopy.unverified(nil))] {
+            let r = Rig()
+            r.field(try Self.field(1))
+            r.suggest("Field Robotics Technician role")
+            r.press(.tab(to: Self.chrome))
+            r.field(nil)
+            r.machine.replied(PageInsertReply(requestId: r.inserts[0].requestId, outcome: outcome, says: "x", at: 1))
+            XCTAssertEqual(r.errors, [line], "\(outcome)")
+            XCTAssertEqual(r.errorFields, [at], "\(outcome)")
+        }
+        // Gone before Tab's claim reached the machine: nothing is sent, and it is still said, where the field was.
+        let moved = Rig()
+        moved.field(try Self.field(1))
+        moved.suggest("Field Robotics Technician role")
+        guard case .consume(let claim) = moved.arbiter.handleKeyDown(.tab(to: Self.chrome), now: moved.clock.now) else { return XCTFail("Tab did not take the offer") }
+        moved.field(nil)
+        moved.machine.claimed(claim)
+        XCTAssertEqual(moved.inserts, [])
+        XCTAssertEqual(moved.errors, [PageInlineCopy.notTaken(nil)])
+        XCTAssertEqual(moved.errorFields, [at])
     }
 
     func testARefusedInsertInGmailNamesGmail() throws {

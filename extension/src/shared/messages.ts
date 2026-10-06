@@ -100,6 +100,11 @@ export interface ActAnswer {
   attached?: Attached;
   /** With outcome failed only: the press may have landed and the page then changed, so the run stops (B28). */
   pageChanged?: PageChange[];
+  /**
+   * pageInsertText only, with outcome failed (H13 review): `unchanged`, the field reads as it did before the insert;
+   * `unverified`, it changed, but not exactly to its text with the insert at the caret. Nothing is undone.
+   */
+  insert?: "unchanged" | "unverified";
 }
 
 interface TargetFields {

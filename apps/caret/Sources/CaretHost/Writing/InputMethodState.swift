@@ -11,6 +11,8 @@ import os
 /// Read on main (Text Input Sources must be), read from any thread.
 final class InputMethodState: @unchecked Sendable {
     static let shared = InputMethodState()
+    /// Posted on main after `composes` changes (H13 review: page inline text is decided again).
+    static let changed = Notification.Name("CaretInputMethodStateChanged")
 
     private let flag = OSAllocatedUnfairLock(initialState: false)
     private var observer: NSObjectProtocol?
@@ -34,6 +36,10 @@ final class InputMethodState: @unchecked Sendable {
         } else {
             composes = false
         }
-        flag.withLock { $0 = composes }
+        let changed = flag.withLock { old in
+            defer { old = composes }
+            return old != composes
+        }
+        if changed { NotificationCenter.default.post(name: Self.changed, object: self) }
     }
 }

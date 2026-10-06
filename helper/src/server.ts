@@ -311,7 +311,7 @@ export class HelperServer {
                 .catch((e: unknown): PageInsertReply => {
                   // The error's name only: its message could quote the page.
                   this.warn(`pageInsert ${requestId} failed: ${e instanceof Error ? e.name : "error"}`);
-                  return { type: "pageInsertReply", v: PROTOCOL_VERSION, requestId, outcome: "failed", says: "the helper could not insert the text", at: Date.now() };
+                  return { type: "pageInsertReply", v: PROTOCOL_VERSION, requestId, outcome: "unverified", says: "the helper could not tell whether the text went in", at: Date.now() };
                 })
                 .then((r) => {
                   if (!s.destroyed) s.write(JSON.stringify(r) + "\n");

@@ -136,6 +136,10 @@ public final class OfferArbiter: @unchecked Sendable {
     /// replaced, so whoever drew it can take it down. Set once, before offers flow.
     public var onDisplaced: (@Sendable (Offer) -> Void)?
 
+    /// H13 review (P1): whether an input method that composes text (Pinyin) is selected now. Asked under the lock as a
+    /// key would claim a page's inline text, so Tab reaches the input method. Set once, before keys flow.
+    public var composing: @Sendable () -> Bool = { false }
+
     public init() {}
 
     // MARK: - Main thread
@@ -343,6 +347,12 @@ public final class OfferArbiter: @unchecked Sendable {
             // inline text, fill value or writing fix of Caret's takes it there. The offer goes, as for any key it
             // does not own; its other keys (Esc, ⌘-digits) are still Caret's.
             if keyClass == .tab, s.pageTabOwners[offer.target.pid] != nil, PageWindow.isPage(offer.target.windowID), Self.yieldsTab(offer) {
+                Self.clearOffer(&s)
+                return .pass(.dismissed)
+            }
+            // H13 review (P1): while an input method composes, every key is the input method's: a page's inline text
+            // takes none (Tab may be choosing a candidate), and it goes, as for any key it does not own.
+            if offer.source == .page, case .ghost = offer.kind, composing() {
                 Self.clearOffer(&s)
                 return .pass(.dismissed)
             }

@@ -67,7 +67,7 @@ const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 30));
 const hostHello = (pid: number, capabilities: string[], host = true) => ({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid, version: "test", ...(host ? { host: true } : {}), capabilities });
 
 /** A page link that records grants and inserts, and answers each insert with `outcome`. */
-function fakeLink(outcome: VerbResult["outcome"]) {
+function fakeLink(outcome: VerbResult["outcome"], extra: Partial<VerbResult> = {}) {
   const grants: (ActGrant | ActRevoke | CalendarGrant)[] = [];
   const inserts: { windowId: string; key: string; expect: string; text: string; taskId: string }[] = [];
   const link: ReaderLink = {
@@ -75,7 +75,7 @@ function fakeLink(outcome: VerbResult["outcome"]) {
     grant: (m) => void grants.push(m),
     insertText: async (windowId, key, expect, text, taskId) => {
       inserts.push({ windowId, key, expect, text, taskId });
-      return { type: "verbResult", v: 1, id: "r", at: 0, outcome, detail: "'Cover letter' quoted here" };
+      return { type: "verbResult", v: 1, id: "r", at: 0, outcome, detail: "'Cover letter' quoted here", ...extra };
     },
   };
   return { link, grants, inserts };
@@ -172,13 +172,24 @@ describe("handlePageInsert (H13)", () => {
   const insert = (): ConsumerMessage => ConsumerMessage.parse(at(2));
   const make = (fake: ReturnType<typeof fakeLink>, warn: string[] = []) => new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, readerLink: fake.link, publish: () => {}, warn: (l) => void warn.push(l) });
 
-  it("says refused for a field that changed, and failed when the page kept other text, quoting nothing from the page", async () => {
-    for (const [outcome, said] of [["changed", "refused"], ["notAllowed", "refused"], ["noElement", "refused"], ["axError", "failed"]] as const) {
-      const fake = fakeLink(outcome);
+  // H13 review (P1/P2): refused is nothing written, checked before the write; failed is a write the page did not keep,
+  // with the field reading as before; unverified is a field that changed but not to the insert, or an answer that
+  // cannot say (a timeout, an error mid-way), which the host must not call "didn't take it".
+  it("says refused before any write, failed when the field reads as before, unverified otherwise, quoting nothing from the page", async () => {
+    const cases = [
+      ["changed", {}, "refused"],
+      ["notAllowed", {}, "refused"],
+      ["noElement", {}, "refused"],
+      ["changed", { insert: "unchanged" }, "failed"],
+      ["axError", { insert: "unverified" }, "unverified"],
+      ["axError", {}, "unverified"],
+    ] as const;
+    for (const [outcome, extra, said] of cases) {
+      const fake = fakeLink(outcome, extra);
       const warn: string[] = [];
       const h = make(fake, warn);
       const r = await h.handlePageInsert(insert() as never);
-      expect(r.outcome, outcome).toBe(said);
+      expect(r.outcome, `${outcome} ${JSON.stringify(extra)}`).toBe(said);
       expect(r.says).not.toContain("Cover letter");
       expect(warn.join("\n")).not.toMatch(/apply for the|Robotics/);
       expect(fake.grants.at(-1)?.type).toBe("actRevoke");

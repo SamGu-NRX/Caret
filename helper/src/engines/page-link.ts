@@ -332,6 +332,9 @@ export function toVerbOutcome(r: PageResult): VerbResult {
     case "failed":
       // A Yes/No press after which the page navigated or submitted (B28): may have landed, and the executor stops at once.
       if (r.pageChanged !== undefined) return { ...verbResult("axError", detail), pageChanged: r.pageChanged };
+      // An inline insert (H13 review): the field as it was is nothing landed; any other change may have.
+      if (r.insert === "unchanged") return { ...verbResult("changed", detail), insert: "unchanged" };
+      if (r.insert === "unverified") return { ...verbResult("axError", detail), insert: "unverified" };
       return verbResult(r.readings === undefined || r.readings.afterBlur !== r.readings.before ? "axError" : "changed", detail);
     case "unsupported":
     case "error":
@@ -589,7 +592,8 @@ export class PageEngineLink implements ReaderLink {
     const snap = this.session.tabs.get(w.tabId);
     const t = targetFor(snap, key);
     if (t === null) return verbResult("noElement", `no element ${key} in the tab's last walk`);
-    if (!INSERT_KINDS.has(t.control.kind)) return verbResult("axError", `'${t.control.name}' is a ${t.control.kind}, which takes no typed text`);
+    // Refusals before anything is sent are `changed`: the helper says axError as unverified (H13 review).
+    if (!INSERT_KINDS.has(t.control.kind)) return verbResult("changed", `'${t.control.name}' is a ${t.control.kind}, which takes no typed text`);
     if (snap?.focused?.frameId !== t.frameId || snap.focused.id !== t.id) return verbResult("changed", `'${t.control.name}' is not the field that has focus`);
     // H13 review: the key may name another element now (the page replaced the field with one of the same label).
     if (token !== undefined && elementToken(t) !== token) return verbResult("changed", `'${t.control.name}' is not the element the offer was made for`);

@@ -672,6 +672,13 @@
             "restored": {
               "type": "boolean",
               "const": true
+            },
+            "insert": {
+              "type": "string",
+              "enum": [
+                "unchanged",
+                "unverified"
+              ]
             }
           },
           "required": [
@@ -9778,7 +9785,8 @@
               "enum": [
                 "inserted",
                 "refused",
-                "failed"
+                "failed",
+                "unverified"
               ]
             },
             "says": {

@@ -325,6 +325,84 @@ describe("the insert at the caret (item 8)", () => {
     }
   });
 
+  // H13 review (P1): an input method's composition (Pinyin) is the IME's. Nothing goes in while one is under way in the
+  // document, whether it started before Tab or while Caret asked the worker about its grant.
+  test("touches nothing while an input method composes, before or during the grant wait", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => { __p4.trackComposition(); const ta = document.getElementById("ta"); ta.value = "Ni hao "; ta.focus(); ta.setSelectionRange(7, 7); })()`);
+    const start = `document.getElementById("ta").dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, composed: true }))`;
+    const end = `document.getElementById("ta").dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, composed: true }))`;
+    await tab.evaluate(start);
+    assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ta", "Ni hao ", "friend"))).outcome, "stale");
+    await tab.evaluate(end);
+    const during = `__p4.insertAtCaret(document.getElementById("ta"), { expect: "Ni hao ", text: "friend" }, async () => { ${start}; return null; })`;
+    assert.equal((await tab.evaluate<{ outcome: string }>(during)).outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Ni hao ");
+    await tab.evaluate(end);
+    assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ta", "Ni hao ", "friend"))).outcome, "ok");
+    await tab.close();
+  });
+
+  // H13 review (P2): an image selected in an editor serializes to "", but it is a selection, not a caret, and an insert
+  // would replace it or land beside it. Refused at Tab and while the worker answers about the grant.
+  test("an image selected in an editor is not a caret, before or during the grant wait", async () => {
+    const tab = await open("/fields");
+    const selectImage = `(() => { const ce = document.getElementById("ce"); const r = document.createRange(); r.setStart(ce, 1); r.setEnd(ce, 2); const s = getSelection(); s.removeAllRanges(); s.addRange(r); })()`;
+    await tab.evaluate(`(() => {
+      const ce = document.getElementById("ce"); ce.innerHTML = 'Hello <img alt="" width="8" height="8">'; ce.focus();
+    })()`);
+    await tab.evaluate(selectImage);
+    assert.equal((await tab.evaluate<{ selection: string }>(`__p4.fieldText(document.getElementById("ce"))`)).selection, "", "the image reads as no text");
+    assert.equal((await tab.evaluate<{ outcome: string }>(insert("#ce", "Hello ", "there"))).outcome, "stale");
+    await tab.evaluate(`(() => { const ce = document.getElementById("ce"); const r = document.createRange(); r.setStart(ce.firstChild, 6); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r); })()`);
+    const during = `__p4.insertAtCaret(document.getElementById("ce"), { expect: "Hello ", text: "there" }, async () => { ${selectImage}; return null; })`;
+    assert.equal((await tab.evaluate<{ outcome: string }>(during)).outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("ce").innerHTML`), 'Hello <img alt="" width="8" height="8">');
+    await tab.close();
+  });
+
+  // H13 review (P1): the read-back is of the whole field, not the 2,000 code units before the caret: the text after the
+  // caret must be as it was and the caret right after the insert. A change other than the insert is unverified and
+  // left as it is (never undone blindly); a field that reads as before is unchanged.
+  test("validates the whole field after the insert: unverified when the page changed more, unchanged when it took nothing", async () => {
+    const tab = await open("/fields");
+    // A page handler that drops the text after the caret when a multi-character insert comes in.
+    await tab.evaluate(`(() => {
+      const ta = document.getElementById("ta"); ta.value = "Dear team,\\nThe second line stays."; ta.focus(); ta.setSelectionRange(10, 10);
+      ta.addEventListener("input", (e) => { if (e.inputType === "insertText" && (e.data ?? "").length > 1) ta.value = ta.value.slice(0, ta.selectionStart); });
+    })()`);
+    const dropped = await tab.evaluate<{ outcome: string; insert?: string }>(insert("#ta", "Dear team,", " thanks"));
+    assert.deepEqual([dropped.outcome, dropped.insert], ["failed", "unverified"]);
+    assert.equal(await tab.evaluate(`document.getElementById("ta").value`), "Dear team, thanks", "left as the page made it");
+    // A change beyond the 2,000 code units before the caret is still seen.
+    await tab.evaluate(`(() => {
+      const t = document.getElementById("t"); t.value = "a".repeat(3000); t.focus(); t.setSelectionRange(3000, 3000);
+      t.addEventListener("input", (e) => { if (e.inputType === "insertText" && (e.data ?? "").length > 1) { const at = t.selectionStart; t.value = "b" + t.value.slice(1); t.setSelectionRange(at, at); } });
+    })()`);
+    const far = await tab.evaluate<{ outcome: string; insert?: string }>(insert("#t", "a".repeat(2000), "!!"));
+    assert.deepEqual([far.outcome, far.insert], ["failed", "unverified"]);
+    // The caret must sit right after the insert.
+    await tab.evaluate(`(() => {
+      const ce = document.getElementById("ce"); ce.textContent = "Hi"; ce.focus();
+      const r = document.createRange(); r.setStart(ce.firstChild, 2); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      ce.addEventListener("input", () => { const r2 = document.createRange(); r2.setStart(ce.firstChild, 0); r2.collapse(true); const s2 = getSelection(); s2.removeAllRanges(); s2.addRange(r2); });
+    })()`);
+    const moved = await tab.evaluate<{ outcome: string; insert?: string }>(insert("#ce", "Hi", " there"));
+    assert.deepEqual([moved.outcome, moved.insert], ["failed", "unverified"]);
+    await tab.close();
+    // A page that puts its value back (a controlled field that rejects the change): nothing changed. (A beforeinput
+    // handler cannot cancel execCommand's insert in Chrome.)
+    const tab2 = await open("/fields");
+    await tab2.evaluate(`(() => {
+      const ta = document.getElementById("ta"); ta.value = "Dear team,"; ta.focus(); ta.setSelectionRange(10, 10);
+      ta.addEventListener("input", () => { ta.value = "Dear team,"; ta.setSelectionRange(10, 10); });
+    })()`);
+    const cancelled = await tab2.evaluate<{ outcome: string; insert?: string }>(insert("#ta", "Dear team,", " thanks"));
+    assert.deepEqual([cancelled.outcome, cancelled.insert], ["failed", "unchanged"]);
+    assert.equal(await tab2.evaluate(`document.getElementById("ta").value`), "Dear team,");
+    await tab2.close();
+  });
+
   test("touches nothing when the text before the caret changed, text is selected, or the field lost focus", async () => {
     const tab = await open("/fields");
     await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.value = "Dear team, "; ta.focus(); ta.setSelectionRange(11, 11); })()`);

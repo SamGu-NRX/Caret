@@ -114,6 +114,7 @@ function result(id: string, a: ActAnswer): void {
     ...(a.attached === undefined ? {} : { attached: a.attached }),
     ...(a.pageChanged === undefined ? {} : { pageChanged: a.pageChanged }),
     ...(a.text === undefined ? {} : { text: a.text }),
+    ...(a.insert === undefined ? {} : { insert: a.insert }),
   });
 }
 

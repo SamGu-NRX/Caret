@@ -108,15 +108,16 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// H13, the Sites tab and the quiet line in Gmail: pages with their own suggestions where Caret's inline text is
     /// on, and those whose line the user asked never to see again.
     public var pageInline = PageInlineSettings()
-    /// H13: inline text in web page fields, the overall switch. On by default: on the test Mac
-    /// (runs/20261006T160032Z-67799), one ⌘Z after real typing and Tab removed only the insert, 4 of 4 in each of a
-    /// text input, a textarea and a contenteditable.
+    /// H13: inline text in web page fields, the overall switch. On by default: in text inputs and textareas one ⌘Z
+    /// after real typing and Tab removed only the insert on the test Mac, 4 of 4 each (runs/20261006T161320Z-68498).
+    /// Contenteditables only with `pageInlineContentEditable` too.
     public var pageInlineText = true
-    /// H13: inline text in contenteditable editors, which can be turned off alone. On by default since the insert ends
-    /// the typing's undo step (extension content/insert.ts closeTyping). Before that, one ⌘Z after real typing and Tab
-    /// removed the typed sentence with the insert, 4 of 4 (runs/20261006T151009Z-37788). With it, ⌘Z removed only the
-    /// insert, 4 of 4 (runs/20261006T160032Z-67799).
-    public var pageInlineContentEditable = true
+    /// H13: inline text in contenteditable editors as well. Off by default (lead decision after the H13 review,
+    /// 2026-10-06): the insert closes Chrome's typing step (extension content/insert.ts closeTyping), and on the test Mac
+    /// ⌘Z then removed only the insert, 4 of 4 (runs/20261006T161320Z-68498). But a rich editor (ProseMirror, Lexical,
+    /// Draft.js, Notion) keeps its own undo history, whose groups that does not close, so its ⌘Z may still take the
+    /// user's typing with the insert. The user can turn it on.
+    public var pageInlineContentEditable = false
 
     public init() {}
 
@@ -165,7 +166,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         pageInline = try c.decodeIfPresent(PageInlineSettings.self, forKey: .pageInline) ?? PageInlineSettings()
         // Absent: the defaults, as for a new user.
         pageInlineText = try c.decodeIfPresent(Bool.self, forKey: .pageInlineText) ?? true
-        pageInlineContentEditable = try c.decodeIfPresent(Bool.self, forKey: .pageInlineContentEditable) ?? true
+        pageInlineContentEditable = try c.decodeIfPresent(Bool.self, forKey: .pageInlineContentEditable) ?? false
         let pages = Set(PageField.OwnSuggestions.allCases.map(\.rawValue))
         if let bad = (pageInline.on + pageInline.quiet).first(where: { !pages.contains($0) }) {
             throw DecodingError.dataCorruptedError(forKey: .pageInline, in: c, debugDescription: "\(bad) is not a page with its own suggestions")
@@ -188,7 +189,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         if pageInline != PageInlineSettings() { try c.encode(pageInline, forKey: .pageInline) }
         // Written only when the user changed them, so a later default reaches a user who never did.
         if !pageInlineText { try c.encode(pageInlineText, forKey: .pageInlineText) }
-        if !pageInlineContentEditable { try c.encode(pageInlineContentEditable, forKey: .pageInlineContentEditable) }
+        if pageInlineContentEditable { try c.encode(pageInlineContentEditable, forKey: .pageInlineContentEditable) }
     }
 
     public var gate: GatePolicy { GatePolicy(self) }

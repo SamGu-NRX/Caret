@@ -112,8 +112,14 @@ public final class SettingsStore {
         case ("calendar", 2):
             // H8: an EventKit calendar identifier, or "default".
             update(source: .socket) { $0.eventCalendar = words[1] == "default" ? nil : words[1] }
+        case ("pageInlineText", 2):
+            guard let on = onOff(words[1]) else { return "usage: settings set pageInlineText on|off" }
+            update(source: .socket) { $0.pageInlineText = on }
+        case ("pageInlineContentEditable", 2):
+            guard let on = onOff(words[1]) else { return "usage: settings set pageInlineContentEditable on|off" }
+            update(source: .socket) { $0.pageInlineContentEditable = on }
         default:
-            return "usage: settings set role|level|character|paused|routing|calendar ..."
+            return "usage: settings set role|level|character|paused|routing|calendar|pageInlineText|pageInlineContentEditable ..."
         }
         return nil
     }
