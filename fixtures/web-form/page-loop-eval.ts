@@ -1109,7 +1109,8 @@ async function main(): Promise<number> {
         stage = "writes";
         await helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: seg.goalId, segment: seg.segment, digest: seg.digest, at: Date.now(), ...(pick === undefined ? {} : { confirmedFile: { step: pick.index, path: resume } }) });
         const fin = await finishedOf(seg.goalId);
-        row.outcome = fin?.outcome ?? "not finished";
+        const stop = published.find((x): x is Extract<GoalProgress, { event: "stopped" }> => x.type === "goalProgress" && x.event === "stopped" && x.goalId === seg?.goalId);
+        row.outcome = fin?.outcome ?? (stop === undefined ? "not finished" : `stopped (${stop.reason}: ${stop.says.slice(0, 160)})`);
         if (fin !== null && fin.left.length > 0) row.note = `left: ${fin.left.join(" / ").slice(0, 300)}`;
         goalId = seg.goalId;
         const plan = helper.goals.planOf(seg.goalId);
