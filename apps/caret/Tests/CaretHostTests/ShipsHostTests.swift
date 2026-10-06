@@ -120,6 +120,17 @@ final class ShipsHostTests: XCTestCase {
         XCTAssertNil(reader["CARET_ENV_FILE"])
     }
 
+    /// J1's daily Jev spend cap reaches the helper when set, and neither the reader nor the key rule.
+    func testTheDailyJevCapReachesTheHelperOnly() throws {
+        let home = try CaretHome.resolve(override: "\(dir)/home", userHome: "/nonexistent")
+        let programs = CaretServices.Programs(node: "/n", helperEntry: "/m", reader: "/r")
+        let launch = ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: ["CARET_JEV_DAILY_CAP": "1.25"], storedKey: { nil })
+        XCTAssertEqual(launch.env["CARET_JEV_DAILY_CAP"], "1.25")
+        XCTAssertEqual(launch.jev, .off, "a cap is not a key")
+        XCTAssertNil(ServiceLauncher.childEnvironment(["CARET_JEV_DAILY_CAP": "1.25"], passesJevKey: false)["CARET_JEV_DAILY_CAP"])
+        XCTAssertNil(ServiceLauncher.helperLaunch(programs: programs, home: home, hostEnvironment: [:], storedKey: { nil }).env["CARET_JEV_DAILY_CAP"])
+    }
+
     func testTheEnvironmentWinsOverTheKeychainAndNoKeyMeansNoJev() throws {
         let home = try CaretHome.resolve(override: "\(dir)/home", userHome: "/nonexistent")
         let programs = CaretServices.Programs(node: "/n", helperEntry: "/m", reader: "/r")

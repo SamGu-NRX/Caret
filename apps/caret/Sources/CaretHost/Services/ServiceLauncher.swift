@@ -271,11 +271,12 @@ final class ServiceLauncher {
     }
 
     /// The children's environment, built rather than inherited: nothing like NODE_OPTIONS or DYLD_* reaches them.
-    /// For the helper, the Jev key passes through by the two names it reads (fill/jev.ts); the reader never asks Jev and
-    /// gets neither.
+    /// For the helper, the Jev key passes through by the two names it reads (fill/jev.ts), and so does J1's daily Jev
+    /// spend cap, `CARET_JEV_DAILY_CAP` (the helper's default, $0.50 a day, applies when it is unset); the reader never
+    /// asks Jev and gets none of them.
     static func childEnvironment(_ host: [String: String], passesJevKey: Bool) -> [String: String] {
         var env = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-        for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG"] + (passesJevKey ? jevKeyNames : []) {
+        for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG"] + (passesJevKey ? jevKeyNames + ["CARET_JEV_DAILY_CAP"] : []) {
             if let v = host[key], !v.isEmpty { env[key] = v }
         }
         return env
