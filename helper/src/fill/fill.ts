@@ -15,7 +15,7 @@ import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCa
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, misfit, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
-import { ABOUT_SAYS, fieldAsksFor, fieldAsksForNamePart, type AboutValue } from "./about.ts";
+import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, joinName, namePart, partFits, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
@@ -306,7 +306,7 @@ export const whoseId = (fieldId: string): string => `${fieldId}_whose`;
 
 /** The criterion for a value the user told Caret: what it is, and that it is the user's own. */
 export function describeAbout(a: AboutValue): string {
-  return `"${a.value}" (${a.kind === "email" ? "email" : "a name"}; the user's own ${a.label}, which the user told Caret)`;
+  return `"${a.value}" (${ABOUT_KIND_SAYS[a.kind]}; the user's own ${a.label}, which the user told Caret)`;
 }
 
 /** Values code derived for one field, or candidates whose owner is asked, under one ask's ids. */
@@ -633,6 +633,11 @@ const purposeOf = (labels: readonly (string | null)[]): Set<string> =>
 const LABELLED_KINDS: ReadonlySet<string> = new Set(["email", "phone", "url"]);
 /** Kinds whose values are someone's: whose they are is asked before one fills a field that wants someone's (B24 owner veto). */
 const PERSONAL_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "address"]);
+/**
+ * C1: the kind of screen value an About entry stands beside, so a cut that took a window's value of that kind withholds
+ * the entry too, as it does an email (pickCut). Kinds with no typed screen value (a school, a yes or no) have none.
+ */
+const ABOUT_VALUE_KIND: Partial<Record<AboutKind, ValueKind>> = { email: "email", phone: "phone", address: "address", street: "address", gradDate: "date", linkedin: "url", github: "url", website: "url" };
 /** Labels of a message header's sender. */
 const SENDER = /^(?:from|sender|reply-to)$/i;
 /** Owner questions one ask carries at most. Assumed: well above the personal values a few source windows hold. */
@@ -730,7 +735,7 @@ export async function proposeFill(
       ((part !== null && part !== "country" && !DATE_PARTS.has(part)) || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
     // An Ask that names no memory, or names another person for a personal field, is not offered the user's own.
     const memoryOk = scope === undefined || (scope.memory && (scope.person === null || !personal));
-    const about = x.control === "text" && memoryOk ? (opts.about ?? []).filter((a) => fieldAsksFor(a, name)) : [];
+    const about = memoryOk ? (opts.about ?? []).filter((a) => aboutFits(a, x.control) && fieldAsksFor(a, name)) : [];
     const descriptor = describeInput(w, x);
     fields.push({ id: `f${fields.length + 1}`, node: n, descriptor, name: name ?? "unnamed field", kinds, terms, texts, about, control: x.control, form: c, part, labelWords, personal });
   }
@@ -1067,6 +1072,11 @@ export async function proposeFill(
     return { choice: id as string, confidence: a.confidence, value: pickText(p) };
   };
 
+  /** Whether a cut took a window's value of the kind an About entry stands beside (ABOUT_VALUE_KIND). */
+  const aboutCut = (a: AboutValue): boolean => {
+    const k = ABOUT_VALUE_KIND[a.kind];
+    return k !== undefined && isCut(new Set([k]));
+  };
   // Picks of a kind a cut took are withheld (see above); a value from memory is of its own kind; a derived
   // value meets its source's rules.
   const pickCut = (p: Pick): boolean =>
@@ -1076,12 +1086,12 @@ export async function proposeFill(
       ? pickCut(p.base) || (p.also !== null && pickCut({ from: "window", c: p.also }))
       : p.from === "window"
         ? isCut(candidateKinds(model, p.c)) || (nameCut && isNameLike(p.c.text, p.c.context))
-        : p.a.kind === "email"
-          ? isCut(new Set(["email"]))
-          : nameCut;
+        : p.a.kind === "name"
+          ? nameCut
+          : aboutCut(p.a);
   /** A pick of a kind a cut took, whatever window it came from. */
   const kindCut = (p: Pick): boolean =>
-    p.from === "instruction" ? false : p.from === "derived" ? kindCut(p.base) || (p.also !== null && kindCut({ from: "window", c: p.also })) : p.from === "window" ? isCut(candidateKinds(model, p.c)) : p.a.kind === "email" && isCut(new Set(["email"]));
+    p.from === "instruction" ? false : p.from === "derived" ? kindCut(p.base) || (p.also !== null && kindCut({ from: "window", c: p.also })) : p.from === "window" ? isCut(candidateKinds(model, p.c)) : aboutCut(p.a);
   /**
    * What still withholds a pick from the window the user just left: a cut of its own kind, and the name cut for
    * a name (review: a cut chat's "Name: Dana Whitfield" beside the note's "Name: Alex Raman"; nothing says the
@@ -1163,7 +1173,9 @@ export async function proposeFill(
     // the owner to be settled blanked B13's fill desk, an order confirmation's details on a checkout form (final
     // live replay, evidence/screen/b24/adv-live-replay-final): there the unsettled owner vetoes nothing.
     const labelsField = c.labelled === true && c.recency === "justLeft" && c.context !== null && overlap(fieldTerms([c.context]), f.terms) > 0;
-    const kind = candidateKinds(model, c).has("email") ? "email" : personName(c) !== null || isNameLike(c.text, c.context) ? "name" : null;
+    // C1: a phone the user told Caret counts as their own value of that kind, as an email does.
+    const ck = candidateKinds(model, c);
+    const kind = ck.has("email") ? "email" : ck.has("phone") ? "phone" : personName(c) !== null || isNameLike(c.text, c.context) ? "name" : null;
     if (wants === "user" && is !== "user" && kind !== null && memoryKinds.has(kind) && !labelsField) return true;
     // An Ask that names no source reads every window, as fill on focus does, but its questions quote the
     // instruction instead of where users copy from, and Jev picks more boldly: "fill in whatever you know about me"
