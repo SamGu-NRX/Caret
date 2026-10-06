@@ -311,7 +311,10 @@ public final class PageInlineMachine {
         gate = g
         // A new focus: every unanswered line may show again (once in it).
         if previous.map(Self.focusKey) != f.map(Self.focusKey) { shownIn.removeAll() }
-        guard let f, let key = f.key, f.editable, let pid = Int32(exactly: f.app.pid), pid > 0 else {
+        // A field the user types in: editable (fill may write it) or one the page reports text around the caret for. A
+        // contenteditable is the second (the test Mac, e94f463: fill hands those to the user, so the helper marks them
+        // not editable), and Gmail's compose body is one.
+        guard let f, let key = f.key, f.editable || f.text != nil, let pid = Int32(exactly: f.app.pid), pid > 0 else {
             hideNotice()
             return clear("noField")
         }

@@ -325,6 +325,30 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(r.machine.lastOutcome, "pageUnfocused")
     }
 
+    /// The test Mac (e94f463): a contenteditable comes as editable false (fill may not write it; the helper's
+    /// page-link.ts VALUE_KINDS), with the text around its caret. Inline text goes by the text, not by that flag, and
+    /// so does Gmail's line (its compose body is a contenteditable).
+    func testAContentEditableGetsInlineTextAndGmailsLine() throws {
+        let r = Rig()
+        var f = try Self.field(1)
+        f.editable = false
+        f.empty = true
+        r.field(f)
+        XCTAssertEqual(r.requests.map(\.before), ["I am writing to apply for the "])
+        let g = Rig()
+        var gmail = try Self.field(7)
+        gmail.editable = false
+        g.field(gmail)
+        XCTAssertEqual(g.notices.count, 1)
+        // A control with no text of the user's (a button, a checkbox) still gets nothing.
+        let b = Rig()
+        var button = try Self.field(1)
+        button.editable = false
+        button.text = nil
+        b.field(button)
+        XCTAssertEqual(b.requests, [])
+    }
+
     func testAReplacedElementWithTheSameKeyTakesTheOfferDown() throws {
         let r = Rig()
         r.field(try Self.field(1))
