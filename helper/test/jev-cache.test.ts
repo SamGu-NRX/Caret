@@ -15,7 +15,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-const FIXTURE = { windows: (id: string) => id === "fx-1", memory: true };
+const FIXTURE = { windows: (id: string) => id === "fx-1", memory: true, plan: true };
 const opts = (mode: CacheOptions["mode"], env: NodeJS.ProcessEnv = {}): CacheOptions => ({ dir, mode, engine: "jev", model: "jev-latest", fixture: FIXTURE, env });
 
 /** A fill-shaped request: two fields, three candidates, the second ask's ids and order as given. */
@@ -78,7 +78,7 @@ describe("the record-and-replay cache", () => {
 
   it("refuses the user's memory unless the harness says its memory is a fixture", async () => {
     const req = { ...fillReq(["c1", "c2", "c3"]), snippets: [{ windowId: "memory", kind: "candidate" as const, text: "Ada" }] };
-    await expect(cachedAsk(engine().ask, { ...opts("replay-or-record"), fixture: { windows: FIXTURE.windows, memory: false } })(req)).rejects.toThrow(CacheRefused);
+    await expect(cachedAsk(engine().ask, { ...opts("replay-or-record"), fixture: { ...FIXTURE, memory: false } })(req)).rejects.toThrow(CacheRefused);
     await expect(cachedAsk(engine().ask, opts("replay-or-record"))(req)).resolves.toBeDefined();
   });
 
@@ -156,3 +156,11 @@ describe("the record-and-replay cache", () => {
 });
 
 vi.restoreAllMocks();
+
+describe("the fixture check", () => {
+  it("refuses a window the request's ledger charged, though it declared the text under the plan", async () => {
+    const req = { ...fillReq(["c1", "c2", "c3"]), snippets: [{ windowId: "plan", kind: "candidate" as const, text: "Ada" }], charged: { "92930-real": 3 } };
+    await expect(cachedAsk(engine().ask, opts("replay-or-record"))(req)).rejects.toThrow(/window 92930-real/);
+    await expect(cachedAsk(engine().ask, { ...opts("replay-or-record"), fixture: { ...FIXTURE, plan: false } })({ ...req, charged: {} })).rejects.toThrow(/plan's text/);
+  });
+});

@@ -35,9 +35,20 @@ export interface HarnessEngine {
   says: string;
 }
 
-export function calibrationFromEnv(env: NodeJS.ProcessEnv): Calibration {
+/**
+ * Each llama model's calibration as the bake-off fitted it on B24, the calibration set (evidence/screen/j1/runs). A model
+ * not listed has none, and an eval refuses to run it without CARET_ENGINE_CALIBRATION, since a small model's raw
+ * probabilities pass callers' floors that Jev's would not; "1,1" runs it raw, for fitting.
+ */
+export const CALIBRATIONS: Readonly<Record<string, Calibration>> = {};
+
+export function calibrationFromEnv(env: NodeJS.ProcessEnv, model?: string): Calibration {
   const raw = env.CARET_ENGINE_CALIBRATION;
-  if (raw === undefined || raw === "") return UNCALIBRATED;
+  if (raw === undefined || raw === "") {
+    const known = model === undefined ? undefined : CALIBRATIONS[model];
+    if (known !== undefined) return known;
+    throw new Error(`no calibration for ${model ?? "this engine"}: set CARET_ENGINE_CALIBRATION ("choiceT,noulT"; "1,1" reads its probabilities raw, for fitting)`);
+  }
   const [c, n] = raw.split(",").map(Number);
   if (c === undefined || n === undefined || !(c > 0) || !(n > 0)) throw new Error(`CARET_ENGINE_CALIBRATION is '${raw}'; it must be two temperatures above 0, "choiceT,noulT"`);
   return { choiceT: c, noulT: n };
@@ -68,7 +79,7 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   const engine = baseEngine(o, env);
   const cache = engine.name === "canned" ? null : cacheFromEnv(env, HARNESS_CACHE_DIR);
   let ask = cache === null ? engine.ask : cachedAsk(engine.ask, { ...cache, engine: engine.name, model: engine.model, fixture: o.fixture, env });
-  const cal = engine.name === "llama" ? calibrationFromEnv(env) : UNCALIBRATED;
+  const cal = engine.name === "llama" ? calibrationFromEnv(env, engine.model) : UNCALIBRATED;
   if (engine.name === "llama") ask = calibrated(ask, cal);
   const log = o.logRequests;
   const inner = ask;

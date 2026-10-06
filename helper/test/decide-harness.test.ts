@@ -21,7 +21,7 @@ afterEach(() => {
 
 const req = (windowId: string): JevRequest => ({ state: { s: 1 }, questions: { q: { type: "choice", instructions: "i", criteria: { a: "A", b: "B" } } }, snippets: [{ windowId, kind: "candidate", text: "A" }], charged: {} });
 const canned: AskJev = async () => ({ model: "canned", answers: { q: { choice: "a", confidence: 0.9 } }, inputTokens: 0, latencyMs: 0, costUsd: 0 });
-const fixture = { windows: (id: string) => id === "fx", memory: true };
+const fixture = { windows: (id: string) => id === "fx", memory: true, plan: true };
 
 describe("an eval's decision engine", () => {
   it("is one of jev, canned, llama and gemini", () => {
@@ -51,5 +51,10 @@ describe("an eval's decision engine", () => {
     const e = harnessEngine({ name: "llama", canned: null, fixture, env: { CARET_LLAMA_MODEL: "qwen", CARET_JEV_CACHE: dir, CARET_ENGINE_CALIBRATION: "1.5,2" } });
     expect(e.says).toBe(`engine llama (qwen), cache replay-or-record in ${dir}, calibration choice T 1.5, yes/no T 2`);
     expect(() => calibrationFromEnv({ CARET_ENGINE_CALIBRATION: "hot" })).toThrow(/CARET_ENGINE_CALIBRATION/);
+  });
+
+  it("refuses llama with no calibration, since a small model's raw probabilities pass floors Jev's would not", () => {
+    expect(() => harnessEngine({ name: "llama", canned: null, fixture, env: { CARET_LLAMA_MODEL: "unfitted", CARET_JEV_CACHE: "off" } })).toThrow(/no calibration for unfitted/);
+    expect(harnessEngine({ name: "llama", canned: null, fixture, env: { CARET_LLAMA_MODEL: "unfitted", CARET_JEV_CACHE: "off", CARET_ENGINE_CALIBRATION: "1,1" } }).says).toContain("choice T 1");
   });
 });

@@ -504,7 +504,7 @@ const canned: AskJev = async (req: JevRequest): Promise<JevResult> => {
 };
 /** Windows this eval put on the desk from fixtures: the fixture page's tab and each page's replayed sources. */
 const fixtureIds = new Set<string>();
-const decide = harnessEngine({ name: ENGINE, canned, fixture: { windows: (id) => fixtureIds.has(id), memory: true }, ...(args["log-requests"] === undefined ? {} : { logRequests: args["log-requests"] }) });
+const decide = harnessEngine({ name: ENGINE, canned, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(args["log-requests"] === undefined ? {} : { logRequests: args["log-requests"] }) });
 const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   const r = await decide.ask(req);

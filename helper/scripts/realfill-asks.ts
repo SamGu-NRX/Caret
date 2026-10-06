@@ -91,7 +91,7 @@ const jevModels = new Set<string>();
 let writerSpent = 0;
 /** Windows put on a desk, all from fixture files (buildDesk); the cache and the request log take only their text. */
 const fixtureIds = new Set<string>();
-const decide = harnessEngine({ name: engineName(a.engine), canned: null, fixture: { windows: (id) => fixtureIds.has(id), memory: true }, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
+const decide = harnessEngine({ name: engineName(a.engine), canned: null, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
 /** Each decision request's latency, for the bake-off's p50 and p95. */
 const requestMs: number[] = [];
 let current = "";

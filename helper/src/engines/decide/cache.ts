@@ -32,11 +32,18 @@ export class CacheRefused extends Error {
   }
 }
 
-/** Which texts the harness loaded from fixtures: window ids it put on its desk from fixture files, and its memory. */
+/**
+ * Which texts the harness loaded from fixtures: window ids it put on its desk from fixture files, its memory, and the
+ * text its plans wrote from its own instructions (SnippetLedger.plan declares it under window id "plan").
+ */
 export interface FixtureSources {
   windows: (windowId: string) => boolean;
   memory: boolean;
+  plan: boolean;
 }
+
+/** SnippetLedger.plan's window id (privacy.ts). */
+const PLAN_SNIPPETS = "plan";
 
 export interface CacheOptions {
   dir: string;
@@ -162,11 +169,15 @@ interface Entry {
 
 /** Throws CacheRefused when `req` declares text that is not a fixture's (see the file's header). */
 export function checkFixture(req: JevRequest, fixture: FixtureSources): void {
-  for (const s of req.snippets) {
-    if (s.windowId === MEMORY_SNIPPETS) {
+  // Every window the request declares text from, and every window its ledger charged: a plan's text is declared under
+  // "plan", but each window line it holds is charged to that window.
+  for (const id of new Set([...req.snippets.map((s) => s.windowId), ...Object.keys(req.charged)])) {
+    if (id === MEMORY_SNIPPETS) {
       if (!fixture.memory) throw new CacheRefused("the decision cache stores request text on disk, and this request carries the user's memory, which this harness did not load from a fixture");
-    } else if (!fixture.windows(s.windowId)) {
-      throw new CacheRefused(`the decision cache stores request text on disk, and this request carries text from window ${s.windowId}, which this harness did not load from a fixture`);
+    } else if (id === PLAN_SNIPPETS) {
+      if (!fixture.plan) throw new CacheRefused("the decision cache stores request text on disk, and this request carries a plan's text, which this harness did not write from a fixture's instruction");
+    } else if (!fixture.windows(id)) {
+      throw new CacheRefused(`the decision cache stores request text on disk, and this request carries text from window ${id}, which this harness did not load from a fixture`);
     }
   }
 }
