@@ -295,7 +295,14 @@ async function walk(id: string, tabId: number | null): Promise<void> {
     focused:
       focusedFrame?.r.focused === undefined || focusedFrame.r.focused === null
         ? null
-        : { frameId: focusedFrame.f.frameId, ...focusedFrame.r.focused, ...(deniedOrigin(focusedFrame.origin) || (top !== null && deniedOrigin(top)) ? { text: null, caret: null } : {}) },
+        : {
+            frameId: focusedFrame.f.frameId,
+            ...focusedFrame.r.focused,
+            // H13 review: whether that frame's document has focus now; after a click in the address bar none does, and
+            // the host takes its inline text down rather than let Tab take it.
+            hasFocus: focusedFrame.r.hasFocus === true,
+            ...(deniedOrigin(focusedFrame.origin) || (top !== null && deniedOrigin(top)) ? { text: null, caret: null } : {}),
+          },
     view,
     walkMs: Math.round((performance.now() - t0) * 10) / 10,
   });

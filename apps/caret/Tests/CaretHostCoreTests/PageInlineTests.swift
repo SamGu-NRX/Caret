@@ -305,6 +305,18 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(r.ghosts.last?.0, "eld Robotics Technician role")
     }
 
+    func testNothingIsOfferedWhenThePagesDocumentLostFocus() throws {
+        let r = Rig()
+        r.field(try Self.field(1))
+        r.suggest("Field Robotics Technician role")
+        var f = try Self.field(1)
+        f.pageFocused = false
+        r.field(f)
+        XCTAssertNil(r.arbiter.snapshot().current, "Tab goes to the address bar")
+        XCTAssertTrue(r.ghostHidden)
+        XCTAssertEqual(r.machine.lastOutcome, "pageUnfocused")
+    }
+
     func testAReplacedElementWithTheSameKeyTakesTheOfferDown() throws {
         let r = Rig()
         r.field(try Self.field(1))

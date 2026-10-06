@@ -262,6 +262,15 @@ describe("the page field the host hears (H13)", () => {
     expect(HelperMessage.safeParse(f).success).toBe(true);
   });
 
+  it("says when the field's document lost focus (the address bar), so the host offers nothing there", async () => {
+    const { published, session, helper } = build({ frameId: 0, id: "e1", selection: [12, 12], text: { before: "I am writing", after: "", selection: "" }, caret: [110, 50, 1, 18], hasFocus: false });
+    await settle();
+    helper.handleReader({ type: "appSwitch", v: 1, at: 2, from: null, to: chrome });
+    session.receive({ type: "pageFocus", v: 1, at: 3, tabId: 7, frameId: 0 });
+    await settle();
+    expect(fields(published).at(-1)?.pageFocused).toBe(false);
+  });
+
   it("says Gmail's compose body offers its own suggestions", async () => {
     const { published, session, helper } = build({ frameId: 0, id: "e1", selection: [0, 0], text: { before: "Hi Gareth, ", after: "", selection: "" }, caret: null }, "https://mail.google.com", "/mail/u/0/", "contenteditable");
     await settle();

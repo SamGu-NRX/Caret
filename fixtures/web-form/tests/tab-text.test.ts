@@ -399,6 +399,21 @@ describe("the caret of the focused field (H13)", () => {
     await tab.close();
   });
 
+  test("an insert into an editor goes nowhere while a form control inside it has focus (H13 review)", async () => {
+    const tab = await open("/fields");
+    await tab.evaluate(`(() => {
+      const outer = document.getElementById("ce");
+      outer.innerHTML = 'Dear Alice, <input id="embedded" value="">';
+      const r = document.createRange(); r.setStart(outer.firstChild, 12); r.collapse(true);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      document.getElementById("embedded").focus();
+    })()`);
+    const r = await tab.evaluate<{ outcome: string }>(`__p4.insertAtCaret(document.getElementById("ce"), { expect: "Dear Alice, ", text: "thanks" }, async () => null)`);
+    assert.equal(r.outcome, "stale");
+    assert.equal(await tab.evaluate(`document.getElementById("embedded").value`), "");
+    await tab.close();
+  });
+
   test("an insert touches nothing in a document that does not have focus (a tab the user just left)", async () => {
     const tab = await open("/fields");
     await tab.evaluate(`(() => { const ta = document.getElementById("ta"); ta.value = "Dear team, "; ta.focus(); ta.setSelectionRange(11, 11); document.hasFocus = () => false; })()`);

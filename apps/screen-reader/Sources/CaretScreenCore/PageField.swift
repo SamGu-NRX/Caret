@@ -30,6 +30,8 @@ public struct PageField: Codable, Equatable, Sendable {
     /// H13 review: the walked element itself (frame, document, registry id), opaque. The key is a label and an ordinal,
     /// which a replacement field of the same label keeps; an insert names this token and the page refuses any other.
     public var token: String?
+    /// H13 review: false when the field's document lost focus (the browser's address bar); nil when not said.
+    public var pageFocused: Bool?
 
     /// The text before the caret (at most 2,000 characters), after it (500) and selected.
     public struct Text: Codable, Equatable, Sendable {
@@ -66,7 +68,7 @@ public struct PageField: Codable, Equatable, Sendable {
         self.text = text; self.ownSuggestions = ownSuggestions; self.docsText = docsText; self.caret = caret; self.token = token
     }
 
-    enum CodingKeys: String, CodingKey { case at, app, windowId, title, key, role, editable, empty, frame, look, text, ownSuggestions, docsText, caret, token }
+    enum CodingKeys: String, CodingKey { case at, app, windowId, title, key, role, editable, empty, frame, look, text, ownSuggestions, docsText, caret, token, pageFocused }
 
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
@@ -83,6 +85,7 @@ public struct PageField: Codable, Equatable, Sendable {
         docsText = try c.decodeIfPresent(DocsText.self, forKey: .docsText)
         caret = try c.decodeIfPresent(Frame.self, forKey: .caret)
         token = try c.decodeIfPresent(String.self, forKey: .token)
+        pageFocused = try c.decodeIfPresent(Bool.self, forKey: .pageFocused)
         if let text, text.before.count > 2000 || text.after.count > 500 || text.selection.count > 2000 {
             throw ProtocolError("pageField's text is longer than a walk reports")
         }
@@ -100,7 +103,7 @@ public struct PageField: Codable, Equatable, Sendable {
         try c.encode(editable, forKey: .editable); try c.encode(empty, forKey: .empty); try c.encode(frame, forKey: .frame)
         try c.encodeIfPresent(look, forKey: .look)
         try c.encodeIfPresent(text, forKey: .text); try c.encodeIfPresent(ownSuggestions, forKey: .ownSuggestions)
-        try c.encodeIfPresent(docsText, forKey: .docsText); try c.encodeIfPresent(caret, forKey: .caret); try c.encodeIfPresent(token, forKey: .token)
+        try c.encodeIfPresent(docsText, forKey: .docsText); try c.encodeIfPresent(caret, forKey: .caret); try c.encodeIfPresent(token, forKey: .token); try c.encodeIfPresent(pageFocused, forKey: .pageFocused)
     }
 }
 

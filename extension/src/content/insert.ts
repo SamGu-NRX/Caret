@@ -26,9 +26,12 @@ function hasFocus(el: Element): boolean {
   if (active === null) return false;
   if (!(el instanceof HTMLElement) || !el.isContentEditable) return active === el;
   // H13 review: in an editor, focus and the selection must belong to the editor the walk kept, not to an editor nested
-  // in it behind a non-editable boundary (its own editing host), nor to an input inside it.
+  // in it behind a non-editable boundary (its own editing host), nor to a form control inside it.
+  if (active !== el && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement)) return false;
   const host = editingHost(el);
-  const sel = el.ownerDocument.getSelection();
+  // A shadow root keeps its own selection in Chrome, as field-text.ts reads it.
+  const root = el.getRootNode();
+  const sel = root.nodeType === Node.DOCUMENT_FRAGMENT_NODE && "getSelection" in root ? (root as ShadowRoot & { getSelection(): Selection | null }).getSelection() : el.ownerDocument.getSelection();
   const anchor = sel === null || sel.rangeCount === 0 ? null : sel.getRangeAt(0).startContainer;
   return editingHost(active) === host && anchor !== null && editingHost(anchor) === host;
 }

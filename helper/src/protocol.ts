@@ -2261,6 +2261,11 @@ export const PageField = z.object({
    * key is a label and an ordinal, which a replacement field of the same label keeps; an insert names this token.
    */
   token: z.string().min(1).max(300).optional(),
+  /**
+   * H13 review: false when the field's document has lost focus (the user clicked the address bar): the host offers no
+   * inline text there, since Tab would go to the browser. With `text`, to the same hosts only; absent before H13.
+   */
+  pageFocused: z.boolean().optional(),
 });
 export type PageField = z.infer<typeof PageField>;
 
@@ -2712,6 +2717,8 @@ export const PageSnapshot = z.object({
        * when the page cannot place it, absent from an extension before H13.
        */
       caret: Frame.nullable().optional(),
+      /** H13 review: the focused control's document has focus (not the browser's address bar, nor another window). */
+      hasFocus: z.boolean().optional(),
     })
     .nullable(),
   /**

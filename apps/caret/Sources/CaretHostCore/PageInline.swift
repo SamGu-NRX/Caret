@@ -298,6 +298,8 @@ public final class PageInlineMachine {
             return
         }
         guard g.allowed else { return clear("notAllowed") }
+        // H13 review: the page's document lost focus (the address bar): Tab goes to the browser, so nothing is on offer.
+        if f.pageFocused == false { return clear("pageUnfocused") }
         guard let text = f.text, text.selection.isEmpty, let caretFrame = f.caret, f.frame != nil else { return clear("noText") }
         if PageInline.midLine(text.after) { return clear("midLine") }
         let caret = Self.rect(caretFrame)

@@ -219,7 +219,9 @@ describe("focus and typing reports to the helper (H13)", () => {
     f.answers.set("1:0:walk", { origin: "https://accounts.google.com", path: "/signin", title: "t", headings: [], controls: [], iframes: [], viewport: [1280, 900], excluded: {}, truncated: false, focused: { id: "e1", selection: [0, 0], text: { before: "a", after: "", selection: "" }, caret: [10, 10, 1, 16] }, hasFocus: true, walkMs: 1 });
     await f.fire("port.message", { type: "pageCommand", v: 1, id: "w1", expires: Date.now() + 5000, verb: { kind: "pageWalk", tabId: 1 } });
     for (let i = 0; i < 20 && !f.sentToHelper.some((m) => m.type === "pageSnapshot"); i++) await settle();
-    const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot") as { focused: { text: unknown; caret: unknown } } | undefined;
+    const snap = f.sentToHelper.find((m) => m.type === "pageSnapshot") as { focused: { text: unknown; caret: unknown; hasFocus: unknown } } | undefined;
     expect(snap?.focused.caret).toBeNull();
+    // H13 review: whether the field's document has focus travels with it.
+    expect(snap?.focused.hasFocus).toBe(true);
   });
 });
