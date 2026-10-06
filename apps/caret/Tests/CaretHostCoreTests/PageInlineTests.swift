@@ -18,7 +18,7 @@ final class PageInlineTests: XCTestCase {
         let machine: PageInlineMachine
         var commands: [PageInlineMachine.Command] = []
         /// Every field kind on, contenteditables included, so the machine's other behaviour is tested in all of them;
-        /// the defaults have their own test (testInlineTextIsOnInInputsAndTextareasAndOffInContentEditablesByDefault).
+        /// the defaults have their own test (testInlineTextIsOnByDefaultInInputsTextareasAndContentEditables).
         var gate = PageInlineMachine.Gate(allowed: true, contentEditable: true, settings: PageInlineSettings())
 
         init() {
@@ -352,43 +352,56 @@ final class PageInlineTests: XCTestCase {
         XCTAssertEqual(b.requests, [])
     }
 
-    /// The lead's defaults (2026-10-06), by the test Mac's ⌘Z: one ⌘Z after real typing and Tab removed only the insert
-    /// in a textarea (runs/20261006T150211Z-73497) and the typed sentence too in a contenteditable
-    /// (runs/20261006T151009Z-37788). So inline text on pages is on, in inputs and textareas, and off in contenteditables,
-    /// where Gmail's line stays away too: turning Caret on there would show nothing.
-    func testInlineTextIsOnInInputsAndTextareasAndOffInContentEditablesByDefault() throws {
+    /// The lead's defaults (2026-10-06), by the test Mac's ⌘Z: on by default wherever one ⌘Z after real typing and Tab
+    /// removed only the insert. Inputs and textareas, 4 of 4 each (runs/20261006T160032Z-67799). Contenteditables,
+    /// 4 of 4 once the insert ends the typing's undo step (same run). Before that fix, they lost the typed sentence
+    /// too (runs/20261006T151009Z-37788). `pageInlineContentEditable` still turns contenteditables off alone, and
+    /// then Gmail's line stays away too: turning Caret on there would show nothing.
+    func testInlineTextIsOnByDefaultInInputsTextareasAndContentEditables() throws {
         let d = CaretSettings()
         XCTAssertTrue(d.pageInlineText)
-        XCTAssertFalse(d.pageInlineContentEditable)
+        XCTAssertTrue(d.pageInlineContentEditable)
         XCTAssertTrue(PageInline.allowed(d, wordsAllowed: true, engineReady: true, browserAllowed: true))
-        func rig() -> Rig {
+        func rig(_ s: CaretSettings) -> Rig {
             let r = Rig()
-            r.gate = PageInlineMachine.Gate(allowed: PageInline.allowed(d, wordsAllowed: true, engineReady: true, browserAllowed: true),
-                                            contentEditable: d.pageInlineContentEditable, settings: d.pageInline)
+            r.gate = PageInlineMachine.Gate(allowed: PageInline.allowed(s, wordsAllowed: true, engineReady: true, browserAllowed: true),
+                                            contentEditable: s.pageInlineContentEditable, settings: s.pageInline)
             return r
         }
-        let textarea = rig()
+        let textarea = rig(d)
         XCTAssertEqual(try Self.field(1).fieldKind, .textarea)
         textarea.field(try Self.field(1))
         XCTAssertEqual(textarea.requests.map(\.before), ["I am writing to apply for the "])
-        let input = rig()
+        let input = rig(d)
         var line = try Self.field(1)
         line.fieldKind = .input
         input.field(line)
         XCTAssertEqual(input.requests.count, 1)
-        let editor = rig()
         var ce = try Self.field(1)
         ce.fieldKind = .contenteditable
+        let editor = rig(d)
         editor.field(ce)
-        XCTAssertEqual(editor.requests, [])
-        XCTAssertEqual(editor.machine.lastOutcome, "contentEditableOff")
-        let gmail = rig()
+        XCTAssertEqual(editor.requests.count, 1)
+        let gmail = rig(d)
         XCTAssertEqual(try Self.field(7).fieldKind, .contenteditable)
         gmail.field(try Self.field(7))
         XCTAssertEqual(gmail.requests, [])
-        XCTAssertEqual(gmail.notices, [], "no Gmail line where Turn Caret on here would show nothing")
+        XCTAssertEqual(gmail.notices.count, 1)
+        // Contenteditables turned off alone: no inline text there, and no Gmail line.
+        var noEditors = d
+        noEditors.pageInlineContentEditable = false
+        let off = rig(noEditors)
+        off.field(ce)
+        XCTAssertEqual(off.requests, [])
+        XCTAssertEqual(off.machine.lastOutcome, "contentEditableOff")
+        let quietGmail = rig(noEditors)
+        quietGmail.field(try Self.field(7))
+        XCTAssertEqual(quietGmail.notices, [], "no Gmail line where Turn Caret on here would show nothing")
+        let stillTextarea = rig(noEditors)
+        stillTextarea.field(try Self.field(1))
+        XCTAssertEqual(stillTextarea.requests.count, 1)
         // A field whose kind the page did not say gets nothing.
-        let unknown = rig()
+        let unknown = rig(d)
         var bare = try Self.field(1)
         bare.fieldKind = nil
         unknown.field(bare)
@@ -400,10 +413,10 @@ final class PageInlineTests: XCTestCase {
         XCTAssertNil(json["pageInlineContentEditable"])
         var chosen = d
         chosen.pageInlineText = false
-        chosen.pageInlineContentEditable = true
+        chosen.pageInlineContentEditable = false
         let back = try JSONDecoder().decode(CaretSettings.self, from: JSONEncoder().encode(chosen))
         XCTAssertFalse(back.pageInlineText)
-        XCTAssertTrue(back.pageInlineContentEditable)
+        XCTAssertFalse(back.pageInlineContentEditable)
     }
 
     /// The overall switch off: nothing shows in any field, Gmail's line included.
