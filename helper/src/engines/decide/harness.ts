@@ -61,11 +61,21 @@ export function calibrationFromEnv(env: NodeJS.ProcessEnv, model?: string): Cali
   return { choiceT: c, noulT: n };
 }
 
+/**
+ * R1: free Laya answers HTTP 422 to any request whose state is a JSON object, and accepts the same state as a JSON
+ * string (probes of B24 ask-01's heads request, 2026-10-06, evidence/screen/r1/probe/laya-shapes.txt). Caret's builders
+ * send objects, so for Laya the state goes as its JSON text: the same characters, in one string.
+ */
+function layaState(ask: AskJev): AskJev {
+  return (req) => ask(typeof req.state === "string" ? req : { ...req, state: JSON.stringify(req.state) });
+}
+
 function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngine {
   if (o.name === "jev" || o.name.startsWith("gateway:")) {
     const providerEnv = o.name === "jev" ? env : { ...env, CARET_JEV_PROVIDER: "gateway", CARET_JEV_MODEL: o.name.slice("gateway:".length) };
     const settings = jevSettings(providerEnv);
-    return { name: o.name, model: settings.model, reach: settings.provider, ask: makeJevClient((provider) => loadJevKey(providerEnv, provider), 10_000, DailySpend.fromEnv(providerEnv), settings, undefined, undefined, { fixture: o.fixture, env }) };
+    const ask = makeJevClient((provider) => loadJevKey(providerEnv, provider), 10_000, DailySpend.fromEnv(providerEnv), settings, undefined, undefined, { fixture: o.fixture, env });
+    return { name: o.name, model: settings.model, reach: settings.provider, ask: settings.model === LAYA_FREE_MODEL ? layaState(ask) : ask };
   }
   switch (o.name) {
     case "canned":
@@ -113,7 +123,7 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   const env = o.env ?? process.env;
   const engine = baseEngine(o, env);
   const cache = engine.name === "canned" ? null : cacheFromEnv(env, HARNESS_CACHE_DIR);
-  const variant = engine.reach === "typesafe" || engine.reach === "gateway" ? `provider:${engine.reach};body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}` : engine.name === "llama" ? `prompt:${env.CARET_LLAMA_PROMPT ?? "chat"};thinking:${env.CARET_LLAMA_THINKING ?? "default"};read:${LLAMA_READING}` : "";
+  const variant = engine.reach === "typesafe" || engine.reach === "gateway" ? `provider:${engine.reach};body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}${engine.model === LAYA_FREE_MODEL ? ";state:json-text" : ""}` : engine.name === "llama" ? `prompt:${env.CARET_LLAMA_PROMPT ?? "chat"};thinking:${env.CARET_LLAMA_THINKING ?? "default"};read:${LLAMA_READING}` : "";
   const sent = slowFromEnv(engine, env, cache?.dir ?? null, variant);
   let ask = cache === null ? sent : cachedAsk(sent, { ...cache, engine: engine.name, model: engine.model, variant, fixture: o.fixture, env });
   if (engine.model === LAYA_FREE_MODEL) {

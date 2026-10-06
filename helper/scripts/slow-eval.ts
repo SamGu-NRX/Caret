@@ -210,13 +210,15 @@ const corpusEligible = (): Map<string, number> => eligibleByPage(join(EVIDENCE, 
 function scoreOf(set: SetDef, dir: string): SetScore {
   return scoreDir(set.kind, dir, { ...(set.drop === undefined ? {} : { drop: set.drop }), ...(set.kind === "corpus" ? { fallbackEligible: corpusEligible() } : {}) });
 }
-interface Totals { sent: number; rate: number; transient: number; waitMs: number; latencies: number[] }
+/** `rejected`: requests Laya or the client could not answer (a 422, a malformed reply), recorded and replayed as failures. */
+interface Totals { sent: number; rejected: number; rate: number; transient: number; waitMs: number; latencies: number[] }
 function totals(set: EvalSet, st: SetStatus): Totals {
-  const t: Totals = { sent: 0, rate: 0, transient: 0, waitMs: st.backoffMs, latencies: [] };
+  const t: Totals = { sent: 0, rejected: 0, rate: 0, transient: 0, waitMs: st.backoffMs, latencies: [] };
   for (let p = 1; p <= st.passes; p++) {
     const ev = readEvents(eventsFile(set, p));
     const c = passCounts(ev);
     t.sent += c.sent;
+    t.rejected += c.rejected;
     t.rate += c.rate;
     t.transient += c.transient;
     t.waitMs += c.paceWaitMs;
@@ -230,7 +232,7 @@ function summaryLine(set: EvalSet, st: SetStatus): string {
   const t = totals(set, st);
   if (st.state === "failed" || st.score === undefined) return `${set.id}: FAILED (${st.error ?? "?"}) after ${st.passes} passes; requests ${t.sent}, 429s ${t.rate}`;
   const s = st.score;
-  return `${set.id}: right ${s.right}, wrong ${s.wrong}, abstained ${s.abstained ?? "-"}, written ${s.written} of ${s.eligible ?? "-"} ${s.unit}; requests ${t.sent}, 429s ${t.rate}${t.transient > 0 ? `, transient ${t.transient}` : ""}, wait ${mins(t.waitMs)}, latency p50 ${ms(percentile(t.latencies, 0.5))} ms p95 ${ms(percentile(t.latencies, 0.95))} ms; ${s.extra}; pass ${st.scoredPass}${st.settled === true ? "" : " (UNSETTLED: still sent requests)"}`;
+  return `${set.id}: right ${s.right}, wrong ${s.wrong}, abstained ${s.abstained ?? "-"}, written ${s.written} of ${s.eligible ?? "-"} ${s.unit}; requests ${t.sent} (${t.rejected} rejected), 429s ${t.rate}${t.transient > 0 ? `, transient ${t.transient}` : ""}, wait ${mins(t.waitMs)}, latency p50 ${ms(percentile(t.latencies, 0.5))} ms p95 ${ms(percentile(t.latencies, 0.95))} ms; ${s.extra}; pass ${st.scoredPass}${st.settled === true ? "" : " (UNSETTLED: still sent requests)"}`;
 }
 function refCell(refs: [string, string][] | undefined, set: SetDef): string {
   if (refs === undefined) return "none";
@@ -248,7 +250,7 @@ function writeResults(status: RunnerStatus): void {
     const st = status.sets[set.id];
     const ours = st === undefined || st.state !== "done" || st.score === undefined ? `${st?.state ?? "pending"}${st !== undefined && st.passes > 0 ? ` (pass ${st.passes})` : ""}` : `${cell(st.score)}${st.score.abstained === null ? "" : `, ${st.score.abstained} ${st.score.unit === "asks" ? "asked or refused" : "left"}`}; ${st.score.extra}${st.settled === true ? "" : "; UNSETTLED"}`;
     const t = st === undefined ? null : totals(set, st);
-    const traffic = t === null || st?.passes === 0 ? "-" : `${t.sent} sent, ${t.rate} × 429, wait ${mins(t.waitMs)}; p50 ${ms(percentile(t.latencies, 0.5))} / p95 ${ms(percentile(t.latencies, 0.95))} ms`;
+    const traffic = t === null || st?.passes === 0 ? "-" : `${t.sent} sent, ${t.rejected} rejected, ${t.rate} × 429, wait ${mins(t.waitMs)}; p50 ${ms(percentile(t.latencies, 0.5))} / p95 ${ms(percentile(t.latencies, 0.95))} ms`;
     return `| ${set.title} | ${ours} | ${traffic} | ${refCell(set.refs.canned, set)} | ${refCell(set.refs.jev, set)} |`;
   });
   const md = [

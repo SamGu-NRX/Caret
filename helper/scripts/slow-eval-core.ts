@@ -119,8 +119,9 @@ export function newStatus(pid: number, now: number, sets: readonly EvalSet[], ol
 }
 
 /** What one pass's events add up to. */
-export function passCounts(ev: readonly SlowEvent[]): { sent: number; ok: number; rate: number; transient: number; paceWaitMs: number; end: Extract<SlowEvent, { t: "end" }> | undefined } {
+export function passCounts(ev: readonly SlowEvent[]): { sent: number; ok: number; rejected: number; rate: number; transient: number; paceWaitMs: number; end: Extract<SlowEvent, { t: "end" }> | undefined } {
   let sent = 0;
+  let rejected = 0;
   let ok = 0;
   let rate = 0;
   let transient = 0;
@@ -131,10 +132,11 @@ export function passCounts(ev: readonly SlowEvent[]): { sent: number; ok: number
       paceWaitMs += e.paceWaitMs;
     }
     if (e.t === "sent" || e.t === "answerFailed") ok++;
+    if (e.t === "answerFailed") rejected++;
     if (e.t === "rate") rate++;
     if (e.t === "transient") transient++;
   }
-  return { sent, ok, rate, transient, paceWaitMs, end: ev.find((e): e is Extract<SlowEvent, { t: "end" }> => e.t === "end") };
+  return { sent, ok, rejected, rate, transient, paceWaitMs, end: ev.find((e): e is Extract<SlowEvent, { t: "end" }> => e.t === "end") };
 }
 
 export class Runner {

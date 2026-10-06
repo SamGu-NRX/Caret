@@ -34,7 +34,7 @@ function fakeClock(start = 1_000_000): SlowClock & { sleeps: number[] } {
   };
 }
 
-const req = (q: string): JevRequest => ({ state: "fixture", questions: { [q]: { type: "choice", instructions: `Pick for ${q}`, criteria: { a: "A", b: "B" } } }, snippets: [], charged: {} });
+const req = (q: string): JevRequest => ({ state: { form: "fixture" }, questions: { [q]: { type: "choice", instructions: `Pick for ${q}`, criteria: { a: "A", b: "B" } } }, snippets: [], charged: {} });
 const answer = (q: string, costUsd = 0): JevResult => ({ model: "convaiinnovations/laya-free", answers: { [q]: { choice: "a", confidence: 0.9 } }, inputTokens: 10, latencyMs: 400, costUsd });
 const qOf = (r: JevRequest): string => Object.keys(r.questions)[0] as string;
 
@@ -428,6 +428,8 @@ describe("harness wiring", () => {
     expect((await h.ask(req("a"))).answers.a?.choice).toBe("a");
     expect((await h.ask(req("a"))).answers.a?.choice).toBe("a");
     expect(fetch).toHaveBeenCalledTimes(1);
+    // Laya takes the state as JSON text only (layaState).
+    expect(JSON.parse(fetch.mock.calls[0]?.[1]?.body as string).state).toBe(JSON.stringify(req("a").state));
     const events = readFileSync(join(dir, "events.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as SlowEvent);
     expect(events.map((e) => e.t)).toEqual(["sent"]);
   });
