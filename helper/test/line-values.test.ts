@@ -151,3 +151,14 @@ describe("the sentence a warning may be in", () => {
     expect(sentenceAround(c, c.indexOf("555-0101"), "555-0101")).toBe(c);
   });
 });
+
+describe("abbreviations inside a warning sentence", () => {
+  it("do not end it", () => {
+    const a = "Phone: 555-0101 in the U.S. is old; do not use this number on the application or contact form.";
+    expect(sentenceAround(a, a.indexOf("555-0101"), "555-0101")).toBe(a);
+    const b = "Do not use the old B.S. graduation date May 2020 for this application because the records were incorrect.";
+    expect(sentenceAround(b, b.indexOf("May 2020"), "May 2020")).toBe(b);
+    const c = "Call e.g. Dr. Lee at 555-0101 only after five. Then rest.";
+    expect(sentenceAround(c, c.indexOf("555-0101"), "555-0101")).toBe("Call e.g. Dr. Lee at 555-0101 only after five.");
+  });
+});

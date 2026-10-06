@@ -86,6 +86,23 @@ const TRAILING_MARKS = /[.,;:!?)\]'"]+$/u;
  * types gives none.
  */
 export function lineValues(line: string): LineValue[] {
+  const hit = valuesMemo.get(line);
+  if (hit !== undefined) return hit;
+  const found = scanValues(line);
+  if (valuesMemo.size >= MEMO_LINES) valuesMemo.clear();
+  valuesMemo.set(line, found);
+  return found;
+}
+
+/**
+ * Lines whose values were read, so a line the generator, the label check and the clause all read is scanned once: the
+ * generator runs on the helper's event loop within GENERATOR_BUDGET_MS, and rescanning cost the corpus desks a third
+ * more time. Bounded; the number is assumed, well above the lines of a few source windows.
+ */
+const MEMO_LINES = 4000;
+const valuesMemo = new Map<string, LineValue[]>();
+
+function scanValues(line: string): LineValue[] {
   if (secretLine(line)) return [];
   const hits: { text: string; kind: ValueKind; at: number }[] = [];
   const scan = (re: RegExp, kind: ValueKind, trim = false): void => {
@@ -214,16 +231,24 @@ export function clauseAround(line: string, at: number, text: string): string | n
 }
 
 /**
+ * Where a sentence ends: ". ", "! " or "? " before a capital, a quote or a bracket, and not after an abbreviation: a
+ * single letter ("U.S.", "B.S.", "e.g.") or a common title or word ("Dr.", "St.", "Apt."), which would split a sentence
+ * early and leave its warning out (C1 review).
+ */
+const SENTENCE_END = /(?<!\b(?:\p{L}|Dr|Mr|Mrs|Ms|Mx|St|Jr|Sr|Prof|Inc|Ltd|Co|vs|etc|approx|No|Apt|Ste|Ave|Rd|Blvd|Mt|Ft))[.!?]\s+(?=[\p{Lu}"'“‘(\[])/gu;
+
+/**
  * The sentence of a line that holds a value at `at`, uncut: from the end of the sentence before (". ", "! ", "? ") to the
  * end of its own, a bracketed remark right after the value included. A warning in it may be about the value, so fill
  * sends it whole with the value, or not the value (candidates.ts lineFact).
  */
 export function sentenceAround(line: string, at: number, text: string): string {
   let start = 0;
-  for (const m of line.slice(0, at).matchAll(/[.!?]\s+/gu)) start = (m.index ?? 0) + m[0].length;
+  for (const m of line.slice(0, at).matchAll(SENTENCE_END)) start = (m.index ?? 0) + m[0].length;
   const end = at + text.length;
-  const remark = /^\s*\([^()]*\)/u.exec(line.slice(end));
+  const remark = /^\s*(?:\([^()]*\)|\[[^[\]]*\])/u.exec(line.slice(end));
   const from = remark === null ? end : end + remark[0].length;
-  const stop = /[.!?](?=\s|$)/u.exec(line.slice(from));
+  const rest = line.slice(from);
+  const stop = new RegExp(SENTENCE_END.source, "u").exec(rest);
   return line.slice(start, stop === null ? line.length : from + stop.index + 1).trim();
 }

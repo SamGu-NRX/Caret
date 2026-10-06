@@ -276,6 +276,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   /** Spans that go only with their clause (Candidate.line set at build). */
   const quoted = new WeakSet<Candidate>();
   /**
+   * Texts left out because their warning did not fit: the same text found later with no warning beside it is left out
+   * too, so it cannot stand in for the warned one, and the cut rules still count it as kept out (C1 review).
+   */
+  const unwarned = new Set<string>();
+  /**
    * C1: the clause each span would quote (Candidate.line), set only once every span is in (finish): a clause is worth a
    * window's budget only after every value that fits, so it never pushes another span out. Spent first, clauses took
    * the room of the lines a field's terms matched, and the cut rule then withheld those fields (corpus clinic-intake).
@@ -286,7 +291,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * does not fit its window's budget closes the window.
    */
   const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string): void => {
-    if (full() || seen.has(text) || closed.has(w.window.windowId)) return;
+    if (full() || seen.has(text) || unwarned.has(text) || closed.has(w.window.windowId)) return;
     const c = build(w, node, text, kind, context, quote);
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       missed.add(w.window.windowId);
@@ -294,6 +299,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       // counts as cut, so the cut rules withhold its kind and words, but the spans after it are still read. Closing the
       // window instead cut every later line of a mail whose prose warns often (corpus clinic-intake, 7 -> 5).
       if (quoted.has(c)) {
+        unwarned.add(text);
         if (!ranked.has(w.window.windowId)) leftOutOf.add(w.window.windowId);
         return;
       }
@@ -528,7 +534,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const texts = new Set<string>();
       for (const i of order) {
         const sp = spans[i] as (typeof spans)[number];
-        if (sp.group !== k || seen.has(sp.text) || texts.has(sp.text)) continue;
+        if (sp.group !== k || seen.has(sp.text) || unwarned.has(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
         group.push(build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote));
       }
@@ -560,6 +566,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     }
     /** Kinds left out whole, since none of them fits what is left; a line holding a value of one stays out too. */
     const leftOut = new Set(groups.keys());
+    for (const g of groups.values()) for (const c of g) if (quoted.has(c)) unwarned.add(c.text);
     if (leftOut.size > 0) missed.add(w.window.windowId);
     // Then the rest, nearest the fields first, with their facts, until one does not fit.
     for (const i of order.filter((x) => !takesKind(x))) {

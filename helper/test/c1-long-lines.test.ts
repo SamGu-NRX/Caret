@@ -220,3 +220,18 @@ describe("a labelled value its line warns about", () => {
     expect(d?.line).toBe("Phone: 555-0101; do not use this old number.");
   });
 });
+
+describe("a warned value that does not fit", () => {
+  it("keeps a later bare copy of it out too, and the cut rules count its kind", async () => {
+    const { SnippetLedger } = await import("../src/privacy.ts");
+    const { cutKinds } = await import("../src/fill/candidates.ts");
+    const pad = "The building manager said the lobby will be repainted next week and the elevator inspection is on Friday morning. ".repeat(10);
+    const m = new ScreenModel();
+    m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: `Phone: 555-0101; do not use this old number belonging to Dana Whitfield because ${pad}\\nPhone: 555-0101`, editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
+    m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));
+    const r = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()) });
+    const c = r.candidates.find((x) => x.text === "555-0101");
+    expect(c === undefined || (c.line ?? "").includes("do not use")).toBe(true);
+    if (c === undefined) expect([...cutKinds(m, r.cut, r.candidates)]).toContain("phone");
+  });
+});
