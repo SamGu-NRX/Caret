@@ -67,7 +67,10 @@ final class PageTaskCoordinator {
             if client?.send(accept) != true { status.increment("pageTask.acceptUnsent") }
         case .send(.control(let control)):
             if client?.send(control) != true { status.increment("pageTask.controlUnsent") }
-        case .count(let name): status.increment(name)
+        case .count(let name):
+            status.increment(name)
+            // A new task is placed at its own form, not where the task it replaced stood.
+            if name == "pageTask.started" { placed = false }
         case .toastTaken: onToastTaken?()
         case .chooseFile(let choice): choose(choice)
         }
