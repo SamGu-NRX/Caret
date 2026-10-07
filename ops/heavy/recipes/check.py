@@ -74,6 +74,19 @@ def _rows(data):
     return data["rows"]
 
 
+# What page-loop-eval reports for a scored task with nothing eligible to fill, which Caret stopped empty: the eval
+# passes it (page-loop-eval.ts, "scored zero-eligible task with no preview"), so it is no page error (B1 report,
+# 2026-10-07: wizard-3 in caret-hb-1eac305-canned-n1). Any other error, on any row, still fails the set.
+STOPPED_EMPTY = "no preview: stopped Caret found nothing to put in "
+
+
+def expected_empty_task(row):
+    task = row.get("task")
+    return (row.get("goal") is None and isinstance(task, dict) and task.get("scored") is True
+            and task.get("eligible") == 0 and isinstance(row.get("error"), str)
+            and row["error"].startswith(STOPPED_EMPTY))
+
+
 def page_loop(name, exit_code, wrong_seen, expect_ids=None, goal=False):
     """One eval set. Acceptance: no wrong value, every expected page present and walked, no page error, no press or
     POST, and on the goal path a goal result for every page that had something to fill."""
@@ -93,7 +106,9 @@ def page_loop(name, exit_code, wrong_seen, expect_ids=None, goal=False):
     if rows is not None:
         ids = [r["id"] for r in rows]
         step.update(pages=len(rows), walked=sum(1 for r in rows if r["walk"] is not None),
-                    wrong=sum(len(r["wrong"]) for r in rows), errors=[r["id"] for r in rows if r["error"]],
+                    wrong=sum(len(r["wrong"]) for r in rows),
+                    errors=[r["id"] for r in rows if r["error"] and not expected_empty_task(r)],
+                    stopped_empty=[r["id"] for r in rows if expected_empty_task(r)],
                     presses=data.get("presses") or 0, posts=data.get("posts") or 0, spent=data.get("spent"))
     problems, failures = [], []
     if rows is not None:

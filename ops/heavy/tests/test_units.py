@@ -267,6 +267,43 @@ class CheckTest(Temp):
         self.write("out/rowshape/page-loop.json", json.dumps({"rows": [{"id": "a", "wrong": "x", "walk": {}}], "presses": 0}))
         self.assertEqual(self.run_check("page-loop", "rowshape", "--exit", "0"), check.EVIDENCE)
 
+    def stopped_empty(self, name, **change):
+        """The blind set's wizard-3 row (B1, caret-hb-1eac305-canned-n1), as synthetic evidence: a scored task with nothing
+        eligible, which Caret stopped empty. *change* edits the row; the other page is an ordinary done one."""
+        row = {"id": "wizard-3", "controls": 1, "walk": {"commandMs": 1}, "goal": None, "previewMs": None, "wrong": [],
+               "error": "no preview: stopped Caret found nothing to put in Cover letter.",
+               "task": {"scored": True, "eligible": 0, "right": 0, "missed": [], "attachGap": ["resume"],
+                        "arrived": "harness Next on wizard-2"}}
+        for key, value in change.items():
+            if key in ("scored", "eligible"):
+                row["task"][key] = value
+            else:
+                row[key] = value
+        rows = [{"id": "wizard-1", "walk": {"commandMs": 1}, "wrong": [], "error": None, "goal": {"outcome": "done"},
+                 "task": {"scored": True, "eligible": 2}}, row]
+        self.write("out/{}/page-loop.json".format(name), json.dumps({"rows": rows, "presses": 0, "posts": 0}))
+        self.write("out/{}.log".format(name), "log\n")
+
+    def test_an_expected_empty_task_is_not_a_page_error_and_nothing_else_is_excused(self):
+        cases = [
+            ("stopped-empty", {}, "0", check.OK),
+            ("other-error", {"error": "read ECONNRESET"}, "0", check.FAILED),
+            ("unsettled-ask", {"error": "no preview: asked: Choose a source"}, "0", check.FAILED),
+            ("eligible", {"eligible": 1}, "0", check.EVIDENCE),        # something to fill and no goal result
+            ("unscored", {"scored": False}, "0", check.EVIDENCE),
+            ("wrong-write", {"wrong": ["Cover letter: x (key: y)"]}, "0", check.WRONG),
+            ("eval-failed", {}, "1", check.FAILED),
+        ]
+        for name, change, exit_code, want in cases:
+            with self.subTest(name):
+                self.stopped_empty(name, **change)
+                self.assertEqual(self.run_check("page-loop", name, "--exit", exit_code, "--goal"), want)
+        # Off the goal path the same rules hold for errors: only the stopped-empty task is excused.
+        self.stopped_empty("plain-empty")
+        self.assertEqual(self.run_check("page-loop", "plain-empty", "--exit", "0"), check.OK)
+        self.stopped_empty("plain-eligible", eligible=1)
+        self.assertEqual(self.run_check("page-loop", "plain-eligible", "--exit", "0"), check.FAILED)
+
     def test_page_loop_acceptance_needs_every_expected_page_no_error_and_goal_results(self):
         ids = self.write("ids.txt", "a\nb\n")
         self.page_loop("good")
