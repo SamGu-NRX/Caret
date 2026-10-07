@@ -19,7 +19,7 @@ import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
 import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind } from "./kinds.ts";
-import { takesOneValue, writeMisfit } from "./writable.ts";
+import { writeMisfit, type ShapeSource } from "./writable.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { secretIn } from "../planner/trace.ts";
 import type { AskJev, JevRequest } from "./jev.ts";
@@ -346,8 +346,12 @@ export function sourceLabel(p: Proposed): string | null {
  * time, each only on verifier evidence (migration step 4).
  */
 export function textShapeRefusal(p: Proposed): string | null {
-  if (p.provenance.kind === "window" && p.provenance.partOf !== null && !takesOneValue(p.field.labelWords)) return `'${clip(p.text)}' is part of '${clip(p.provenance.partOf)}', and the field asks for more than one value`;
-  return writeMisfit(p.text, { labelWords: p.field.labelWords, part: p.field.part }, { label: sourceLabel(p) });
+  return writeMisfit(p.text, { labelWords: p.field.labelWords, part: p.field.part }, shapeSource(p));
+}
+
+/** What labels a proposed value, for W1's families: its source label (sourceLabel) and, for a window's part, the value it was cut from. */
+export function shapeSource(p: Proposed): ShapeSource {
+  return { label: sourceLabel(p), partOf: p.provenance.kind === "window" ? p.provenance.partOf : null };
 }
 
 /** The never-typed check every mint meets, exemptions included: a value Caret never types, by its shape or by the instruction's label for it. */

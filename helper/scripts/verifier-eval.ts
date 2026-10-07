@@ -6,6 +6,12 @@
 // pass. The verdicts are evidence for reading, never training data (TypeSafe terms §2.3(b)).
 //
 //   CARET_JEV_DAILY_CAP=<ledger + margin> node scripts/verifier-eval.ts --out DIR [--dev FILE] [--passes 3]
+//   node scripts/verifier-eval.ts --out DIR --from DIR/results.json   (no Jev: the verdicts of an earlier run, read again
+//                                                                       against the code checks as they are now)
+//
+// The family table (AC1 section 6, migration step 4): for each of W1's text-shape families (fill/writable.ts), the
+// wrong cases it refuses and how many of them the verifier minted in some pass, and the right cases it refuses that
+// the verifier minted in every pass: what retiring it would recover.
 //
 // Spend counts against CARET_JEV_DAILY_CAP (fill/jev.ts makeJevClient). Writes results.json (every verdict) and
 // summary.md to --out. Exit 1 when a wrong case was minted in any pass.
@@ -13,7 +19,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { makeFieldContract, shapeRefusal, textShapeRefusal, verifyProposed, VERIFY_CUTOFF, type Proposed, type Provenance, type VerifyAsk } from "../src/fill/contract.ts";
+import { makeFieldContract, shapeRefusal, shapeSource, textShapeRefusal, verifyProposed, VERIFY_CUTOFF, type Proposed, type Provenance, type VerifyAsk } from "../src/fill/contract.ts";
+import { familyRefusal, RETIRED_FAMILIES, SHAPE_FAMILIES } from "../src/fill/writable.ts";
 import { fieldKinds } from "../src/fill/kinds.ts";
 import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import type { Control } from "../src/fill/controls.ts";
@@ -21,7 +28,7 @@ import type { FillPart } from "../src/fill/derive.ts";
 import type { Node } from "../src/protocol.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const a = parseArgs({ options: { out: { type: "string" }, dev: { type: "string", default: join(HERE, "..", "fixtures", "verify", "dev.json") }, passes: { type: "string", default: "3" } } });
+const a = parseArgs({ options: { out: { type: "string" }, dev: { type: "string", default: join(HERE, "..", "fixtures", "verify", "dev.json") }, passes: { type: "string", default: "3" }, from: { type: "string" } } });
 if (a.values.out === undefined) throw new Error("--out is required");
 const OUT = resolve(a.values.out);
 const PASSES = Number(a.values.passes);
@@ -48,21 +55,29 @@ const proposed: Proposed[] = dev.cases.map((c) => ({
 }));
 const code = proposed.map((p) => ({ shape: shapeRefusal(p), w1: textShapeRefusal(p) }));
 
-const live = makeJevClient(loadJevKey);
 const latencies: number[] = [];
 let spent = 0;
-const ask: AskJev = async (req) => {
-  const r = await live(req);
-  latencies.push(r.latencyMs);
-  spent += r.costUsd;
-  return r;
-};
-
 const passes: (readonly [VerifyAsk, VerifyAsk] | null)[][] = [];
-for (let i = 0; i < PASSES; i++) {
-  const r = await verifyProposed(proposed, { askJev: ask, ledger: null, now: Date.now() });
-  passes.push(r.asks);
-  process.stderr.write(`pass ${i + 1}: ${r.jev.requests} requests, $${r.jev.costUsd.toFixed(5)}\n`);
+if (a.values.from !== undefined) {
+  const earlier = JSON.parse(readFileSync(resolve(a.values.from), "utf8")) as { rows: { id: string; verdicts: (readonly [VerifyAsk, VerifyAsk] | null)[] }[]; latencyMs: { all?: number[] }; spentUsd: number };
+  const byId = new Map(earlier.rows.map((r) => [r.id, r.verdicts]));
+  const n = earlier.rows[0]?.verdicts.length ?? 0;
+  for (let k = 0; k < n; k++) passes.push(dev.cases.map((c) => byId.get(c.id)?.[k] ?? null));
+  latencies.push(...(earlier.latencyMs.all ?? []));
+  spent = earlier.spentUsd;
+} else {
+  const live = makeJevClient(loadJevKey);
+  const ask: AskJev = async (req) => {
+    const r = await live(req);
+    latencies.push(r.latencyMs);
+    spent += r.costUsd;
+    return r;
+  };
+  for (let i = 0; i < PASSES; i++) {
+    const r = await verifyProposed(proposed, { askJev: ask, ledger: null, now: Date.now() });
+    passes.push(r.asks);
+    process.stderr.write(`pass ${i + 1}: ${r.jev.requests} requests, $${r.jev.costUsd.toFixed(5)}\n`);
+  }
 }
 
 const mints = (x: readonly [VerifyAsk, VerifyAsk] | null): boolean => x !== null && x[0].choice === "exact" && x[1].choice === "exact" && Math.min(x[0].confidence, x[1].confidence) >= VERIFY_CUTOFF;
@@ -81,6 +96,7 @@ const rows = dev.cases.map((c, i) => ({
   w1: code[i]?.w1 ?? null,
   verdicts: passes.map((p) => p[i] ?? null),
   minted: passes.map((p) => mints(p[i] ?? null)),
+  families: SHAPE_FAMILIES.filter((f) => familyRefusal(f, c.text, { labelWords: c.field.labelWords, part: c.field.part }, shapeSource(proposed[i] as Proposed)) !== null),
 }));
 const wrong = rows.filter((r) => r.expected === "wrong");
 const right = rows.filter((r) => r.expected === "right");
@@ -113,8 +129,22 @@ const byFamily = families.map((f) => {
     rightOnlyCodeRefuses: fr.filter((r) => r.expected === "right" && r.minted.every(Boolean) && (r.shape !== null || r.w1 !== null)).map((r) => `${r.id} '${r.text}' in ${r.field}: ${r.shape ?? r.w1}`),
   };
 });
+const familyTable = SHAPE_FAMILIES.map((f) => {
+  const fr = rows.filter((r) => r.families.includes(f));
+  const wr = fr.filter((r) => r.expected === "wrong");
+  const rr = fr.filter((r) => r.expected === "right");
+  return {
+    family: f,
+    retired: RETIRED_FAMILIES.has(f),
+    wrongRefused: wr.length,
+    wrongVerifierMinted: wr.filter((r) => r.minted.some(Boolean)).map((r) => `${r.id} '${r.text}'`),
+    rightRefused: rr.length,
+    // Recovered by retiring the family: the verifier minted it every pass, and no other check refuses it.
+    rightRecovered: rr.filter((r) => r.minted.every(Boolean) && r.shape === null && r.families.every((g) => g === f || RETIRED_FAMILIES.has(g))).map((r) => `${r.id} '${r.text}' in ${r.field}`),
+  };
+});
 mkdirSync(OUT, { recursive: true });
-writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ cutoff: VERIFY_CUTOFF, passes: PASSES, spentUsd: spent, latencyMs: { n: latencies.length, p50: q(latencies, 0.5), p95: q(latencies, 0.95) }, table, byFamily, rows }, null, 1)}\n`);
+writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ cutoff: VERIFY_CUTOFF, passes: PASSES, spentUsd: spent, latencyMs: { n: latencies.length, p50: q(latencies, 0.5), p95: q(latencies, 0.95), all: latencies }, table, byFamily, familyTable, rows }, null, 1)}\n`);
 const md = [
   `# Verifier eval (W2), ${dev.cases.length} cases (${wrong.length} wrong, ${right.length} right), ${PASSES} passes, cutoff ${VERIFY_CUTOFF}`,
   "",
@@ -129,6 +159,12 @@ const md = [
   "| family | cases | wrong minted (any pass) | right minted (every pass) | right code refuses | of those, the verifier mints |",
   "|---|---|---|---|---|---|",
   ...byFamily.map((f) => `| ${f.family} | ${f.cases} | ${f.wrongMintedAnyPass} | ${f.rightMintedEveryPass} | ${f.rightCodeRefuses} | ${f.rightOnlyCodeRefuses.length} |`),
+  "",
+  "## W1's text-shape families (fill/writable.ts), by what the verifier does with the cases each refuses",
+  "",
+  "| family | retired | wrong it refuses | of those, the verifier minted (any pass) | right it refuses | right recovered by retiring it |",
+  "|---|---|---|---|---|---|",
+  ...familyTable.map((f) => `| ${f.family} | ${f.retired ? "yes" : "no"} | ${f.wrongRefused} | ${f.wrongVerifierMinted.length}${f.wrongVerifierMinted.length === 0 ? "" : `: ${f.wrongVerifierMinted.join(", ")}`} | ${f.rightRefused} | ${f.rightRecovered.length}${f.rightRecovered.length === 0 ? "" : `: ${f.rightRecovered.join("; ")}`} |`),
   "",
   "## Wrong cases minted",
   "",

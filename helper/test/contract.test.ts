@@ -67,12 +67,14 @@ describe("sourceLabel: what labels a value, as W1's gate reads it", () => {
 });
 
 describe("checkValues and the mint", () => {
-  it("mints a value that passes, refuses one that fails as wrongKind, and carries the source label (REVIEW-R2 P2.5)", async () => {
+  it("mints a value that passes, refuses one the shape checks refuse as wrongKind, and keeps its provenance (REVIEW-R2 P2.5)", async () => {
     const first = fc("First name");
-    const r = await checkValues([prop(first, "Mary Ann", win("Mary Ann", "First name")), prop(first, "Mary Ann"), prop(fc("Phone"), "dana@lumen.example")], opts);
+    const labelled = prop(first, "Mary Ann", win("Mary Ann", "First name"));
+    const r = await checkValues([labelled, prop(fc("Phone"), "dana@lumen.example")], opts);
     expect(r.ok.map((c) => c.text)).toEqual(["Mary Ann"]);
     expect(r.ok[0]?.verdict).toMatchObject({ by: "verifier", confidence: 0.95 });
-    expect(r.refused.map((x) => [x.proposed.text, x.why])).toEqual([["Mary Ann", "wrongKind"], ["dana@lumen.example", "wrongKind"]]);
+    expect(r.ok[0]?.provenance).toBe(labelled.provenance);
+    expect(r.refused.map((x) => [x.proposed.text, x.why])).toEqual([["dana@lumen.example", "wrongKind"]]);
   });
 
   it("refuses a value the instruction labels a secret", async () => {

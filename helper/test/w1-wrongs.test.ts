@@ -12,7 +12,9 @@ import { ScreenModel } from "../src/model.ts";
 import { proposeFill, type FillScope } from "../src/fill/fill.ts";
 import { lineSpans, setGeneratorClock } from "../src/fill/candidates.ts";
 import { instructionText, LABELLED, lineTexts, questionAnswer, roleAt, severalValues } from "../src/fill/line-values.ts";
-import { writeMisfit } from "../src/fill/writable.ts";
+import { familyRefusal, SHAPE_FAMILIES } from "../src/fill/writable.ts";
+import { setTestVerifier } from "../src/fill/contract.ts";
+import { STAND_IN } from "./setup/verifier.ts";
 import { misfit } from "../src/fill/kinds.ts";
 import { fieldPart } from "../src/fill/derive.ts";
 import { PlannerError } from "../src/planner/validate.ts";
@@ -22,8 +24,43 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { buildDesk, loadAsks, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { field, jevPickingText, snap } from "./builders.ts";
 
-beforeAll(() => setGeneratorClock(() => 0));
-afterAll(() => setGeneratorClock(null));
+/**
+ * W2: since W1's text-shape families left the gate (fill/writable.ts RETIRED_FAMILIES, AC1 migration step 4), the
+ * write contract's verifier refuses these values. The stand-in answers each with the verdicts live Jev gave it on the
+ * dev set, both wordings, pass 1 (evidence/screen/w2/verify-eval-3; fixtures/verify/dev.json a-034, a-052, a-053, b-003,
+ * r2-reception, r2-ring), and calls every other value exact. LV1 wrong 2 and 'Reception Desk' are refused only because
+ * the two wordings disagree.
+ */
+const LIVE_VERDICTS: Readonly<Record<string, readonly [string, string, number]>> = {
+  "Brightline Dental Labs, lab technician, $5,200/mo gross": ["more", "more", 0.93],
+  "Junior Analyst at Ridgeline Outdoor Co (since 2024)": ["exact", "more", 0.72],
+  "Junior Analyst at Ridgeline Outdoor Co": ["exact", "more", 0.48],
+  "use the token-leak story, write it fresh.": ["note", "note", 0.92],
+  "use the token-leak story, write it fresh": ["note", "note", 0.92],
+  "Reception Desk": ["part", "exact", 0.28],
+  "ring twice": ["part", "more", 0.51],
+};
+const liveLike: AskJev = async (req) => ({
+  model: "verify-live-verdicts",
+  answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
+    const ins = String(q.instructions);
+    const text = /nothing added or removed: "([^"]*)"|^Proposed text for the field '[^']*': "([^"]*)"/u.exec(ins);
+    const v = LIVE_VERDICTS[text?.[1] ?? text?.[2] ?? ""];
+    const second = ins.startsWith("Proposed text");
+    return [id, v === undefined ? { choice: "exact", confidence: 0.95 } : { choice: second ? v[1] : v[0], confidence: v[2] }];
+  })),
+  inputTokens: 0,
+  latencyMs: 0,
+  costUsd: 0,
+});
+beforeAll(() => {
+  setGeneratorClock(() => 0);
+  setTestVerifier(liveLike);
+});
+afterAll(() => {
+  setGeneratorClock(null);
+  setTestVerifier(STAND_IN);
+});
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REALFILL = join(here, "../../fixtures/realfill");
@@ -68,7 +105,7 @@ describe("LV1 wrong 1: the rental application's Job title took the whole work li
     const job = fieldNode(d, "Job title");
     const seen: JevRequest[] = [];
     const bad = await proposeFill(d.model, picking("Job title", LINE, seen), d.form.window.windowId, job.key, T0, { about: d.about, rand: () => 0 });
-    expect(fieldOf(bad, job.key)).toMatchObject({ value: null, withheld: "wrongKind" });
+    expect(fieldOf(bad, job.key)).toMatchObject({ value: null, withheld: "notExact" });
     expect(offered(seen, "Job title")).toEqual(expect.arrayContaining(["lab technician", LINE]));
     const good = await proposeFill(d.model, picking("Job title", "lab technician"), d.form.window.windowId, job.key, T0, { about: d.about, rand: () => 0 });
     expect(fieldOf(good, job.key)).toMatchObject({ value: "lab technician", withheld: null });
@@ -77,7 +114,7 @@ describe("LV1 wrong 1: the rental application's Job title took the whole work li
   it("refuses the whole line from an unlabelled note line too", async () => {
     const m = noteDesk(`${LINE}\n`, [field("form/job", "", { label: "Job title" })]);
     const p = await proposeFill(m, picking("Job title", LINE), "form", "form/job", T0, { rand: () => 0 });
-    expect(fieldOf(p, "form/job")).toMatchObject({ value: null, withheld: "wrongKind", confidence: 0.9 });
+    expect(fieldOf(p, "form/job")).toMatchObject({ value: null, withheld: "notExact", confidence: 0.9 });
   });
 
   it("is refused by the planner's validation, which the writer's plans meet (review 7)", async () => {
@@ -108,7 +145,7 @@ describe("LV1 wrong 2: B25 held-09's Current company took a role at the company"
     const args = (ask: AskJev) => [d.model, ask, d.form.window.windowId, company.key, T0, { about: d.about, rand: () => 0, ...(scoped ? { scope: wholeForm([company.key], "fill out the Northgate application for me") } : {}) }] as const;
     const seen: JevRequest[] = [];
     const bad = await proposeFill(...args(picking("Current company", BAD, seen)));
-    expect(fieldOf(bad, company.key)).toMatchObject({ value: null, withheld: "wrongKind" });
+    expect(fieldOf(bad, company.key)).toMatchObject({ value: null, withheld: "notExact" });
     expect(offered(seen, "Current company")).toContain("Ridgeline Outdoor Co");
     const good = await proposeFill(...args(picking("Current company", "Ridgeline Outdoor Co")));
     expect(fieldOf(good, company.key)).toMatchObject({ value: "Ridgeline Outdoor Co", withheld: null });
@@ -155,7 +192,7 @@ describe("W1 review: parts keep what their line says about them", () => {
   it("writes a part only into a field that takes one value: never 'ring twice' into Delivery instructions (review 3)", async () => {
     const m = noteDesk("Delivery instructions: Reception Desk, ring twice\n", [field("form/notes", "", { role: "AXTextArea", label: "Delivery instructions" })]);
     const part = await proposeFill(m, picking("Delivery instructions", "ring twice"), "form", "form/notes", T0, { rand: () => 0 });
-    expect(fieldOf(part, "form/notes")).toMatchObject({ value: null, withheld: "wrongKind" });
+    expect(fieldOf(part, "form/notes")).toMatchObject({ value: null, withheld: "notExact" });
     const whole = await proposeFill(m, picking("Delivery instructions", "Reception Desk, ring twice"), "form", "form/notes", T0, { rand: () => 0 });
     expect(fieldOf(whole, "form/notes")).toMatchObject({ value: "Reception Desk, ring twice", withheld: null });
   });
@@ -173,7 +210,7 @@ describe("W1 round-2 review: one span found twice keeps what both readings say",
     expect(lineTexts(`Delivery instructions: ${value}`).find((t) => t.text === "Reception Desk")).toEqual({ text: "Reception Desk", label: "Delivery instructions", with: value, partOf: value });
     const m = noteDesk(`Delivery instructions: ${value}\n`, [field("form/notes", "", { role: "AXTextArea", label: "Delivery instructions" })]);
     const p = await proposeFill(m, picking("Delivery instructions", "Reception Desk"), "form", "form/notes", T0, { rand: () => 0 });
-    expect(fieldOf(p, "form/notes")).toMatchObject({ value: null, withheld: "wrongKind" });
+    expect(fieldOf(p, "form/notes")).toMatchObject({ value: null, withheld: "notExact" });
   });
 
   it("keeps the qualifier beside 'Lumen Labs' from 'Lumen Labs, lab technician (for my sister)'", async () => {
@@ -247,7 +284,14 @@ describe("severalValues", () => {
   });
 });
 
-describe("the shared write check (writable.ts writeMisfit)", () => {
+/**
+ * W2: W1's text-shape families, retired from the gate (fill/writable.ts RETIRED_FAMILIES) and kept as code with one
+ * right answer per input: each row asks whether any family refuses the value, as writeMisfit did before W2.
+ */
+const anyFamily = (value: string, field: { labelWords: readonly string[]; part?: ReturnType<typeof fieldPart> }, from: string | null = null): string | null =>
+  SHAPE_FAMILIES.map((f) => familyRefusal(f, value, field, { label: from })).find((x) => x !== null) ?? null;
+
+describe("W1's text-shape families (writable.ts familyRefusal), retired from the gate", () => {
   const N = null;
   it.each([
     // The three live wrongs and the review's holes: refused.
@@ -284,7 +328,7 @@ describe("the shared write check (writable.ts writeMisfit)", () => {
     ["Austin", "City", N, true],
     ["the lease ends Oct 31 and they're raising rent", "Reason for moving", N, true],
   ] as const)("'%s' into %s (source label %s): %s", (value, label, from, ok) => {
-    expect(writeMisfit(value, { labelWords: [label] }, { label: from }) === null).toBe(ok);
+    expect(misfit(value, [label]) === null && anyFamily(value, { labelWords: [label] }, from) === null).toBe(ok);
   });
 
   it.each([
@@ -294,7 +338,7 @@ describe("the shared write check (writable.ts writeMisfit)", () => {
     ["1907 Alameda de las Pulgas", { labelWords: ["Address"], part: "street" }, true],
     ["1907 Alameda de las Pulgas, apt 12", { labelWords: ["Address"], part: null }, true],
   ] as const)("'%s' into %j: %s (the adversary's Ask run)", (value, f, ok) => {
-    expect(writeMisfit(value, f) === null).toBe(ok);
+    expect(misfit(value, f.labelWords) === null && anyFamily(value, f) === null).toBe(ok);
   });
 
   it("reads no phone's area code as a remark (the mileage clause the adversary's Ask run wrote)", () => {
@@ -310,7 +354,7 @@ describe("the shared write check (writable.ts writeMisfit)", () => {
       const f = corpus.forms.find((x) => x.id === a.form);
       if (a.expected !== "refuse" && f !== undefined) for (const [l, v] of Object.entries(a.expected)) if (!["select", "radio", "checkbox", "date", "time", "file"].includes(f.fields.find((x) => x.label === l)?.control ?? "")) pairs.push([v, l, partOf(f, l)]);
     }
-    const refused = pairs.filter(([v, l, part]) => !["none", "handoff"].includes(v) && misfit(v, [l]) === null && writeMisfit(v, { labelWords: [l], part }) !== null);
+    const refused = pairs.filter(([v, l, part]) => !["none", "handoff"].includes(v) && misfit(v, [l]) === null && anyFamily(v, { labelWords: [l], part }) !== null);
     expect(refused).toEqual([]);
   });
 });
@@ -381,15 +425,16 @@ describe("instructions to the user", () => {
 });
 
 describe("the guard adversary (scripts/guard-adversary.ts) on the committed desks", () => {
-  it("writes no value that strictly holds a key's value, nor the instruction, on the corpus's recorded windows and the four Ask sets", () => {
+  it("loses no canned right value when every value check says exact, on the corpus's recorded windows and the four Ask sets", () => {
     const out = mkdtempSync(join(tmpdir(), "w1-adversary-"));
     try {
       execFileSync(process.execPath, [join(here, "../scripts/guard-adversary.ts"), "--out", out, "--sets", "corpus,b24,b25,b26,b31", "--corpus-pages", join(out, "none")], { stdio: "pipe" });
       const r = JSON.parse(readFileSync(join(out, "guard-adversary.json"), "utf8")) as { desks: Record<string, number>; a: { written: number }; attempts: { cls: string; value: string; outcome: string }[]; canned: { outcome: string }[] };
       expect(r.desks).toMatchObject({ "corpus-reader": 14, b24: 15, b25: 14, b26: 13, b31: 22 });
       expect(r.attempts.filter((x) => x.cls === "a").length).toBeGreaterThan(100);
-      expect(r.a.written).toBe(0);
-      // Canned right values measured on these desks when W1's review fixes landed (the corpus by the reader's windows, the Ask sets through
+      // W2: with every value check saying exact, class (a) measures code alone, which no longer reads text shapes (W1's
+      // families left the gate on the verifier's evidence, fill/writable.ts RETIRED_FAMILIES); the refuse-mode run below
+      // holds every class at 0. Canned right values measured on these desks when W1's review fixes landed (the corpus by the reader's windows, the Ask sets through
       // planAsk): the guards must not cost one.
       expect(r.canned.filter((x) => x.outcome === "right").length).toBeGreaterThanOrEqual(167);
     } finally {

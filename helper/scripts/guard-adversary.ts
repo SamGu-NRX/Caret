@@ -17,7 +17,9 @@
 // so any write a class makes means a path skipped the write contract; a write minted under a named exemption (an
 // option's label, a box, a resolved date, a user transfer) is counted apart, by rule. A routine set (W2) replays the
 // planted pattern stream through the helper (patterns/engine.ts plan()) and counts the cells its offers write.
-// Exit 1: in accept mode when class (a) is above 0, in refuse mode when any class writes outside an exemption.
+// Exit 1 in refuse mode when any class writes outside an exemption. Accept mode measures code alone: since W1's
+// text-shape families left the gate (fill/writable.ts RETIRED_FAMILIES), class (a) writes there are the verifier's to
+// refuse, and the run only reports them.
 //
 // Page sets (the corpus, F1's tasks, W4) are asked two ways, and a value counts once if either writes it: a Fill all per
 // part of MAX_FIELDS (no scope), and the page through the goal path as the helper runs it: planAsk with goal plans on
@@ -767,4 +769,4 @@ writeFileSync(join(OUT, "guard-adversary.md"), `${md.join("\n")}\n`);
 const summary = (cls: Cls) => ({ written: count(cls, "written"), handedOff: count(cls, "handedOff"), rightValue: count(cls, "rightValue"), withheld: count(cls, "withheld"), unexempt: unexempt(cls).length });
 writeFileSync(join(OUT, "guard-adversary.json"), `${JSON.stringify({ verifier: VERIFIER, desks, fills, a: summary("a"), b: summary("b"), c: summary("c"), unexempt: unexempt().length, routine, attempts, canned, unattacked, refusals: Object.fromEntries(refusals), failures, goalRuns, skipped }, null, 1)}\n`);
 process.stderr.write(`guard adversary (verifier ${VERIFIER}): written outside an exemption ${unexempt().length}; ${CLASSES.map((c) => `(${c}) written ${count(c, "written")} of ${attempts.filter((x) => x.cls === c).length}`).join("; ")}; canned right ${cannedRight.length}, refused ${canned.filter((x) => x.outcome === "refused").length}${routine === null ? "" : `; routine cells ${routine.cells} in ${routine.offers} offers, errors ${routine.errors.length}`}; ${join(OUT, "guard-adversary.md")}\n`);
-process.exitCode = (VERIFIER === "refuse" ? unexempt().length > 0 || (routine?.errors.length ?? 0) > 0 : count("a", "written") > 0) ? 1 : 0;
+process.exitCode = VERIFIER === "refuse" && (unexempt().length > 0 || (routine?.errors.length ?? 0) > 0 || failures.length > 0) ? 1 : 0;
