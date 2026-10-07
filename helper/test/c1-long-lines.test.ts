@@ -8,6 +8,7 @@ import { proposeFill } from "../src/fill/fill.ts";
 import type { JevRequest } from "../src/fill/jev.ts";
 import { datePart, splitAddress, splitDate } from "../src/fill/derive.ts";
 import { sourceHolds } from "../src/offers/fill-popup.ts";
+import { lineDigests } from "../src/fill/line-values.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, jevPickingText, snap, text } from "./builders.ts";
 
@@ -108,25 +109,27 @@ describe("the recheck reads a line the way fill read it", () => {
     return m.windows.get("8-1") as NonNullable<ReturnType<ScreenModel["windows"]["get"]>>;
   };
   const key = "dev.caret.notes/standard/statictext:a~0";
+  /** G2: what fill records when it reads `span` from `text` (FillField.basis.lines); a recheck without it holds nothing. */
+  const read = (t: string, span: string) => ({ lines: lineDigests(t, span) });
 
   it("holds a date's month from a labelled line whose label does not name the date", () => {
-    expect(sourceHolds(src("School: Lakeshore Polytechnic Institute, B.S. Electrical Engineering, September 2016 to May 2020."), key, "May", null, "select")).toBe(true);
-    expect(sourceHolds(src("Graduated in May 2020 from Lakeshore, and the transcript is at home with my parents somewhere."), key, "2020", null, "select")).toBe(true);
+    expect(sourceHolds(src("School: Lakeshore Polytechnic Institute, B.S. Electrical Engineering, September 2016 to May 2020."), key, "May", null, "select", read("School: Lakeshore Polytechnic Institute, B.S. Electrical Engineering, September 2016 to May 2020.", "May"))).toBe(true);
+    expect(sourceHolds(src("Graduated in May 2020 from Lakeshore, and the transcript is at home with my parents somewhere."), key, "2020", null, "select", read("Graduated in May 2020 from Lakeshore, and the transcript is at home with my parents somewhere.", "2020"))).toBe(true);
   });
 
   it("refuses a line that now has a label naming the value", () => {
-    expect(sourceHolds(src("Do not use: May 2020"), key, "May", null, "select")).toBe(false);
+    expect(sourceHolds(src("Do not use: May 2020"), key, "May", null, "select", read("Do not use: May 2020", "May"))).toBe(false);
     // C1 review: a value code found in a line (not the reader's typed value) is checked by the line as it reads now.
-    expect(sourceHolds(src("Do not use: May 2027"), key, "May 2027", null, "select")).toBe(false);
-    expect(sourceHolds(src("Do not use: 555-0147"), key, "555-0147", null, "combobox")).toBe(false);
-    expect(sourceHolds(src("Graduating in May 2027 from Lakeshore, with the transcript to follow by mail, I hope."), key, "May 2027", null, "select")).toBe(true);
-    expect(sourceHolds(src("Do not use: Oakland, California, United States"), key, "Oakland, California, United States", null, "combobox")).toBe(false);
+    expect(sourceHolds(src("Do not use: May 2027"), key, "May 2027", null, "select", read("Do not use: May 2027", "May 2027"))).toBe(false);
+    expect(sourceHolds(src("Do not use: 555-0147"), key, "555-0147", null, "combobox", read("Do not use: 555-0147", "555-0147"))).toBe(false);
+    expect(sourceHolds(src("Graduating in May 2027 from Lakeshore, with the transcript to follow by mail, I hope."), key, "May 2027", null, "select", read("Graduating in May 2027 from Lakeshore, with the transcript to follow by mail, I hope.", "May 2027"))).toBe(true);
+    expect(sourceHolds(src("Do not use: Oakland, California, United States"), key, "Oakland, California, United States", null, "combobox", read("Do not use: Oakland, California, United States", "Oakland, California, United States"))).toBe(false);
   });
 
   it("checks a value from a long labelled line by its label", () => {
     const line = "School: Lakeshore Polytechnic Institute, B.S. Electrical Engineering, September 2016 to May 2020.";
-    expect(sourceHolds(src(line), key, "Lakeshore Polytechnic Institute", "School", "combobox")).toBe(true);
-    expect(sourceHolds(src(line.replace("School:", "Not my school:")), key, "Lakeshore Polytechnic Institute", "School", "combobox")).toBe(false);
+    expect(sourceHolds(src(line), key, "Lakeshore Polytechnic Institute", "School", "combobox", read(line, "Lakeshore Polytechnic Institute"))).toBe(true);
+    expect(sourceHolds(src(line.replace("School:", "Not my school:")), key, "Lakeshore Polytechnic Institute", "School", "combobox", read(line, "Lakeshore Polytechnic Institute"))).toBe(false);
   });
 });
 

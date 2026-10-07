@@ -756,7 +756,9 @@ export class SecretInRequest extends Error {}
 export function assertNoSecrets(req: { state: unknown; questions: Record<string, unknown>; nouls?: Record<string, unknown> }): void {
   const check = (where: string, v: unknown): void => {
     if (typeof v === "string") {
-      if (secretText(v) && !OWN_WORDING.has(v)) throw new SecretInRequest(`a Jev request's ${where} holds a secret marker; it was not sent`);
+      // Caret's own fixed wording passes only where Caret puts it, as a question's criterion; nowhere else, and never in
+      // the state, where screen text goes (G2 round 5).
+      if (secretText(v) && !(OWN_WORDING.has(v) && /^questions\.[^.]+\.criteria\.[^.]+$/u.test(where))) throw new SecretInRequest(`a Jev request's ${where} holds a secret marker; it was not sent`);
       return;
     }
     if (Array.isArray(v)) v.forEach((x, i) => check(`${where}[${i}]`, x));
@@ -769,8 +771,8 @@ export function assertNoSecrets(req: { state: unknown; questions: Record<string,
 
 /**
  * G2 round 4: Caret's own fixed wording a request carries, which may name a kind of secret to say what Caret refuses
- * ("…give a card number, a password, a one-time code…"): assertNoSecrets passes these strings, matched exactly, and no
- * other. A builder registers its constants once, at load (ownWording).
+ * ("…give a card number, a password, a one-time code…"): assertNoSecrets passes these strings, matched exactly, as a
+ * question's criterion and nowhere else. A builder registers its constants once, at load (ownWording).
  */
 const OWN_WORDING = new Set<string>();
 export function ownWording(...texts: readonly string[]): void {

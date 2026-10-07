@@ -6,12 +6,13 @@
 // screen model, memory and the proposal and builds the message, the recheck and the plan; publishing and
 // running are the helper's.
 import { ABOUT_SAYS, type AboutValue } from "../fill/about.ts";
-import { PAGE_SUBROLE, PROTOCOL_VERSION, type FillField, type FillMemory, type FillProposal, type FillSource, type OfferPopup } from "../protocol.ts";
+import { PAGE_SUBROLE, PROTOCOL_VERSION, type Node, type FillField, type FillMemory, type FillProposal, type FillSource, type OfferPopup } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
 import { labelledLines, lineGives, lineSpans } from "../fill/candidates.ts";
 import { bareLine, LABELLED, lineDigests, logicalLines } from "../fill/line-values.ts";
+import { redactWindow } from "../fill/redact.ts";
 import { splitAddress, splitPlace } from "../fill/derive.ts";
 import { conversionOf, derivePart, describeInput, emptyInput, identityRefOf, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import { identityKey } from "../fill/whose.ts";
@@ -254,37 +255,42 @@ function derivesSpan(line: string, span: string): boolean {
  *   - A text field's value: the node's text holds the span, or one of its typed values is it.
  */
 export function sourceHolds(sw: WindowState, nodeKey: string, span: string, context: string | null, control: string, basis?: SourceBasis): boolean {
-  const src = sw.nodes.get(nodeKey);
+  if (sw.nodes.get(nodeKey) === undefined) return false;
+  // G2 round 5: a value is held to what fill may read now, the window's redacted view (fill/redact.ts): a source the view
+  // no longer admits (its placeholder became "Password", a marker line went in above it) gives nothing.
+  const view = redactWindow(sw);
+  const src = view.nodes.get(nodeKey);
   if (src === undefined) return false;
+  // A value read with no record of its source lines, or whose source lines could not be found then, is never held: the
+  // recheck cannot say it is the same (G2 round 5).
+  if (basis?.lines === undefined || basis.lines.length === 0) return false;
+  const raw = nodeText(sw.nodes.get(nodeKey) as Node);
   const text = nodeText(src);
   // Source texts are found as the generator reads lines (bareLine), a wrapped sentence joined (logicalLines).
   const norm = (t: string): string => t.replace(/\s+/gu, " ").trim();
   const joined = logicalLines(text).join("\n");
-  const typedIs = (t: string): boolean => sw.values.some((v) => v.nodeKey === nodeKey && norm(v.text) === norm(t));
+  const typedIs = (t: string): boolean => view.values.some((v) => v.nodeKey === nodeKey && norm(v.text) === norm(t));
   // G2 review: what the value was read from as Jev was shown it (FillField.basis). Each source text must be in the
   // source again, the value must derive from them again by the same code (fill.ts derivePart: a first name from "Robin
   // Vale", a full name joined from two lines), and the lines that held them, with the line before and after each, must
-  // read exactly as they did (line-values.ts lineDigests): any edit there refuses the value, whatever an unchanged line
-  // says (a "but" in a name's line, a field's own label). A value with no basis (from memory, or a helper before this)
-  // meets the rules below alone.
-  const from = basis?.from;
+  // read exactly as they did (line-values.ts lineDigests, on the source as written): any edit there refuses the value,
+  // whatever an unchanged line says (a "but" in a name's line, a field's own label).
+  const from = basis.from;
   if (from !== undefined) {
-    if (!from.every((t) => joined.includes(norm(t)) || typedIs(t))) return false;
-    const got = basis?.how === undefined ? (from[0] ?? null) : derivePart(basis.how, from);
+    if (!from.every((t) => joined.includes(norm(t)) || norm(text).includes(norm(t)) || typedIs(t))) return false;
+    const got = basis.how === undefined ? (from[0] ?? null) : derivePart(basis.how, from);
     if (got === null || norm(got) !== norm(span)) return false;
   }
-  if (basis?.lines !== undefined) {
-    const now = (from ?? [span]).flatMap((t) => lineDigests(text, t));
-    const was = new Set(basis.lines);
-    if (now.length === 0 || now.some((d) => !was.has(d)) || basis.lines.some((d) => !now.includes(d))) return false;
-  }
+  const now = (from ?? [span]).flatMap((t) => lineDigests(raw, t));
+  const was = new Set(basis.lines);
+  if (now.length === 0 || now.some((d) => !was.has(d)) || basis.lines.some((d) => !now.includes(d))) return false;
   const base = from?.[0] ?? span;
   // The reader's own typed values only: one code finds in a line (fill/candidates.ts windowValues) is checked by the line
   // as it reads now (lineGives in derivesSpan), so a line that gained a label naming it passes nothing (C1 review).
-  const typed = sw.values.some((v) => v.nodeKey === nodeKey && v.text === span);
+  const typed = view.values.some((v) => v.nodeKey === nodeKey && v.text === span);
   if (context !== null) {
     const box = control === "checkbox";
-    return labelledLines(sw).some((l) => l.node.key === nodeKey && l.label === context && (box ? l.value === base : norm(l.value).includes(norm(base))));
+    return labelledLines(view).some((l) => l.node.key === nodeKey && l.label === context && (box ? l.value === base : norm(l.value).includes(norm(base))));
   }
   // A derivation found again above is the check for a control's or a text field's derived value.
   if (from !== undefined) return true;

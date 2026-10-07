@@ -14,6 +14,7 @@ import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { ScreenModel } from "../src/model.ts";
 import { sourceHolds } from "../src/offers/fill-popup.ts";
+import { lineDigests } from "../src/fill/line-values.ts";
 import { field, focus, jevPickingText, snap } from "./builders.ts";
 import { c, chrome, FakePage, hello, okReader, TEXTEDIT, WIN } from "./fake-page.ts";
 
@@ -25,32 +26,34 @@ const source = (text: string) => {
 };
 
 describe("sourceHolds: a span inside a longer source line (P2 decision)", () => {
+  /** G2: what fill records when it reads `span` from `text` (FillField.basis.lines); a recheck without it holds nothing. */
+  const read = (t: string, span: string) => ({ lines: lineDigests(t, span) });
   const LOCATION = "Location: Oakland, California, United States (in the Bay Area)";
 
   it("passes a control's value on its own 'Label:' line, which still holds it", () => {
-    expect(sourceHolds(source(LOCATION), "te/n", "United States", "Location", "combobox")).toBe(true);
+    expect(sourceHolds(source(LOCATION), "te/n", "United States", "Location", "combobox", read(LOCATION, "United States"))).toBe(true);
     // The line under another label no longer says it is the location.
-    expect(sourceHolds(source("Moving from: Oakland, California, United States"), "te/n", "United States", "Location", "combobox")).toBe(false);
+    expect(sourceHolds(source("Moving from: Oakland, California, United States"), "te/n", "United States", "Location", "combobox", read("Moving from: Oakland, California, United States", "United States"))).toBe(false);
   });
 
   it("passes an unlabelled control's value only when code derives exactly that part from the whole line again", () => {
-    expect(sourceHolds(source("Oakland, California, United States"), "te/n", "United States", null, "combobox")).toBe(true);
-    expect(sourceHolds(source("12 Harbor Way, Oakland, CA 94607"), "te/n", "94607", null, "select")).toBe(true);
+    expect(sourceHolds(source("Oakland, California, United States"), "te/n", "United States", null, "combobox", read("Oakland, California, United States", "United States"))).toBe(true);
+    expect(sourceHolds(source("12 Harbor Way, Oakland, CA 94607"), "te/n", "94607", null, "select", read("12 Harbor Way, Oakland, CA 94607", "94607"))).toBe(true);
     // A line that gained a label is not the line the value was read from (P2 review), whatever the label says.
-    expect(sourceHolds(source("Do not use: Oakland, California, United States"), "te/n", "United States", null, "combobox")).toBe(false);
-    expect(sourceHolds(source(LOCATION), "te/n", "California", null, "select")).toBe(false);
+    expect(sourceHolds(source("Do not use: Oakland, California, United States"), "te/n", "United States", null, "combobox", read("Do not use: Oakland, California, United States", "United States"))).toBe(false);
+    expect(sourceHolds(source(LOCATION), "te/n", "California", null, "select", read(LOCATION, "California"))).toBe(false);
   });
 
   it("refuses a short answer inside a sentence that now says otherwise, and a span that is no derived part", () => {
-    expect(sourceHolds(source("I have a valid driving license? No."), "te/n", "No", null, "select")).toBe(false);
-    expect(sourceHolds(source("We ship to the United States only."), "te/n", "United States", null, "combobox")).toBe(false);
+    expect(sourceHolds(source("I have a valid driving license? No."), "te/n", "No", null, "select", read("I have a valid driving license? No.", "No"))).toBe(false);
+    expect(sourceHolds(source("We ship to the United States only."), "te/n", "United States", null, "combobox", read("We ship to the United States only.", "United States"))).toBe(false);
     // The same line whole still passes, as before P2.
-    expect(sourceHolds(source("Yes\nNo"), "te/n", "No", null, "select")).toBe(true);
+    expect(sourceHolds(source("Yes\nNo"), "te/n", "No", null, "select", read("Yes\nNo", "No"))).toBe(true);
   });
 
   it("holds a text field's value to the node's text, as before", () => {
-    expect(sourceHolds(source(LOCATION), "te/n", "Oakland", null, "text")).toBe(true);
-    expect(sourceHolds(source(LOCATION), "te/n", "Berkeley", null, "text")).toBe(false);
+    expect(sourceHolds(source(LOCATION), "te/n", "Oakland", null, "text", read(LOCATION, "Oakland"))).toBe(true);
+    expect(sourceHolds(source(LOCATION), "te/n", "Berkeley", null, "text", read(LOCATION, "Berkeley"))).toBe(false);
   });
 });
 

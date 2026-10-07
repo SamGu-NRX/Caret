@@ -476,15 +476,20 @@ export function partAround(line: string, at: number, text: string): string | nul
  * digests, not the lines, travel with the proposal, so no more screen text reaches a consumer.
  */
 export function lineDigests(text: string, span: string): string[] {
-  const want = span.replace(/\s+/gu, " ").trim();
-  if (want === "") return [];
+  // G2 round 5: a span over several lines ("4410 Speedway\napt 2") covers each of them; its digest is of all of them and
+  // the line before and after. Each of its lines is read as the generator reads a line (bareLine).
+  const want = span.split(/\r?\n/u).map(bareLine).filter((l) => l !== "");
+  if (want.length === 0) return [];
   const lines = text.split(/\r?\n/u).map((l) => l.replace(/\s+$/u, ""));
+  const bare = lines.map(bareLine);
   const out: string[] = [];
-  lines.forEach((l, i) => {
-    if (!bareLine(l).includes(want)) return;
-    const hood = [lines[i - 1] ?? "", l, lines[i + 1] ?? ""].join("\n");
+  for (let i = 0; i + want.length <= lines.length; i++) {
+    const k = want.length;
+    const fits = k === 1 ? (bare[i] as string).includes(want[0] as string) : (bare[i] as string).endsWith(want[0] as string) && want.slice(1, -1).every((w, j) => bare[i + 1 + j] === w) && (bare[i + k - 1] as string).startsWith(want[k - 1] as string);
+    if (!fits) continue;
+    const hood = [lines[i - 1] ?? "", ...lines.slice(i, i + k), lines[i + k] ?? ""].join("\n");
     out.push(createHash("sha256").update(hood).digest("hex").slice(0, 16));
-  });
+  }
   return out;
 }
 

@@ -44,9 +44,13 @@ function keptText(text: string): { kept: string; dropped: string[] } {
       continue;
     }
     dropped.push(l);
-    if (opensValue(l) && i + 2 < parts.length) {
-      dropped.push(parts[i + 2] as string);
+    // G2 round 5: an opener takes the next line, and a line it takes opens in turn ("Password:" then "PIN:" then
+    // "violet-orchard-seven"): each value-opening line drops the one after it.
+    for (let open = opensValue(l); open && i + 2 < parts.length; ) {
       i += 2;
+      const next = parts[i] as string;
+      dropped.push(next);
+      open = opensValue(next);
     }
   }
   return { kept: out.join("").replace(/\r?\n$/u, ""), dropped };
@@ -101,7 +105,10 @@ function build(w: WindowState): WindowState {
     }
   }
   // The reader's typed values, less those of a dropped node or line.
-  const values: TypedValue[] = w.values.filter((v) => nodes.has(v.nodeKey) && !secretText(v.text) && !(lost.get(v.nodeKey) ?? []).some((l) => l.includes(v.text)));
+  // G2 round 5: a value that spans lines goes when any line it covers went ("4410 Speedway\napt 2, Austin" under a dropped
+  // "Password:" opener).
+  const covers = (v: TypedValue, l: string): boolean => l.trim() !== "" && (l.includes(v.text) || v.text.split(/\r?\n/u).some((part) => part.trim() !== "" && (l.includes(part.trim()) || part.includes(l.trim()))));
+  const values: TypedValue[] = w.values.filter((v) => nodes.has(v.nodeKey) && !secretText(v.text) && !(lost.get(v.nodeKey) ?? []).some((l) => covers(v, l)));
   // A window that gives everything is read as it is: the same state, so every cache keyed by it (windowValues, the
   // ledger's budgets, descriptor.ts's label index) is shared with code that reads it raw.
   if (nodes.size === w.nodes.size && [...nodes].every(([k, n]) => w.nodes.get(k) === n) && values.length === w.values.length) return w;

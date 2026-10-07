@@ -129,14 +129,17 @@ export function nearestLabel(w: WindowState, target: Node, labelOnly = false): {
 }
 
 /**
- * G2: the keys of the nodes whose nearest text (nearestLabel, no shape filter) `marked` says names a secret, and of
- * those texts' own nodes. Marked texts are few, so this looks only at the nodes each one could be nearest to (to its
- * right on its row, or below it) and asks nearestLabel for those alone: about one pass over the window, not one per field
- * (G2 round 4: asking every field cost about 30 ms on 2,000 fields).
+ * G2: the keys of the nodes whose nearest text `marked` says names a secret, and of those texts' own nodes. Admission
+ * reads every static text in full (G2 round 5: the presentation list, labelTexts, leaves out texts over MAX_LABEL_CHARS,
+ * so a long label naming a password did not keep the field beside it out), and a node is dropped when its nearest text
+ * by that full list, or by either reading nearestText presents (any text, or label-like texts only), is marked. Marked
+ * texts are few, so this looks only at the nodes each one could be nearest to (to its right on its row, or below it):
+ * about one pass over the window, not one lookup per field (G2 round 4: one per field cost about 30 ms on 2,000).
  */
 export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean): Set<string> {
   const out = new Set<string>();
-  const hits = labelTexts(w).filter((e) => marked(e.t));
+  const all = allTexts(w);
+  const hits = all.filter((e) => marked(e.t));
   if (hits.length === 0) return out;
   for (const e of hits) out.add(e.key);
   for (const n of w.nodes.values()) {
@@ -150,10 +153,52 @@ export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean):
       return sameRow || below;
     });
     if (!near) continue;
-    const l = nearestLabel(w, n, false);
-    if (l !== null && marked(l.t)) out.add(n.key);
+    const full = nearestIn(all, n);
+    const shown = [nearestLabel(w, n, false), nearestLabel(w, n, true)];
+    if ((full !== null && marked(full.t)) || shown.some((l) => l !== null && marked(l.t))) out.add(n.key);
   }
   return out;
+}
+
+/** Every static text with a frame, in full and cleaned of runs of white space: what admission reads (nodesLabelledBy). */
+function allTexts(w: WindowState): LabelText[] {
+  let out = fullIndex.get(w);
+  if (out !== undefined) return out;
+  out = [];
+  for (const n of w.nodes.values()) {
+    if (n.role !== "AXStaticText" || n.frame === undefined) continue;
+    const t = clean(n.label ?? n.value);
+    if (t !== null) out.push({ key: n.key, frame: n.frame, t, labelLike: false });
+  }
+  fullIndex.set(w, out);
+  return out;
+}
+const fullIndex = new WeakMap<WindowState, LabelText[]>();
+
+/** nearestLabel's rule over a given list of texts. */
+function nearestIn(texts: readonly LabelText[], target: Node): LabelText | null {
+  const f = target.frame;
+  if (f === undefined) return null;
+  const [fx, fy, , fh] = f;
+  const cy = fy + fh / 2;
+  let left: { d: number; e: LabelText } | null = null;
+  let above: { d: number; e: LabelText } | null = null;
+  for (const e of texts) {
+    if (e.key === target.key) continue;
+    const [x, y, wd, h] = e.frame;
+    const right = x + wd;
+    if (Math.abs(y + h / 2 - cy) <= Math.max(fh, h) / 2 && right <= fx + 4) {
+      const d = fx - right;
+      if (d <= MAX_LEFT_GAP && (left === null || d < left.d)) left = { d, e };
+      continue;
+    }
+    const bottom = y + h;
+    if (bottom <= fy + 4 && overlapsHorizontally(e.frame, f)) {
+      const d = fy - bottom;
+      if (d <= MAX_ABOVE_GAP && (above === null || d < above.d)) above = { d, e };
+    }
+  }
+  return (left ?? above)?.e ?? null;
 }
 
 function overlapsHorizontally(a: Frame, b: Frame): boolean {

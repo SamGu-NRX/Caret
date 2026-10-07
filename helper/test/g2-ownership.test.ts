@@ -16,6 +16,7 @@ import { EngineSession } from "../src/engines/session.ts";
 import { buildFillPopup, fillPlan, recheckFields, recheckFill, sourceHolds, writtenFields } from "../src/offers/fill-popup.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
 import { assertNoSecrets, SecretInRequest } from "../src/privacy.ts";
+import "../src/planner/intent-heads.ts";
 import { bareLine, lineDigests } from "../src/fill/line-values.ts";
 import { secretText as holdsSecret } from "../src/memory/sensitive.ts";
 import { nodeText } from "../src/model.ts";
@@ -657,5 +658,70 @@ describe("G2 round 4: recheck by neighbourhood", () => {
     expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nDo not use this old number\nCity: Austin")).toEqual([keyOf(phone)]);
     // An edit two lines away touches neither.
     expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin\nZIP: 78751")).toEqual([]);
+  });
+});
+
+describe("G2 round 5", () => {
+  const leaks = async (sources: Snapshot[], planted: string[]): Promise<string[]> => {
+    const name = control("e1", "Full name");
+    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+    await proposeFill(desk([name, control("e2", "Street address")], [...sources, noteWindow("Name: Kenji Watanabe")]), ask, WIN, keyOf(name), 2000);
+    expect(requests.length).toBeGreaterThan(0);
+    const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.nouls ?? {}, r.snippets]));
+    return planted.filter((t) => sent.includes(t));
+  };
+  const other = (nodes: Snapshot["nodes"]): Snapshot => ({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 600, 300] }, focused: false, root: null, nodes, values: [], focusedKey: null, stats: { walkMs: 0, visited: nodes.length, truncated: false } }) as Snapshot;
+
+  it("1: a line an opener takes opens in turn, with LF or CRLF", async () => {
+    for (const nl of ["\n", "\r\n"]) {
+      const text = ["Accounts", "Password:", "PIN:", "violet-orchard-seven", "City: Austin"].join(nl);
+      expect(await leaks([{ ...other([{ key: "o/t", parent: null, role: "AXTextArea", editable: true, value: text, frame: [0, 0, 400, 200] }]) }], ["violet-orchard-seven"]), JSON.stringify(nl)).toEqual([]);
+    }
+  });
+
+  it("2: a typed value over several lines goes when a line it covers was dropped", async () => {
+    const text = "Accounts\nPassword:\n4410 Speedway\napt 2, Austin, TX 78751\nCity: Austin";
+    const s = other([{ key: "o/t", parent: null, role: "AXTextArea", editable: true, value: text, frame: [0, 0, 400, 200] }]);
+    expect(await leaks([{ ...s, values: [{ kind: "address", text: "4410 Speedway\napt 2, Austin, TX 78751", nodeKey: "o/t" }] }], ["4410 Speedway"])).toEqual([]);
+  });
+
+  it("3: a label over 60 characters that names a secret keeps the field beside it out", async () => {
+    const label = "The staging account password for the shared deploy box is in here";
+    expect(label.length).toBeGreaterThan(60);
+    const s = other([
+      { key: "o/l", parent: null, role: "AXStaticText", value: label, frame: [20, 40, 300, 20] },
+      { key: "o/f", parent: null, role: "AXTextField", editable: true, value: "Qz7-Lime-River", frame: [330, 40, 160, 20] },
+    ]);
+    expect(await leaks([s], ["Qz7-Lime-River"])).toEqual([]);
+  });
+
+  it("4: a span over several lines has digests of all its lines, and a value with none is never held", () => {
+    const text = "Home\n4410 Speedway\napt 2, Austin\nPhone: 555-0164";
+    expect(lineDigests(text, "4410 Speedway\napt 2, Austin")).toHaveLength(1);
+    const sw = desk([control("e1", "Street")], [noteWindow(text)]).windows.get("w4-note")!;
+    const KEY = "com.apple.TextEdit/standard/textarea:~0";
+    expect(sourceHolds(sw, KEY, "555-0164", null, "text", { lines: lineDigests(text, "555-0164") })).toBe(true);
+    expect(sourceHolds(sw, KEY, "555-0164", null, "text")).toBe(false);
+    expect(sourceHolds(sw, KEY, "555-0164", null, "text", { lines: [] })).toBe(false);
+  });
+
+  it("5: acceptance refuses a source the redacted view no longer admits", async () => {
+    const name = control("e1", "Full name");
+    const field = (placeholder?: string): Snapshot => other([{ key: "o/f", parent: null, role: "AXTextField", editable: true, value: "Robin Vale", label: "Name", ...(placeholder === undefined ? {} : { placeholder }), frame: [20, 40, 200, 20] }]);
+    const m = desk([name], [{ ...field(), focused: true, at: 900 }]);
+    const { ask } = scripted({ "Full name": "Robin Vale" }, () => ({ choice: "user", confidence: 0.95 }));
+    const g = writtenFields(await proposeFill(m, ask, WIN, keyOf(name), 2000));
+    expect(g.fields.map((f) => f.value)).toEqual(["Robin Vale"]);
+    expect(recheckFill(m, g, () => null)).toBeNull();
+    m.apply({ ...field("Password"), at: 2500 });
+    expect(recheckFill(m, g, () => null)).not.toBeNull();
+  });
+
+  it("8: Caret's own wording passes only as a question's criterion, never in the state", () => {
+    const refuse = "Something Caret must not or cannot do here: pay, give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.";
+    // The Ask heads register it (planner/intent-heads.ts); importing fill.ts loads them through the planner.
+    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { scope: { type: "choice", instructions: "Which?", criteria: { refuse } } } })).not.toThrow();
+    expect(() => assertNoSecrets({ state: { screenText: refuse }, questions: {} })).toThrow(SecretInRequest);
+    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { scope: { type: "choice", instructions: refuse, criteria: { none: "None." } } } })).toThrow(SecretInRequest);
   });
 });
