@@ -1,1 +1,0 @@
-C2/F2/GW1 fill lore: memory refs via memoryRefOf; forms over 20 fields split into parts accepted and undone alone; joined ambient fills promoted to explicit, keeping caller identity; gateway.only names the serving provider; Laya is fixture-only.

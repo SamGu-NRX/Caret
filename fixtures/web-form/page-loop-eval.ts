@@ -1301,7 +1301,7 @@ async function main(): Promise<number> {
 
       if (GOAL) {
         await goalPath(p, row, ready, w, before);
-        say(`${p.id}: goal ${row.goal?.outcome ?? "-"}, preview ${fmt(row.goal?.previewMs ?? null)} ms, ${row.goal?.steps ?? 0} steps, written ${row.goal?.eligibleWritten ?? 0}/${row.goal?.eligible ?? 0} eligible, tabs ${row.goal?.tabs ?? 0}, reveal ${fmt(row.goal?.revealMs ?? null)} ms, undo ${row.goal?.restored === true ? "restored" : `NOT restored ${row.goal?.notRestored.join("; ") ?? ""}`}, page ${fmt(row.pageMs)} ms; wrong ${row.wrong.length}${row.wrong.length > 0 ? ` (${row.wrong.join("; ")})` : ""}; disagreements ${row.goal?.disagreements.length ?? 0}${row.error === null ? "" : `; ${row.error}`}`);
+        say(`${p.id}: goal ${row.goal?.outcome ?? "-"}, preview ${fmt(row.goal?.previewMs ?? null)} ms, ${row.goal?.steps ?? 0} steps, written ${row.goal?.eligibleWritten ?? 0}/${row.goal?.eligible ?? 0} eligible, tabs ${row.goal?.tabs ?? 0}, reveal ${fmt(row.goal?.revealMs ?? null)} ms, undo ${row.goal === null ? "-" : row.goal.restored ? "restored" : `NOT restored ${row.goal.notRestored.join("; ")}`}, page ${fmt(row.pageMs)} ms; wrong ${row.wrong.length}${row.wrong.length > 0 ? ` (${row.wrong.join("; ")})` : ""}; disagreements ${row.goal?.disagreements.length ?? 0}${row.error === null ? "" : `; ${row.error}`}`);
         continue;
       }
       // Ask's intent: the heads maker's one request on the form as walked.
