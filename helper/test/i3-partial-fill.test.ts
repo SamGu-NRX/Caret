@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
-import { MAX_ASK_OPTIONS, Snapshot } from "../src/protocol.ts";
+import { MAX_ASK_OPTIONS, PROTOCOL_VERSION, Snapshot, type AskQuestion } from "../src/protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
 import { headsIntentMaker, headsRequest, readHeads, SCOPE_CUTOFF, scopeId } from "../src/planner/intent-heads.ts";
@@ -192,5 +192,27 @@ describe("a page goal through the helper", () => {
     const preview = (await r.ask("fill out this form from my note")) as Segment;
     expect(preview.steps.map((s) => s.says)).toEqual(["Full name: Robin Okafor", "Email: robin.okafor@example.com", "The rest is yours"]);
     expect(preview.warnings).toEqual(labels.slice(2).map((l) => `'${l}' is yours: Caret wasn't sure your request asks for it.`));
+  });
+});
+
+describe("the writer maker's settlement (ask.ts settleFields)", () => {
+  afterEach(closeRigs);
+
+  it("asks about the unclear fields beside the settled one, and the answer fills both on the page", async () => {
+    const labels = ["Full name", "Email", "Phone"];
+    const controls = (): PageControl[] => labels.map((l, i) => c(`e${i + 1}`, "text", l, { value: "" }));
+    const scoped = (inner: AskJev): AskJev => async (req) => {
+      const r = await inner(req);
+      if (req.purpose !== "ask.scope") return r;
+      return { ...r, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, /[Tt]he field 'Full name'/u.test(String(q.instructions)) ? settled : unclear])) };
+    };
+    const r = await rig({ controls, note: "Full name: Robin Okafor\nEmail: robin.okafor@example.com\nPhone: (737) 555-0101", picks: { "Full name": "Robin Okafor", Email: "robin.okafor@example.com", Phone: "(737) 555-0101" }, jev: scoped });
+    const q = (await r.ask("fill out this form from my note")) as unknown as AskQuestion;
+    expect(q.type).toBe("askQuestion");
+    expect(q.text).toBe("Caret will fill Full name. Which of these should it fill too?");
+    expect(q.options.map((o) => (o.kind === "field" ? o.label : o.kind))).toEqual(["Email", "Phone"]);
+    const email = q.options.find((o) => o.kind === "field" && o.label === "Email");
+    const preview = (await r.helper.handleAskAnswer({ type: "askAnswer", v: PROTOCOL_VERSION, requestId: "a2", at: Date.now(), questionId: q.questionId, picks: [email?.id ?? ""] }, undefined, true)) as Segment;
+    expect(preview.steps.map((s) => s.says)).toEqual(["Full name: Robin Okafor", "Email: robin.okafor@example.com", "The rest is yours"]);
   });
 });
