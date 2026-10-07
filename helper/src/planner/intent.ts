@@ -85,6 +85,16 @@ export interface AskIntent {
    * person in its sources, or a memory entry for the relation it names. Takes the place of a person ref in `whose`.
    */
   person?: string;
+  /**
+   * I3: the fields (refs) Jev settled, on an intent that asks about the others (`options`). They stay in scope whatever
+   * the user picks: a pick adds to them (ask.ts applyFixed). Only the heads maker sets it.
+   */
+  sure?: readonly string[];
+  /**
+   * I3: the fields (refs) Jev left unclear or voted for below the cutoff that the Ask neither fills nor asks about,
+   * because no question asks about them (they are too many for one, or nothing is unclear). Each is the user's, said.
+   */
+  unsure?: readonly string[];
 }
 
 /**

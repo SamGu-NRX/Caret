@@ -3,8 +3,9 @@
 //   - the scope ask, in two wordings: one categorical question per field, showing the field's label, its heading, its
 //     group, the kind of control it is and its neighbours' labels, with the options asks, not and unclear.
 // Jev decides which fields an Ask means; code only vetoes. A field is in scope only when both wordings answer "asks" at
-// SCOPE_CUTOFF or above. Any "unclear" in either wording asks the user which fields, offering those fields with the ones
-// Jev chose (choices.ts offers exactly these). No code path here adds a field Jev did not choose. The vetoes, each at
+// SCOPE_CUTOFF or above. Any "unclear" in either wording asks the user which fields, offering the unclear and
+// below-cutoff fields beside the ones Jev chose (choices.ts offers exactly these), when one question lists them all;
+// otherwise the chosen fields are filled and the rest left to the user, each said (I3 lead ruling). No code path here adds a field Jev did not choose. The vetoes, each at
 // its own site: a kind Caret never types (checkIntent: such fields are left to the user); one person per Ask (people.ts
 // readWhose asks when the instruction names two); a literal value must be an exact span of the instruction and is only
 // tied to a field Jev chose or offered (tieLiterals, checkIntent); a named source only narrows the windows read (the
@@ -26,6 +27,7 @@ import { dateShaped, timeShaped } from "../fill/kinds.ts";
 import { fieldWords, restrictsSources } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
 import { jevFailedError, type AskPart } from "./says.ts";
+import { MAX_ASK_OPTIONS } from "../protocol.ts";
 
 /** Lowest confidence for the route, why, source and whose heads: plan section 3's provisional router floor, not calibrated. */
 export const HEAD_FLOOR = ROUTE_CUTOFF;
@@ -305,10 +307,21 @@ function readHeadsIntent(snap: IntentSnapshot, heads: JevResult, scope: readonly
   // A field either wording answered "asks" without the pair settling it (below the cutoff, or in one wording only): the
   // user may pick it, so it is offered whenever the fields are asked about; only a pick puts it in the scope.
   const pickable = scope === null ? [] : snap.fields.filter((f) => !chosen.includes(f) && scope.some((r) => r.answers[scopeId(f.ref)]?.choice === "asks"));
-  if (unclear.length > 0) {
+  // I3 lead ruling: an Ask is never refused whole because some fields are unclear or a question would be too long. The
+  // fields Jev chose are filled. The unclear and below-cutoff ones are asked about, beside the chosen ones (`sure`), only
+  // when one question lists them all; otherwise, or when none is unclear, each is left to the user (`unsure`), said.
+  const uncertain = inOrder(snap, [...unclear, ...pickable]);
+  let sure: IntentField[] = [];
+  let unsure: IntentField[] = [];
+  if (chosen.length > 0 && unclear.length > 0 && uncertain.length <= MAX_ASK_OPTIONS) {
     open.push("fields");
-    offered = inOrder(snap, [...chosen, ...unclear, ...pickable]);
-  } else if (chosen.length === 0) {
+    offered = uncertain;
+    sure = chosen;
+  } else if (chosen.length > 0) unsure = uncertain;
+  else if (unclear.length > 0) {
+    open.push("fields");
+    offered = uncertain;
+  } else {
     // Nothing settled: offer any field either wording said the request asks for, below the cutoff or not agreed.
     offered = scope === null ? [] : snap.fields.filter((f) => scope.some((r) => r.answers[scopeId(f.ref)]?.choice === "asks"));
     // Every field "not" in both wordings, on a fill Jev settled: the form has no field the instruction asks for.
@@ -321,14 +334,17 @@ function readHeadsIntent(snap: IntentSnapshot, heads: JevResult, scope: readonly
   // must keep its words in the value question (A3 review 2).
   const empties = snap.fields.filter((f) => !f.filled);
   const wholeForm = route === "all" && chosen.length > 0 && chosen.length === empties.length && empties.every((f) => chosen.includes(f));
+  const refs = (fs: readonly IntentField[]): string[] => fs.map((f) => f.ref);
   const jevFields = {
     scope: "list" as const,
-    fields: open.includes("fields") ? [] : chosen.map((f) => f.ref),
-    ...(open.includes("fields") ? { options: offered.map((f) => f.ref) } : { agreed: true as const, ...(wholeForm ? { wholeForm: true as const } : {}) }),
+    fields: open.includes("fields") ? [] : refs(chosen),
+    ...(open.includes("fields")
+      ? { options: refs(offered), ...(sure.length === 0 ? {} : { sure: refs(sure) }) }
+      : { agreed: true as const, ...(wholeForm ? { wholeForm: true as const } : {}), ...(unsure.length === 0 ? {} : { unsure: refs(unsure) }) }),
   };
-  // In scope for tying values: the chosen fields, or the offered ones when the fields are asked (applyFixed keeps a
-  // literal only on a field the user then picks).
-  const typable = (open.includes("fields") ? offered : chosen).filter((f) => f.neverTyped === null);
+  // In scope for tying values: the chosen fields, or the offered ones and the sure ones when the fields are asked
+  // (applyFixed keeps a literal only on a field that stays in scope after the pick).
+  const typable = (open.includes("fields") ? inOrder(snap, [...sure, ...offered]) : chosen).filter((f) => f.neverTyped === null);
   const literals = tieLiterals(snap, typable);
 
   // Where from. The instruction's own words come first, whatever the head says, since checkIntent reads "any" as every

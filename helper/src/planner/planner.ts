@@ -103,6 +103,8 @@ export interface PlanDraft {
   controls?: readonly { key: string; name: string; value: string; display: string }[];
   /** Fields an Ask left to the user because Caret never types them, as a sentence (ask.ts); null or absent for none. */
   leftToYou?: string | null;
+  /** I3: fields an Ask left to the user because Jev wasn't sure the request asks for them (ask.ts); each is said in the pop-up. */
+  unsure?: readonly { key: string; name: string }[];
 }
 
 interface Option {

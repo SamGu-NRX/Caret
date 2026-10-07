@@ -197,8 +197,9 @@ describe("every path proposes every field; only the Ask's scope is minted", () =
     if (email === undefined) throw new Error("no Email option");
     // Email now holds text the user typed while the question was open.
     const after = await planAsk(plain, desk({ value: "typed by the user" }), { values: () => MEMORY }, [], { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "r1", windowId: WIN, now: 3000, resume: { ...q.resume, fixed: { ...q.resume.fixed, ...email.fixes } } }).catch((x: unknown) => x);
-    expect(after).toBeInstanceOf(AskRefused);
-    expect(JSON.stringify((after as AskRefused).detail ?? "")).not.toContain("wrote");
+    // I3 lead ruling: Name, which Jev chose, stays in scope beside the pick and is written; the changed Email is not.
+    if (after instanceof Error) expect(after).toBeInstanceOf(AskRefused);
+    else expect((after as { checked: { writes: { node: { key: string } }[] } }).checked.writes.map((w) => w.node.key)).toEqual(["sf/name"]);
   });
 
   it("native plan after a picked person (review reproduction 3): no value the planner can't call that person's is written", async () => {

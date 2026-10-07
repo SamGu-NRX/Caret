@@ -123,11 +123,13 @@ describe("which fields: Jev's, never code's", () => {
     expect(names(s, no.fields)).toEqual(["First name", "Last name"]);
   });
 
-  it("asks which fields on any unclear, offering the unclear fields with the chosen ones, whatever the confidence", () => {
+  // I3 lead ruling: the chosen fields are kept beside the question (`sure`), which offers only the unclear ones.
+  it("asks which fields on any unclear, offering the unclear fields beside the chosen ones, whatever the confidence", () => {
     const s = snapOn("clinic-intake", "use Ines for the emergency contact");
     const i = readHeads(s, headsOf(s), scopeOf(s, ["Emergency contact name"], (n) => (n === "Emergency contact phone" ? { choice: "unclear", confidence: 0.02 } : undefined)));
     expect(i).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"] });
-    expect(names(s, i.options ?? [])).toEqual(["Emergency contact name", "Emergency contact phone"]);
+    expect(names(s, i.options ?? [])).toEqual(["Emergency contact phone"]);
+    expect(names(s, i.sure ?? [])).toEqual(["Emergency contact name"]);
     expect(i.agreed).toBeUndefined();
   });
 
@@ -181,7 +183,10 @@ describe("which fields: Jev's, never code's", () => {
         const i = readHeads(s, headsOf(s, n % 7 === 0 ? { route: "plan" } : {}), scope);
         // Never the whole form: a page goal's "all" would take inputs past the snapshot (A3 review 1).
         expect(i.scope).not.toBe("all");
-        if (unclear) expect(i.route === "ask" || (i.route === "plan" && i.options !== undefined), form.id).toBe(true);
+        // I3 lead ruling: an unclear field is asked about, or, beside chosen ones, too many to ask about, left to the user.
+        const unsure = new Set(i.unsure ?? []);
+        if (unclear) expect(i.route === "ask" || (i.route === "plan" && i.options !== undefined) || s.fields.every((f) => !scope.some((x) => x.answers[scopeId(f.ref)]?.choice === "unclear") || unsure.has(f.ref)), form.id).toBe(true);
+        for (const ref of i.unsure ?? []) expect(i.fields.includes(ref), `${form.id}: unsure ${ref} in scope`).toBe(false);
         if (i.route === "plan") expect(i.agreed === true ? i.fields.every((ref) => chosen.has(s.fields.find((f) => f.ref === ref)?.key ?? "")) : i.fields.length === 0).toBe(true);
         if (i.route !== "fill") {
           asks++;
@@ -320,17 +325,19 @@ describe("through planAsk", () => {
     expect(jev.confirms()).toBe(0);
   });
 
-  it("asks on unclear with exactly Jev's fields offered, and a pick fills only what was picked", async () => {
+  // I3 lead ruling: the field Jev chose is filled whatever the pick; the question offers only the unclear ones.
+  it("asks on unclear with exactly Jev's unclear fields offered, and a pick adds to the chosen one", async () => {
     const jev = jevFor(["Emergency contact name"], { "Emergency contact name": "Ines Lindqvist" }, ["Relationship to patient", "Emergency contact phone"]);
     const e = await run("clinic-intake", "use Ines for the emergency contact", jev).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(AskAsks);
     const q = (e as AskAsks).question;
     expect(q.part).toBe("fields");
-    expect(q.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Emergency contact name", "Relationship to patient", "Emergency contact phone"]);
-    const name = q.options[0];
-    if (name === undefined) throw new Error("no option");
-    const after = await run("clinic-intake", "use Ines for the emergency contact", jev, { ...q.resume, fixed: { ...q.resume.fixed, ...name.fixes } });
-    expect(after.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[name.fixes.fields?.[0], "Ines Lindqvist"]]);
+    expect(q.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Relationship to patient", "Emergency contact phone"]);
+    const relation = q.options[0];
+    if (relation === undefined) throw new Error("no option");
+    const after = await run("clinic-intake", "use Ines for the emergency contact", jev, { ...q.resume, fixed: { ...q.resume.fixed, ...relation.fixes } });
+    // Only the name has a value in this stand-in: the picked relationship is asked and finds none.
+    expect(after.checked.writes.map((w) => w.value)).toEqual(["Ines Lindqvist"]);
   });
 
   it("fills only Jev's fields, or asks, when a page host fills a plan's form (A3 review 1)", async () => {

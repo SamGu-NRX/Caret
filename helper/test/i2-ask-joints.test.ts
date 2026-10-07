@@ -146,17 +146,19 @@ describe("a native plan from Jev's scope ask writes only the fields Jev chose (I
     expect((e as AskRefused).message).toBe(SAYS.whichFields);
   });
 
-  it("asks first when Jev left Email unclear, offering Name and Email, and a pick writes only the pick", async () => {
+  // I3 lead ruling: Name, which Jev chose, is written whatever the pick; the question asks about Email alone.
+  it("asks first when Jev left Email unclear, offering Email beside the chosen Name, and a pick adds to Name", async () => {
     const plain = "put my details in and tidy the form up";
     const e = await go(jev(["Name"], ["Email"]), undefined, plain).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(AskAsks);
     const q = (e as AskAsks).question;
     expect(q.part).toBe("fields");
-    expect(q.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Name", "Email"]);
+    expect(q.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Email"]);
+    expect(q.text).toBe("Caret will fill Name. Which of these should it fill too?");
     const email = q.options.find((c) => c.option.kind === "field" && c.option.label === "Email");
     if (email === undefined) throw new Error("no Email option");
     const after = await go(jev(["Name"], ["Email"]), { ...q.resume, fixed: { ...q.resume.fixed, ...email.fixes } }, plain);
-    expect(after.checked.writes.map((w) => [w.node.key, w.value])).toEqual([["sf/email", "elena.vance@example.com"]]);
+    expect(after.checked.writes.map((w) => [w.node.key, w.value])).toEqual([["sf/name", "Elena Vance"], ["sf/email", "elena.vance@example.com"]]);
   });
 
   it("plans no write when Jev chose no field, so a press alone is said as the user's (B26 decision 3), not asked about", async () => {

@@ -22,7 +22,7 @@ import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import type { EventClock } from "../offers/event-time.ts";
 import { writtenFields } from "../offers/fill-popup.ts";
 import { fieldName } from "../planner/planner.ts";
-import { saysNoValue } from "../planner/says.ts";
+import { saysNoValue, UNSURE_FIELD } from "../planner/says.ts";
 import { handoffWhy } from "../planner/validate.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import type { DraftPlan } from "../codemode/types.ts";
@@ -106,6 +106,11 @@ export interface PlanPageOptions {
   /** Which fields the scope takes, for the reveal continuation (runs.ts): every empty control, a section's, or a list. */
   kind: PageGoal["kind"];
   section: string | null;
+  /**
+   * I3: the empty fields an Ask's scope ask left unclear or below its cutoff, that it neither fills nor asks about: each
+   * is the user's, said before Tab (planner/ask.ts AskGoal.page.unsure). Never in `scope`.
+   */
+  unsure?: readonly string[];
   /** What the user told Caret (fill/about.ts), as a Fill all offers it. */
   about: readonly AboutValue[];
   askJev: AskJev;
@@ -283,6 +288,11 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       // (After a stop, a field the goal it replaces already wrote is filled for that reason, and is not left.)
       else if (o.carried === undefined && n !== undefined && (n.value ?? "") !== "" && neverTypedNode(w, n) === null) leave(n, "it already holds something, and Caret fills only empty fields here");
     }
+  }
+  // I3: the fields Jev wasn't sure the request asks for, when still empty, and never one the scope takes.
+  for (const k of o.unsure ?? []) {
+    const n = w.nodes.get(k);
+    if (n !== undefined && (n.value ?? "") === "" && !wanted.some((x) => x.node.key === k)) leave(n, UNSURE_FIELD);
   }
   // Fields of a kind Caret never types that the scope takes are named before Tab.
   const scopeKeys = o.scope === null || o.kind === "all" ? null : new Set(o.kind === "list" ? o.scope.fields : []);

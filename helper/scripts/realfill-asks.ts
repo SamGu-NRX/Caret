@@ -351,6 +351,8 @@ for (const [i, ask] of asks.entries()) {
     draft = await run();
     intent = draft.intent;
     use = draft.maker;
+    // I3: the fields the Ask left to the user because Jev wasn't sure the request asks for them.
+    if (draft.unsure !== undefined) detail = `left to you (unsure): ${draft.unsure.map((u) => u.name).join(", ")}`;
   } catch (e) {
     if (!(e instanceof PlannerError)) throw e;
     error = `${e.code}: ${e.message}`;

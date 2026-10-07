@@ -13,7 +13,9 @@
 //     the lead's list: B24's "my name and email please" comes from it, and no window could be the right answer.
 //   - person: the user, or someone the instruction or an open mail names (a name once, its longest form); one is picked.
 //
-// Nothing is listed past MAX_ASK_OPTIONS: an Ask whose candidates do not fit is refused as before.
+// Nothing is listed past MAX_ASK_OPTIONS. A fields question that does not fit is not asked: the Ask fills the fields Jev
+// chose and leaves the rest to the user (I3 lead ruling, intent-heads.ts); a source or person question that does not
+// fit lists its first candidates.
 import type { ScreenModel } from "../model.ts";
 import { MAX_ASK_OPTIONS, type AskOption } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";

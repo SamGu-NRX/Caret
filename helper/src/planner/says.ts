@@ -282,6 +282,25 @@ export function saysLeftToYou(fields: readonly { name: string; kind: SensitiveKi
   return `${capital(list(fields.map((f) => f.name), "and"))} ${fields.length === 1 ? "is" : "are"} yours to type. Caret doesn't type ${list(kinds, "or")}.`;
 }
 
+/**
+ * I3: a field an Ask leaves to the user because Jev wasn't sure the request asks for it: "Pizza Size: Caret wasn't sure
+ * your request asks for it."
+ */
+export function saysUnsureField(name: string): string {
+  return `${field(name)}: ${UNSURE_FIELD}.`;
+}
+export const UNSURE_FIELD = "Caret wasn't sure your request asks for it";
+
+/** I3: an Ask with no field Jev settled and more unsettled ones than one question lists. */
+export function saysUnsureFields(names: readonly string[]): string {
+  return `Caret wasn't sure your request asks for ${list(names, "or")}, so it filled nothing. Name the fields you want filled.`;
+}
+
+/** I3: the fields question beside fields Jev settled: "Caret will fill Customer name and Telephone. Which of these should it fill too?" */
+export function asksFieldsBeside(sure: readonly string[]): string {
+  return `Caret will fill ${list(sure, "and")}. Which of these should it fill too?`;
+}
+
 /** A field's label as a sentence says it: no "(optional)", required marks or trailing colon. */
 export function field(name: string): string {
   return name.replace(/\((?:required|optional)\)/giu, "").replace(/[*:✱∗]/gu, "").replace(/\s+/gu, " ").trim() || "that field";
