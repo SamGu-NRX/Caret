@@ -111,6 +111,33 @@ class DarwinProbes:
     def all_pids(self):
         return self._list(self.PROC_ALL_PIDS, 0)
 
+    KERN_PROC, KERN_PROC_UID, KINFO_PROC_SIZE, P_PID_OFFSET = 14, 5, 648, 40
+
+    def user_pids(self, uid):
+        """Every pid the kernel lists under *uid* (sysctl KERN_PROC_UID, which `ps -U` reads). A process missing from
+        it belongs to another user: evidence a failed probe on that process could never give. Raises OSError."""
+        mib = (ctypes.c_int * 4)(self.CTL_KERN, self.KERN_PROC, self.KERN_PROC_UID, uid)
+        for _attempt in range(5):
+            size = ctypes.c_size_t(0)
+            if self._sysctl(mib, 4, None, ctypes.byref(size), None, 0) != 0:
+                raise _errno_error("sysctl kern.proc.uid size")
+            size.value += 32 * self.KINFO_PROC_SIZE  # room for processes started meanwhile
+            buf = ctypes.create_string_buffer(size.value)
+            ctypes.set_errno(0)
+            if self._sysctl(mib, 4, buf, ctypes.byref(size), None, 0) == 0:
+                break
+            if ctypes.get_errno() != errno.ENOMEM:
+                raise _errno_error("sysctl kern.proc.uid")
+        else:
+            raise OSError(errno.ENOMEM, "sysctl kern.proc.uid kept growing")
+        if size.value % self.KINFO_PROC_SIZE:
+            raise OSError(errno.EIO, "sysctl kern.proc.uid returned {} bytes, not whole kinfo_proc records".format(size.value))
+        pids = [struct.unpack_from("i", buf.raw, n + self.P_PID_OFFSET)[0]
+                for n in range(0, size.value, self.KINFO_PROC_SIZE)]
+        if uid == os.getuid() and os.getpid() not in pids:
+            raise OSError(errno.EIO, "sysctl kern.proc.uid did not list this process: wrong record layout")
+        return pids
+
     def group(self, pgid):
         """PIDs whose process group is *pgid*, zombies included."""
         return self._list(self.PROC_PGRP_ONLY, pgid)
@@ -489,20 +516,29 @@ class Tracker:
         return found
 
     def _marked(self):
+        """This user's processes started since the job that carry its marker. One it cannot read is kept as
+        uninspectable and owned (never assumed unmarked); another user's process is excluded only because the kernel
+        lists it under another uid. Raises OSError when the user's process list cannot be read."""
         hits = []
-        for pid in self.probes.all_pids():
+        for pid in self.probes.user_pids(os.getuid()):
             if pid == self.me:
                 continue
             try:
                 usage = self.probes.usage(pid)
             except PermissionError:
-                continue  # another user's process: it cannot carry this job's marker in an environment we set
+                self.uninspectable.add(pid)
+                hits.append(pid)
+                continue
             if usage is None or usage[1] < self.started_abstime:
                 continue
             if self.tracked.get(pid) == usage[1]:
                 continue  # already walked from the tracked set; a reused pid (other start) is read again
             got = self.probes.procargs(pid)
-            if got is not None and self.mark_entry in got[1]:
+            if got is None:
+                if self.probes.usage(pid) is not None:
+                    self.uninspectable.add(pid)
+                    hits.append(pid)
+            elif self.mark_entry in got[1]:
                 hits.append(pid)
         return hits
 

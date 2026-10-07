@@ -432,6 +432,9 @@ class TrackerTest(unittest.TestCase):
         def all_pids(self):
             return list(self.procs)
 
+        def user_pids(self, uid):
+            return list(self.procs)
+
         def usage(self, pid):
             p = self.procs.get(pid)
             return None if p is None else (1, p[0])

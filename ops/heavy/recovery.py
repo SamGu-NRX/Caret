@@ -279,24 +279,33 @@ def check_resource(resource, job_id):
 
 
 def marked_state(probes, resource):
-    """(state, [(pid, start)] or detail) of live processes started since the job that carry its marker."""
+    """(state, [(pid, start)] or detail) of live processes started since the job that carry its marker.
+
+    Only this user's processes can carry it, and the kernel's per-user list says which those are. One of them that
+    cannot be read (usage denied, arguments unreadable while it lives) makes the answer UNKNOWN."""
     entry = "{}={}".format(procs.MARK_VAR, resource["mark"])
-    found = []
+    found, unreadable = [], []
     try:
-        for pid in probes.all_pids():
+        for pid in probes.user_pids(os.getuid()):
             if pid == os.getpid():
                 continue
             try:
                 usage = probes.usage(pid)
             except PermissionError:
-                continue  # another user's process cannot carry an environment this job set
+                unreadable.append(pid)
+                continue
             if usage is None or usage[1] < resource["since"]:
                 continue
             got = probes.procargs(pid)
-            if got is not None and entry in got[1]:
+            if got is None:
+                if probes.usage(pid) is not None:
+                    unreadable.append(pid)
+            elif entry in got[1]:
                 found.append((pid, usage[1]))
     except OSError as ex:
         return procs.UNKNOWN, "process scan failed: {}".format(ex)
+    if unreadable:
+        return procs.UNKNOWN, "processes of this user that cannot be read: {}".format(unreadable)
     return (procs.PRESENT, found) if found else (procs.ABSENT, [])
 
 

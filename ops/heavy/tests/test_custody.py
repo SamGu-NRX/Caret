@@ -391,7 +391,7 @@ class WireDescriptorsAndDeadlines(unittest.TestCase):
         owner = recovery.Owner.__new__(recovery.Owner)
         owner.journal = recovery.Journal(os.path.join(d, "journal.ndjson"))
         owner.supervisor, owner.watches, owner.clients, owner.fds = None, {}, {}, {}
-        owner.plan, owner.paths = {"job_id": "caret-x", "test": {}}, {}
+        owner.plan, owner.paths, owner.state = {"job_id": "caret-x", "test": {}}, {}, "custody"
         return owner
 
     def copies(self, target):
@@ -528,6 +528,60 @@ class LeaderStaysUnreaped(Custody):
         self.assert_all_released(job_id)
 
 
+class MarkerScanFailsClosed(unittest.TestCase):
+    """A process of this user that the scan cannot read is UNKNOWN, never assumed unmarked; another user's process is
+    excluded only because the kernel lists it under another uid."""
+
+    class Probes(object):
+        def __init__(self, mine, procs_):
+            self.mine, self.procs = mine, procs_  # pid -> (start, env or None for unreadable, denied?)
+
+        def user_pids(self, uid):
+            if self.mine is None:
+                raise OSError(5, "sysctl failed")
+            return list(self.mine)
+
+        def all_pids(self):
+            return list(self.procs)
+
+        def group(self, pgid):
+            return []
+
+        def children(self, pid):
+            return []
+
+        def usage(self, pid):
+            start, env, denied = self.procs[pid]
+            if denied:
+                raise PermissionError(1, "denied")
+            return (1, start)
+
+        def procargs(self, pid):
+            env = self.procs[pid][1]
+            return None if env is None else (["x"], env)
+
+    marker = {"mark": "caret-x.n", "since": 100}
+
+    def test_unreadable_own_processes_are_unknown(self):
+        mark = ["CARET_HEAVY_MARK=caret-x.n"]
+        for procs_, why in (({10: (200, None, False)}, "arguments unreadable"),
+                            ({11: (200, [], True)}, "usage denied")):
+            with self.subTest(why):
+                probes = self.Probes(list(procs_), procs_)
+                self.assertEqual(recovery.marked_state(probes, self.marker)[0], procs.UNKNOWN)
+        probes = self.Probes([12], {12: (200, mark, False), 13: (200, None, True)})  # 13 belongs to another user
+        self.assertEqual(recovery.marked_state(probes, self.marker), (procs.PRESENT, [(12, 200)]))
+        self.assertEqual(recovery.marked_state(self.Probes(None, {}), self.marker)[0], procs.UNKNOWN)
+
+    def test_the_supervisor_scan_keeps_unreadable_candidates_as_present(self):
+        probes = self.Probes([10], {10: (200, None, False)})
+        t = procs.Tracker(probes, "caret-x.n", "caret-heavy.caret-x.", started_abstime=100)
+        t.me = -1
+        with mock.patch.object(procs, "launchd_jobs", return_value=[]):
+            self.assertIn(10, t.owned(full=True))
+        self.assertIn(10, t.uninspectable)
+
+
 class Test8PidReuseAndStaleRecords(unittest.TestCase):
     class Probes:
         def __init__(self):
@@ -544,6 +598,9 @@ class Test8PidReuseAndStaleRecords(unittest.TestCase):
 
         def all_pids(self):
             return list(self.procs)
+
+        def user_pids(self, uid):
+            return list(self.procs)  # every fake process is this user's
 
         def procargs(self, pid):
             return ["x"], self.procs[pid][3]
