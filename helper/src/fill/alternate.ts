@@ -17,40 +17,63 @@ import type { FillField, Node } from "../protocol.ts";
 export type AlternateKind = "email" | "phone" | "address";
 const KINDS: readonly AlternateKind[] = ["email", "phone", "address"];
 
-// Source: general language knowledge, not held-out pages or keys. The groups cover English, Spanish,
-// French, German, Arabic, Hindi and Korean, then unspaced Chinese/Japanese compounds. No coverage study
-// exists. Match whole words in spaced scripts, including combining marks, rather than English-only \b.
-const SECONDARY = /(?<![\p{L}\p{M}\p{N}])(?:alternate|alternative|secondary|backup|other|additional|second|2nd|alternativ[oa]s?|secundari[oa]s?|otr[oa]s?|adicional|segund[oa]|de reserva|secondaire|alternatif|autre|supplémentaire|de secours|alternativ(?:e[rsnm]?)?|sekundär(?:e[rsnm]?)?|ersatz|weitere[rsnm]?|andere[rsnm]?|zweite[rsnm]?|احتياطي|الاحتياطي|بديل|البديل|آخر|الآخر|ثانوي|الثانوي|إضافي|الإضافي|ثاني|الثاني|वैकल्पिक|अन्य|दूसरा|दूसरी|अतिरिक्त|보조|대체|다른|추가|두 번째|예비|백업)(?![\p{L}\p{M}\p{N}])|备用|備用|其他|其它|第二|额外|額外|予備|代替|追加|別の|その他/iu;
+// Source: general language knowledge, not held-out pages or keys. The groups cover English, Spanish, French, German,
+// Arabic and Hindi as whole words (boundaries include combining marks, unlike English-only \b), then Korean, Chinese
+// and Japanese with no boundary: their compounds are written without spaces ("보조이메일"). No coverage study exists.
+const SECONDARY = /(?<![\p{L}\p{M}\p{N}])(?:alternate|alternative|secondary|backup|other|additional|second|2nd|alternativ[oa]s?|secundari[oa]s?|otr[oa]s?|adicional|segund[oa]|de reserva|secondaire|alternatif|autre|supplémentaire|de secours|alternativ(?:e[rsnm]?)?|sekundär(?:e[rsnm]?)?|ersatz|weitere[rsnm]?|andere[rsnm]?|zweite[rsnm]?|احتياطي|الاحتياطي|بديل|البديل|آخر|الآخر|ثانوي|الثانوي|إضافي|الإضافي|ثاني|الثاني|वैकल्पिक|अन्य|दूसरा|दूसरी|अतिरिक्त|बैकअप|द्वितीयक)(?![\p{L}\p{M}\p{N}])|보조|대체|다른|추가|두 번째|예비|백업|备用|備用|其他|其它|第二|额外|額外|予備|代替|追加|別の|その他/iu;
 const CONFIRM = /(?<![\p{L}\p{M}])(?:confirm(?:ation)?|re[ -]?enter|verify|again|confirmar|confirmación|verificar|repetir|de nuevo|confirmer|confirmation|vérifier|ressaisir|à nouveau|bestätigen|bestätigung|wiederholen|erneut|تأكيد|التأكيد|تحقق|التحقق|مرة أخرى|إعادة|पुष्टि|दोबारा|फिर से|확인|재입력|다시)(?![\p{L}\p{M}])|确认|確認|再次|重新输入|再入力|もう一度/iu;
+/** The ordinal secondary words, which a confirmation field uses for "a second time" ("Second email confirmation"). */
+const ORDINAL = /(?<![\p{L}\p{M}\p{N}])(?:second|2nd|segund[oa]|zweite[rsnm]?|ثاني|الثاني|दूसरा|दूसरी)(?![\p{L}\p{M}\p{N}])|두 번째|第二/giu;
+/** Words a bracketed qualifier may hold beside a marker and still be the field's own name: "(secondary, optional)". */
+const PLAIN = /^(?:optional|required|if any|if applicable|opcional|obligatorio|facultatif|facultative|obligatoire|freiwillig|erforderlich|pflichtfeld|اختياري|مطلوب|आवश्यक|선택|필수|选填|必填|任意|必須)$/iu;
 
-export function alternateKind(label: string | null): AlternateKind | null {
+const whole = (re: RegExp, t: string): boolean => new RegExp(`^(?:${re.source})$`, "iu").test(t);
+
+/**
+ * A field's name without its help text. A bracketed part stays only when every item in it is a marker (secondary or
+ * confirmation) or a plain qualifier ("optional"): "Email (secondary, optional)" keeps both; "Email (other people can
+ * see this)" and "Alternate email (we will verify this address)" are help text, whose words name nothing.
+ */
+function ownName(label: string | null): string {
   const cleaned = fieldLabelText(label)?.normalize("NFKC") ?? "";
-  // Help text in parentheses does not rename a field: "Email (other people can see this)".
-  const qualifier = new RegExp(`^(?:${SECONDARY.source})$`, "iu");
-  const name = cleaned.replace(/\(([^)]*)\)|\[([^\]]*)\]/gu, (_all, round: string | undefined, square: string | undefined) => {
-    const inside = (round ?? square ?? "").trim();
-    return qualifier.test(inside) ? ` ${inside} ` : "";
+  return cleaned.replace(/\(([^)]*)\)|\[([^\]]*)\]/gu, (_all, round: string | undefined, square: string | undefined) => {
+    const items = (round ?? square ?? "").split(/\s*(?:[,;/、，]|\s(?:and|or|y|o|et|ou|und|oder)\s)\s*/iu).map((x) => x.trim()).filter((x) => x !== "");
+    const marker = (x: string): boolean => whole(SECONDARY, x) || whole(CONFIRM, x);
+    return items.length > 0 && items.some(marker) && items.every((x) => marker(x) || PLAIN.test(x)) ? ` ${items.join(" ")} ` : " ";
   });
-  if (CONFIRM.test(cleaned) || !SECONDARY.test(name)) return null;
-  return primaryKind(name);
 }
 
-/** The kinds of an alternate field (alternateKind), as a list: what its FieldContract carries (contract.ts). */
+/** The kinds a name asks for, every one of them: "Secondary email or phone" is both. */
+function kindsIn(name: string): AlternateKind[] {
+  const kinds = fieldKinds([name]);
+  return KINDS.filter((k) => kinds.has(k));
+}
+
+/**
+ * The kinds a field is an alternate of: a secondary marker in its own name, unless the name confirms. A confirmation
+ * that uses only an ordinal ("Second email confirmation", "Email again") is exempt; one that also says alternate,
+ * backup or the like ("Confirm alternate email") is still an alternate, since its value must not be the primary's either.
+ */
 export function alternateKinds(label: string | null): readonly AlternateKind[] {
-  const k = alternateKind(label);
-  return k === null ? [] : [k];
+  return secondaryName(label) ? kindsIn(ownName(label)) : [];
 }
 
-export function primaryKind(label: string | null): AlternateKind | null {
-  const kinds = fieldKinds([label?.normalize("NFKC")]);
-  return KINDS.find((k) => kinds.has(k)) ?? null;
+/** Whether a field's or a saved entry's own name marks it secondary (alternateKinds), whatever kind it names. */
+function secondaryName(label: string | null): boolean {
+  const name = ownName(label);
+  return SECONDARY.test(name) && !(CONFIRM.test(name) && !SECONDARY.test(name.replace(ORDINAL, " ")));
 }
 
 /** The kinds a field that is no alternate stands as the primary of. */
 function primaryKinds(label: string | null): readonly AlternateKind[] {
-  if (alternateKinds(label).length > 0) return [];
-  const k = primaryKind(label);
-  return k === null ? [] : [k];
+  return secondaryName(label) ? [] : kindsIn(ownName(label));
+}
+
+/** Whether a value could be of a kind: an email has an @, a phone at least seven digits and no @. */
+function fits(kind: AlternateKind, v: string): boolean {
+  if (kind === "email") return v.includes("@");
+  if (v.includes("@")) return false;
+  return kind === "address" || v.replace(/[^0-9]/gu, "").length >= 7;
 }
 
 /**
@@ -168,13 +191,16 @@ const KIND_SAYS: Record<AlternateKind, string> = { email: "email address", phone
  */
 export function alternateVeto(write: AlternateWrite, form: AlternateForm, kinds: readonly AlternateKind[] = alternateKinds(write.name)): AlternateVeto | null {
   for (const kind of kinds) {
+    // Every kind a mixed field takes that the value could be (V6: "Secondary email or phone" given the primary phone).
+    if (!fits(kind, write.text)) continue;
     const fields = form.fields.filter((f) => f.key !== write.key && primaryKinds(f.name).includes(kind));
     const writes = form.writes.filter((x) => x.key !== write.key && primaryKinds(x.name).includes(kind));
     // A form with no primary field of the kind is exempt: the only email field may be labelled alternate.
     if (fields.length === 0 && writes.length === 0) continue;
     const field = [...fields.map((f) => ({ key: f.key, name: f.name, value: f.value })), ...writes.map((x) => ({ key: x.key, name: x.name, value: x.text }))].find((p) => p.value.trim() !== "" && sameValue(kind, p.value, write.text));
     if (field !== undefined) return { says: `it would repeat your ${field.name}`, repeats: { field: field.key } };
-    if (form.saved.some((s) => s.kind === kind && sameValue(kind, s.value, write.text))) return { says: `it would repeat your saved ${KIND_SAYS[kind]}`, repeats: { saved: kind } };
+    // Only the user's primary values: an entry the user labelled as a backup ("Backup email") is the alternate's to take.
+    if (form.saved.some((s) => s.kind === kind && !secondaryName(s.label) && sameValue(kind, s.value, write.text))) return { says: `it would repeat your saved ${KIND_SAYS[kind]}`, repeats: { saved: kind } };
   }
   return null;
 }

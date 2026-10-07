@@ -14,15 +14,16 @@ import type { ValueKind } from "../protocol.ts";
  */
 // Non-English terms below come from general language knowledge, not evaluation pages: Chinese, Arabic,
 // Hindi, Spanish, French, German, Japanese and Korean. Unicode word boundaries include combining marks;
-// Chinese/Japanese compounds do not require spaces. These lists are not measured language coverage.
+// Korean, Chinese and Japanese terms need no boundary, since their compounds are written without spaces
+// ("이메일주소", an email address; "휴대폰번호", a mobile number). These lists are not measured language coverage.
 const KIND_WORDS: readonly (readonly [ValueKind, RegExp])[] = [
-  ["email", /\be-?mail\b|(?<![\p{L}\p{M}])(?:correo(?: electrónico)?|courriel|البريد الإلكتروني|بريد إلكتروني|ईमेल|이메일)(?![\p{L}\p{M}])|邮箱|電子郵件|电子邮件|メール/iu],
+  ["email", /\be-?mail\b|(?<![\p{L}\p{M}])(?:correo(?: electrónico)?|courriel|البريد الإلكتروني|بريد إلكتروني|ईमेल)(?![\p{L}\p{M}])|이메일|邮箱|電子郵件|电子邮件|メール/iu],
   ["url", /\b(?:url|website|web ?site|web address|homepage|link)\b/],
-  ["phone", /\b(?:phone|telephone|tel|mobile|cell|fax)\b|(?<![\p{L}\p{M}])(?:teléfono|téléphone|telefon(?:nummer)?|الهاتف|هاتف|फोन|फ़ोन|मोबाइल|전화(?:번호)?|휴대폰)(?![\p{L}\p{M}])|电话|電話|手机|手機/iu],
+  ["phone", /\b(?:phone|telephone|tel|mobile|cell|fax)\b|(?<![\p{L}\p{M}])(?:teléfono|téléphone|telefon(?:nummer)?|الهاتف|هاتف|फोन|फ़ोन|मोबाइल)(?![\p{L}\p{M}])|전화|휴대폰|电话|電話|手机|手機/iu],
   ["date", /\b(?:date|day|birthday|dob|deadline|due)\b/],
   ["time", /\b(?:time|hour)\b/],
   ["amount", /\b(?:amount|total|subtotal|price|cost|fee|balance|payment)\b/],
-  ["address", /\b(?:address|street)\b|(?<![\p{L}\p{M}])(?:dirección|adresse|anschrift|العنوان|عنوان|पता|पते|주소)(?![\p{L}\p{M}])|地址|住所/iu],
+  ["address", /\b(?:address|street)\b|(?<![\p{L}\p{M}])(?:dirección|adresse|anschrift|العنوان|عنوان|पता|पते)(?![\p{L}\p{M}])|주소|地址|住所/iu],
   ["id", /\b(?:id|number|ref|reference|tracking|invoice|ticket|confirmation|code)\b/],
 ];
 

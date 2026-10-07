@@ -108,3 +108,66 @@ describe("alternate values cannot repeat primary values", () => {
     expect((await propose(label, primary)).fields[0]?.value).toBe(EMAIL);
   });
 });
+
+describe("V6 should-fixes: labels, saved backups, reasons, scripts", () => {
+  /** A form of `fields` (label, value) in front of a source window holding `chosen`; Jev picks `chosen` for `target`. */
+  async function form(fields: [string, string][], target: string, chosen: string, about: AboutValue[] = []) {
+    const model = new ScreenModel();
+    const kind = chosen.includes("@") ? "email" : "phone";
+    model.apply(snap([text("source", chosen, [0, 0, 300, 20])], { at: 1000, windowId: "6160-1", values: [value(kind, chosen, "source")] }));
+    model.apply(snap(fields.map(([label, v], i) => field(`f${i}`, v, { label, frame: [100, 40 + 40 * i, 200, 24] })), { at: 2000, windowId: FORM, focused: true }));
+    const key = `f${fields.findIndex(([l]) => l === target)}`;
+    const p = await proposeFill(model, jevPickingText((_, ins) => (ins.includes(`'${target}'`) ? chosen : null)), FORM, key, 3000, { derive: false, about });
+    const out = p.fields.find((f) => f.key === key);
+    if (out === undefined) throw new Error(`no field ${target}`);
+    return out;
+  }
+
+  it("does not read help text that says verify as a confirmation field", async () => {
+    expect((await form([["Email", EMAIL], ["Alternate email (we will verify this address)", ""]], "Alternate email (we will verify this address)", EMAIL)).value).toBeNull();
+  });
+
+  it("keeps a combined qualifier in parentheses", async () => {
+    expect((await form([["Email", EMAIL], ["Email (secondary, optional)", ""]], "Email (secondary, optional)", EMAIL)).value).toBeNull();
+  });
+
+  it("checks every kind a mixed alternate field takes, not the first", async () => {
+    expect((await form([["Phone", PHONE], ["Secondary email or phone", ""]], "Secondary email or phone", PHONE)).value).toBeNull();
+  });
+
+  it("still exempts a field that confirms in its own name", async () => {
+    expect((await form([["Email", EMAIL], ["Email (confirm)", ""]], "Email (confirm)", EMAIL)).value).toBe(EMAIL);
+  });
+
+  it("allows a saved backup email in Backup email and refuses the saved primary there", async () => {
+    const about: AboutValue[] = [{ id: "a1", label: "Email", kind: "email", value: "primary@example.test" }, { id: "a2", label: "Backup email", kind: "email", value: "backup@example.test" }];
+    expect((await form([["Email", "work@example.test"], ["Backup email", ""]], "Backup email", "backup@example.test", about)).value).toBe("backup@example.test");
+    const refused = await form([["Email", "work@example.test"], ["Backup email", ""]], "Backup email", "primary@example.test", about);
+    expect(refused.value).toBeNull();
+    expect(alternateReason(refused)).toBe("Caret left Backup email: it would repeat your saved email address.");
+  });
+
+  it("names the saved phone, not an unrelated work phone, when the saved phone caused the veto", async () => {
+    const f = await form([["Work phone", "(512) 555-0199"], ["Alternate phone", ""]], "Alternate phone", PHONE, [{ id: "p1", label: "Phone", kind: "phone", value: "512-555-0147" }]);
+    expect(f.value).toBeNull();
+    expect(alternateReason(f)).toBe("Caret left Alternate phone: it would repeat your saved phone number.");
+  });
+
+  it.each([
+    ["+1 (512) 555-0147", "5125550147", null],
+    ["+44 7700 900123", "07700 900123", null],
+    ["555-0147", "5125550147", "555-0147"],
+  ])("compares %s in Alternate phone with a primary %s by national number, never by suffix", async (chosen, primary, kept) => {
+    expect((await form([["Phone", primary], ["Alternate phone", ""]], "Alternate phone", chosen)).value).toBe(kept);
+  });
+
+  it.each([
+    ["बैकअप ईमेल", "ईमेल"],
+    ["보조 이메일주소", "이메일"],
+    ["보조이메일", "이메일"],
+    ["휴대폰번호 (보조)", "휴대폰번호"],
+  ])("withholds a repeated value in %s", async (label, primary) => {
+    const chosen = /휴대폰/u.test(label) ? PHONE : EMAIL;
+    expect((await form([[primary, chosen], [label, ""]], label, chosen)).value).toBeNull();
+  });
+});
