@@ -168,7 +168,7 @@ export type Provenance =
     }
   | { kind: "transfer"; srcWindowId: string; srcKey: string; rounds: number; reshaped: "memory" | null; /** The source element's whole value when read. */ value?: string };
 
-/** G2's slot. The contract never computes it; it only reads it into the verifier's description. */
+/** G2's slot. The contract never computes it. HA2: the verifier's questions no longer say it (verifyProposed); the Ask's scope reads it. */
 export type Owner = "user" | "other" | "person" | "unclear" | null;
 
 /** A write one path wants to make: everything the deterministic checks and the verifier need, nothing they infer. */
@@ -510,7 +510,6 @@ export function neverTypedRefusal(p: Proposed, instruction = ""): string | null 
 /** Questions one verifier request asks at most: fill's MAX_FIELDS, so a request is no bigger than a fill's. */
 export const VERIFY_BATCH = 20;
 
-const OWNER_SAYS: Record<Exclude<Owner, null | "unclear">, string> = { user: "the user's", other: "someone else's", person: "the person the user named" };
 
 /** The source window's own words for a window provenance: its app and title, quoted only when the ledger admitted them. */
 function where(app: string, title: string, admitted: (t: string) => boolean): string {
@@ -604,10 +603,10 @@ export function takesSays(f: FieldContract): string {
 }
 
 const WORDINGS = [
-  (p: Proposed, from: string, owner: string): string =>
-    `Field: ${p.field.descriptor}${takesSays(p.field)} Caret proposes to type this into it, with nothing added or removed: "${p.text}". It was read from ${from}${owner}. What is the proposed text, for this field?`,
-  (p: Proposed, from: string, owner: string): string =>
-    `Proposed text for the field '${p.field.name}': "${p.text}". Read from ${from}${owner}. The field: ${p.field.descriptor}${takesSays(p.field)} If Caret typed exactly this text into the field, what would it have typed?`,
+  (p: Proposed, from: string): string =>
+    `Field: ${p.field.descriptor}${takesSays(p.field)} Caret proposes to type this into it, with nothing added or removed: "${p.text}". It was read from ${from}. What is the proposed text, for this field?`,
+  (p: Proposed, from: string): string =>
+    `Proposed text for the field '${p.field.name}': "${p.text}". Read from ${from}. The field: ${p.field.descriptor}${takesSays(p.field)} If Caret typed exactly this text into the field, what would it have typed?`,
 ] as const;
 
 /** Every string a request carries in its state and questions. */
@@ -681,8 +680,10 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     if (!admitted(p.field.descriptor) || !admitted(p.text) || !admitted(p.field.name)) return null;
     for (const t of provenanceTexts(p.provenance)) admitted(t);
     const from = provenanceSays(p.provenance, admitted);
-    const owner = p.owner === null || p.owner === "unclear" ? "" : `; the screen says it is ${OWNER_SAYS[p.owner]}`;
-    return [WORDINGS[0](p, from, owner), WORDINGS[1](p, from, owner)] as const;
+    // HA2: no ownership claim. "The screen says it is the user's" restated an earlier answer of Jev's as a screen fact, and
+    // on a held-out note it carried an answer given without the note's own disclaimer into this check. This check judges
+    // exactness; its "other" verdict can still refuse another person's value.
+    return [WORDINGS[0](p, from), WORDINGS[1](p, from)] as const;
   });
   const declared = ledger.declared();
   const state: Record<string, unknown> = { task: "Caret checks that each value it is about to type is exactly what its field asks for.", ...(instruction === undefined ? {} : { instruction }) };

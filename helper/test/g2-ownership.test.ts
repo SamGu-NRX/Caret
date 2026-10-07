@@ -188,16 +188,16 @@ describe("structural evidence in whose-value questions (G2)", () => {
     }
   });
 
-  it("G2: says which note sentences name no other person, and which name someone else", async () => {
+  it("G2: says which note sentences name someone else; HA2: never that a sentence names no other person", async () => {
     const r = await ownerAsk(forty.email);
-    const alone = "it is in a sentence of the note the user just left that names no other person";
+    const alone = "names no other person";
     const other = "it is in a sentence that names someone other than the user";
-    expect(ownerQuestionOf(r, "2210 Willow Bend Drive, Apt 5B, Portland, Oregon 97214")).toContain(alone);
-    expect(ownerQuestionOf(r, "555-0164")).toContain(alone);
+    // HA2: one sentence can't say whose a value is, so code no longer claims it (whose.ts header).
+    for (const q of ownerQuestions(r)) expect(q).not.toContain(alone);
+    expect(ownerQuestionOf(r, "555-0164")).not.toContain("Where it sits");
     expect(ownerQuestionOf(r, "555-0171")).toContain(other);
     expect(ownerQuestionOf(r, "marcus.cole@example.net")).toContain(other);
     expect(ownerQuestionOf(r, "Marcus Cole")).toContain(other);
-    for (const t of ["555-0171", "marcus.cole@example.net"]) expect(ownerQuestionOf(r, t)).not.toContain(alone);
   });
 
   it("reads the sentence, not the line: the user's cell beside a warning about the parents' landline", async () => {
@@ -540,7 +540,11 @@ describe("G2 review round 2: provenance", () => {
     const entry = about.find((a) => a.value === "jo.abernathycole@example.com") as AboutValue;
     const pick: Record<string, string> = { Phone: "555-0164", City: "Portland", "ZIP code": "97214", Apartment: "Apt 5B", Street: "2210 Willow Bend Drive", "Mobile phone": "555-0164", Email: "jo.abernathycole@example.com" };
     const { ask } = scripted(pick, () => ({ choice: "user", confidence: 0.95 }));
-    const m = desk(fields, [mailWindow(forty.email), noteWindow(forty.note)]);
+    // HA2: the owner questions must show the whole note, and a note with a line over 80 characters is prose, of which a
+    // fill on focus sends under half; its values for the user's fields are withheld (fill.ts NOTE_UNSHOWN). This test is
+    // about the pop-up's rows, so it reads the note's card lines alone, which may go whole.
+    const card = forty.note.split("\n").filter((l) => l.length <= 80).join("\n");
+    const m = desk(fields, [mailWindow(forty.email), noteWindow(card)]);
     const p = await proposeFill(m, ask, WIN, keyOf(fields[0] as PageControl), 2000, { about });
     const g = writtenFields(p);
     expect(g.fields.length).toBeGreaterThan(5);

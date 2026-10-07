@@ -358,6 +358,11 @@ export interface RequestMore {
   memoryWhose?: ReadonlyMap<string, string>;
   /** Candidates whose owner is asked, by this ask's candidate id. */
   owners?: readonly AskExtra[];
+  /**
+   * HA2: the whole notes the owner questions' values were read from, by note id ("note 1"), sent once in the request's
+   * state (source_notes) beside the owner questions that name them.
+   */
+  notes?: ReadonlyMap<string, string>;
   /** Each field's control, which words its question. Text when absent. */
   controls?: ReadonlyMap<string, Control>;
   /**
@@ -474,10 +479,12 @@ export function buildFillRequest(
   }
   const anyAbout = fields.some((f) => (about.get(f.id)?.length ?? 0) > 0);
   const anyDerived = fields.some((f) => (more.derived?.get(f.id)?.length ?? 0) > 0);
+  const notes = more.stage !== "values" && (more.owners?.length ?? 0) > 0 && (more.notes?.size ?? 0) > 0 ? Object.fromEntries(more.notes as ReadonlyMap<string, string>) : null;
   const req: JevRequest = assertNoSecrets({
     purpose: more.stage === "whose" ? "fill.whose" : "fill.values",
     state: {
       ...(more.instruction === undefined ? {} : { instruction: more.instruction }),
+      ...(notes === null ? {} : { source_notes: notes }),
       destination_window: where,
       form_fields: [...fields.map((f) => f.name), ...(more.answers ?? []).map((a) => a.descriptor)].join("; "),
       task:
@@ -790,10 +797,14 @@ const OWN_SAYS: Partial<Record<AboutKind, string>> = { workAuth: "work authoriza
 const MAX_OWNERS = 40;
 
 /** G2: a candidate as a whose-value question describes it: its description, then where it sits (Candidate.placements). I3: `line`, its whole source line, in place of its clause. */
-function describeOwned(c: Candidate, line?: string): string {
+function describeOwned(c: Candidate, line?: string, note?: string): string {
   const d = describeCandidate({ ...c, id: "", ...(line === undefined ? {} : { line }) });
-  return c.placements === undefined ? d : `${d} Where it sits: ${c.placements.map((p) => PLACEMENT_SAYS[p]).join("; ")}.`;
+  const placed = c.placements === undefined ? d : `${d} Where it sits: ${c.placements.map((p) => PLACEMENT_SAYS[p]).join("; ")}.`;
+  return note === undefined ? placed : `${placed} The whole text it was read from is ${note} in source_notes; whose it is depends on all of that text.`;
 }
+
+/** HA2: why a value is withheld when the owner questions could not show the whole text it was read from (ownerNotes). */
+export const NOTE_UNSHOWN = "the note is too long for Caret to show Jev whose this value is";
 
 /** The person's name a candidate holds, when it is a person's: the display name of "Name <email>", the head of "Name, more", or the whole span. */
 function personName(c: Candidate): string | null {
@@ -1286,11 +1297,10 @@ export async function proposeFill(
   const memoryRead = scope === undefined || scope.memory;
   const ids = memoryRead ? identitiesOf(opts.about ?? []) : [];
   const userEmails = new Set(ids.filter((x) => x.kind === "email").map((x) => x.key));
-  const userNames = ids.filter((x) => x.kind === "name").map((x) => x.key);
   for (const c of candidates) {
     const id = identityOf(c.text, ids);
     if (id !== null && ledger.memory([id.label])) c.identity = id;
-    const sits = placementsOf(model, c, userEmails, userNames);
+    const sits = placementsOf(model, c, userEmails);
     if (sits.length > 0) c.placements = sits;
     snapshotOf(c);
   }
@@ -1329,6 +1339,28 @@ export async function proposeFill(
       if (line === undefined || line === c.text || line === c.line) continue;
       if (ledger.take(sw, "candidate", [line])) ownerLines.set(c.id, line);
     }
+  }
+  // HA2 (lead decision): an owner judgement about a window's value counts only when both owner questions showed the
+  // whole text it was read from, its source node as the redacted view shows it, charged to its window's budget and prose
+  // share, which are unchanged. A held-out note held the user's profile, then another person's contact lines and a
+  // sentence saying they were that person's; the owner questions showed the value's own line and the note's first 60
+  // characters, and Jev called the phone the user's. One rule, with no name detection and no choice of sentences: a
+  // disclaimer that names nobody ("neither line is mine") is shown as any other text is. A note that does not fit is not
+  // sent in part; its values are withheld from fields that want the user's details (noteUnshown, below).
+  const notes = new Map<string, string>();
+  const ownerNotes = new Map<string, string>();
+  for (const c of ownerCands) {
+    const sw = viewOf(model, c.source.windowId);
+    const node = sw?.nodes.get(c.source.nodeKey);
+    const text = node === undefined ? "" : nodeText(node).trim();
+    if (sw === undefined || text === "") continue;
+    let id = [...notes].find(([, t]) => t === text)?.[0];
+    if (id === undefined) {
+      if (!ledger.take(sw, "candidate", [text])) continue;
+      id = `note ${notes.size + 1}`;
+      notes.set(id, text);
+    }
+    ownerNotes.set(c.id, id);
   }
   // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its
   // window was still charged for them, which errs on the side of saying less.
@@ -1416,7 +1448,8 @@ export async function proposeFill(
     derived: askDerived(dIds),
     personal: whose ? whoseAsked : new Set(),
     memoryWhose,
-    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c, ownerLines.get(c.id)), text: c.text })),
+    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c, ownerLines.get(c.id), ownerNotes.get(c.id)), text: c.text })),
+    notes,
     controls: new Map(asked.map((f) => [f.id, f.control])),
   });
   // Two stages when some field wants a person's details (B24). First, both asks say whose details each such
@@ -1426,13 +1459,22 @@ export async function proposeFill(
   // the user's own name and email from memory were offered beside it (evidence/screen/b24/dev-7: 0 of 12 memory
   // values on the corpus's four memory forms).
   const staged = whose && personal.size > 0;
-  const [w1, w2] =
-    asked.length === 0 || !staged
-      ? [null, null]
-      : await Promise.all([
-          asking(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" })),
-          asking(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" })),
-        ]);
+  const whoseAsks = asked.length === 0 || !staged ? null : ([buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" }), buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" })] as const);
+  const [w1, w2] = whoseAsks === null ? [null, null] : await Promise.all([asking(whoseAsks[0]), asking(whoseAsks[1])]);
+  /**
+   * HA2: whether both owner questions about `c` showed the whole text it was read from: each request's question names
+   * its note, and each request's state carries that note whole. Read from the requests as sent, not from what was meant.
+   */
+  const noteShown = (c: Candidate): boolean => {
+    const id = ownerNotes.get(c.id);
+    const text = id === undefined ? undefined : notes.get(id);
+    if (whoseAsks === null || id === undefined || text === undefined) return false;
+    return ([[whoseAsks[0], c.id], [whoseAsks[1], secondId.get(c.id) ?? ""]] as const).every(([req, cid]) => {
+      const q = req.questions[ownerId(cid)];
+      const sent = (req.state as { source_notes?: Record<string, string> }).source_notes?.[id];
+      return q !== undefined && String(q.instructions).includes(`${id} in source_notes`) && sent === text;
+    });
+  };
   /** Both stage-one asks' answer to a whose or owner question, agreed at the whose cutoff, or null. */
   const stageOne = (q: string, q2: string = q): string | null => {
     const a1 = w1?.answers[q];
@@ -1603,6 +1645,20 @@ export async function proposeFill(
     // the user's identity Jev cannot know who the user is, and requiring a settled owner there blanked B13's fill desk
     // (evidence/screen/b24/adv-live-replay-final).
     return wants === "user";
+  };
+  /**
+   * HA2 rule 2: a window's value for a field both asks say wants the user's details, admitted on an owner judgement that
+   * did not see the whole text the value was read from (noteShown), the window bases and extra sources of a derived
+   * value included. Exceptions, as before: a value that is exactly the user's identity from memory (Candidate.identity),
+   * what the user told Caret, and a value the user's instruction spells out. Only withholds.
+   */
+  const noteUnshown = (f: Field, p: Pick): string | null => {
+    if (!owners || !f.personal || namedPerson !== null || sameChoice(whoseId(f.id)) !== "user") return null;
+    const sources = p.from === "window" ? [p.c] : p.from === "derived" ? [...(p.base.from === "window" ? [p.base.c] : []), ...(p.also === null ? [] : [p.also])] : [];
+    // Only a value an owner judgement admits: one whose owner was asked (ownerCands). A value of no person's kind (a city,
+    // a place) is asked no owner question and is admitted on no judgement, as before HA2 (otherPerson); widening the rule
+    // to those is a separate decision, flagged to the lead (it cost 2 of the scripted oracle's ZIP codes when tried).
+    return sources.some((c) => c.identity === undefined && ownerCands.some((x) => x.id === c.id) && !noteShown(c)) ? NOTE_UNSHOWN : null;
   };
   /** Whether the named person has several values of the pick's kind and nothing on the pick's line names the field. */
   const personHasSeveral = (f: Field, p: Pick): boolean => {
@@ -1840,6 +1896,7 @@ export async function proposeFill(
     // signature's office phone in Emergency contact phone, where her mail says "my cell is …" beside "emergency
     // contact" (evidence/screen/b25/asks-dev-3-gpt-oss-20b, ask-10; a rule tuned on the B24 corpus).
     const whichOfTheirs = namedPerson !== null && picked !== undefined && f.personal && personHasSeveral(f, picked);
+    const unshown = picked === undefined ? null : noteUnshown(f, picked);
     const withheld: FillWithheld | null =
       a1.choice === NONE && a2.choice === NONE
         ? null
@@ -1855,7 +1912,9 @@ export async function proposeFill(
                   ? "ambiguous"
                   : picked !== undefined && otherPerson(f, picked)
                   ? "otherPerson"
-                  : null;
+                  : unshown !== null
+                    ? "ambiguous"
+                    : null;
     const p = withheld === null ? picked : undefined;
     const got = p === undefined || read === null || "why" in read ? null : read;
     // A text field's value is `value`, which Caret writes. Any other control's is a hand-off, which a Fill all writes
@@ -1884,7 +1943,7 @@ export async function proposeFill(
     const basisOf = line?.identity ?? (p?.from === "derived" ? (p.also?.identity ?? undefined) : undefined);
     const idPart = p?.from === "derived" && f.part !== null && NAME_PARTS.has(f.part) ? (f.part as "first" | "middle" | "last") : undefined;
     const basis = p === undefined || got === null || basisOf === undefined ? undefined : { identity: { memoryId: basisOf.memoryId, kind: basisOf.kind, key: basisOf.key, ...(idPart === undefined ? {} : { part: idPart }) } };
-    return {
+    const field: FillField = {
       ...empty,
       ...(basis === undefined ? {} : { basis }),
       handoff,
@@ -1896,6 +1955,8 @@ export async function proposeFill(
       withheld,
       asks: [a1, a2],
     };
+    if (unshown !== null && withheld === "ambiguous") setHeldReason(field, `Caret left ${f.name}: ${unshown}.`);
+    return field;
   });
 
   // The alternate-field veto (alternate.ts): a secondary field never repeats its primary's value or the user's own. A
@@ -1927,8 +1988,8 @@ export async function proposeFill(
   /** Each candidate's source text as Jev was shown it (`judged`, taken before the asks), for its provenance's digests. */
   const judgedText = (c: Candidate): string | undefined => judged.get(nodeKeyOf(c));
   /**
-   * AC1's Owner slot, which G2's ownership fills and the contract only reads into the verifier's question ("the screen
-   * says it is the user's"): the user's for what they told Caret and for their own identity on screen (whose.ts), else
+   * AC1's Owner slot, which G2's ownership fills and the contract carries for the Ask's scope check; since HA2 the
+   * verifier's question no longer says it, so no earlier answer is restated as a screen fact: the user's for what they told Caret and for their own identity on screen (whose.ts), else
    * whose both asks agreed a window's value is, at the whose cutoff (ownerAgreed); null when it was not asked or not
    * settled, and for the user's instruction. A value derived from two window values has their owner only when they agree.
    * The owner veto (otherPerson, above) has already withheld every pick it refuses: those never reach checkValues, so
@@ -2041,6 +2102,19 @@ export async function proposeFill(
  * refuses to write it.
  */
 const fieldMints = new WeakMap<FillField, CheckedValue>();
+
+/**
+ * HA2: the sentence a preview says for a field proposeFill withheld for a reason the protocol's FillWithheld has no word
+ * for (NOTE_UNSHOWN), by the very FillField object. Helper-local, like fieldMints: the host's wire contract is unchanged.
+ */
+const heldReasons = new WeakMap<FillField, string>();
+function setHeldReason(f: FillField, says: string): void {
+  heldReasons.set(f, says);
+}
+/** The sentence a preview says for a field proposeFill withheld (heldReasons), or null. */
+export function heldReason(f: FillField): string | null {
+  return heldReasons.get(f) ?? null;
+}
 
 /** The write contract's mint for a field proposeFill returned, or undefined (fieldMints). */
 export function mintOf(f: FillField): CheckedValue | undefined {

@@ -439,7 +439,10 @@ describe("the guard adversary (scripts/guard-adversary.ts) on the committed desk
       // families left the gate on the verifier's evidence, fill/writable.ts RETIRED_FAMILIES); the refuse-mode run below
       // holds every class at 0. Canned right values measured on these desks when W1's review fixes landed (the corpus by the reader's windows, the Ask sets through
       // planAsk): the guards must not cost one.
-      expect(r.canned.filter((x) => x.outcome === "right").length).toBeGreaterThanOrEqual(167);
+      // HA2 (lead decision): a user's value admitted by owner questions needs them to have shown its whole note, and a note
+      // with a prose line never goes whole on a fill on focus, so those values are withheld. Measured on these desks at
+      // 68a7daa 199 right, with HA2 164 (evidence/screen/ha2); the floor is that, and the guards must not cost one more.
+      expect(r.canned.filter((x) => x.outcome === "right").length).toBeGreaterThanOrEqual(164);
     } finally {
       rmSync(out, { recursive: true, force: true });
     }

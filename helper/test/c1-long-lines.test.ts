@@ -49,7 +49,9 @@ describe("values inside a note's lines", () => {
       "Reach me at jo.cole@example.org any time after five; weekdays and weekends are both fine with me for calls.",
     ].join("\n");
     const { values } = await fill(note, { "Mobile phone": "555-0164", "Graduation date": "May 2027", Email: "jo.cole@example.org" });
-    expect(values).toEqual({ "Mobile phone": "555-0164", "Graduation date": "May 2027", Email: "jo.cole@example.org" });
+    // HA2: the phone and the email are the user's details, admitted only by owner questions that showed the whole note;
+    // this note has prose lines, of which under half may be sent, so they are withheld. The date is no person's detail.
+    expect(values).toEqual({ "Mobile phone": null, "Graduation date": "May 2027", Email: null });
   });
 
   it("takes a date's month and year for fields that ask for only that", async () => {
@@ -69,7 +71,8 @@ describe("values inside a note's lines", () => {
   it("takes a value before its remark, and a place from a sentence", async () => {
     const note = "Preferred first name: Dima (legal name Dmitri Halvorsen).\nMoving to San Diego, California in November and will work from there. San Jose is only until the move.";
     const { values } = await fill(note, { "Preferred first name": "Dima", Location: "San Diego, California" });
-    expect(values).toEqual({ "Preferred first name": "Dima", Location: "San Diego, California" });
+    // HA2: the preferred name is withheld, as above (a prose note cannot be shown whole to its owner questions).
+    expect(values).toEqual({ "Preferred first name": null, Location: "San Diego, California" });
   });
 });
 
@@ -183,7 +186,9 @@ describe("a menu takes the part of a whole value it asks for", () => {
     const p = await proposeFill(m, jev, FORM, F("city"), 3000);
     const got = Object.fromEntries(p.fields.map((f) => [f.key.split("/").pop(), f.handoff === null ? null : [f.handoff.value, f.handoff.writes ?? false]]));
     // Through Accessibility a menu is the user's to set (writes false); the value is the part, an option's exact name.
-    expect(got).toEqual({ city: null, month: ["May", false], state: ["Oregon", false] });
+    // HA2: the state is a part of the user's address, which the note's prose keeps from being shown whole to its owner
+    // questions, so it is withheld; the month is no person's detail.
+    expect(got).toEqual({ city: null, month: ["May", false], state: null });
   });
 });
 

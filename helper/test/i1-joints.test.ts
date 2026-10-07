@@ -95,8 +95,8 @@ describe("I1 joint 1: the user's own email offered for 'Reference 2 email' is re
     // The verifier still saw the user's email for their own Email field, at the same 0.87, and passed it.
     expect(p.fields.find((f) => f.key === keyOf("Email"))?.value).toBe(ME);
     expect(j.questions().some((q) => q.includes("Reference 2 email"))).toBe(false);
-    // G2 fills AC1's Owner slot: the verifier is told whose the value is.
-    expect(j.questions().filter((q) => q.includes(ME)).every((q) => q.includes("the screen says it is the user's"))).toBe(true);
+    // HA2: the verifier is no longer told whose the value is; that restated an earlier answer of Jev's as a screen fact.
+    expect(j.questions().filter((q) => q.includes(ME)).some((q) => q.includes("the screen says"))).toBe(false);
   });
 });
 

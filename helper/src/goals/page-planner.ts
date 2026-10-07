@@ -12,7 +12,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { AboutValue } from "../fill/about.ts";
 import type { AskJev } from "../fill/jev.ts";
-import { conversionOf, FILLABLE_ROLES, FillError, identityRefOf, MAX_FIELDS, memoryRefOf, mintOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FILLABLE_ROLES, FillError, heldReason, identityRefOf, MAX_FIELDS, memoryRefOf, mintOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { ContractError, fieldContract, requireChecked, type FieldContract } from "../fill/contract.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
@@ -385,8 +385,8 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       if (n === undefined) continue;
       // H13: a field that takes a written answer is the user's by design, whatever Jev made of it: "wasn't sure" would say
       // Caret tried to write it. A saved answer matched to it but held back (`answer`) keeps that reason instead.
-      const repeated = alternateReason(f);
-      // The veto already names both fields in a complete sentence. lowerGoal adds the final period.
+      // The alternate veto and HA2's note rule say their own complete sentence. lowerGoal adds the final period.
+      const repeated = alternateReason(f) ?? heldReason(f);
       if (repeated !== null) left.push({ windowId: o.windowId, key: n.key, label: fieldName(w, n), why: "dropped", says: repeated.replace(/\.$/u, "") });
       else if (f.withheld !== null && f.answer === undefined && isAnswerField(n)) leave(n, "Caret doesn't write answers", undefined, "is yours to write");
       else if (f.withheld !== null) leave(n, WITHHELD_SAYS[f.withheld] ?? "Caret wasn't sure what goes there");

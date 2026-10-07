@@ -80,11 +80,10 @@ export interface CandidateIdentity {
  * just left that names no other person. `namesOther`: in a sentence that names someone other than the user ("my
  * husband Marcus Cole, …").
  */
-export type Placement = "soleRecipient" | "toUsersAddress" | "ownNoteAlone" | "namesOther";
+export type Placement = "soleRecipient" | "toUsersAddress" | "namesOther";
 export const PLACEMENT_SAYS: Record<Placement, string> = {
   soleRecipient: "it is the only recipient on the To: line of this mail",
   toUsersAddress: "it is on a To: line whose address is the email the user told Caret is theirs",
-  ownNoteAlone: "it is in a sentence of the note the user just left that names no other person",
   namesOther: "it is in a sentence that names someone other than the user",
 };
 
