@@ -131,7 +131,7 @@ export interface RunOptions {
    * caller holds each step's write-contract mint and rechecks its text and provenance (fill/contract.ts provenanceStale)
    * immediately before each dispatch, as memoryHolds does for a memory entry. A refusal stops the run there.
    */
-  guard?: (step: number, value: string) => string | null;
+  guard?: (step: number, value: string, target?: { windowId: string; node: Node }) => string | null;
 }
 
 /** A step a run left to the user (RunOptions.leaveFailedToYou): its index in the plan, and the sentence that says why. */
@@ -240,7 +240,7 @@ interface Task {
   granted: boolean;
   /** Started by a skill with no Tab (RunOptions.unprompted). */
   /** W2: the caller's recheck of each copied value before its dispatch (RunOptions.guard). */
-  guard: ((step: number, value: string) => string | null) | null;
+  guard: ((step: number, value: string, target?: { windowId: string; node: Node }) => string | null) | null;
   unprompted: boolean;
   /** The act grant the reader holds for this task now, or null. One window per task. */
   grant: { pid: number; windowId: string } | null;
@@ -949,7 +949,7 @@ export class Executor {
         throw StepStop.stop("changed", `what you told Caret for '${step.says}' changed or is gone, so Caret did not write it`);
       }
       // W2: and a copied value's source must still say what it said when the value was checked, right before each dispatch.
-      const stale = attribute === "value" ? (task.guard?.(i, value) ?? null) : null;
+      const stale = attribute === "value" ? (task.guard?.(i, value, { windowId: w.window.windowId, node }) ?? null) : null;
       if (stale !== null) throw StepStop.stop("changed", `${stale}, so Caret did not write it`);
       try {
         return await this.act(task, v, w.window.windowId);

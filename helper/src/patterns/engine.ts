@@ -39,7 +39,7 @@ import { offerField } from "../offers/field.ts";
 import type { Family, OfferGate } from "../offers/settings.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { cleanRun, Skills, type WriteAction } from "./skills.ts";
-import { ContractError, fieldContract, mintExempt, requireChecked, type CheckedValue } from "../fill/contract.ts";
+import { ContractError, fieldContract, guardFor, mintExempt, requireChecked, type CheckedValue } from "../fill/contract.ts";
 
 /** How long after Caret fills a field an edit to it is read as a preference. Assumed. */
 export const EDIT_WATCH_MS = 60_000;
@@ -134,6 +134,8 @@ export interface RunDeps {
   unprompted?: boolean;
   family: Family;
   routineId: string | null;
+  /** W2: the executor's recheck of each cell's mint right before its write (fill/contract.ts guardFor). */
+  guard?: (step: number, value: string, target?: { windowId: string; node: import("../protocol.ts").Node }) => string | null;
 }
 
 interface OfferState {
@@ -708,7 +710,9 @@ export class PatternEngine {
     if (routineId !== null) this.skills.runStarted(taskId, routineId, this.writeAction(o.msg.windowId));
     let r: TaskResult;
     try {
-      r = await this.deps.run(taskId, o.plan, o.slots, empty, { ...(unprompted ? { unprompted: true } : {}), family: familyOf(o.msg.kind), routineId: o.routineId });
+      // W2: each cell's mint, by its step (plan() puts cell i at step i), rechecked right before its write.
+      const guard = guardFor(() => this.deps.model, new Map(o.cells.map((c, i) => [i, c.checked])));
+      r = await this.deps.run(taskId, o.plan, o.slots, empty, { ...(unprompted ? { unprompted: true } : {}), family: familyOf(o.msg.kind), routineId: o.routineId, guard });
     } catch (e) {
       // A run that ends in an error (the reader refusing the last watch, say) is a failure like any other.
       if (routineId !== null) this.skills.afterRun(taskId, routineId, o.plan, o.cells, { outcome: "stopped", step: null }, this.clock);
@@ -1066,8 +1070,12 @@ export class PatternEngine {
       // in earlier rounds (shape.ts refuses a fragment that is no typed span), reshaped only by a memory rule. A field
       // Caret never types, or a value that is a secret, gets no mint, and then no offer.
       if (node === undefined) return null;
+      // W2 review: the exemption covers a whole element value the user copied; a value cut from an element's text (a
+      // typed span) has no such demonstration, so its offer is not made.
+      const src = model.windows.get(c.srcWindowId)?.nodes.get(c.srcKey);
+      if (src === undefined || nodeText(src).trim() !== c.value.trim()) return null;
       try {
-        const provenance = { kind: "transfer" as const, srcWindowId: c.srcWindowId, srcKey: c.srcKey, rounds: 0, reshaped: m.used.length > 0 ? ("memory" as const) : null };
+        const provenance = { kind: "transfer" as const, srcWindowId: c.srcWindowId, srcKey: c.srcKey, rounds: 0, reshaped: m.used.length > 0 ? ("memory" as const) : null, value: c.value };
         const checked = mintExempt({ field: fieldContract(w, node), text: m.value, display: m.value, provenance, owner: null }, "userTransfer", this.clock);
         written.push({ ...c, written: m.value, dstShapeHash, memory: m.used, checked });
       } catch (e) {
@@ -1237,7 +1245,8 @@ export class PatternEngine {
         says: `${label === "" ? "The field" : label} holds {{v${i}}}`,
         end: {
           kind: "valueEquals" as const,
-          window: { bundleId, title: "{{title}}" },
+          // W2 review: pinned to the window the cells were minted for, not any window of the app that takes its title.
+          window: { bundleId, title: "{{title}}", windowId: c.dstWindowId },
           // The exact key only: a key that has gone must stop the step, never fall back to another field with the same role.
           target: { key: c.dstKey, describe: label === "" ? "the field" : `the ${label} field` },
           value: `{{v${i}}}`,

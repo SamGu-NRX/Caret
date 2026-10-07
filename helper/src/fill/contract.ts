@@ -125,7 +125,7 @@ export type Provenance =
   | { kind: "instruction"; span: string }
   | { kind: "answer"; id: string; question: string }
   | { kind: "derived"; how: DeriveHow; base: Provenance; also: Provenance | null }
-  | { kind: "transfer"; srcWindowId: string; srcKey: string; rounds: number; reshaped: "memory" | null };
+  | { kind: "transfer"; srcWindowId: string; srcKey: string; rounds: number; reshaped: "memory" | null; /** The source element's whole value when read. */ value?: string };
 
 /** G2's slot. The contract never computes it; it only reads it into the verifier's description. */
 export type Owner = "user" | "other" | "person" | "unclear" | null;
@@ -148,7 +148,11 @@ export type ExemptRule =
   | "draft" // B30: goals/drafts.ts draftCheck owns the facts; the field is a prose field (and H9: the user's words over a draft)
   | "userTransfer" // patterns: the user copied this whole element value in earlier rounds (shape.ts refuses fragments)
   | "recipientFromFrom" // B30: lower.ts recipientCheck read the answered message's From
-  | "derivedEvent"; // G3: a calendar event the inventory derived, eventAsAsked holds
+  | "derivedEvent" // G3: a calendar event the inventory derived, eventAsAsked holds
+  // W2, not in AC1's list (flagged for the lead): the user's own words typed over a draft in the preview (H9, runs.ts
+  // edit). They are typed, not copied, so no source can be exact against them; the draft's field rule (codeGate) and the
+  // never-typed check still run, and its fact check does not (the words are the user's).
+  | "userTyped";
 
 /**
  * The verifier's categories (AC1 section 4). A yes/no "is this right for the field?" invites a yes to a note about the
@@ -690,7 +694,9 @@ export function exemptRefusal(p: Proposed, rule: ExemptRule, instruction = ""): 
  * Mints without the verifier for a value whose exactness code settles (ExemptRule). Throws ContractError on a value
  * exemptRefusal refuses: a caller that may meet one asks exemptRefusal first; one that reaches here with it has a bug.
  */
-export function mintExempt(p: Proposed, rule: ExemptRule, now: number, instruction = ""): CheckedValue {
+export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction = ""): CheckedValue {
+  // Frozen before it is judged, as checkValues does: what is judged is what is minted (W2 review).
+  const p = snapshot(proposed);
   const why = exemptRefusal(p, rule, instruction);
   if (why !== null) throw new ContractError(neverTypedRefusal(p, instruction) === null ? "shape" : "neverTyped", why);
   return mint(p, { by: "exempt", rule }, now);
@@ -765,6 +771,13 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
     }
     case "derived":
       return provenanceStale(model, pr.base) ?? (pr.also === null ? null : provenanceStale(model, pr.also));
+    case "transfer": {
+      // A routine's cell: the element it copies must still be there, and still hold the value unless a memory rule
+      // reshaped it (W2 review: patterns runs recheck their sources at dispatch too).
+      const node = model.windows.get(pr.srcWindowId)?.nodes.get(pr.srcKey);
+      if (node === undefined) return "what it was copied from is gone";
+      return pr.reshaped === null && pr.value !== undefined && nodeText(node).trim() !== pr.value.trim() ? "what it was copied from changed" : null;
+    }
     default:
       return null;
   }
@@ -775,11 +788,14 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
  * in the run's plan, its mint. Right before each dispatch the value must be the mint's text, and its source must still
  * say what it said (provenanceStale, read from `model()`); a value step with no mint is refused.
  */
-export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>): (step: number, value: string) => string | null {
-  return (step, value) => {
+export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>): (step: number, value: string, target?: { windowId: string; node: Node }) => string | null {
+  return (step, value, target) => {
     const m = mints.get(step);
     if (!isChecked(m)) return "the value has no check from the write contract";
     if (m.text !== value) return "the value is not the one Caret checked";
+    // At dispatch the executor names the element it resolved: it must be the field checked, still asking the same (W2 review).
+    if (target !== undefined && (target.node.key !== m.field.key || target.windowId !== m.field.windowId)) return "the field is not the one Caret checked the value for";
+    if (target !== undefined && contractStale(target.node, m.field, value) !== null) return "the field now asks for something else than when its value was checked";
     const stale = provenanceStale(model(), m.provenance);
     return stale === null ? null : `the source of '${clip(m.text)}' changed (${stale})`;
   };

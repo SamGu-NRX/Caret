@@ -673,7 +673,7 @@ export class Helper {
       run: (taskId, plan, slots, expect, opts) => {
         if (opts !== undefined) this.taskDeps.set(taskId, { family: opts.family, routineId: opts.routineId });
         if (opts?.unprompted === true) this.taskHosts.set(taskId, new Set(this.hosts));
-        return this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true });
+        return this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true, ...(opts?.guard === undefined ? {} : { guard: opts.guard }) });
       },
       hostConnected: () => this.hostPresent,
       // A run of a skill that just went back on Tab, still going with no Tab, is revoked now (B22 review).
@@ -1186,7 +1186,7 @@ export class Helper {
   }
 
   /** Runs an accepted offer of this settings family under a grant, recording the family it depends on. */
-  private runFrom(family: Family | null, taskId: string, plan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, guard?: (step: number, value: string) => string | null): Promise<TaskResult> {
+  private runFrom(family: Family | null, taskId: string, plan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, guard?: (step: number, value: string, target?: { windowId: string; node: Node }) => string | null): Promise<TaskResult> {
     if (family !== null) this.taskDeps.set(taskId, { family, routineId: null });
     return this.executor.run(taskId, plan, slots, expect, { grant: true, ...(guard === undefined ? {} : { guard }) });
   }

@@ -62,7 +62,7 @@ export interface FirstLookDeps {
   patterns: PatternEngine;
   /** The event card generator, whose first-look scan the `event` family runs. */
   events: EventCards;
-  run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, guard?: (step: number, value: string) => string | null) => Promise<TaskResult>;
+  run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, guard?: (step: number, value: string, target?: { windowId: string; node: import("../protocol.ts").Node }) => string | null) => Promise<TaskResult>;
   /**
    * Records the found offer so an offerAccept with its key reaches `accept`. `underlying` is the id of the
    * engine's offer it reports, so that offer's withdrawal ends the first look's key too.

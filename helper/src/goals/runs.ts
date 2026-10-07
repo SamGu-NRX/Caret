@@ -460,7 +460,7 @@ export class GoalRuns {
     if (gated !== null) return { refused: gated };
     const value: ValueBinding = { ...s.value, text, display: text, origin: { kind: "you", digest: sha256(text) }, source: null, memory: null, event: null, draft: null, owner: "user" };
     // W2: the user's own words over a draft, under the draft's exemption: its field rule passed (codeGate above).
-    const checked = mintExempt(proposedFor(s.target, value, text), "draft", this.deps.now(), run.plan.instruction);
+    const checked = mintExempt(proposedFor(s.target, value, text), "userTyped", this.deps.now(), run.plan.instruction);
     const step: GoalStep = { ...s, value, writes: text, says: `${s.target.label}: ${text}`, gate: "you", checked };
     run.mints.set(`${seg.index}:${s.ref}`, checked);
     const edited = segmentOf(run.plan.programHash, { index: seg.index, domain: seg.domain, reason: seg.reason, steps: seg.steps.map((x, k) => (k === i ? step : x)) }, run.plan.warnings);
