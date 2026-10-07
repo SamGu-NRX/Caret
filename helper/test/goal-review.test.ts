@@ -1,8 +1,14 @@
 // G2 review (theo-astra-reviewer a083a3197a7fa3dd0): each path the review showed writing an unchecked value or ending
 // done with an effect missing, as a scene on the desk. Every name and number is invented.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { GoalProgress, Node } from "../src/protocol.ts";
 import { areaKey, button, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, SUPPORT, textArea, textField, textKey, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { setTestVerifier } from "../src/fill/contract.ts";
+import { STAND_IN } from "./setup/verifier.ts";
+
+// W2: the write contract's verifier asks this file's stand-in Jev (goal-desk.ts standInJev: `belongs` decides), not the suite's.
+beforeAll(() => setTestVerifier(null));
+afterAll(() => setTestVerifier(STAND_IN));
 
 const scenes: GoalScene[] = [];
 afterEach(async () => {
@@ -61,7 +67,7 @@ describe("finding 1: every write passes the gates, drafts, the code-filled To an
     const doubting = scene({ scripts: [steps], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: standInJev({ belongs: () => false }) });
     const g = preview(await doubting.request("add this meeting to my calendar and address a reply to Priya"));
     expect(g.steps.map((s) => s.kind)).toEqual(["calendar"]);
-    expect(g.warnings).toEqual([`You add the recipient in 'To': Jev didn't confirm '${EMAIL}' belongs there.`]);
+    expect(g.warnings).toEqual([`You add the recipient in 'To': '${EMAIL}' isn't this field's value.`]);
     const alone = scene({ scripts: [[steps[0] as CannedStep]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: undefined });
     const r = preview(await alone.request("add this meeting to my calendar"));
     expect(r.steps.map((s) => s.kind)).toEqual(["calendar"]);

@@ -1,9 +1,15 @@
 // G2: every value a goal writes passes the gates Ask's fill passes, before the preview. The value's kind must fit the
 // field, Jev must confirm it belongs there with fill's question and floor, and a kind Caret never types is never
 // written. A write that fails is dropped from the plan, and the preview says why. Every name and number is invented.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { GoalProgress } from "../src/protocol.ts";
 import { caseWindow, detailsWindow, goalScene, mailWindow, standInJev, SUPPORT, textField, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { setTestVerifier } from "../src/fill/contract.ts";
+import { STAND_IN } from "./setup/verifier.ts";
+
+// W2: the write contract's verifier asks this file's stand-in Jev (goal-desk.ts standInJev: `belongs` decides), not the suite's.
+beforeAll(() => setTestVerifier(null));
+afterAll(() => setTestVerifier(STAND_IN));
 
 const scenes: GoalScene[] = [];
 afterEach(async () => {
@@ -50,22 +56,22 @@ describe("a goal value's kind must fit its field", () => {
 });
 
 describe("Jev confirms each value belongs in its field, with fill's question and floor", () => {
-  it("asks Jev about every copied value, both wordings, and drops a write Jev does not confirm", async () => {
+  it("asks the write contract's verifier about every copied value, both wordings, and drops a write it does not call exact (W2)", async () => {
     const jev = standInJev({ belongs: (q) => !q.includes("'Description'") });
     const sc = scene({ scripts: [[{ fill: { window: "New case", target: "Order number", value: ORDER } }, { fill: { window: "Case details", target: "Description", value: "cracked base" } }]], windows: supportDesk(), userWindow: "7171-1", askJev: jev });
     const g = preview(await sc.request(INSTRUCTION));
     expect(says(g)).toEqual([`Order number: ${ORDER}`]);
-    expect(g.warnings).toEqual([`Caret left 'Description' empty: Jev didn't confirm '${PROBLEM.slice(0, 59)}…' belongs there.`]);
-    // Ask's question, in both of its wordings, for each of the two writes.
-    expect(jev.asked.filter((q) => q.startsWith("A form has the field 'Order number'. Is this value the right one for it?"))).toHaveLength(1);
-    expect(jev.asked.filter((q) => q.includes("Field: 'Order number'. The user asked:") && q.includes("Does this value belong in this field?"))).toHaveLength(1);
+    expect(g.warnings).toEqual([`Caret left 'Description' empty: '${PROBLEM.slice(0, 59)}…' isn't this field's value.`]);
+    // The verifier's question, in both of its wordings, for each of the two writes.
+    expect(jev.asked.filter((q) => q.startsWith("Field: ") && q.includes("'Order number'"))).toHaveLength(1);
+    expect(jev.asked.filter((q) => q.startsWith("Proposed text for the field 'Order number'"))).toHaveLength(1);
     expect(jev.asked.filter((q) => q.includes("'Description'"))).toHaveLength(2);
   });
 
-  it("drops a write Jev confirms under fill's floor", async () => {
+  it("drops a write the verifier calls exact under its floor", async () => {
     const sc = scene({ scripts: [[{ fill: { window: "New case", target: "Order number", value: ORDER } }]], windows: supportDesk(), userWindow: "7171-1", askJev: standInJev({ p: 0.7 }) });
     const g = await sc.request(INSTRUCTION);
-    expect(g.event === "stopped" && g.says).toBe(`Caret left 'Order number' empty: Jev didn't confirm '${ORDER}' belongs there`);
+    expect(g.event === "stopped" && g.says).toBe(`Caret left 'Order number' empty: Caret wasn't sure enough that '${ORDER}' is exactly what the field asks for (0.70 under 0.75)`);
   });
 
   it("writes no copied value when Jev is not there", async () => {

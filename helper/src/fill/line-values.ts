@@ -336,8 +336,10 @@ export function questionAnswer(text: string): boolean {
 function valueParts(value: string): string[] {
   // W2: an organization that ends in a legal suffix is a part too ("Ridgeline Outdoor Co, Inc."), though its comma is
   // no name's (REVIEW-R2 round-1 item 4).
-  return (severalValues(value) ?? []).filter((p) => !typedPart(p) && p.split(/\s+/u).length <= 6 && (isNameLike(p, null) || roleLike(p) || orgRun(p)));
+  return (severalValues(value) ?? []).filter((p) => !typedPart(p) && p.split(/\s+/u).length <= 6 && (isNameLike(p, null) || roleLike(p) || legalOrg(p)));
 }
+/** An organization written with a legal suffix after a comma ("Lumen Labs, LLC"): only such a one, not any capitalized run. */
+const legalOrg = (p: string): boolean => ORG_SUFFIX.test(p.split(",").at(-1)?.trim() ?? "") && p.includes(",") && orgRun(p);
 const typedPart = (p: string): boolean => lineValues(p).length > 0 || new RegExp(AMOUNT.source, "u").test(p) || /\d/u.test(p);
 /** Labels that name an organization, though "name" is in them: "Company name", "Employer". */
 const ORG_LABEL = /\b(?:company|employer|business|organi[sz]ation|school|university|college|firm)\b/iu;

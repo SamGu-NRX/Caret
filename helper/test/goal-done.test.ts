@@ -2,9 +2,15 @@
 // requires is missing. A write code dropped, a field the form marks required and a message's recipient are listed as
 // what is left; a goal with any of them ends partial, or handed off when only the recipient (and the user's own press)
 // is left. Every name and number is invented.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { GoalProgress } from "../src/protocol.ts";
 import { areaKey, button, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, SUPPORT, textArea, textField, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { setTestVerifier } from "../src/fill/contract.ts";
+import { STAND_IN } from "./setup/verifier.ts";
+
+// W2: the write contract's verifier asks this file's stand-in Jev (goal-desk.ts standInJev: `belongs` decides), not the suite's.
+beforeAll(() => setTestVerifier(null));
+afterAll(() => setTestVerifier(STAND_IN));
 
 const scenes: GoalScene[] = [];
 afterEach(async () => {
@@ -68,11 +74,11 @@ describe("a reply's recipient", () => {
   });
 
   // G3: code's own To skips Jev (goal-derived.test.ts); a To the program wrote is the writer's pick.
-  it("is put to Jev as the sender of the message the reply answers when the program wrote To itself", async () => {
+  it("is put to the write contract's verifier with where it was read when the program wrote To itself (W2)", async () => {
     const jev = standInJev();
     const sc = scene({ scripts: [[{ fill: { window: "Re: Order", target: "To", value: EMAIL } }, message]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: jev });
     preview(await sc.request("draft a reply to Priya saying I'm in"));
-    expect(jev.asked.filter((q) => q.includes(`"${EMAIL}" (the sender of the message this reply answers: the From line of 'Order ORD-2026-48213 arrived damaged')`))).toHaveLength(2);
+    expect(jev.asked.filter((q) => q.includes(`"${EMAIL}"`) && q.includes("Order ORD-2026-48213 arrived damaged"))).toHaveLength(2);
   });
 
   it("is the user's to add when no sender can be found, and the goal ends handed off, never done", async () => {

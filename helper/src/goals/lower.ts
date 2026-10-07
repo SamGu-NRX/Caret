@@ -402,7 +402,11 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   // W2: every copied text value the program chose meets the write contract once (fill/contract.ts checkValues), with the
   // provenance the inventory froze; a refusal is dropped and said, as a gate's is.
   const copies = steps.filter((x) => x.kind === "write" && x.checked === undefined && x.writes !== null && x.value !== null);
-  if (copies.length > 0) {
+  if (copies.length > 0 && o.askJev === null) {
+    // No Jev to verify with: every copied value is left to the user, each said, as before W2 (never a write).
+    for (const x of copies) dropAs(x.target, `Caret couldn't ask Jev whether '${clip(x.writes as string)}' belongs there`, x.value);
+    steps = steps.filter((x) => !copies.includes(x));
+  } else if (copies.length > 0) {
     const proposed = copies.map((x) => proposedFor(x.target, x.value as ValueBinding, x.writes as string));
     let result: Awaited<ReturnType<typeof checkValues>>;
     try {
