@@ -431,6 +431,40 @@ export function clauseAround(line: string, at: number, text: string): string | n
 }
 
 /**
+ * G2: the part of a value's clause (clauseAround) that says what the value is, for a date, an email or a phone number:
+ * the comma or semicolon part that holds it, and when that part holds no word of its own beside typed values ("555-0139"
+ * in "my cell, 555-0139, or this email"), the parts either side joined on. A whole sentence did not fit the window's
+ * budget on F1's task notes after their spans (evidence/screen/g2/whose/probe-head.json: the School line's dates and the
+ * reference's phone went out bare); "September 2016 to May 2020" costs four characters beyond its two dates. Null when
+ * that part is the value alone.
+ */
+export function partAround(line: string, at: number, text: string): string | null {
+  const clause = clauseAround(line, at, text);
+  if (clause === null) return null;
+  const from = clause.indexOf(text);
+  if (from < 0) return clause;
+  // Typed values and the value itself are masked, so their own commas ("October 18, 2026") split nothing.
+  let masked = clause;
+  const mask = (i: number, n: number): void => void (masked = masked.slice(0, i) + "\u0001".repeat(n) + masked.slice(i + n));
+  for (const v of lineValues(clause)) mask(v.at, v.text.length);
+  mask(from, text.length);
+  const cuts: [number, number][] = [];
+  let start = 0;
+  for (const m of masked.matchAll(/\s*[,;]\s+/gu)) {
+    cuts.push([start, m.index ?? 0]);
+    start = (m.index ?? 0) + m[0].length;
+  }
+  cuts.push([start, masked.length]);
+  const k = cuts.findIndex(([s, e]) => s <= from && from < e);
+  if (k < 0) return clause;
+  const word = (i: number): boolean => /\p{L}{2,}/u.test(masked.slice(cuts[i]?.[0] ?? 0, cuts[i]?.[1] ?? 0));
+  let [a, b] = [k, k];
+  if (!word(k)) [a, b] = [Math.max(0, k - 1), Math.min(cuts.length - 1, k + 1)];
+  const part = clause.slice(cuts[a]?.[0] ?? 0, cuts[b]?.[1] ?? clause.length).trim().replace(/[.!?;,]+$/u, "");
+  return part === text || part === "" ? null : part;
+}
+
+/**
  * Where a sentence ends: ". ", "! " or "? " after a lowercase word or a number and before a capital letter. A period
  * after a capital, a single letter or a lowercase abbreviation ("U.S.", "B.S.", "Corp.", "Dr. Lee", "e.g.", "vs.") ends
  * nothing, nor one before a quote or a bracket, so a

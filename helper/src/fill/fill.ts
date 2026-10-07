@@ -11,7 +11,7 @@
 import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
-import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, type Candidate } from "./candidates.ts";
+import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, PLACEMENT_SAYS, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
@@ -20,6 +20,7 @@ import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { takesOneValue, writeMisfit } from "./writable.ts";
+import { identitiesOf, identityOf, placementsOf } from "./whose.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -312,6 +313,18 @@ const WHOSE_WORDINGS = [
   (where: string, d: string): string => `A form in the ${where} has this field: ${d} Whose name or email does this field ask for?`,
   (where: string, d: string): string => `Field: ${d} It is in a form in the ${where}. Is it for the details of the user filling in the form, of someone else, or can you not tell?`,
 ] as const;
+/**
+ * G2: the whose-details question for a field that asks for no person's name, email, phone or address, asked because
+ * something the user told Caret is offered to it, in the terms of what is offered (`own`, "job title"). WHOSE_WORDINGS'
+ * "Whose name or email" drew unclear at 0.62/0.02 for wizard-2's Job title, whose memory pick agreed at 0.42/0.49 above
+ * MEMORY_CUTOFF (evidence/screen/g1). The answers and WHOSE_CUTOFF are unchanged; the cutoff was set on the other wording
+ * (B18), and no run has measured it on this one yet. A target role's title on a form ("Position applied for") can draw
+ * "user" here too; the value question must still pick the user's current title from memory above MEMORY_CUTOFF.
+ */
+const MEMORY_WHOSE_WORDINGS = [
+  (where: string, d: string, own: string): string => `A form in the ${where} has this field: ${d} Does it ask about the user filling in the form (such as the user's own ${own}), about someone else, or can you not tell?`,
+  (where: string, d: string, own: string): string => `Field: ${d} It is in a form in the ${where}. Is it for the user's own ${own}, for someone else's, or can you not tell?`,
+] as const;
 /** The id of a field's whose-details question. */
 export const whoseId = (fieldId: string): string => `${fieldId}_whose`;
 
@@ -332,6 +345,8 @@ export interface RequestMore {
   derived?: ReadonlyMap<string, readonly AskExtra[]>;
   /** Fields that ask for a person's details, so whose details they want is asked beside them. */
   personal?: ReadonlySet<string>;
+  /** G2: fields that ask for no person's details, by id, with what memory offers them ("job title"): MEMORY_WHOSE_WORDINGS. */
+  memoryWhose?: ReadonlyMap<string, string>;
   /** Candidates whose owner is asked, by this ask's candidate id. */
   owners?: readonly AskExtra[];
   /** Each field's control, which words its question. Text when absent. */
@@ -431,7 +446,8 @@ export function buildFillRequest(
       questions[f.id] = { type: "choice", instructions: asked, criteria };
     }
     if (more.stage !== "values" && whose && ((about.get(f.id)?.length ?? 0) > 0 || more.personal?.has(f.id) === true)) {
-      questions[whoseId(f.id)] = { type: "choice", instructions: WHOSE_WORDINGS[wording](where, f.descriptor), criteria: { ...WHOSE_CRITERIA } };
+      const own = more.memoryWhose?.get(f.id);
+      questions[whoseId(f.id)] = { type: "choice", instructions: own === undefined ? WHOSE_WORDINGS[wording](where, f.descriptor) : MEMORY_WHOSE_WORDINGS[wording](where, f.descriptor, own), criteria: { ...WHOSE_CRITERIA } };
     }
   }
   if (more.stage !== "whose") {
@@ -712,8 +728,19 @@ const PERSONAL_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "addre
 const ABOUT_VALUE_KIND: Partial<Record<AboutKind, ValueKind>> = { email: "email", phone: "phone", address: "address", street: "address", gradDate: "date", linkedin: "url", github: "url", website: "url", birthDate: "date", salary: "amount" };
 /** Labels of a message header's sender. */
 const SENDER = /^(?:from|sender|reply-to)$/i;
+/**
+ * G2: what a memory entry of each kind is, as MEMORY_WHOSE_WORDINGS asks "the user's own …"; a kind not listed is said as
+ * ABOUT_KIND_SAYS says it. These name a thing; ABOUT_KIND_SAYS's "whether the user may work there, yes or no" does not.
+ */
+const OWN_SAYS: Partial<Record<AboutKind, string>> = { workAuth: "work authorization", sponsorship: "need for visa sponsorship", heard: "answer to how they heard about the job", name: "name" };
 /** Owner questions one ask carries at most. Assumed: well above the personal values a few source windows hold. */
 const MAX_OWNERS = 40;
+
+/** G2: a candidate as a whose-value question describes it: its description, then where it sits (Candidate.placements). */
+function describeOwned(c: Candidate): string {
+  const d = describeCandidate({ ...c, id: "" });
+  return c.placements === undefined ? d : `${d} Where it sits: ${c.placements.map((p) => PLACEMENT_SAYS[p]).join("; ")}.`;
+}
 
 /** The person's name a candidate holds, when it is a person's: the display name of "Name <email>", the head of "Name, more", or the whole span. */
 function personName(c: Candidate): string | null {
@@ -1048,10 +1075,28 @@ export async function proposeFill(
   }
   // C1: each candidate's clause (candidates.ts Candidate.line) only now, when every span and memory value is in, and
   // only where its window's budget still has room.
-  for (const [c, clause] of clauses) {
+  // G2: a date's, email's or phone number's clause first (candidates.ts lineFact), then a name's, then the rest: these
+  // are what tells a start date from an end date and a reference's phone from an emergency contact's (G1 fix 3).
+  const clauseRank = (c: Candidate): number => (c.kind === "date" || c.kind === "email" || c.kind === "phone" ? 0 : isNameLike(c.text, c.context) ? 1 : 2);
+  for (const [c, clause] of [...clauses].sort(([a], [b]) => clauseRank(a) - clauseRank(b))) {
     const sw = model.windows.get(c.source.windowId);
     // A candidate the anchor replaced (labelledCandidate above) is not sent, so neither is its clause.
     if (sw !== undefined && candidates.includes(c) && ledger.take(sw, "candidate", [clause])) c.line = clause;
+  }
+  // G2: what code knows about whose each candidate is (fill/whose.ts), as fields on the candidate. Identity is the user's
+  // own email, phone or full name from memory, matched exactly; an Ask that names no memory reads none. The memory
+  // entry's label rides in the value question ("the user's own primary email, which the user told Caret"), as the entry
+  // itself did before the window's same text replaced it (above), so it goes through the ledger as memory; an entry
+  // whose label does not fit is no identity.
+  const memoryRead = scope === undefined || scope.memory;
+  const ids = memoryRead ? identitiesOf(opts.about ?? []) : [];
+  const userEmails = new Set(ids.filter((x) => x.kind === "email").map((x) => x.key));
+  const userNames = ids.filter((x) => x.kind === "name").map((x) => x.key);
+  for (const c of candidates) {
+    const id = identityOf(c.text, ids);
+    if (id !== null && ledger.memory([id.label])) c.identity = id;
+    const sits = placementsOf(model, c, userEmails, userNames);
+    if (sits.length > 0) c.placements = sits;
   }
   // S1: a saved answer is the user's memory, not screen text, and is declared and charged as memory, as an About value
   // is (lead decision 4). The question it was saved for and its first ANSWER_CRITERION_CHARS characters are what a match
@@ -1110,7 +1155,11 @@ export async function proposeFill(
   // or a name), when some asked field wants a person's details (the owner veto below).
   const personal = new Set(asked.filter((f) => f.personal).map((f) => f.id));
   const personalCand = (c: Candidate): boolean => [...candidateKinds(model, c)].some((k) => PERSONAL_KINDS.has(k)) || personName(c) !== null || isNameLike(c.text, c.context);
-  const ownerCands = owners && personal.size > 0 ? candidates.filter(personalCand).slice(0, MAX_OWNERS) : [];
+  // G2: a candidate that is the user's own identity (whose.ts) is the user's without asking; it is "asked" in every
+  // sense below (ownerKnown), its answer "user" from both asks.
+  const ownerCands = owners && personal.size > 0 ? candidates.filter((c) => personalCand(c) && c.identity === undefined).slice(0, MAX_OWNERS) : [];
+  /** Whether fill has an answer to whose this candidate is: code's identity, or its owner questions were asked. */
+  const ownerKnown = (c: Candidate): boolean => c.identity !== undefined || ownerCands.some((x) => x.id === c.id);
   const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
   if (opts.trace !== undefined) {
     const traced = new Map<string, { text: string; from: "window" | "memory" | "derived"; label: string | null; app: string | null }>();
@@ -1136,11 +1185,20 @@ export async function proposeFill(
   // C2: a field offered a part of a memory entry is asked whose details it wants, as one offered the whole entry is
   // (theUsers), a date's month, day or year included, which no other rule makes personal.
   const whoseAsked = new Set([...personal, ...asked.filter((f) => (derived.get(f.id) ?? []).some((d) => d.base.from === "memory")).map((f) => f.id)]);
+  // G2: what each field that asks for no person's details is offered from memory, in the words of its kind.
+  const memoryWhose = new Map(
+    asked.flatMap((f): [string, string][] => {
+      if (f.personal) return [];
+      const kinds = [...new Set([...f.about, ...(derived.get(f.id) ?? []).flatMap((d) => (d.base.from === "memory" ? [d.base.a] : []))].map((a) => OWN_SAYS[a.kind] ?? ABOUT_KIND_SAYS[a.kind]))];
+      return kinds.length === 0 ? [] : [[f.id, kinds.join(" or ")]];
+    }),
+  );
   const more = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({
     ...(scope === undefined || plainAsk ? {} : { instruction: scope.instruction, person: scope.person }),
     derived: askDerived(dIds),
     personal: whose ? whoseAsked : new Set(),
-    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeCandidate({ ...c, id: "" }) })),
+    memoryWhose,
+    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c) })),
     controls: new Map(asked.map((f) => [f.id, f.control])),
   });
   // Two stages when some field wants a person's details (B24). First, both asks say whose details each such
@@ -1167,6 +1225,7 @@ export async function proposeFill(
   const namedPerson = scope?.person ?? null;
   /** Both asks' answer to whose a candidate is, agreed at the whose cutoff ("person" too when an Ask names one), or null. */
   const ownerAgreed = (c: Candidate): string | null => {
+    if (c.identity !== undefined) return "user";
     const [x1, x2] = staged ? [w1, w2] : [r1, r2];
     const a1 = x1?.answers[ownerId(c.id)];
     const a2 = x2?.answers[ownerId(secondId.get(c.id) ?? "")];
@@ -1178,11 +1237,11 @@ export async function proposeFill(
     if (!owners || !f.personal) return false;
     // A person's value past the owner questions' cap was never asked about, so it is not offered to a field
     // that wants a person's details (review: the 41st email was proposed unchecked).
-    if (!ownerCands.some((x) => x.id === c.id)) return personalCand(c);
+    if (!ownerKnown(c)) return personalCand(c);
     // An Ask that names a person offers its personal fields only that person's values, as both asks say (FillScope.person).
     if (namedPerson !== null) return personalCand(c) && ownerAgreed(c) !== "person";
     const wants = stageOne(whoseId(f.id));
-    const is = stageOne(ownerId(c.id), ownerId(secondId.get(c.id) ?? ""));
+    const is = c.identity !== undefined ? "user" : stageOne(ownerId(c.id), ownerId(secondId.get(c.id) ?? ""));
     return wants !== null && is !== null && wants !== "unclear" && is !== "unclear" && wants !== is;
   };
   const exclude = (first: boolean): Map<string, Set<string>> =>
@@ -1295,16 +1354,16 @@ export async function proposeFill(
     if (also !== null && otherPerson(f, { from: "window", c: also })) return true;
     const c = windowOf(p);
     if (!owners || !f.personal || c === null) return false;
-    if (!ownerCands.some((x) => x.id === c.id)) return personalCand(c);
+    if (!ownerKnown(c)) return personalCand(c);
     const wants = agreedChoice(whoseId(f.id));
-    const is = agreedChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? ""));
+    const is = c.identity !== undefined ? "user" : agreedChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? ""));
     if (wants !== null && is !== null && wants !== "unclear" && is !== "unclear") return wants !== is;
     // A veto only withholds, so both asks calling the value someone else's is enough at any confidence when the field
     // wants the user's. B27's corpus run put a colleague's signature phone in a demo request's Phone number: in five
     // reruns all ten owner answers said "other", at 0.47 to 0.67, and the one under WHOSE_CUTOFF let it through
     // (evidence/screen/b27/b2b-probe, seed 24). The field's whose answers count at any confidence too: with both at
     // 0.49 "user", the settled `wants` was null and the colleague's phone went in (B27 second review).
-    if (sameChoice(whoseId(f.id)) === "user" && sameChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? "")) === "other") return true;
+    if (sameChoice(whoseId(f.id)) === "user" && c.identity === undefined && sameChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? "")) === "other") return true;
     // Someone else's value goes only in a field both asks say wants someone else's: an RSVP's Phone, its whose
     // answer split at 0.48 and 0.60, took the sender's signature phone, which both asks called hers (dev-10).
     if (is === "other") return true;

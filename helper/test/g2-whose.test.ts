@@ -11,6 +11,8 @@ import { EngineSession } from "../src/engines/session.ts";
 import { sourceHolds, writtenFields } from "../src/offers/fill-popup.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot } from "../src/protocol.ts";
 import { field, jevPickingText, snap } from "./builders.ts";
+import { identitiesOf, identityOf } from "../src/fill/whose.ts";
+import { partAround } from "../src/fill/line-values.ts";
 
 const TASKS = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "fixtures", "web-form", "tasks", "expect");
 const expectation = (page: string): { sources: { note: string } } => JSON.parse(readFileSync(join(TASKS, `${page}.json`), "utf8"));
@@ -77,5 +79,47 @@ describe("Greenhouse task page: the Location step's source check (G1 fix 1, froz
     expect(sourceHolds(sw("I live in Bangor now. Recruiters keep mixing that up."), NOTE_KEY, "Portland", null, "combobox")).toBe(false);
     expect(sourceHolds(sw("Not this one: Portland, Maine"), NOTE_KEY, "Portland", null, "combobox")).toBe(false);
     expect(sourceHolds(sw("I flew through Portland once."), NOTE_KEY, "Portland", null, "combobox")).toBe(false);
+  });
+});
+
+describe("identity: exact token equality only (whose.ts)", () => {
+  const about = [
+    { id: "m1", label: "primary email", value: "jo.abernathycole@example.com", kind: "email" as const },
+    { id: "m2", label: "cell", value: "(512) 555-0147", kind: "phone" as const },
+    { id: "m3", label: "full name", value: "Priya Castellanos", kind: "name" as const },
+    { id: "m4", label: "nickname", value: "Jo", kind: "name" as const },
+  ];
+  const ids = identitiesOf(about);
+
+  it("matches the same email in any case, the same phone digit groups, the same full name word for word", () => {
+    expect(identityOf("JO.AbernathyCole@example.com", ids)).toEqual({ memoryId: "m1", kind: "email", label: "primary email" });
+    expect(identityOf("512-555-0147", ids)?.memoryId).toBe("m2");
+    expect(identityOf("(512) 555-0147", ids)?.memoryId).toBe("m2");
+    expect(identityOf("Priya  Castellanos", ids)?.memoryId).toBe("m3");
+  });
+
+  it("matches no near miss, part, header or one-word name", () => {
+    for (const t of ["jo.abernathycole@example.net", "jo.abernathycole@example.com.", "Jo Abernathy-Cole <jo.abernathycole@example.com>", "5125550147", "555-0147", "(512) 555-0148", "Priya", "priya castellanos", "Priya Castellanos-Diaz", "Jo"]) {
+      expect(identityOf(t, ids), t).toBeNull();
+    }
+    // A one-word name is no identity at all.
+    expect(ids.map((x) => x.a.id)).toEqual(["m1", "m2", "m3"]);
+  });
+});
+
+describe("partAround: the part of a date's or a contact's clause that says what it is", () => {
+  const at = (line: string, text: string): string | null => partAround(line, line.indexOf(text), text);
+  it("takes the comma part holding the value, and its neighbours when that part has no word of its own", () => {
+    const school = "School: Lakeshore Polytechnic Institute, B.S. Electrical Engineering, September 2016 to May 2020.";
+    expect(at(school, "September 2016")).toBe("September 2016 to May 2020");
+    expect(at(school, "May 2020")).toBe("September 2016 to May 2020");
+    expect(at("Of course. Put me down as Elena Varga; the best way to reach me is my cell, 555-0139, or this email.", "555-0139")).toBe("the best way to reach me is my cell, 555-0139, or this email");
+    // A date's own commas split nothing.
+    expect(at("Also, orientation is Sunday, October 18, 2026, so that's the earliest you could start.", "October 18, 2026")).toBe("orientation is Sunday, October 18, 2026, so that's the earliest you could start");
+    expect(at("Started at Tallgrass Mechatronics in August 2022. Before that: Copperline.", "August 2022")).toBe("Started at Tallgrass Mechatronics in August 2022");
+  });
+  it("is null when the part is the value alone", () => {
+    expect(at("555-0164", "555-0164")).toBeNull();
+    expect(at("May 2021.", "May 2021")).toBeNull();
   });
 });

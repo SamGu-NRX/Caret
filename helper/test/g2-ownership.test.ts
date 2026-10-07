@@ -1,0 +1,234 @@
+// G2: fill's ownership stage, end to end through proposeFill on a page form with the task pages' sources as
+// page-loop-eval.ts replays them (a Mail window, then the note the user just left). Jev is a script that answers each
+// question by rule and records every request. Imports nothing G2 added, so the same file runs on the code before G2,
+// where the tests marked "G2" fail (evidence/screen/g2/whose/ownership-before.txt). Every value is synthetic.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { ScreenModel } from "../src/model.ts";
+import { proposeFill } from "../src/fill/fill.ts";
+import type { AboutValue } from "../src/fill/about.ts";
+import { aboutKind } from "../src/fill/about.ts";
+import type { AskJev, JevRequest } from "../src/fill/jev.ts";
+import { toWindowSnapshot } from "../src/engines/page-link.ts";
+import { EngineSession } from "../src/engines/session.ts";
+import { writtenFields } from "../src/offers/fill-popup.ts";
+import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
+
+const TASKS = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "fixtures", "web-form", "tasks", "expect");
+type Mail = { from: string; to: string; subject: string; body: string };
+const expectation = (page: string): { sources: { note: string; email: Mail; memory: { key: string; value: string }[] } } => JSON.parse(readFileSync(join(TASKS, `${page}.json`), "utf8"));
+const memoryOf = (page: string): AboutValue[] =>
+  expectation(page).sources.memory.flatMap((m, i) => {
+    const kind = aboutKind(m.key, m.value);
+    return kind === null ? [] : [{ id: `about-${i + 1}`, label: m.key, value: m.value, kind }];
+  });
+
+const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+const WIN = "page:eng1:7";
+const control = (id: string, name: string, kind: PageControl["kind"] = "text"): PageControl => ({ id, key: `form[apply]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#apply", rect: [0, Number(id.slice(1)) * 30, 100, 20], value: "" });
+const keyOf = (c: PageControl): string => `f0/${c.key}`;
+
+/** page-loop-eval.ts's mailWindow: the header lines, then the body as one static text. */
+function mailWindow(m: Mail, extra: string[] = []): Snapshot {
+  const lines = [`From: ${m.from}`, `To: ${m.to}`, ...extra, `Subject: ${m.subject}`, m.body];
+  return {
+    type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7002, bundleId: "com.apple.mail", name: "Mail" },
+    window: { windowId: "task-mail", kind: "standard", title: m.subject, frame: [0, 520, 900, 640] }, focused: false, root: null,
+    nodes: lines.map((t, n) => ({ key: `com.apple.mail/standard/statictext:~${n}`, parent: null, role: "AXStaticText", value: t, frame: [20, 560 + n * 24, 860, 18] })),
+    values: [], focusedKey: null, stats: { walkMs: 0, visited: lines.length, truncated: false },
+  };
+}
+/** page-loop-eval.ts's noteWindow, focused before the form: the window the user just left. */
+const noteWindow = (text: string): Snapshot => ({
+  type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 900, reason: "initial", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" },
+  window: { windowId: "w4-note", kind: "standard", title: "Application details.txt", frame: [0, 0, 700, 500] }, focused: true, root: null,
+  nodes: [{ key: "com.apple.TextEdit/standard/textarea:~0", parent: null, role: "AXTextArea", value: text, editable: true }], values: [], focusedKey: null, stats: { walkMs: 0, visited: 1, truncated: false },
+});
+function desk(controls: PageControl[], sources: Snapshot[]): ScreenModel {
+  const page: PageSnapshot = {
+    type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
+    frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/apply", navGen: 1, title: "Apply", headings: ["Apply"], iframes: [], excluded: {}, truncated: false, controls }],
+    missing: [], focused: { frameId: 0, id: controls[0]?.id ?? "e1", selection: [0, 0] },
+  };
+  const m = new ScreenModel();
+  for (const s of sources) m.apply(s);
+  m.apply(toWindowSnapshot(page, session, 1));
+  return m;
+}
+
+type Answer = { choice: string; confidence: number };
+/**
+ * Scripted Jev. `pick` names the value each field takes by its label (the option whose description starts with it);
+ * `owner` answers a whose-value question by the value's text and the ask (0 or 1); every whose-details question says
+ * the user's at 0.95. Records every request.
+ */
+function scripted(pick: Record<string, string>, owner: (text: string, ask: number) => Answer): { ask: AskJev; requests: JevRequest[] } {
+  const requests: JevRequest[] = [];
+  let n = 0;
+  const ask: AskJev = async (req) => {
+    requests.push(req);
+    const which = n++ % 2;
+    const answers: Record<string, Answer> = {};
+    for (const [id, q] of Object.entries(req.questions)) {
+      const ins = String(q.instructions);
+      if (id.endsWith("_whose")) answers[id] = { choice: "user", confidence: 0.95 };
+      else if (id.endsWith("_owner")) answers[id] = owner(/"(.*?)" \(/su.exec(ins)?.[1] ?? "", which);
+      else {
+        const label = /Label: '(.+?)'\./u.exec(ins)?.[1];
+        const want = label === undefined ? undefined : pick[label];
+        const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`))?.[0];
+        answers[id] = { choice: hit ?? "none", confidence: 0.95 };
+      }
+    }
+    return { model: "scripted", answers, inputTokens: 0, latencyMs: 0, costUsd: 0 };
+  };
+  return { ask, requests };
+}
+const ownerQuestions = (requests: JevRequest[]): string[] => requests.flatMap((r) => Object.entries(r.questions).filter(([id]) => id.endsWith("_owner")).map(([, q]) => String(q.instructions)));
+const ownerQuestionOf = (requests: JevRequest[], text: string): string | undefined => ownerQuestions(requests).find((q) => q.includes(`"${text}" (`));
+const written = (p: Awaited<ReturnType<typeof proposeFill>>, key: string): string | null => writtenFields(p).fields.find((f) => f.key === key)?.value ?? null;
+
+describe("exact identity, decided by code (G2)", () => {
+  const forty = expectation("forty").sources;
+  const email = control("e1", "Email");
+
+  it("G2: writes the user's own To: address in Email although both asks call it someone else's, and asks nothing about it", async () => {
+    // LV1 pass 1, forty: the To: address jo.abernathycole@example.com, the user's "primary email" from memory, was
+    // called other at 0.70/0.65 and excluded from Email's question.
+    const { ask, requests } = scripted({ Email: "jo.abernathycole@example.com" }, () => ({ choice: "other", confidence: 0.8 }));
+    const p = await proposeFill(desk([email], [mailWindow(forty.email), noteWindow(forty.note)]), ask, WIN, keyOf(email), 2000, { about: memoryOf("forty") });
+    expect(written(p, keyOf(email))).toBe("jo.abernathycole@example.com");
+    expect(ownerQuestionOf(requests, "jo.abernathycole@example.com")).toBeUndefined();
+  });
+
+  it("never writes someone else's value that matches nothing in the user's identity, whatever Jev says short of both asks calling it the user's", async () => {
+    // Memory holds the user's jo.abernathycole@example.com; the mail's sender writes from a near miss and the note holds
+    // the husband's. Neither is the user's identity, so code decides nothing and the owner questions are asked.
+    const m: Mail = { ...forty.email, from: "Jo Abernathy <jo.abernathycole@example.net>" };
+    for (const want of ["jo.abernathycole@example.net", "marcus.cole@example.net"]) {
+      const answers: ((text: string, ask: number) => Answer)[] = [
+        () => ({ choice: "other", confidence: 0.9 }),
+        () => ({ choice: "other", confidence: 0.3 }),
+        () => ({ choice: "unclear", confidence: 0.9 }),
+        (_, a) => ({ choice: a === 0 ? "user" : "other", confidence: 0.9 }),
+        (_, a) => ({ choice: a === 0 ? "user" : "unclear", confidence: 0.9 }),
+        () => ({ choice: "user", confidence: 0.3 }),
+      ];
+      for (const owner of answers) {
+        const { ask, requests } = scripted({ Email: want }, (text, a) => (text === want ? owner(text, a) : { choice: "user", confidence: 0.95 }));
+        const p = await proposeFill(desk([email], [mailWindow(m), noteWindow(forty.note)]), ask, WIN, keyOf(email), 2000, { about: memoryOf("forty") });
+        expect(written(p, keyOf(email)), `${want}, ${owner("", 0).choice}/${owner("", 1).choice}`).not.toBe(want);
+        expect(ownerQuestionOf(requests, want)).toBeDefined();
+      }
+    }
+  });
+});
+
+describe("structural evidence in whose-value questions (G2)", () => {
+  const forty = expectation("forty").sources;
+  const fields = [control("e1", "Email"), control("e2", "Mobile phone"), control("e3", "City"), control("e4", "Emergency contact phone"), control("e5", "Full name")];
+  const ownerAsk = async (mail: Mail, extra: string[] = [], about: AboutValue[] = []): Promise<JevRequest[]> => {
+    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+    await proposeFill(desk(fields, [mailWindow(mail, extra), noteWindow(forty.note)]), ask, WIN, keyOf(fields[0] as PageControl), 2000, { about });
+    return requests;
+  };
+
+  it("G2: says a To: value is the mail's only recipient, and that the address is the user's own when memory says so", async () => {
+    const header = "Jo Abernathy-Cole <jo.abernathycole@example.com>";
+    const plain = await ownerAsk(forty.email);
+    for (const t of [header, "Jo Abernathy-Cole", "jo.abernathycole@example.com"]) expect(ownerQuestionOf(plain, t), t).toContain("the only recipient on the To: line of this mail");
+    expect(ownerQuestionOf(plain, "Elena Varga")).not.toContain("Where it sits");
+    // With the user's email in memory the To: address is decided by code and not asked; the name and the header beside
+    // it are still asked, now with both facts.
+    const told = await ownerAsk(forty.email, [], memoryOf("forty"));
+    expect(ownerQuestionOf(told, "jo.abernathycole@example.com")).toBeUndefined();
+    for (const t of [header, "Jo Abernathy-Cole"]) {
+      expect(ownerQuestionOf(told, t), t).toContain("the only recipient on the To: line of this mail");
+      expect(ownerQuestionOf(told, t), t).toContain("a To: line whose address is the email the user told Caret is theirs");
+    }
+  });
+
+  it("gives a mail with several recipients, or a Cc:, no structural evidence", async () => {
+    const several = await ownerAsk({ ...forty.email, to: "Jo Abernathy-Cole <jo.abernathycole@example.com>, Tamsin Reyes <tamsin.reyes@example.org>" });
+    for (const t of ["jo.abernathycole@example.com", "tamsin.reyes@example.org"]) expect(ownerQuestionOf(several, t), t).toBeDefined();
+    for (const q of ownerQuestions(several).filter((x) => x.includes("Mail window"))) expect(q).not.toContain("Where it sits");
+    const cc = await ownerAsk(forty.email, ["Cc: Tamsin Reyes <tamsin.reyes@example.org>"]);
+    for (const q of ownerQuestions(cc).filter((x) => x.includes("labelled 'To'"))) expect(q).not.toContain("only recipient");
+  });
+
+  it("gives no recipient evidence to a mail the user sent, by the From: address in memory", async () => {
+    const sent = await ownerAsk({ ...forty.email, from: "Jo Abernathy-Cole <jo.abernathycole@example.com>", to: "Elena Varga <elena.varga@example.org>" }, [], memoryOf("forty"));
+    for (const t of ["Elena Varga", "elena.varga@example.org"]) {
+      expect(ownerQuestionOf(sent, t), t).toBeDefined();
+      expect(ownerQuestionOf(sent, t), t).not.toContain("only recipient");
+    }
+  });
+
+  it("G2: says which note sentences name no other person, and which name someone else", async () => {
+    const r = await ownerAsk(forty.email);
+    const alone = "it is in a sentence of the note the user just left that names no other person";
+    const other = "it is in a sentence that names someone other than the user";
+    expect(ownerQuestionOf(r, "2210 Willow Bend Drive, Apt 5B, Portland, Oregon 97214")).toContain(alone);
+    expect(ownerQuestionOf(r, "555-0164")).toContain(alone);
+    expect(ownerQuestionOf(r, "555-0171")).toContain(other);
+    expect(ownerQuestionOf(r, "marcus.cole@example.net")).toContain(other);
+    expect(ownerQuestionOf(r, "Marcus Cole")).toContain(other);
+    for (const t of ["555-0171", "marcus.cole@example.net"]) expect(ownerQuestionOf(r, t)).not.toContain(alone);
+  });
+
+  it("reads the sentence, not the line: the user's cell beside a warning about the parents' landline", async () => {
+    const w = expectation("wizard-1").sources;
+    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+    const phone = control("e1", "Phone");
+    await proposeFill(desk([phone], [mailWindow(w.email), noteWindow(w.note)]), ask, WIN, keyOf(phone), 2000);
+    const own = ownerQuestions(requests).find((q) => q.includes(`"555-0147" (`));
+    expect(own).not.toContain("names someone other than the user");
+  });
+});
+
+describe("a date's or a contact's clause (G2)", () => {
+  const descriptions = (requests: JevRequest[]): string[] => requests.flatMap((r) => Object.values(r.questions).flatMap((q) => Object.values(q.criteria).filter((d): d is string => typeof d === "string")));
+
+  // Passes before G2 too: on a two-field page the old rule's long-line clause fits. On F1's walked Greenhouse page the
+  // note's budget was spent before any clause, and these dates went out bare (evidence/screen/g2/whose/probe-*.json).
+  it("shows the School line's dates with the words that make one the start and one the end", async () => {
+    const g = expectation("greenhouse").sources;
+    const { ask, requests } = scripted({}, () => ({ choice: "user", confidence: 0.95 }));
+    const start = control("e1", "Start date year");
+    await proposeFill(desk([start, control("e2", "End date year")], [mailWindow(g.email), noteWindow(g.note)]), ask, WIN, keyOf(start), 2000);
+    const sept = descriptions(requests).find((d) => d.startsWith(`"September 2016" (`));
+    expect(sept).toMatch(/in the line '[^']*September 2016 to May 2020/u);
+  });
+
+  it("G2: shows 'August 2022' with the sentence that says it is when the job started, where the note's prose share has room", async () => {
+    const w = expectation("wizard-2").sources;
+    const ask = async (note: string): Promise<string | undefined> => {
+      const { ask: jev, requests } = scripted({}, () => ({ choice: "user", confidence: 0.95 }));
+      const start = control("e1", "Start date");
+      await proposeFill(desk([control("e0", "Employer"), start], [mailWindow(w.email), noteWindow(note)]), jev, WIN, keyOf(start), 2000, { about: memoryOf("wizard-2") });
+      return descriptions(requests).find((d) => d.startsWith(`"August 2022" (`));
+    };
+    // Without the degree line, the clause fits the note's prose share (privacy.ts windowBudget) and goes out.
+    const short = w.note.split("\n").filter((l) => !l.includes("B.S.")).join("\n");
+    expect(await ask(short)).toContain("in the line 'Started at Tallgrass Mechatronics in August 2022'");
+    // On F1's whole note it does not: the degree line's sentence holds a warning ("Not Northfield College"), so it goes
+    // out whole beside "May 2021" and spends the prose share first. The share is a privacy rule and stays; wizard-2's
+    // Start date gets no clause from this change.
+    expect(await ask(w.note)).not.toContain("Started at Tallgrass");
+  });
+});
+
+describe("a field that asks for no person's details, offered memory (G2)", () => {
+  it("G2: asks whose job title Job title wants, not whose name or email", async () => {
+    const w = expectation("wizard-2").sources;
+    const { ask, requests } = scripted({}, () => ({ choice: "user", confidence: 0.95 }));
+    const title = control("e1", "Job title");
+    await proposeFill(desk([title], [mailWindow(w.email), noteWindow(w.note)]), ask, WIN, keyOf(title), 2000, { about: memoryOf("wizard-2") });
+    const q = requests.flatMap((r) => Object.entries(r.questions)).find(([id]) => id.endsWith("_whose"));
+    expect(q?.[1].instructions).toContain("the user's own job title");
+    expect(q?.[1].instructions).not.toContain("name or email");
+  });
+});

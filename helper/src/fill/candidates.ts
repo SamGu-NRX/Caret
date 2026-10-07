@@ -8,7 +8,7 @@ import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
-import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, sentenceAround, WARNS } from "./line-values.ts";
+import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, sentenceAround, WARNS } from "./line-values.ts";
 import { splitDate } from "./derive.ts";
 
 /**
@@ -42,6 +42,13 @@ export interface Candidate {
    * field that takes one value may take it (fill.ts).
    */
   partOf?: string;
+  /**
+   * G2: the memory entry this text is exactly, when it is the user's own email, phone or full name (whose.ts
+   * identityOf): code decides such a value is the user's without asking. Its label goes through the ledger as memory.
+   */
+  identity?: CandidateIdentity;
+  /** G2: where the span sits, as code reads its window (whose.ts placementsOf); shown to Jev in whose-value questions. */
+  placements?: readonly Placement[];
   /** The nearest named container around the span, such as a group box or a section heading. */
   section: string | null;
   /**
@@ -53,6 +60,29 @@ export interface Candidate {
   recency: Recency;
   source: FillSource;
 }
+
+/** G2: a candidate that is exactly one of the user's own identities from memory (whose.ts identityOf). */
+export interface CandidateIdentity {
+  memoryId: string;
+  kind: "email" | "phone" | "name";
+  /** The memory entry's label ("primary email"), which the value question quotes. */
+  label: string;
+}
+
+/**
+ * G2: where a candidate sits, read by code from its window (whose.ts placementsOf), for Jev to weigh in a whose-value
+ * question, never as a rule. `soleRecipient`: on the To: line of a mail, as its only recipient. `toUsersAddress`: on a
+ * To: line whose one address is the user's own email from memory. `ownNoteAlone`: in a sentence of the note the user
+ * just left that names no other person. `namesOther`: in a sentence that names someone other than the user ("my
+ * husband Marcus Cole, …").
+ */
+export type Placement = "soleRecipient" | "toUsersAddress" | "ownNoteAlone" | "namesOther";
+export const PLACEMENT_SAYS: Record<Placement, string> = {
+  soleRecipient: "it is the only recipient on the To: line of this mail",
+  toUsersAddress: "it is on a To: line whose address is the email the user told Caret is theirs",
+  ownNoteAlone: "it is in a sentence of the note the user just left that names no other person",
+  namesOther: "it is in a sentence that names someone other than the user",
+};
 
 /**
  * "justLeft": the window the user was in just before they came to the form (ScreenModel.windowBefore).
@@ -294,6 +324,27 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * the room of the lines a field's terms matched, and the cut rule then withheld those fields (corpus clinic-intake).
    */
   const clauses = new Map<Candidate, string>();
+  /**
+   * G2: a date's, email's or phone number's clause part (lineFact, line-values.ts partAround) is charged once every typed
+   * value of its window is in and before the window's other lines, when it fits; any other clause waits for finish.
+   * Charged after every span, none of these fit F1's task notes, whose short lines each go out whole and spend the budget
+   * first (evidence/screen/g2/whose/probe-head.json). Charged right after each span, they cost later kinds their place:
+   * the guard adversary's canned writes fell from 316 to 308, emails cut on forty and on corpus forms (adversary-eager).
+   * Charged before a conversation's other lines (a mail), they still cut a contact line there, which counts the window's
+   * names as kept out and withheld clinic-intake's City and Emergency contact name (314 of 316); so a conversation's wait
+   * for finish, as before. With that, canned writes on the same desks are 316 of 316 (adversary-head). The cost: on
+   * forty, the reference's "my cell, 555-0139" and the start date's sentence, both in the mail, still go out bare.
+   */
+  const eagerClauses = (w: WindowState): void => {
+    if (heldAsConversation(w)) return;
+    for (const c of out) {
+      const clause = clauses.get(c);
+      if (clause === undefined || c.source.windowId !== w.window.windowId || (c.kind !== "date" && c.kind !== "email" && c.kind !== "phone")) continue;
+      if (o.ledger !== undefined && !o.ledger.take(w, "candidate", [clause])) continue;
+      c.line = clause;
+      clauses.delete(c);
+    }
+  };
   /**
    * Adds a span unless the cap is reached, its text is already in, or its window is closed. A span that
    * does not fit its window's budget closes the window.
@@ -576,6 +627,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     const leftOut = new Set(groups.keys());
     for (const g of groups.values()) for (const c of g) if (quoted.has(c)) unwarned.add(c.text);
     if (leftOut.size > 0) missed.add(w.window.windowId);
+    eagerClauses(w);
     // Then the rest, nearest the fields first, with their facts, until one does not fit.
     for (const i of order.filter((x) => !takesKind(x))) {
       if (full() || outOfTime()) return false;
@@ -607,6 +659,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (node === undefined || secretValue(w, v)) continue;
       add(w, node, v.text, v.kind, () => contextFor(w, node, v.text));
     }
+    eagerClauses(w);
   }
   for (const w of windows) {
     if (full()) break;
@@ -763,9 +816,21 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
   // 1978") cost corpus clinic-intake two values. A label otherwise says what the span is.
   const sentence = sentenceAround(line, pos, text);
   if (WARNS.test(sentence.replace(text, " "))) return sentence === text ? null : { clause: sentence, required: true };
-  if (labelled) return null;
   const values = lineValues(line);
   const kind = values.find((v) => v.text === text)?.kind;
+  // G2: a date, email or phone number goes with the part of its clause that says what it is (line-values.ts
+  // partAround) whenever that says more than "Label: value", on a short line and under a label too. A label alone does
+  // not say which of two dates is which: "School: …, September 2016 to May 2020." offered both as labelled 'School', and
+  // live Jev put May 2020 in the education Start date (evidence/screen/g1 fix 3: start dates on wizard-2 and Greenhouse,
+  // the reference's phone and email on forty). collectCandidates charges it before the window's other lines outside a
+  // conversation (eagerClauses), else after every span. It can carry a second value of the line that Jev then reads
+  // beside the first; both are spans of the line, and agreement and the cutoff still decide.
+  if (kind === "date" || kind === "email" || kind === "phone") {
+    const clause = partAround(line, pos, text);
+    const said = clause === null ? null : (LABELLED.exec(clause)?.[2] ?? clause).trim().replace(/[.!?;,]+$/u, "");
+    return clause === null || said === text ? null : { clause, required: false };
+  }
+  if (labelled) return null;
   const twins = kind !== undefined && values.filter((v) => v.kind === kind).length > 1;
   if (line.length <= MAX_LINE && !twins) return null;
   const clause = clauseAround(line, pos, text);
@@ -1075,6 +1140,7 @@ const RECENCY_TEXT: Record<Recency, string> = {
 export function describeCandidate(c: Candidate): string {
   const facts: string[] = [];
   if (c.kind !== null) facts.push(c.kind);
+  if (c.identity !== undefined) facts.push(`the user's own ${c.identity.label}, which the user told Caret`);
   if (c.context !== null && c.context !== c.text) facts.push(`labelled '${c.context}'`);
   if (c.line !== undefined && c.line !== null) facts.push(`in the line '${c.line}'`);
   if (c.blockHead !== null) facts.push(`in a block that starts '${c.blockHead}'`);
