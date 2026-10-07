@@ -256,6 +256,16 @@ export function saysPress(why: HandoffWhy, label: string): string {
 /** "Caret found nothing to put in Phone or Company name." */
 export const saysNoValue = (names: readonly string[]): string => `Caret found nothing to put in ${list(names, "or")}.`;
 
+/**
+ * V4: menus whose choices the app shows only once opened, which Caret never opens to read: "Caret can't see the choices
+ * in Month without opening the menu, so Month is yours to set." Null for none.
+ */
+export function saysOptionsUnseen(names: readonly string[]): string | null {
+  if (names.length === 0) return null;
+  const one = new Set(names.map(field)).size === 1;
+  return `Caret can't see the choices in ${list(names, "and")} without opening ${one ? "the menu" : "those menus"}, so ${one ? `${list(names, "and")} is` : "they are"} yours to set.`;
+}
+
 /** "Caret wasn't sure what goes in Your name or Email address. Say what goes there and ask again." */
 export const saysUnsure = (names: readonly string[]): string => `Caret wasn't sure what goes in ${list(names, "or")}. Say what goes there and ask again.`;
 

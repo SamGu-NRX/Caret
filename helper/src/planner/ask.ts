@@ -21,12 +21,13 @@ import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
 import { conversionOf, FillError, identityRefOf, memoryRefOf, mintOf, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
+import { formControls } from "../fill/controls.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
 import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, wordsOf, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
-import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure, saysUnsureFields, type AskPart } from "./says.ts";
+import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNoValue, saysOptionsUnseen, saysPress, saysUnsure, saysUnsureFields, type AskPart } from "./says.ts";
 import { choicesFor, type Choice } from "./choices.ts";
 import { fieldWords } from "./sources.ts";
 import { asksForWholeForm, exclusionsIn, namedSection } from "./scope-words.ts";
@@ -209,6 +210,22 @@ function withUnnamed(left: string | null, w: WindowState): string | null {
   if (n === 0) return left;
   const says = `${n === 1 ? "A field with no name is" : `${n} fields with no name are`} yours to fill.`;
   return left === null ? says : `${left} ${says}`;
+}
+
+/**
+ * V4: the scoped menus whose options the window does not show (FormControl.options null: Chrome's Accessibility shows a
+ * closed menu's selected option only), which fill never asks about and Caret never opens to read; the Ask says they are
+ * the user's.
+ */
+function unseenOptions(w: WindowState, fields: readonly IntentField[]): IntentField[] {
+  const shut = new Set(formControls(w).filter((c) => c.control === "select" && c.options === null).map((c) => c.node.key));
+  return fields.filter((f) => shut.has(f.key));
+}
+
+/** `left`, then the sentence for the scoped menus whose options Caret cannot see (unseenOptions). */
+function withUnseen(left: string | null, w: WindowState, fields: readonly IntentField[]): string | null {
+  const says = saysOptionsUnseen(unseenOptions(w, fields).map((f) => f.name));
+  return says === null ? left : left === null ? says : `${left} ${says}`;
 }
 
 /** A planner's refusal, with the fields no name reads said as the user's (withUnnamed): an Ask never writes them. */
@@ -748,8 +765,12 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   if (writes.length === 0 && controls.length === 0) {
     const unsure = p.fields.filter((f) => f.withheld === "disagree" || f.withheld === "lowConfidence");
     if (unsure.length > 0) return refused(new SaidError("unsure", saysUnsure(unsure.map(name)), `Jev was not sure enough about ${unsure.map((f) => `${name(f)} (${f.withheld === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`));
-    const left = withUnnamed(leftToYouSays(checked.leftToYou), w);
-    return refused(new SaidError("nothingToDo", `${saysNoValue(checked.fields.map((f) => f.name))}${left === null ? "" : ` ${left}`}`, `no value for ${checked.fields.map((f) => f.name).join(", ")} on screen, in memory or in the instruction`));
+    const left = withUnseen(withUnnamed(leftToYouSays(checked.leftToYou), w), w, checked.fields);
+    // V4: a menu whose options Caret cannot see is named once, as the user's, not also as one with nothing found.
+    const unseen = new Set(unseenOptions(w, checked.fields).map((f) => f.key));
+    const empty = checked.fields.filter((f) => !unseen.has(f.key)).map((f) => f.name);
+    const said = [empty.length === 0 ? null : saysNoValue(empty), left].filter((x): x is string => x !== null).join(" ");
+    return refused(new SaidError("nothingToDo", said, `no value for ${checked.fields.map((f) => f.name).join(", ")} on screen, in memory or in the instruction${unseen.size === 0 ? "" : `; ${unseen.size} of them menus whose options the window does not show`}`));
   }
 
   const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: w.window.windowId } : {}) };
@@ -800,7 +821,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     withheld: p.fields.flatMap((f) => (f.withheld === "disagree" || f.withheld === "lowConfidence" ? [{ name: name(f), why: f.withheld }] : [])),
     jev: { calls: jev.calls, costUsd: jev.costUsd, latencyMs: p.jev.latencyMs + use.latencyMs },
     controls: controls.map((f) => ({ key: f.key, name: name(f), value: f.handoff?.value ?? "", display: f.handoff?.display ?? "" })),
-    leftToYou: withUnnamed(leftToYouSays(checked.leftToYou), w),
+    leftToYou: withUnseen(withUnnamed(leftToYouSays(checked.leftToYou), w), w, checked.fields),
     ...withUnsure(checked.fields.map((f) => f.key)),
     route: "fill",
     intent,

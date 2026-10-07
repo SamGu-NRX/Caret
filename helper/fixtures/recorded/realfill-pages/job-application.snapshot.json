@@ -1,0 +1,448 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "35afafb2-2ca2-49e3-a95b-2573cf8dabda",
+ "at": 1791185590582,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "Northgate Analytics - Data Analyst",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "9771DFA361E8D9A1BDC4F19407A67C99",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/job-application.html",
+   "navGen": 13,
+   "title": "Northgate Analytics - Data Analyst",
+   "headings": [
+    "Data Analyst",
+    "Submit your application",
+    "Links",
+    "A few questions",
+    "Professional reference",
+    "Additional information"
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/button:resume/cv ✱~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=resume\",\"file\"]",
+     "kind": "file",
+     "role": "button",
+     "name": "Resume/CV ✱",
+     "form": "form@0",
+     "rect": [
+      516,
+      146,
+      484,
+      37
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/textbox:full name ✱~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=name\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Full name ✱",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      193,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:email ✱~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=email\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email ✱",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      234,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/textbox:phone ✱~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=phone\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Phone ✱",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      275,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/textbox:current company~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=org\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Current company",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      316,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/textbox:linkedin url~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=li\",\"url\"]",
+     "kind": "url",
+     "role": "textbox",
+     "name": "LinkedIn URL",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      407,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/textbox:github url~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=gh\",\"url\"]",
+     "kind": "url",
+     "role": "textbox",
+     "name": "GitHub URL",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      448,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/textbox:portfolio or website~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=pf\",\"url\"]",
+     "kind": "url",
+     "role": "textbox",
+     "name": "Portfolio or website",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      489,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/textbox:earliest start date~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=start\",\"date\"]",
+     "kind": "date",
+     "role": "textbox",
+     "name": "Earliest start date",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      580,
+      484,
+      34
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/radio:yes~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=spons\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Yes",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      285,
+      654,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e10",
+      "name": "Will you now or in the future require visa sponsorship to work in the US? ✱"
+     }
+    },
+    {
+     "id": "e11",
+     "key": "form@0/radio:no~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=spons\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "No",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      364.7,
+      654,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e10",
+      "name": "Will you now or in the future require visa sponsorship to work in the US? ✱"
+     }
+    },
+    {
+     "id": "e12",
+     "key": "form@0/combobox:how did you hear about this role?~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=heard\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "How did you hear about this role?",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select...",
+       "selected": true
+      },
+      {
+       "value": "LinkedIn",
+       "label": "LinkedIn",
+       "selected": false
+      },
+      {
+       "value": "Company website",
+       "label": "Company website",
+       "selected": false
+      },
+      {
+       "value": "Employee referral",
+       "label": "Employee referral",
+       "selected": false
+      },
+      {
+       "value": "Job board",
+       "label": "Job board",
+       "selected": false
+      },
+      {
+       "value": "University career center",
+       "label": "University career center",
+       "selected": false
+      },
+      {
+       "value": "Other",
+       "label": "Other",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      516,
+      685.5,
+      484,
+      33
+     ]
+    },
+    {
+     "id": "e13",
+     "key": "form@0/textbox:referrer's name (if referred)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ref\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Referrer's name (if referred)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      729,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e14",
+     "key": "form@0/textbox:desired salary (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=sal\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Desired salary (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      770,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e15",
+     "key": "form@0/textbox:reference name~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=rname\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Reference name",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      861,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e16",
+     "key": "form@0/combobox:reference relationship~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=rrel\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Reference relationship",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select...",
+       "selected": true
+      },
+      {
+       "value": "Manager",
+       "label": "Manager",
+       "selected": false
+      },
+      {
+       "value": "Colleague",
+       "label": "Colleague",
+       "selected": false
+      },
+      {
+       "value": "Direct report",
+       "label": "Direct report",
+       "selected": false
+      },
+      {
+       "value": "Professor",
+       "label": "Professor",
+       "selected": false
+      },
+      {
+       "value": "Other",
+       "label": "Other",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      516,
+      902,
+      484,
+      33
+     ]
+    },
+    {
+     "id": "e17",
+     "key": "form@0/textbox:reference email~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=remail\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Reference email",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      945,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e18",
+     "key": "form@0/textbox:reference phone~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=rphone\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Reference phone",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      986,
+      484,
+      31
+     ]
+    },
+    {
+     "id": "e19",
+     "key": "form@0/textbox:cover letter or anything else you'd like us to know~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=add\",\"textarea\"]",
+     "kind": "textarea",
+     "role": "textbox",
+     "name": "Cover letter or anything else you'd like us to know",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      516,
+      1077,
+      484,
+      104
+     ]
+    },
+    {
+     "id": "e20",
+     "key": "form@0/checkbox:keep me in mind for future openings at northgate~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=future\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Keep me in mind for future openings at Northgate",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      284,
+      1198,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e21",
+     "key": "form@0/button:submit application~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Submit application",
+     "form": "form@0",
+     "rect": [
+      280,
+      1254,
+      227.5,
+      40
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {},
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

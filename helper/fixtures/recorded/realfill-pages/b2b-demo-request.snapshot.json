@@ -1,0 +1,356 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "d58dd161-f16f-453d-a2be-0195c82d16e9",
+ "at": 1791185612145,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "Request a demo | Ledgerline",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "314F50F1AAE6D915D18A727B9BDCED31",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/b2b-demo-request.html",
+   "navGen": 15,
+   "title": "Request a demo | Ledgerline",
+   "headings": [
+    "See Ledgerline in action"
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/textbox:first name*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=fn\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "First name*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      360,
+      165,
+      274,
+      39
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/textbox:last name*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ln\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Last name*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      646,
+      165,
+      274,
+      39
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:work email*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=em\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Work email*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      360,
+      237,
+      560,
+      39
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/textbox:phone number~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ph\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Phone number",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      360,
+      309,
+      560,
+      39
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/textbox:company name*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=co\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Company name*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      360,
+      381,
+      274,
+      39
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/textbox:job title*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=jt\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Job title*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      646,
+      381,
+      274,
+      39
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/textbox:company website~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=web\",\"url\"]",
+     "kind": "url",
+     "role": "textbox",
+     "name": "Company website",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      360,
+      453,
+      560,
+      39
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/combobox:number of employees*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=size\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Number of employees*",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select one",
+       "selected": true
+      },
+      {
+       "value": "1-10",
+       "label": "1-10",
+       "selected": false
+      },
+      {
+       "value": "11-50",
+       "label": "11-50",
+       "selected": false
+      },
+      {
+       "value": "51-200",
+       "label": "51-200",
+       "selected": false
+      },
+      {
+       "value": "201-1,000",
+       "label": "201-1,000",
+       "selected": false
+      },
+      {
+       "value": "1,001+",
+       "label": "1,001+",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      360,
+      525,
+      274,
+      41
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/combobox:country*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ctry\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Country*",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select one",
+       "selected": true
+      },
+      {
+       "value": "United States",
+       "label": "United States",
+       "selected": false
+      },
+      {
+       "value": "Canada",
+       "label": "Canada",
+       "selected": false
+      },
+      {
+       "value": "United Kingdom",
+       "label": "United Kingdom",
+       "selected": false
+      },
+      {
+       "value": "Ireland",
+       "label": "Ireland",
+       "selected": false
+      },
+      {
+       "value": "Australia",
+       "label": "Australia",
+       "selected": false
+      },
+      {
+       "value": "Other",
+       "label": "Other",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      646,
+      525,
+      274,
+      41
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/checkbox:accounts payable automation~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=int\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Accounts payable automation",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      364,
+      608,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form@0/checkbox:expense management~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=int\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Expense management",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      364,
+      633,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e12",
+     "key": "form@0/checkbox:procurement~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=int\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Procurement",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      364,
+      658,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e13",
+     "key": "form@0/textbox:preferred demo date (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=when\",\"date\"]",
+     "kind": "date",
+     "role": "textbox",
+     "name": "Preferred demo date (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      360,
+      713,
+      560,
+      42
+     ]
+    },
+    {
+     "id": "e14",
+     "key": "form@0/textbox:anything else we should know?~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=more\",\"textarea\"]",
+     "kind": "textarea",
+     "role": "textbox",
+     "name": "Anything else we should know?",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      360,
+      788,
+      560,
+      76
+     ]
+    },
+    {
+     "id": "e15",
+     "key": "form@0/checkbox:i'd like to receive product news and marketing emails from …~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=mkt\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "I'd like to receive product news and marketing emails from Ledgerline. You can unsubscribe at any time.",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      364,
+      884,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e16",
+     "key": "form@0/button:request demo~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Request demo",
+     "form": "form@0",
+     "rect": [
+      360,
+      944,
+      560,
+      43
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {},
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

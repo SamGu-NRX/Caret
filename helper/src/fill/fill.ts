@@ -18,7 +18,7 @@ import { assertNoSecrets, SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
-import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl } from "./controls.ts";
+import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
 import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
@@ -667,6 +667,13 @@ function scopedInputs(w: WindowState, keys: readonly string[]): FormInput[] {
 
 /** V3: a choice code made in deriving a value, and the extra source it read for it (a message's send line), for the verifier. */
 type Chosen = { says: string; also: Provenance | null; via?: "sentLine" };
+/** V4: how a value names a menu's option, as the verifier is told it (controls.ts optionLink). */
+const OPTION_LINK_SAYS: Record<OptionLink, string> = {
+  inText: "the option's words are in it",
+  sameWords: "it has the same words as the option",
+  inOption: "its words are in the option",
+  stateCode: "a US state's name and its postal code",
+};
 
 /** V3 review: a reading's assumptions as a stated choice, or undefined for a plain reading (when.ts Reading). */
 function stated(r: Reading | null): Chosen | undefined {
@@ -1152,6 +1159,31 @@ export async function proposeFill(
     const lit = literalOf(f);
     if (lit === undefined || candidates.some((c) => c.text === lit)) continue;
     derived.set(f.id, [{ key: `${f.id}:said`, text: lit, describe: `"${lit}" (written in the user's instruction for this field)`, base: { from: "instruction", text: lit }, also: null }, ...(derived.get(f.id) ?? [])]);
+  }
+  // V4 (G3: 30 of 35 Ask fields with no candidate were menus): a menu's option that a value on offer names without being
+  // it (controls.ts optionLink: "Manager" in "my manager at Ridgeline", "TX" for "Texas") is offered as that option's own
+  // label, in that field's question only, so Jev picks among the options its sources name. An option equal to a value
+  // needs no link: that value is the option, and its pick is minted under optionLabel. Which option a value names is
+  // code's reading, so a linked pick goes to the verifier with the reading said (`chose`), never minted as the option's
+  // label: options are candidates, never mints. A derived value that already carries a choice is not linked again, so a
+  // pick states at most one choice. A value the instruction spells out for the menu is linked too ("Texas" in "put Texas for
+  // state"). Radio groups keep their visible buttons and controlValue's reading of a pick.
+  if (derive) {
+    for (const f of fields) {
+      const options = f.form?.options ?? null;
+      if (f.control !== "select" || options === null) continue;
+      const list = derived.get(f.id) ?? [];
+      const link = (text: string, describe: string, base: Derived["base"], also: Candidate | null): void => {
+        const l = optionLink(options, text);
+        if (l === null || candidates.some((c) => c.text === l.option) || list.some((x) => x.text === l.option)) return;
+        const chose: Chosen = { says: `Caret took "${text}" to name the option '${l.option}' (${OPTION_LINK_SAYS[l.how]})`, also: null };
+        list.push({ key: `${f.id}:${list.length}`, text: l.option, describe: `"${l.option}" (the option ${describe} names)`, base, also, chose });
+      };
+      for (const d of [...list]) if (d.chose === undefined) link(d.text, d.describe, d.base, d.also);
+      for (const c of candidates) link(c.text, describeCandidate(c), { from: "window", c }, null);
+      for (const a of f.about) link(a.value, describeAbout(a), { from: "memory", a }, null);
+      if (list.length > 0) derived.set(f.id, list);
+    }
   }
   if (candidates.length === 0 && cut.length === 0 && answersFor.size === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
 

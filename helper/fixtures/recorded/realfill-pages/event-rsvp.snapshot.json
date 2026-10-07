@@ -1,0 +1,326 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "db62dd27-6a08-4cbb-b276-2333fca89be7",
+ "at": 1791185546931,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "RSVP | Jun & Priscilla's 10th Anniversary",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "8F7ABDC8F4A27D9CA8F6B64F7759AA69",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/event-rsvp.html",
+   "navGen": 9,
+   "title": "RSVP | Jun & Priscilla's 10th Anniversary",
+   "headings": [
+    "Jun & Priscilla",
+    "Dinner",
+    "The evening"
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/textbox:your full name *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=name\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Your full name *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      330,
+      139,
+      620,
+      37
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/textbox:email *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=email\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      330,
+      208,
+      620,
+      37
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:phone (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=phone\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Phone (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      330,
+      277,
+      620,
+      37
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/radio:joyfully accepts~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=attend\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Joyfully accepts",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      335,
+      361,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e4",
+      "name": "Will you be joining us? *"
+     }
+    },
+    {
+     "id": "e5",
+     "key": "form@0/radio:regretfully declines~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=attend\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Regretfully declines",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      497,
+      361,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e4",
+      "name": "Will you be joining us? *"
+     }
+    },
+    {
+     "id": "e6",
+     "key": "form@0/combobox:how many in your party? *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=party\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "How many in your party? *",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select",
+       "selected": true
+      },
+      {
+       "value": "1",
+       "label": "1",
+       "selected": false
+      },
+      {
+       "value": "2",
+       "label": "2",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      330,
+      414,
+      620,
+      39
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/combobox:your meal choice~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=meal\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Your meal choice",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select a meal",
+       "selected": true
+      },
+      {
+       "value": "Braised short rib",
+       "label": "Braised short rib",
+       "selected": false
+      },
+      {
+       "value": "Herb-roasted salmon",
+       "label": "Herb-roasted salmon",
+       "selected": false
+      },
+      {
+       "value": "Wild mushroom risotto (vegetarian)",
+       "label": "Wild mushroom risotto (vegetarian)",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      330,
+      578.6,
+      620,
+      39
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/textbox:guest's full name~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=gname\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Guest's full name",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      330,
+      649.6,
+      620,
+      37
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/combobox:guest's meal choice~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=gmeal\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Guest's meal choice",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select a meal",
+       "selected": true
+      },
+      {
+       "value": "Braised short rib",
+       "label": "Braised short rib",
+       "selected": false
+      },
+      {
+       "value": "Herb-roasted salmon",
+       "label": "Herb-roasted salmon",
+       "selected": false
+      },
+      {
+       "value": "Wild mushroom risotto (vegetarian)",
+       "label": "Wild mushroom risotto (vegetarian)",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      330,
+      718.6,
+      620,
+      39
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/textbox:dietary restrictions or allergies (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=diet\",\"textarea\"]",
+     "kind": "textarea",
+     "role": "textbox",
+     "name": "Dietary restrictions or allergies (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      330,
+      789.6,
+      620,
+      56
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form@0/textbox:approximate arrival time~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=arrive\",\"time\"]",
+     "kind": "time",
+     "role": "textbox",
+     "name": "Approximate arrival time",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      330,
+      949.2,
+      620,
+      41.8
+     ]
+    },
+    {
+     "id": "e12",
+     "key": "form@0/textbox:a note for the couple (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=note\",\"textarea\"]",
+     "kind": "textarea",
+     "role": "textbox",
+     "name": "A note for the couple (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      330,
+      1048.9,
+      620,
+      74
+     ]
+    },
+    {
+     "id": "e13",
+     "key": "form@0/checkbox:text me updates about the day~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=texts\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Text me updates about the day",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      334,
+      1129.9,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e14",
+     "key": "form@0/button:send rsvp~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Send RSVP",
+     "form": "form@0",
+     "rect": [
+      563.3,
+      1172.9,
+      153.4,
+      42
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {},
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

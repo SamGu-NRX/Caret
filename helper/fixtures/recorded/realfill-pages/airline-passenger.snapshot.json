@@ -1,0 +1,358 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "80424520-d3b5-43cd-98e1-85e88c25ea6b",
+ "at": 1791185492775,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "Guest information | Alaska Airlines (local replica)",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "23DB9AB00D47D0D4C213FB880BDBFF47",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/airline-passenger.html",
+   "navGen": 4,
+   "title": "Guest information | Alaska Airlines (local replica)",
+   "headings": [
+    "Who's flying?",
+    "Passenger 1 (Adult)",
+    "Contact information"
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/textbox:first name / given name~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=fn\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "First name / Given name",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      260,
+      181,
+      242.7,
+      37
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/textbox:middle name (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=mn\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Middle name (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      518.7,
+      181,
+      242.7,
+      37
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:last name / surname~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ln\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Last name / Surname",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      777.3,
+      181,
+      242.7,
+      37
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/combobox:suffix (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=sfx\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Suffix (optional)",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "None",
+       "selected": true
+      },
+      {
+       "value": "Jr.",
+       "label": "Jr.",
+       "selected": false
+      },
+      {
+       "value": "Sr.",
+       "label": "Sr.",
+       "selected": false
+      },
+      {
+       "value": "II",
+       "label": "II",
+       "selected": false
+      },
+      {
+       "value": "III",
+       "label": "III",
+       "selected": false
+      },
+      {
+       "value": "IV",
+       "label": "IV",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      260,
+      249,
+      760,
+      37
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/combobox:month~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=dobm\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Month",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Month",
+       "selected": true
+      },
+      {
+       "value": "January",
+       "label": "January",
+       "selected": false
+      },
+      {
+       "value": "February",
+       "label": "February",
+       "selected": false
+      },
+      {
+       "value": "March",
+       "label": "March",
+       "selected": false
+      },
+      {
+       "value": "April",
+       "label": "April",
+       "selected": false
+      },
+      {
+       "value": "May",
+       "label": "May",
+       "selected": false
+      },
+      {
+       "value": "June",
+       "label": "June",
+       "selected": false
+      },
+      {
+       "value": "July",
+       "label": "July",
+       "selected": false
+      },
+      {
+       "value": "August",
+       "label": "August",
+       "selected": false
+      },
+      {
+       "value": "September",
+       "label": "September",
+       "selected": false
+      },
+      {
+       "value": "October",
+       "label": "October",
+       "selected": false
+      },
+      {
+       "value": "November",
+       "label": "November",
+       "selected": false
+      },
+      {
+       "value": "December",
+       "label": "December",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      260,
+      344,
+      242.7,
+      37
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/textbox:day~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=dobd\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Day",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      518.7,
+      344,
+      242.7,
+      37
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/textbox:year~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=doby\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Year",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      777.3,
+      344,
+      242.7,
+      37
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/textbox:mileage plan number (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=mp\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Mileage Plan number (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      260,
+      567,
+      760,
+      37
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/textbox:known traveler number (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ktn\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Known Traveler Number (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      260,
+      635,
+      760,
+      37
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/textbox:email address~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=em\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email address",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      260,
+      767,
+      372,
+      37
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form@0/textbox:phone number~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ph\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Phone number",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      648,
+      767,
+      372,
+      37
+     ]
+    },
+    {
+     "id": "e12",
+     "key": "form@0/textbox:zip code~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=zip\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Zip code",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      260,
+      835,
+      760,
+      37
+     ]
+    },
+    {
+     "id": "e13",
+     "key": "form@0/checkbox:send me flight status updates by text~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=txt\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Send me flight status updates by text",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      264,
+      887,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e14",
+     "key": "form@0/button:continue~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Continue",
+     "form": "form@0",
+     "rect": [
+      260,
+      931,
+      108,
+      42
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {
+    "selfIdentification": 4
+   },
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}
