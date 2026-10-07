@@ -330,11 +330,13 @@ export function questionAnswer(text: string): boolean {
 
 /**
  * W1: the parts of a labelled value that holds several values (severalValues) a field that takes one value could take:
- * a role or an organization ("lab technician", "Ridgeline Outdoor Co"), each a span of the line. A part holding a typed
+ * a role or an organization ("lab technician", "Ridgeline Outdoor Co", "Lumen Labs, Inc."), each a span of the line. A part holding a typed
  * value or an amount is not one: that value is offered as the window's typed value.
  */
 function valueParts(value: string): string[] {
-  return (severalValues(value) ?? []).filter((p) => !typedPart(p) && p.split(/\s+/u).length <= 6 && (isNameLike(p, null) || roleLike(p)));
+  // W2: an organization that ends in a legal suffix is a part too ("Ridgeline Outdoor Co, Inc."), though its comma is
+  // no name's (REVIEW-R2 round-1 item 4).
+  return (severalValues(value) ?? []).filter((p) => !typedPart(p) && p.split(/\s+/u).length <= 6 && (isNameLike(p, null) || roleLike(p) || orgRun(p)));
 }
 const typedPart = (p: string): boolean => lineValues(p).length > 0 || new RegExp(AMOUNT.source, "u").test(p) || /\d/u.test(p);
 /** Labels that name an organization, though "name" is in them: "Company name", "Employer". */
@@ -367,7 +369,8 @@ export function lineTexts(line: string): LineText[] {
   // only the first reading lost both, so a part could be written whole into a prose field and lose its qualifier ("Lumen
   // Labs, lab technician (for my sister)"; W1 round-2 review). The longer quote holds the shorter one's words.
   const add = (text: string, label: string | null, quote?: string, partOf?: string): void => {
-    const t = text.trim().replace(/[.,;:!?]+$/u, "");
+    // A closing period goes, unless it ends an abbreviation the value needs ("Ridgeline Outdoor Co, Inc."; SENTENCE_STOP).
+    const t = text.trim().replace(/[,;:!?]+$/u, "").replace(SENTENCE_STOP, "");
     if (t.length < 2 || !line.includes(t)) return;
     const i = out.findIndex((o) => o.text === t);
     const prior = out[i];

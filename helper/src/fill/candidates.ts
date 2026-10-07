@@ -302,6 +302,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId)) return;
     const c = build(w, node, text, kind, context, quote, partOf);
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
+      // W2: a part of a labelled value (line-values.ts valueParts) is an extra beside the whole value: one that does not
+      // fit is dropped, and the window is neither cut nor closed for it. Counting it as a cut withheld Greenhouse's names
+      // (W1's regression: 12/12 to 6/6 canned, evidence/screen/w1 CHECKLIST).
+      if (partOf !== undefined) return;
       missed.add(w.window.windowId);
       // A span that goes only with its line (a warning, a remark) and does not fit with it is left out alone: the window
       // counts as cut, so the cut rules withhold its kind and words, but the spans after it are still read. Closing the
@@ -486,7 +490,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
           const names = wantsNames && kinds.some((k) => CONTACT_KINDS.has(k)) ? namesOutside(s.line, valuesOf.get(node.key)) : [];
           if (name) names.push(s.text);
           if (names.length > 0) terms.add(NAME_TERM);
-          spans.push({ node, text: s.text, kind: null, group: name ? NAME_TERM : null, context, terms, names, ...(s.with === undefined ? {} : { quote: s.with }), ...(s.partOf === undefined ? {} : { partOf: s.partOf }) });
+          // W2: a part of a labelled value joins no kind's group: the group goes in whole or not at all, so a part and its
+          // quote of the whole value spent the names' budget and cut the note (W1's Greenhouse regression). Parts come after.
+          spans.push({ node, text: s.text, kind: null, group: name && s.partOf === undefined ? NAME_TERM : null, context, terms, names, ...(s.with === undefined ? {} : { quote: s.with }), ...(s.partOf === undefined ? {} : { partOf: s.partOf }) });
           // Each name a contact line holds goes in with the names too, as its own span, copied verbatim from
           // the line: else "From: Priya Raman <priya.raman@…>" left a name out whenever the line was cut, and
           // the names spent the budget for nothing (B14 oracle replay, Claim form with the sources as Messages).
