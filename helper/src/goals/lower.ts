@@ -31,6 +31,7 @@ import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived
 import { checkValues, ContractError, exemptRefusal, isChecked, mintExempt, requireChecked, statedChoice, VerifierUnavailable, type CheckedValue, type Proposed, type Provenance } from "../fill/contract.ts";
 import { readClock, readDate, readDateTime, readMonth } from "../fill/when.ts";
 import { alternateVetoes, type AlternateWrite } from "../fill/alternate.ts";
+import { bindNotes, personalField } from "../planner/codeplan.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
@@ -519,7 +520,13 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     }
     const refusedSteps = new Set<GoalStep>();
     for (const [scope, group] of byScope) {
-      const proposed = group.map((x) => proposedFor(x.target, x.value as ValueBinding, x.writes as string, verifiedAs.get(x)));
+      // HA2 review P1: a copied value for a person's field is bound to the notes frozen for it at plan time, which its
+      // owner check shows (jevGate), so the recheck before each write refuses it once any of them changes.
+      const proposed = group.map((x) => {
+        const p = proposedFor(x.target, x.value as ValueBinding, x.writes as string, verifiedAs.get(x));
+        const notes = personalField(x.target.label) ? (inv.notes?.get((x.value as ValueBinding).ref) ?? null) : null;
+        return notes === null ? p : { ...p, provenance: bindNotes(p.provenance, notes, null) };
+      });
       let result: Awaited<ReturnType<typeof checkValues>>;
       try {
         result = await checkValues(proposed, { askJev: o.askJev, ledger: o.ledger, instruction, now, authority: authorityBy(scope), documentOf });

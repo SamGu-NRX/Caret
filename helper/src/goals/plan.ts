@@ -125,12 +125,12 @@ export interface GoalInventory {
    */
   alternates?: { fields: ReadonlyMap<string, readonly ReadableField[]>; saved: readonly SavedValue[] };
   /**
-   * HA2: each value's source node, as the redacted view showed it when the goal was planned, by noteKey (codeplan.ts
-   * frozenNotes): the whole note the value gate's owner questions show (gates.ts jevGate), charged to its window's budget
-   * only when sent. A value whose note is not here is withheld from a field that wants the user's details. Never sent
-   * otherwise.
+   * HA2: by value ref, the whole notes that held each value when the goal was planned (codeplan.ts frozenNotes), or null
+   * when they could not be shown (a cut, a source gone): what the value gate's owner questions show (gates.ts jevGate),
+   * charged to their windows' budgets only when sent, and what a copied value for a person's field is bound to. A value
+   * with no entry is withheld from a field that wants the user's details. Never sent otherwise.
    */
-  notes?: ReadonlyMap<string, SourceNote>;
+  notes?: ReadonlyMap<string, readonly SourceNote[] | null>;
 }
 
 /** `attach` (P2 adds the kind; P3 lowers it): a file the user confirmed in the preview, put in a page's file control. */

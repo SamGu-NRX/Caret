@@ -24,6 +24,7 @@ import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, in
 import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
+import { ownedOf, unitKey, unitsHolding, type NoteUnit } from "./note-unit.ts";
 import { alternateVetoes, readableFields, setAlternateReason, type AlternateWrite, type PartPicks } from "./alternate.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type Reading } from "./when.ts";
@@ -801,11 +802,20 @@ const OWN_SAYS: Partial<Record<AboutKind, string>> = { workAuth: "work authoriza
 const MAX_OWNERS = 40;
 
 /** G2: a candidate as a whose-value question describes it: its description, then where it sits (Candidate.placements). I3: `line`, its whole source line, in place of its clause. */
-function describeOwned(c: Candidate, line?: string, note?: string): string {
+function describeOwned(c: Candidate, line?: string, notes?: readonly string[]): string {
   const d = describeCandidate({ ...c, id: "", ...(line === undefined ? {} : { line }) });
   const placed = c.placements === undefined ? d : `${d} Where it sits: ${c.placements.map((p) => PLACEMENT_SAYS[p]).join("; ")}.`;
-  return note === undefined ? placed : `${placed} The whole text it was read from is ${note} in source_notes; whose it is depends on all of that text.`;
+  if (notes === undefined || notes.length === 0) return placed;
+  return `${placed} ${notesSay(notes)}`;
 }
+
+/** HA2: how an owner question names the whole texts that hold its value; noteShown looks for exactly this. */
+export function notesSay(ids: readonly string[]): string {
+  return `Every text on screen that holds it, whole: ${ids.join(" and ")} in source_notes; whose it is depends on all of that text.`;
+}
+
+/** HA2 (b): why a value is withheld when redaction cut part of a text that holds it. */
+export const NOTE_PRIVATE = "part of the note is private, so Caret can't show Jev whose this value is";
 
 /** HA2: why a value is withheld when the owner questions could not show the whole text it was read from (ownerNotes). */
 export const NOTE_UNSHOWN = "the note is too long for Caret to show Jev whose this value is";
@@ -1363,20 +1373,33 @@ export async function proposeFill(
   // characters, and Jev called the phone the user's. One rule, with no name detection and no choice of sentences: a
   // disclaimer that names nobody ("neither line is mine") is shown as any other text is. A note that does not fit is not
   // sent in part; its values are withheld from fields that want the user's details (noteUnshown, below).
+  // Lead decisions on the review: the evidence is every unit that holds the value (note-unit.ts: (a) all of them, (b) none
+  // a redaction cut, (c) a text area or its whole window), each taken through the ledger once and sent once.
   const notes = new Map<string, string>();
-  const ownerNotes = new Map<string, string>();
+  const noteIds = new Map<string, string>();
+  const ownerNotes = new Map<string, { units: NoteUnit[]; ids: string[] | null; why: "private" | "unshown" | null }>();
   for (const c of ownerCands) {
-    const sw = viewOf(model, c.source.windowId);
-    const node = sw?.nodes.get(c.source.nodeKey);
-    const text = node === undefined ? "" : nodeText(node).trim();
-    if (sw === undefined || text === "") continue;
-    let id = [...notes].find(([, t]) => t === text)?.[0];
-    if (id === undefined) {
-      if (!ledger.take(sw, "candidate", [text])) continue;
-      id = `note ${notes.size + 1}`;
-      notes.set(id, text);
+    const units = unitsHolding(model, c.text, windowId, { windowId: c.source.windowId, nodeKey: c.source.nodeKey });
+    if (units === null || units.length === 0) {
+      ownerNotes.set(c.id, { units: [], ids: null, why: "unshown" });
+      continue;
     }
-    ownerNotes.set(c.id, id);
+    if (units.some((u) => !u.complete)) {
+      ownerNotes.set(c.id, { units, ids: null, why: "private" });
+      continue;
+    }
+    const ids: string[] = [];
+    for (const u of units) {
+      let id = noteIds.get(unitKey(u));
+      if (id === undefined) {
+        if (!ledger.takeFrom(u.windowId, "candidate", [u.text])) break;
+        id = `note ${notes.size + 1}`;
+        notes.set(id, u.text);
+        noteIds.set(unitKey(u), id);
+      }
+      ids.push(id);
+    }
+    ownerNotes.set(c.id, ids.length === units.length ? { units, ids, why: null } : { units, ids: null, why: "unshown" });
   }
   // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its
   // window was still charged for them, which errs on the side of saying less.
@@ -1464,7 +1487,7 @@ export async function proposeFill(
     derived: askDerived(dIds),
     personal: whose ? whoseAsked : new Set(),
     memoryWhose,
-    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c, ownerLines.get(c.id), ownerNotes.get(c.id)), text: c.text })),
+    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c, ownerLines.get(c.id), ownerNotes.get(c.id)?.ids ?? undefined), text: c.text })),
     notes,
     controls: new Map(asked.map((f) => [f.id, f.control])),
   });
@@ -1482,13 +1505,12 @@ export async function proposeFill(
    * its note, and each request's state carries that note whole. Read from the requests as sent, not from what was meant.
    */
   const noteShown = (c: Candidate): boolean => {
-    const id = ownerNotes.get(c.id);
-    const text = id === undefined ? undefined : notes.get(id);
-    if (whoseAsks === null || id === undefined || text === undefined) return false;
+    const ids = ownerNotes.get(c.id)?.ids ?? null;
+    if (whoseAsks === null || ids === null || ids.length === 0) return false;
     return ([[whoseAsks[0], c.id], [whoseAsks[1], secondId.get(c.id) ?? ""]] as const).every(([req, cid]) => {
       const q = req.questions[ownerId(cid)];
-      const sent = (req.state as { source_notes?: Record<string, string> }).source_notes?.[id];
-      return q !== undefined && String(q.instructions).includes(`${id} in source_notes`) && sent === text;
+      const sent = (req.state as { source_notes?: Record<string, string> }).source_notes ?? {};
+      return q !== undefined && String(q.instructions).includes(notesSay(ids)) && ids.every((id) => sent[id] === notes.get(id));
     });
   };
   /** Both stage-one asks' answer to a whose or owner question, agreed at the whose cutoff, or null. */
@@ -1677,6 +1699,7 @@ export async function proposeFill(
     const asked1 = (c: Candidate): boolean => ownerCands.some((x) => x.id === c.id);
     const address = f.part !== null && PERSON_PLACE_PARTS.has(f.part);
     const open = sources.filter((c) => c.identity === undefined);
+    if (open.some((c) => asked1(c) && ownerNotes.get(c.id)?.why === "private")) return NOTE_PRIVATE;
     if (open.some((c) => asked1(c) && !noteShown(c))) return NOTE_UNSHOWN;
     return address && open.some((c) => !asked1(c)) ? OWNER_UNASKED : null;
   };
@@ -1899,7 +1922,13 @@ export async function proposeFill(
     const a2 = readAsk(r2, f, (id) => back.get(id));
     const agree = a1.choice === a2.choice;
     const confidence = agree ? Math.min(a1.confidence, a2.confidence) : 0;
-    const picked = agree && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
+    const chosen = agree && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
+    // HA2 review P2: the value the user's instruction spells out for this field is theirs, whatever window also shows the
+    // same text. The literal is offered as the window's candidate when one has its text (literals, above), so a pick of
+    // that candidate is the instruction's own value: its provenance is the instruction, which no owner rule withholds.
+    // Before, a phone the user typed into the Ask and that a long note also held was withheld as the note's.
+    const said = literalOf(f);
+    const picked: Pick | undefined = chosen !== undefined && chosen.from === "window" && said !== undefined && chosen.c.text === said ? { from: "instruction", text: said } : chosen;
     const fromMemory = picked !== undefined && memoryOf(picked) !== null;
     // An anchored field's pick from the anchor window is judged on its own; any other pick meets the cut rules.
     const anchoredPick = picked !== undefined && anchored(f) && fromAnchor(f, picked);
@@ -2005,6 +2034,18 @@ export async function proposeFill(
     picksOf.delete(i);
   }
 
+  /**
+   * HA2 review P1: a window value an owner judgement saw whole (noteShown) is bound to every unit that held it, by digest
+   * (note-unit.ts ownedOf), its derived bases and extra sources included; the one recheck of a source refuses it once any
+   * of them changes (contract.ts provenanceStale). Values from memory, an identity or the instruction carry no binding.
+   */
+  const bindOwned = (pr: Provenance): Provenance => {
+    if (pr.kind === "derived") return { ...pr, base: bindOwned(pr.base), also: pr.also === null ? null : bindOwned(pr.also) };
+    if (pr.kind !== "window") return pr;
+    const c = ownerCands.find((x) => x.source.windowId === pr.windowId && x.source.nodeKey === pr.nodeKey && x.text === pr.span);
+    const ev = c === undefined ? undefined : ownerNotes.get(c.id);
+    return c === undefined || ev === undefined || !noteShown(c) ? pr : { ...pr, owned: ownedOf(windowId, ev.units) };
+  };
   /** Each candidate's source text as Jev was shown it (`judged`, taken before the asks), for its provenance's digests. */
   const judgedText = (c: Candidate): string | undefined => judged.get(nodeKeyOf(c));
   /**
@@ -2041,7 +2082,7 @@ export async function proposeFill(
     // V3 review: a control's value code chose (an order, a year, an option a word names) is no plain conversion, so it
     // meets the verifier as text does, with the choice said in its provenance, and is never minted under an exemption.
     if (f.control !== "text" && f.control !== "combobox" && chose === undefined) continue;
-    proposed.push({ i, p: { field: contracts[i] as FieldContract, text, display: text, provenance: provenanceOf(model, p, f.part, text, judgedText, f.control, chose), owner: ownerOf(p) } });
+    proposed.push({ i, p: { field: contracts[i] as FieldContract, text, display: text, provenance: bindOwned(provenanceOf(model, p, f.part, text, judgedText, f.control, chose)), owner: ownerOf(p) } });
   }
   let verify: VerifyUse | null = null;
   let verifierDown: string | null = null;
@@ -2072,7 +2113,7 @@ export async function proposeFill(
     if (exempt === null || picksOf.get(i)?.chose !== undefined) continue;
     const text = o.value ?? o.handoff?.value ?? "";
     const pick = picksOf.get(i);
-    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : provenanceOf(model, pick.p, f.part, text, judgedText, f.control);
+    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : bindOwned(provenanceOf(model, pick.p, f.part, text, judgedText, f.control));
     const proposedExempt: Proposed = { field: contracts[i] as FieldContract, text, display: o.handoff?.display ?? text, provenance, owner: pick === undefined ? null : ownerOf(pick.p) };
     // I2: a control outside the Ask's scope is withheld, as the contract would refuse to mint it.
     if (authority.kind === "ask" && scopeRefusal(proposedExempt, authority.scope, documentOf) !== null) {

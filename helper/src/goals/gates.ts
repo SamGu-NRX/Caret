@@ -21,7 +21,7 @@
 import type { AskJev } from "../fill/jev.ts";
 import { fieldKinds, NUMBER_FIELD } from "../fill/kinds.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
-import { noteKey, sourceRefs, verifyWrites, type CheckUse, type SourceNote } from "../planner/codeplan.ts";
+import { verifyWrites, type CheckUse, type SourceNote } from "../planner/codeplan.ts";
 import { secretIn } from "../planner/trace.ts";
 import type { SnippetLedger } from "../privacy.ts";
 import type { GoalStep, TargetBinding, ValueBinding } from "./plan.ts";
@@ -145,7 +145,7 @@ function shown(w: JevWrite): string {
  * The writes Jev does not confirm, by step ref, each with the sentence the preview shows. With no Jev, every write is
  * unconfirmed. Throws JevUnavailable when the request fails: code does not guess on Jev's behalf.
  */
-export async function jevGate(instruction: string, writes: readonly JevWrite[], askJev: AskJev | null, ledger: SnippetLedger, notes: ReadonlyMap<string, SourceNote>): Promise<{ unconfirmed: Map<string, string>; jev: CheckUse }> {
+export async function jevGate(instruction: string, writes: readonly JevWrite[], askJev: AskJev | null, ledger: SnippetLedger, notes: ReadonlyMap<string, readonly SourceNote[] | null>): Promise<{ unconfirmed: Map<string, string>; jev: CheckUse }> {
   const out = new Map<string, string>();
   const none: CheckUse = { calls: 0, costUsd: 0, latencyMs: 0 };
   if (writes.length === 0) return { unconfirmed: out, jev: none };
@@ -157,11 +157,7 @@ export async function jevGate(instruction: string, writes: readonly JevWrite[], 
    * HA2: the notes a value was read from, as the goal's inventory froze them at plan time (GoalInventory.notes); null when
    * one was not frozen, which withholds the value from a field that wants the user's details (verifyWrites).
    */
-  const notesOf = (v: ValueBinding): SourceNote[] | null => {
-    const refs = v.provenance !== undefined ? sourceRefs(v.provenance) : v.source === null ? [] : [{ windowId: v.source.windowId, nodeKey: v.source.key }];
-    const got = refs.map((r) => notes.get(noteKey(r.windowId, r.nodeKey)));
-    return got.every((n): n is SourceNote => n !== undefined) ? got : null;
-  };
+  const notesOf = (v: ValueBinding): readonly SourceNote[] | null => notes.get(v.ref) ?? null;
   let dropped: Set<string>;
   let jev: CheckUse;
   try {

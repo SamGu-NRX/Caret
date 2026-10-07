@@ -31,6 +31,7 @@ import { secretIn } from "../planner/trace.ts";
 import type { AskJev, JevRequest } from "./jev.ts";
 import { assertNoSecrets, SnippetLedger } from "../privacy.ts";
 import { alternateKinds, alternateStale, type AlternateKind, type SavedReader } from "./alternate.ts";
+import { ownedStale, type OwnedEvidence } from "./note-unit.ts";
 
 /** The page walk's text input kind (protocol.ts PageControlKind), projected into Node by toWindowSnapshot; null through Accessibility. */
 export type InputKind = "text" | "email" | "tel" | "url" | "number" | "search" | "date" | "time" | "datetime" | "month" | "week" | "textarea" | null;
@@ -146,6 +147,13 @@ export type Provenance =
        * becomes "number, do not use it.").
        */
       sentences: readonly string[];
+      /**
+       * HA2 P1: when the value was admitted on an owner judgement, every unit that held it and that judgement showed whole
+       * (fill/note-unit.ts), by digest. The recheck at acceptance, at plan validation and right before each write
+       * requires the same units with the same digests (ownedStale): `lines` and `sentences` cover only the span's own
+       * neighbourhood, and a note's last sentence could turn "mine" into "not mine" outside it.
+       */
+      owned?: OwnedEvidence;
     }
   | { kind: "memory"; id: string; label: string; part: FillMemory["part"] | null; whose: "user" | "other" | null }
   | { kind: "instruction"; span: string }
@@ -927,7 +935,7 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
       if (now.length === 0) return "its source no longer shows it";
       if (!sameDigests(now, pr.lines) || !sameDigests(sentenceDigests(shown, pr.span), pr.sentences)) return "what its source says around it changed";
       if (pr.context !== null && !spanContexts(view, seen as Node, pr.span).includes(pr.context)) return "the label it was read beside changed";
-      return null;
+      return pr.owned === undefined ? null : ownedStale(model, pr.span, { windowId: pr.windowId, nodeKey: pr.nodeKey }, pr.owned);
     }
     case "derived": {
       const stale = provenanceStale(model, pr.base) ?? (pr.also === null ? null : provenanceStale(model, pr.also));

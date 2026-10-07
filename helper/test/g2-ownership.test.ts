@@ -701,9 +701,10 @@ describe("G2 round 4: recheck by neighbourhood", () => {
       return "stale" in r ? ["stale"] : r.dropped.map((d) => d.key);
     };
     expect(after("First name: Kenji\nLandlord\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin")).toContain(keyOf(full));
-    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nDo not use this old number\nCity: Austin")).toEqual([keyOf(phone)]);
-    // An edit two lines away touches neither.
-    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin\nZIP: 78751")).toEqual([]);
+    // HA2 review P1: each value is also bound to the whole note its owner questions showed, so any edit of the note refuses
+    // every value from it; the neighbourhood rule above still names its own cause first.
+    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nDo not use this old number\nCity: Austin")).toEqual([keyOf(full), keyOf(phone)]);
+    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin\nZIP: 78751")).toEqual([keyOf(full), keyOf(phone)]);
   });
 });
 

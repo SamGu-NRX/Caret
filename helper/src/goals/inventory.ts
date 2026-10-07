@@ -200,7 +200,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   // V6 B2: the user's own values of a kind, for the alternate-field veto; a person's entry is not the user's.
   const saved = savedValuesOf(o.memory);
   // HA2: every value's source note, frozen now, for the value gate's owner questions (gates.ts jevGate).
-  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed, alternates: { fields: readable, saved }, notes: frozenNotes(model, values.values()) }, ledger };
+  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed, alternates: { fields: readable, saved }, notes: frozenNotes(model, values.values(), null) }, ledger };
 }
 
 /**

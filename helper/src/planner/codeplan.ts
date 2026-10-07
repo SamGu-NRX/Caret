@@ -14,7 +14,8 @@ import { assertNoSecrets } from "../privacy.ts";
 // fill (plan section 5, "Unknown presses remain handoffs"; this batch hands off none).
 import type { Authority, DocumentReader } from "../fill/ask-scope.ts";
 import { createHash } from "node:crypto";
-import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
+import type { ScreenModel, WindowState } from "../model.ts";
+import { unitKey, unitsHolding } from "../fill/note-unit.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { asksCountry, fieldPart, namePart, splitAddress, splitName } from "../fill/derive.ts";
 import { fieldKinds, isNameLike } from "../fill/kinds.ts";
@@ -234,7 +235,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   const { dropped, jev: owners } = await verifyWrites(instruction, kept.flatMap((f) => {
     const field = fields[Number(f.target.slice(1)) - 1];
     const value = values[Number(f.value.slice(1)) - 1];
-    return field === undefined || value === undefined ? [] : [{ key: f.ref, field, value: { ...value, notes: sourceNotes(model, value.provenance) } }];
+    return field === undefined || value === undefined ? [] : [{ key: f.ref, field, value: { ...value, notes: sourceNotes(model, value.provenance, w.window.windowId) } }];
   }), o.askJev, ledger);
   const unvetoed = kept.filter((f) => !dropped.has(f.ref));
   if (unvetoed.length === 0) throw new PlannerError("unsure", "Jev said every value the plan program chose is another person's");
@@ -248,7 +249,9 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   for (const f of unvetoed) if (pairOf(f) === null) throw new PlannerError("schema", `the plan program named ${f.target} and ${f.value}, which the snapshot did not list`);
   const minted = await mintWrites(unvetoed.map((f) => {
     const { field, value } = pairOf(f) as { field: Field; value: Value };
-    return { key: f.ref, w, node: field.node, name: field.name, text: value.text, provenance: value.provenance, owner: value.owner };
+    // HA2 review P1: a person's value is bound to the notes its owner check showed, rechecked before each write.
+    const notes = personalField(field.label) ? sourceNotes(model, value.provenance, w.window.windowId) : null;
+    return { key: f.ref, w, node: field.node, name: field.name, text: value.text, provenance: notes === null ? value.provenance : bindNotes(value.provenance, notes, w.window.windowId), owner: value.owner };
   }), { askJev: o.askJev, ledger, instruction, now, authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null }, savedValuesOf(memoryValues));
   const checkedFills = unvetoed.filter((f) => minted.mints.has(f.ref));
   if (checkedFills.length === 0) throw allRefused(minted.refused);
@@ -327,68 +330,68 @@ async function confirmFields(instruction: string, unnamed: readonly Field[], ask
 }
 
 /** A field that takes a person's details: a name or a part of one, an email, a phone, an address or a part of one. */
-function personalField(label: string): boolean {
+export function personalField(label: string): boolean {
   // HA2 (lead decision 2): a country is a part of a person's address too.
   return fieldPart(label) !== null || asksCountry(label) || [...fieldKinds([label])].some((k) => k === "email" || k === "phone" || k === "address");
 }
 
 /**
- * HA2: the whole text a value was read from, as the redacted view shows its source node, and its window's id, which the
- * ledger charges it to (SnippetLedger.takeFrom). No window is held, so a goal inventory that freezes notes keeps only them.
+ * HA2: a whole text that holds a value (fill/note-unit.ts NoteUnit, complete), with its window's id, which the ledger
+ * charges it to (SnippetLedger.takeFrom). No window is held, so a goal inventory that freezes notes keeps only these.
  */
 export interface SourceNote {
   windowId: string;
+  /** The text area it is, or null for its whole window (note-unit.ts (c)). */
+  nodeKey: string | null;
   text: string;
+  digest: string;
 }
 
-/**
- * HA2: the notes a value was read from: each window source's whole node (a derived value's base and extra source too),
- * from the redacted view. Null when a window source can no longer be read: then no owner question can show it. Empty
- * for a value from the instruction or memory, which no owner question judges.
- */
-export function sourceNotes(model: ScreenModel, pr: Provenance): SourceNote[] | null {
-  const out: SourceNote[] = [];
-  for (const r of sourceRefs(pr)) {
-    const n = readNote(model, r.windowId, r.nodeKey);
-    if (n === null) return null;
-    out.push(n);
-  }
-  return out;
-}
-
-/** HA2: the window nodes a value was read from: a window provenance's, and a derived value's base's and extra source's. */
-export function sourceRefs(pr: Provenance): { windowId: string; nodeKey: string }[] {
-  if (pr.kind === "window") return [{ windowId: pr.windowId, nodeKey: pr.nodeKey }];
+/** HA2: the window nodes a value was read from, with the span read there: a window provenance's, a derived value's base's and extra source's. */
+export function sourceRefs(pr: Provenance): { windowId: string; nodeKey: string; span: string }[] {
+  if (pr.kind === "window") return [{ windowId: pr.windowId, nodeKey: pr.nodeKey, span: pr.span }];
   if (pr.kind !== "derived") return [];
   return [...sourceRefs(pr.base), ...(pr.also === null ? [] : sourceRefs(pr.also))];
 }
 
-/** HA2: one source node's whole text as the redacted view shows it, with that view; null when it cannot be read. */
-export function readNote(model: ScreenModel, windowId: string, nodeKey: string): SourceNote | null {
-  const w = viewOf(model, windowId);
-  const node = w?.nodes.get(nodeKey);
-  const text = node === undefined ? "" : nodeText(node).trim();
-  return w === undefined || text === "" ? null : { windowId, text };
+/**
+ * HA2: the notes an owner question about a value must show (fill/note-unit.ts, the lead's rules on the review): every
+ * unit on screen that holds each span it was read from, (a) all of them, (c) a text area or its whole window, never the
+ * form `form`. Null, which withholds a value from a field that wants the user's details, when a source is gone or (b) a
+ * unit redaction cut. Empty for a value from the instruction or memory, which no owner question judges.
+ */
+export function sourceNotes(model: ScreenModel, pr: Provenance, form: string | null): SourceNote[] | null {
+  const out = new Map<string, SourceNote>();
+  for (const r of sourceRefs(pr)) {
+    const units = unitsHolding(model, r.span, form, r);
+    if (units === null || units.some((u) => !u.complete)) return null;
+    for (const u of units) out.set(unitKey(u), { windowId: u.windowId, nodeKey: u.nodeKey, text: u.text, digest: u.digest });
+  }
+  return [...out.values()];
 }
 
-/** HA2: the key a goal inventory freezes a source node's note under (GoalInventory.notes). */
-export const noteKey = (windowId: string, nodeKey: string): string => `${windowId}\u0000${nodeKey}`;
+/**
+ * HA2 review P1: `pr` with every window source bound to the notes its owner judgement showed (contract.ts Provenance
+ * owned), so the recheck before each write refuses it once any of them changes. `notes` are the units that held each
+ * span (sourceNotes, or a goal's frozen ones).
+ */
+export function bindNotes(pr: Provenance, notes: readonly SourceNote[], form: string | null): Provenance {
+  if (pr.kind === "derived") return { ...pr, base: bindNotes(pr.base, notes, form), also: pr.also === null ? null : bindNotes(pr.also, notes, form) };
+  if (pr.kind !== "window") return pr;
+  const units = notes.filter((n) => n.text.replace(/\s+/gu, " ").includes(pr.span.replace(/\s+/gu, " ").trim()) || (n.windowId === pr.windowId && (n.nodeKey === null || n.nodeKey === pr.nodeKey)));
+  return { ...pr, owned: { form, units: units.map((u) => ({ windowId: u.windowId, nodeKey: u.nodeKey, digest: u.digest })) } };
+}
 
 /**
- * HA2: each value's source notes as the redacted view shows them now, by noteKey: what a goal inventory freezes at plan
- * time, for its gate's owner questions (goals/gates.ts jevGate). A node that cannot be read is left out, and a value
- * whose note is missing is withheld there.
+ * HA2: each value's notes as they are now (sourceNotes), by the value's ref, or null for a value whose notes cannot be
+ * shown: what a goal inventory freezes at plan time for its gate's owner questions (goals/gates.ts jevGate). A value
+ * with no entry is withheld there from a field that wants the user's details.
  */
-export function frozenNotes(model: ScreenModel, values: Iterable<{ provenance?: Provenance; source: { windowId: string; key: string } | null }>): Map<string, SourceNote> {
-  const out = new Map<string, SourceNote>();
+export function frozenNotes(model: ScreenModel, values: Iterable<{ ref: string; provenance?: Provenance; source: { windowId: string; key: string } | null }>, form: string | null): Map<string, readonly SourceNote[] | null> {
+  const out = new Map<string, readonly SourceNote[] | null>();
   for (const v of values) {
-    const refs = v.provenance !== undefined ? sourceRefs(v.provenance) : v.source === null ? [] : [{ windowId: v.source.windowId, nodeKey: v.source.key }];
-    for (const r of refs) {
-      const k = noteKey(r.windowId, r.nodeKey);
-      if (out.has(k)) continue;
-      const n = readNote(model, r.windowId, r.nodeKey);
-      if (n !== null) out.set(k, n);
-    }
+    const pr: Provenance | null = v.provenance ?? (v.source === null ? null : { kind: "window", windowId: v.source.windowId, nodeKey: v.source.key, app: "", title: "", span: "", label: null, line: null, partOf: null, context: null, lines: [], sentences: [] });
+    if (pr !== null) out.set(v.ref, sourceNotes(model, pr, form));
   }
   return out;
 }

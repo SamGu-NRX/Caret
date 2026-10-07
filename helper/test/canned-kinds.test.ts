@@ -13,7 +13,7 @@ import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { AskAsks, planAsk } from "../src/planner/ask.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { jevIntentMaker } from "../src/planner/intent-makers.ts";
-import { readNote, verifyWrites } from "../src/planner/codeplan.ts";
+import { sourceNotes, verifyWrites } from "../src/planner/codeplan.ts";
 import { planTask, taskWindow } from "../src/planner/planner.ts";
 import { SnippetLedger } from "../src/privacy.ts";
 import { CannedGap, cannedReply, questionKind } from "../src/engines/decide/canned.ts";
@@ -78,7 +78,7 @@ describe("page-loop-eval's canned engine", () => {
           return null;
         });
         // W2: the value question goes only with a calendar event now (goals/gates.ts jevGate); asked here so its rule is met.
-        const writes = (p?.fields ?? []).filter((f) => f.value !== null).map((f, i) => ({ key: `s${i}`, field: { name: f.descriptor, label: f.descriptor }, value: { display: `"${f.value as string}"`, window: f.source?.windowId ?? null, owner: null, notes: f.source === null ? [] : [readNote(desk.model, f.source.windowId, f.source.nodeKey)].filter((n) => n !== null) }, askValue: true }));
+        const writes = (p?.fields ?? []).filter((f) => f.value !== null).map((f, i) => ({ key: `s${i}`, field: { name: f.descriptor, label: f.descriptor }, value: { display: `"${f.value as string}"`, window: f.source?.windowId ?? null, owner: null, notes: f.source === null ? [] : sourceNotes(desk.model, { kind: "window", windowId: f.source.windowId, nodeKey: f.source.nodeKey, app: "", title: "", span: f.value as string, label: null, line: null, partOf: null, context: null, lines: [], sentences: [] }, desk.form.window.windowId) }, askValue: true }));
         if (writes.length > 0) await verifyWrites(instruction, writes, ask, new SnippetLedger(desk.model.windows.values()));
         for (const r of seen) for (const id of [...Object.keys(r.questions), ...Object.keys(r.nouls ?? {})]) kinds.add(questionKind(r, id));
       }
