@@ -57,6 +57,8 @@ import type { EngineSession } from "../../helper/src/engines/session.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
 import type { AskJev, JevRequest, JevResult } from "../../helper/src/fill/jev.ts";
 import { harnessEngine } from "../../helper/src/engines/decide/harness.ts";
+import type { CannedAnswer } from "../../helper/src/engines/decide/canned.ts";
+import { pageLoopCanned, type PageLoopOwnership } from "./canned-jev.ts";
 import { engineName } from "../../helper/src/engines/decide/port.ts";
 import { PAGE_CHECKED, PROTOCOL_VERSION, Snapshot, type GoalProgress, type HelperMessage } from "../../helper/src/protocol.ts";
 import type { WindowState } from "../../helper/src/model.ts";
@@ -70,7 +72,7 @@ import { CFT_BUILD, Cdp, HOST_NAME, chrome, cleanup, designated, launch, launchd
 import { NetworkSink, type Oracle, type Scored } from "./oracle.ts";
 import { FixtureSite } from "./server.ts";
 import { TASK_PAGES, loadExpectation, taskPage, type Expectation } from "./tasks/site.ts";
-import { fieldWhoseAnswer, loadOwners, ownersOf, ownershipAnswers, UNCLEAR, valueOwnerAnswer, type Owners } from "./owners.ts";
+import { fieldWhoseAnswer, loadOwners, ownersOf, valueOwnerAnswer, type Owners } from "./owners.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = join(HERE, "..", "..");
@@ -486,52 +488,44 @@ async function taskKeyFor(ins: string): Promise<Expect | undefined> {
   return undefined;
 }
 
-/**
- * Canned Jev: Ask's heads read the whole form from any source for the user; each fill question takes the answer key's
- * value. G2: each ownership question takes owners.json's answer at 0.95, or unclear at 0.5 where it says nothing: whose
- * details a field asks for (`_whose`) by the field's key, whose a value is (`_owner`) by its text. An Ask that names a
- * person asks whether a value is theirs; owners.json does not say who that person is, so only the user's is answered.
- */
-const canned: AskJev = async (req: JevRequest): Promise<JevResult> => {
-  if ("scope" in req.questions) {
-    const pick: Record<string, string> = { scope: "all", source: "any", whose: "user", why: "nothingToFill", section: "none" };
-    return { model: "canned", answers: Object.fromEntries(Object.keys(req.questions).map((k) => [k, { choice: pick[k] ?? "none", confidence: 0.9 }])), nouls: Object.fromEntries(Object.keys(req.nouls ?? {}).map((k) => [k, 0])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
+/** Canned Jev: canned-jev.ts's rules, each fill question taking the answer key's value (cannedValue). */
+const quotedText = (t: string | null): string | null => (t === null ? null : (/^"([^"]*)"/u.exec(t)?.[1] ?? null));
+/** A fill question's answer: the option quoting the answer key's value for its field, else none (and what was picked, on task pages). */
+async function cannedValue(q: JevRequest["questions"][string]): Promise<CannedAnswer> {
+  const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
+  const e = TASKS ? await taskKeyFor(ins) : keyFor(ins);
+  const hit = e === undefined ? undefined : Object.entries(q.criteria).find(([, t]) => {
+    const text = quotedText(t);
+    return text !== null && fits(text, e);
+  })?.[0];
+  // Task pages: what canned Jev picked for each field the Ask (and its reveal) asked about; a pick is never replaced by a later none.
+  if (TASKS && e !== undefined && page !== null && (stage === "ask" || stage === "writes")) {
+    const picked = asksOn(page.id).picked;
+    const text = hit === undefined ? null : quotedText(q.criteria[hit] ?? null);
+    if (text !== null || !picked.has(e.label)) picked.set(e.label, text);
   }
-  const entries = Object.entries(req.questions);
-  const filled = (k: string, q: (typeof entries)[number][1]): boolean => !(k.endsWith("_owner") || ("yes" in q.criteria && "no" in q.criteria));
-  const instructionsOf = (q: (typeof entries)[number][1]): string => (typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions));
-  const keys = await Promise.all(entries.map(([k, q]) => (!filled(k, q) ? undefined : TASKS ? taskKeyFor(instructionsOf(q)) : keyFor(instructionsOf(q)))));
-  const owners = page?.owners ?? null;
-  const sameField = (listed: string, field: string): boolean => (TASKS ? listed === field : normLabel(listed) === normLabel(field));
-  const answers = Object.fromEntries(
-    entries.map(([k, q], i) => {
-      if (k.endsWith("_whose")) return [k, fieldWhoseAnswer(keys[i]?.label ?? null, owners, sameField)];
-      if (k.endsWith("_owner")) {
-        const text = req.subjects?.[k];
-        if (text === undefined) throw new Error(`whose-value question ${k} came with no subject (JevRequest.subjects)`);
-        return [k, valueOwnerAnswer(text, q.criteria, owners)];
-      }
-      // The goal gate's own ownership questions (planner/codeplan.ts verifyWrites) name a field only by its name, which
-      // the harness does not map to a key.
-      if (ownershipAnswers(q.criteria)) return [k, { ...UNCLEAR }];
-      if ("yes" in q.criteria && "no" in q.criteria) return [k, { choice: "no", confidence: 0.95 }];
-      const e = keys[i];
-      const quoted = (t: string | null): string | null => (t === null ? null : (/^"([^"]*)"/u.exec(t)?.[1] ?? null));
-      const hit = e === undefined ? undefined : Object.entries(q.criteria).find(([, t]) => {
-        const text = quoted(t);
-        return text !== null && fits(text, e);
-      })?.[0];
-      // Task pages: what canned Jev picked for each field the Ask (and its reveal) asked about; a pick is never replaced by a later none.
-      if (TASKS && e !== undefined && page !== null && (stage === "ask" || stage === "writes")) {
-        const picked = asksOn(page.id).picked;
-        const text = hit === undefined ? null : quoted(q.criteria[hit] ?? null);
-        if (text !== null || !picked.has(e.label)) picked.set(e.label, text);
-      }
-      return [k, hit === undefined ? { choice: "none" in q.criteria ? "none" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 } : { choice: hit, confidence: 0.95 }];
-    }),
-  );
-  return { model: "canned", answers, ...(req.nouls === undefined ? {} : { nouls: Object.fromEntries(Object.keys(req.nouls).map((k) => [k, 0])) }), inputTokens: 0, latencyMs: 0, costUsd: 0 };
+  return hit === undefined ? { choice: "none" in q.criteria ? "none" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 } : { choice: hit, confidence: 0.95 };
+}
+/**
+ * G2: each ownership question takes owners.json's answer at 0.95, or unclear at 0.5 where it says nothing: whose details
+ * a field asks for by the field's key, whose a value is by its text (JevRequest.subjects, never parsed from the
+ * question). An Ask that names a person asks whether a value is theirs; owners.json does not say who that person is, so
+ * only the user's is answered. The goal gate's own ownership questions (planner/codeplan.ts verifyWrites) name a field
+ * only by its name, which the harness does not map to a key: unclear.
+ */
+const ownership: PageLoopOwnership = {
+  whose: async (q) => {
+    const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
+    const e = TASKS ? await taskKeyFor(ins) : keyFor(ins);
+    return fieldWhoseAnswer(e?.label ?? null, page?.owners ?? null, (listed, field) => (TASKS ? listed === field : normLabel(listed) === normLabel(field)));
+  },
+  owner: (q, id, req) => {
+    const text = req.subjects?.[id];
+    if (text === undefined) throw new Error(`whose-value question ${id} came with no subject (JevRequest.subjects)`);
+    return valueOwnerAnswer(text, q.criteria, page?.owners ?? null);
+  },
 };
+const canned: AskJev = pageLoopCanned(cannedValue, ownership);
 /** Windows this eval put on the desk from fixtures: the fixture page's tab and each page's replayed sources. */
 const fixtureIds = new Set<string>();
 const decide = harnessEngine({ name: ENGINE, canned, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(args["log-requests"] === undefined ? {} : { logRequests: args["log-requests"] }) });

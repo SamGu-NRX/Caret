@@ -77,6 +77,7 @@ function b6Request(w: WindowState, then: readonly string[], now: readonly string
   const list = (ms: readonly Marker[]): string => (ms.length === 0 ? "none" : [...new Set(ms.map((m) => m.line))].slice(0, 10).join("\n"));
   const current = buildPendingRequest(w, [w], then, now, thenMarkers, nowMarkers);
   return {
+    purpose: "pending.change",
     state: {
       window: `${w.app.name} window '${w.window.title}'`,
       situation: "The user left this window while it showed unfinished work. Caret watches it so it can tell the user when the work is done or needs them.",

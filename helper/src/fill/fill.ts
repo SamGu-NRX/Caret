@@ -466,6 +466,7 @@ export function buildFillRequest(
   const anyAbout = fields.some((f) => (about.get(f.id)?.length ?? 0) > 0);
   const anyDerived = fields.some((f) => (more.derived?.get(f.id)?.length ?? 0) > 0);
   const req: JevRequest = {
+    purpose: more.stage === "whose" ? "fill.whose" : "fill.values",
     state: {
       ...(more.instruction === undefined ? {} : { instruction: more.instruction }),
       destination_window: where,

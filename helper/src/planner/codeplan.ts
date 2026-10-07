@@ -274,6 +274,7 @@ async function confirmFields(instruction: string, unnamed: readonly Field[], ask
   const declared = ledger.declared();
   const req = (wording: 0 | 1): JevRequest =>
     sentOnly({
+      purpose: "codeplan.asksAbout",
       state: { instruction, task: "Caret drafted field writes for the user's instruction and checks that each field is one the instruction asks about." },
       questions: Object.fromEntries(unnamed.map((f, i) => [`f${i + 1}`, { type: "choice" as const, instructions: ASKS_ABOUT_WORDINGS[wording](instruction, f.name), criteria: { ...ASKS_ABOUT } }])),
       snippets: declared.snippets,
@@ -336,7 +337,7 @@ export async function verifyWrites(instruction: string, writes: readonly WriteTo
       questions[`f${i + 1}`] = { type: "choice", instructions: wording === 0 ? `The user asked: "${instruction}". A form has the field '${x.field.name}'. Whose details does this field ask for?` : `Field: '${x.field.name}'. Instruction: "${instruction}". Is this field for the details of the user filling in the form, of someone else, or can you not tell?`, criteria: { ...WHOSE_CRITERIA } };
       if (x.value.window !== null) questions[`v${i + 1}`] = { type: "choice", instructions: wording === 0 ? `A value on the user's screen: ${x.value.display} Whose details is it?` : `Whose details is this value, the user's or someone else's? ${x.value.display}`, criteria: { ...OWNER_CRITERIA } };
     });
-    return sentOnly({ state: { instruction, task: "Caret checks each value a drafted plan would write before offering the plan." }, questions, snippets: declared.snippets, charged: declared.charged });
+    return sentOnly({ purpose: "plan.verify", state: { instruction, task: "Caret checks each value a drafted plan would write before offering the plan." }, questions, snippets: declared.snippets, charged: declared.charged });
   };
   let r: Awaited<ReturnType<AskJev>>[];
   try {

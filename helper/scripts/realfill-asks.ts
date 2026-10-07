@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { AskJev } from "../src/fill/jev.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
+import { cannedReply } from "../src/engines/decide/canned.ts";
 import { engineName } from "../src/engines/decide/port.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft, type AskQuestionDraft } from "../src/planner/ask.ts";
 import { jevIntentMaker, writerIntentMaker, type IntentMaker, type MakerUse } from "../src/planner/intent-makers.ts";
@@ -135,7 +136,7 @@ const oracle: AskJev = async (req) => {
   const wanted = (label: string): boolean => Object.keys(want).some((l) => normLabel(l) === normLabel(label) && want[l] !== "none");
   const labelIn = (ins: string): string | null => /(?:Label|field): '([^']+)'|the field '([^']+)'|fill or change '([^']+)'/u.exec(ins)?.slice(1).find((x) => x !== undefined) ?? null;
   const answers: Record<string, { choice: string; confidence: number }> = {};
-  for (const [id, q] of Object.entries(req.questions)) {
+  const answer = (id: string, q: (typeof req.questions)[string]): { choice: string; confidence: number } => {
     const keys = Object.keys(q.criteria);
     const ins = String(q.instructions);
     const pick = (k: string): void => {
@@ -172,10 +173,25 @@ const oracle: AskJev = async (req) => {
       const press = ask?.reason === "submit" || ask?.reason === "send" ? Object.entries(q.criteria).find(([, d]) => typeof d === "string" && new RegExp(`\\b${ask.reason}\\b`, "iu").test(d)) : undefined;
       pick(hit?.[0] ?? press?.[0] ?? "none");
     }
-  }
-  // The field yes/no heads say no: only code's reading, confirmed, ever settles fields.
-  const nouls = Object.fromEntries(Object.keys(req.nouls ?? {}).map((id) => [id, 0.01]));
-  return { model: "oracle", answers, nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
+    return answers[id] as { choice: string; confidence: number };
+  };
+  // W1: every kind of question the oracle answers, each by the rule above for its id; any other kind throws
+  // (engines/decide/canned.ts), so a question a later batch adds is never answered by silence. The field yes/no heads
+  // say no: only code's reading, confirmed, ever settles fields.
+  const kinds = [
+    ...["scope", "why", "source", "whose", "section", "reading"].map((h) => `ask.heads:${h}`),
+    ...["route", "why", "scope", "source", "whose", "literal"].map((h) => `intent.route:${h}`),
+    "ask.confirm:all", "ask.confirm:field", "codeplan.asksAbout:field",
+    "fill.whose:whose", "fill.whose:owner", "fill.values:whose", "fill.values:owner", "fill.values:value", "fill.values:answer",
+    "plan.verify:value", "plan.verify:whose", "plan.verify:owner", "planner.window:window", "planner.fields:field", "planner.fields:press",
+  ];
+  const r = await cannedReply(req, {
+    model: "oracle",
+    confidence: 0.99,
+    choice: Object.fromEntries(kinds.map((k) => [k, (q: (typeof req.questions)[string], id: string) => answer(id, q)])),
+    noul: Object.fromEntries(["ask.heads:field", "intent.fields:field", "intent.fields:tie"].map((k) => [k, () => 0.01])),
+  });
+  return { ...r, nouls: r.nouls ?? {} };
 };
 const decide = harnessEngine({ name: engineName(a.engine), canned: oracle, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
 /** Each decision request's latency, for the bake-off's p50 and p95. */

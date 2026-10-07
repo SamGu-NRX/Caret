@@ -36,6 +36,7 @@ import { pageTabReader, type TabReader } from "../../helper/src/engines/tab-sour
 import type { EngineSession } from "../../helper/src/engines/session.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
 import type { AskJev, JevRequest, JevResult } from "../../helper/src/fill/jev.ts";
+import { cannedReply, type CannedAnswer } from "../../helper/src/engines/decide/canned.ts";
 import { harnessEngine } from "../../helper/src/engines/decide/harness.ts";
 import { engineName } from "../../helper/src/engines/decide/port.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type OfferPopup, type PageResult } from "../../helper/src/protocol.ts";
@@ -86,21 +87,25 @@ const DECOYS = ["555-0112", "555-0199", "555-0198", "555-0100", "555-0177"];
 // ---- Jev ----
 let spent = 0;
 const quoted = (t: string | null | undefined): string | null => (t === null || t === undefined ? null : (/^"([^"]*)"/u.exec(t)?.[1] ?? null));
-/** Canned: each fill question takes the candidate that quotes F1's expected value for its field exactly, else none. */
-const canned: AskJev = async (req: JevRequest): Promise<JevResult> => {
-  const answers = Object.fromEntries(
-    Object.entries(req.questions).map(([k, q]) => {
-      if (k.endsWith("_whose") || k.endsWith("_owner")) return [k, { choice: "user", confidence: 0.95 }];
-      if ("yes" in q.criteria && "no" in q.criteria) return [k, { choice: "no", confidence: 0.95 }];
-      const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
-      const label = /Label: '(.+?)'\.(?=\s|$)/u.exec(ins)?.[1];
-      const want = label === undefined ? undefined : expected[LABEL_FIELD[label] ?? ""];
-      const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, t]) => quoted(t) === want)?.[0];
-      return [k, hit === undefined ? { choice: "none" in q.criteria ? "none" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 } : { choice: hit, confidence: 0.95 }];
-    }),
-  );
-  return { model: "canned", answers, ...(req.nouls === undefined ? {} : { nouls: Object.fromEntries(Object.keys(req.nouls).map((k) => [k, 0])) }), inputTokens: 0, latencyMs: 0, costUsd: 0 };
+/**
+ * Canned, by kind of question (helper engines/decide/canned.ts; a kind with no rule throws): each fill question takes the
+ * candidate that quotes F1's expected value for its field exactly, else none; whose and owner questions say the user's.
+ * The journey makes Fill all offers only, so a fill's questions are all it meets.
+ */
+const fillValue = (q: JevRequest["questions"][string]): CannedAnswer => {
+  const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
+  const label = /Label: '(.+?)'\.(?=\s|$)/u.exec(ins)?.[1];
+  const want = label === undefined ? undefined : expected[LABEL_FIELD[label] ?? ""];
+  const hit = want === undefined ? undefined : Object.entries(q.criteria).find(([, t]) => quoted(t) === want)?.[0];
+  return hit === undefined ? { choice: "none" in q.criteria ? "none" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 } : { choice: hit, confidence: 0.95 };
 };
+const theUsers = (): CannedAnswer => ({ choice: "user", confidence: 0.95 });
+const canned: AskJev = (req: JevRequest): Promise<JevResult> =>
+  cannedReply(req, {
+    confidence: 0.9,
+    choice: { "fill.whose:whose": theUsers, "fill.whose:owner": theUsers, "fill.values:whose": theUsers, "fill.values:owner": theUsers, "fill.values:value": fillValue, "fill.values:answer": () => "none" },
+    noul: {},
+  });
 const ENGINE = engineName(args.engine ?? (args.jev === "live" ? "jev" : "canned"));
 /** Windows of the tabs this journey opened, each from its own fixture page: the only text a request may carry. */
 const fixtureIds = new Set<string>();

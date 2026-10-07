@@ -149,6 +149,7 @@ export class SavedFiles {
     const first = new Map(asked.map((c, i) => [`f${i + 1}`, c]));
     const second = new Map(shuffled(asked).map((c, i) => [`g${i + 1}`, c]));
     const request = (ids: Map<string, (typeof asked)[number]>, wording: 0 | 1): JevRequest => ({
+      purpose: "savedFile.match",
       state: {
         destination_window: where,
         form_fields: d,

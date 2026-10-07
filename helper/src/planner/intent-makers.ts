@@ -167,7 +167,7 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
         snap.literals.forEach((span, i) => {
           questions[`lit${i + 1}`] = { type: "choice", instructions: WORDS.literal[wording](span), criteria: order(fieldCriteria) };
         });
-        return { state, questions, snippets: declared.snippets, charged: declared.charged };
+        return { purpose: "intent.route", state, questions, snippets: declared.snippets, charged: declared.charged };
       };
       const [a, b] = await ask(stage1(0), stage1(1));
       const agreed = (q: string): string | null => {
@@ -203,7 +203,7 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
         ties.forEach((t, i) => {
           nouls[`t${i + 1}`] = { type: "noul", instructions: WORDS.tie[wording](t.span, t.field.name) };
         });
-        return { state, questions: {}, nouls, snippets: declared.snippets, charged: declared.charged };
+        return { purpose: "intent.fields", state, questions: {}, nouls, snippets: declared.snippets, charged: declared.charged };
       };
       let yes = (_: string): boolean => false;
       if (listed.length > 0 || ties.length > 0) {
