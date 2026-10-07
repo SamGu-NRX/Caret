@@ -376,18 +376,20 @@ class Owner:
         uid, pid = peer(sock)
         return uid == os.getuid() and self.supervisor is not None and pid == self.supervisor[0]
 
-    def _from_member(self, sock):
-        uid, pid = peer(sock)
-        if uid != os.getuid():
-            return False
+    def _verified(self):
+        """Every live process of the job's registered groups, by verified identity."""
+        verified = set()
         for watch in self.watches.values():
             try:
                 watch.tick()
             except OSError:
                 continue
-            if pid in watch.live_verified:
-                return True
-        return False
+            verified.update(watch.live_verified)
+        return verified
+
+    def _from_member(self, sock):
+        uid, pid = peer(sock)
+        return uid == os.getuid() and pid in self._verified()
 
     def _adopt_locks(self, names, fds):
         if len(names) != len(fds):
@@ -420,8 +422,17 @@ class Owner:
         if not self._from_supervisor(sock):
             if op == "register" and self._from_member(sock):
                 resource = check_resource(dict(msg["resource"]), self.plan["job_id"])
-                if resource["type"] != "launchd":
-                    raise ValueError("a recipe registers launchd jobs only")
+                if resource["type"] == "group":
+                    # Only a group whose leader is a live child of one of the job's verified processes (rig.ts's
+                    # held Chrome, a sibling of the register.py that asks): never a stranger's, which this owner
+                    # would otherwise stop.
+                    leader = resource["leader"]
+                    parents = [v for v in self._verified() if leader[0] in self.probes.children(v)]
+                    if same_process(self.probes, leader) is not True or not parents:
+                        raise ValueError("group {} was not started by this job (its leader is no live child of the "
+                                         "job's processes)".format(resource["pgid"]))
+                elif resource["type"] != "launchd":
+                    raise ValueError("a recipe registers launchd jobs and its own process groups only")
                 return self._register(resource)
             raise ValueError("{} must come from the adopting supervisor".format(op))
         if op == "lock":

@@ -181,6 +181,33 @@ class Test5LaunchdResource(Custody):
         self.assertEqual(procs.launchd_state(label)[0], procs.ABSENT)
         self.assert_all_released(job_id)
 
+    def test_a_recipe_registers_a_group_it_started_but_not_a_strangers(self):
+        """Phase B's path: rig.ts registers Chrome's own process group before releasing it."""
+        stranger = subprocess.Popen(["/bin/sleep", "600"], start_new_session=True)
+        self.addCleanup(lambda: (stranger.kill(), stranger.wait()))
+        job_id, _ = self.enqueue(["group-held", str(stranger.pid)], profile=profile(grace=3))
+        self.run_queue("--once", "--max-wait", "120")
+        out = os.path.join(self.run_root(job_id), "out")
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 120), self.queue_log(job_id))
+        with open(os.path.join(out, "held.pid")) as fh:
+            held = int(fh.read())
+        with open(os.path.join(out, "register-group.txt")) as fh:
+            self.assertIn("exit 0", fh.read())
+        with open(os.path.join(out, "register-stranger.txt")) as fh:
+            text = fh.read()
+        self.assertIn("exit 1", text)
+        self.assertIn("was not started by this job", text)
+        groups = [r["resource"]["pgid"] for r in self.journal(job_id)
+                  if r["event"] == "register" and r["resource"]["type"] == "group"]
+        self.assertIn(held, groups)
+        self.assertNotIn(stranger.pid, groups)
+        with open(os.path.join(self.run_root(job_id), "supervisor.json")) as fh:
+            os.kill(json.load(fh)["supervisor_pid"], signal.SIGKILL)
+        self.wait_clean(job_id, "recovery")
+        self.assertFalse(self.alive(held))
+        self.assertTrue(self.alive(stranger.pid))  # never touched
+        self.assert_all_released(job_id)
+
     def test_registration_outside_the_jobs_prefix_is_refused(self):
         job_id, _ = self.enqueue(["register-bad"])
         self.run_queue("--once", "--max-wait", "120").wait(timeout=300)

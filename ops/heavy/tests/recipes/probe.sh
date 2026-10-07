@@ -12,6 +12,9 @@
 #   stubborn                     leave a child that closes every inherited descriptor and ignores SIGTERM, then ok
 #   launchd-up                   register and start a launchd job with the job's prefix, write OUT/ready, sleep
 #   register-bad                 try to register a label outside the job's prefix (OUT/register-bad.txt), then ok
+#   group-held                   start a held process in a new session (as rig.ts does for Chrome), register its group,
+#                                release it, write OUT/ready, sleep; also try registering a stranger's group
+#                                (ARG = its pid), recording the answer in OUT/register-stranger.txt
 #   lock-proof                   run rig-run's proof that RIG_HEAVY_LOCK_FD holds heavy.lock (HEAVY_LOCK_PATH),
 #                                write the answer to OUT/lock-proof.txt, then ok
 #   rig RIG-RUN ARGS...          run RIG-RUN (tests/fake-rig-run.sh, or the real rig-run) with ARGS, forwarding TERM,
@@ -93,6 +96,24 @@ PLIST
     $CARET_HEAVY_REGISTER launchd "$label" || exit 64
     launchctl bootstrap "gui/$(id -u)" "$OUT/$label.plist"
     echo "$label" > "$OUT/ready"
+    sleep 600 & wait $! ;;
+  group-held)
+    mkfifo "$OUT/go"
+    (exec "$PY" -I -B -X pycache_prefix=/var/empty -c 'import os, sys, time
+os.setsid()
+open(sys.argv[2] + ".sid", "w").close()
+with open(sys.argv[1]) as go:
+    if go.read(1) != "G":
+        os._exit(97)
+open(sys.argv[2], "w").write(str(os.getpid()))
+time.sleep(600)' "$OUT/go" "$OUT/held.pid") &
+    held=$!
+    for _ in $(seq 1 50); do [ -e "$OUT/held.pid.sid" ] && break; sleep 0.1; done  # rig.ts's spawn makes the group first
+    $CARET_HEAVY_REGISTER group "$held" 2> "$OUT/register-group.txt"; echo "exit $?" >> "$OUT/register-group.txt"
+    echo G > "$OUT/go"
+    $CARET_HEAVY_REGISTER group "$ARG" 2> "$OUT/register-stranger.txt"; echo "exit $?" >> "$OUT/register-stranger.txt"
+    for _ in $(seq 1 50); do [ -s "$OUT/held.pid" ] && break; sleep 0.1; done
+    touch "$OUT/ready"
     sleep 600 & wait $! ;;
   register-bad)
     $CARET_HEAVY_REGISTER launchd "com.example.not-this-job" 2> "$OUT/register-bad.txt"; echo "exit $?" >> "$OUT/register-bad.txt"
