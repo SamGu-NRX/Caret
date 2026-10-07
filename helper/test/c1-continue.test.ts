@@ -77,6 +77,8 @@ async function rig(onChoose: (v: Extract<PageVerb, { kind: "pageChooseOption" }>
   const jev: AskJev = async (req) => {
     const r = await pick(req);
     for (const [id, q] of Object.entries(req.questions)) if ("yes" in q.criteria) r.answers[id] = { choice: "yes", confidence: 0.95 };
+    // I2 ruling: every Ask route asks Jev's per-field scope question first; every field is one this Ask asks for.
+    if (req.purpose === "ask.scope") for (const id of Object.keys(req.questions)) r.answers[id] = { choice: "asks", confidence: 0.95 };
     return r;
   };
   let helper: Helper;

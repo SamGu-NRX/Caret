@@ -1,6 +1,7 @@
 // Lead addendum (2026-10-06): when Jev fails, the user reads how, and what to do. Before it, every failure read
 // "Caret couldn't reach its model just now. Try again.", which for a 402 (no credits) was wrong twice: Caret reached
 // Jev, and trying again does not add credits. The client throws a typed failure; Ask, fill and a page goal say it.
+import { answeringScope } from "./builders.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -181,7 +182,8 @@ describe("a page goal whose fill round fails says how (lead addendum)", () => {
     [new JevHttpError(402, '{"error_type":"billing_error"}'), SAYS.jevBilling],
     [new JevNetworkError("down", null), SAYS.jevNetwork],
   ])("%s", async (err, says) => {
-    const r = await rig({ jev: () => failing(err) });
+    // I2: the Ask's per-field scope question (asked first on every route) answers; the fill round's requests fail.
+    const r = await rig({ jev: () => answeringScope(failing(err)) });
     const m = await r.ask("fill out this form from my note");
     expect(m).toMatchObject({ event: "stopped", reason: "refused", says });
   });

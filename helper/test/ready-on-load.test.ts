@@ -2,13 +2,14 @@
 // when code finds two empty fields with a candidate from memory or the window the user left (lead decision). A
 // search box, a login form's credentials and a payment form never count, and none of them sends a Jev request. Every
 // name and value is invented.
+import { PROTOCOL_VERSION } from "../src/protocol.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import type { HelperMessage, Node, PageControl } from "../src/protocol.ts";
 import type { AboutValue } from "../src/fill/about.ts";
 import { readyOnLoad } from "../src/offers/ready-on-load.ts";
 import { field, node, snap, text } from "./builders.ts";
-import { c, chrome, mixedControls, NOTE } from "./fake-page.ts";
+import { c, chrome, mixedControls, NOTE, WIN } from "./fake-page.ts";
 import { closeRigs, rig, type Rig } from "./page-rig.ts";
 import type { Store } from "../src/store.ts";
 
@@ -181,6 +182,8 @@ describe("a page load in the helper (P3)", () => {
     await r.helper.goals.idle();
     await new Promise((x) => setTimeout(x, 0));
     await r.helper.goals.idle();
+    // The user's Next, which the reader saw (I2 ruling: a carry needs an observed Next), then the next page loads.
+    await r.helper.handleReader({ type: "userPress", v: PROTOCOL_VERSION, at: Date.now(), pid: chrome.pid, windowId: WIN, key: null, role: "AXButton", label: "Next", via: "click" });
     await load(r, () => [c("n1", "text", "Full name", { value: "" }), c("n2", "email", "Email", { value: "" })], "Apply: step 2", "/two");
     await r.helper.goals.idle();
     expect(popups(r)).toEqual([]);
