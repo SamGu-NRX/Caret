@@ -62,7 +62,7 @@ import {
   type ReaderVerb,
   type VerbResult,
   type RunPlan,
-  type Settings,
+  type SessionLocked, type Settings,
   type SkillAnswer,
   type TaskControl,
   type TaskCause,
@@ -1113,6 +1113,10 @@ export class Helper {
    * session that sent it. Only a host session's records the watch role as the user's consent (routing/consent.ts).
    */
   handleSettings(m: Settings, from?: string): void {
+    // HA2 lever 2, Sam's rule 3 (i, ii): a change to the sites switched off clears the session's owner verdicts first,
+    // before anything else reacts (the page engines hear the list last, below). The whole cache goes, not only the
+    // entries from windows that show those sites: an entry records the windows its notes came from, not their sites.
+    if (m.sitesOff !== undefined && !sameList(m.sitesOff, this.sitesOffList)) this.ownerVerdicts.clear();
     this.consent.settings(m.roles, from !== undefined && this.hosts.has(from));
     const off = this.gate.apply(m);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
@@ -1131,10 +1135,18 @@ export class Helper {
     // engine hello. A host before H5 sends no list, and the helper's stays as it was.
     if (m.sitesOff !== undefined) {
       this.sitesOffList = [...new Set(m.sitesOff)];
-      this.ownerVerdicts.clear();
       this.opts.store.count("settings.sitesOff", 1);
       for (const l of this.sitesOffListeners) l(this.sitesOffList);
     }
+  }
+
+  /**
+   * HA2 lever 2, Sam's rule 3 (iii): the user locked the screen or signed out (the host's sessionLocked). The session's
+   * owner verdicts are cleared; nothing else changes here.
+   */
+  handleSessionLocked(m: SessionLocked): void {
+    this.ownerVerdicts.clear();
+    this.opts.store.count(`session.${m.why}`, 1);
   }
 
   /** Whether a task id is in use by a run or an activity record: new offer ids skip these (B23). */
@@ -3622,4 +3634,12 @@ function inFillForm(p: GroundedProposal, windowId: string, key: string): boolean
 function issuePath(path: readonly PropertyKey[]): string {
   if (path.length === 0) return "the message";
   return path.map((p, i) => (typeof p === "number" ? `[${p}]` : i === 0 ? String(p) : `.${String(p)}`)).join("");
+}
+
+/** Whether two lists of sites switched off hold the same sites; null, no list yet, matches nothing. */
+function sameList(a: readonly string[], b: readonly string[] | null): boolean {
+  if (b === null) return false;
+  const x = new Set(a);
+  const y = new Set(b);
+  return x.size === y.size && [...x].every((o) => y.has(o));
 }

@@ -925,6 +925,18 @@ export const Settings = z.object({
 });
 export type Settings = z.infer<typeof Settings>;
 
+/**
+ * HA2 lever 2 (Sam's rule 3, iii): the user locked the screen or signed out of their Mac session. The helper clears the
+ * session's owner verdicts (fill/owner-cache.ts). No host sends it yet: the host's wiring is v2/hostint's follow-up.
+ */
+export const SessionLocked = z.object({
+  type: z.literal("sessionLocked"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  why: z.enum(["lock", "signOut"]),
+});
+export type SessionLocked = z.infer<typeof SessionLocked>;
+
 // MARK: - the first look (host's contract: CaretHostCore/FirstLook.swift and first-look.ndjson on v2/host)
 
 /**
@@ -1354,7 +1366,7 @@ export const SavedFilesRequest = z
   .refine((m) => (m.op === "forget") === (m.id !== undefined), { message: "forget names the file's id; list names none", path: ["id"] });
 export type SavedFilesRequest = z.infer<typeof SavedFilesRequest>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit, LocalTextReply, AnswerSave, FileSave, PageInsert, SavedFilesRequest, SessionLocked]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
