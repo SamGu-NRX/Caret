@@ -270,6 +270,25 @@ final class UnconfirmedInsertReviewTests: XCTestCase {
         XCTAssertNil(refused.machine.lineText)
     }
 
+    /// Confirmation item 2: Tab on another producer's offer while the inline undo is pending reaches
+    /// `claimed`, not `offerChanged`. The key dismissed the line, so the result and its pending undo
+    /// end too: the late answer draws nothing and takes no status slot from the new work.
+    func testTabOnAnotherOfferWhileAnInlineUndoIsPendingEndsTheLine() {
+        let rig = SurfaceRig()
+        rig.screen.front(.email)
+        rig.machine.inlineInsertionFinished(Self.inline(Self.ghostClaim(), held: "summ"))
+        guard case .undo(let grant) = rig.arbiter.handleKeyDown(Fx.cmdZ(), now: rig.clock.now) else { return XCTFail("⌘Z is not Caret's") }
+        rig.machine.undoStarted(grant)
+        rig.takeLog()
+        XCTAssertNotNil(rig.arbiter.publish(Offer(text: "next words", target: Fx.identity(.email), fieldValue: "", caretUTF16: 0)))
+        rig.press(Fx.tab())
+        XCTAssertEqual(rig.takeLog(), ["hide 0.08"])
+        rig.machine.inlineUndoFinished(grantID: grant.id, ok: true, error: nil, partial: true, says: nil)
+        XCTAssertEqual(rig.takeLog(), [])
+        XCTAssertNil(rig.arbiter.snapshot().statusLine)
+        XCTAssertNil(rig.machine.lineText)
+    }
+
     func testAnUnrecognizedInlineInsertIsDescribedAndLeft() {
         let rig = SurfaceRig()
         rig.screen.front(.email)

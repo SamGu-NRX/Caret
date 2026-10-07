@@ -690,11 +690,13 @@ final class InsertionExecutor: @unchecked Sendable {
     ) -> RangeOutcome {
         // Puts the user's selection back after a refusal, only while the field is exactly as it was
         // read and the selection is still the range Caret selected: nothing of the fix was written,
-        // and a selection the user made since (a click) is theirs to keep.
+        // and a selection the user made since (a click) is theirs to keep. `stillTarget` (with ⌘Z's
+        // input mark for an undo) is asked again after the read, immediately before the write.
         func restoreSelection() {
-            guard stillTarget(), let live = FieldReader.read(element), live.value.utf16.elementsEqual(before.value.utf16),
-                  live.selection == UTF16Selection(start: edit.replace.start, end: edit.replace.end)
-            else { return }
+            guard stillTarget(), SelectionRollback.allowed(
+                read: { FieldReader.read(element).map { ($0.value, $0.selection) } }, before: before.value,
+                span: UTF16Selection(start: edit.replace.start, end: edit.replace.end), permit: stillTarget
+            ) else { return }
             AXRead.setRange(kAXSelectedTextRangeAttribute, location: edit.observedSelection.start, length: edit.observedSelection.end - edit.observedSelection.start, on: element)
         }
         guard stillTarget() else { return .failed(refusal()) }
