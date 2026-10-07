@@ -143,7 +143,7 @@ describe("ruling C: a goal's scopes persist across replans; a changed field is r
       const { askScope, fieldFingerprint } = await import("../src/fill/ask-scope.ts");
       const w = sc.helper.model.windows.get(windowId) as never;
       const key = "dev.caret.supportfixture/standard/textfield:order number~0";
-      return askScope(windowId, document, [key], { [key]: fieldFingerprint(w, key) }, null);
+      return askScope(windowId, document, [key], { [key]: fieldFingerprint(w, key) }, null, "ask-c");
     };
     const lower = async (scopes: ReturnType<typeof scopeSet>) => {
       const inv = buildInventory(sc.helper.model, { instruction: "copy the order number into the case", windows: ["7171-1", "6161-1"], memory: [], calendar: null, clock: macClock(new Date(sc.desk.at)), now: sc.desk.at, readerSession: 1 });
@@ -151,7 +151,7 @@ describe("ruling C: a goal's scopes persist across replans; a changed field is r
       if (!ran.ok) throw new Error(`sandbox ${ran.kind}: ${ran.detail}`);
       return lowerGoal("g-c", "copy the order number into the case", ran.plan, inv.inventory, { askJev: standInJev(), ledger: inv.ledger, scopes, documentOf: null, settleScope });
     };
-    const first = await lower(scopeSet(null));
+    const first = await lower(scopeSet("ask-c", null));
     expect(settles).toBe(1);
     expect(first.segments.flatMap((x) => x.steps).filter((x) => x.kind === "write")).toHaveLength(1);
     const again = await lower(first.scopes as ReturnType<typeof scopeSet>);

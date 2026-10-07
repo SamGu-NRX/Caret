@@ -75,7 +75,7 @@ const choosing = (chose: boolean) => async (model: ScreenModel, id: string): Pro
   const w = model.windows.get(id);
   if (w === undefined) return null;
   const files = [...w.nodes.values()].filter((n) => n.subrole === FILE_INPUT_SUBROLE).map((n) => n.key);
-  return askScope(id, null, chose ? files : [], Object.fromEntries(files.map((k) => [k, fieldFingerprint(w, k)])), null);
+  return askScope(id, null, chose ? files : [], Object.fromEntries(files.map((k) => [k, fieldFingerprint(w, k)])), null, "ask-h5");
 };
 const planAttach = (instruction: string, model: ScreenModel, windowId: string | null, offerKey: string, chose = true) => planAttachScoped(instruction, model, windowId, offerKey, (id) => choosing(chose)(model, id), 1, null);
 

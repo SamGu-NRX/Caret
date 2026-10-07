@@ -2,6 +2,7 @@
 // a hello that declares "askChoices", a planRequest answered with a question, the answer, a second question, the
 // proposal, a person question, and an answer to a question already answered. Then the helper's side: who gets a
 // question, who may answer it, and that an answer is taken once and only as listed. All text is synthetic.
+import { answeringScope } from "./builders.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -92,7 +93,7 @@ describe("Ask questions in the helper (B29)", () => {
     wireButtons(app);
     app.enforceGrants = true;
     clock = 10_000;
-    helper = new Helper({ store, memory, askJev: cityJev, shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, now: () => clock, ask: { maker: "writer", writer: openFields } });
+    helper = new Helper({ store, memory, askJev: answeringScope(cityJev), shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, now: () => clock, ask: { maker: "writer", writer: openFields } });
     app.helper = helper;
     app.show();
     void helper.handleReader(mailWindow());

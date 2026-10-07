@@ -254,6 +254,9 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   const document = o.pageDocument(o.windowId);
   // I2: the page's scope in the Ask's goal's set, for this window and the document it shows now; none, nothing is written.
   const pageScope: AskScope | undefined = o.scopes === undefined ? undefined : o.scopes.scopes[scopeKey(o.windowId, o.documentOf === undefined || o.documentOf === null ? null : o.documentOf(o.windowId))];
+  // I2 ruling: an Ask's goal never mints under a goal's own authority. With no scope of the Ask for this page and the
+  // document it shows now (a continued Ask on another document, a carry that settled nothing), it plans nothing, loudly.
+  if (o.scopes !== undefined && pageScope === undefined) throw new GoalError("nothingToDo", "The Ask settled no field of this page, so Caret fills nothing here", `no scope of Ask ${o.scopes.askId} for ${o.windowId} on its document now`);
   if (document === null) throw new GoalError("nothingToDo", "Caret can't tell which page this is, so it won't plan a fill of it");
   const instruction = o.instruction ?? "Fill this page";
 
@@ -332,7 +335,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
         // With no scope, the part's own fields (C2 review: a fill on focus asks about the 20 nearest the trigger, which
         // on a long form of look-alike fields were not the part's).
         const which = scope === undefined ? { only: part.map((x) => x.node.key) } : { scope };
-        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), authority: pageScope === undefined ? { kind: "goal", goalId: o.goalId } : { kind: "ask", scope: pageScope }, documentOf: o.documentOf ?? null }), error: null };
+        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), authority: o.scopes === undefined || pageScope === undefined ? { kind: "goal", goalId: o.goalId } : { kind: "ask", scope: pageScope }, documentOf: o.documentOf ?? null }), error: null };
       } catch (e) {
         if (e instanceof FillError) return { part, scope, proposal: null, error: e };
         throw e;

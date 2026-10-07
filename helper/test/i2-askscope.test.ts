@@ -58,7 +58,7 @@ function desk(email: { label?: string; value?: string } = {}): ScreenModel {
 const win = (m: ScreenModel) => m.windows.get(WIN) ?? (() => { throw new Error("no form"); })();
 const scopeOf = (m: ScreenModel, keys: readonly string[], person: string | null = null): AskScope => {
   const w = win(m);
-  return askScope(WIN, null, keys, Object.fromEntries([NAME, EMAIL].map((k) => [k, fieldFingerprint(w, k)])), person);
+  return askScope(WIN, null, keys, Object.fromEntries([NAME, EMAIL].map((k) => [k, fieldFingerprint(w, k)])), person, "ask-1");
 };
 const proposed = (m: ScreenModel, key: string, text: string, owner: Proposed["owner"] = "user"): Proposed => {
   const w = win(m);
@@ -150,7 +150,7 @@ describe("the scope is bound to the page document, read through the owning helpe
     const documentOf = (): string => doc;
     const m = desk();
     const w = win(m);
-    const scope = askScope(WIN, documentOf(), [NAME], { [NAME]: fieldFingerprint(w, NAME) }, null);
+    const scope = askScope(WIN, documentOf(), [NAME], { [NAME]: fieldFingerprint(w, NAME) }, null, "ask-1");
     const check = (reader: (() => string) | null) => checkValues([proposed(m, NAME, "Elena Vance")], { askJev: jev([]), ledger: null, now: 1, authority: { kind: "ask", scope }, documentOf: reader });
     const before = await check(documentOf);
     expect(before.ok).toHaveLength(1);
@@ -282,7 +282,7 @@ describe("the executor rereads each field right before it writes it (re-review b
     const emailKey = K("textfield:email~0");
     const w = helper.model.windows.get(FA_WIN);
     if (w === undefined) throw new Error("no executor window");
-    const scope = askScope(FA_WIN, null, [nameKey, emailKey], Object.fromEntries([nameKey, emailKey].map((k) => [k, fieldFingerprint(w, k)])), null);
+    const scope = askScope(FA_WIN, null, [nameKey, emailKey], Object.fromEntries([nameKey, emailKey].map((k) => [k, fieldFingerprint(w, k)])), null, "ask-x");
     const mintFor = (key: string, text: string) => mintExempt({ field: fieldContract(w, w.nodes.get(key) as never), text, display: text, provenance: { kind: "instruction", span: text }, owner: "user" }, "userTyped", 1, "", { kind: "ask", scope }, null);
     const mints = new Map([[0, mintFor(nameKey, "Dana Whitfield")], [1, mintFor(emailKey, "dana@example.com")]]);
     beforeAct = (i) => {
@@ -299,7 +299,7 @@ describe("the executor rereads each field right before it writes it (re-review b
     const emailKey = K("textfield:email~0");
     const w = helper.model.windows.get(FA_WIN);
     if (w === undefined) throw new Error("no executor window");
-    const scope = askScope(FA_WIN, null, [nameKey, emailKey], Object.fromEntries([nameKey, emailKey].map((k) => [k, fieldFingerprint(w, k)])), null);
+    const scope = askScope(FA_WIN, null, [nameKey, emailKey], Object.fromEntries([nameKey, emailKey].map((k) => [k, fieldFingerprint(w, k)])), null, "ask-x");
     const mintFor = (key: string, text: string) => mintExempt({ field: fieldContract(w, w.nodes.get(key) as never), text, display: text, provenance: { kind: "instruction", span: text }, owner: "user" }, "userTyped", 1, "", { kind: "ask", scope }, null);
     const mints = new Map([[0, mintFor(nameKey, "Dana Whitfield")], [1, mintFor(emailKey, "dana@example.com")]]);
     // Writing Name makes the app put a heading right before Email: the field Email is now under 'Work contact'.

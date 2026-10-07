@@ -224,7 +224,7 @@ describe("planWithCode under an Ask's scope (I2)", () => {
   const EMAIL = `${P}/textfield:email~0`;
   const scopeOn = (m: ScreenModel, keys: readonly string[]) => {
     const w = m.windows.get("form") as WindowState;
-    return askScope("form", null, keys, Object.fromEntries(keys.map((k) => [k, fieldFingerprint(w, k)])), null);
+    return askScope("form", null, keys, Object.fromEntries(keys.map((k) => [k, fieldFingerprint(w, k)])), null, "ask-test");
   };
 
   it("mints only the scope's field when the program fills two, told nothing of the scope", async () => {

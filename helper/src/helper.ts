@@ -137,6 +137,16 @@ import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
 import { TabSource, TabTextExpired, type DocsApp, type TabReader } from "./engines/tab-source.ts";
 
+declare const settleMark: unique symbol;
+/**
+ * I2 lead ruling: the capability to settle an Ask's scope by its per-field question. Only two entry points hold one: a
+ * fresh Ask (handlePlanRequest with no question being answered) and an explicit carry to the next page (replanPage on
+ * "nextPage"). A continued Ask, a replan after a stop, a reveal and every other path hold none, so nothing they reach
+ * can settle a scope: they go on from the frozen one, or write nothing.
+ */
+type SettleTicket = { readonly from: "freshAsk" | "carry"; readonly [settleMark]: true };
+const settleTicket = (from: SettleTicket["from"]): SettleTicket => ({ from }) as SettleTicket;
+
 /**
  * The router above the producers (routing/coordinator.ts). With it, no producer makes an ambient offer on its own: a
  * focus, a finished sentence, a heard conversation line, a held pattern offer or a resolved watch is a candidate the
@@ -147,7 +157,7 @@ export interface RoutingOptions {
   hostWrites?: () => boolean;
   /** Replaces setTimeout for the routers' cooldown, for tests and evaluations with a fake clock. */
   setTimer?: (fn: () => void, ms: number) => () => void;
-  /** Sees every decision, for evaluations. */
+/** Sees every decision, for evaluations. */
   onDecision?: (d: Decision) => void;
 }
 
@@ -1280,7 +1290,7 @@ export class Helper {
    * Plans `instruction` as a goal and offers its first segment to `session`, as the reply to `requestId`: a goalRequest's,
    * or an Ask's whose intent route is plan (B30), which names the window the Ask was about so the goal reads it first.
    */
-  private async offerGoal(requestId: string, instruction: string, session: string | undefined, first: string | null, page: NonNullable<AskGoal["page"]> | null = null, askScope?: AskScope | null): Promise<GoalProgress> {
+  private async offerGoal(requestId: string, instruction: string, session: string | undefined, first: string | null, page: NonNullable<AskGoal["page"]> | null = null, ask?: { scope: AskScope | null; askId: string; ticket: SettleTicket | null }): Promise<GoalProgress> {
     let goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     const refuse = (says: string): GoalProgress => this.goals.refused(goalId, requestId, says);
@@ -1294,8 +1304,9 @@ export class Helper {
     try {
       // I2 ruling C: an Ask's goal is held to its ScopeSet, which starts with the Ask's own scope (none, when the Ask came
       // from a window with no field) and gains a window's only by the scope question, once.
-      const scopes = askScope === undefined ? undefined : scopeSet(askScope?.person ?? null, askScope === null ? [] : [askScope]);
-      const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page, { session, ...(scopes === undefined ? {} : { scopes: await this.withPageScope(instruction, first, scopes) }) }) : await this.goalPlan(goalId, instruction, [], first, [], scopes);
+      const scopes = ask === undefined ? undefined : scopeSet(ask.askId, ask.scope?.person ?? null, ask.scope === null ? [] : [ask.scope]);
+      const ticket = ask?.ticket ?? null;
+      const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page, { session, ...(scopes === undefined ? {} : { scopes: await this.withPageScope(ticket, instruction, first, scopes) }) }) : await this.goalPlan(goalId, instruction, [], first, [], scopes, ticket);
       if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
       this.opts.store.count("goal.proposed", 1);
       return this.goals.propose(plan, session, requestId);
@@ -1377,7 +1388,7 @@ export class Helper {
     return [...(user === null ? [] : [user]), ...rest].map((w) => w.window.windowId);
   }
 
-  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null, carried: readonly LeftItem[] = [], scopes?: ScopeSet): ReturnType<typeof planGoal> {
+  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null, carried: readonly LeftItem[] = [], scopes?: ScopeSet, ticket: SettleTicket | null = null): ReturnType<typeof planGoal> {
     const writer = this.writer;
     if (writer === null) throw new GoalError("nothingToDo", "no plan writer is configured");
     const calendar = this.executorHasCalendar ? (this.opts.eventCalendar ?? "Caret") : null;
@@ -1398,7 +1409,7 @@ export class Helper {
       ...(this.opts.drafter === undefined ? {} : { drafter: this.opts.drafter }),
       // I2 ruling C: an Ask's goal holds each window it writes in to its ScopeSet; a window and document the set does
       // not hold yet is settled once by the scope question (settleScopeFor).
-      ...(scopes === undefined ? {} : { scopes, documentOf: this.documentReader(), settleScope: (id: string, doc: string | null) => this.settleScopeFor(instruction, id, scopes.person, doc) }),
+      ...(scopes === undefined ? {} : { scopes, documentOf: this.documentReader(), ...(ticket === null ? {} : { settleScope: (id: string, doc: string | null) => this.settleScopeFor(ticket, instruction, id, scopes, doc) }) }),
     });
   }
 
@@ -1414,24 +1425,27 @@ export class Helper {
    * the question was sent. Caret cannot ask the user mid-goal, so an unclear field is not chosen. With no Jev or no such
    * window, a scope of no field: nothing is written there.
    */
-  private async settleScopeFor(instruction: string, windowId: string, person: string | null, document?: string | null): Promise<AskScope> {
+  private async settleScopeFor(_ticket: SettleTicket, instruction: string, windowId: string, of: { askId: string; person: string | null }, document?: string | null): Promise<AskScope> {
+    const person = of.person;
     const reader = this.documentReader();
     const doc = document !== undefined ? document : reader === null ? null : reader(windowId);
     const w = this.model.windows.get(windowId);
     const ask = this.ask;
-    if (w === undefined || ask === null) return askScope(windowId, doc, [], {}, person);
+    if (w === undefined || ask === null) return askScope(windowId, doc, [], {}, person, of.askId);
     const snap = intentSnapshot(instruction, this.model, w, this.plannerMemory());
     const seen = Object.fromEntries([...snap.fields, ...snap.uploads].map((f) => [f.key, fieldFingerprint(w, f.key)]));
     const { asks } = await settleFields(snap, ask);
-    return askScope(windowId, doc, asks.map((f) => f.key), seen, person);
+    return askScope(windowId, doc, asks.map((f) => f.key), seen, person, of.askId);
   }
 
   /** The set with the page's scope for its document now: the one it holds, or one settled for a document it has none for. */
-  private async withPageScope(instruction: string, windowId: string, scopes: ScopeSet): Promise<ScopeSet> {
+  private async withPageScope(ticket: SettleTicket | null, instruction: string, windowId: string, scopes: ScopeSet): Promise<ScopeSet> {
     const reader = this.documentReader();
     const doc = reader === null ? null : reader(windowId);
     if (scopes.scopes[scopeKey(windowId, doc)] !== undefined) return scopes;
-    return withScope(scopes, await this.settleScopeFor(instruction, windowId, scopes.person, doc));
+    // Without a ticket nothing is settled: the page planner then withholds every mint, loudly (page-planner.ts).
+    if (ticket === null) return scopes;
+    return withScope(scopes, await this.settleScopeFor(ticket, instruction, windowId, scopes, doc));
   }
 
 
@@ -1562,7 +1576,7 @@ export class Helper {
     // carried goal's receipts name the old document's keys (runs.ts keepCarry), so none of them match the new page.
     const attached = new Set(r.completed.filter((x) => x.target.windowId === page.windowId).map((x) => x.target.key));
     try {
-      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, session: r.session, attached, ...(r.scopes === undefined ? {} : { scopes: await this.withPageScope(instruction, page.windowId, r.scopes) }), ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
+      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, session: r.session, attached, ...(r.scopes === undefined ? {} : { scopes: await this.withPageScope(r.why === "nextPage" ? settleTicket("carry") : null, instruction, page.windowId, r.scopes) }), ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
     } catch (e) {
       // I2: the scope ask for a next page or a reveal failing (settleScopeFor) leaves no fresh plan, as a planner refusal does.
       if (e instanceof PlannerError) {
@@ -1691,7 +1705,7 @@ export class Helper {
     try {
       // I2 ruling A: never unscoped: the page's fields and upload fields are settled by the scope question first. A
       // continued Ask never comes here: it goes on from its frozen scope (planner/ask.ts AskResume), settling nothing.
-      if (resume === undefined) attachDraft = await planAttach(instruction, this.model, windowId, offerKey, async (id) => (this.ask === null ? null : await this.settleScopeFor(instruction, id, null)), this.now(), this.documentReader());
+      if (resume === undefined) attachDraft = await planAttach(instruction, this.model, windowId, offerKey, async (id) => (this.ask === null ? null : await this.settleScopeFor(settleTicket("freshAsk"), instruction, id, { askId: randomUUID(), person: null })), this.now(), this.documentReader());
     } catch (e) {
       if (!(e instanceof PlannerError)) throw e;
       return fail(e.code, e.message, said(e));
@@ -1711,7 +1725,8 @@ export class Helper {
         if (d.route === "goal") {
           if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
           // I2: an Ask's goal: its own scope, or null when it came from a window with no field (its windows settle theirs).
-          return await this.offerGoal(requestId, instruction, from, d.windowId, d.page ?? null, d.askScope ?? null);
+          // A fresh Ask's goal may settle the windows it writes in; a continued one's settles nothing (I2 ruling).
+          return await this.offerGoal(requestId, instruction, from, d.windowId, d.page ?? null, { scope: d.askScope ?? null, askId: d.askId, ticket: d.resumed ? null : settleTicket("freshAsk") });
         }
         draft = d;
       } catch (e) {

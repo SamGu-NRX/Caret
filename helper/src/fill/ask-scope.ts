@@ -18,6 +18,12 @@ export type DocumentReader = (windowId: string) => string | null;
  * Anything that would change a scope is a new settle, for a new document or a new Ask (I2 lead ruling B).
  */
 export interface AskScope {
+  /**
+   * I2 ruling: the Ask this scope is of, unique per Ask (planner/ask.ts). Authority identifies the request: a value
+   * minted for one Ask ("use my work email") is not another's ("use my personal email"), however alike their fields.
+   * A goal's later scopes (a carry, a reply window) keep their Ask's id.
+   */
+  readonly askId: string;
   readonly windowId: string;
   /**
    * The page document the question was asked on, read before any planning awaited (ask.ts) and kept in a continued
@@ -32,7 +38,7 @@ export interface AskScope {
   readonly person: string | null;
 }
 
-export function askScope(windowId: string, document: string | null, keys: Iterable<string>, seen: Readonly<Record<string, string>>, person: string | null): AskScope {
+export function askScope(windowId: string, document: string | null, keys: Iterable<string>, seen: Readonly<Record<string, string>>, person: string | null, askId: string): AskScope {
   const fields = new Set(keys);
   const own: Record<string, string> = {};
   for (const k of fields) {
@@ -41,7 +47,7 @@ export function askScope(windowId: string, document: string | null, keys: Iterab
     if (s === undefined) throw new Error(`the Ask's scope names field ${k}, which its record of the form lacks`);
     own[k] = s;
   }
-  return Object.freeze({ windowId, document, fields, seen: Object.freeze(own), person });
+  return Object.freeze({ askId, windowId, document, fields, seen: Object.freeze(own), person });
 }
 
 /**
@@ -51,15 +57,19 @@ export function askScope(windowId: string, document: string | null, keys: Iterab
  */
 export interface ScopeSet {
   readonly ask: boolean;
+  /** The Ask the goal is of (AskScope.askId): every scope settled for it carries this id. */
+  readonly askId: string;
   readonly person: string | null;
   readonly scopes: Readonly<Record<string, AskScope>>;
 }
 export const scopeKey = (windowId: string, document: string | null): string => `${windowId}\n${document ?? ""}`;
-export function scopeSet(person: string | null, scopes: readonly AskScope[] = []): ScopeSet {
-  return Object.freeze({ ask: true, person, scopes: Object.freeze(Object.fromEntries(scopes.map((x) => [scopeKey(x.windowId, x.document), x]))) });
+export function scopeSet(askId: string, person: string | null, scopes: readonly AskScope[] = []): ScopeSet {
+  if (scopes.some((x) => x.askId !== askId)) throw new Error("a goal's scopes are all of its one Ask");
+  return Object.freeze({ ask: true, askId, person, scopes: Object.freeze(Object.fromEntries(scopes.map((x) => [scopeKey(x.windowId, x.document), x]))) });
 }
 /** The set with `x` added; a window and document it already holds keeps its first scope. */
 export function withScope(set: ScopeSet, x: AskScope): ScopeSet {
+  if (x.askId !== set.askId) throw new Error(`a scope of Ask ${x.askId} cannot join the goal of Ask ${set.askId}`);
   const k = scopeKey(x.windowId, x.document);
   return set.scopes[k] !== undefined ? set : Object.freeze({ ...set, scopes: Object.freeze({ ...set.scopes, [k]: x }) });
 }
@@ -151,7 +161,7 @@ export type Origin = Authority | { readonly kind: "askGoal"; readonly scopes: Sc
 /** Whether two scopes are the same settled scope, by content: a goal plan is cloned when it is offered. */
 export function sameScope(a: AskScope, b: AskScope): boolean {
   if (a === b) return true;
-  if (a.windowId !== b.windowId || a.document !== b.document || a.person !== b.person || a.fields.size !== b.fields.size) return false;
+  if (a.askId !== b.askId || a.windowId !== b.windowId || a.document !== b.document || a.person !== b.person || a.fields.size !== b.fields.size) return false;
   for (const k of a.fields) if (!b.fields.has(k) || a.seen[k] !== b.seen[k]) return false;
   return true;
 }

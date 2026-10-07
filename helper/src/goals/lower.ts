@@ -313,7 +313,12 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     return fresh;
   };
   /** I2: a mint's authority: the Ask's scope for the window it is written in, or this goal's when no Ask made it. */
-  const authorityBy = (sc: AskScope | null | undefined): Authority => (sc === null || sc === undefined ? { kind: "goal", goalId } : { kind: "ask", scope: sc });
+  const authorityBy = (sc: AskScope | null | undefined): Authority => {
+    if (sc !== null && sc !== undefined) return { kind: "ask", scope: sc };
+    // I2 ruling: an Ask's goal never mints a goal's authority; its callers drop a write with no scope before this.
+    if (set !== undefined) throw new GoalError("schema", "Caret refused to check a value outside the Ask's scope", "an Ask's goal reached a mint with no scope");
+    return { kind: "goal", goalId };
+  };
   /** The plan's origin, which every mint's authority must match (ask-scope.ts authorityRefusal). */
   const originNow = (): Origin => (set === undefined ? { kind: "goal", goalId } : { kind: "askGoal", scopes: set });
   const NO_SCOPE = "the Ask settled no field of this window for Caret to fill";

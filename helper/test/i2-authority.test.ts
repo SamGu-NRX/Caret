@@ -197,3 +197,82 @@ describe("reproduction 2: a continued Ask settles nothing again, and the attach 
 
 // Imported for the goal desk's fixtures above.
 void [MAIL, line, textField];
+
+describe("ruling 4: authority identifies the request (AskScope.askId)", () => {
+  it("refuses a mint from \"use my work email\" under a separate \"use my personal email\" Ask with identical fields", async () => {
+    const ask = jev("some", ["Email"]);
+    const m = desk();
+    const work = await planAsk("use my work email", m, { values: () => MEMORY }, ABOUT, { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "w", windowId: WIN, now: 2000 });
+    const personal = await planAsk("use my personal email", m, { values: () => MEMORY }, ABOUT, { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "p", windowId: WIN, now: 2000 });
+    const a = work as { plan: unknown; slots: Record<string, string>; checked: { mints: ReadonlyMap<string, CheckedValue>; origin: Origin } };
+    const b = personal as { checked: { origin: Origin } };
+    expect(a.checked.origin.kind === "ask" && b.checked.origin.kind === "ask" && [...a.checked.origin.scope.fields]).toEqual(b.checked.origin.kind === "ask" ? [...b.checked.origin.scope.fields] : null);
+    const { validatePlan } = await import("../src/planner/validate.ts");
+    expect(() => validatePlan(a.plan, a.slots, { model: m, memory: MEMORY, instruction: "use my personal email", origin: b.checked.origin, documentOf: null }, a.checked.mints)).toThrow(/another Ask's scope/u);
+  });
+});
+
+describe("rulings 1 and 2: a resume settles nothing and refuses a changed document; the scope is settled before any question", () => {
+  const page = (): ScreenModel => {
+    const m = new ScreenModel();
+    m.apply(snap([node("pg/web", "AXWebArea", { label: "Apply" }), field("pg/name", "", { parent: "pg/web", label: "Name", frame: [10, 10, 200, 20] }), field("pg/email", "", { parent: "pg/web", label: "Email", frame: [10, 40, 200, 20] })], { at: 1000, windowId: "page:i2:g", kind: "page", title: "Apply", focused: true, focusedKey: "pg/name" }));
+    return m;
+  };
+  /** Jev that leaves Email unclear, so the Ask asks which fields. */
+  const unclearEmail = (log: JevRequest[] = []): AskJev => async (req) => {
+    const r = await jev("some", ["Name"], log)(req);
+    if (req.purpose === "ask.scope") for (const [id, q] of Object.entries(req.questions)) if (/field 'Email'/u.test(String(q.instructions))) r.answers[id] = { choice: "unclear", confidence: 0.95 };
+    return r;
+  };
+
+  it("a page Ask with goals, answered after the page became doc-2, is refused before any goal is handed off", async () => {
+    let doc = "doc-1";
+    const m = page();
+    const ask = unclearEmail();
+    const opts = { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "g1", windowId: "page:i2:g", now: 2000, goals: true as const, documentOf: () => doc };
+    const q = ((await planAsk("fill in my details", m, { values: () => MEMORY }, ABOUT, opts).catch((e: unknown) => e)) as AskAsks).question;
+    expect(q.resume.document).toBe("doc-1");
+    doc = "doc-2";
+    const pick = q.options.find((c) => c.option.kind === "field" && c.option.label === "Name");
+    const after = await planAsk("fill in my details", m, { values: () => MEMORY }, ABOUT, { ...opts, now: 3000, resume: { ...q.resume, fixed: { ...q.resume.fixed, ...(pick?.fixes ?? {}) } } }).catch((e: unknown) => e);
+    expect(after).toBeInstanceOf(AskRefused);
+  });
+
+  it("a writer's Ask asks the per-field question before its first question, which carries the frozen scope; its resume asks it no more", async () => {
+    const log: JevRequest[] = [];
+    const ask = jev("some", ["Name", "Email"], log);
+    // The writer cannot tell which fields: the Ask asks which, offering only the fields the scope question settled.
+    const writer = { name: "writer" as const, async make() { return { intent: { route: "ask" as const, why: "whichFields" as const, scope: "none" as const, section: "none", fields: [], sources: ["any"], whose: "user", literals: [] }, use: { maker: "writer" as const, model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }; } };
+    const first = await planAsk("do this one", desk(), { values: () => MEMORY }, ABOUT, { askJev: ask, maker: writer as never, writer: null, offerKey: "wq", windowId: WIN, now: 2000 }).catch((e: unknown) => e);
+    expect(first).toBeInstanceOf(AskAsks);
+    const q = (first as AskAsks).question;
+    expect(log.some((r) => r.purpose === "ask.scope")).toBe(true);
+    expect(q.resume.scopeKeys?.length).toBe(2);
+    const before = log.length;
+    const pick = q.options[0];
+    await planAsk("do this one", desk(), { values: () => MEMORY }, ABOUT, { askJev: ask, maker: writer as never, writer: null, offerKey: "wq", windowId: WIN, now: 3000, resume: { ...q.resume, fixed: { ...q.resume.fixed, ...(pick?.fixes ?? {}) } } }).catch(() => null);
+    expect(log.slice(before).some((r) => r.purpose === "ask.scope")).toBe(false);
+  });
+
+  it("refuses a resume that carries no settled scope", async () => {
+    const ask = unclearEmail();
+    const opts = { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "g2", windowId: "page:i2:g", now: 2000 };
+    const m = page();
+    const q = ((await planAsk("fill in my details", m, { values: () => MEMORY }, ABOUT, opts).catch((e: unknown) => e)) as AskAsks).question;
+    const { scopeKeys: _, ...old } = q.resume;
+    await expect(planAsk("fill in my details", m, { values: () => MEMORY }, ABOUT, { ...opts, resume: old as never })).rejects.toBeInstanceOf(AskRefused);
+  });
+});
+
+describe("ruling 3: an Ask's goal never mints a goal's authority", () => {
+  it("withholds the page plan, loudly, when the Ask's scopes hold none for the page's document now", async () => {
+    const r = await rig();
+    const { planPage } = await import("../src/goals/page-planner.ts");
+    const { macClock } = await import("../src/offers/event-time.ts");
+    const { scopeSet } = await import("../src/fill/ask-scope.ts");
+    const { WIN: PAGE_WIN } = await import("./fake-page.ts");
+    const run = planPage(r.helper.model, { goalId: "g-noscope", instruction: "fill out this form", windowId: PAGE_WIN, scope: null, kind: "all", section: null, about: [], askJev: jev("some", []), now: Date.now(), clock: macClock(new Date()), readerSession: 0, pageDocument: (id) => r.host.registry.documentOf(id), scopes: scopeSet("ask-g", null), documentOf: (id) => r.host.registry.documentOf(id) });
+    await expect(run).rejects.toThrow(/The Ask settled no field of this page/u);
+    expect(seen.filter((c) => c.authority.kind === "goal")).toEqual([]);
+  });
+});
