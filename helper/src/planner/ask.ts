@@ -669,7 +669,7 @@ function jevConfirms(instruction: string, snap: IntentSnapshot, askJev: AskJev):
         questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](instruction, f.name), criteria: { ...CONFIRM } };
       });
       const sent = JSON.stringify([instruction, questions]);
-      return { state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
+      return { purpose: "ask.confirm", state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
     };
     const [a, b] = await Promise.all([askJev(req(0)), askJev(req(1))]);
     return (id) => {

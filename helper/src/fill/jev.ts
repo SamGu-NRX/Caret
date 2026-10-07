@@ -124,7 +124,20 @@ export interface NoulQuestion {
   criteria?: { true: string; false: string };
 }
 
+/**
+ * What a request asks, by its builder (W1). Never sent. Question ids repeat across builders ("f1" is a fill value, an
+ * Ask's field confirmation and a plan check's field) and so do option sets (yes/no), so an evaluation's canned engine
+ * answers by this and the question's id (engines/decide/canned.ts), and refuses a request whose purpose it has no rule
+ * for rather than answering it with silence.
+ */
+export type JevPurpose =
+  | "fill.whose" | "fill.values" | "ask.heads" | "ask.confirm" | "intent.route" | "intent.fields" | "plan.verify" | "codeplan.asksAbout"
+  | "planner.window" | "planner.fields" | "savedFile.match" | "codemode.choice" | "draft.check" | "event.card" | "pattern.naming"
+  | "executor.target" | "route.judge" | "route.task" | "route.pick" | "pending.change" | "pending.look" | "probe.latency";
+
 export interface JevRequest {
+  /** What the request asks (JevPurpose); absent only in tests' hand-built requests, which no canned engine answers. */
+  purpose?: JevPurpose;
   state: string | Record<string, unknown>;
   questions: Record<string, ChoiceQuestion>;
   /**

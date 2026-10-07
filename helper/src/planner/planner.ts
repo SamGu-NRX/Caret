@@ -521,6 +521,7 @@ async function chooseWindow(
   const first = listed.map((w, i) => ({ id: `w${i + 1}`, w }));
   const second = shuffled(first, rand).map((x, i) => ({ id: `x${i + 1}`, w: x.w }));
   const req = (list: typeof first, wording: 0 | 1): JevRequest => ({
+    purpose: "planner.window",
     state: { instruction, task: "Caret is about to plan the user's instruction in one of the user's open windows." },
     questions: {
       window: {
@@ -575,6 +576,7 @@ function fieldRequest(instruction: string, w: WindowState, title: string | null,
     };
   }
   return {
+    purpose: "planner.fields",
     state: {
       instruction,
       window: title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`,

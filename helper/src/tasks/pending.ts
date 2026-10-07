@@ -305,6 +305,7 @@ export function buildPendingRequest(
   const signsNow = takeLines(ledger, w, markerLines(nowMarkers), SIGN_LINES);
   const signsThen = takeLines(ledger, w, markerLines(thenMarkers), SIGN_LINES);
   return {
+    purpose: "pending.change",
     state: {
       window: windowName(w, title),
       situation:
@@ -377,6 +378,7 @@ export function buildLookRequest(w: WindowState, screen: Iterable<WindowState>, 
   return {
     lines: tail,
     req: {
+      purpose: "pending.look",
       state: {
         window: windowName(w, title),
         situation: "The window shows signs of running work. Caret looks at it once to tell the user whether the work is done or needs them.",

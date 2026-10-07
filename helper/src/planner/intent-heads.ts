@@ -101,7 +101,7 @@ export function headsRequest(snap: IntentSnapshot): JevRequest {
   if (code !== null) questions.reading = { type: "choice", instructions: "Which of these does the instruction ask Caret to do?", criteria: readingCriteria(code) };
   const nouls: NonNullable<JevRequest["nouls"]> = {};
   for (const f of snap.fields) nouls[`n_${f.ref}`] = { type: "noul", instructions: `Does the instruction ask to fill or change '${f.name}'?` };
-  return { state, questions, nouls, snippets: declared.snippets, charged: declared.charged };
+  return { purpose: "ask.heads", state, questions, nouls, snippets: declared.snippets, charged: declared.charged };
 }
 
 /** A head's answer when it clears the floor, else null. Throws when Jev left the question unanswered. */

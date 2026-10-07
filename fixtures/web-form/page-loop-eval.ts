@@ -57,6 +57,8 @@ import type { EngineSession } from "../../helper/src/engines/session.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
 import type { AskJev, JevRequest, JevResult } from "../../helper/src/fill/jev.ts";
 import { harnessEngine } from "../../helper/src/engines/decide/harness.ts";
+import type { CannedAnswer } from "../../helper/src/engines/decide/canned.ts";
+import { pageLoopCanned } from "./canned-jev.ts";
 import { engineName } from "../../helper/src/engines/decide/port.ts";
 import { PAGE_CHECKED, PROTOCOL_VERSION, Snapshot, type GoalProgress, type HelperMessage } from "../../helper/src/protocol.ts";
 import type { WindowState } from "../../helper/src/model.ts";
@@ -471,37 +473,25 @@ async function taskKeyFor(ins: string): Promise<Expect | undefined> {
   return undefined;
 }
 
-/** Canned Jev: Ask's heads read the whole form from any source for the user; each fill question takes the answer key's value. */
-const canned: AskJev = async (req: JevRequest): Promise<JevResult> => {
-  if ("scope" in req.questions) {
-    const pick: Record<string, string> = { scope: "all", source: "any", whose: "user", why: "nothingToFill", section: "none" };
-    return { model: "canned", answers: Object.fromEntries(Object.keys(req.questions).map((k) => [k, { choice: pick[k] ?? "none", confidence: 0.9 }])), nouls: Object.fromEntries(Object.keys(req.nouls ?? {}).map((k) => [k, 0])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
+/** Canned Jev: canned-jev.ts's rules, each fill question taking the answer key's value (cannedValue). */
+const quotedText = (t: string | null): string | null => (t === null ? null : (/^"([^"]*)"/u.exec(t)?.[1] ?? null));
+/** A fill question's answer: the option quoting the answer key's value for its field, else none (and what was picked, on task pages). */
+async function cannedValue(q: JevRequest["questions"][string]): Promise<CannedAnswer> {
+  const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
+  const e = TASKS ? await taskKeyFor(ins) : keyFor(ins);
+  const hit = e === undefined ? undefined : Object.entries(q.criteria).find(([, t]) => {
+    const text = quotedText(t);
+    return text !== null && fits(text, e);
+  })?.[0];
+  // Task pages: what canned Jev picked for each field the Ask (and its reveal) asked about; a pick is never replaced by a later none.
+  if (TASKS && e !== undefined && page !== null && (stage === "ask" || stage === "writes")) {
+    const picked = asksOn(page.id).picked;
+    const text = hit === undefined ? null : quotedText(q.criteria[hit] ?? null);
+    if (text !== null || !picked.has(e.label)) picked.set(e.label, text);
   }
-  const entries = Object.entries(req.questions);
-  const filled = (k: string, q: (typeof entries)[number][1]): boolean => !(k.endsWith("_whose") || k.endsWith("_owner") || ("yes" in q.criteria && "no" in q.criteria));
-  const instructionsOf = (q: (typeof entries)[number][1]): string => (typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions));
-  const keys = await Promise.all(entries.map(([k, q]) => (!filled(k, q) ? undefined : TASKS ? taskKeyFor(instructionsOf(q)) : keyFor(instructionsOf(q)))));
-  const answers = Object.fromEntries(
-    entries.map(([k, q], i) => {
-      if (k.endsWith("_whose") || k.endsWith("_owner")) return [k, { choice: "user", confidence: 0.95 }];
-      if ("yes" in q.criteria && "no" in q.criteria) return [k, { choice: "no", confidence: 0.95 }];
-      const e = keys[i];
-      const quoted = (t: string | null): string | null => (t === null ? null : (/^"([^"]*)"/u.exec(t)?.[1] ?? null));
-      const hit = e === undefined ? undefined : Object.entries(q.criteria).find(([, t]) => {
-        const text = quoted(t);
-        return text !== null && fits(text, e);
-      })?.[0];
-      // Task pages: what canned Jev picked for each field the Ask (and its reveal) asked about; a pick is never replaced by a later none.
-      if (TASKS && e !== undefined && page !== null && (stage === "ask" || stage === "writes")) {
-        const picked = asksOn(page.id).picked;
-        const text = hit === undefined ? null : quoted(q.criteria[hit] ?? null);
-        if (text !== null || !picked.has(e.label)) picked.set(e.label, text);
-      }
-      return [k, hit === undefined ? { choice: "none" in q.criteria ? "none" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 } : { choice: hit, confidence: 0.95 }];
-    }),
-  );
-  return { model: "canned", answers, ...(req.nouls === undefined ? {} : { nouls: Object.fromEntries(Object.keys(req.nouls).map((k) => [k, 0])) }), inputTokens: 0, latencyMs: 0, costUsd: 0 };
-};
+  return hit === undefined ? { choice: "none" in q.criteria ? "none" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 } : { choice: hit, confidence: 0.95 };
+}
+const canned: AskJev = pageLoopCanned(cannedValue);
 /** Windows this eval put on the desk from fixtures: the fixture page's tab and each page's replayed sources. */
 const fixtureIds = new Set<string>();
 const decide = harnessEngine({ name: ENGINE, canned, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(args["log-requests"] === undefined ? {} : { logRequests: args["log-requests"] }) });
