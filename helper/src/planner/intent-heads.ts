@@ -11,6 +11,8 @@
 // One request means no second wording agrees with the first, so planAsk checks this maker's scope as it checks the
 // writer's (ask.ts confirmScope: Jev, asked twice, confirms fields the instruction does not name and a whole form the
 // instruction does not state). Values the instruction spells out are tied to fields by code (tieLiterals), never by Jev.
+import { ownWording, sendable } from "../privacy.ts";
+import { secretText } from "../memory/sensitive.ts";
 import { asksForWholeForm } from "./scope-words.ts";
 import { readScope, type ScopeReading } from "./scope-reading.ts";
 import { readWhose } from "./people.ts";
@@ -44,6 +46,8 @@ const WHY: Record<string, string> = {
   nothingToFill: "Something else Caret should not do.",
 };
 
+ownWording(...Object.values(SCOPE), ...Object.values(WHY));
+
 const TASK = "Caret reads the user's instruction about the form on screen: what to do, which fields, from where, and for whom. Answer from the instruction; Caret finds the values itself.";
 
 /**
@@ -71,17 +75,18 @@ export function headsRequest(snap: IntentSnapshot): JevRequest {
   const state = {
     instruction: snap.instruction,
     form: {
-      title: snap.title === null ? `${snap.window.app.name} window` : `${snap.window.app.name} window '${snap.title}'`,
-      sections: snap.sections.map((s) => ({ id: s.ref, name: s.name })),
-      fields: snap.fields.map((f) => ({ id: f.ref, name: f.name, control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled, section: f.section === null ? null : (sectionRef.get(f.section) ?? null) })),
+      // G2 round 4: a name or title that holds a secret marker word is sent as what it is, never as its words.
+      title: snap.title === null || secretText(snap.title) ? `${snap.window.app.name} window` : `${snap.window.app.name} window '${snap.title}'`,
+      sections: snap.sections.map((s) => ({ id: s.ref, name: sendable(s.name, "a section") })),
+      fields: snap.fields.map((f) => ({ id: f.ref, name: sendable(f.name, "a field Caret leaves to the user"), control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled, section: f.section === null ? null : (sectionRef.get(f.section) ?? null) })),
     },
-    sources: snap.windows.map((w) => ({ id: w.ref, title: `${w.app}: ${w.title}${w.from === null ? "" : ` (from ${w.from})`}` })),
+    sources: snap.windows.map((w) => ({ id: w.ref, title: `${w.app}: ${sendable(w.title, "a window")}${w.from === null ? "" : ` (from ${w.from})`}` })),
     people: snap.persons.map((p) => ({ id: p.ref, span: p.span })),
     task: TASK,
   };
   const scope = snap.sections.length > 0 ? SCOPE : Object.fromEntries(Object.entries(SCOPE).filter(([k]) => k !== "section"));
   const source: Record<string, string> = { any: "The instruction does not say where the values come from.", ...(snap.memory.length > 0 ? { memory: "What the user told Caret about themselves (their own name and email)." } : {}), instruction: "Only values the instruction itself spells out." };
-  for (const w of snap.windows) source[w.ref] = `The ${w.app} window '${w.title}'${w.from === null ? "" : `, from ${w.from}`}.`;
+  for (const w of snap.windows) source[w.ref] = `The ${w.app} window '${sendable(w.title, "a window")}'${w.from === null ? "" : `, from ${w.from}`}.`;
   const whose: Record<string, string> = { user: "The user's own details, or each field's own: the instruction names no one else whose details go in." };
   for (const p of snap.persons) whose[p.ref] = `The details of ${p.span}, whom the instruction names.`;
   whose.unclear = "Someone else's details, but the instruction does not say whose.";
@@ -100,7 +105,7 @@ export function headsRequest(snap: IntentSnapshot): JevRequest {
   const code = readScope(snap).reading;
   if (code !== null) questions.reading = { type: "choice", instructions: "Which of these does the instruction ask Caret to do?", criteria: readingCriteria(code) };
   const nouls: NonNullable<JevRequest["nouls"]> = {};
-  for (const f of snap.fields) nouls[`n_${f.ref}`] = { type: "noul", instructions: `Does the instruction ask to fill or change '${f.name}'?` };
+  for (const f of snap.fields) nouls[`n_${f.ref}`] = { type: "noul", instructions: `Does the instruction ask to fill or change '${sendable(f.name, "a field Caret leaves to the user")}'?` };
   return { purpose: "ask.heads", state, questions, nouls, snippets: declared.snippets, charged: declared.charged };
 }
 

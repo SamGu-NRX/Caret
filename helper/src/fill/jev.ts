@@ -2,7 +2,7 @@
 // CARET_ENV_FILE. Gateway uses only CARET_JEV_GATEWAY_KEY, never the writer's AI_GATEWAY_API_KEY.
 import { readFileSync } from "node:fs";
 import * as z from "zod";
-import type { Snippet } from "../privacy.ts";
+import { assertNoSecrets, type Snippet } from "../privacy.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
 
@@ -165,6 +165,12 @@ export interface JevRequest {
    * CONSENTED). Never sent; privacy.test.ts holds every other window to its usual rules.
    */
   consented?: readonly string[];
+  /**
+   * G2: for each whose-value question (fill.ts ownerId), the text of the value it asks about, so an evaluation harness
+   * answers from the value itself and never parses it back out of the question (page-loop-eval.ts canned Jev). Never
+   * sent: the text is already in the question, through the ledger.
+   */
+  subjects?: Readonly<Record<string, string>>;
 }
 
 const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number(), probabilities: z.record(z.string(), z.number()).optional() }).loose();
@@ -298,6 +304,8 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
     }
     const ids = Object.keys(req.nouls ?? {});
     if (ids.some((id) => id in req.questions)) throw new Error("Jev request repeats a question id between its choices and its yes/no questions");
+    // G2 review: no request leaves with a secret marker in it, whichever builder made it (privacy.ts assertNoSecrets).
+    assertNoSecrets(req);
     const wire = wireBody(req, route.model);
     if (route.provider === "gateway") {
       wire.providerOptions = { gateway: { only: [checkGatewayModel(route.model)] } };

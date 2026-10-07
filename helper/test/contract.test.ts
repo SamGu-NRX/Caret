@@ -20,7 +20,7 @@ const desk = (nodes: Node[]): ScreenModel => {
 /** A field contract read from a label alone, with an input kind and a maxlength when given. */
 const fc = (label: string, o: { inputKind?: Node["inputKind"]; maxLength?: number; key?: string } = {}): FieldContract =>
   makeFieldContract({ windowId: WIN, node: { key: o.key ?? `k:${label}`, parent: null, role: "AXTextField", label, ...(o.inputKind === undefined ? {} : { inputKind: o.inputKind }), ...(o.maxLength === undefined ? {} : { maxLength: o.maxLength }) }, descriptor: label, name: label, labelWords: [label], control: "text", kinds: fieldKinds([label]), part: fieldPart(label) });
-const win = (span: string, label: string | null = null, partOf: string | null = null): Provenance => ({ kind: "window", windowId: "note", nodeKey: "n", app: "TextEdit", title: "notes.txt", span, label, line: null, partOf, context: label, sentences: [] });
+const win = (span: string, label: string | null = null, partOf: string | null = null): Provenance => ({ kind: "window", windowId: "note", nodeKey: "n", app: "TextEdit", title: "notes.txt", span, label, line: null, partOf, context: label, lines: [] });
 const prop = (field: FieldContract, text: string, provenance: Provenance = win(text)): Proposed => ({ field, text, display: text, provenance, owner: null });
 const opts = { askJev: exactJev, ledger: null, now: 1 };
 

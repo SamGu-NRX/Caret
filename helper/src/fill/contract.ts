@@ -15,18 +15,18 @@
 // draft) are minted under a named exemption instead (ExemptRule); only the never-typed check runs on them.
 import type { AutocompleteToken, FillMemory, FillWithheld, Node, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
-import { createHash } from "node:crypto";
-import { bareLine, sentenceAround } from "./line-values.ts";
+import { lineDigests, logicalLines } from "./line-values.ts";
 import { spanContexts } from "./candidates.ts";
+import { redactWindow } from "./redact.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
 import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind } from "./kinds.ts";
 import { writeMisfit, type ShapeSource } from "./writable.ts";
-import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
+import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { secretIn } from "../planner/trace.ts";
 import type { AskJev, JevRequest } from "./jev.ts";
-import { SnippetLedger } from "../privacy.ts";
+import { assertNoSecrets, SnippetLedger } from "../privacy.ts";
 
 /** The page walk's text input kind (protocol.ts PageControlKind), projected into Node by toWindowSnapshot; null through Accessibility. */
 export type InputKind = "text" | "email" | "tel" | "url" | "number" | "search" | "date" | "time" | "datetime" | "month" | "week" | "textarea" | null;
@@ -115,11 +115,13 @@ export type Provenance =
        */
       context: string | null;
       /**
-       * Digests of the sentences of the source node that held the span when it was read (sentenceDigests), in order. A
-       * sentence that changed around a value that stayed ("Do not use: 555-0164") or a new one that holds it is not what
-       * the value was read from. Digests, not sentences, so no more screen text travels with the value.
+       * G2's digests of each source line that held the span when Jev judged it, with the line before and after it
+       * (line-values.ts lineDigests, on the source as written). Any edit there refuses the value (provenanceStale): a
+       * changed sentence around a value that stayed ("Do not use: 555-0164"), a line added beside it. Empty when none
+       * could be found, and such a value is never held. Digests, not lines, so no more screen text travels with the value.
+       * I1: these replace W2's sentence digests and G2's FillField.basis.lines, so one record backs one recheck.
        */
-      sentences: readonly string[];
+      lines: readonly string[];
     }
   | { kind: "memory"; id: string; label: string; part: FillMemory["part"] | null; whose: "user" | "other" | null }
   | { kind: "instruction"; span: string }
@@ -576,7 +578,11 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     if (ok === undefined) admittedCache.set(t, (ok = ledger.plan([t])));
     return ok;
   };
-  if (o.instruction !== undefined && o.instruction !== "" && !admitted(o.instruction)) throw new VerifierUnavailable("the instruction quotes more of an open window than the verifier may carry");
+  // I1: an instruction that names a secret ("Put my password 'hunter2' in Plan") is not sent: no Jev request may carry a
+  // secret marker (privacy.ts assertNoSecrets, G2), and the verifier judges a value against its field and where it was
+  // read without it. Its values Caret never types were refused before this (neverTypedRefusal, with the instruction).
+  const instruction = o.instruction === undefined || o.instruction === "" || secretText(o.instruction) ? undefined : o.instruction;
+  if (instruction !== undefined && !admitted(instruction)) throw new VerifierUnavailable("the instruction quotes more of an open window than the verifier may carry");
   const questions = proposed.map((p) => {
     // The field's descriptor and the text itself must go; a value whose own text the ledger refuses is not verified.
     if (!admitted(p.field.descriptor) || !admitted(p.text) || !admitted(p.field.name)) return null;
@@ -586,7 +592,7 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     return [WORDINGS[0](p, from, owner), WORDINGS[1](p, from, owner)] as const;
   });
   const declared = ledger.declared();
-  const state: Record<string, unknown> = { task: "Caret checks that each value it is about to type is exactly what its field asks for.", ...(o.instruction === undefined || o.instruction === "" ? {} : { instruction: o.instruction }) };
+  const state: Record<string, unknown> = { task: "Caret checks that each value it is about to type is exactly what its field asks for.", ...(instruction === undefined ? {} : { instruction }) };
   const batches: number[][] = [];
   const asked = proposed.flatMap((_, i) => (questions[i] === null ? [] : [i]));
   for (let i = 0; i < asked.length; i += VERIFY_BATCH) batches.push(asked.slice(i, i + VERIFY_BATCH));
@@ -595,7 +601,12 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     const order = wording === 0 ? batch : [...batch].reverse();
     const qs: JevRequest["questions"] = Object.fromEntries(order.map((i) => [`x${i + 1}`, { type: "choice" as const, instructions: (questions[i] as readonly [string, string])[wording], criteria: { ...VERDICTS } }]));
     const sent = sentStrings([state, qs]);
-    return { purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged };
+    const req: JevRequest = { purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged };
+    // I1: the disclosure rule every Jev request meets at build (privacy.ts assertNoSecrets, G2), the verifier's included:
+    // its provenance sentences quote only redacted, ledger-admitted text, and this is the guarantee behind that. A throw
+    // here makes the verifier unavailable (below), so every value it would have checked is withheld, nothing is sent.
+    assertNoSecrets(req);
+    return req;
   };
   const out: (readonly [VerifyAsk, VerifyAsk] | null)[] = proposed.map(() => null);
   try {
@@ -726,35 +737,35 @@ export function contractStale(node: Node, f: FieldContract, text: string): strin
 }
 
 /**
- * Digests of each sentence of `text` that holds `span`: the text's lines as the generator reads them (bareLine) joined
- * by a space, so a sentence a line break wraps reads as one, each sentence as line-values.ts sentenceAround reads it.
- * The same rule as G2's sentence-digest recheck (caret-v2-whose ca01553, line-values.ts sentenceDigests).
+ * A window value's provenance (fill, the planner and code plans build theirs with this): its candidate's facts, and the
+ * digests of the lines around it in `text`, its source node's text as Jev was shown it (fill passes the text it took
+ * before its asks, G2's `judged`); by default the node's text in `w` now.
  */
-export function sentenceDigests(text: string, span: string): string[] {
-  const joined = text.split(/\r?\n/u).map(bareLine).filter((l) => l !== "").join(" ").replace(/\s+/gu, " ");
-  const want = span.replace(/\s+/gu, " ").trim();
-  if (want === "") return [];
-  const out: string[] = [];
-  for (let at = joined.indexOf(want); at >= 0; at = joined.indexOf(want, at + 1)) out.push(createHash("sha256").update(sentenceAround(joined, at, want)).digest("hex").slice(0, 16));
-  return out;
-}
-
-/**
- * A window value's provenance as read now from `w` (fill, the planner and code plans build theirs with this): its
- * candidate's facts, and the digests of the sentences that hold it.
- */
-export function windowProvenance(w: WindowState | undefined, c: { text: string; context: string | null; labelled?: boolean; line?: string | null; partOf?: string; source: { windowId: string; nodeKey: string; appName: string; windowTitle: string } }): Provenance {
+export function windowProvenance(w: WindowState | undefined, c: { text: string; context: string | null; labelled?: boolean; line?: string | null; partOf?: string; source: { windowId: string; nodeKey: string; appName: string; windowTitle: string } }, text?: string): Provenance {
   const node = w?.nodes.get(c.source.nodeKey);
-  return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null, context: c.context, sentences: node === undefined ? [] : sentenceDigests(nodeText(node), c.text) };
+  const read = text ?? (node === undefined ? undefined : nodeText(node));
+  return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null, context: c.context, lines: read === undefined ? [] : lineDigests(read, c.text) };
 }
 
+const norm = (t: string): string => t.replace(/\s+/gu, " ").trim();
+
 /**
- * Why a value no longer rests on what it was read from, or null (W2: the lead's G2 round-3 gaps). For a window's value:
- * the window and node are still there, the sentences that held the span are exactly those that hold it now (a sentence
- * changed around it, or a new one holds it, refuses it), and the label it was read beside is still one the source
- * gives it (an editable source field relabelled "Do not use" refuses it). A derived value meets its sources' checks. A
- * memory entry is checked by the executor's memoryHolds; an instruction, a saved answer and a transfer have no screen
- * source here.
+ * Why a value no longer rests on what it was read from, or null: the one recheck of a value's source, which runs at a
+ * preview's acceptance, at plan validation and right before each write (guardFor). I1 merged G2's
+ * offers/fill-popup.ts sourceHolds into it, and deleted that: both held the same value to its source, by different
+ * records. For a window's value:
+ *   - the window and node are still there, and the window's redacted view (fill/redact.ts) still admits the node and
+ *     shows the span (G2 round 5: a source whose placeholder became "Password", or a marker line put in above it, gives
+ *     nothing);
+ *   - its lines were recorded, and the lines that hold the span now, each with the line before and after it, are
+ *     exactly those (G2's neighbourhood digests): a changed line, a line added beside it, or a new line that holds it
+ *     refuses it;
+ *   - the label it was read beside is still one the source gives it (W2: an editable source field relabelled "Do not
+ *     use").
+ * A derived value meets each of its sources' checks. G2 also derived the value again from its source texts; with each
+ * source's lines unchanged, the same code gives the same value, so that check is gone with sourceHolds. A memory entry
+ * is checked by the executor's memoryHolds, and an identity, a saved answer and a memory value by the preview's own
+ * recheck (fill-popup.ts valueStale); an instruction has no screen source.
  */
 export function provenanceStale(model: ScreenModel, pr: Provenance): string | null {
   switch (pr.kind) {
@@ -763,10 +774,16 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
       if (sw === undefined) return "the window it was read from closed";
       const node = sw.nodes.get(pr.nodeKey);
       if (node === undefined) return "what it was read from is gone";
-      const now = sentenceDigests(nodeText(node), pr.span);
+      const view = redactWindow(sw);
+      const seen = view.nodes.get(pr.nodeKey);
+      const shown = seen === undefined ? "" : nodeText(seen);
+      const shows = seen !== undefined && (norm(logicalLines(shown).join("\n")).includes(norm(pr.span)) || norm(shown).includes(norm(pr.span)) || view.values.some((v) => v.nodeKey === pr.nodeKey && norm(v.text) === norm(pr.span)));
+      if (!shows) return "Caret may no longer read it where it was read";
+      if (pr.lines.length === 0) return "Caret has no record of the lines it was read from";
+      const now = lineDigests(nodeText(node), pr.span);
       if (now.length === 0) return "its source no longer shows it";
-      if (pr.sentences.length > 0 && (now.some((d) => !pr.sentences.includes(d)) || pr.sentences.some((d) => !now.includes(d)))) return "what its source says around it changed";
-      if (pr.context !== null && !spanContexts(sw, node, pr.span).includes(pr.context)) return "the label it was read beside changed";
+      if (now.some((d) => !pr.lines.includes(d)) || pr.lines.some((d) => !now.includes(d))) return "what its source says around it changed";
+      if (pr.context !== null && !spanContexts(view, seen as Node, pr.span).includes(pr.context)) return "the label it was read beside changed";
       return null;
     }
     case "derived":

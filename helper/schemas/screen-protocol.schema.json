@@ -2717,6 +2717,69 @@
                       "withheld"
                     ],
                     "additionalProperties": false
+                  },
+                  "basis": {
+                    "type": "object",
+                    "properties": {
+                      "identity": {
+                        "type": "object",
+                        "properties": {
+                          "memoryId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "email",
+                              "phone",
+                              "name"
+                            ]
+                          },
+                          "key": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "part": {
+                            "type": "string",
+                            "enum": [
+                              "first",
+                              "middle",
+                              "last"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "memoryId",
+                          "kind",
+                          "key"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "clause": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "lines": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "from": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "how": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "required": [

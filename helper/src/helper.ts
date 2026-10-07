@@ -80,7 +80,7 @@ import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
 import { guardFor, type CheckedValue } from "./fill/contract.ts";
-import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFields, recheckFill, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
+import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFields, recheckFill, valueStale, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
 import { aboutValues, type AboutValue } from "./fill/about.ts";
 import type { PopupSpecT } from "./popup.ts";
 import { describeField } from "./fill/descriptor.ts";
@@ -1811,6 +1811,18 @@ export class Helper {
       if (now.window.window.windowId !== proposed) return { refused: `unknownWindow: the window the plan was made for (${proposed}) closed; nothing was written` };
       // W2: each write's mint, by its step, for the executor's recheck of its source right before it (contract.ts guardFor).
       mints = new Map(now.writes.map((wr) => [wr.step, wr.checked]));
+      // G2 review: every value an Ask's fill read is checked against what it rests on again, as a Fill all's are
+      // (offers/fill-popup.ts valueStale): a saved answer, a memory entry, an identity, and the source by its mint's
+      // provenance. The destinations may hold values an Ask changes, so only the values are checked here; the plan's own
+      // end states read the destinations. I1: validatePlan above and guardFor before each write recheck the source by the
+      // same provenance; this adds the memory side.
+      const fill = "fill" in p.draft ? (p.draft as { fill: FillProposal | null }).fill : null;
+      if (fill !== null) {
+        for (const f of writtenFields(fill).fields) {
+          const stale = valueStale(sources, now.window, f, this.aboutNow, this.answerText, this.opts.pageContext?.(fill.windowId) ?? null);
+          if (stale !== null) return { refused: `sourceChanged: ${stale.log}; nothing was written` };
+        }
+      }
     } catch (e) {
       if (e instanceof PlannerError) return { refused: `${e.code}: ${e.message}; nothing was written` };
       throw e;

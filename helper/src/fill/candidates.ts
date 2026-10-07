@@ -8,7 +8,8 @@ import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
-import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, sentenceAround, WARNS } from "./line-values.ts";
+import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, sentenceAround, WARNS } from "./line-values.ts";
+import { redactWindow } from "./redact.ts";
 import { splitDate } from "./derive.ts";
 
 /**
@@ -19,6 +20,7 @@ import { splitDate } from "./derive.ts";
 function sourceField(node: Node): boolean {
   return node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null && node.role !== "AXCheckBox";
 }
+
 
 export interface Candidate {
   id: string;
@@ -42,6 +44,13 @@ export interface Candidate {
    * field that takes one value may take it (fill.ts).
    */
   partOf?: string;
+  /**
+   * G2: the memory entry this text is exactly, when it is the user's own email, phone or full name (whose.ts
+   * identityOf): code decides such a value is the user's without asking. Its label goes through the ledger as memory.
+   */
+  identity?: CandidateIdentity;
+  /** G2: where the span sits, as code reads its window (whose.ts placementsOf); shown to Jev in whose-value questions. */
+  placements?: readonly Placement[];
   /** The nearest named container around the span, such as a group box or a section heading. */
   section: string | null;
   /**
@@ -53,6 +62,31 @@ export interface Candidate {
   recency: Recency;
   source: FillSource;
 }
+
+/** G2: a candidate that is exactly one of the user's own identities from memory (whose.ts identityOf). */
+export interface CandidateIdentity {
+  memoryId: string;
+  kind: "email" | "phone" | "name";
+  /** The memory entry's label ("primary email"), which the value question quotes. */
+  label: string;
+  /** The identity as fill compared it (whose.ts identityKey), which a recheck compares the entry with again. */
+  key: string;
+}
+
+/**
+ * G2: where a candidate sits, read by code from its window (whose.ts placementsOf), for Jev to weigh in a whose-value
+ * question, never as a rule. `soleRecipient`: on the To: line of a mail, as its only recipient. `toUsersAddress`: on a
+ * To: line whose one address is the user's own email from memory. `ownNoteAlone`: in a sentence of the note the user
+ * just left that names no other person. `namesOther`: in a sentence that names someone other than the user ("my
+ * husband Marcus Cole, …").
+ */
+export type Placement = "soleRecipient" | "toUsersAddress" | "ownNoteAlone" | "namesOther";
+export const PLACEMENT_SAYS: Record<Placement, string> = {
+  soleRecipient: "it is the only recipient on the To: line of this mail",
+  toUsersAddress: "it is on a To: line whose address is the email the user told Caret is theirs",
+  ownNoteAlone: "it is in a sentence of the note the user just left that names no other person",
+  namesOther: "it is in a sentence that names someone other than the user",
+};
 
 /**
  * "justLeft": the window the user was in just before they came to the form (ScreenModel.windowBefore).
@@ -222,6 +256,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
 
   const windows = [...model.windows.values()]
     .filter((w) => w.window.windowId !== targetWindowId && o.exclude?.has(w.window.windowId) !== true)
+    // G2 round 4: every source window is read through its redacted view (redact.ts), the one place secrets are decided.
+    .map(redactWindow)
     .sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
   const justLeft = model.windowBefore(targetWindowId);
   const recency = (w: WindowState): Recency =>
@@ -330,13 +366,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     const pending = new Map<Candidate, string>();
     for (const c of out) {
       const clause = clauses.get(c);
-      const sw = model.windows.get(c.source.windowId);
+      const sw = viewOf(model, c.source.windowId);
       if (clause === undefined || sw === undefined) continue;
       if (o.deferClauses === true) pending.set(c, clause);
       else if (o.ledger === undefined || o.ledger.take(sw, "candidate", [clause])) c.line = clause;
     }
     for (const id of leftOutOf) {
-      const lw = model.windows.get(id);
+      const lw = viewOf(model, id);
       if (lw !== undefined) leftOut(lw);
     }
     leftOutOf.clear();
@@ -635,6 +671,12 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   return finish();
 }
 
+/** G2 round 4: a window as fill may read it (redact.ts), by id, or undefined. */
+export function viewOf(model: ScreenModel, windowId: string): WindowState | undefined {
+  const w = model.windows.get(windowId);
+  return w === undefined ? undefined : redactWindow(w);
+}
+
 const constant =
   <T>(x: T): (() => T) =>
   () =>
@@ -769,9 +811,23 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
   // 1978") cost corpus clinic-intake two values. A label otherwise says what the span is.
   const sentence = sentenceAround(line, pos, text);
   if (WARNS.test(sentence.replace(text, " "))) return sentence === text ? null : { clause: sentence, required: true };
-  if (labelled) return null;
   const values = lineValues(line);
   const kind = values.find((v) => v.text === text)?.kind;
+  // G2: a date, email or phone number goes with the part of its clause that says what it is (line-values.ts
+  // partAround) whenever that says more than "Label: value", on a short line and under a label too. A label alone does
+  // not say which of two dates is which: "School: …, September 2016 to May 2020." offered both as labelled 'School', and
+  // live Jev put May 2020 in the education Start date (evidence/screen/g1 fix 3: start dates on wizard-2 and Greenhouse,
+  // the reference's phone and email on forty). It is optional context: charged only after every span and memory value
+  // (fill.ts, dates' and contacts' first among clauses), so it never keeps a value out and dropping it marks nothing
+  // cut (G2 review: charged earlier, it pushed values out). On F1's task notes the budget is spent by then, and the
+  // School line's dates go out without it (evidence/screen/g2/whose/probe-head.json). It can carry a second value of the
+  // line that Jev then reads beside the first; both are spans of the line, and agreement and the cutoff still decide.
+  if (kind === "date" || kind === "email" || kind === "phone") {
+    const clause = partAround(line, pos, text);
+    const said = clause === null ? null : (LABELLED.exec(clause)?.[2] ?? clause).trim().replace(/[.!?;,]+$/u, "");
+    return clause === null || said === text ? null : { clause, required: false };
+  }
+  if (labelled) return null;
   const twins = kind !== undefined && values.filter((v) => v.kind === kind).length > 1;
   if (line.length <= MAX_LINE && !twins) return null;
   const clause = clauseAround(line, pos, text);
@@ -789,7 +845,7 @@ export function labelledLines(w: WindowState): { label: string; value: string; n
     if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
     for (const raw of nodeText(node).split(/\r?\n/)) {
       // C1: a labelled line of any length, so a value read from a long one ("School: …, September 2016 to May 2020.")
-      // is checked by its label as one from a short one is (offers/fill-popup.ts sourceHolds).
+      // is checked by its label as one from a short one is (fill/contract.ts provenanceStale, spanContexts).
       const line = bareLine(raw);
       const m = LABELLED.exec(line);
       if (m?.[1] === undefined || m[2] === undefined || !/[\p{L}\p{N}]/u.test(m[2]) || sensitiveKind(m[1], m[2]) !== null) continue;
@@ -843,7 +899,13 @@ function lineContext(w: WindowState, node: Node, lines: number, isSourceField: b
  */
 export function spanContexts(w: WindowState, node: Node, span: string): string[] {
   const lines = nodeText(node).split(/\r?\n/).length;
-  return [contextFor(w, node, span), lineContext(w, node, lines, sourceField(node)), ...lineSpans(lineHolding(nodeText(node), span)).filter((s) => s.text === span).map((s) => s.label)].filter((x): x is string => x !== null);
+  // I1: G2's lines read white space as one space ("Name: Robin  Vale" gives "Robin Vale"), so the span is found and
+  // compared that way too; and every line that holds it is read, not the first: a short span ("M", "4") is in many
+  // ("Emergency contact name: …" before "T-shirt size: M"), and reading only the first refused unchanged sources
+  // (evidence/screen/i1/canned-offline-merge.json, 4 drops).
+  const flat = (t: string): string => t.replace(/\s+/gu, " ").trim();
+  const labels = linesHolding(nodeText(node), span).flatMap((l) => lineSpans(l).filter((s) => flat(s.text) === flat(span)).map((s) => s.label));
+  return [contextFor(w, node, span), lineContext(w, node, lines, sourceField(node)), ...labels].filter((x): x is string => x !== null);
 }
 
 /** The line of a node's text that holds a span, found by search rather than by splitting the whole text. */
@@ -852,6 +914,14 @@ function lineHolding(text: string, span: string): string {
   if (at < 0) return span;
   const nl = text.indexOf("\n", at);
   return text.slice(text.lastIndexOf("\n", at) + 1, nl < 0 ? text.length : nl);
+}
+
+/** The lines of a node's text that hold a span, white space in the span matching any run of spaces or tabs; the span itself when none does. */
+function linesHolding(text: string, span: string): string[] {
+  const words = span.trim().split(/\s+/u).map((x) => x.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"));
+  const re = new RegExp(words.join("[ \\t]+"), "u");
+  const held = text.split(/\r?\n/u).filter((l) => l.includes(span) || re.test(l));
+  return held.length === 0 ? [span] : held;
 }
 
 /** The candidates for a fill; see collectCandidates. With a ledger, each window gives only what fits its budget. */
@@ -872,7 +942,7 @@ export function cutKinds(model: ScreenModel, cut: readonly string[], offered: re
   // One string, so each value is one search; NUL appears in no screen text, so a match never spans two spans.
   const taken = offered.map((c) => c.text).join("\u0000");
   for (const id of cut) {
-    const w = model.windows.get(id);
+    const w = viewOf(model, id);
     if (w === undefined) continue;
     for (const v of windowValues(w)) if (w.nodes.has(v.nodeKey) && !holdsWhole(taken, v.text)) for (const k of valueKinds(v)) out.add(k);
   }
@@ -917,7 +987,7 @@ function holdsWhole(text: string, value: string): boolean {
 /** The kinds of the reader's typed values a candidate's text holds, its own kind included. */
 export function candidateKinds(model: ScreenModel, c: Candidate): Set<ValueKind> {
   const out = new Set<ValueKind>(c.kind === null ? [] : valueKinds({ kind: c.kind, text: c.text }));
-  const sw = model.windows.get(c.source.windowId);
+  const sw = viewOf(model, c.source.windowId);
   for (const v of sw === undefined ? [] : windowValues(sw)) {
     if (c.text.includes(v.text) || (v.nodeKey === c.source.nodeKey && v.text.includes(c.text))) for (const k of valueKinds(v)) out.add(k);
   }
@@ -1091,6 +1161,7 @@ const RECENCY_TEXT: Record<Recency, string> = {
 export function describeCandidate(c: Candidate): string {
   const facts: string[] = [];
   if (c.kind !== null) facts.push(c.kind);
+  if (c.identity !== undefined) facts.push(`the user's own ${c.identity.label}, which the user told Caret`);
   if (c.context !== null && c.context !== c.text) facts.push(`labelled '${c.context}'`);
   if (c.line !== undefined && c.line !== null) facts.push(`in the line '${c.line}'`);
   if (c.blockHead !== null) facts.push(`in a block that starts '${c.blockHead}'`);

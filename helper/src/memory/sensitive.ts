@@ -160,3 +160,102 @@ function luhn(digits: string): boolean {
   }
   return sum % 10 === 0;
 }
+
+/**
+ * G2 round 4: whether a text holds a secret marker word: any phrase of LABEL_PHRASES ("password", "PIN", "token",
+ * "security code", "API key", "SSN", "routing", …) as whole words, a plural "s" allowed, case-insensitive, anywhere,
+ * whatever follows it (a separator, a quote, a bracket, or nothing at all). The one rule for what may reach Jev: the
+ * redacted view (fill/redact.ts) drops a line or a node that holds one, and a request that still carries one is refused
+ * (privacy.ts assertNoSecrets). It drops some innocent lines ("Pin it to the board", "routing the call"); the lead
+ * accepted that cost (G2 round 4), counted in fill/redact.ts.
+ */
+export function markerWord(text: string | null | undefined): boolean {
+  return markerAt(text, false);
+}
+
+/**
+ * G2 round 4: whether a text ends in a marker phrase, maybe followed by "is", "was", "are" or a separator ("my private
+ * key", "Password:", "PIN is"): its value may be on the next line (fill/redact.ts).
+ */
+export function markerEnds(text: string | null | undefined): boolean {
+  return markerAt(text?.replace(/(?:\s*(?:\bis\b|\bwas\b|\bare\b|[:=\-–—>]))+\s*$/iu, ""), true);
+}
+
+function markerAt(text: string | null | undefined, atEnd: boolean): boolean {
+  if (text === null || text === undefined || text === "") return false;
+  const memo = atEnd ? ENDS_MEMO : WORD_MEMO;
+  const hit = memo.get(text);
+  if (hit !== undefined) return hit;
+  const found = scanMarker(text, atEnd);
+  if (memo.size >= MARKER_MEMO) memo.clear();
+  memo.set(text, found);
+  return found;
+}
+
+function scanMarker(text: string, atEnd: boolean): boolean {
+  const ws = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "");
+  for (let i = 0; i < ws.length; i++) {
+    const first = ws[i] as string;
+    const ps = BY_FIRST.get(first) ?? (first.endsWith("s") ? BY_FIRST.get(first.slice(0, -1)) : undefined);
+    if (ps === undefined) continue;
+    for (const p of ps) {
+      if (i + p.length > ws.length) continue;
+      let ok = true;
+      for (let j = 0; j < p.length && ok; j++) {
+        const w = ws[i + j] as string;
+        const want = p[j] as string;
+        ok = w === want || (j === p.length - 1 && w === `${want}s`);
+      }
+      if (ok && (!atEnd || i + p.length === ws.length)) return true;
+    }
+  }
+  return false;
+}
+/** The marker phrases by their first word: a line is read once, each word looked up, not every phrase tried at it. */
+const BY_FIRST = new Map<string, string[][]>();
+for (const [, phrases] of LABEL_PHRASES) for (const p of phrases) BY_FIRST.set(p[0] as string, [...(BY_FIRST.get(p[0] as string) ?? []), p]);
+/** markerWord's and markerEnds's answers by text: the redacted view reads every line of a window it builds. Bounded. */
+const MARKER_MEMO = 8000;
+const WORD_MEMO = new Map<string, boolean>();
+const ENDS_MEMO = new Map<string, boolean>();
+
+/** G2 round 4: whether a text is one fill must never send: it holds a marker word or a value Caret never types. */
+export function secretText(text: string | null | undefined): boolean {
+  if (text === null || text === undefined || text === "") return false;
+  const hit = SECRET_MEMO.get(text);
+  if (hit !== undefined) return hit;
+  const found = markerWord(text) || valueKind(text) !== null;
+  if (SECRET_MEMO.size >= MARKER_MEMO) SECRET_MEMO.clear();
+  SECRET_MEMO.set(text, found);
+  return found;
+}
+const SECRET_MEMO = new Map<string, boolean>();
+
+/**
+ * G2: whether two consecutive lines carry a marker phrase split by their line break ("API" then "key: …"): the first line
+ * ends with the phrase's first word(s), and the second starts with the rest, followed by nothing, a separator or a value.
+ * A heading never joins a labelled record: "Card" then "Number of attendees: 4" names no card number, since the second
+ * line's label is more than the phrase's rest (G2 round 7 review).
+ */
+export function markerAcross(first: string, second: string): boolean {
+  const a = first.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "");
+  const b = second.toLowerCase();
+  if (a.length === 0) return false;
+  for (const [, phrases] of LABEL_PHRASES) {
+    for (const p of phrases) {
+      for (let k = 1; k < p.length; k++) {
+        const head = p.slice(0, k);
+        if (a.length < k || !head.every((w, j) => a[a.length - k + j] === w)) continue;
+        const rest = p.slice(k).map((w) => w.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("[\\s_-]+");
+        const label = /^\s*([^:]{1,32}):\s*\S/u.exec(second)?.[1]?.trim().toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "");
+        if (label !== undefined && label.join(" ") !== p.slice(k).join(" ") && label.join(" ") !== `${p.slice(k).join(" ")}s`) continue;
+        if (new RegExp(`^\\s*${rest}s?(?![\\p{L}\\p{N}])\\s*(?:$|[:=\\-–—>]|\\bis\\b|\\bwas\\b|[\\p{L}\\p{N}"'(\\[<\`])`, "u").test(b)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** G2: a PEM fence line: "-----BEGIN … PRIVATE KEY-----" opens a block that runs to its "-----END … PRIVATE KEY-----". */
+export const PEM_BEGIN = /^\s*-{3,}\s*BEGIN\b[^-]*PRIVATE KEY\s*-{3,}\s*$/iu;
+export const PEM_END = /^\s*-{3,}\s*END\b[^-]*PRIVATE KEY\s*-{3,}\s*$/iu;

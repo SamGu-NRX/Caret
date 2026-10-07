@@ -42,14 +42,18 @@ const memory = { values: () => MEMORY };
 const about = [{ id: "about-1", label: "Name", value: "Elena Vance", kind: "name" as const }];
 
 /** Jev picking the candidate `pick` names for each field question, "user" for whose, yes for every confirm. */
-function jevBy(pick: (q: string) => string | null, owner: (d: string) => string = () => "unclear"): { ask: AskJev; seen: JevRequest[] } {
+/** G2 review: by default the user's own values (Elena's) are hers, and anyone else's are unclear. */
+const elenas = (d: string): string => (/elena/iu.test(/"(.*?)" \(/su.exec(d)?.[1] ?? "") ? "user" : "unclear");
+function jevBy(pick: (q: string) => string | null, owner: (d: string) => string = elenas): { ask: AskJev; seen: JevRequest[] } {
   const seen: JevRequest[] = [];
   const ask: AskJev = async (req) => {
     seen.push(req);
     const answers = Object.fromEntries(
       Object.entries(req.questions).map(([id, q]) => {
         const ins = String(q.instructions);
-        if (id.endsWith("_whose")) return [id, { choice: "user", confidence: 0.9 }];
+        // G2 review: a field that wants the user's details takes only a value both asks call the user's; a landlord's
+        // field wants someone else's.
+        if (id.endsWith("_whose")) return [id, { choice: /landlord/iu.test(ins) ? "other" : "user", confidence: 0.9 }];
         if (id.endsWith("_owner")) return [id, { choice: owner(ins), confidence: 0.9 }];
         if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];
         const want = pick(ins);
@@ -289,7 +293,7 @@ describe("re-check: the fields a continued Ask fills must read as the question s
     const q = questionOf(await fail(planAsk(instruction, desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((x) => ({ route: "ask", why: "whichFields", fields: ["Landlord name", "Landlord phone"].map((n) => x.fields.find((f) => f.name === n)?.ref ?? "?") })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }))) as Q;
     const name = q.options.find((c) => c.option.label === "Landlord name")?.option.id as string;
     const m = at([], (ns) => ns.map((n) => (n.key === KEY("landlord phone") ? { ...n, label: "Office phone" } : n)));
-    const d = await answer(q, [name], { model: m, ask: jevBy((x) => (x.includes("'Landlord name'") ? "Gary Pruitt" : null), () => "user").ask, instruction });
+    const d = await answer(q, [name], { model: m, ask: jevBy((x) => (x.includes("'Landlord name'") ? "Gary Pruitt" : null), () => "other").ask, instruction });
     expect(d.checked.writes.map((w) => w.node.key)).toEqual([KEY("landlord name")]);
   });
 });
@@ -390,7 +394,7 @@ describe("second re-check: what a continued Ask compares, and when (B29)", () =>
     const q = questionOf(await fail(planAsk(instruction, m, memory, about, { askJev: jevBy(() => null).ask, maker: maker((x) => ({ route: "ask", why: "whichFields", fields: [ref(x, "Landlord name"), ref(x, "Landlord phone")] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }))) as Q;
     formSnap(m, (ns) => ns.filter((n) => n.key !== KEY("landlord phone")));
     const name = q.options.find((c) => c.option.label === "Landlord name")?.option.id as string;
-    const d = await answer(q, [name], { model: m, ask: jevBy((x) => (x.includes("'Landlord name'") ? "Gary Pruitt" : null), () => "user").ask, instruction });
+    const d = await answer(q, [name], { model: m, ask: jevBy((x) => (x.includes("'Landlord name'") ? "Gary Pruitt" : null), () => "other").ask, instruction });
     expect(d.checked.writes.map((w) => w.node.key)).toEqual([KEY("landlord name")]);
   });
 });

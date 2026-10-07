@@ -11,7 +11,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { AboutValue } from "../fill/about.ts";
 import type { AskJev } from "../fill/jev.ts";
-import { conversionOf, FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, mintOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FILLABLE_ROLES, FillError, identityRefOf, MAX_FIELDS, memoryRefOf, mintOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { requireChecked } from "../fill/contract.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
@@ -130,7 +130,7 @@ export interface PlanPageOptions {
 }
 
 /** A value fill would write, with what it was read from: a Fill all's GroundedField, or a value the instruction spells out. */
-type Written = Pick<ReturnType<typeof writtenFields>["fields"][number], "key" | "control" | "value" | "display" | "span" | "context" | "source" | "memory" | "checked">;
+type Written = Pick<ReturnType<typeof writtenFields>["fields"][number], "key" | "control" | "value" | "display" | "span" | "context" | "source" | "memory" | "checked" | "basis">;
 
 /** An empty control of a page fill can ask about, in document order: what a page goal may fill. */
 interface PageInput {
@@ -400,12 +400,22 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
             ? { kind: "derived", inputs: [], resolver: "fill/when", version: RESOLVER_VERSION, parametersDigest: shortDigest(f.span) }
             : { kind: "span", snapshot: "s1", source: f.source?.windowId ?? "instruction", startUTF16: 0, endUTF16: f.span.length, digest: shortDigest(f.span) },
       source: f.source === null || src === undefined ? null : { windowId: f.source.windowId, key: f.source.nodeKey, revision: windowRevision(src) },
-      memory: f.memory === null ? null : memoryRefOf(f.memory, conversionOf(f.control)),
+      // G2: a window's value that is the user's identity, or a part split from one, names its entry too (fill.ts
+      // identityRefOf), so the write is checked against the entry again (executor memoryHolds, conversion "identity"),
+      // and before each segment (runs.ts precheck, fill.identity).
+      memory: f.memory !== null ? memoryRefOf(f.memory, conversionOf(f.control)) : identityRefOf(f, f.value),
       event: null,
       draft: null,
-      owner: f.memory !== null ? "user" : null,
-      fill: { span: f.span, context: f.context, control: f.control, ...(f.memory === null ? {} : { memoryLabel: f.memory.label }) },
-      // W2: fill's mint for this value in this field, which lowering passes on without asking again.
+      owner: f.memory !== null || f.basis?.identity !== undefined ? "user" : null,
+      fill: {
+        span: f.span,
+        context: f.context,
+        control: f.control,
+        ...(f.memory === null ? {} : { memoryLabel: f.memory.label }),
+        ...(f.basis?.identity === undefined ? {} : { identity: f.basis.identity }),
+      },
+      // W2: fill's mint for this value in this field, which lowering passes on without asking again. I1: its provenance
+      // carries the source-line digests G2 kept in `fill` (contract.ts Provenance), so they are not copied here again.
       provenance: f.checked.provenance,
       checked: f.checked,
     };

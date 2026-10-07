@@ -164,7 +164,9 @@ describe("LV1 wrong 3: the Ashby task's incident question took a note-to-self in
       for (const scope of [undefined, wholeForm(["form/phone", "form/incident"], "fill out this form")]) {
         const seen: JevRequest[] = [];
         const p = await proposeFill(m, picking(INCIDENT, "use the token-leak story, write it fresh", seen), "form", "form/phone", T0, { rand: () => 0, ...(scope === undefined ? {} : { scope }) });
-        expect(offered(seen, INCIDENT).some((t) => t.startsWith("use the token-leak story"))).toBe(true);
+        // G2 round 4: "token-leak" holds a secret marker word (memory/sensitive.ts markerWord), so the redacted view
+        // (fill/redact.ts) drops the line and it is no longer offered at all; never written either way.
+        expect(offered(seen, INCIDENT).some((t) => t.startsWith("use the token-leak story"))).toBe(false);
         expect(fieldOf(p, "form/incident").value).toBeNull();
       }
     }

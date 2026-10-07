@@ -9,6 +9,7 @@
 // stops there because those spans have edges punctuation or a closed list sets: a name run, a remark's bracket, a
 // state's name. A phrase in a sentence ("Started at Tallgrass Mechatronics in August") has no such edge, and where it
 // ends would be a guess. The patterns are written for common note and mail text, not measured on a corpus.
+import { createHash } from "node:crypto";
 import type { ValueKind } from "../protocol.ts";
 import { dateShaped, isNameLike, NAME_JOINERS, namesIn, ORG_SUFFIX, textKind, timeShaped } from "./kinds.ts";
 import { splitName, splitPlace } from "./derive.ts";
@@ -76,6 +77,7 @@ export function secretLine(line: string): boolean {
   const m = LABELLED.exec(line);
   return valueKind(line) !== null || (m?.[1] !== undefined && labelKind(m[1]) !== null);
 }
+
 
 /** Lower wins when two values overlap, as the reader decides (TypedValues.swift priority). */
 const PRIORITY: Record<string, number> = { email: 0, url: 1, phone: 2, address: 3, date: 4 };
@@ -445,6 +447,89 @@ export function clauseAround(line: string, at: number, text: string): string | n
   }
   const clause = line.slice(start, stop).trim();
   return clause === text || clause === "" ? null : clause;
+}
+
+/**
+ * G2: the part of a value's clause (clauseAround) that says what the value is, for a date, an email or a phone number:
+ * the comma or semicolon part that holds it, and when that part holds no word of its own beside typed values ("555-0139"
+ * in "my cell, 555-0139, or this email"), the parts either side joined on. A whole sentence did not fit the window's
+ * budget on F1's task notes after their spans (evidence/screen/g2/whose/probe-head.json: the School line's dates and the
+ * reference's phone went out bare); "September 2016 to May 2020" costs four characters beyond its two dates. Null when
+ * that part is the value alone.
+ */
+export function partAround(line: string, at: number, text: string): string | null {
+  const clause = clauseAround(line, at, text);
+  if (clause === null) return null;
+  const from = clause.indexOf(text);
+  if (from < 0) return clause;
+  // Typed values and the value itself are masked, so their own commas ("October 18, 2026") split nothing.
+  let masked = clause;
+  const mask = (i: number, n: number): void => void (masked = masked.slice(0, i) + "\u0001".repeat(n) + masked.slice(i + n));
+  for (const v of lineValues(clause)) mask(v.at, v.text.length);
+  mask(from, text.length);
+  const cuts: [number, number][] = [];
+  let start = 0;
+  for (const m of masked.matchAll(/\s*[,;]\s+/gu)) {
+    cuts.push([start, m.index ?? 0]);
+    start = (m.index ?? 0) + m[0].length;
+  }
+  cuts.push([start, masked.length]);
+  const k = cuts.findIndex(([s, e]) => s <= from && from < e);
+  if (k < 0) return clause;
+  const word = (i: number): boolean => /\p{L}{2,}/u.test(masked.slice(cuts[i]?.[0] ?? 0, cuts[i]?.[1] ?? 0));
+  let [a, b] = [k, k];
+  if (!word(k)) [a, b] = [Math.max(0, k - 1), Math.min(cuts.length - 1, k + 1)];
+  const part = clause.slice(cuts[a]?.[0] ?? 0, cuts[b]?.[1] ?? clause.length).trim().replace(/[.!?;,]+$/u, "");
+  return part === text || part === "" ? null : part;
+}
+
+/**
+ * G2 round 4: a short digest of the neighbourhood of each line of `text` that holds `span` (as the generator reads a line,
+ * bareLine): that line, the one before it and the one after it, each as written but for trailing white space. A fill
+ * records them in the value's write-contract provenance (fill/contract.ts Provenance.lines) and the recheck before a
+ * write takes them again (contract.ts provenanceStale): any edit there refuses the value, a changed sentence around a value that stayed
+ * ("Mobile 555-0164 is my old number"), a line added beside it ("Do not use this old number"), a line put between two it
+ * was joined from ("Landlord" between a first and a last name). Refusing after a nearby edit is the accepted cost. The
+ * digests, not the lines, travel with the proposal, so no more screen text reaches a consumer.
+ */
+export function lineDigests(text: string, span: string): string[] {
+  // G2 round 5: a span over several lines ("4410 Speedway\napt 2") covers each of them; its digest is of all of them and
+  // the line before and after. Each of its lines is read as the generator reads a line (bareLine).
+  // Blank lines at either end of the span are no part of it; one inside it is (G2 round 6: "4410 Speedway\n\napt 2"
+  // found no lines, so its unchanged offer failed the recheck).
+  const want = span.split(/\r?\n/u).map(bareLine);
+  while (want.length > 0 && want[0] === "") want.shift();
+  while (want.length > 0 && want[want.length - 1] === "") want.pop();
+  if (want.length === 0) return [];
+  const lines = text.split(/\r?\n/u).map((l) => l.replace(/\s+$/u, ""));
+  const bare = lines.map(bareLine);
+  const out: string[] = [];
+  for (let i = 0; i + want.length <= lines.length; i++) {
+    const k = want.length;
+    const fits = k === 1 ? (bare[i] as string).includes(want[0] as string) : (bare[i] as string).endsWith(want[0] as string) && want.slice(1, -1).every((w, j) => bare[i + 1 + j] === w) && (bare[i + k - 1] as string).startsWith(want[k - 1] as string);
+    if (!fits) continue;
+    const hood = [lines[i - 1] ?? "", ...lines.slice(i, i + k), lines[i + k] ?? ""].join("\n");
+    out.push(createHash("sha256").update(hood).digest("hex").slice(0, 16));
+  }
+  return out;
+}
+
+/**
+ * A text's lines as the generator reads them (bareLine), a line joined to the one before when it goes on with that one's
+ * sentence (the one before ends with no ".", "!", "?", ";" or ":" and this one starts in lowercase), as candidates.ts
+ * lineFact reads a wrapped sentence. A note's lines that end with no stop stay apart: joined, every line of a list read
+ * as one sentence. The recheck finds a value's span in these (fill/contract.ts provenanceStale).
+ */
+export function logicalLines(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.split(/\r?\n/u)) {
+    const l = bareLine(raw);
+    if (l === "") continue;
+    const prev = out[out.length - 1];
+    if (prev !== undefined && !/[.!?;:]$/u.test(prev) && /^\p{Ll}/u.test(l)) out[out.length - 1] = `${prev} ${l}`;
+    else out.push(l);
+  }
+  return out;
 }
 
 /**

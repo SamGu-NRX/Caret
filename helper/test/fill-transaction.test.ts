@@ -384,7 +384,7 @@ describe("what a Fill all writes, control by control (D2-04)", () => {
     expect(g.fields.map((f) => [f.value, f.context])).toEqual([["Canada", null], ["2026-10-20", "Start"]]);
     expect(recheckFill(m, g, () => null)).toBeNull();
     m.apply(snap([field("te/note", "Not Canada\nStart: Tuesday, October 20, 2026", { role: "AXTextArea" })], { at: 1100, windowId: "note", title: "Details.txt", app: NOTE_APP }));
-    expect(recheckFill(m, g, () => null)).toBe("the source te/note changed");
+    expect(recheckFill(m, g, () => null)).toBe("the source te/note changed: what its source says around it changed");
   });
 
   it("never offers the review's marketing and certification boxes, nor ticks a conditional statement even as a hand-off (R1, R5)", async () => {
@@ -403,7 +403,7 @@ describe("what a Fill all writes, control by control (D2-04)", () => {
     expect(g.fields.map((f) => [f.value, f.context])).toEqual([[PAGE_CHECKED, "Valid driving license"]]);
     expect(recheckFill(m, g, () => null)).toBeNull();
     m.apply(snap([field("te/note", "Valid driving license: no\nNeeds renewal: yes", { role: "AXTextArea" })], { at: 1100, windowId: "note", title: "Details.txt", app: NOTE_APP }));
-    expect(recheckFill(m, g, () => null)).toBe("the source te/note changed");
+    expect(recheckFill(m, g, () => null)).toBe("the source te/note changed: what its source says around it changed");
   });
 
   it("never asks about a box whose nearest text is a sign-up, and leaves a switch's tick to the user", async () => {

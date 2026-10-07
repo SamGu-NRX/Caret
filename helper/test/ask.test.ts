@@ -168,7 +168,9 @@ function jevBy(pick: (q: string) => string | null, owner: (d: string) => string 
     const answers = Object.fromEntries(
       Object.entries(req.questions).map(([id, q]) => {
         const ins = String(q.instructions);
-        if (id.endsWith("_whose")) return [id, { choice: "user", confidence: 0.9 }];
+        // G2 review: a field that wants the user's details takes only a value both asks call the user's; a landlord's
+        // field wants someone else's.
+        if (id.endsWith("_whose")) return [id, { choice: /landlord/iu.test(ins) ? "other" : "user", confidence: 0.9 }];
         if (id.endsWith("_owner")) return [id, { choice: owner(ins), confidence: 0.9 }];
         if ("yes" in q.criteria) return [id, { choice: confirm(ins), confidence: 0.9 }];
         const want = pick(ins);
@@ -676,7 +678,8 @@ describe("what B26's blind held-out-2 run found", () => {
 
   it("confirms a writer's list of every empty field as the whole form, with one question", async () => {
     const pick = (q: string): string | null => (q.includes("'Landlord name'") ? "Gary Pruitt" : q.includes("'Landlord phone'") ? "(512) 555-0193" : null);
-    const jev = jevBy(pick, () => "user", () => "yes");
+    // G2 review: the landlord's name and phone are someone else's, as the landlord's fields want.
+    const jev = jevBy(pick, () => "other", () => "yes");
     const every = (s: IntentSnapshot): string[] => s.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
     const d = await planAsk("fill out the landlord application from my note", desk(), memory, about, { askJev: jev.ask, maker: maker((s) => ({ fields: every(s) })), writer: null, offerKey: "h2-1", windowId: "form", now: 2000 });
     const confirms = jev.seen.filter((r) => Object.values(r.questions).some((q) => "yes" in q.criteria));

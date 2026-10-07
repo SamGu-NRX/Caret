@@ -24,8 +24,8 @@ import { PROTOCOL_VERSION, type GoalAccept, type GoalEdit, type GoalProgress, ty
 import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
 import { isDerived } from "./gates.ts";
-import { sourceHolds } from "../offers/fill-popup.ts";
 import { memoryWrites, parseMemoryRef } from "../fill/fill.ts";
+import { identityKey } from "../fill/whose.ts";
 import { continuationScope, pageInputKeys } from "./page-planner.ts";
 import { pageView } from "./page-view.ts";
 import { describeField } from "../fill/descriptor.ts";
@@ -528,6 +528,13 @@ export class GoalRuns {
       // W2: a copied value's source must still say what it said when its value was checked (fill/contract.ts).
       const m = s.kind === "write" ? run.mints.get(`${seg.index}:${s.ref}`) : undefined;
       if (m !== undefined && provenanceStale(this.sourcesOf(run), m.provenance) !== null) return { reason: "sourceChanged", says: `what '${s.target.label}' was copied from changed since Caret planned this` };
+      // G2: a value code decided was the user's by their identity in memory, a part split from one included, holds only
+      // while the entry is still that identity (no way to read the entry is no entry).
+      const id = v.fill?.identity;
+      if (id !== undefined) {
+        const now = this.deps.aboutNow?.(id.memoryId) ?? null;
+        if (now === null || identityKey(id.kind, now.value) !== id.key) return { reason: "sourceChanged", says: `what you told Caret about yourself, which '${s.target.label}' rests on, changed or is gone` };
+      }
       if (v.source === null) continue;
       if (!this.sourceShows(run, v)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
     }
@@ -540,8 +547,9 @@ export class GoalRuns {
   }
 
   /**
-   * Whether a value's source window still shows it: a value fill read (P2) the way fill read it (offers/fill-popup.ts
-   * sourceHolds, the same rule a Fill all's recheck holds it to), any other the text it copies (an event its sentence).
+   * Whether a value's source window still shows it: a value fill read (P2) by its write-contract provenance (fill/
+   * contract.ts provenanceStale, the one recheck a Fill all's acceptance and every write's guard hold it to; I1: it
+   * replaced offers/fill-popup.ts sourceHolds here), any other the text it copies (an event its sentence).
    */
   private sourceShows(run: Run, v: NonNullable<GoalStep["value"]>): boolean {
     const src = v.source;
@@ -549,7 +557,8 @@ export class GoalRuns {
     // I6: a value from the tab the user left is shown only while this goal still holds that tab's text.
     const sw = (this.deps.sourceModel?.(run.plan.goalId) ?? this.deps.model).windows.get(src.windowId);
     if (sw === undefined) return false;
-    if (v.fill !== undefined) return sourceHolds(sw, src.key, v.fill.span, v.fill.context, v.fill.control);
+    // A fill value always carries its provenance (goals/page-planner.ts); one without is not shown.
+    if (v.fill !== undefined) return v.provenance !== undefined && provenanceStale(this.sourcesOf(run), v.provenance) === null;
     const node = sw.nodes.get(src.key);
     const want = v.event?.sentence ?? v.text;
     const typed = sw.values.some((x) => x.nodeKey === src.key && x.text === want);
@@ -1104,7 +1113,7 @@ export class GoalRuns {
     const blank = (v: ValueBinding): ValueBinding => {
       for (const t of [v.text, v.fill?.span ?? "", v.fill?.context ?? ""]) if (t.trim() !== "") quoted.add(t);
       // W2: the write contract's provenance and mint quote the source too (its span, line and label); a goal that ended
-      // needs neither.
+      // needs neither. I1: G2's clause and source texts now travel only in the provenance, so they go with it.
       const { provenance: _p, checked: _c, ...rest } = v;
       return { ...rest, text: "", display: "", ...(v.fill === undefined ? {} : { fill: { ...v.fill, span: "", context: null } }) };
     };

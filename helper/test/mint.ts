@@ -5,7 +5,8 @@
 // the drafter would have thrown.
 import { Plan } from "../src/executor/schema.ts";
 import { resolveLocally } from "../src/executor/target.ts";
-import { checkValues, ContractError, fieldContract, makeFieldContract, mintExempt, type CheckedValue, type FieldContract, type Provenance } from "../src/fill/contract.ts";
+import { checkValues, ContractError, fieldContract, makeFieldContract, mintExempt, windowProvenance, type CheckedValue, type FieldContract, type Provenance } from "../src/fill/contract.ts";
+import type { ScreenModel } from "../src/model.ts";
 import { fieldPart } from "../src/fill/derive.ts";
 import { fieldKinds } from "../src/fill/kinds.ts";
 import type { Control } from "../src/fill/controls.ts";
@@ -53,7 +54,8 @@ export async function validateMinted(raw: unknown, slots: Record<string, string>
       throw e;
     }
     const t = traceValue(text, ctx.model, ctx.memory, ctx.instruction);
-    const provenance: Provenance = t?.from === "window" ? { kind: "window", windowId: t.windowId, nodeKey: t.nodeKey ?? "", app: "", title: "", span: text, label: null, line: null, partOf: null, context: null, sentences: [] } : t?.from === "memory" ? { kind: "memory", id: t.id, label: "", part: null, whose: "user" } : { kind: "instruction", span: text };
+    // I1: a window value's provenance records the lines around it, as fill's does (contract.ts windowProvenance).
+    const provenance: Provenance = t?.from === "window" ? windowProvenance(ctx.model.windows.get(t.windowId), { text, context: null, source: { windowId: t.windowId, nodeKey: t.nodeKey ?? "", appName: "", windowTitle: "" } }) : t?.from === "memory" ? { kind: "memory", id: t.id, label: "", part: null, whose: "user" } : { kind: "instruction", span: text };
     const r = await checkValues([{ field, text, display: text, provenance, owner: null }], { askJev: exactJev, ledger: null, instruction: ctx.instruction, now: 0 });
     const ok = r.ok[0];
     if (ok !== undefined) mints.set(slot, ok);
@@ -85,9 +87,11 @@ export function targetField(t: Omit<TargetBinding, "field">): FieldContract | un
 /**
  * A hand-built fill proposal with each field it writes minted by the write contract (fill/contract.ts), for tests of
  * what comes after proposeFill: a text value through checkValues (its field read from the key and descriptor alone), a
- * saved answer and a control's value under their exemptions. Throws when the contract refuses a test's value.
+ * saved answer and a control's value under their exemptions. Throws when the contract refuses a test's value. I1: with
+ * `model`, a window value's provenance records the lines around it there (contract.ts windowProvenance), as fill's does;
+ * without it, it records none, and the recheck before a write never holds it.
  */
-export async function minted(p: FillProposal): Promise<FillProposal> {
+export async function minted(p: FillProposal, model?: ScreenModel): Promise<FillProposal> {
   for (const f of p.fields) {
     const text = f.value ?? (f.handoff?.writes === true ? f.handoff.value : null);
     if (text === null) continue;
@@ -95,7 +99,7 @@ export async function minted(p: FillProposal): Promise<FillProposal> {
     const control = f.control as Control;
     const field = makeFieldContract({ windowId: p.windowId, node: { key: f.key, parent: null, role: "AXTextField", label }, descriptor: f.descriptor, name: label, labelWords: [label], control, kinds: control === "text" ? fieldKinds([label]) : new Set(), part: null });
     const source = f.source ?? f.handoff?.source ?? null;
-    const provenance: Provenance = f.answer !== undefined ? { kind: "answer", id: f.answer.id, question: f.memory?.label ?? "" } : source !== null ? { kind: "window", windowId: source.windowId, nodeKey: source.nodeKey, app: source.appName, title: source.windowTitle, span: text, label: null, line: null, partOf: null, context: null, sentences: [] } : { kind: "instruction", span: text };
+    const provenance: Provenance = f.answer !== undefined ? { kind: "answer", id: f.answer.id, question: f.memory?.label ?? "" } : source !== null ? windowProvenance(model?.windows.get(source.windowId) ?? undefined, { text, context: null, source }) : { kind: "instruction", span: text };
     const proposed = { field, text, display: text, provenance, owner: null };
     if (f.answer !== undefined) bindMint(f, p.windowId, mintExempt(proposed, "savedAnswerShown", 0));
     else if (control !== "text" && control !== "combobox") bindMint(f, p.windowId, mintExempt(proposed, control === "checkbox" ? "boxFromLabelledLine" : control === "date" || control === "time" ? "resolverFormat" : "optionLabel", 0));

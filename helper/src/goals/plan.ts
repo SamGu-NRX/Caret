@@ -72,14 +72,25 @@ export interface ValueBinding {
   owner: "user" | "other" | null;
   /**
    * P2: how fill read a value the page planner took from proposeFill (goals/page-planner.ts), which the source must still
-   * show the same way right before the write (offers/fill-popup.ts sourceHolds): the span the pick came from, the label
+   * show the same way right before the write (fill/contract.ts provenanceStale, on `provenance`): the span the pick came from, the label
    * of the "Label: value" line it was read from, and the control it was read for. `text` is then what the control takes
    * (an option's name, a resolved date), which need not be a span of the source. `memoryLabel`: for a value from what
    * the user told Caret, the entry's label then, which decided the fields it was offered to (fill/about.ts), so a
    * renamed entry no longer stands behind it (P2 review). Absent for every other value.
    */
-  fill?: { span: string; context: string | null; control: string; memoryLabel?: string };
-  /** W2: where the value was read, as the write contract carries it (fill/contract.ts Provenance); absent for a draft or an event. */
+  fill?: {
+    span: string;
+    context: string | null;
+    control: string;
+    memoryLabel?: string;
+    /** G2: the memory identity that made the value the user's (FillField.basis.identity), which must still hold. */
+    identity?: { memoryId: string; kind: "email" | "phone" | "name"; key: string };
+  };
+  /**
+   * W2: where the value was read, as the write contract carries it (fill/contract.ts Provenance); absent for a draft or
+   * an event. I1: it holds the digests of the source lines around the value that G2 kept in `fill` (clause, lines, from,
+   * how); the one recheck before each write (contract.ts provenanceStale) takes them from here.
+   */
   provenance?: Provenance;
   /** W2: the mint fill made for this very value in its target (goals/page-planner.ts), which lowering passes on. */
   checked?: CheckedValue;

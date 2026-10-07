@@ -145,7 +145,11 @@ describe("proposeFill with values the user told Caret", () => {
     const email = p.fields.find((f) => f.key === key("Email"));
     expect(email).toMatchObject({ value: "sam.rivera@example.com", memory: null, source: { windowId: SRC } });
     expect(p.fields.find((f) => f.key === key("Name"))).toMatchObject({ value: "Sam Rivera", memory: { id: NAME.id } });
-    expect(requests.find((r) => r.questions.f1 !== undefined)?.snippets.filter((s) => s.windowId === "memory").map((s) => s.text)).toEqual(["Sam Rivera", "Name"]);
+    // G2: the window's copy is exactly the user's own email, so its description says so, quoting memory's label, which
+    // is declared as memory.
+    const asked = requests.find((r) => r.questions.f1 !== undefined);
+    expect(asked?.snippets.filter((s) => s.windowId === "memory").map((s) => s.text)).toEqual(["Sam Rivera", "Name", "Email"]);
+    expect(Object.values(asked?.questions ?? {}).some((q) => Object.values(q.criteria).some((d) => d?.startsWith(`"sam.rivera@example.com" (email; the user's own Email, which the user told Caret;`)))).toBe(true);
   });
 
   it("charges a window that shows a memory value inside a line, as sending the value reveals it", async () => {

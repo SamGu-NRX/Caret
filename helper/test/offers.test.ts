@@ -306,10 +306,11 @@ describe("fill pop-up", () => {
     const m = desk();
     // Each field as fill describes it, which recheckFill compares with the form as it is now.
     const form = m.windows.get(FORM)!;
-    const p = await writtenMinted(proposal([nameField, phoneField].map((f) => ({ ...f, descriptor: describeField(form, form.nodes.get(f.key)!).text }))));
+    // Minted on this desk, so each value's provenance records the lines it was read from (I1).
+    const p = writtenFields(await minted(proposal([nameField, phoneField].map((f) => ({ ...f, descriptor: describeField(form, form.nodes.get(f.key)!).text }))), m));
     expect(recheckFill(m, p, () => null)).toBeNull();
     m.apply(snap([text(MK("statictext:dana whitfield~0"), "Dana W.")], { at: 4000, windowId: SRC, title: "Order confirmation", app: MAIL_APP, root: MK("statictext:dana whitfield~0") }));
-    expect(recheckFill(m, p, () => null)).toBe(`the source ${MK("statictext:dana whitfield~0")} changed`);
+    expect(recheckFill(m, p, () => null)).toMatch(new RegExp(`^the source ${MK("statictext:dana whitfield~0")} changed: `));
     const filled = desk();
     filled.apply(snap([field(FK("textfield:phone~0"), "555")], { at: 4000, windowId: FORM, title: "Checkout {{x}}", root: FK("textfield:phone~0") }));
     expect(recheckFill(filled, p, () => null)).toBe(`the field ${FK("textfield:phone~0")} is no longer empty`);

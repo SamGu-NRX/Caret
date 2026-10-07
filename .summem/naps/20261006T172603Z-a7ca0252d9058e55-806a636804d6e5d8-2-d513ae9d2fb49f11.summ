@@ -1,0 +1,1 @@
+H14/page inline: once Chrome web AX is on, native ghost text sees page fields but Chrome ignores AX writes (HostCoordinator yields via PageInline.nativeYields); PageTaskMachine.publish must invalidate its own live offer before republishing or onDisplaced puts the task away.
