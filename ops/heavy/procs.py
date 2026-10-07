@@ -214,9 +214,30 @@ def inherited_lock_fd(path, fd=None):
     return fd
 
 
+def inherited_lock_fd_if_any(path):
+    """inherited_lock_fd(path) when this process inherited a descriptor for *path*, else None.
+
+    The shared queue's runner may hold heavy.lock for each job and hand the job its descriptor, as
+    it does slot.lock. Holding that same open file is the only proof the lock is this job's: a
+    LOCK_EX through it is a no-op, and through any other open file it fails.
+    """
+    try:
+        target = os.stat(path)
+    except FileNotFoundError:
+        return None
+    for name in os.listdir("/dev/fd"):
+        candidate = int(name)
+        try:
+            if candidate > 2 and os.path.samestat(os.fstat(candidate), target) and os.get_inheritable(candidate):
+                return inherited_lock_fd(path)
+        except OSError:
+            continue
+    return None
+
+
 # launchd
 
-_SERVICE = re.compile(r"^\s+(-|\d+)\s+(\S+)\s+(\S+)\s*$")
+_SERVICE =re.compile(r"^\s+(-|\d+)\s+(\S+)\s+(\S+)\s*$")
 
 
 def launchd_jobs(prefix, uid=None):

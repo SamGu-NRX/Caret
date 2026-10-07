@@ -30,6 +30,8 @@ The queue's command is a relay that stays in the queue's process group. It start
 
 The supervisor, not the recipe, owns the rig's heavy lease (run `caret`, owner = the supervisor's pid) and `~/.long-run/locks/heavy.lock`. It renews the lease every 300 s (TTL 15 minutes), so mem-guard keeps seeing it. Leases are reaped only when their owner is gone (see "Rig changes" below). Recipes therefore take no lease of their own. For VM jobs the supervisor takes none, because rig-run takes the heavy and vm leases and heavy.lock itself.
 
+The queue's owner has been asked to make the runner hold heavy.lock for each job. That only works without deadlock if the runner passes its locked descriptor to the job, as it already passes slot.lock. The relay looks for an inherited heavy.lock descriptor and proves it holds the lock (a flock through it succeeds while a fresh open of the file is refused). If it does, the supervisor uses that descriptor instead of taking the lock, and passes it on to the recipe with `RIG_HEAVY_LOCK_FD`, which rig-run checks the same way before using it. With no inherited descriptor, as in today's queue, the supervisor takes heavy.lock itself. A runner that holds heavy.lock without passing it makes every job wait out its lease wait and end with 75, with a reason that says so. The recipe inherits the slot and heavy.lock descriptors too, so if the supervisor itself is SIGKILLed, neither frees while a recipe process that kept them is alive.
+
 A job owns every process that
 - is in the process group the supervisor made for the recipe;
 - descends from an owned process (recorded by pid and start time, so a reused pid never counts);
@@ -96,16 +98,16 @@ Every job is enqueued with `--wait-absent ~/.caret-run/HOLD`. While HOLD exists 
 
 ```sh
 cd '/Users/samgu/Programming Projects/caret-ops-heavy/ops/heavy/tests'
-/opt/homebrew/opt/python@3.14/bin/python3.14 -B -m unittest -v test_units test_supervisor   # about two minutes
+/opt/homebrew/opt/python@3.14/bin/python3.14 -B -m unittest -v test_units test_recipes test_supervisor   # about three minutes
 ~/.long-run/rig/bin/test-rig-run-heavy-lock.sh
 cd ~/.long-run/bin && node --test lr-lease.test.mjs
 ```
 
-`test_supervisor` runs the real queue runner, relay, supervisor, lr-lease, lr-reap, rig-stop and launchd, with real processes, against a temporary queue state, HOLD path, lease directory, zero-floor lease policy, heavy.lock and scratch repositories. The profile and the evidence are synthetic. Each test waits up to 90 s for normal memory pressure and skips if it never comes. `RealVm` is written but skipped: it boots and cancels a real rig VM, and runs only with `CARET_HEAVY_VM_TEST=1`, HOLD released and 15 GiB free.
+`test_supervisor` runs the real queue runner, relay, supervisor, lr-lease, lr-reap, rig-stop and launchd, with real processes, against a temporary queue state, HOLD path, lease directory, zero-floor lease policy, heavy.lock and scratch repositories. The profile and the evidence are synthetic. `RunnerHeavyLock` runs the queue's own code with one addition, `tests/run_queue_holding_heavy_lock.py`, which holds heavy.lock and passes it to each job, to stand in for the proposed runner change. `test_recipes` runs the recipe scripts directly with stub `pnpm`, `node`, `npx`, `rig-run` and Lume (`tests/stubs`); r2-prepare's build and staging have no test beyond `bash -n`. Each test waits up to 90 s for normal memory pressure and skips if it never comes. `RealVm` is written but skipped: it boots and cancels a real rig VM, and runs only with `CARET_HEAVY_VM_TEST=1`, HOLD released and 15 GiB free.
 
 ## Rig changes this relies on
 
 - `~/.long-run/bin/lr-lease-core.mjs` reaps a lease only when its owner is gone, or its pid now belongs to a process started more than 2 s after the lease. Expiry alone no longer reaps a live owner. `lr-lease renew ID --owner-pid PID --ttl MIN` extends a live lease, because mem-guard only picks victims among unexpired leases.
-- `~/.long-run/rig/bin/rig-run` takes `heavy.lock` after its two leases, so a VM cannot start beside a build that holds the lock. A busy lock counts as a refusal and releases both leases. Test: `test-rig-run-heavy-lock.sh`.
+- `~/.long-run/rig/bin/rig-run` takes `heavy.lock` after its two leases, so a VM cannot start beside a build that holds the lock. A busy lock counts as a refusal and releases both leases. With `RIG_HEAVY_LOCK_FD`, it uses an inherited descriptor instead, but only one proven to hold the lock. Test: `test-rig-run-heavy-lock.sh`.
 
 Backups of the originals are in `~/.long-run/backup/20261007-q2-lease-owner/`.

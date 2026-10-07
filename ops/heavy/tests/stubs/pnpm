@@ -1,0 +1,10 @@
+#!/bin/bash
+# Stub pnpm for tests/test_recipes.py: install succeeds unless STUB_INSTALL_EXIT says otherwise; `test` prints a
+# vitest summary, failing in the package named by STUB_FAIL_SUITE.
+case "$1" in
+  install) echo "stub pnpm install in $PWD"; exit "${STUB_INSTALL_EXIT:-0}" ;;
+  test)
+    if [ "${STUB_FAIL_SUITE:-}" = "$(basename "$PWD")" ]; then echo "      Tests  2 failed | 10 passed (12)"; exit 1; fi
+    echo "      Tests  12 passed (12)" ;;
+  *) echo "stub pnpm: unexpected $*" >&2; exit 2 ;;
+esac

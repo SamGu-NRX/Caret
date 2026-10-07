@@ -17,7 +17,7 @@ import time
 import unittest
 import uuid
 
-from support import World, profile  # first: puts ops/heavy on sys.path
+from support import PY as PY_FOR_TESTS, World, profile  # first: puts ops/heavy on sys.path
 import manifest  # noqa: E402
 import procs  # noqa: E402
 
@@ -89,6 +89,33 @@ class Cancellation(World):
         self.assertEqual(self.outcome(second)["exit"], 0)
         self.assertEqual(self.marked(first), [])
 
+    def test_a_sigkilled_supervisor_leaves_the_slot_held_while_the_recipe_lives(self):
+        job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3))
+        self.run_queue("--once", "--max-wait", "10")
+        out = os.path.join(self.run_root(job_id), "out")
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 30), self.queue_log(job_id))
+        with open(os.path.join(self.run_root(job_id), "supervisor.json")) as fh:
+            supervisor = json.load(fh)["supervisor_pid"]
+        os.kill(supervisor, signal.SIGKILL)  # the exact pid of this test's supervisor
+        self.assertTrue(self.wait_for(lambda: self.job(job_id)["state"] == "failed", 20))  # the relay saw no status
+        self.assertEqual(self.job(job_id)["exit_code"], 125)
+        # The recipe inherited the slot and heavy.lock descriptors, so neither is free while it runs.
+        self.assertTrue(procs.lock_held(self.paths["slot_lock"]))
+        self.assertTrue(procs.lock_held(self.paths["heavy_lock"]))
+        for pid in self.marked(job_id):
+            os.kill(pid, signal.SIGKILL)
+        for label in self.labels(job_id):
+            procs.launchd_bootout(label)
+        # The child with an empty environment carries no marker; only the dead supervisor's record knew it. It still
+        # holds the inherited descriptors, so the queue stays blocked instead of starting beside it.
+        empty_env_child = self.spawned(job_id)["empty-env-child"]
+        time.sleep(1)
+        self.assertTrue(self.alive(empty_env_child))
+        self.assertTrue(procs.lock_held(self.paths["slot_lock"]))
+        os.kill(empty_env_child, signal.SIGKILL)  # exact pid the probe recorded
+        self.assertTrue(self.wait_for(lambda: not procs.lock_held(self.paths["slot_lock"]), 10))
+        self.assertFalse(procs.lock_held(self.paths["heavy_lock"]))
+
     def test_leftovers_after_a_clean_exit_are_stopped_and_the_run_still_validates(self):
         job_id, _ = self.enqueue(["leftover"], profile=profile(grace=3))
         self.run_queue("--once", "--max-wait", "10").wait(timeout=90)
@@ -155,6 +182,57 @@ class Lease(World):
         self.assertFalse(os.path.exists(os.path.join(self.run_root(job_id), "recipe.log")))
         self.assertEqual([lease["id"] for lease in self.leases()], [holder])
         self.assertFalse(procs.lock_held(self.paths["heavy_lock"]))
+
+
+class RunnerHeavyLock(World):
+    """heavy.lock with today's queue (the supervisor takes it) and with a runner that holds it and passes its descriptor
+    (the coordinator's proposal, simulated by tests/run_queue_holding_heavy_lock.py). Neither may deadlock, and in both
+    the recipe gets a descriptor that rig-run's proof accepts."""
+
+    def run_lock_proof(self, holding):
+        job_id, _ = self.enqueue(["lock-proof", self.paths["heavy_lock"]])
+        lease_only, _ = self.enqueue(["ok"], profile=profile(lease=False))
+        self.assertEqual(self.run_queue("--max-wait", "10", holding_heavy_lock=holding).wait(timeout=120), 0)
+        return job_id, lease_only
+
+    def test_today_the_supervisor_takes_heavy_lock_itself(self):
+        job_id, vm_like = self.run_lock_proof(holding=False)
+        outcome = self.outcome(job_id)
+        self.assertEqual(outcome["exit"], 0, outcome["reason"])
+        admitted = next(e for e in outcome["events"] if e["event"] == "admitted")
+        self.assertEqual(admitted["heavy_lock"], "taken")
+        with open(os.path.join(self.run_root(job_id), "out", "lock-proof.txt")) as fh:
+            self.assertEqual(fh.read().strip(), "held-through-fd")
+        admitted = next(e for e in self.outcome(vm_like)["events"] if e["event"] == "admitted")
+        self.assertEqual(admitted["heavy_lock"], "left to rig-run")
+        self.assertFalse(procs.lock_held(self.paths["heavy_lock"]))
+
+    def test_a_runner_holding_heavy_lock_hands_it_down_without_deadlock(self):
+        job_id, vm_like = self.run_lock_proof(holding=True)
+        outcome = self.outcome(job_id)
+        self.assertEqual(outcome["exit"], 0, outcome["reason"])
+        admitted = next(e for e in outcome["events"] if e["event"] == "admitted")
+        self.assertEqual(admitted["heavy_lock"], "inherited from the queue runner")
+        self.assertIn("holds the slot and the runner's heavy.lock", self.queue_log(job_id))
+        with open(os.path.join(self.run_root(job_id), "out", "lock-proof.txt")) as fh:
+            self.assertEqual(fh.read().strip(), "held-through-fd")
+        admitted = next(e for e in self.outcome(vm_like)["events"] if e["event"] == "admitted")
+        self.assertEqual(admitted["heavy_lock"], "inherited from the queue runner")
+        self.assertEqual(self.leases(), [])
+        self.assertFalse(procs.lock_held(self.paths["heavy_lock"]))  # the runner has exited
+
+    def test_a_runner_holding_heavy_lock_without_passing_it_is_a_bounded_named_wait(self):
+        holder = subprocess.Popen([PY_FOR_TESTS, "-c", "import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_RDWR | "
+                                   "os.O_CREAT); fcntl.flock(fd, fcntl.LOCK_EX); print(flush=True); time.sleep(120)",
+                                   self.paths["heavy_lock"]], stdout=subprocess.PIPE)
+        self.addCleanup(lambda: (holder.kill(), holder.wait(), holder.stdout.close()))
+        holder.stdout.readline()
+        job_id, _ = self.enqueue(["ok"], profile=profile(lease_wait=4))
+        self.run_queue("--once", "--max-wait", "10").wait(timeout=60)
+        outcome = self.outcome(job_id)
+        self.assertEqual(outcome["exit"], 75)
+        self.assertIn("must pass its descriptor to the job", outcome["reason"])
+        self.assertEqual(self.leases(), [])
 
 
 class PostLeaseRecheck(World):

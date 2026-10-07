@@ -1,0 +1,3 @@
+#!/bin/bash
+# Stub Lume for tests/test_recipes.py: knows no VM, so R2's feeder never finds a guest to ssh into.
+exit 1

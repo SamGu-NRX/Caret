@@ -1,0 +1,34 @@
+#!/opt/homebrew/opt/python@3.14/bin/python3.14 -I
+"""Stub node for tests/test_recipes.py. `node --test ...` passes. `node [--import HOOK] .../page-loop-eval.ts ...`
+writes the eval's report for its --out set: STUB_WRONG names sets (comma-separated name prefixes) that get one wrong
+value and exit 1. A live run (--engine jev) appends STUB_SPEND USD to today's ledger under HOME, and a live run with a
+wrong value prints the page line, then hangs, so the recipe's watcher must stop it."""
+import datetime, json, os, sys, time
+args = sys.argv[1:]
+if args[:1] == ["--test"]:
+    print("ℹ tests 2\nℹ pass 2\nℹ fail 0")
+    sys.exit(0)
+if args[:1] == ["--import"]:
+    print("hook", args[1], flush=True)
+    args = args[2:]
+assert args[0].endswith("page-loop-eval.ts"), args
+out = args[args.index("--out") + 1]
+name = os.path.basename(out)
+live = "--engine" in args
+if live and not os.environ.get("CARET_ENV_FILE"):
+    sys.exit("stub node: live run without CARET_ENV_FILE")
+wrong = 1 if any(name.startswith(p) for p in os.environ.get("STUB_WRONG", "").split(",") if p) else 0
+if live:
+    ledger = os.path.join(os.environ["HOME"], "Library/Application Support/CaretV2/jev-spend",
+                          datetime.date.today().isoformat() + ".ndjson")
+    os.makedirs(os.path.dirname(ledger), exist_ok=True)
+    with open(ledger, "a") as fh:
+        fh.write(json.dumps({"usd": float(os.environ.get("STUB_SPEND", "0.01"))}) + "\n")
+    print("[page-loop +1s] p1: walk 1 ms; wrong {}".format(wrong), flush=True)
+    if wrong:
+        time.sleep(120)
+rows = [{"id": "p1", "walk": {"commandMs": 1}, "wrong": ["Email: 'x' (key: y)"] * wrong, "error": None}]
+with open(os.path.join(out, "page-loop.json"), "w") as fh:
+    json.dump({"rows": rows, "presses": 0, "posts": 0, "spent": 0}, fh)
+print("[page-loop] pages 1, walked 1, wrong {}".format(wrong))
+sys.exit(1 if wrong else 0)

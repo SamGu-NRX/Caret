@@ -21,7 +21,9 @@ set +x
 unset K_JEV TYPESAFE_API_KEY GROQ_API_KEY
 HERE=$(cd "$(dirname "$0")" && pwd)
 R="$HOME/.long-run/rig"
-LUME=/Users/samgu/.local/share/lume/lume.app/Contents/MacOS/lume
+# Test only: CARET_HEAVY_TEST_LUME replaces Lume (tests/test_recipes.py). The supervisor's environment allowlist never
+# passes it to a real job.
+LUME=${CARET_HEAVY_TEST_LUME:-/Users/samgu/.local/share/lume/lume.app/Contents/MacOS/lume}
 export LUME_TELEMETRY_ENABLED=false
 JOB=""; HARNESS=""; WAIT=3600; CONFIG=""
 while [ $# -gt 0 ]; do

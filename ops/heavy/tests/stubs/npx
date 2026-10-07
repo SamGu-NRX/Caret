@@ -1,0 +1,3 @@
+#!/bin/bash
+# Stub npx for tests/test_recipes.py: tsc with no errors.
+[ "$1" = tsc ] || { echo "stub npx: unexpected $*" >&2; exit 2; }

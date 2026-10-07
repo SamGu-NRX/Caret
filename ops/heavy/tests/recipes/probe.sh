@@ -8,6 +8,8 @@
 #   leftover                     start tracked processes, then ok and exit 0 with them still running
 #   slow-cleanup SECONDS         on TERM, take SECONDS to clean up, write OUT/cleanup-done, exit 143
 #   env-dump                     write this recipe's environment to OUT/env.txt, then ok
+#   lock-proof                   run rig-run's proof that RIG_HEAVY_LOCK_FD holds heavy.lock (HEAVY_LOCK_PATH),
+#                                write the answer to OUT/lock-proof.txt, then ok
 #   rig RIG-RUN ARGS...          run RIG-RUN (tests/fake-rig-run.sh, or the real rig-run) with ARGS, forwarding TERM,
 #                                then ok
 # Tracked processes: a detached process group (setsid), a double-forked orphan, a child with an empty environment,
@@ -67,6 +69,19 @@ case "$MODE" in
     trap 'sleep "$ARG"; date +%s > "$OUT/cleanup-done"; exit 143' TERM
     touch "$OUT/ready"; sleep 600 & wait $! ;;
   env-dump) env > "$OUT/env.txt"; evidence set 0; check page-loop set --exit 0; finish ;;
+  lock-proof)
+    # The same check rig-run's take_heavy_lock makes before using an inherited descriptor.
+    "$PY" -I -c 'import fcntl, os, sys
+fd, path = int(sys.argv[1]), sys.argv[2]
+if not os.path.samestat(os.fstat(fd), os.stat(path)): sys.exit(1)
+probe = os.open(path, os.O_RDONLY)
+try:
+    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    sys.exit(1)
+except BlockingIOError:
+    pass
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' "${RIG_HEAVY_LOCK_FD:-none}" "$ARG" && echo held-through-fd > "$OUT/lock-proof.txt" || echo refused > "$OUT/lock-proof.txt"
+    evidence set 0; check page-loop set --exit 0; finish ;;
   rig)
     shift 2
     /bin/bash "$ARG" "$@" &

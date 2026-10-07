@@ -143,10 +143,13 @@ class World(unittest.TestCase):
             env_file=env_file, ops_repo=self.ops_repo, profile=kw.pop("profile", profile()), **kw)
         return job_id, plan_path
 
-    def run_queue(self, *args, env=None):
-        """Starts the real queue runner in its own session; returns the Popen."""
+    def run_queue(self, *args, env=None, holding_heavy_lock=False):
+        """Starts the real queue runner in its own session; returns the Popen. With holding_heavy_lock, the runner
+        holds heavy.lock and passes it to each job (tests/run_queue_holding_heavy_lock.py)."""
         log = open(os.path.join(self.root, "runner-{}.log".format(len(self.runners))), "ab")
-        runner = subprocess.Popen([PY, caret_heavy.QUEUE, "--state-dir", self.paths["queue_state"], "run", *args],
+        head = [PY, os.path.join(HEAVY, "tests/run_queue_holding_heavy_lock.py"), caret_heavy.QUEUE,
+                self.paths["heavy_lock"]] if holding_heavy_lock else [PY, caret_heavy.QUEUE]
+        runner = subprocess.Popen([*head, "--state-dir", self.paths["queue_state"], "run", *args],
                                   env=dict(self.env, **(env or {})), stdin=subprocess.DEVNULL, stdout=log,
                                   stderr=subprocess.STDOUT, start_new_session=True)
         log.close()

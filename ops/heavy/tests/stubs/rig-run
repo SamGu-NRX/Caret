@@ -1,0 +1,20 @@
+#!/bin/bash
+# Stub rig-run for tests/test_recipes.py: makes the run directory rig-run would copy back, from STUB_* settings, and
+# records the CARET_JEV_DAILY_CAP it was started with.
+JOB=$1
+RUN="$JOB/runs/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+mkdir -p "$RUN/out/jev-spend"
+echo "{\"exit\": ${STUB_RIG_EXIT:-0}}" > "$RUN/rig.json"
+echo "stub rig-run" > "$RUN/rig.log"
+echo "${CARET_JEV_DAILY_CAP:-unset}" > "$RUN/cap-seen.txt"
+/opt/homebrew/opt/python@3.14/bin/python3.14 -I - "$JOB/payload" "$RUN/out" "${STUB_WRONG_ROW:-no}" "${STUB_RESULT_REV:-}" <<'PY'
+import json, os, sys
+payload, out, wrong, rev = sys.argv[1:]
+options = json.load(open(os.path.join(payload, "h11-options.json")))
+rev = rev or open(os.path.join(payload, "REV")).read().strip()
+json.dump({"rev": rev, "options": options, "rows": [{"id": "r1", "wrong": wrong}]}, open(os.path.join(out, "results.json"), "w"))
+open(os.path.join(out, "leak-check.txt"), "w").write("CLEAN (stub)\n")
+open(os.path.join(out, "jev-spend", "day.ndjson"), "w").write('{"usd": 5, "r2Seed": true}\n{"usd": 0.03}\n')
+PY
+[ -z "${STUB_LEAK_KEY_FROM:-}" ] || sed -n 's/^TYPESAFE_API_KEY=//p' "$STUB_LEAK_KEY_FROM" > "$RUN/out/job.log"
+exit "${STUB_RIG_EXIT:-0}"

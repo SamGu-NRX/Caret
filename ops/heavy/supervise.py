@@ -68,8 +68,10 @@ def main(plan_path, plan_digest, plan, argv):
         parser = argparse.ArgumentParser(prog="supervise")
         for name in ("--slot-fd", "--life-fd", "--status-fd"):
             parser.add_argument(name, type=int, required=True)
+        parser.add_argument("--heavy-fd", type=int)
         args = parser.parse_args(argv[1:])
-        return Supervisor(plan_path, plan_digest, plan, args.slot_fd, args.life_fd, args.status_fd).run()
+        return Supervisor(plan_path, plan_digest, plan, args.slot_fd, args.life_fd, args.status_fd,
+                          heavy_fd=args.heavy_fd).run()
     say("boot", "expected relay or supervise, got {}".format(argv[:1]))
     return 2
 
@@ -81,6 +83,8 @@ def relay(plan_path, plan_digest, plan):
     import caret_heavy  # from the same verified snapshot
     try:
         slot_fd = procs.inherited_lock_fd(plan["paths"]["slot_lock"])
+        # A runner that holds heavy.lock for the job passes its descriptor, as it passes the slot's.
+        heavy_fd = procs.inherited_lock_fd_if_any(plan["paths"]["heavy_lock"])
     except procs.Refusal as ex:
         say("relay", "refused: {}".format(ex))
         return EXIT_REFUSED
@@ -88,16 +92,20 @@ def relay(plan_path, plan_digest, plan):
     status_r, status_w = os.pipe()   # supervisor -> relay: the final exit status, after all cleanup
     argv = caret_heavy.boot_argv(plan["python"], plan_path, plan_digest, "supervise", "--slot-fd", str(slot_fd),
                                  "--life-fd", str(life_r), "--status-fd", str(status_w))
+    passed = (slot_fd, life_r, status_w)
+    if heavy_fd is not None:
+        argv += ["--heavy-fd", str(heavy_fd)]
+        passed += (heavy_fd,)
     try:
-        proc = subprocess.Popen(argv, start_new_session=True, pass_fds=(slot_fd, life_r, status_w),
-                                stdin=subprocess.DEVNULL)
+        proc = subprocess.Popen(argv, start_new_session=True, pass_fds=passed, stdin=subprocess.DEVNULL)
     except OSError as ex:
         say("relay", "could not start the supervisor: {}".format(ex))
         return EXIT_ERROR
     # The supervisor now holds the slot; this copy and the pipe ends it owns are closed here.
-    for fd in (slot_fd, life_r, status_w):
+    for fd in passed:
         os.close(fd)
-    say("relay", "supervisor pid {} (session {}) holds the slot".format(proc.pid, proc.pid))
+    say("relay", "supervisor pid {} (session {}) holds the slot{}".format(
+        proc.pid, proc.pid, " and the runner's heavy.lock" if heavy_fd is not None else ""))
     forwarded = []
 
     def forward(signum, _frame):
@@ -134,9 +142,12 @@ def relay(plan_path, plan_digest, plan):
 
 
 class Supervisor:
-    def __init__(self, plan_path, plan_digest, plan, slot_fd, life_fd, status_fd, probes=None):
+    def __init__(self, plan_path, plan_digest, plan, slot_fd, life_fd, status_fd, probes=None, heavy_fd=None):
         self.plan_path, self.plan_digest, self.plan = plan_path, plan_digest, plan
         self.slot_fd, self.life_fd, self.status_fd = slot_fd, life_fd, status_fd
+        # heavy.lock held through the queue runner's descriptor, or None (today's queue): then the supervisor
+        # takes heavy.lock itself, and for VM jobs rig-run does.
+        self.heavy_fd = heavy_fd
         self.profile, self.paths = plan["profile"], plan["paths"]
         self.probes = probes or procs.DarwinProbes()
         self.pid = os.getpid()
@@ -164,6 +175,8 @@ class Supervisor:
         try:
             # The slot must be the queue's, held through this exact open file.
             procs.inherited_lock_fd(self.paths["slot_lock"], self.slot_fd)
+            if self.heavy_fd is not None:
+                procs.inherited_lock_fd(self.paths["heavy_lock"], self.heavy_fd)
             if signal.getsignal(signal.SIGCHLD) not in (signal.SIG_DFL, None):
                 raise procs.Refusal("SIGCHLD must have its default disposition")
             for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -266,13 +279,15 @@ class Supervisor:
                 return "heavy lease: {}".format(got.stdout.strip() or got.returncode)
             self.lease_id = got.stdout.strip()
             self.lease_renewed = time.monotonic()
-            os.makedirs(os.path.dirname(self.paths["heavy_lock"]), exist_ok=True)
-            self.lock_fd = os.open(self.paths["heavy_lock"], os.O_RDWR | os.O_CREAT, 0o644)
-            try:
-                fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                self._release()
-                return "heavy.lock is held by another heavy job"
+            if self.heavy_fd is None:
+                os.makedirs(os.path.dirname(self.paths["heavy_lock"]), exist_ok=True)
+                self.lock_fd = os.open(self.paths["heavy_lock"], os.O_RDWR | os.O_CREAT, 0o644)
+                try:
+                    fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    self._release()
+                    return ("heavy.lock is held by another heavy job (a queue runner that holds it must pass its "
+                            "descriptor to the job)")
         # Rechecked under the lease, just before the heavy work: the queue's admission was a while ago.
         level = self.probes.pressure_level()
         problem = None
@@ -289,7 +304,8 @@ class Supervisor:
         if problem:
             self._release()
             return problem
-        self.log("admitted", lease=self.lease_id, heavy_lock=self.lock_fd is not None)
+        self.log("admitted", lease=self.lease_id, heavy_lock="inherited from the queue runner" if self.heavy_fd is not None
+                 else "taken" if self.lock_fd is not None else "left to rig-run")
         self.record["lease"] = {"id": self.lease_id, "renewals": 0, "renew_failures": []}
         return None
 
@@ -326,13 +342,18 @@ class Supervisor:
             "CARET_HEAVY_PY": self.plan["python"], "CARET_HEAVY_REV": self.plan["rev"],
             "CARET_HEAVY_RECIPES": os.path.join(self.plan["ops"]["snapshot"], "ops/heavy/recipes"),
         }
-        if self.profile["lease"]:
-            # This supervisor holds heavy.lock; Caret's scripts would otherwise wait on it from a child.
-            env.update(CARET_HEAVY_LOCK_HELD="1", CARET_NO_LOCK="1")
+        held = self._held_heavy_fd()
+        if held is not None:
+            # heavy.lock is held for this job; Caret's scripts would otherwise wait on it from a child, and rig-run
+            # proves the descriptor holds it (flock through it) before using it instead of taking its own.
+            env.update(CARET_HEAVY_LOCK_HELD="1", CARET_NO_LOCK="1", RIG_HEAVY_LOCK_FD=str(held))
         env.update(self.plan["env"])
         if self.plan["recipe"]["live"]:
             env["CARET_ENV_FILE"] = self.plan["env_file"]
         return env
+
+    def _held_heavy_fd(self):
+        return self.heavy_fd if self.heavy_fd is not None else self.lock_fd
 
     def _run_recipe(self):
         started_abstime = self.probes.now_abstime()
@@ -340,16 +361,18 @@ class Supervisor:
         vz_before = set(self._vz_pids())
         started_wall = time.time()
         log = open(os.path.join(self.run_root, "recipe.log"), "ab")
+        # The recipe inherits the slot and heavy.lock descriptors as the queue intends: if this supervisor is
+        # SIGKILLed, the slot and lock stay held while a recipe process that kept them is alive.
+        held = tuple(fd for fd in (self.slot_fd, self._held_heavy_fd()) if fd is not None)
         try:
             proc = subprocess.Popen(["/bin/bash", self.plan["recipe"]["script"], *self.plan["recipe"]["args"]],
                                     cwd=self.plan["worktree"], env=self._recipe_env(), stdin=subprocess.DEVNULL,
-                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True, pass_fds=held)
         finally:
             log.close()
         self.tracker.add_leader(proc.pid)
         self.log("recipe started", pid=proc.pid, pgid=proc.pid)
         stop = self._watch(proc)
-        status = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
         proc.wait()
         recipe_exit = proc.returncode if proc.returncode >= 0 else 128 - proc.returncode
         self.record["recipe"] = {"pid": proc.pid, "exit": recipe_exit, "owned_seen": sorted(self.tracker.tracked),
