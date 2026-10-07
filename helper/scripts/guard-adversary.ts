@@ -39,6 +39,7 @@ import { GoalError } from "../src/goals/lower.ts";
 import { macClock } from "../src/offers/event-time.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { PlannerError } from "../src/planner/validate.ts";
+import { cannedReply, type CannedAnswer, type CannedRules } from "../src/engines/decide/canned.ts";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { aboutKind, type AboutValue } from "../src/fill/about.ts";
 import { words } from "../src/fill/kinds.ts";
@@ -46,7 +47,7 @@ import { writtenFields } from "../src/offers/fill-popup.ts";
 import { pageInputNodes } from "../src/goals/page-planner.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
-import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
+import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { PageSnapshot, PROTOCOL_VERSION, Snapshot, type Node } from "../src/protocol.ts";
 import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, T0, type Corpus, type CorpusForm } from "./realfill-corpus.ts";
 
@@ -290,40 +291,52 @@ function* askDesks(set: string, file: string): Generator<Desk> {
   }
 }
 
-const result = (answers: JevResult["answers"], nouls?: Record<string, number>): JevResult => ({ model: "adversary", answers, ...(nouls === undefined ? {} : { nouls }), inputTokens: 0, latencyMs: 0, costUsd: 0 });
 
 /**
- * The stand-in for Jev. Each value question (fill.ts f<i>) of a field in `picks` takes the option whose traced text
- * (FillTrace) is the pick, when the question offers it; every other value question none. Whose and owner questions say
- * the user's, which vetoes least; the goal gate's and other yes/no questions say no; Ask's heads take code's reading
- * from any source for the user, as realfill-asks' canned oracle does, and its field yes/no heads say no.
+ * The stand-in for Jev, by kind of question (engines/decide/canned.ts: a kind with no rule throws). Each fill value
+ * question of a field in `picks` takes the option whose traced text (FillTrace) is the pick, when the question offers
+ * it; every other value question none. Whose and owner questions say the user's, which vetoes least; the goal gate's
+ * and the Ask's yes/no confirmations say no; Ask's heads take code's reading from any source for the user (the goal path
+ * settles the whole form, as page-loop-eval's canned heads do), and its field yes/no heads say no.
  */
 function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { traces: FillTrace[]; requests: JevRequest[] }, scopeHead: "all" | "unclear"): { ask: AskJev; trace: (t: FillTrace) => void } {
-  // page-loop-eval's canned heads settle the whole form ("all"); realfill-asks' oracle leaves scope to code ("unclear").
   const heads: Record<string, string> = { reading: "code", scope: scopeHead, why: "nothingToFill", source: "any", whose: "user", section: "none" };
+  const user = (): CannedAnswer => "user";
+  const no = (): CannedAnswer => "no";
+  const value = (q: JevRequest["questions"][string], id: string, req: JevRequest): CannedAnswer => {
+    // The proposal that sent this request (FillTrace.owns): planPage asks its parts at once.
+    const t = seen.traces.find((x) => x.owns(req));
+    const key = t?.fields.find((f) => f.id === id)?.key;
+    const want = key === undefined ? undefined : picks.get(key);
+    const hit = want === undefined || t === undefined ? undefined : Object.keys(q.criteria).find((k) => t.options.get(k)?.text === want);
+    return hit ?? "none";
+  };
+  const rules: CannedRules = {
+    model: "adversary",
+    confidence,
+    choice: {
+      ...Object.fromEntries(Object.entries(heads).map(([k, v]) => [`ask.heads:${k}`, () => v])),
+      "ask.confirm:all": no,
+      "ask.confirm:field": no,
+      "fill.whose:whose": user,
+      "fill.whose:owner": user,
+      "fill.values:whose": user,
+      "fill.values:owner": user,
+      "fill.values:value": value,
+      "fill.values:answer": () => "none",
+      "plan.verify:value": no,
+      "plan.verify:whose": user,
+      "plan.verify:owner": user,
+    },
+    noul: { "ask.heads:field": () => 0.01 },
+  };
   return {
     trace: (t) => {
       seen.traces.push(t);
     },
     ask: async (req) => {
       seen.requests.push(req);
-      const answers: JevResult["answers"] = {};
-      for (const [id, q] of Object.entries(req.questions)) {
-        const keys = Object.keys(q.criteria);
-        const choose = (k: string): string => (keys.includes(k) ? k : keys.includes("none") ? "none" : (keys[0] ?? "none"));
-        if (id.endsWith("_whose") || id.endsWith("_owner")) answers[id] = { choice: choose("user"), confidence };
-        else if (id in heads) answers[id] = { choice: choose(heads[id] as string), confidence };
-        else if (keys.includes("yes") && keys.includes("no")) answers[id] = { choice: "no", confidence };
-        else if (/^f\d+$/u.test(id)) {
-          // The proposal that sent this request (FillTrace.owns): planPage asks its parts at once.
-          const t = seen.traces.find((x) => x.owns(req));
-          const key = t?.fields.find((f) => f.id === id)?.key;
-          const want = key === undefined ? undefined : picks.get(key);
-          const hit = want === undefined || t === undefined ? undefined : keys.find((k) => t.options.get(k)?.text === want);
-          answers[id] = { choice: hit ?? "none", confidence };
-        } else answers[id] = { choice: choose("none"), confidence };
-      }
-      return result(answers, req.nouls === undefined ? undefined : Object.fromEntries(Object.keys(req.nouls).map((k) => [k, 0.01])));
+      return cannedReply(req, rules);
     },
   };
 }
