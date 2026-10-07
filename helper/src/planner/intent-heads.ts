@@ -228,7 +228,6 @@ export function readHeads(snap: IntentSnapshot, heads: JevResult, scope: readonl
     const why = settled(heads, "why");
     return { ...base, route: "refuse", why: why !== null && why in WHY ? (why as AskIntent["why"]) : "nothingToFill", scope: "none" };
   }
-  if (route === "plan") return { ...base, route: "plan", why: "none", scope: "none" };
 
   // Which fields: Jev's, field by field. A fill route under its floor is no reason to ask; the fields decide.
   const open: AskPart[] = [];
@@ -246,8 +245,17 @@ export function readHeads(snap: IntentSnapshot, heads: JevResult, scope: readonl
     if (offered.length === 0 && route === "fill" && scope !== null) return { ...base, route: "refuse", why: "noSuchField", scope: "none" };
     open.push("fields");
   }
+  // Every empty field chosen: still a list of exactly those fields (a page goal's "all" would take inputs past the
+  // snapshot, goals/page-planner.ts), whose values fill asks as Fill all does (FillScope.wholeForm).
   const empties = snap.fields.filter((f) => !f.filled);
-  const all = chosen.length === empties.length && empties.every((f) => chosen.includes(f));
+  const wholeForm = chosen.length > 0 && chosen.length === empties.length && empties.every((f) => chosen.includes(f));
+  const jevFields = {
+    scope: "list" as const,
+    fields: open.includes("fields") ? [] : chosen.map((f) => f.ref),
+    ...(open.includes("fields") ? { options: offered.map((f) => f.ref) } : { agreed: true as const, ...(wholeForm ? { wholeForm: true as const } : {}) }),
+  };
+  // A plan carries Jev's fields, so a page host that fills a plan's form fills only those, or asks (ask.ts).
+  if (route === "plan") return { ...base, route: "plan", why: "none", ...jevFields };
   // In scope for tying values: the chosen fields, or the offered ones when the fields are asked (applyFixed keeps a
   // literal only on a field the user then picks).
   const typable = (open.includes("fields") ? offered : chosen).filter((f) => f.neverTyped === null);
@@ -289,17 +297,7 @@ export function readHeads(snap: IntentSnapshot, heads: JevResult, scope: readonl
     unnamed = whose === "unclear";
   }
 
-  const fieldsOpen = open.includes("fields");
-  const parts = {
-    scope: fieldsOpen ? ("list" as const) : all ? ("all" as const) : ("list" as const),
-    section: "none",
-    fields: fieldsOpen || all ? [] : chosen.map((f) => f.ref),
-    sources,
-    whose: person ?? "user",
-    literals,
-    ...(named === undefined ? {} : { person: named }),
-    ...(fieldsOpen ? { options: offered.map((f) => f.ref) } : { agreed: true as const }),
-  };
+  const parts = { ...jevFields, section: "none", sources, whose: person ?? "user", literals, ...(named === undefined ? {} : { person: named }) };
   if (open.length > 0) {
     const first = open[0] as AskPart;
     const why = first === "fields" ? "whichFields" : first === "source" ? "whichSource" : unnamed ? "otherPersonUnnamed" : "whichPerson";

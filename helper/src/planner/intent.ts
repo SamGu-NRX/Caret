@@ -32,7 +32,10 @@ export type Reason = (typeof REASONS)[number];
 export interface AskIntent {
   route: AskRoute;
   why: Reason;
-  /** "none" only for a route that fills nothing (refuse, ask, plan). */
+  /**
+   * "none" only for a route that fills nothing (refuse, ask, plan). A3: a plan from the heads maker carries Jev's
+   * fields as a list, for a page host that fills a plan's form instead (ask.ts planAsAll).
+   */
   scope: "all" | "section" | "list" | "none";
   /** A section ref ("s1") when scope is section; "none" otherwise. */
   section: string;
@@ -59,6 +62,11 @@ export interface AskIntent {
    * the heads maker sets it, and choices.ts offers exactly these, never fields code picked itself.
    */
   options?: readonly string[];
+  /**
+   * A3: Jev chose every empty field, so fill asks their values as Fill all does (FillScope.wholeForm). The scope is
+   * still the list of those fields. Only the heads maker sets it.
+   */
+  wholeForm?: true;
   /**
    * A1: whose details go in, as code resolved them to a name the instruction does not spell (people.ts): the one other
    * person in its sources, or a memory entry for the relation it names. Takes the place of a person ref in `whose`.
@@ -418,7 +426,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
     consented: fixed.source === undefined ? new Set(named) : new Set(fixed.source.kind === "window" ? [fixed.source.windowId] : []),
     first: [...new Set(snap.named.flatMap((n) => n.names))],
     // C1: a whole-form Ask that narrows nothing asks values as a Fill all does (fill.ts plainAsk).
-    wholeForm: intent.scope === "all",
+    wholeForm: intent.scope === "all" || (intent.wholeForm === true && fixed.fields === undefined),
   };
   // The fill engine's trigger: the focused field when it is in scope, else the first field in scope.
   const focused = snap.window.focusedKey;

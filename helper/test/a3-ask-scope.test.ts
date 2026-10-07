@@ -132,9 +132,13 @@ describe("which fields: Jev's, never code's", () => {
     expect(readHeads(s, low, scopeOf(s, []))).toMatchObject({ route: "ask", why: "whichFields", options: [] });
   });
 
-  it("takes every empty field chosen as the whole form, so fill asks values as Fill all does", () => {
+  it("lists every empty field chosen, never the whole form, and asks their values as Fill all does", () => {
     const s = snapOn("hubspot-contact", "fill out this contact form");
-    expect(readHeads(s, headsOf(s), scopeOf(s, s.fields.map((f) => f.name)))).toMatchObject({ route: "fill", scope: "all", fields: [], agreed: true });
+    const i = readHeads(s, headsOf(s), scopeOf(s, s.fields.map((f) => f.name)));
+    expect(i).toMatchObject({ route: "fill", scope: "list", fields: s.fields.map((f) => f.ref), agreed: true, wholeForm: true });
+    const checked = checkIntent(i, s);
+    expect(checked.route === "fill" && checked.scope.wholeForm).toBe(true);
+    expect(checked.route === "fill" && checkIntent(i, s, { fields: [s.fields[0]?.key ?? ""] }).route === "fill").toBe(true);
   });
 
   it("still plans or refuses on a settled route head, and lets the fields decide under its floor", () => {
@@ -161,8 +165,11 @@ describe("which fields: Jev's, never code's", () => {
         const scope: [JevResult, JevResult] = [wording(s, pick), wording(s, pick)];
         const chosen = new Set(s.fields.filter((f) => scope.every((x) => x.answers[scopeId(f.ref)]?.choice === "asks" && (x.answers[scopeId(f.ref)]?.confidence ?? 0) >= SCOPE_CUTOFF)).map((f) => f.key));
         const unclear = s.fields.some((f) => scope.some((x) => x.answers[scopeId(f.ref)]?.choice === "unclear"));
-        const i = readHeads(s, headsOf(s), scope);
-        if (unclear) expect(i.route, form.id).toBe("ask");
+        const i = readHeads(s, headsOf(s, n % 7 === 0 ? { route: "plan" } : {}), scope);
+        // Never the whole form: a page goal's "all" would take inputs past the snapshot (A3 review 1).
+        expect(i.scope).not.toBe("all");
+        if (unclear) expect(i.route === "ask" || (i.route === "plan" && i.options !== undefined), form.id).toBe(true);
+        if (i.route === "plan") expect(i.agreed === true ? i.fields.every((ref) => chosen.has(s.fields.find((f) => f.ref === ref)?.key ?? "")) : i.fields.length === 0).toBe(true);
         if (i.route !== "fill") {
           asks++;
           continue;
@@ -266,6 +273,9 @@ describe("through planAsk", () => {
           const ins = String(q.instructions);
           if (id === "route") return [id, { choice: "fill", confidence: 0.9 }];
           if (id === "source") return [id, { choice: "any", confidence: 0.9 }];
+          // Ines's values are hers, and an emergency contact field wants someone else's; the rest is the user's.
+          if (id.endsWith("_owner") && "person" in q.criteria && /Ines/u.test(ins)) return [id, { choice: "person", confidence: 0.9 }];
+          if (id.endsWith("_whose") && "other" in q.criteria && /Emergency/u.test(ins)) return [id, { choice: "other", confidence: 0.9 }];
           if (id === "whose" || id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user" in q.criteria ? "user" : (Object.keys(q.criteria)[0] ?? "none"), confidence: 0.9 }];
           if (id.startsWith("s_")) {
             const label = /[Tt]he field '([^']+)'/u.exec(ins)?.[1] ?? "";
@@ -295,7 +305,7 @@ describe("through planAsk", () => {
   });
 
   it("asks on unclear with exactly Jev's fields offered, and a pick fills only what was picked", async () => {
-    const jev = jevFor(["Emergency contact name"], {}, ["Relationship to patient", "Emergency contact phone"]);
+    const jev = jevFor(["Emergency contact name"], { "Emergency contact name": "Ines Lindqvist" }, ["Relationship to patient", "Emergency contact phone"]);
     const e = await run("clinic-intake", "use Ines for the emergency contact", jev).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(AskAsks);
     const q = (e as AskAsks).question;
@@ -303,9 +313,26 @@ describe("through planAsk", () => {
     expect(q.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Emergency contact name", "Relationship to patient", "Emergency contact phone"]);
     const name = q.options[0];
     if (name === undefined) throw new Error("no option");
-    const after = await run("clinic-intake", "use Ines for the emergency contact", jev, { ...q.resume, fixed: { ...q.resume.fixed, ...name.fixes } }).catch((x: unknown) => x);
-    // Whatever the fill found, nothing outside the pick is proposed.
-    if (!(after instanceof AskRefused)) expect((after as Awaited<ReturnType<typeof run>>).checked.writes.map((w) => w.node.key)).toEqual(name.fixes.fields);
+    const after = await run("clinic-intake", "use Ines for the emergency contact", jev, { ...q.resume, fixed: { ...q.resume.fixed, ...name.fixes } });
+    expect(after.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[name.fixes.fields?.[0], "Ines Lindqvist"]]);
+  });
+
+  it("fills only Jev's fields, or asks, when a page host fills a plan's form (A3 review 1)", async () => {
+    const m = deskOf("hubspot-contact").model;
+    m.apply(snap([field("pg/name", "", { label: "Full name" }), field("pg/email", "", { label: "Email" })], { at: T0 + 1000, windowId: "page:a3:1", kind: "page", focused: true }));
+    const planJev = (asks: readonly string[], unclear: readonly string[] = []): AskJev => {
+      const inner = jevFor(asks, {}, unclear).ask;
+      return async (req) => {
+        const r = await inner(req);
+        return "route" in req.questions ? { ...r, answers: { ...r.answers, route: { choice: "plan", confidence: 0.9 } } } : r;
+      };
+    };
+    const go = (ask: AskJev) => planAsk("register me", m, { values: () => [] }, [], { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "a3p", windowId: "page:a3:1", now: T0 + 2000, goals: true });
+    const goal = await go(planJev(["Email"]));
+    expect(goal).toMatchObject({ route: "goal", page: { kind: "list", scope: { fields: ["pg/email"] } } });
+    const asked = await go(planJev([], ["Full name"])).catch((x: unknown) => x);
+    expect(asked).toBeInstanceOf(AskAsks);
+    expect((asked as AskAsks).question.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Full name"]);
   });
 
   it("still refuses what Ask refuses, with its sentence", async () => {

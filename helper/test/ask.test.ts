@@ -321,7 +321,8 @@ describe("the heads intent maker (P1, A3)", () => {
   };
 
   it("reads a plan or a refusal from the route head at its floor", () => {
-    expect(read("submit it", { route: "plan" })).toMatchObject({ route: "plan", scope: "none" });
+    // A plan carries Jev's fields, for a page host that fills its form instead (ask.ts).
+    expect(read("submit it", { route: "plan" })).toMatchObject({ route: "plan", scope: "list", agreed: true });
     expect(read("pay for it", { route: "refuse", why: "payment" })).toMatchObject({ route: "refuse", why: "payment" });
     // A refusal whose reason is under the floor is said generally; checkIntent still names a never-typed kind itself.
     expect(read("pay for it", { route: "refuse", why: "payment" }, everyField, { why: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "refuse", why: "nothingToFill" });

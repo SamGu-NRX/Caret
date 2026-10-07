@@ -227,6 +227,9 @@ function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot, fi
   };
 }
 
+/** Whether the intent's fields are Jev's scope ask's (intent-heads.ts): chosen in both wordings, or offered to ask. */
+const fromJev = (intent: AskIntent): boolean => intent.agreed === true || intent.options !== undefined;
+
 /** An intent whose scope is no longer the fields Jev chose, once planAsk rewrites it. */
 function withoutAgreement(intent: AskIntent): AskIntent {
   const { agreed: _, ...rest } = intent;
@@ -345,7 +348,9 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // whole form), and Caret still presses nothing on the page.
   const pageGoal = o.goals === true && w.window.kind === PAGE_WINDOW_KIND && snap.fields.length > 0;
   const planAsAll = pageGoal && intent.route === "plan";
-  if (planAsAll) intent = { ...withoutAgreement(intent), route: "fill", why: "none", scope: "list", fields: [], literals: [] };
+  // A3: a plan from the heads maker carries Jev's fields (intent-heads.ts): those it chose are filled, the user's picks
+  // stand, and fields Jev left unsettled are asked; never the whole form.
+  if (planAsAll) intent = fromJev(intent) ? (fixed.fields !== undefined || intent.agreed === true ? { ...intent, route: "fill", why: "none" } : { ...intent, route: "ask", why: "whichFields", open: ["fields"] }) : { ...withoutAgreement(intent), route: "fill", why: "none", scope: "list", fields: [], literals: [] };
   /** The question for an unclear part, when it is not one the user already picked and code can list its candidates. */
   const question = (e: Unclear): AskQuestionDraft | string => {
     if (fixed[e.part] !== undefined) return `the user already picked the ${e.part}`;
