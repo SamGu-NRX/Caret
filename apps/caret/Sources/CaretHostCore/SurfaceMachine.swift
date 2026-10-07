@@ -1044,10 +1044,14 @@ public final class SurfaceMachine {
             toastInfo = nil
             cancelResultTimer()
             takeLineDown(exit: 0.08)
+            // As in `offerChanged`: an inline result dismissed owns nothing more (S2).
+            if inlineResult { endResult() }
         } else if resultTimer != nil, undoing == nil, snapshot.statusLine?.id != resultStatusID {
             // A result or error line the key dismissed, as `offerChanged` takes it down.
             cancelResultTimer()
             takeLineDown(exit: 0.08)
+            // Its pending undo too, so a late answer neither redraws it nor takes the new work's status slot.
+            if inlineResult { endResult() }
         }
     }
 

@@ -140,3 +140,42 @@ final class GuardedUndoTests: XCTestCase {
         var now: Date { Date(timeIntervalSince1970: 0) }
     }
 }
+
+/// S2 confirmation, F1 remainder: the writing fix's rollback of its own selection. The value and
+/// span are checked on a fresh read, and the permit (target, then ⌘Z's input mark for an undo) is
+/// asked after that read, immediately before the selection write, so a click recorded during
+/// the Accessibility reads is never crossed.
+final class SelectionRollbackTests: XCTestCase {
+    private let span = UTF16Selection(start: 6, end: 11)
+
+    func testThePermitIsAskedAfterTheReadImmediatelyBeforeTheWrite() {
+        var order: [String] = []
+        let allowed = SelectionRollback.allowed(
+            read: { order.append("read"); return ("Hello world", self.span) },
+            before: "Hello world", span: span,
+            permit: { order.append("permit"); return true }
+        )
+        XCTAssertTrue(allowed)
+        XCTAssertEqual(order, ["read", "permit"])
+    }
+
+    func testAClickDuringTheReadRefusesTheRollback() {
+        var clicked = false
+        let allowed = SelectionRollback.allowed(
+            read: { clicked = true; return ("Hello world", self.span) },
+            before: "Hello world", span: span,
+            permit: { !clicked }
+        )
+        XCTAssertFalse(allowed)
+    }
+
+    func testAChangedValueOrSelectionRefusesWithoutAskingThePermit() {
+        var asked = false
+        let permit = { () -> Bool in asked = true; return true }
+        XCTAssertFalse(SelectionRollback.allowed(read: { ("Hello worlds", self.span) }, before: "Hello world", span: span, permit: permit))
+        XCTAssertFalse(SelectionRollback.allowed(read: { ("Hello world", .caret(11)) }, before: "Hello world", span: span, permit: permit))
+        XCTAssertFalse(SelectionRollback.allowed(read: { nil }, before: "Hello world", span: span, permit: permit))
+        XCTAssertFalse(SelectionRollback.allowed(read: { ("Cafe\u{301}", .caret(0)) }, before: "Caf\u{E9}", span: .caret(0), permit: permit), "code units, not canonical equality")
+        XCTAssertFalse(asked)
+    }
+}
