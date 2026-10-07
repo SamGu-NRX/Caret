@@ -213,6 +213,38 @@ class Supervisor:
 
     # Entry
 
+    def _hand_over(self):
+        """True once the recovery owner confirms it holds every lock this process holds and the token. Until then this
+        process keeps its own copies and keeps cleaning; if it finishes the cleanup itself, it returns False with
+        self.concluded set."""
+        need = {"slot"} | ({"heavy"} if self._held_heavy_fd() is not None else set())
+        terminating_since = None
+        while True:
+            try:
+                reply = self.custody.must({"op": "status"})  # re-adopts, and restarts a missing owner
+                if reply.get("terminating"):
+                    # Being booted out: its SIGKILL follows within launchd's exit timeout. Wait for the replacement.
+                    terminating_since = terminating_since or time.monotonic()
+                    if time.monotonic() - terminating_since < 120:
+                        time.sleep(1)
+                        continue
+                elif need <= set(reply.get("locks", [])) and reply.get("token"):
+                    self.log("the recovery owner holds {} and the token; leaving the cleanup to it".format(sorted(need)))
+                    return True
+                else:
+                    terminating_since = None
+                self.log("the recovery owner does not confirm custody: {}".format(reply))
+            except recovery.CustodyError as ex:
+                self.log("no confirmed recovery owner ({}); cleaning up here".format(ex))
+            try:
+                if self.tracker is not None:
+                    self._stop_all("supervisor error")
+                self._conclude()
+                return False
+            except Exception as ex:  # noqa: BLE001 - keep holding, and try again
+                self.log("cleanup attempt failed: {!r}".format(ex))
+            time.sleep(QUARANTINE_RETRY[1])
+
     def _lease_supports_cleanup(self):
         """Whether this lr-lease takes --cleanup-attempt (the vendored version, pending install)."""
         try:
@@ -240,12 +272,12 @@ class Supervisor:
             code, reason = EXIT_ERROR, "supervisor error: {!r}".format(ex)
             traceback.print_exc()
         finally:
-            if self.launched and not self.concluded:
-                # Something was started and its absence is not confirmed: keep the lease and locks, which the
-                # recovery owner holds too; it finishes the cleanup once this process is gone.
-                reason += "; cleanup left to the recovery owner {}".format(self.custody.label if self.custody else "")
+            # Something was started and its absence is not confirmed: leave only once the recovery owner is confirmed
+            # to hold every lock this process holds, and the token. _hand_over cleans up here until then.
+            if self.launched and not self.concluded and self._hand_over():
+                reason += "; cleanup left to the recovery owner {}".format(self.custody.label)
                 self.record["cleanup"] = "left to the recovery owner"
-            else:
+            else:  # nothing was started, or this process confirmed the clean itself
                 self._release()
                 if self.custody is not None and not self.concluded:
                     self._conclude_unlaunched()
@@ -573,6 +605,9 @@ class Supervisor:
             os.close(go_w)
         if released:
             recovery.test_point(self.plan, "supervisor:after-release")
+            if (self.plan.get("test") or {}).get("bootout_owner"):
+                procs.launchd_bootout(self.custody.label)  # tests only: the recovery owner is gone
+            recovery.test_raise(self.plan, "supervisor:after-release")
             self.log("recipe started", pid=proc.pid, pgid=proc.pid)
         else:
             self.log("recipe never released", pid=proc.pid)

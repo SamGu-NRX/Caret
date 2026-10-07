@@ -81,6 +81,12 @@ def test_point(plan, name):
     os.kill(os.getpid(), signal.SIGKILL)
 
 
+def test_raise(plan, name):
+    """Tests only: plan["test"]["raise_at"] names a point where the supervisor raises, as an unexpected error would."""
+    if (plan.get("test") or {}).get("raise_at") == name:
+        raise RuntimeError("test: raised at {}".format(name))
+
+
 def identity(probes, pid):
     usage = probes.usage(pid)
     return None if usage is None else [pid, usage[1]]
@@ -402,7 +408,14 @@ class Owner:
         listener.bind(self.sock_path)
         os.chmod(self.sock_path, 0o600)
         listener.listen(8)
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # only the journal's CLEAN ends custody, never a stray TERM
+        # Only the journal's CLEAN ends custody, so a TERM does not stop the owner. But launchd's bootout sends one before
+        # its SIGKILL: from then on the owner says it is terminating, so nobody hands custody to it.
+        self.terminating = False
+
+        def on_term(_signum, _frame):
+            self.terminating = True
+            self.log("received SIGTERM; reporting terminating until launchd stops this process")
+        signal.signal(signal.SIGTERM, on_term)
         self.log("listening on {} (state {})".format(self.sock_path, self.state))
         while not self.finished:
             # Custody ends only with CLEAN: any other failure is logged and the loop carries on, holding the locks.
@@ -574,7 +587,8 @@ class Owner:
                 return {"ok": True}
             return {"ok": False, "results": results, "lease": lease}
         if op == "status":
-            return {"ok": True, "state": self.state, "locks": sorted(self.fds), "token": self.token is not None}
+            return {"ok": True, "state": self.state, "locks": sorted(self.fds), "token": self.token is not None,
+                    "terminating": getattr(self, "terminating", False)}
         raise ValueError("unknown op {!r}".format(op))
 
     def _replay(self, sock, msg):
@@ -741,15 +755,25 @@ class Custody:
                  "StandardErrorPath": os.path.join(self.dir, "recovery.log"),
                  "StandardOutPath": os.path.join(self.dir, "recovery.log"),
                  "WorkingDirectory": self.dir, "ProcessType": "Background"}
-        path = os.path.join(self.dir, self.label + ".plist")
-        with open(path, "wb") as fh:
+        self.plist = os.path.join(self.dir, self.label + ".plist")
+        with open(self.plist, "wb") as fh:
             plistlib.dump(plist, fh)
-        done = subprocess.run(["/bin/launchctl", "bootstrap", "gui/{}".format(os.getuid()), path],
-                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        if done.returncode != 0:
-            raise CustodyError("launchctl bootstrap {} exited {}: {}".format(self.label, done.returncode, done.stdout.strip()))
+        self._bootstrap()
         self.locks = dict(locks)
         self._connect_and_adopt(deadline=30)
+
+    def _bootstrap(self):
+        done = subprocess.run(["/bin/launchctl", "bootstrap", "gui/{}".format(os.getuid()), self.plist],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                              timeout=60)
+        if done.returncode != 0:
+            raise CustodyError("launchctl bootstrap {} exited {}: {}".format(self.label, done.returncode, done.stdout.strip()))
+
+    def _ensure_loaded(self):
+        """An owner whose launchd job is gone (booted out, not just crashed) is started again from its plist."""
+        if procs.launchd_state(self.label)[0] == procs.ABSENT:
+            self.log("the recovery owner {} is not loaded; starting it again".format(self.label))
+            self._bootstrap()
 
     def _agent_pid(self):
         out = subprocess.run(["/bin/launchctl", "print", "gui/{}/{}".format(os.getuid(), self.label)],
@@ -780,6 +804,10 @@ class Custody:
             except (OSError, CustodyError) as ex:
                 last = ex
                 self.sock = self.reader = None
+                try:
+                    self._ensure_loaded()
+                except (OSError, CustodyError, subprocess.SubprocessError) as again:
+                    last = again
                 time.sleep(0.2)
         raise CustodyError("no adoption by {} within {} s: {!r}".format(self.label, deadline, last))
 

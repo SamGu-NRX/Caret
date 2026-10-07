@@ -482,6 +482,31 @@ class AdoptionIsAllOrNothing(unittest.TestCase):
         os.close(good)
 
 
+class SupervisorErrorWithoutAnOwner(Custody):
+    def test_an_error_with_no_confirmed_owner_keeps_the_locks_until_one_holds_them(self):
+        job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3),
+                                 test={"raise_at": "supervisor:after-release", "bootout_owner": True})
+        self.run_queue("--once", "--max-wait", "120")
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 120),
+                        self.queue_log(job_id))
+        # The workload runs and the original owner is gone: the locks must never be free meanwhile.
+        for _ in range(10):
+            self.assertTrue(self.contender_blocked() or not self.marked(job_id), "locks free while the job runs")
+            if finished(self, job_id):
+                break
+            time.sleep(1)
+        self.assertTrue(self.wait_for(lambda: finished(self, job_id), 120), self.queue_log(job_id))
+        outcome = self.outcome(job_id)
+        self.assertEqual(outcome["exit"], 125)
+        self.assertIn("cleanup left to the recovery owner", outcome["reason"])
+        self.assertGreaterEqual(len([r for r in self.journal(job_id) if r["event"] == "adopted"]), 2)
+        self.wait_clean(job_id, "recovery")
+        for kind, pid in self.spawned(job_id).items():
+            if isinstance(pid, int):
+                self.assertFalse(self.alive(pid), kind)
+        self.assert_all_released(job_id)
+
+
 class LeaderStaysUnreaped(Custody):
     QUEUE_REV = QUEUE_LEGACY_REV  # quarantined through the supervisor's own lease status
 
