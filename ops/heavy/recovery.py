@@ -334,6 +334,10 @@ class Owner:
         self.fds = {}
         listener.close()
         os.unlink(self.sock_path)
+        try:
+            os.rmdir(os.path.dirname(self.sock_path))  # the supervisor's private directory for this socket
+        except OSError:
+            pass
         self.log("CLEAN; descriptors closed")
         if self.supervisor is None or same_process(self.probes, self.supervisor) is not True:
             self._bootout_self()

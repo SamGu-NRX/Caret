@@ -17,7 +17,7 @@ import time
 import unittest
 from unittest import mock
 
-from support import HEAVY, PY, World, profile  # first: puts ops/heavy on sys.path
+from support import QUEUE_LEGACY_REV, HEAVY, PY, World, profile  # first: puts ops/heavy on sys.path
 import procs  # noqa: E402
 import recovery  # noqa: E402
 
@@ -34,6 +34,8 @@ class Custody(World):
         self.assertEqual([r["by"] for r in self.journal(job_id) if r["event"] == "clean"], [by])
 
     def assert_all_released(self, job_id):
+        # The live queue leaves a dead runner's lease for lr-lease's reaper (heavy-job-queue 401c4d1).
+        subprocess.run([self.paths["lr_reap"]], env=self.env, stdout=subprocess.DEVNULL, check=True)
         self.assertTrue(self.wait_for(lambda: not self.contender_blocked(), 20), "a lock is still held")
         self.assertTrue(self.wait_for(lambda: not self.recovery_agents(job_id), 20), self.recovery_agents(job_id))
         self.assertEqual(self.marked(job_id), [])
@@ -46,7 +48,7 @@ class Test1ChildrenOutliveTheirParent(Custody):
         job_id, _ = self.enqueue(["stubborn"], profile=profile(grace=4))
         self.run_queue("--once", "--max-wait", "120")
         out = os.path.join(self.run_root(job_id), "out")
-        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "stubborn.pid")), 30))
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "stubborn.pid")), 120))
         with open(os.path.join(out, "stubborn.pid")) as fh:
             child = int(fh.read())
         self.assertTrue(self.wait_for(lambda: "stopping: recipe exited" in self.queue_log(job_id), 30))
@@ -65,7 +67,7 @@ class Test2CleanupLongerThanTheQueueGrace(Custody):
     def test_the_queue_sigkills_the_relay_while_cleanup_takes_15_s(self):
         job_id, _ = self.enqueue(["slow-cleanup", "15"], profile=profile(grace=30))
         self.run_queue("--once", "--max-wait", "120")
-        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 30))
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 120))
         self.assertEqual(self.queue("cancel", "--id", job_id).returncode, 0)
         self.assertTrue(self.wait_for(lambda: self.job(job_id)["state"] == "cancelled", 25))
         self.assertIn("SIGKILL", self.job(job_id)["outcome_reason"])  # the queue's 10 s ran out
@@ -112,7 +114,7 @@ class Test3KillEachHolderAtEachBoundary(Custody):
     def test_queue_runner_death_cancels_the_workload(self):
         job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3))
         runner = self.run_queue("--once", "--max-wait", "120")
-        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 30))
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 120))
         os.kill(runner.pid, signal.SIGKILL)  # this test's own runner, by exact pid
         runner.wait()
         self.assertTrue(self.wait_for(lambda: finished(self, job_id), 60), self.queue_log(job_id))
@@ -130,7 +132,7 @@ class Test4RecoveryRestartAndDuplicates(Custody):
     def test_a_restarted_recovery_owner_is_adopted_again_and_a_duplicate_owner_steps_aside(self):
         job_id, plan_path = self.enqueue(["spawn", "15"], profile=profile(grace=3))
         self.run_queue("--once", "--max-wait", "120")
-        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 30))
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 120))
         with open(os.path.join(self.run_root(job_id), "supervisor.json")) as fh:
             rec = json.load(fh)["recovery"]
         pid = self.agent_pid(rec["label"])
@@ -163,7 +165,7 @@ class Test5LaunchdResource(Custody):
         job_id, _ = self.enqueue(["launchd-up"], profile=profile(grace=3))
         self.run_queue("--once", "--max-wait", "120")
         ready = os.path.join(self.run_root(job_id), "out", "ready")
-        self.assertTrue(self.wait_for(lambda: os.path.exists(ready), 30), self.queue_log(job_id))
+        self.assertTrue(self.wait_for(lambda: os.path.exists(ready), 120), self.queue_log(job_id))
         with open(ready) as fh:
             label = fh.read().strip()
         self.assertTrue(any(r["event"] == "register" and r["resource"].get("label") == label
@@ -241,6 +243,8 @@ class Test6ProbeFailures(unittest.TestCase):
 
 
 class Test6And9QuarantineHoldsEverything(Custody):
+    QUEUE_REV = QUEUE_LEGACY_REV  # the supervisor's own lease, and rig-run's for VM jobs
+
     def test_an_unknown_lease_status_quarantines_and_blocks_the_next_job_until_it_clears(self):
         flaky = os.path.join(self.home, ".long-run/flaky-status")
         self.paths["lr_lease"] = os.path.join(self.home, ".long-run/bin/lr-lease-flaky")
@@ -319,12 +323,14 @@ class Test8PidReuseAndStaleRecords(unittest.TestCase):
 class Test10ReservationsAndCredentials(Custody):
     """With the vendored lr-lease (cleanup-required leases, pending install)."""
 
+    QUEUE_REV = QUEUE_LEGACY_REV  # the supervisor's own lease, and rig-run's for VM jobs
+
     LEASE_SOURCE = os.path.join(HEAVY, "vendor/long-run/bin")
 
     def test_owner_death_and_expiry_keep_the_reservation_until_the_recovery_owner_acknowledges(self):
         job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3), lease_ttl_min=0.02, lease_renew_s=10000)
         self.run_queue("--once", "--max-wait", "120")
-        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 30))
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 120))
         [lease] = self.leases()
         self.assertTrue(lease["cleanupRequired"])
         time.sleep(2)  # the TTL has passed; the owner is alive

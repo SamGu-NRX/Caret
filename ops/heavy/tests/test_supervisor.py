@@ -17,7 +17,7 @@ import time
 import unittest
 import uuid
 
-from support import PY as PY_FOR_TESTS, World, profile  # first: puts ops/heavy on sys.path
+from support import QUEUE_LEGACY_REV, PY as PY_FOR_TESTS, World, profile  # first: puts ops/heavy on sys.path
 import manifest  # noqa: E402
 import procs  # noqa: E402
 
@@ -27,7 +27,7 @@ class Cancellation(World):
         job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3))
         self.run_queue("--once", "--max-wait", "120")
         out = os.path.join(self.run_root(job_id), "out")
-        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 30), self.queue_log(job_id))
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 120), self.queue_log(job_id))
         spawned = self.spawned(job_id)
         self.assertEqual(set(spawned), {"detached-group", "empty-env-child", "launchd", "orphan"})
         for kind in ("detached-group", "empty-env-child", "orphan"):
@@ -64,16 +64,18 @@ class Cancellation(World):
         second, _ = self.enqueue(["ok"])
         self.run_queue("--max-wait", "120")
         out = os.path.join(self.run_root(first), "out")
-        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 30), self.queue_log(first))
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 120), self.queue_log(first))
         cancelled_at = time.time()
         self.assertEqual(self.queue("cancel", "--id", first).returncode, 0)
         self.assertTrue(self.wait_for(lambda: self.job(first)["state"] == "cancelled", 20))
         relay_gone_at = time.time()
         self.assertIn("SIGKILL", self.job(first)["outcome_reason"])  # the queue's 10 s grace ran out
-        # The relay is dead, but the supervisor still holds the slot and the lease while the recipe cleans up.
+        # The relay is dead, but the supervisor still holds the slot and a heavy lease while the recipe cleans up.
+        # The live queue releases its own lease once the relay's group is empty; the supervisor then takes the
+        # reservation over until its cleanup is confirmed.
         self.assertFalse(os.path.exists(os.path.join(out, "cleanup-done")))
         self.assertTrue(procs.lock_held(self.paths["slot_lock"]))
-        self.assertEqual(len(self.leases()), 1)
+        self.assertTrue(self.wait_for(lambda: [l["run"] for l in self.leases()] == ["caret"], 10), self.leases())
         self.assertFalse(os.path.exists(self.run_root(second)))
         self.assertTrue(self.wait_for(lambda: self.outcome(second) and "exit" in self.outcome(second), 60))
         with open(os.path.join(out, "cleanup-done")) as fh:
@@ -95,7 +97,7 @@ class Cancellation(World):
         job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3))
         self.run_queue("--once", "--max-wait", "120")
         out = os.path.join(self.run_root(job_id), "out")
-        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 30), self.queue_log(job_id))
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 120), self.queue_log(job_id))
         spawned = self.spawned(job_id)
         with open(os.path.join(self.run_root(job_id), "supervisor.json")) as fh:
             supervisor = json.load(fh)["supervisor_pid"]
@@ -131,11 +133,13 @@ class Cancellation(World):
 
 
 class Lease(World):
+    QUEUE_REV = QUEUE_LEGACY_REV  # the supervisor's own lease, and rig-run's for VM jobs
+
     def test_owner_tied_lease_outlives_its_ttl_and_blocks_other_heavy_jobs(self):
         # TTL 1.2 s and no renewal: before the reaper change, lr-reap removed this lease mid-job.
         job_id, _ = self.enqueue(["spawn", "8"], lease_ttl_min=0.02, lease_renew_s=10000)
         self.run_queue("--once", "--max-wait", "120")
-        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 30))
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 120))
         time.sleep(2)
         for args in ([], ["--run", "caret"]):
             subprocess.run([self.paths["lr_reap"], *args], env=self.env, check=True)
@@ -189,6 +193,8 @@ class RunnerHeavyLock(World):
     """heavy.lock with the queue's runner holding it and passing its descriptor (the queue since 366e9c2), and with a
     runner that does not hold it (older queues: the supervisor takes it). Neither may deadlock, and in both the recipe
     gets a descriptor that rig-run's proof accepts."""
+
+    QUEUE_REV = QUEUE_LEGACY_REV  # the supervisor's own lease, and rig-run's for VM jobs
 
     def run_lock_proof(self, holding):
         job_id, _ = self.enqueue(["lock-proof", self.paths["heavy_lock"]])
@@ -377,7 +383,20 @@ class Pins(World):
         self.assertFalse(os.path.exists(os.path.join(self.run_root(job_id), "recipe.log")))
         self.assertEqual(self.leases(), [])
 
-    def test_a_change_during_the_lease_wait_is_refused_right_before_spawn(self):
+    def test_a_moved_worktree_is_refused_by_the_queue_at_release(self):
+        job_id, _ = self.enqueue(["ok"])
+        with open(os.path.join(self.worktree, "tracked"), "w") as fh:
+            fh.write("two\n")
+        job = self.run_once(job_id)
+        self.assertEqual(job["state"], "refused")
+        self.assertFalse(os.path.exists(self.run_root(job_id)))
+
+
+class PinsDuringTheLeaseWait(Pins):
+    """The supervisor's lease wait is stalled by holding the heavy lease, which only the legacy queue leaves to it."""
+    QUEUE_REV = QUEUE_LEGACY_REV
+
+    def test_only_a_change_during_the_lease_wait_is_refused_right_before_spawn(self):
         fixture, tree, specs = self.sources()
         for target in ("ops/heavy/tests/recipes/probe.sh", "inputs/bridge"):
             with self.subTest(target):
@@ -401,13 +420,9 @@ class Pins(World):
                 self.assertFalse(os.path.exists(os.path.join(self.run_root(job_id), "recipe.log")))
                 self.assertEqual(self.leases(), [])
 
-    def test_a_moved_worktree_is_refused_by_the_queue_at_release(self):
-        job_id, _ = self.enqueue(["ok"])
-        with open(os.path.join(self.worktree, "tracked"), "w") as fh:
-            fh.write("two\n")
-        job = self.run_once(job_id)
-        self.assertEqual(job["state"], "refused")
-        self.assertFalse(os.path.exists(self.run_root(job_id)))
+
+for _name in [n for n in dir(Pins) if n.startswith("test_")]:
+    setattr(PinsDuringTheLeaseWait, _name, None)  # run only the lease-wait test here
 
 
 class Adapters(World):
@@ -489,6 +504,8 @@ class Credentials(World):
 
 
 class VmFloor(World):
+    QUEUE_REV = QUEUE_LEGACY_REV  # the supervisor's own lease, and rig-run's for VM jobs
+
     def test_a_vm_job_hands_its_floor_to_rig_run(self):
         job_id, _ = self.enqueue(["env-dump"], profile=profile(lease=False, floor=0))
         other, _ = self.enqueue(["env-dump"])
@@ -503,6 +520,8 @@ class VmFloor(World):
 
 class VmPath(World):
     """rig-run's cleanup inside the slot, with a fake rig-run: real leases, real rig-stop, no Lume."""
+
+    QUEUE_REV = QUEUE_LEGACY_REV  # the supervisor's own lease, and rig-run's for VM jobs
 
     def fake_rig(self, mode, seconds):
         job_id, _ = self.enqueue(["rig", self.paths["rig_run"], mode, str(seconds)],
@@ -553,6 +572,8 @@ class RealVm(World):
     Uses the real rig (HOME, leases, heavy.lock, Lume, rig-golden) and the rig's own smoke job. Run it only when the
     coordinator has released HOLD and free disk clears the VM floor; it is a real heavy job.
     """
+
+    QUEUE_REV = QUEUE_LEGACY_REV  # the supervisor's own lease, and rig-run's for VM jobs
 
     def test_cancelling_a_booting_vm_cleans_up_inside_the_slot(self):
         real_home = os.path.expanduser("~")

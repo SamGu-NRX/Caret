@@ -478,6 +478,17 @@ def write_plan(plan, job_dir):
     return path, hashlib.sha256(data).hexdigest()
 
 
+def queue_takes_leases(queue_script):
+    """Whether this queue takes an lr-lease per job (heavy-job-queue 401c4d1 and later): it then needs estimates."""
+    with open(queue_script, encoding="utf-8") as fh:
+        return "--est-mem-gib" in fh.read()
+
+
+def _plain(number):
+    # The queue passes estimates to lr-lease, whose parser takes no exponents.
+    return "{:f}".format(float(number)).rstrip("0").rstrip(".")
+
+
 def queue_enqueue_argv(plan, plan_path, plan_digest):
     profile, paths = plan["profile"], plan["paths"]
     argv = [plan["python"], paths["queue_script"], "--state-dir", paths["queue_state"], "enqueue",
@@ -486,6 +497,8 @@ def queue_enqueue_argv(plan, plan_path, plan_digest):
             "--min-free-gib", str(profile["floor_gib"]), "--wait-absent", paths["hold"]]
     for key in profile["wait_flock"]:
         argv += ["--wait-flock", paths[key]]
+    if queue_takes_leases(paths["queue_script"]):
+        argv += ["--est-mem-gib", _plain(profile["est_mem_gib"]), "--est-disk-gib", _plain(profile["est_disk_gib"])]
     return argv + ["--", *boot_argv(plan["python"], plan_path, plan_digest, "relay")]
 
 
@@ -513,6 +526,11 @@ def enqueue(recipe_name, job_id, worktree, rev, recipe_args, paths, env_file=Non
             raise manifest.ManifestError("CARET_ENV_FILE must name an existing absolute file")
     else:
         env_file = None  # an offline recipe gets no key path at all
+    if not (profile or PROFILES[recipe.profile]).lease and queue_takes_leases(paths["queue_script"]):
+        # Pending a coordinator decision: rig-run takes the single heavy lease itself, which the queue's own per-job
+        # heavy lease (owner: the runner) now holds for the job's whole life.
+        raise manifest.ManifestError("VM jobs cannot run on this queue yet: it holds a heavy lease per job, and "
+                                     "rig-run's own heavy lease cannot be granted beside it (heavy maxCount 1)")
     recipe_argv, specs, recorded = recipe.plan_args(recipe_args, worktree, rev, paths)
     repo, commit = ops_repo_and_commit(ops_repo)
     run_root = os.path.join(paths["evidence_root"], job_id)

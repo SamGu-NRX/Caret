@@ -199,7 +199,7 @@ class Supervisor:
         self.tracker = None
         self.cancel = threading.Event()
         self.cancel_reason, self.cancel_code = None, None
-        self.lease_id, self.lock_fd = None, None
+        self.lease_id, self.lock_fd, self.queue_lease = None, None, None
         self.lease_cleanup = self._lease_supports_cleanup()
         self.record = {"job_id": plan["job_id"], "plan": plan_path, "plan_sha256": plan_digest,
                        "supervisor_pid": self.pid, "mark": self.mark, "launchd_prefix": self.launchd_prefix,
@@ -365,7 +365,8 @@ class Supervisor:
     def _try_admit(self):
         if os.path.lexists(self.paths["hold"]):
             return "HOLD {} exists".format(self.paths["hold"])
-        if self.profile["lease"]:
+        self.queue_lease = self._queue_lease()
+        if self.profile["lease"] and self.queue_lease is None:
             subprocess.run([self.paths["lr_reap"], "--run", self.plan["lease"]["run"]], stdin=subprocess.DEVNULL,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             cleanup = ["--cleanup-attempt", self.attempt, "--cleanup-token-sha256",
@@ -378,6 +379,7 @@ class Supervisor:
                 return "heavy lease: {}".format(got.stdout.strip() or got.returncode)
             self.lease_id = got.stdout.strip()
             self.lease_renewed = time.monotonic()
+        if self.profile["lease"]:
             if self.heavy_fd is None:
                 os.makedirs(os.path.dirname(self.paths["heavy_lock"]), exist_ok=True)
                 self.lock_fd = os.open(self.paths["heavy_lock"], os.O_RDWR | os.O_CREAT, 0o644)
@@ -412,18 +414,70 @@ class Supervisor:
         except recovery.CustodyError:
             self._release()
             raise
-        self.log("admitted", lease=self.lease_id, lease_cleanup_required=self.lease_cleanup,
+        self.log("admitted", lease=self.lease_id, queue_lease=self.queue_lease, lease_cleanup_required=self.lease_cleanup,
                  heavy_lock="inherited from the queue runner" if self.heavy_fd is not None
                  else "taken" if self.lock_fd is not None else "left to rig-run")
         self.record["lease"] = {"id": self.lease_id, "cleanup_required": self.lease_cleanup, "renewals": 0,
-                                "renew_failures": []}
+                                "renew_failures": [], "queue_lease": self.queue_lease}
         return None
+
+    def _queue_lease(self):
+        """The heavy lease the queue took for this job (heavy-job-queue 401c4d1 and later), when it is live.
+
+        Such a queue holds the single heavy lease for the job's whole life (owner: its runner), so the supervisor
+        takes none of its own, which lr-lease's count limit would refuse. The queue releases it once the job's
+        process group is empty; see README, "Leases"."""
+        try:
+            with open(os.path.join(self.paths["queue_state"], "jobs", self.plan["job_id"] + ".json"),
+                      encoding="utf-8") as fh:
+                lease_id = json.load(fh).get("lease_id")
+        except (OSError, ValueError):
+            return None
+        if not lease_id:
+            return None
+        state, detail = procs.lease_state(self.paths["lr_lease"], lease_id)
+        if state != procs.PRESENT:
+            raise procs.Refusal("the queue recorded lease {} for this job, but it is {}: {}".format(lease_id, state, detail))
+        return lease_id
 
     def _lease_cmd(self, *args):
         return subprocess.run([self.paths["lr_lease"], *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True)
 
+    def _hold_reservation(self):
+        """The queue's lease is released once the relay's group is empty, which the queue's SIGKILL of the relay
+        makes true while cleanup may still be running. Then the supervisor takes the job's heavy lease itself (the
+        count limit is free again) and keeps it until the cleanup is confirmed. If another run took it first,
+        exclusion still rests on the locks this job holds."""
+        if not self.queue_lease or self.lease_id or not self.profile["lease"] or self.concluded:
+            return
+        if time.monotonic() - getattr(self, "queue_lease_checked", 0) < 2:
+            return
+        self.queue_lease_checked = time.monotonic()
+        if procs.lease_state(self.paths["lr_lease"], self.queue_lease)[0] != procs.ABSENT:
+            return
+        cleanup = ["--cleanup-attempt", self.attempt, "--cleanup-token-sha256",
+                   recovery.token_sha256(self.token)] if self.lease_cleanup else []
+        got = self._lease_cmd("acquire", "--run", self.plan["lease"]["run"], "--kind", "heavy",
+                              "--est-mem", str(self.profile["est_mem_gib"]), "--est-disk", str(self.profile["est_disk_gib"]),
+                              "--ttl", str(self.plan["lease"]["ttl_min"]), "--owner-pid", str(self.pid), *cleanup)
+        if got.returncode != 0:
+            if not getattr(self, "takeover_refused", False):
+                self.takeover_refused = True
+                self.log("the queue released its lease before cleanup was confirmed; taking it over was refused: {}"
+                         .format(got.stdout.strip()[:200]))
+            return
+        self.lease_id, self.lease_renewed = got.stdout.strip(), time.monotonic()
+        self.record.setdefault("lease", {}).update(id=self.lease_id, taken_over_from=self.queue_lease)
+        try:
+            self.custody.must({"op": "lease", "id": self.lease_id, "cleanup": self.lease_cleanup})
+        except recovery.CustodyError as ex:
+            self.log("the recovery owner did not record the lease: {}".format(ex))
+        self.log("the queue released its lease before cleanup was confirmed; holding lease {} until it is".format(
+            self.lease_id))
+
     def _renew_if_due(self):
+        self._hold_reservation()
         if not self.lease_id or time.monotonic() - self.lease_renewed < self.plan["lease"]["renew_s"]:
             return
         self.lease_renewed = time.monotonic()

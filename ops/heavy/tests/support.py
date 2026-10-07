@@ -32,7 +32,11 @@ REAL_LONG_RUN = os.path.expanduser("~/.long-run")
 # The shared queue at a fixed commit, so the tests do not follow its owner's uncommitted work. 7ef4ccb: the runner holds
 # heavy.lock and passes it to each job. Raise this deliberately when the queue's interface changes.
 QUEUE_REPO = os.path.dirname(os.path.dirname(caret_heavy.QUEUE))
-QUEUE_TEST_REV = "7ef4ccba3f71704bd8ca065c92b4beeb03c640cf"
+# 401c4d1 (the live queue): the runner also holds a heavy lr-lease for each job, owned by itself, so the supervisor
+# takes none. 7ef4ccb (LEGACY): no per-job lease; the supervisor owns the job's heavy lease, and rig-run its own (VM
+# jobs). Tests of those two paths set QUEUE_REV = QUEUE_LEGACY_REV.
+QUEUE_TEST_REV = "401c4d17b741d6847b644cddbbe6d2a7f1e88ed3"
+QUEUE_LEGACY_REV = "7ef4ccba3f71704bd8ca065c92b4beeb03c640cf"
 GIT_ENV = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
 
 
@@ -62,6 +66,8 @@ class World(unittest.TestCase):
     maxDiff = None
     # Where the world's lr-lease comes from: the live files by default; the vendored copy for cleanup-required leases.
     LEASE_SOURCE = os.path.join(REAL_LONG_RUN, "bin")
+    # CARET_HEAVY_TEST_QUEUE_REV runs every test against another queue commit (one-off checks).
+    QUEUE_REV = os.environ.get("CARET_HEAVY_TEST_QUEUE_REV", QUEUE_TEST_REV)
 
     def setUp(self):
         probes = procs.DarwinProbes()
@@ -92,7 +98,7 @@ class World(unittest.TestCase):
         queue_script = os.path.join(self.root, "queue", "heavy-job-queue.py")
         os.makedirs(os.path.dirname(queue_script))
         with open(queue_script, "wb") as fh:
-            fh.write(subprocess.run(["git", "-C", QUEUE_REPO, "show", QUEUE_TEST_REV + ":scripts/heavy-job-queue.py"],
+            fh.write(subprocess.run(["git", "-C", QUEUE_REPO, "show", self.QUEUE_REV + ":scripts/heavy-job-queue.py"],
                                     capture_output=True, check=True).stdout)
         self.paths = {
             "queue_script": queue_script,
