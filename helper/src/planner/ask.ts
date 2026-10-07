@@ -1,4 +1,4 @@
-import { instructionForModel, instructionView } from "../fill/redact.ts";
+import { instructionForModel, instructionView, redactWindow } from "../fill/redact.ts";
 import { mentionedKind } from "../memory/sensitive.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Ask (B25): an instruction becomes an intent (intent.ts), code checks it, and the route decides what runs.
@@ -218,16 +218,18 @@ function withUnnamed(left: string | null, w: WindowState): string | null {
 /**
  * V4: the scoped menus whose options the window does not show (FormControl.options null: Chrome's Accessibility shows a
  * closed menu's selected option only), which fill never asks about and Caret never opens to read; the Ask says they are
- * the user's.
+ * the user's. I4 review: only menus PV1's redacted view keeps (fill/redact.ts redactWindow), named as that view names
+ * them (IntentField.modelName), since the sentence is new text about the menu: a menu whose own label holds a secret's
+ * line is dropped from the view, and naming it here repeated the secret.
  */
 function unseenOptions(w: WindowState, fields: readonly IntentField[]): IntentField[] {
-  const shut = new Set(formControls(w).filter((c) => c.control === "select" && c.options === null).map((c) => c.node.key));
+  const shut = new Set(formControls(redactWindow(w)).filter((c) => c.control === "select" && c.options === null).map((c) => c.node.key));
   return fields.filter((f) => shut.has(f.key));
 }
 
 /** `left`, then the sentence for the scoped menus whose options Caret cannot see (unseenOptions). */
 function withUnseen(left: string | null, w: WindowState, fields: readonly IntentField[]): string | null {
-  const says = saysOptionsUnseen(unseenOptions(w, fields).map((f) => f.name));
+  const says = saysOptionsUnseen(unseenOptions(w, fields).map((f) => f.modelName ?? f.name));
   return says === null ? left : left === null ? says : `${left} ${says}`;
 }
 

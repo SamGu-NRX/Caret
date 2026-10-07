@@ -330,6 +330,25 @@ describe("an Ask about a menu whose options the window does not show", () => {
     expect((e as AskRefused).message).toBe("Caret can't see the choices in Degree without opening the menu, so Degree is yours to set.");
   });
 
+  it("never names a menu the redacted view left out, so its sentence repeats no secret (I4 review)", async () => {
+    // The Degree menu's own label holds a password's line, so PV1's redacted view drops the menu. The scope ask settles
+    // it anyway (as "a field Caret leaves to the user", its name in requests), beside Phone.
+    const SECRET = "violet-orchard-seven";
+    const relabelled = snaps.map((s) => ({ ...s, nodes: s.nodes.map((n) => (n.role === "AXPopUpButton" && n.label === "Degree *" ? { ...n, label: `Password:\n${SECRET}` } : n)) }));
+    const d = buildDesk(corpus, relabelled, formOf("greenhouse-apply"));
+    const settles: AskJev = async (req) => {
+      const r = await jev(req);
+      if (req.purpose !== "ask.scope") return r;
+      return { ...r, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: /[Tt]he field '(?:Phone|a field Caret leaves to the user)/u.test(String(q.instructions)) ? "asks" : "not", confidence: 0.99 }])) };
+    };
+    const out = await planAsk("just the degree and my phone number", d.model, { values: () => d.memory }, d.about, { askJev: settles, maker: headsIntentMaker(settles), writer: null, offerKey: "v4", windowId: d.form.window.windowId, now: T0 }).catch((x: unknown) => x);
+    // What the user reads: the refusal, or the draft's left-to-you sentence. (The Ask scope's local fingerprints of the
+    // field, ask-scope.ts, are not a sentence and predate V4.)
+    const said = out instanceof AskRefused ? out.message : ((out as AskDraft).leftToYou ?? "");
+    expect(said).not.toContain(SECRET);
+    expect(said).not.toMatch(/can't see the choices/u);
+  });
+
   it("says one menu and several the way a sentence does", () => {
     expect([saysOptionsUnseen([]), saysOptionsUnseen(["Month"]), saysOptionsUnseen(["State *", "Term"])]).toEqual([
       null,
