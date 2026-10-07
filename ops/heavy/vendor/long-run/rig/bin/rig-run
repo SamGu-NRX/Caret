@@ -1,0 +1,526 @@
+#!/bin/bash
+# rig-run <job-dir> [--wait SECONDS]
+#
+# Runs one job in a throwaway copy of the rig-golden macOS VM: takes a vm lease, makes an APFS
+# clone of rig-golden, boots it with no display and no VNC listener, copies the job in, seeds TCC
+# rows for the job's build, runs job.sh as a one-shot LaunchAgent in the guest's desktop session,
+# copies its output back, then stops and deletes the clone and releases the lease. rig-golden is
+# never booted or written. Job contract and limits: ~/.long-run/rig/README.md.
+#
+# Stopping it at any point (INT, TERM, HUP) runs the same cleanup. A SIGKILLed run leaves its
+# clone behind; the next rig-run deletes any rig-run-* clone whose owner pid is gone.
+#
+# Edit this file by writing a copy and renaming it over: bash reads a running script as it goes,
+# so an in-place edit can break a rig-run that is mid-job.
+#
+# While a clone exists, rig-run holds two leases owned by its own pid: the vm lease and the single
+# heavy lease (estimates 0/0), so no heavy build runs beside a VM. A VM at its 5.65 GiB peak plus
+# one heavy job on the 19-21 GiB memory baseline went critical in the 2026-10-03 stress run.
+# It also holds ~/.long-run/locks/heavy.lock, the lock with-heavy.sh runs every heavy command under,
+# so a build that got past the leases some other way still cannot start beside a VM (2026-10-07,
+# Caret's coordinator: every heavy start comes in through one door). The lock is taken after both
+# leases without waiting; a busy lock counts as a refusal, so the leases are released while waiting.
+# Children inherit the descriptor, so a VM left by a SIGKILLed rig-run keeps the lock until it is swept.
+#
+# Exit: the job's exit status; 75 no lease (or busy); 70 rig failure; 124 job timed out;
+# 130/143/129 interrupted.
+set -uo pipefail
+
+R=~/.long-run/rig
+# Every live rig-run has argv exactly "/bin/bash <this absolute path> ...": owner checks here and
+# in rig-stop match on that, so re-exec (same pid, same start time) if started any other way.
+[ "$0" = "$R/bin/rig-run" ] || exec /bin/bash "$R/bin/rig-run" "$@"
+LUME=/Users/samgu/.local/share/lume/lume.app/Contents/MacOS/lume
+export LUME_TELEMETRY_ENABLED=false
+GOLDEN=rig-golden
+KEY=$R/tmp/rig_ed25519
+# The guest's host key is the golden's, pinned under an alias so a clone's new IP still verifies.
+KNOWN=$R/tmp/known_hosts_rig
+LEASE=~/.long-run/bin/lr-lease
+REAP=~/.long-run/bin/lr-reap
+HEAVY_LOCK=~/.long-run/locks/heavy.lock
+
+usage() { echo "usage: rig-run <job-dir> [--wait SECONDS]" >&2; exit 64; }
+[ $# -ge 1 ] || usage
+JOB=$(cd "$1" 2>/dev/null && pwd) || { echo "rig-run: no such job dir: $1" >&2; exit 64; }
+shift
+WAIT_LEASE=0
+while [ $# -gt 0 ]; do
+  case "$1" in --wait) WAIT_LEASE=${2:?}; shift 2 ;; *) usage ;; esac
+done
+[ -f "$JOB/job.sh" ] || { echo "rig-run: $JOB/job.sh is missing" >&2; exit 64; }
+TIMEOUT=$(sed -n '1,10s/^# rig-timeout-seconds: *\([0-9][0-9]*\) *$/\1/p' "$JOB/job.sh" | head -1)
+TIMEOUT=${TIMEOUT:-900}
+[ "$TIMEOUT" -ge 1 ] && [ "$TIMEOUT" -le 3600 ] || { echo "rig-run: rig-timeout-seconds must be 1..3600" >&2; exit 64; }
+if [ -f "$JOB/tcc.txt" ]; then
+  # SERVICE[,SERVICE] PATH, PATH relative to payload/ or absolute in the guest. Checked before any
+  # lease is taken, so a typo costs nothing.
+  bad=$(grep -vE '^\s*(#|$)' "$JOB/tcc.txt" | grep -vE '^[A-Za-z]+(,[A-Za-z]+)* +[^ ]+$' || true)
+  [ -z "$bad" ] || { echo "rig-run: bad tcc.txt line(s): $bad" >&2; exit 64; }
+fi
+
+ID=$(date -u +%Y%m%dT%H%M%SZ)-$$
+VM=rig-run-$$
+RUN=$JOB/runs/$ID
+STATE=$R/runs/$VM
+mkdir -p "$RUN/out" "$STATE"
+echo $$ > "$STATE/owner.pid"
+# Start time of this shell, so a later pid reuse can't pass as the owner (rig-stop --orphans).
+ps -o lstart= -p $$ > "$STATE/owner.start"
+echo "$RUN" > "$STATE/run.dir"
+# RIG_RUN_ID_FILE: the caller learns this run's exact directory here, instead of globbing runs/ by pid, which can match
+# an older run that had the same pid (2026-10-07, Caret's wrapper re-review, should-fix 11).
+[ -z "${RIG_RUN_ID_FILE:-}" ] || printf '%s\n' "$RUN" > "$RIG_RUN_ID_FILE"
+LOG=$RUN/rig.log
+# fd 3 is the caller's stderr, so a trap that fires inside a redirected command still logs once.
+exec 3>&2
+log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$LOG" >&3; }
+now() { python3 -c 'import time; print(f"{time.time():.2f}")'; }
+free_kib() { df -k /System/Volumes/Data | awk 'NR==2{print $4}'; }
+
+STEP=start REACHED="" LEASE_ID="" HEAVY_ID="" LUME_PID="" IP="" SAMPLER="" VZ_PIDS="" JOB_RC="" RC=70
+declare -a T_NAMES=() T_VALS=()
+mark() { T_NAMES+=("$1"); T_VALS+=("$2"); }
+T0=$(now)
+
+gssh() {
+  ssh -i "$KEY" -o HostKeyAlias=rig-golden -o UserKnownHostsFile="$KNOWN" -o StrictHostKeyChecking=yes \
+      -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o LogLevel=ERROR "lume@$IP" "$@"
+}
+# Long commands run in the background and are waited on, so a signal's trap runs at once instead
+# of after the command ends.
+bg() { "$@" & local p=$!; wait $p; }
+
+# --- cleanup -----------------------------------------------------------------------------------
+
+# Stopping must finish well inside 45 s: a Mac-wide memory guard SIGTERMs the youngest lease
+# owner's process group and SIGKILLs it 45 s later. So: at most 15 s for the VM to stop, then
+# SIGKILL; delete with rm -rf (lume delete took 9-17 s per clone in R2); release the lease last.
+stop_vm() {
+  local vm=$1 pid=${2:-} i
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 0
+  # Only the VM's own process: a recorded pid may since have been reused.
+  ps -o command= -p "$pid" | grep -qE "lume run $vm( |\$)" || return 0
+  "$LUME" stop "$vm" >>"$LOG" 2>&1 &
+  local sp=$!
+  for i in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  kill "$sp" 2>/dev/null
+  if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null; sleep 0.5; fi
+  return 0
+}
+
+delete_vm() {
+  local vm=$1 i
+  [[ "$vm" =~ ^rig-run-[0-9]+$ ]] || { log "refusing to delete $vm"; return 1; }
+  # Retried: right after a stop, Lume can still be restoring config.json from its backup, which
+  # made a single rm -rf hit "Directory not empty" (15:43Z interrupt in the reboot step).
+  for i in $(seq 1 10); do
+    rm -rf ~/.lume/"$vm" 2>/dev/null
+    [ -d ~/.lume/"$vm" ] || break
+    sleep 0.5
+  done
+  rm -f ~/.lume/."$vm".resize.guard
+  [ -d ~/.lume/"$vm" ] && { log "could not delete ~/.lume/$vm"; return 1; }
+  return 0
+}
+
+write_report() {
+  local f=$RUN/rig.json
+  {
+    printf '{\n  "id": "%s",\n  "vm": "%s",\n  "job": "%s",\n  "exit": %s,\n  "jobExit": %s,\n  "lastStep": "%s",\n' \
+      "$ID" "$VM" "$JOB" "$RC" "${JOB_RC:-null}" "$REACHED"
+    printf '  "timings": {'
+    local i sep=""
+    for i in "${!T_NAMES[@]}"; do printf '%s"%s": %s' "$sep" "${T_NAMES[$i]}" "${T_VALS[$i]}"; sep=", "; done
+    printf '},\n'
+    printf '  "peakMemKiB": %s,\n' "$(awk '{print $2}' "$RUN/mem.log" 2>/dev/null | sort -n | tail -1 | grep . || echo null)"
+    # Counts of lines; null when the step that writes the file was never reached.
+    printf '  "hostWindowsFromVM": %s,\n' "$( [ -f "$RUN/host-windows.log" ] && wc -l < "$RUN/host-windows.log" | tr -d ' ' || echo null)"
+    printf '  "vmTcpListeners": %s\n}\n' "$( [ -f "$RUN/listeners.txt" ] && wc -l < "$RUN/listeners.txt" | tr -d ' ' || echo null)"
+  } > "$f"
+}
+
+# Kills a process, then every descendant listed before it died, so a killed subshell can't orphan its
+# ssh or tar.
+killtree() { local c kids; kids=$(pgrep -P "$1"); kill "$1" 2>/dev/null; for c in $kids; do killtree "$c"; done; }
+
+CLEANED=""
+cleanup() {
+  # Runs once: a signal's trap calls it, then the EXIT trap would again. (/bin/bash is 3.2, so no
+  # BASHPID; subshells reset traps, so only the main shell gets here.)
+  [ -n "$CLEANED" ] && return
+  CLEANED=1
+  trap '' INT TERM HUP
+  local reached=$STEP
+  REACHED=$STEP
+  STEP=cleanup
+  # Children this script started (sampler, ssh, tar, sleep); the VM's own process is stopped by
+  # stop_vm so Lume can release its locks.
+  local c; for c in $(pgrep -P $$); do [ "$c" != "$LUME_PID" ] && killtree "$c"; done
+  local t=$(now)
+  stop_vm "$VM" "$LUME_PID"
+  mark stopS "$(python3 -c "print(round($(now)-$t,2))")"
+  [ -n "${FREE_BEFORE_CLONE:-}" ] && mark diskAddedKiB "$(( FREE_BEFORE_CLONE - $(free_kib) ))"
+  t=$(now)
+  delete_vm "$VM"
+  mark deleteS "$(python3 -c "print(round($(now)-$t,2))")"
+  # heavy.lock before the leases, so no heavy job admitted by a lease finds it still taken.
+  exec 9>&-
+  [ -n "$LEASE_ID" ] && "$LEASE" release "$LEASE_ID" >>"$LOG" 2>&1 && log "released lease $LEASE_ID"
+  [ -n "$HEAVY_ID" ] && "$LEASE" release "$HEAVY_ID" >>"$LOG" 2>&1 && log "released heavy lease $HEAVY_ID"
+  LEASE_ID="" HEAVY_ID=""
+  rm -rf "$STATE"
+  mark totalS "$(python3 -c "print(round($(now)-$T0,2))")"
+  write_report
+  log "done: exit $RC (last step $reached)"
+}
+on_signal() { RC=$1; log "signal during step $STEP"; cleanup; exit "$RC"; }
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap 'on_signal 129' HUP
+trap 'cleanup' EXIT
+
+# --- sweep clones left by a killed rig-run -------------------------------------------------------
+
+# A state dir's owner is alive when its pid is this exact script under /bin/bash and started when
+# recorded. A substring match on "rig-run" would accept any process whose arguments mention it.
+# Classifies a state dir's owner, as rig-stop --orphans does. Only gone and replaced owners are
+# swept; anything unreadable is left alone (a live run's clone must never be deleted).
+#   live: pid present, start time as recorded, command exactly /bin/bash <this script>
+#   gone: no such pid
+#   replaced: pid present, start differs from the recorded one by more than 1000 ms (whole seconds)
+#   unverifiable: everything else
+owner_state() {
+  local d=$1 owner rec st a b diff
+  owner=$(cat "$d/owner.pid" 2>/dev/null)
+  [[ "$owner" =~ ^[0-9]+$ ]] || { echo unverifiable; return; }
+  ps -p "$owner" >/dev/null 2>&1 || { echo gone; return; }
+  rec=$(cat "$d/owner.start" 2>/dev/null); st=$(ps -o lstart= -p "$owner" 2>/dev/null)
+  [ -n "$rec" ] && [ -n "$st" ] || { echo unverifiable; return; }
+  a=$(LC_ALL=C date -j -f "%a %b %d %T %Y" "$(echo $rec)" +%s 2>/dev/null)
+  b=$(LC_ALL=C date -j -f "%a %b %d %T %Y" "$(echo $st)" +%s 2>/dev/null)
+  [ -n "$a" ] && [ -n "$b" ] || { echo unverifiable; return; }
+  diff=$(( a - b )); diff=${diff#-}
+  [ "$diff" -gt 1 ] && { echo replaced; return; }
+  [ "$diff" -eq 0 ] && ps -o command= -p "$owner" | grep -qE "^/bin/bash $R/bin/rig-run( |\$)" && { echo live; return; }
+  echo unverifiable
+}
+
+sweep() {
+  local d vm owner cls
+  for d in "$R"/runs/rig-run-*; do
+    [ -d "$d" ] || continue
+    vm=$(basename "$d"); [ "$vm" = "$VM" ] && continue
+    owner=$(cat "$d/owner.pid" 2>/dev/null)
+    # A live rig-run is left alone: the vm lease (count 1) is what keeps runs apart. Waiting on
+    # live state dirs deadlocked two waiting runs at 15:07Z, since each makes its dir first.
+    cls=$(owner_state "$d")
+    case "$cls" in
+      live) continue ;;
+      gone|replaced) ;;
+      *) log "leaving $vm: owner $owner unverifiable"; continue ;;
+    esac
+    log "sweeping $vm left by rig-run $owner ($cls)"
+    stop_vm "$vm" "$(cat "$d/lume.pid" 2>/dev/null)"
+    delete_vm "$vm"
+    rm -rf "$d"
+  done
+  # A clone directory with no state dir: every run makes its state dir before it clones and
+  # removes it only after deleting the clone, so this is a leftover, swept when the pid in its
+  # name is gone. With that pid present there is no recorded start to check it against: left.
+  for d in ~/.lume/rig-run-*; do
+    [ -d "$d" ] || continue
+    vm=$(basename "$d")
+    [[ "$vm" =~ ^rig-run-[0-9]+$ ]] || continue
+    [ "$vm" = "$VM" ] || [ -d "$R/runs/$vm" ] && continue
+    if ps -p "${vm#rig-run-}" >/dev/null 2>&1; then log "leaving clone dir $vm: pid present, unverifiable"; continue; fi
+    log "sweeping leftover clone dir $vm"; delete_vm "$vm"
+  done
+  return 0
+}
+
+# --- 1. lease ------------------------------------------------------------------------------------
+
+# flock through fd 9: the lock belongs to the open file, so it stays with this shell after python exits.
+# RIG_HEAVY_LOCK_FD names a descriptor this run inherited that already holds heavy.lock: the shared queue's runner can
+# hold the lock for a job and pass its descriptor down (through Caret's supervisor), and taking the lock again through
+# a new open file would wait on that holder forever. The descriptor is used only when heavy.lock is held and a flock
+# through it succeeds, which is a no-op for the open file that holds the lock and fails for any other, so it cannot
+# let a VM start beside another holder.
+take_heavy_lock() {
+  if [ -n "${RIG_HEAVY_LOCK_FD:-}" ]; then
+    [[ "$RIG_HEAVY_LOCK_FD" =~ ^[0-9]+$ ]] && [ "$RIG_HEAVY_LOCK_FD" -gt 2 ] || return 1
+    python3 -c 'import fcntl, os, sys
+fd, path = int(sys.argv[1]), sys.argv[2]
+if not os.path.samestat(os.fstat(fd), os.stat(path)): sys.exit(1)
+probe = os.open(path, os.O_RDONLY)
+try:
+    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    sys.exit(1)  # nobody held it, so the descriptor proves nothing
+except BlockingIOError:
+    pass
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' "$RIG_HEAVY_LOCK_FD" "$HEAVY_LOCK" 2>/dev/null || return 1
+    exec 9>&"$RIG_HEAVY_LOCK_FD"
+    return 0
+  fi
+  mkdir -p "$(dirname "$HEAVY_LOCK")" && exec 9>>"$HEAVY_LOCK" &&
+    python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' 2>/dev/null
+}
+
+STEP=lease
+t=$(now)
+waited=0
+while :; do
+  sweep
+  "$REAP" --run rig >/dev/null 2>&1
+  # Measured over 54 R2 runs (rig.json): peak RSS of Lume + Virtualization 5.65 GiB, disk added per
+  # clone at most 0.51 GiB. So 6 GiB memory, and 2 GiB disk (4x the largest seen).
+  # The lead's hold marker (bin/lead-hold) counts as a refusal: --wait keeps waiting through it.
+  if hold=$("$R/bin/lead-hold"); then
+    out="held by lead: $hold"; rc=75
+  else
+    # The heavy lease first, estimates 0/0: it only keeps heavy builds off the Mac while the VM runs.
+    # Taken before the vm lease because the vm lease's own 6+2 GiB reservation counted against heavy's
+    # 8 GiB floor and refused every VM below 16 GiB free, contradicting Sam's "run the VM at about
+    # 14.9 GiB" (2026-10-05, Caret thread b9836627; vm floor 4). Then the vm lease carries the VM's
+    # estimates against its own floor. Holding either while waiting for the other would block other
+    # runs for nothing, so a refused vm lease releases the heavy one.
+    out=""; hout=$("$LEASE" acquire --run rig --kind heavy --est-mem 0 --est-disk 0 --ttl $(( TIMEOUT / 60 + 20 )) --owner-pid $$); rc=$?
+  fi
+  if [ $rc -eq 0 ]; then
+    HEAVY_ID=$hout
+    out=$("$LEASE" acquire --run rig --kind vm --est-mem 6 --est-disk 2 --ttl $(( TIMEOUT / 60 + 20 )) --owner-pid $$); rc=$?
+    if [ $rc -eq 0 ]; then
+      LEASE_ID=$out
+      if take_heavy_lock; then
+        # Written only once both are held: the interrupt tests start their clock on lease.id.
+        echo "$LEASE_ID" > "$STATE/lease.id"; echo "$HEAVY_ID" > "$STATE/heavy.id"
+        break
+      fi
+      "$LEASE" release "$LEASE_ID" >>"$LOG" 2>&1; LEASE_ID=""
+      out="heavy.lock is held by another heavy job"; rc=75
+    else
+      out="vm: $out"
+    fi
+    "$LEASE" release "$HEAVY_ID" >>"$LOG" 2>&1; HEAVY_ID=""
+  elif [ "${out#held by lead}" = "$out" ]; then
+    out="heavy: $hout"
+  fi
+  echo "$(date -u +%H:%M:%SZ) $out" >> "$RUN/lease-refusals.log"
+  # Into rig.log too, once per change of reason, so a held run says so where people look.
+  if [ "${out#held by lead}" != "$out" ] && [ "$out" != "${last_held:-}" ]; then log "$out"; fi
+  last_held=$out
+  if [ $rc -ne 75 ] || [ "$waited" -ge "$WAIT_LEASE" ]; then log "no lease: $out"; RC=75; exit 75; fi
+  sleep 30 & wait $!; waited=$(( waited + 30 ))
+done
+mark leaseS "$(python3 -c "print(round($(now)-$t,2))")"
+log "lease $LEASE_ID, heavy lease $HEAVY_ID, heavy.lock"
+
+# Admission again, now that the leases and heavy.lock are held: the hold check and the readings above may be up to
+# --wait seconds old. The lead's hold, memory pressure, and free disk against the caller's floor (RIG_RUN_MIN_FREE_GIB,
+# raise-only; the clone step's own 12 GiB check still applies). Any of them refuses with 75; the EXIT trap releases
+# both leases and heavy.lock. (2026-10-07, Caret's wrapper re-review, should-fix 13.)
+if hold=$("$R/bin/lead-hold"); then log "blocked after leases: held by lead: $hold"; RC=75; exit 75; fi
+pressure=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null)
+[ "$pressure" = 1 ] || { log "blocked after leases: memory pressure level ${pressure:-unreadable} (1 is normal)"; RC=75; exit 75; }
+if [ -n "${RIG_RUN_MIN_FREE_GIB:-}" ]; then
+  [[ "$RIG_RUN_MIN_FREE_GIB" =~ ^[0-9]+$ ]] || { log "RIG_RUN_MIN_FREE_GIB must be whole GiB"; RC=64; exit 64; }
+  [ "$(free_kib)" -ge $(( RIG_RUN_MIN_FREE_GIB * 1048576 )) ] ||
+    { log "blocked after leases: disk ($(free_kib) KiB free, caller's floor ${RIG_RUN_MIN_FREE_GIB} GiB)"; RC=75; exit 75; }
+fi
+
+# Test only: RIG_RUN_TEST_HOLD_AT_LOCK=<file> makes a run that holds both leases and heavy.lock create
+# <file>, wait until it is removed, and exit 0 before anything touches Lume (test-rig-run-heavy-lock.sh).
+if [ -n "${RIG_RUN_TEST_HOLD_AT_LOCK:-}" ]; then
+  : > "$RIG_RUN_TEST_HOLD_AT_LOCK"
+  while [ -e "$RIG_RUN_TEST_HOLD_AT_LOCK" ]; do sleep 0.2 & wait $!; done
+  RC=0; STEP=finished; exit 0
+fi
+
+# --- 2. clone ------------------------------------------------------------------------------------
+
+STEP=clone
+gstatus=$("$LUME" get $GOLDEN --format json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d.get("status"))')
+[ "$gstatus" = stopped ] || { log "rig-golden is $gstatus, not stopped"; exit 70; }
+FREE_BEFORE_CLONE=$(free_kib)
+# 12 GiB before cloning (2026-10-05, Sam: run the VM at ~14.9 GiB free; was 15, the old lease floor copied
+# in). A clone adds at most 0.51 GiB (54 R2 runs); the lease decides admission, mem-guard stops a VM
+# under critical pressure, and the full-copy check below still refuses a 22 GiB fallback.
+[ "$FREE_BEFORE_CLONE" -gt $(( 12 * 1048576 )) ] || { log "blocked: disk ($FREE_BEFORE_CLONE KiB free)"; RC=75; exit 75; }
+t=$(now)
+bg "$LUME" clone $GOLDEN "$VM" >>"$LOG" 2>&1 || { log "lume clone failed"; exit 70; }
+mark cloneS "$(python3 -c "print(round($(now)-$t,2))")"
+# Lume falls back to a full copy when clonefile fails; that would cost ~22 GiB, so refuse it.
+if grep -q "falling back to regular copy\|clonefile failed" "$LOG"; then log "clone was a full copy, not APFS clone"; exit 70; fi
+added=$(( FREE_BEFORE_CLONE - $(free_kib) ))
+mark cloneDiskKiB "$added"
+[ "$added" -lt $(( 2 * 1048576 )) ] || { log "clone used $added KiB; not a copy-on-write clone"; exit 70; }
+
+# An optional `display` file (WIDTHxHEIGHT) sizes the clone's screen; rig-golden's is 1024x768,
+# too small for Caret's placement checks (fixture windows and panels cannot all fit).
+if [ -f "$JOB/display" ]; then
+  disp=$(tr -d ' \n' < "$JOB/display")
+  [[ "$disp" =~ ^[0-9]{3,4}x[0-9]{3,4}$ ]] || { log "bad display: $disp"; exit 64; }
+  "$LUME" set "$VM" --display "$disp" >>"$LOG" 2>&1 || { log "lume set --display failed"; exit 70; }
+fi
+
+# --- 3. boot headless, no VNC ---------------------------------------------------------------------
+
+STEP=boot
+before_vz=$(pgrep -f com.apple.Virtualization.VirtualMachine | sort)
+t=$(now)
+"$LUME" run "$VM" --display none --vnc disabled >"$RUN/lume-run.log" 2>&1 &
+LUME_PID=$!
+echo "$LUME_PID" > "$STATE/lume.pid"
+log "lume run pid $LUME_PID"
+for i in $(seq 1 120); do
+  kill -0 "$LUME_PID" 2>/dev/null || { log "lume run exited early"; cat "$RUN/lume-run.log" >>"$LOG"; exit 70; }
+  IP=$("$LUME" get "$VM" --format json 2>/dev/null | python3 -c 'import json,sys
+d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d.get("ipAddress") or "")' 2>/dev/null)
+  [ -n "$IP" ] && break
+  sleep 1 & wait $!
+done
+[ -n "$IP" ] || { log "no guest IP after 120 s"; exit 70; }
+VZ_PIDS=$(comm -13 <(echo "$before_vz") <(pgrep -f com.apple.Virtualization.VirtualMachine | sort) | tr '\n' ' ')
+echo "$VZ_PIDS" > "$STATE/vz.pids"
+# Memory of the VM's processes and any host window they own, every 2 s, while rig-run lives.
+(
+  while kill -0 $$ 2>/dev/null; do
+    kib=0; for p in $LUME_PID $VZ_PIDS; do r=$(ps -o rss= -p "$p" 2>/dev/null | tr -d ' '); kib=$(( kib + ${r:-0} )); done
+    echo "$(date -u +%H:%M:%S) $kib" >> "$RUN/mem.log"
+    "$R/bin/winlist" 2>/dev/null | awk -F'\t' -v pids=" $LUME_PID $VZ_PIDS " '$1=="WIN" && index(pids, " "$3" ")' >> "$RUN/host-windows.log"
+    sleep 2
+  done
+) &
+SAMPLER=$!
+ready=""
+for i in $(seq 1 90); do
+  if gssh 'launchctl print gui/501 >/dev/null 2>&1 && pgrep -x -u lume Dock >/dev/null && pgrep -x -u lume Finder >/dev/null' 2>/dev/null; then ready=1; break; fi
+  sleep 2 & wait $!
+done
+[ -n "$ready" ] || { log "guest desktop not ready"; exit 70; }
+mark bootToReadyS "$(python3 -c "print(round($(now)-$t,2))")"
+log "guest ready at $IP"
+# Exposure check: the VM's processes may not listen on any TCP port.
+lsof -nP -iTCP -sTCP:LISTEN -a -p "$(echo $LUME_PID $VZ_PIDS | tr ' ' ',')" 2>/dev/null | tail -n +2 > "$RUN/listeners.txt"
+lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null > "$RUN/host-listeners.txt"
+if [ -s "$RUN/listeners.txt" ]; then log "VM process listens on TCP:"; cat "$RUN/listeners.txt" >>"$LOG"; exit 70; fi
+
+# --- 4. copy the job in --------------------------------------------------------------------------
+
+STEP=copy-in
+t=$(now)
+bg gssh 'rm -rf ~/rig/job && mkdir -p ~/rig/job/payload ~/rig/job/out ~/rig/bin' || exit 70
+{ tar -C "$R/guest" -cf - . | gssh 'tar -C ~/rig/bin -xf -'; } & wait $! || { log "copy tools failed"; exit 70; }
+{ tar -C /Applications -cf - CuaDriver.app | gssh 'tar -C ~/rig -xf - && ln -sf ~/rig/CuaDriver.app/Contents/MacOS/cua-driver ~/rig/bin/cua-driver'; } & wait $! || { log "copy cua-driver failed"; exit 70; }
+if [ -d "$JOB/payload" ]; then
+  { tar -C "$JOB/payload" -cf - . | gssh 'tar -C ~/rig/job/payload -xf -'; } & wait $! || { log "copy payload failed"; exit 70; }
+fi
+{ tar -C "$JOB" -cf - job.sh $( [ -f "$JOB/tcc.txt" ] && echo tcc.txt ) | gssh 'tar -C ~/rig/job -xf -'; } & wait $! || exit 70
+mark copyInS "$(python3 -c "print(round($(now)-$t,2))")"
+
+# --- 5. TCC rows for this build ------------------------------------------------------------------
+
+STEP=tcc
+t=$(now)
+gssh 'bash -s' >"$RUN/tcc.txt" 2>&1 <<'G' &
+set -euo pipefail
+cd ~/rig/job/payload
+export RIG_TCC_NO_RESTART=1
+~/rig/bin/seed-tcc.sh grant kTCCServiceAccessibility,kTCCServiceScreenCapture ~/rig/CuaDriver.app >/dev/null
+# job.sh runs under /bin/bash, the responsible process for plain commands it starts, so
+# screencapture works from a job. Screen capture only: Accessibility stays per-binary, so a test
+# of an app's own Accessibility grant is not masked by the shell's.
+~/rig/bin/seed-tcc.sh grant kTCCServiceScreenCapture /bin/bash >/dev/null
+if [ -f ~/rig/job/tcc.txt ]; then
+  grep -vE '^\s*(#|$)' ~/rig/job/tcc.txt | while read -r services path; do
+    [[ "$path" = /* ]] || path=~/rig/job/payload/$path
+    svc=$(echo "$services" | sed -E 's/(^|,)([A-Za-z]+)/\1kTCCService\2/g')
+    ~/rig/bin/seed-tcc.sh grant "$svc" "$path" >/dev/null
+    echo "granted $svc $path"
+  done
+fi
+echo lume | sudo -S -p "" launchctl kickstart -k system/com.apple.tccd.system
+launchctl kickstart -k gui/$(id -u)/com.apple.tccd 2>/dev/null || true
+G
+wait $! || { log "seeding TCC failed"; cat "$RUN/tcc.txt" >>"$LOG"; exit 70; }
+mark tccS "$(python3 -c "print(round($(now)-$t,2))")"
+
+# --- 5a. graceful reboot --------------------------------------------------------------------------
+
+# rig-golden was last stopped hard, and every clone boots with Setup Assistant's -MiniBuddy sheet
+# frontmost; it refuses to give up the foreground (hide and activate fail). One graceful reboot
+# clears it: measured 13:58Z, buddy gone and Finder front on boot 2 (evidence/r2/reboot-test.txt).
+# A job dir with a `no-reboot` file skips this (~25 s).
+if [ ! -e "$JOB/no-reboot" ]; then
+  STEP=reboot
+  t=$(now)
+  # After a reboot Setup Assistant can still come back in full (14:05Z run, pid 346), launched into
+  # the session by com.apple.mbuseragent. Disabling that agent in this clone keeps it away.
+  # rig-capture-approvals.py pre-approves screen capture for the job's shell and python (macOS 26
+  # otherwise asks once per app, in an alert that takes the foreground).
+  gssh '~/rig/python3 ~/rig/bin/rig-capture-approvals.py; launchctl disable gui/501/com.apple.mbuseragent; echo lume | sudo -S -p "" launchctl disable system/com.apple.mbusertrampoline; echo lume | sudo -S -p "" shutdown -r now' >>"$LOG" 2>&1
+  for i in $(seq 1 30); do gssh true >/dev/null 2>&1 || break; sleep 1 & wait $!; done
+  ready=""
+  for i in $(seq 1 90); do
+    if gssh 'pgrep -x -u lume Dock >/dev/null && pgrep -x -u lume Finder >/dev/null' 2>/dev/null; then ready=1; break; fi
+    sleep 2 & wait $!
+  done
+  [ -n "$ready" ] || { log "guest desktop not back after reboot"; exit 70; }
+  mark rebootS "$(python3 -c "print(round($(now)-$t,2))")"
+fi
+
+# --- 5b. desktop prep: cua-driver daemon -----------------------------------------------------------
+
+STEP=prep
+t=$(now)
+gssh '~/rig/bin/rig-cua-up.sh' >>"$LOG" 2>&1 & wait $! || { log "cua-driver daemon failed"; exit 70; }
+gssh 'echo "front after prep: $(lsappinfo info -only name $(lsappinfo front)); setup sheet pid: $(pgrep -f "Setup Assistant -MiniBuddy" || echo none)"' >>"$LOG" 2>&1 & wait $!
+mark prepS "$(python3 -c "print(round($(now)-$t,2))")"
+
+# --- 6. the job, as a LaunchAgent in the guest's desktop session ----------------------------------
+
+STEP=job
+t=$(now)
+gssh "bash -s $TIMEOUT" >>"$LOG" 2>&1 <<'G' &
+set -u
+timeout=$1
+J=~/rig/job
+cat > $J/launch.sh <<'S'
+#!/bin/bash
+cd "$RIG_JOB"; /bin/bash "$RIG_JOB/job.sh" > "$RIG_OUT/job.stdout.log" 2> "$RIG_OUT/job.stderr.log"
+echo $? > "$RIG_JOB/exit"
+S
+chmod +x $J/launch.sh
+cat > $J/job.plist <<P
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>rig.job</string>
+<key>ProgramArguments</key><array><string>$J/launch.sh</string></array>
+<key>EnvironmentVariables</key><dict>
+<key>RIG_JOB</key><string>$J</string><key>RIG_PAYLOAD</key><string>$J/payload</string><key>RIG_OUT</key><string>$J/out</string>
+<key>RIG_BIN</key><string>$HOME/rig/bin</string><key>RIG_PYTHON</key><string>$HOME/rig/python3</string>
+<key>HOME</key><string>$HOME</string><key>PATH</key><string>$HOME/rig/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+<key>RunAtLoad</key><true/><key>WorkingDirectory</key><string>$J</string>
+<key>LimitLoadToSessionType</key><string>Aqua</string><key>ProcessType</key><string>Interactive</string></dict></plist>
+P
+launchctl bootout gui/501/rig.job 2>/dev/null || true
+launchctl bootstrap gui/501 $J/job.plist
+for i in $(seq 1 $timeout); do [ -f $J/exit ] && break; sleep 1; done
+launchctl bootout gui/501/rig.job 2>/dev/null || true
+echo "guest job exit=$(cat $J/exit 2>/dev/null || echo timeout)"
+[ -f $J/exit ] || exit 124
+exit "$(cat $J/exit)"
+G
+wait $!; JOB_RC=$?
+mark jobS "$(python3 -c "print(round($(now)-$t,2))")"
+log "job exit $JOB_RC"
+
+# --- 7. copy back, then cleanup (EXIT trap) stops and deletes the clone --------------------------
+
+STEP=copy-back
+t=$(now)
+{ gssh 'tar -C ~/rig/job/out -cf - .' | tar -C "$RUN/out" -xf -; } & wait $! || log "copy back failed"
+mark copyBackS "$(python3 -c "print(round($(now)-$t,2))")"
+RC=$JOB_RC
+STEP=finished
+exit "$RC"

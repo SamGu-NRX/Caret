@@ -1,0 +1,19 @@
+#!/bin/bash
+# lead-hold: exit 0 and print the reason while the lead's hold marker is active, else exit 1.
+# The marker is ~/.caret-run/HOLD (RIG_HOLD_FILE overrides it, for tests): its first field is epoch
+# seconds, the rest of the line is the reason. Active while that time is in the future. A marker
+# whose first field isn't a number also counts as held, so a typo stops runs rather than letting
+# them through; the reason then says so.
+# rig-run, with-heavy.sh and r3-queue.sh check it before every lease acquire.
+f=${RIG_HOLD_FILE:-$HOME/.caret-run/HOLD}
+[ -e "$f" ] || exit 1
+line=$(head -1 "$f" 2>/dev/null)
+until=$(echo "$line" | awk '{print $1}')
+reason=$(echo "$line" | cut -s -d' ' -f2-)
+if ! [[ "$until" =~ ^[0-9]+$ ]]; then
+  echo "unreadable hold marker $f (first field '$until' is not epoch seconds)"
+  exit 0
+fi
+[ "$until" -gt "$(date +%s)" ] || exit 1
+echo "${reason:-no reason given} (until $(date -u -r "$until" +%H:%M:%SZ))"
+exit 0
