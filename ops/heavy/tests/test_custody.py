@@ -327,6 +327,27 @@ class JournalReplay(unittest.TestCase):
         with self.assertRaises(recovery.JournalCorrupt):
             recovery.Journal(self.path).load(repair=True)
 
+    def test_a_failed_append_leaves_nothing_for_the_next_one_to_land_behind(self):
+        for failing in ("write", "fsync"):
+            with self.subTest(failing):
+                os.unlink(self.path) if os.path.exists(self.path) else None
+                j = recovery.Journal(self.path)
+                j.append({"event": "adopted"})
+                real_write, calls = os.write, []
+
+                def write(fd, data):
+                    calls.append(1)
+                    if failing == "write" and len(calls) > 1:
+                        raise OSError(28, "No space left on device")
+                    return real_write(fd, bytes(data[:5]) if failing == "write" else data)
+                with mock.patch.object(recovery.os, "write", side_effect=write), \
+                        mock.patch.object(recovery.os, "fsync", side_effect=OSError(5, "I/O error")
+                                          if failing == "fsync" else (lambda fd: None)):
+                    with self.assertRaises(OSError):
+                        j.append({"event": "register"})  # not acknowledged, so it must not be there
+                j.append({"event": "lease"})
+                self.assertEqual([r["event"] for r in recovery.Journal(self.path).load()], ["adopted", "lease"])
+
     def test_short_writes_are_completed(self):
         real = os.write
         with mock.patch.object(recovery.os, "write", side_effect=lambda fd, data: real(fd, bytes(data[:3]))):
@@ -463,6 +484,39 @@ class WireDescriptorsAndDeadlines(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 5)
 
 
+class ClientDeadlines(unittest.TestCase):
+    """Nothing that talks to the recovery owner or launchd waits forever."""
+
+    def test_register_gives_up_on_an_owner_that_never_answers(self):
+        import socket
+        import tempfile
+        d = tempfile.mkdtemp(prefix="chr.", dir="/tmp")  # a short path: AF_UNIX names are limited
+        self.addCleanup(subprocess.run, ["rm", "-rf", d])
+        path = os.path.join(d, "s")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(server.close)
+        server.bind(path)
+        server.listen(1)  # accepted by the kernel, never answered
+        env = dict(os.environ, CARET_HEAVY_RECOVERY_SOCKET=path, CARET_HEAVY_REGISTER_TIMEOUT_S="2")
+        started = time.monotonic()
+        done = subprocess.run([PY, "-I", os.path.join(HEAVY, "register.py"), "launchd", "caret-heavy.caret-x.svc"],
+                              env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertLess(time.monotonic() - started, 15)
+
+    def test_the_agent_pid_lookup_has_a_deadline(self):
+        c = recovery.Custody.__new__(recovery.Custody)
+        c.label = "caret-heavy-recovery.caret-x.00000000"
+        calls = []
+
+        def run(*args, **kwargs):
+            calls.append(kwargs)
+            raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout"))
+        with mock.patch.object(recovery.subprocess, "run", side_effect=run):
+            self.assertIsNone(c._agent_pid())
+        self.assertTrue(calls[0].get("timeout"))
+
+
 class AdoptionIsAllOrNothing(unittest.TestCase):
     def test_a_refused_descriptor_leaves_none_of_the_others_kept(self):
         import fcntl
@@ -505,6 +559,83 @@ class SupervisorErrorWithoutAnOwner(Custody):
             if isinstance(pid, int):
                 self.assertFalse(self.alive(pid), kind)
         self.assert_all_released(job_id)
+
+
+class StateOnlyAfterTheJournal(unittest.TestCase):
+    """Custody, leases and discovered identities change in memory only after their journal record is durable. A failed
+    append leaves the owner as it was, and closes every descriptor it received."""
+
+    def setUp(self):
+        import fcntl
+        import tempfile
+        d = tempfile.mkdtemp(prefix="caret-state-")
+        self.addCleanup(subprocess.run, ["rm", "-rf", d])
+        self.slot = os.path.join(d, "slot.lock")
+        self.lock = os.open(self.slot, os.O_RDWR | os.O_CREAT)
+        self.addCleanup(os.close, self.lock)
+        fcntl.flock(self.lock, fcntl.LOCK_EX)
+        owner = recovery.Owner.__new__(recovery.Owner)
+        owner.journal = recovery.Journal(os.path.join(d, "journal.ndjson"))
+        owner.probes = procs.DarwinProbes()
+        owner.paths, owner.plan = {"slot_lock": self.slot}, {"job_id": "caret-x", "test": {}}
+        owner.attempt, owner.state, owner.supervisor, owner.token, owner.lease = "a" * 32, "waiting", None, None, None
+        owner.fds, owner.clients, owner.watches, owner.resources = {}, {}, {}, {}
+        owner.adopted_ms = owner.dead_ms = None
+        self.owner = owner
+        self.me = recovery.identity(owner.probes, os.getpid())
+
+    serve = WireDescriptorsAndDeadlines.serve
+    copies = WireDescriptorsAndDeadlines.copies
+
+    def ask(self, msg, fds=()):
+        a, b = self.serve(self.owner, (json.dumps(msg) + "\n").encode(), fds=fds)
+        self.addCleanup(b.close)
+        return recovery.Reader(a).read()[0]
+
+    def adopt(self):
+        return self.ask({"op": "adopt", "attempt": self.owner.attempt, "token": "t" * 64, "supervisor": self.me,
+                         "locks": ["slot"]}, fds=[self.lock])
+
+    def test_a_failed_adoption_record_keeps_no_descriptor_no_token_and_no_supervisor(self):
+        with mock.patch.object(self.owner.journal, "append", side_effect=OSError(28, "No space left on device")):
+            self.assertFalse(self.adopt()["ok"])
+        self.assertEqual((self.owner.fds, self.owner.token, self.owner.supervisor, self.owner.state),
+                         ({}, None, None, "waiting"))
+        self.assertEqual(self.copies(self.lock), 1)  # the received copy was closed, not kept in a map
+        self.assertTrue(self.adopt()["ok"])  # and a later adoption works
+        self.assertEqual(sorted(self.owner.fds), ["slot"])
+
+    def test_a_failed_lock_or_lease_record_changes_nothing(self):
+        self.assertTrue(self.adopt()["ok"])
+        kept = self.owner.fds["slot"]
+        with mock.patch.object(self.owner.journal, "append", side_effect=OSError(28, "No space left on device")):
+            self.assertFalse(self.ask({"op": "lease", "id": "l-1", "cleanup": True})["ok"])
+            self.assertFalse(self.ask({"op": "lock", "name": "slot"}, fds=[self.lock])["ok"])
+        self.assertIsNone(self.owner.lease)
+        self.assertEqual(self.owner.fds, {"slot": kept})
+        self.assertEqual(self.copies(self.lock), 2)  # the test's and the first adoption's, nothing more
+        os.fstat(kept)  # still open
+
+    def test_an_identity_whose_record_failed_is_journalled_by_the_next_tick(self):
+        probes = Test8PidReuseAndStaleRecords.Probes()
+        probes.procs[500] = (100, 1, 500, [])
+        self.owner.probes = probes
+        self.owner._track({"id": "recipe", "type": "group", "pgid": 500, "leader": [500, 100]})
+        probes.procs[501] = (110, 500, 500, [])
+        with mock.patch.object(self.owner.journal, "append", side_effect=OSError(28, "No space left on device")):
+            with self.assertRaises(OSError):
+                self.owner._tick_groups()
+        self.owner._tick_groups()
+        members = [tuple(m) for r in self.owner.journal.load() if r["event"] == "members" for m in r["add"]]
+        self.assertEqual(members, [(501, 110)])
+
+    def test_a_clean_owner_answers_inventory_and_closes_descriptors_it_does_not_keep(self):
+        self.owner.state, self.owner.supervisor = "clean", self.me
+        reply = self.ask({"op": "inventory"})
+        self.assertEqual((reply["ok"], reply["state"], reply["results"]), (True, "clean", {}))
+        self.assertTrue(self.adopt()["ok"])
+        self.assertEqual(self.copies(self.lock), 1)
+        self.assertEqual(self.owner.fds, {})
 
 
 class LeaseAcquiredButNotYetRegistered(Custody):
@@ -601,13 +732,21 @@ class MarkerScanFailsClosed(unittest.TestCase):
         self.assertEqual(recovery.marked_state(probes, self.marker), (procs.PRESENT, [(12, 200)]))
         self.assertEqual(recovery.marked_state(self.Probes(None, {}), self.marker)[0], procs.UNKNOWN)
 
-    def test_the_supervisor_scan_keeps_unreadable_candidates_as_present(self):
-        probes = self.Probes([10], {10: (200, None, False)})
-        t = procs.Tracker(probes, "caret-x.n", "caret-heavy.caret-x.", started_abstime=100)
-        t.me = -1
-        with mock.patch.object(procs, "launchd_jobs", return_value=[]):
-            self.assertIn(10, t.owned(full=True))
-        self.assertIn(10, t.uninspectable)
+    def test_the_supervisor_scan_reports_unreadable_candidates_but_never_owns_or_signals_them(self):
+        for procs_, why in (({10: (200, None, False)}, "arguments unreadable"), ({10: (200, [], True)}, "usage denied")):
+            with self.subTest(why):
+                probes = self.Probes([10], procs_)
+                probes.children = lambda pid: [11]  # its child would be walked as owned if it were owned
+                probes.procs[11] = (210, [], False)
+                t = procs.Tracker(probes, "caret-x.n", "caret-heavy.caret-x.", started_abstime=100)
+                t.me = -1
+                with mock.patch.object(procs, "launchd_jobs", return_value=[]):
+                    owned = t.owned(full=True)
+                self.assertEqual((owned, t.unverified), ({}, {10}))
+                self.assertNotIn(10, t.tracked)
+                with mock.patch.object(procs.os, "kill") as kill:
+                    t.signal_all(signal.SIGKILL, set(owned) | {10})  # even when asked: never ours by proof
+                kill.assert_not_called()
 
 
 class Test8PidReuseAndStaleRecords(unittest.TestCase):
@@ -744,6 +883,22 @@ class QueueLeaseUntilClean(Custody):
         self.assert_all_released(job_id)
 
 
+    def test_a_supervisor_error_handed_to_the_owner_keeps_the_queue_lease_until_clean(self):
+        # Raised once the recipe is ready (its TERM trap set), so its cleanup takes the full 12 s.
+        job_id, _ = self.enqueue(["slow-cleanup", "12"], profile=profile(grace=30),
+                                 test={"raise_at": "supervisor:watching", "raise_when": "out/ready"})
+        self.run_queue("--once", "--max-wait", "120")
+        self.assertTrue(self.wait_for(lambda: finished(self, job_id), 120), self.queue_log(job_id))
+        self.assertIn("cleanup left to the recovery owner", self.outcome(job_id)["reason"])
+        lease_id = self.job(job_id)["lease_id"]
+        self.assertEqual(self.held_until_clean(job_id, lease_id), [], "the queue's lease went before CLEAN")
+        self.assertTrue(os.path.exists(os.path.join(self.run_root(job_id), "out", "cleanup-done")))
+        self.wait_clean(job_id, "recovery")
+        self.assertTrue(self.wait_for(lambda: self.job(job_id)["state"] not in ("running", "launching"), 30))
+        self.assertIn("recovery owner journalled CLEAN", self.queue_log(job_id))
+        self.assert_all_released(job_id)
+
+
 class QueueLeaseObliged(QueueLeaseUntilClean):
     """With the vendored lr-lease (pending install): the supervisor makes the queue's lease cleanup-required, so the
     queue's own release after its 10 s SIGKILL of the relay quarantines it rather than dropping it."""
@@ -751,6 +906,9 @@ class QueueLeaseObliged(QueueLeaseUntilClean):
     LEASE_SOURCE = os.path.join(HEAVY, "vendor/long-run/bin")
 
     def test_a_dead_supervisor_leaves_the_relay_holding_the_queue_lease_until_recovery_journals_clean(self):
+        pass  # the parent class covers it
+
+    def test_a_supervisor_error_handed_to_the_owner_keeps_the_queue_lease_until_clean(self):
         pass  # the parent class covers it
 
     def test_the_queues_lease_outlives_the_queues_release_until_the_cleanup_is_acknowledged(self):
@@ -763,6 +921,9 @@ class QueueLeaseObliged(QueueLeaseUntilClean):
         self.assertEqual(self.queue("cancel", "--id", job_id).returncode, 0)
         self.assertTrue(self.wait_for(lambda: self.job(job_id)["state"] == "cancelled", 25))
         self.assertIn("SIGKILL", self.job(job_id)["outcome_reason"])  # the queue's 10 s ran out, then it released
+        # The queue settles its lease after it records the cancellation: wait for that release to land.
+        self.assertTrue(self.wait_for(lambda: [l.get("state") for l in self.leases()] == ["quarantined"], 20),
+                        self.leases())
         self.assertNotIn("lease_release_error", self.job(job_id))
         self.assertFalse(os.path.exists(os.path.join(self.run_root(job_id), "out", "cleanup-done")))
         # Still the queue's lease, now quarantined; no second lease was taken over.
@@ -771,6 +932,7 @@ class QueueLeaseObliged(QueueLeaseUntilClean):
         self.assertEqual(self.held_until(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out",
                                                                              "cleanup-done")), lease_id), [])
         self.wait_clean(job_id, "supervisor")
+        self.assertTrue(self.wait_for(lambda: finished(self, job_id), 30))  # the outcome is written after CLEAN
         outcome = self.outcome(job_id)
         self.assertNotIn("taken_over_from", outcome["lease"])
         self.assertTrue(outcome["lease"]["obliged"])

@@ -82,9 +82,14 @@ def test_point(plan, name):
 
 
 def test_raise(plan, name):
-    """Tests only: plan["test"]["raise_at"] names a point where the supervisor raises, as an unexpected error would."""
-    if (plan.get("test") or {}).get("raise_at") == name:
-        raise RuntimeError("test: raised at {}".format(name))
+    """Tests only: plan["test"]["raise_at"] names a point where the supervisor raises, as an unexpected error would;
+    with plan["test"]["raise_when"], only once that path under the run root exists."""
+    test = plan.get("test") or {}
+    if test.get("raise_at") != name:
+        return
+    if test.get("raise_when") and not os.path.exists(os.path.join(plan["run_root"], test["raise_when"])):
+        return
+    raise RuntimeError("test: raised at {}".format(name))
 
 
 def identity(probes, pid):
@@ -204,7 +209,9 @@ class Journal:
 
     Only the owner holding owner.lock writes it. A crash can leave the last line incomplete; load(repair=True)
     truncates that torn tail before any further append, so a record acknowledged after a restart is never hidden
-    behind it. An unreadable line anywhere else raises JournalCorrupt.
+    behind it. An append that fails (a short write then an error, or a failed fsync) is not acknowledged, so it cuts
+    the file back to where it started; if even that fails, the next append cuts the torn tail first. An unreadable
+    line anywhere else raises JournalCorrupt.
     """
 
     def __init__(self, path):
@@ -215,11 +222,23 @@ class Journal:
             raise ValueError("the journal never holds the token")
         line = memoryview((json.dumps(dict(record, at=utc_now()), sort_keys=True) + "\n").encode())
         new = not os.path.exists(self.path)
-        fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
         try:
-            while line:
-                line = line[os.write(fd, line):]
-            os.fsync(fd)
+            size = os.fstat(fd).st_size
+            if size and os.pread(fd, 1, size - 1) != b"\n":
+                size = os.pread(fd, size, 0).rfind(b"\n") + 1  # a torn tail left by an earlier failure
+                os.ftruncate(fd, size)
+            try:
+                while line:
+                    line = line[os.write(fd, line):]
+                os.fsync(fd)
+            except BaseException:
+                try:
+                    os.ftruncate(fd, size)
+                    os.fsync(fd)
+                except OSError:
+                    pass
+                raise
         finally:
             os.close(fd)
         if new:
@@ -487,8 +506,9 @@ class Owner:
                     raise ValueError("malformed message")
                 if fds and msg.get("op") not in ("adopt", "lock"):
                     raise ValueError("{} takes no descriptors".format(msg.get("op")))
+                kept = self.state != "clean"  # a CLEAN owner keeps no descriptor
                 reply = self._handle(sock, msg, fds)
-                claimed = fds
+                claimed = fds if kept else []
             except (ValueError, KeyError, TypeError, OSError, procs.Refusal) as ex:
                 reply = {"ok": False, "error": str(ex)[:500]}
             close_all([fd for fd in fds if fd not in claimed])
@@ -509,6 +529,9 @@ class Owner:
         """Ticks every group watch and journals each newly learned identity before anything acts on it, so a
         restarted owner knows every process this one knew. Returns ({verified pids}, {resource: probe error})."""
         verified, failed = set(), {}
+        # Identities a watch learned whose record has not been written yet: kept until an append succeeds, since the
+        # watch reports each identity once.
+        pending = self.__dict__.setdefault("pending_members", {})
         for rid, watch in self.watches.items():
             try:
                 added = watch.tick()
@@ -516,8 +539,11 @@ class Owner:
                 failed[rid] = ex
                 continue
             if added:
-                self.journal.append({"event": "members", "id": rid, "add": added})
+                pending.setdefault(rid, []).extend(added)
             verified.update(watch.live_verified)
+        for rid in list(pending):
+            self.journal.append({"event": "members", "id": rid, "add": pending[rid]})
+            del pending[rid]
         return verified, failed
 
     def _verified(self):
@@ -528,12 +554,18 @@ class Owner:
         uid, pid = peer(sock)
         return uid == os.getuid() and pid in self._verified()
 
-    def _adopt_locks(self, names, fds):
+    def _check_locks(self, names, fds):
+        """Every descriptor is checked before any is kept: on a refusal the caller closes them all."""
         if len(names) != len(fds) or len(set(names)) != len(names):
             raise ValueError("{} lock names for {} descriptors".format(len(names), len(fds)))
-        # Every descriptor is checked before any is kept: on a refusal the caller closes them all.
         for name, fd in zip(names, fds):
             procs.inherited_lock_fd(self.paths[LOCK_PATHS[name]], fd)  # same file, and this open file holds it
+
+    def _adopt_locks(self, names, fds):
+        self._check_locks(names, fds)
+        self._keep_locks(names, fds)
+
+    def _keep_locks(self, names, fds):
         for name, fd in zip(names, fds):
             old = self.fds.pop(name, None)
             if old is not None:
@@ -544,6 +576,8 @@ class Owner:
         op = msg.get("op")
         if self.state == "clean":
             return self._replay(sock, msg)
+        # Each change below is journalled first and made in memory only once that record is durable: a failed append
+        # leaves the owner as it was, and _serve closes every descriptor received with the request.
         if op == "adopt":
             uid, pid = peer(sock)
             sup = msg["supervisor"]
@@ -553,11 +587,12 @@ class Owner:
                 raise ValueError("this owner serves attempt {}".format(self.attempt))
             if self.supervisor is not None and self.supervisor != sup:
                 raise ValueError("this attempt already has supervisor {}".format(self.supervisor))
-            self._adopt_locks(msg["locks"], fds)
-            self.token, self.supervisor = msg["token"], sup
-            self.adopted_ms = self.adopted_ms or int(time.time() * 1000)
-            self.journal.append({"event": "adopted", "supervisor": sup, "locks": sorted(self.fds),
-                                 "since_ms": self.adopted_ms})
+            self._check_locks(msg["locks"], fds)
+            since = self.adopted_ms or int(time.time() * 1000)
+            self.journal.append({"event": "adopted", "supervisor": sup, "locks": sorted(set(self.fds) | set(msg["locks"])),
+                                 "since_ms": since})
+            self._keep_locks(msg["locks"], fds)
+            self.token, self.supervisor, self.adopted_ms = msg["token"], sup, since
             if self.state == "waiting":
                 self.state = "custody"
             test_point(self.plan, "recovery:after-adopt")
@@ -579,12 +614,13 @@ class Owner:
                 return self._register(resource)
             raise ValueError("{} must come from the adopting supervisor".format(op))
         if op == "lock":
-            self._adopt_locks([msg["name"]], fds)
+            self._check_locks([msg["name"]], fds)
             self.journal.append({"event": "lock", "name": msg["name"]})
+            self._keep_locks([msg["name"]], fds)
             return {"ok": True}
         if op == "lease":
-            self.lease = {"id": msg["id"], "cleanup": bool(msg["cleanup"])}
             self.journal.append({"event": "lease", "id": msg["id"], "cleanup": bool(msg["cleanup"])})
+            self.lease = {"id": msg["id"], "cleanup": bool(msg["cleanup"])}
             return {"ok": True}
         if op == "register":
             return self._register(check_resource(dict(msg["resource"]), self.plan["job_id"]))
@@ -611,8 +647,9 @@ class Owner:
         raise ValueError("unknown op {!r}".format(op))
 
     def _replay(self, sock, msg):
-        """CLEAN is journalled: no custody is needed any more. The same attempt's supervisor may adopt (its
-        descriptors are not kept) and ask for `clean` again; that answer ends the replay."""
+        """CLEAN is journalled: no custody is needed any more. The same attempt's supervisor may adopt (_serve closes
+        its descriptors rather than keeping them), ask for an inventory of the journalled resources, and ask for
+        `clean` again; that answer ends the replay. Every reply says the state is clean."""
         uid, pid = peer(sock)
         if uid != os.getuid() or self.supervisor is None or pid != self.supervisor[0]:
             raise ValueError("only this attempt's supervisor may talk to a CLEAN owner")
@@ -620,6 +657,8 @@ class Owner:
             raise ValueError("this owner serves attempt {}".format(self.attempt))
         if msg.get("op") == "clean":
             self.finished = True
+        if msg.get("op") == "inventory":
+            return {"ok": True, "state": "clean", "results": self.inventory()}
         if msg.get("op") in ("adopt", "clean", "status"):
             return {"ok": True, "state": "clean"}
         raise ValueError("{} after CLEAN".format(msg.get("op")))
@@ -830,8 +869,13 @@ class Custody:
             self._bootstrap()
 
     def _agent_pid(self):
-        out = subprocess.run(["/bin/launchctl", "print", "gui/{}/{}".format(os.getuid(), self.label)],
-                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout
+        """The agent's pid as launchd reports it, or None (also when launchctl fails or takes over 20 s)."""
+        try:
+            out = subprocess.run(["/bin/launchctl", "print", "gui/{}/{}".format(os.getuid(), self.label)],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                 timeout=20).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
         for line in out.splitlines():
             if line.strip().startswith("pid = "):
                 return int(line.split("=")[1])
@@ -843,6 +887,7 @@ class Custody:
         while time.monotonic() < end:
             try:
                 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.settimeout(self.io_timeout)
                 sock.connect(self.sock_path)
                 uid, pid = peer(sock)
                 if uid != os.getuid() or pid != self._agent_pid():

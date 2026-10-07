@@ -161,14 +161,22 @@ def relay(plan_path, plan_digest, plan):
     except subprocess.TimeoutExpired:
         pass
     try:
-        code = int(json.loads(data)["exit"])
+        status = json.loads(data)
+        code = int(status["exit"])
     except (ValueError, KeyError, TypeError):
         say("relay", "the supervisor ended without a status (exit {})".format(proc.returncode))
         say("relay", await_recovery(plan))
         return EXIT_ERROR
+    if status.get("cleanup") == HANDED_OVER:
+        # The supervisor left an unconfirmed cleanup to the recovery owner: the queue's lease stays until CLEAN.
+        say("relay", await_recovery(plan))
     if forwarded:
         say("relay", "forwarded signal {}; supervisor finished cleanup".format(forwarded[0]))
     return code
+
+
+# outcome.json's "cleanup" when the supervisor left before the cleanup was confirmed; also sent to the relay.
+HANDED_OVER = "left to the recovery owner"
 
 
 def await_recovery(plan, poll=1.0):
@@ -306,7 +314,7 @@ class Supervisor:
             # to hold every lock this process holds, and the token. _hand_over cleans up here until then.
             if self.launched and not self.concluded and self._hand_over():
                 reason += "; cleanup left to the recovery owner {}".format(self.custody.label)
-                self.record["cleanup"] = "left to the recovery owner"
+                self.record["cleanup"] = HANDED_OVER
             else:  # nothing was started, or this process confirmed the clean itself
                 self._release()
                 if self.custody is not None and not self.concluded:
@@ -635,6 +643,9 @@ class Supervisor:
         finally:
             log.close()
             os.close(go_r)
+        # Referenced until this process exits: a Popen dropped while its child is unreaped (an exception unwinding
+        # this frame) is reaped by the next Popen anywhere, which would free the leader's pid while the job is held.
+        self.recipe_proc = proc
         self.launched = True
         self.tracker.add_leader(proc.pid)
         leader = recovery.identity(self.probes, proc.pid)
@@ -714,6 +725,7 @@ class Supervisor:
             if self._runner_gone():
                 self._request_cancel("the queue runner {} died".format(self.runner), EXIT_CANCELLED)
             self._ping_custody(now)
+            recovery.test_raise(self.plan, "supervisor:watching")
             leader_done = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
             full = leader_done or now - last_full >= FULL_SCAN_EVERY
             if full:
@@ -915,6 +927,9 @@ class Supervisor:
         else:
             if owned or labels:
                 results["supervisor-scan"] = [procs.PRESENT, "pids {} launchd {}".format(sorted(owned), labels)]
+            if self.tracker.unverified:
+                results["supervisor-scan-unreadable"] = [procs.UNKNOWN, "this user's pids {} started during the job "
+                                                         "could not be read for the marker".format(sorted(self.tracker.unverified))]
         if self.record.get("vm", {}).get("rig_run_pids"):
             results["vm"] = list(self._vm_state())
         return results
@@ -1007,7 +1022,7 @@ class Supervisor:
 
     def _send_status(self, code):
         try:
-            os.write(self.status_fd, json.dumps({"exit": code}).encode())
+            os.write(self.status_fd, json.dumps({"exit": code, "cleanup": self.record.get("cleanup")}).encode())
         except OSError:
             pass  # the relay is gone; the queue already settled the job from its side
         finally:

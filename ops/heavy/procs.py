@@ -471,6 +471,9 @@ class Tracker:
         self.argv_seen = {}      # pid -> argv, for postconditions (rig-run pids)
         self.labels = set()      # launchd labels seen with the job's prefix
         self.uninspectable = set()  # owned pids whose state a permission error hid
+        # This user's processes from the last full scan whose marker could not be read: possibly the job's, so the
+        # inventory is UNKNOWN while any is alive, but never owned, walked or signalled without that proof.
+        self.unverified = set()
         self.found_last = None      # the last complete owned() answer, for when a probe fails
         self.me = os.getpid()
 
@@ -497,7 +500,8 @@ class Tracker:
         frontier += [(p, False) for p in list(self.tracked)]
         frontier += [(p, True) for p in self.leaders]
         if full:
-            frontier += [(p, True) for p in self._marked()]
+            hits, self.unverified = self._marked()
+            frontier += [(p, True) for p in hits]
             for label, pid in launchd_jobs(self.launchd_prefix):
                 self.labels.add(label)
                 if pid:
@@ -525,18 +529,17 @@ class Tracker:
         return found
 
     def _marked(self):
-        """This user's processes started since the job that carry its marker. One it cannot read is kept as
-        uninspectable and owned (never assumed unmarked); another user's process is excluded only because the kernel
-        lists it under another uid. Raises OSError when the user's process list cannot be read."""
-        hits = []
+        """(pids, unverified): this user's processes started since the job that carry its marker, and those whose
+        marker could not be read (never assumed unmarked, never assumed ours). Another user's process is excluded only
+        because the kernel lists it under another uid. Raises OSError when the user's process list cannot be read."""
+        hits, unverified = [], set()
         for pid in self.probes.user_pids(os.getuid()):
             if pid == self.me:
                 continue
             try:
                 usage = self.probes.usage(pid)
             except PermissionError:
-                self.uninspectable.add(pid)
-                hits.append(pid)
+                unverified.add(pid)
                 continue
             if usage is None or usage[1] < self.started_abstime:
                 continue
@@ -545,11 +548,10 @@ class Tracker:
             got = self.probes.procargs(pid)
             if got is None:
                 if self.probes.usage(pid) is not None:
-                    self.uninspectable.add(pid)
-                    hits.append(pid)
+                    unverified.add(pid)
             elif self.mark_entry in got[1]:
                 hits.append(pid)
-        return hits
+        return hits, unverified
 
     def live_labels(self):
         """Labels with the job's prefix still loaded in launchd."""
@@ -558,7 +560,8 @@ class Tracker:
         return labels
 
     def signal_all(self, sig, owned):
-        """Signal each owned process by pid after rechecking its start time. Returns the pids signalled."""
+        """Signal each owned process by pid after rechecking its start time against the one this tracker recorded
+        when it proved the process was the job's; a pid it never proved is not signalled. Returns the pids signalled."""
         sent = []
         for pid in sorted(owned):
             if pid == self.me:
@@ -567,7 +570,7 @@ class Tracker:
                 usage = self.probes.usage(pid)
             except PermissionError:
                 continue
-            if usage is None or self.tracked.get(pid) not in (None, usage[1]):
+            if usage is None or self.tracked.get(pid) != usage[1]:
                 continue
             try:
                 os.kill(pid, sig)

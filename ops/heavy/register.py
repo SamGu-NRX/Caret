@@ -32,6 +32,9 @@ def main(argv):
             return 1
         resource = {"id": "group:{}:{}".format(*leader), "type": "group", "pgid": pgid, "leader": leader}
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    # The owner answers once one record is fsync'd, so a wait this long means it is stuck; the caller then must not
+    # start the resource. A guess with a wide margin, not a measurement; tests shorten it.
+    sock.settimeout(float(os.environ.get("CARET_HEAVY_REGISTER_TIMEOUT_S", "30")))
     try:
         sock.connect(os.environ["CARET_HEAVY_RECOVERY_SOCKET"])
         recovery.send(sock, {"op": "register", "resource": resource})

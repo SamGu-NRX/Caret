@@ -183,8 +183,10 @@ class Lease(World):
         job_id, _ = self.enqueue(["ok"], profile=profile(lease_wait=4, exec_s=600))
         self.run_queue("--once", "--max-wait", "120").wait(timeout=300)
         outcome = self.outcome(job_id)
+        # Measured from custody (admission starts then), so launchd's start-up time on a busy Mac is not counted.
+        held = [e["at"] for e in outcome["events"] if e["event"].startswith("the recovery owner ")][0]
         seconds = (calendar.timegm(time.strptime(outcome["ended_utc"], "%Y-%m-%dT%H:%M:%SZ")) -
-                   calendar.timegm(time.strptime(outcome["started_utc"], "%Y-%m-%dT%H:%M:%SZ")))
+                   calendar.timegm(time.strptime(held, "%Y-%m-%dT%H:%M:%SZ")))
         self.assertLess(seconds, 15)  # the supervisor gave up after its 4 s lease wait, not its 600 s execution limit
         self.assertEqual(outcome["exit"], 75)
         self.assertIn("not admitted within the lease wait of 4 s: heavy lease: refused: count limit", outcome["reason"])
