@@ -57,6 +57,46 @@ export interface InsertedField {
   deleteSelection(): void;
   /** Waits for the page to apply an edit. */
   settle(): Promise<void>;
+  /** Saves the selection as it is now; the function puts exactly that back, without needing a collapsed caret. */
+  saveSelection(): () => void;
+}
+
+/** An input or a textarea, as far as recovery touches it. */
+export interface TextControl {
+  value: string;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+  setSelectionRange(start: number, end: number): void;
+}
+
+/**
+ * The adapter for a text control, whose offsets are its value's: insert.ts uses it for an input or a textarea. A control
+ * with no selection API (an email input) throws on setSelectionRange; that is a selection Caret cannot make.
+ */
+export function textControlField(c: TextControl, env: Pick<InsertedField, "blocked" | "deleteSelection" | "settle">): InsertedField {
+  const set = (start: number, end: number): boolean => {
+    try {
+      c.setSelectionRange(start, end);
+    } catch {
+      return false;
+    }
+    return c.selectionStart === start && c.selectionEnd === end;
+  };
+  return {
+    read: () => c.value,
+    blocked: env.blocked,
+    select: set,
+    selected: () => (c.selectionStart === null || c.selectionEnd === null ? null : c.value.slice(c.selectionStart, c.selectionEnd)),
+    deleteSelection: env.deleteSelection,
+    settle: env.settle,
+    saveSelection: () => {
+      const start = c.selectionStart;
+      const end = c.selectionEnd;
+      return () => {
+        if (start !== null && end !== null) set(start, end);
+      };
+    },
+  };
 }
 
 const failed = (detail: string, insert: "unchanged" | "unverified"): ActAnswer => ({ outcome: "failed", detail, insert });
@@ -94,9 +134,10 @@ export async function recoverInsert(field: InsertedField, intent: InsertIntent, 
   if (blocked !== null) return failed(`${part}, and Caret could not take them out: ${blocked}; the page's Undo takes them back`, "unverified");
   if (field.read() !== held) return failed(`${part}, and the field changed while Caret checked its grant; Caret left it as it is`, "unverified");
   const at = intent.start;
+  const back = field.saveSelection();
   if (!field.select(at, at + k) || field.selected() !== intent.text.slice(0, k) || field.read() !== held) {
-    // Only the selection moved: the caret goes back after Caret's characters, where the insert left it.
-    field.select(at + k, at + k);
+    // Only the selection moved: it goes back exactly as it was, wherever the page or the user had put it.
+    back();
     return failed(`${part}, and Caret could not select only those characters, so it left them; the page's Undo takes them back`, "unverified");
   }
   field.deleteSelection();

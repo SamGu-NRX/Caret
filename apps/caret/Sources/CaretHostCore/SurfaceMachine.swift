@@ -248,6 +248,8 @@ public final class SurfaceMachine {
     public internal(set) var toastGrantID: UInt64?
     /// The task ⌘Z asked the helper to undo; its `undone` progress gets the last word.
     var undoing: String?
+    /// The inline insert's grant ⌘Z handed to the insertion queue (S2); its answer gets the last word.
+    var inlineUndo: UInt64?
     public internal(set) var toastInfo: DebugState.Toast?
     /// The working or result line was taken down because its app went behind or was covered; it
     /// stays down until the next offer.

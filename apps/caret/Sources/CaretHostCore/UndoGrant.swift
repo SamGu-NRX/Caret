@@ -135,6 +135,10 @@ public enum UndoGuard {
         case secureField
         /// An unconfirmed write's field reads as it did before it: nothing landed, nothing to undo.
         case nothingWritten
+        /// Right before the restore, the selection was not exactly the span Caret selected.
+        case selectionMoved
+        /// A key or click came after ⌘Z and before the restore.
+        case inputDuringUndo
 
         public var code: String {
             switch self {
@@ -143,6 +147,8 @@ public enum UndoGuard {
             case .spanInvalid: return "spanInvalid"
             case .secureField: return "secureField"
             case .nothingWritten: return "nothingWritten"
+            case .selectionMoved: return "selectionMoved"
+            case .inputDuringUndo: return "inputDuringUndo"
             }
         }
     }
@@ -184,7 +190,7 @@ public enum UndoGuard {
                 return .failure(.fieldChanged)
             }
         }
-        guard live.target.elementRevision == UTF16Text.digest(grant.writtenValue), live.value == grant.writtenValue else {
+        guard live.target.elementRevision == UTF16Text.digest(grant.writtenValue), UTF16Text.same(live.value, grant.writtenValue) else {
             return .failure(.fieldChanged)
         }
         let total = UTF16Text.length(live.value)
@@ -196,4 +202,18 @@ public enum UndoGuard {
         else { return .failure(.spanInvalid) }
         return .success(Revert(start: grant.insertedStart, length: grant.insertedLength, expectedValue: grant.priorValue, restore: grant.replacedText))
     }
+
+    /// The last check before the restore writes, after the span is selected and the field read
+    /// again: it holds exactly the value `approve` judged, its selection is exactly the span to
+    /// replace, and no key or click came since ⌘Z (`quiet`). Anything else, or a selection that
+    /// cannot be read, proves nothing about what the write would delete, so nothing is written.
+    public static func recheck(_ revert: Revert, approvedValue: String, now: InsertionGuard.LiveField, quiet: Bool) -> Rejection? {
+        guard quiet else { return .inputDuringUndo }
+        guard UTF16Text.same(now.value, approvedValue) else { return .fieldChanged }
+        guard now.selection == UTF16Selection(start: revert.start, end: revert.start + revert.length) else { return .selectionMoved }
+        return nil
+    }
+
+    /// Whether the field reads exactly as the revert means it to, unit for unit.
+    public static func restored(_ revert: Revert, value: String) -> Bool { UTF16Text.same(value, revert.expectedValue) }
 }
