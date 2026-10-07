@@ -19,7 +19,7 @@
 // snapshot did (`unchanged`); every other field is `unverified`, and is left as the page made it, never undone.
 import type { ActAnswer } from "../shared/messages.ts";
 import { BEFORE_MAX, fieldText, serialize } from "./field-text.ts";
-import { type InsertedField, recoverInsert } from "./partial-insert.ts";
+import { type InsertedField, recoverInsert, textControlField } from "./partial-insert.ts";
 import { deepActiveElement } from "./walker.ts";
 import { settle } from "./dom.ts";
 
@@ -179,27 +179,26 @@ export async function insertAtCaret(
 
 /**
  * The field as partial-insert.ts reads and edits it, in shown() text, whose offsets are the serialized text's (a no-break
- * space for a space is one unit for one). A text control selects by offsets. An editor's text has no offsets to select
- * by, so it selects only from a caret collapsed exactly at the end offset, extending the selection backward a character
- * at a time; recovery then checks that the selection holds exactly Caret's characters before it deletes them.
+ * space for a space is one unit for one). A text control selects by offsets (textControlField). An editor's text has no
+ * offsets to select by, so it selects only from a caret collapsed exactly at the end offset, extending the selection
+ * backward a character at a time. The selection then counts as Caret's characters only when it is proven to be plain
+ * text: it lies inside one text node of this editing host, under no hidden element (serialize() leaves hidden content
+ * out, so its text would not show what a delete removes; S2 review).
  */
 function domField(el: Element): InsertedField {
-  const control = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
+  const env = {
+    blocked: () => (composing ? "an input method is composing text in the field" : hasFocus(el) ? null : "the field no longer has focus"),
+    deleteSelection: () => void document.execCommand("delete", false),
+    settle,
+  };
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return textControlField(el, env);
   return {
+    ...env,
     read: () => {
       const t = wholeText(el);
       return t === null ? null : shown(el, t);
     },
-    blocked: () => (composing ? "an input method is composing text in the field" : hasFocus(el) ? null : "the field no longer has focus"),
     select: (start, end) => {
-      if (control !== null) {
-        try {
-          control.setSelectionRange(start, end);
-        } catch {
-          return false;
-        }
-        return control.selectionStart === start && control.selectionEnd === end;
-      }
       const sel = selectionOf(el);
       const c = caretState(el);
       if (sel === null || c === null || c.before.length !== end) return false;
@@ -207,22 +206,33 @@ function domField(el: Element): InsertedField {
       return (selectedText(el)?.length ?? -1) === end - start;
     },
     selected: () => selectedText(el),
-    deleteSelection: () => void document.execCommand("delete", false),
-    settle,
+    saveSelection: () => {
+      const sel = selectionOf(el);
+      const saved = sel === null ? [] : Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i).cloneRange());
+      return () => {
+        if (sel === null) return;
+        sel.removeAllRanges();
+        for (const r of saved) sel.addRange(r);
+      };
+    },
   };
 }
 
-/** The text of `el`'s selection, as compared; null when it is not inside the field. */
+/**
+ * An editor's selected text, as compared, when the selection is proven to hold only that text: one range, inside one
+ * text node of `el`'s editing host, with no hidden element between that node and the host. Null otherwise.
+ */
 function selectedText(el: Element): string | null {
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-    const s = el.selectionStart;
-    const e = el.selectionEnd;
-    return s === null || e === null ? null : el.value.slice(s, e);
-  }
   const host = editingHost(el);
   const sel = selectionOf(el);
   if (host === null || sel === null || sel.rangeCount !== 1) return null;
   const r = sel.getRangeAt(0);
-  if (!host.contains(r.startContainer) || !host.contains(r.endContainer)) return null;
-  return shown(el, serialize(r));
+  const node = r.startContainer;
+  if (node !== r.endContainer || node.nodeType !== Node.TEXT_NODE || editingHost(node) !== host) return null;
+  const view = host.ownerDocument.defaultView ?? window;
+  for (let e = node.parentElement; e !== null; e = e.parentElement) {
+    if (e.getAttribute("aria-hidden") === "true" || view.getComputedStyle(e).display === "none" || view.getComputedStyle(e).visibility === "hidden") return null;
+    if (e === host) break;
+  }
+  return shown(el, (node as Text).data.slice(r.startOffset, r.endOffset));
 }

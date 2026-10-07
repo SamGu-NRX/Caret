@@ -182,8 +182,18 @@ final class SurfaceCoordinator {
     func activity(_ record: TaskRecord) { machine.activity(record) }
 
     func insertionFinished(_ result: InsertionExecutor.Result) {
-        guard result.claim.offer.source != .engine, case .ghost = result.claim.offer.kind else { return }
+        guard case .ghost = result.claim.offer.kind else { return }
+        // S2: inline text, the engine's or the helper's, that Caret could not confirm is reported at
+        // the caret, and its grant offered there.
+        if let recovery = result.recovery {
+            machine.inlineInsertionFinished(InlineInsertion(claim: result.claim, recovery: recovery, undo: result.undo))
+        }
+        guard result.claim.offer.source != .engine else { return }
         status.increment(result.insertion.ok ? "surface.insertion.ok" : "surface.insertion.failed")
+    }
+
+    func inlineUndoFinished(_ result: InsertionExecutor.UndoResult) {
+        machine.inlineUndoFinished(grantID: result.grant.id, ok: result.ok, error: result.error, partial: result.partial, says: result.says)
     }
 
     func shutdown() {

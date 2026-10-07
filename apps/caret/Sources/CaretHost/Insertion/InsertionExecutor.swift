@@ -90,6 +90,9 @@ final class InsertionExecutor: @unchecked Sendable {
     /// can reread exactly that element even after focus moved to the next field.
     private let written = OSAllocatedUnfairLock(initialState: [(UInt64, AXUIElement, UInt64)]())
     private let writeIDs = OSAllocatedUnfairLock(initialState: UInt64(0))
+    /// How many written elements stay bound. Every insert is bound before it writes (S2), so a run
+    /// of Tabs must not push out the one whose toast or line still offers ⌘Z (5 s).
+    private static let boundWrites = 16
 
     init(
         arbiter: OfferArbiter,
@@ -220,20 +223,21 @@ final class InsertionExecutor: @unchecked Sendable {
             approved = edit
         }
 
-        // S2: a fill's undo grant exists before anything is written, armed with the field as the
-        // guard approved it, and its element is bound under the write id now, so a write stopped
-        // halfway still has its undo. Whether it is kept is decided once the write ends.
-        let armed = origin.map { origin -> UndoGrant in
+        // S2: every insert's undo grant exists before anything is written, a fill's and inline
+        // text's alike, armed with the field as the guard approved it, and its element is bound under
+        // the write id now, so a write stopped halfway still has its undo. Whether it is kept is
+        // decided once the write ends; the fill toast or the inline line owns it (S2 review).
+        let armed: UndoGrant = {
             let writeID = writeIDs.withLock { id -> UInt64 in
                 id &+= 1
                 return id
             }
             written.withLock { list in
                 list.append((writeID, element, processStart))
-                if list.count > 8 { list.removeFirst(list.count - 8) }
+                if list.count > Self.boundWrites { list.removeFirst(list.count - Self.boundWrites) }
             }
             return UndoGrant.armed(target: before.identity, priorValue: before.value, edit: approved, origin: origin, writeID: writeID)
-        }
+        }()
 
         let appKey = WriteMethodTable.appKey(pid: pid)
         // Checked before every event and AX write: the claim still authorized, the same process
@@ -311,7 +315,7 @@ final class InsertionExecutor: @unchecked Sendable {
         arbiter.finishInsertion(claimID: claim.claimID, error: error)
 
         // Stamped now, so the toast's ⌘Z lives its full lifetime from the result.
-        let grant = armed.flatMap { UnconfirmedInsert.grant(armed: $0, verified: verified, report: recovery) }.map { grant -> UndoGrant in
+        let grant = UnconfirmedInsert.grant(armed: armed, verified: verified, report: recovery).map { grant -> UndoGrant in
             var stamped = grant
             stamped.createdAt = Date()
             return stamped
@@ -344,7 +348,13 @@ final class InsertionExecutor: @unchecked Sendable {
         while steady < 2, Date().timeIntervalSince(started) < ignoredAfter {
             Thread.sleep(forTimeInterval: 0.02)
             let now = held()
-            steady = now == last ? steady + 1 : 0
+            let same: Bool
+            switch (now, last) {
+            case let (n?, l?): same = UTF16Text.same(n, l)
+            case (nil, nil): same = true
+            default: same = false
+            }
+            steady = same ? steady + 1 : 0
             last = now
         }
         let intent = UnconfirmedInsert.Intent(before: before.value, start: approved.replaceStart, end: approved.replaceEnd, replacement: approved.replacement)
@@ -363,11 +373,27 @@ final class InsertionExecutor: @unchecked Sendable {
             return (WriteFallback.afterAX(nil, refused: true), false)
         }
         guard stillTarget() else { return (.failed(refusal()), false) }
-        guard AXRead.setString(kAXSelectedTextAttribute, edit.replacement, on: element) == .success else {
+        let answer = Self.axAnswer(AXRead.setString(kAXSelectedTextAttribute, edit.replacement, on: element))
+        switch answer {
+        case .refused:
             // Only the selection moved, to the approved span, which the paste then replaces.
-            return (WriteFallback.afterAX(nil, refused: true), false)
+            return (WriteFallback.afterAX(nil, answer: .refused), false)
+        case .uncertain:
+            // The app did not answer: the text may be in. No paste follows; the field is read (S2 review).
+            return (WriteFallback.afterAX(nil, answer: .uncertain), true)
+        case .accepted:
+            return (WriteFallback.afterAX(waitForSettle(element: element, expected: edit, unchanged: unchanged), answer: .accepted), true)
         }
-        return (WriteFallback.afterAX(waitForSettle(element: element, expected: edit, unchanged: unchanged), refused: false), true)
+    }
+
+    /// An AX text write's answer. `kAXErrorCannotComplete` is the messaging failure (the app did
+    /// not answer in time), not a refusal: the app may have applied the write.
+    private static func axAnswer(_ error: AXError) -> WriteFallback.AXAnswer {
+        switch error {
+        case .success: return .accepted
+        case .cannotComplete: return .uncertain
+        default: return .refused
+        }
     }
 
     /// A ⌘V posted to the target's pid through KeyType's inserter and the reconciled pasteboard;
@@ -506,25 +532,34 @@ final class InsertionExecutor: @unchecked Sendable {
         case .failure(let rejection): return done(false, rejection.code)
         case .success(let r): revert = r
         }
+        // No key or click since ⌘Z: one would be the user's, and the restore must not cross it.
+        let quiet = { [status] in status.inputMark() == mark }
+        guard quiet() else { return done(false, UndoGuard.Rejection.inputDuringUndo.code) }
         guard stillTarget() else { return done(false, authority.isLive(authorization) ? "targetNotAllowed" : "revoked") }
         guard AXRead.setRange(kAXSelectedTextRangeAttribute, location: revert.start, length: revert.length, on: element) == .success else {
             return done(false, "writeRefused")
         }
-        // The guard judged one read; the user may have typed since. Right before the restore the
-        // field must still hold exactly that value, or nothing is written over it.
-        guard let selected = FieldReader.read(element), selected.value == live.value else {
-            return done(false, UndoGuard.Rejection.fieldChanged.code, says: FieldReader.read(element).flatMap { leftAlone($0.value) })
+        // The guard judged one read. Before anything is deleted, prove what would be: the field
+        // still holds exactly that value, unit for unit, its selection is exactly the span, and the
+        // user has been quiet. Otherwise report and write nothing; only a selection this undo made,
+        // over an unchanged field, is put back.
+        let selected = FieldReader.read(element)
+        if let rejection = selected.map({ UndoGuard.recheck(revert, approvedValue: live.value, now: $0.liveField, quiet: quiet()) }) ?? .fieldChanged {
+            if let selected, UTF16Text.same(selected.value, live.value), selected.selection == UTF16Selection(start: revert.start, end: revert.start + revert.length) {
+                AXRead.setRange(kAXSelectedTextRangeAttribute, location: live.selection.start, length: live.selection.end - live.selection.start, on: element)
+            }
+            return done(false, rejection.code, says: rejection == .fieldChanged ? selected.flatMap { leftAlone($0.value) } : nil)
         }
         guard stillTarget() else { return done(false, authority.isLive(authorization) ? "targetNotAllowed" : "revoked") }
-        guard AXRead.setString(kAXSelectedTextAttribute, revert.restore, on: element) == .success else {
-            return done(false, "writeRefused")
-        }
+        // A restore the app did not answer may still apply: it is waited for like one it took.
+        let answer = Self.axAnswer(AXRead.setString(kAXSelectedTextAttribute, revert.restore, on: element))
+        guard answer != .refused else { return done(false, "writeRefused") }
         let deadline = Date().addingTimeInterval(pasteSettleTimeout)
         repeat {
-            if FieldReader.read(element)?.value == revert.expectedValue { return done(true, nil, partial: revert.partialWrite) }
+            if let value = FieldReader.read(element)?.value, UndoGuard.restored(revert, value: value) { return done(true, nil, partial: revert.partialWrite) }
             Thread.sleep(forTimeInterval: 0.02)
         } while Date() < deadline
-        done(false, "writeMismatch")
+        done(false, answer == .uncertain ? WriteFallback.writeUncertain : "writeMismatch")
     }
 
     // MARK: - Range edits (writing fixes)
@@ -593,7 +628,7 @@ final class InsertionExecutor: @unchecked Sendable {
             }
             written.withLock { list in
                 list.append((writeID, element, processStart))
-                if list.count > 8 { list.removeFirst(list.count - 8) }
+                if list.count > Self.boundWrites { list.removeFirst(list.count - Self.boundWrites) }
             }
             finish(error: nil, undo: .range(applied.undo, priorValue: before.value, writtenValue: applied.value, writeID: writeID,
                                             strategy: NativeUndoApps.strategy(bundleID: claim.offer.target.bundleID)))

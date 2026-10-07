@@ -42,6 +42,28 @@ public enum WriteFallback {
         return nil
     }
 
+    /// How the app answered the AX text write. `uncertain`: it did not answer in time
+    /// (`kAXErrorCannotComplete`), which says nothing about whether the text went in.
+    public enum AXAnswer: Equatable, Sendable {
+        case accepted, refused, uncertain
+    }
+
+    /// The failure code for an AX write whose delivery is unknown (S2 review).
+    public static let writeUncertain = "writeUncertain"
+
+    /// Whether the field may hold some of the write: the app took it, or did not say.
+    public static func mayHaveWritten(_ answer: AXAnswer) -> Bool { answer != .refused }
+
+    /// What to do after the AX write. Only a refusal pastes instead. A write that may have been
+    /// applied is never followed by a paste, which could put the text in twice; the field is read.
+    public static func afterAX(_ settle: Settle?, answer: AXAnswer) -> Step {
+        switch answer {
+        case .refused: return .fallBackToPaste
+        case .uncertain: return .failed(writeUncertain)
+        case .accepted: return afterAX(settle, refused: false)
+        }
+    }
+
     /// What to do after the AX write. `refused` is an AX error from the selection or text write.
     public static func afterAX(_ settle: Settle?, refused: Bool) -> Step {
         if refused { return .fallBackToPaste }

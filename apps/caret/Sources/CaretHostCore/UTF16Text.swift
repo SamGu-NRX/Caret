@@ -8,6 +8,11 @@ import Foundation
 public enum UTF16Text {
     public static func length(_ text: String) -> Int { text.utf16.count }
 
+    /// The same UTF-16 code units. Swift's `==` on String is canonical equivalence, so "é" and "e"
+    /// plus a combining accent compare equal there; a field holding the other form is not the same
+    /// field, and a guard that deletes text must not take it for one (S2 review).
+    public static func same(_ a: String, _ b: String) -> Bool { a.utf16.elementsEqual(b.utf16) }
+
     /// Slice by UTF-16 code units. Returns nil for an out-of-range or surrogate-splitting range.
     public static func slice(_ text: String, start: Int, end: Int) -> String? {
         guard start >= 0, end >= start, end <= text.utf16.count else { return nil }

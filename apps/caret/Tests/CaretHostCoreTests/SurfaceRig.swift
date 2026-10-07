@@ -314,7 +314,8 @@ final class SurfaceRig {
             }
             machine.claimed(claim)
         case .undo(let grant):
-            if grant.taskID != nil { machine.undoStarted(grant) }
+            // HostRuntime hands every grant to this machine: a task's to the helper, an inline insert's to its line (S2).
+            machine.undoStarted(grant)
         case .closeToast: machine.offerChanged(.toastDismissed)
         case .navigate(let offerID, let ui): machine.navigated(offerID: offerID, ui: ui)
         case .closeOffer(let offerID):

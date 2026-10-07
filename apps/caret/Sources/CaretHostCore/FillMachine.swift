@@ -833,6 +833,7 @@ public final class FillMachine {
         switch (result.ok, result.error) {
         case (true, _): caption = result.partial ? "Took out the part that went in" : "Cleared 1 field"
         case (false, UndoGuard.Rejection.nothingWritten.code?): caption = "The field already reads as it did before the fill."
+        case (false, UndoGuard.Rejection.inputDuringUndo.code?): caption = "You typed as Caret was undoing, so the field was left as it is."
         default: caption = result.says.map(Self.sentence) ?? "The field changed after the fill, so it was left as it is."
         }
         let kind: FillToastDraw.Kind = result.ok ? .undone : .error
@@ -904,7 +905,7 @@ public final class FillMachine {
     }
 
     /// A clause of S1's wording as a toast's sentence.
-    static func sentence(_ clause: String) -> String {
+    public static func sentence(_ clause: String) -> String {
         clause.prefix(1).uppercased() + clause.dropFirst() + "."
     }
 
@@ -924,6 +925,9 @@ public final class FillMachine {
             return "That suggestion was too old, so nothing was filled."
         case "writeIgnored", "writeMismatch":
             return "The field didn't take the value. Type it in to fill it."
+        // The app did not answer the write, so it may or may not have taken it (S2 review).
+        case WriteFallback.writeUncertain:
+            return "The app didn't answer, so Caret didn't fill it again. Check the field."
         // This app only takes a paste, and what is on the clipboard could not be put back exactly
         // (`WriteFallback.clipboardUnrestorable`).
         case WriteFallback.clipboardUnrestorable:

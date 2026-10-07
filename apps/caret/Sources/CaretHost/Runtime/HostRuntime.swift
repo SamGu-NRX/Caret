@@ -213,6 +213,7 @@ public final class HostRuntime {
                     MainActor.assumeIsolated {
                         fill.undoFinished(result)
                         writing.undoFinished(result)
+                        surface.inlineUndoFinished(result)
                     }
                 }
             }
@@ -529,6 +530,8 @@ public final class HostRuntime {
                         MainActor.assumeIsolated {
                             fill.undoStarted(grant)
                             writing.undoStarted(grant)
+                            // An inline insert's grant belongs to the line at the caret (S2).
+                            surface.undoStarted(grant)
                         }
                     }
                 }
