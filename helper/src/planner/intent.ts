@@ -15,7 +15,8 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { headingsBefore } from "../fill/ask-scope.ts";
-import { formControls, inWebArea, type Control } from "../fill/controls.ts";
+import { inWebArea, type Control } from "../fill/controls.ts";
+import { writableTargets } from "./targets.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
 import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
 import { SnippetLedger } from "../privacy.ts";
@@ -172,25 +173,6 @@ export function personSpans(instruction: string): string[] {
   return out;
 }
 
-/** The fields a snapshot lists: the page's text fields (never the browser's own) and its empty controls, in document order. */
-function formInventory(w: WindowState): { node: Node; control: Control }[] {
-  const web = [...w.nodes.values()].some((n) => n.role === "AXWebArea");
-  const out: { node: Node; control: Control }[] = [];
-  const controls = formControls(w);
-  const byKey = new Map(controls.map((c) => [c.node.key, c]));
-  for (const n of w.nodes.values()) {
-    const c = byKey.get(n.key);
-    if (c !== undefined) {
-      out.push({ node: c.node, control: c.control });
-      continue;
-    }
-    if (n.editable !== true || !FILLABLE_ROLES.has(n.role) || n.states?.includes("secure")) continue;
-    // In a browser window, the page's fields only: the address bar is the browser's.
-    if (web && !inWebArea(w, n)) continue;
-    out.push({ node: n, control: n.role === "AXComboBox" && inWebArea(w, n) ? "combobox" : "text" });
-  }
-  return out;
-}
 
 /**
  * The snapshot an intent maker chooses from, with its text taken through one ledger: the form's title and
@@ -204,11 +186,12 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   const fields: IntentField[] = [];
   const sections: { ref: string; name: string }[] = [];
   const headings = headingsBefore(w);
-  for (const x of formInventory(w)) {
+  // I2 ruling: the one inventory the native planner reads too (targets.ts): a field with no readable name is in neither.
+  for (const x of writableTargets(w)) {
     if (fields.length >= MAX_INTENT_FIELDS) break;
     const d = describeField(w, x.node);
-    const name = x.control === "text" || x.control === "combobox" ? (d.label ?? d.nearest ?? d.placeholder) : (d.label ?? d.nearest);
-    if (name === null || !ledger.take(w, "descriptor", [name, d.section])) continue;
+    const name = x.name;
+    if (!ledger.take(w, "descriptor", [name, d.section])) continue;
     if (d.section !== null && !sections.some((s) => s.name === d.section)) sections.push({ ref: `s${sections.length + 1}`, name: d.section });
     const filled = x.control === "text" && (x.node.value ?? "") !== "";
     const h = headings.get(x.node.key) ?? null;

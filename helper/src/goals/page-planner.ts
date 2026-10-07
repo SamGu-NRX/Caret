@@ -332,7 +332,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
         // With no scope, the part's own fields (C2 review: a fill on focus asks about the 20 nearest the trigger, which
         // on a long form of look-alike fields were not the part's).
         const which = scope === undefined ? { only: part.map((x) => x.node.key) } : { scope };
-        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), ...(pageScope === undefined ? {} : { scoped: { scope: pageScope, documentOf: o.documentOf ?? null } }) }), error: null };
+        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), authority: pageScope === undefined ? { kind: "goal", goalId: o.goalId } : { kind: "ask", scope: pageScope }, documentOf: o.documentOf ?? null }), error: null };
       } catch (e) {
         if (e instanceof FillError) return { part, scope, proposal: null, error: e };
         throw e;

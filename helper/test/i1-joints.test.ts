@@ -1,6 +1,7 @@
 // I1: the four joints where G2's ownership and redaction (v2/whose) meet W2's write contract (v2/wrongs), each through
 // the code that runs in the product. The verifier here is the request path itself (setTestVerifier(null)): a scripted
 // Jev answers its questions and records every request. All names, numbers and addresses are synthetic.
+import { TEST_AUTHORITY } from "./mint.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -125,7 +126,7 @@ describe("I1 joint 2: a secret on a source line never appears in a verifier requ
       sent++;
       throw new Error("not reached");
     };
-    await expect(verifyProposed([p], { askJev: ask, ledger: null, now: T0 })).rejects.toBeInstanceOf(VerifierUnavailable);
+    await expect(verifyProposed([p], { authority: TEST_AUTHORITY, askJev: ask, ledger: null, now: T0 })).rejects.toBeInstanceOf(VerifierUnavailable);
     expect(sent).toBe(0);
   });
 });
@@ -195,7 +196,7 @@ describe("I1 joint 4: a source line edited after acceptance stops the write", ()
     // After acceptance, before the write: the value's own line is unchanged, a warning goes in under it. W2's sentence
     // digests, which saw only the value's own sentence, would have let it through.
     showSource("Contact: Dana Reyes\nDo not use this name, it is my old one\nCity: Austin");
-    await run("t-i1", plan, slots, guardFor(() => helper.model, checks));
+    await run("t-i1", plan, slots, guardFor(() => helper.model, checks, { kind: "fill", proposalId: g.id }, null));
     expect(app.verbs.filter((v) => v.kind === "write")).toEqual([]);
     expect(progress("t-i1").at(-1)?.stopReason).toBe("changed");
   });
@@ -209,7 +210,7 @@ describe("I1 joint 4: a source line edited after acceptance stops the write", ()
     const { plan, slots, checks } = fillPlan(helper.model, g);
     // Outside the value's line and the line after it: only the sentence digests see it.
     showSource("Contact: Dana Reyes\nand this is my current\nname, do not use it.");
-    await run("t-i1-wrap", plan, slots, guardFor(() => helper.model, checks));
+    await run("t-i1-wrap", plan, slots, guardFor(() => helper.model, checks, { kind: "fill", proposalId: g.id }, null));
     expect(app.verbs.filter((v) => v.kind === "write")).toEqual([]);
     expect(progress("t-i1-wrap").at(-1)?.stopReason).toBe("changed");
   });

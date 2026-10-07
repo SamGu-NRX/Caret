@@ -8,7 +8,7 @@
 // instruction, and fits its field's kind (a sentence is never a date). Nothing runs until the host accepts the
 // plan, as before. A press, a wait or a question in the program is refused here: generated programs only
 // fill (plan section 5, "Unknown presses remain handoffs"; this batch hands off none).
-import type { Scoped } from "../fill/contract.ts";
+import type { Authority, DocumentReader } from "../fill/ask-scope.ts";
 import { createHash } from "node:crypto";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
@@ -44,8 +44,13 @@ export interface CodePlanOptions {
   signal?: AbortSignal;
   /** I2: the fields the writer is shown, by node key (PlanTaskOptions.fields), which saves it choosing others; absent, every writable field. */
   fields?: readonly string[];
-  /** I2: the Ask's settled scope and the helper's document reader, which the write contract enforces. */
-  scoped?: Scoped;
+  /**
+   * I2: who authorizes the plan's writes (ask-scope.ts Authority): an Ask's scope, which the write contract and
+   * validatePlan enforce; absent, this plan request itself (kind "plan", by its offer key).
+   */
+  authority?: Authority;
+  /** Which page document a window shows now (the owning helper's page engine), for an Ask's scope. */
+  documentOf?: DocumentReader | null;
 }
 
 /** What the writer cost and wrote, for the proposal's log and the scoreboard. */
@@ -236,7 +241,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   const minted = await mintWrites(unvetoed.map((f) => {
     const { field, value } = pairOf(f) as { field: Field; value: Value };
     return { key: f.ref, w, node: field.node, name: field.name, text: value.text, provenance: value.provenance, owner: value.owner };
-  }), { askJev: o.askJev, ledger, instruction, now, ...(o.scoped === undefined ? {} : { scoped: o.scoped }) });
+  }), { askJev: o.askJev, ledger, instruction, now, authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null });
   const checkedFills = unvetoed.filter((f) => minted.mints.has(f.ref));
   if (checkedFills.length === 0) throw allRefused(minted.refused);
   const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: w.window.windowId } : {}) };
@@ -255,7 +260,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
     return { says: `${field.name} holds {{${slot}}}`, end: { kind: "valueEquals", window: sel, target: { key: field.node.key, describe: `the ${field.name} field` }, value: `{{${slot}}}` } };
   });
   const plan: Plan = { id: o.offerKey, title: instruction.replace(/\s+/g, " ").trim().slice(0, 100), slots: slotNames, steps };
-  const ctx: PlanContext = { model, memory: memoryValues, instruction, ...(o.scoped === undefined ? {} : { scoped: o.scoped }) };
+  const ctx: PlanContext = { model, memory: memoryValues, instruction, origin: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null };
   const checked = validatePlan(plan, slots, ctx, mints);
   if (checked.window.window.windowId !== w.window.windowId) throw new PlannerError("unknownWindow", `'${w.window.title}' closed while Caret planned, and another window took its title`);
   const sources: Record<string, string> = {};

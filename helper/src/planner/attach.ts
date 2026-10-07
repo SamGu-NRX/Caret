@@ -12,7 +12,8 @@ import type { Plan, WindowSel } from "../executor/schema.ts";
 import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
 import { SAYS, SaidError } from "./says.ts";
 import { validatePlan } from "./validate.ts";
-import { ContractError, exemptRefusal, fieldContract, mintExempt, type FieldContract, type Proposed, type Scoped } from "../fill/contract.ts";
+import { ContractError, exemptRefusal, fieldContract, mintExempt, type FieldContract, type Proposed } from "../fill/contract.ts";
+import type { AskScope, Authority, DocumentReader } from "../fill/ask-scope.ts";
 import type { PlanDraft } from "./planner.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 
@@ -46,7 +47,7 @@ const fileInputs = (w: WindowState): Node[] => [...w.nodes.values()].filter((n) 
  * The plan for an instruction that asks to attach a file, or null when it does not ask for one or the page holds no
  * file input. Throws SaidError when the page has several file inputs and none of their labels names the file.
  */
-export async function planAttach(instruction: string, model: ScreenModel, windowId: string | null, offerKey: string, settle: (windowId: string) => Promise<Scoped | null>, now: number): Promise<PlanDraft | null> {
+export async function planAttach(instruction: string, model: ScreenModel, windowId: string | null, offerKey: string, settle: (windowId: string) => Promise<AskScope | null>, now: number, documentOf: DocumentReader | null): Promise<PlanDraft | null> {
   const kind = attachWanted(instruction);
   if (kind === null) return null;
   const w = pageWindowFor(model, windowId);
@@ -67,8 +68,9 @@ export async function planAttach(instruction: string, model: ScreenModel, window
   // I2 lead ruling A: no unscoped attachment. The per-field scope question settles the page's fields and upload fields
   // first ("fill only Name; don't attach my resume" chooses no upload), and the attachment is minted under that scope
   // ("attachment"), which validatePlan and the executor's guard check again. Not chosen, or no scope: not this rule's.
-  const scoped = await settle(w.window.windowId);
-  if (scoped === null || !scoped.scope.fields.has(target.key)) return null;
+  const scope = await settle(w.window.windowId);
+  if (scope === null || !scope.fields.has(target.key)) return null;
+  const authority: Authority = { kind: "ask", scope };
   const wants = kind.wants;
   let field: FieldContract;
   try {
@@ -78,8 +80,8 @@ export async function planAttach(instruction: string, model: ScreenModel, window
     throw e;
   }
   const attachment: Proposed = { field, text: wants, display: wants, provenance: { kind: "instruction", span: wants }, owner: null };
-  if (exemptRefusal(attachment, "attachment", instruction, scoped) !== null) return null;
-  const mint = mintExempt(attachment, "attachment", now, instruction, scoped);
-  const checked = validatePlan(plan, {}, { model, memory: [], instruction, scoped }, new Map([["attach", mint]]));
+  if (exemptRefusal(attachment, "attachment", instruction, authority, documentOf) !== null) return null;
+  const mint = mintExempt(attachment, "attachment", now, instruction, authority, documentOf);
+  const checked = validatePlan(plan, {}, { model, memory: [], instruction, origin: authority, documentOf }, new Map([["attach", mint]]));
   return { plan, slots: {}, checked, answers: {}, withheld: [], jev: { calls: 0, costUsd: 0, latencyMs: 0 } };
 }

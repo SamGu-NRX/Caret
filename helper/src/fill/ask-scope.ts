@@ -125,3 +125,55 @@ export function scopeRefusal(x: ScopedWrite, scope: AskScope | undefined, docume
   if (scope.person !== null && x.owner !== "person") return `the value for '${f.name}' is not ${scope.person}'s, whom you picked`;
   return null;
 }
+
+/**
+ * I2 lead ruling (re-review of ec4e4bb): who authorized a mint, explicit on every mint and never absent. Before it, a mint
+ * with no scope read as "outside an Ask", so an unscoped mint passed validation and the guard. One kind per accepted path:
+ *   - ask: an Ask, held to the scope its per-field question settled (every route an Ask plans, goals included);
+ *   - fill: a fill proposal whose rows the user accepted (the popup, Fill all, first look), by its id;
+ *   - goal: a goal a host requested directly, not an Ask, by its id;
+ *   - plan: a plan request planned without an Ask (the native planner, the code-mode writer), by its offer key;
+ *   - pattern: a pattern offer's transfer of what the user did, by its pattern.
+ */
+export type Authority =
+  | { readonly kind: "ask"; readonly scope: AskScope }
+  | { readonly kind: "fill"; readonly proposalId: string }
+  | { readonly kind: "goal"; readonly goalId: string }
+  | { readonly kind: "plan"; readonly offerKey: string }
+  | { readonly kind: "pattern"; readonly patternId: string };
+
+/**
+ * What a plan's mints must carry, by where the plan started: one authority, or an Ask's goal, whose mints are each the
+ * Ask's for the window they write in (its ScopeSet).
+ */
+export type Origin = Authority | { readonly kind: "askGoal"; readonly scopes: ScopeSet };
+
+/** Whether two scopes are the same settled scope, by content: a goal plan is cloned when it is offered. */
+export function sameScope(a: AskScope, b: AskScope): boolean {
+  if (a === b) return true;
+  if (a.windowId !== b.windowId || a.document !== b.document || a.person !== b.person || a.fields.size !== b.fields.size) return false;
+  for (const k of a.fields) if (!b.fields.has(k) || a.seen[k] !== b.seen[k]) return false;
+  return true;
+}
+
+/** Why a mint's authority is not the plan's origin, or null: refused loudly at validation, the goal gate and the guard. */
+export function authorityRefusal(a: Authority, origin: Origin): string | null {
+  if (origin.kind === "askGoal") {
+    if (a.kind !== "ask") return `the value was checked for a ${a.kind}, and this plan started from an Ask`;
+    const held = origin.scopes.scopes[scopeKey(a.scope.windowId, a.scope.document)];
+    return held !== undefined && sameScope(held, a.scope) ? null : "the value was checked under a scope this Ask's goal does not hold";
+  }
+  if (a.kind !== origin.kind) return `the value was checked for a ${a.kind}, and this plan started from ${origin.kind === "ask" ? "an Ask" : `a ${origin.kind}`}`;
+  switch (origin.kind) {
+    case "ask":
+      return sameScope((a as Extract<Authority, { kind: "ask" }>).scope, origin.scope) ? null : "the value was checked under another Ask's scope";
+    case "fill":
+      return (a as Extract<Authority, { kind: "fill" }>).proposalId === origin.proposalId ? null : "the value was checked for another fill";
+    case "goal":
+      return (a as Extract<Authority, { kind: "goal" }>).goalId === origin.goalId ? null : "the value was checked for another goal";
+    case "plan":
+      return (a as Extract<Authority, { kind: "plan" }>).offerKey === origin.offerKey ? null : "the value was checked for another plan";
+    case "pattern":
+      return (a as Extract<Authority, { kind: "pattern" }>).patternId === origin.patternId ? null : "the value was checked for another pattern";
+  }
+}

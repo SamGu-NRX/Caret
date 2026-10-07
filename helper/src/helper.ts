@@ -1689,8 +1689,9 @@ export class Helper {
     // "Attach my resume" (H5): code plans it, with no model, when the page holds a file input that fits.
     let attachDraft: PlanDraft | null = null;
     try {
-      // I2 ruling A: never unscoped: the page's fields and upload fields are settled by the scope question first.
-      attachDraft = await planAttach(instruction, this.model, windowId, offerKey, async (id) => (this.ask === null ? null : { scope: await this.settleScopeFor(instruction, id, null), documentOf: this.documentReader() }), this.now());
+      // I2 ruling A: never unscoped: the page's fields and upload fields are settled by the scope question first. A
+      // continued Ask never comes here: it goes on from its frozen scope (planner/ask.ts AskResume), settling nothing.
+      if (resume === undefined) attachDraft = await planAttach(instruction, this.model, windowId, offerKey, async (id) => (this.ask === null ? null : await this.settleScopeFor(instruction, id, null)), this.now(), this.documentReader());
     } catch (e) {
       if (!(e instanceof PlannerError)) throw e;
       return fail(e.code, e.message, said(e));
@@ -1863,7 +1864,7 @@ export class Helper {
     try {
       // W2: with the mints the plan was drafted with (CheckedPlan.mints): a value is never re-judged without them.
       // I2: under the Ask's scope it was checked with (CheckedPlan.scope), again.
-      const now = validatePlan(p.draft.plan, p.draft.slots, { model: sources, memory: this.plannerMemory(), instruction: p.instruction, ...(p.draft.checked.scope === undefined ? {} : { scoped: { scope: p.draft.checked.scope, documentOf: this.documentReader() } }) }, p.draft.checked.mints);
+      const now = validatePlan(p.draft.plan, p.draft.slots, { model: sources, memory: this.plannerMemory(), instruction: p.instruction, origin: p.draft.checked.origin, documentOf: this.documentReader() }, p.draft.checked.mints);
       // The plan names its window by app and title; a window that replaced the proposed one under the same
       // title is another window, and the destinations' expected values were read from the first.
       const proposed = p.draft.checked.window.window.windowId;
@@ -1886,7 +1887,7 @@ export class Helper {
       if (e instanceof PlannerError) return { refused: `${e.code}: ${e.message}; nothing was written` };
       throw e;
     }
-    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true, guard: guardFor(guardModel, mints, this.documentReader()) });
+    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true, guard: guardFor(guardModel, mints, p.draft.checked.origin, this.documentReader()) });
   }
 
   private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings" | "stale"): void {
@@ -2128,7 +2129,7 @@ export class Helper {
     const p = checked.p;
     this.bindNew(taskId, session);
     const { plan, slots, checks } = fillPlan(this.model, p);
-    const guard = guardFor(this.guardSources(m.proposalId), checks, this.documentReader());
+    const guard = guardFor(this.guardSources(m.proposalId), checks, { kind: "fill", proposalId: m.proposalId }, this.documentReader());
     // P4: the run carries its values as slots; the text they were read from is not needed past this point.
     this.tabSource?.release(m.proposalId);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
@@ -3154,7 +3155,7 @@ export class Helper {
     }
     const p = checked.p;
     const { plan, slots, checks } = fillPlan(this.model, p);
-    const guard = guardFor(this.guardSources(p.id), checks, this.documentReader());
+    const guard = guardFor(this.guardSources(p.id), checks, { kind: "fill", proposalId: p.id }, this.documentReader());
     this.withdrawFill(p.id, "taken");
     const answers = p.fields.flatMap((f) => (f.answer === undefined ? [] : [{ answerId: f.answer.id, windowId: p.windowId, key: f.key }]));
     if (answers.length > 0) {

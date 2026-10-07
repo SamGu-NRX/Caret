@@ -1,5 +1,6 @@
 // W2: the write contract (src/fill/contract.ts), each part with one correct answer tested alone: the deterministic
 // shape checks, the mint's identity, the compilers' refusals of a missing or mismatched mint. All text is synthetic.
+import { TEST_AUTHORITY } from "./mint.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { checkValues, ContractError, fieldContract, isChecked, makeFieldContract, mintExempt, provenanceSays, requireChecked, setTestVerifier, takesSays, shapeRefusal, sourceLabel, VERDICTS, VerifierUnavailable, VERIFY_BATCH, type FieldContract, type Proposed, type Provenance } from "../src/fill/contract.ts";
@@ -22,7 +23,7 @@ const fc = (label: string, o: { inputKind?: Node["inputKind"]; maxLength?: numbe
   makeFieldContract({ windowId: WIN, node: { key: o.key ?? `k:${label}`, parent: null, role: "AXTextField", label, ...(o.inputKind === undefined ? {} : { inputKind: o.inputKind }), ...(o.maxLength === undefined ? {} : { maxLength: o.maxLength }) }, descriptor: label, name: label, labelWords: [label], control: "text", kinds: fieldKinds([label]), part: fieldPart(label) });
 const win = (span: string, label: string | null = null, partOf: string | null = null): Provenance => ({ kind: "window", windowId: "note", nodeKey: "n", app: "TextEdit", title: "notes.txt", span, label, line: null, partOf, context: label, lines: [], sentences: [] });
 const prop = (field: FieldContract, text: string, provenance: Provenance = win(text)): Proposed => ({ field, text, display: text, provenance, owner: null });
-const opts = { askJev: exactJev, ledger: null, now: 1 };
+const opts = { askJev: exactJev, ledger: null, now: 1, authority: TEST_AUTHORITY };
 
 describe("shapeRefusal: the input's own kind", () => {
   it.each([
@@ -109,10 +110,10 @@ describe("checkValues and the mint", () => {
   });
 
   it("mints an exemption by its rule, and never a value Caret never types", () => {
-    const c = mintExempt(prop(fc("Country"), "Canada"), "optionLabel", 1);
+    const c = mintExempt(prop(fc("Country"), "Canada"), "optionLabel", 1, "", TEST_AUTHORITY);
     expect(isChecked(c)).toBe(true);
     expect(c.verdict).toEqual({ by: "exempt", rule: "optionLabel" });
-    expect(() => mintExempt(prop(fc("Notes"), "4242 4242 4242 4242"), "userTransfer", 1)).toThrow(ContractError);
+    expect(() => mintExempt(prop(fc("Notes"), "4242 4242 4242 4242"), "userTransfer", 1, "", TEST_AUTHORITY)).toThrow(ContractError);
   });
 });
 
@@ -135,7 +136,7 @@ describe("validatePlan takes the mints and refuses without one", () => {
   const w = m.windows.get(WIN);
   if (w === undefined) throw new Error("no window");
   const plan = { id: "p", title: "p", slots: { v1: "the job" }, steps: [{ says: "Job title", end: { kind: "valueEquals", window: { bundleId: w.app.bundleId, title: "Application" }, target: { key: "f/job", describe: "Job title" }, value: "{{v1}}" } }] };
-  const ctx = { model: m, memory: [], instruction: "fill in my job" };
+  const ctx = { model: m, memory: [], instruction: "fill in my job", origin: TEST_AUTHORITY };
 
   it("passes the slot's mint for exactly its text in exactly its field", async () => {
     const [c] = (await checkValues([prop(fieldContract(w, w.nodes.get("f/job") as Node), "lab technician", { kind: "instruction", span: "lab technician" })], opts)).ok;

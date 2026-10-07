@@ -10,7 +10,7 @@ import { FILE_INPUT_SUBROLE, PageEngineLink } from "../src/engines/page-link.ts"
 import { ScreenModel } from "../src/model.ts";
 import { attachWanted, planAttach as planAttachScoped } from "../src/planner/attach.ts";
 import { askScope, fieldFingerprint } from "../src/fill/ask-scope.ts";
-import type { Scoped } from "../src/fill/contract.ts";
+import type { AskScope } from "../src/fill/ask-scope.ts";
 import { proposed } from "../src/planner/proposal.ts";
 import { SAYS, SaidError } from "../src/planner/says.ts";
 import { Helper } from "../src/helper.ts";
@@ -71,13 +71,13 @@ describe("a page's file input in the screen model", () => {
  * I2 ruling A: planAttach mints its attachment under a scope the per-field question settled. These tests are about which
  * file input it picks, so their stand-in scope chooses every file input of the page (`chose`), or none.
  */
-const choosing = (chose: boolean) => async (model: ScreenModel, id: string): Promise<Scoped | null> => {
+const choosing = (chose: boolean) => async (model: ScreenModel, id: string): Promise<AskScope | null> => {
   const w = model.windows.get(id);
   if (w === undefined) return null;
   const files = [...w.nodes.values()].filter((n) => n.subrole === FILE_INPUT_SUBROLE).map((n) => n.key);
-  return { scope: askScope(id, null, chose ? files : [], Object.fromEntries(files.map((k) => [k, fieldFingerprint(w, k)])), null), documentOf: null };
+  return askScope(id, null, chose ? files : [], Object.fromEntries(files.map((k) => [k, fieldFingerprint(w, k)])), null);
 };
-const planAttach = (instruction: string, model: ScreenModel, windowId: string | null, offerKey: string, chose = true) => planAttachScoped(instruction, model, windowId, offerKey, (id) => choosing(chose)(model, id), 1);
+const planAttach = (instruction: string, model: ScreenModel, windowId: string | null, offerKey: string, chose = true) => planAttachScoped(instruction, model, windowId, offerKey, (id) => choosing(chose)(model, id), 1, null);
 
 describe("planAttach", () => {
   it("plans one attach step into the file input the instruction names", async () => {
@@ -156,6 +156,38 @@ describe("the confirmed file's run (helper, executor, page engine)", () => {
     const { sent, reply } = (await setUp(undefined, "fill only Name; don't attach my resume")) as { sent: unknown[]; reply: { attach?: unknown } };
     expect(reply.attach ?? null).toBeNull();
     expect(verbs(sent as never).filter((v) => v.kind === "pageAttachFile")).toEqual([]);
+  });
+
+  // I2 lead ruling (review reproduction): a continued Ask never reruns the direct attach rule, nor settles a scope. The
+  // question is asked on doc-1; the page becomes doc-2, where the scope question would now choose the upload.
+  it("answers a question asked on doc-1 after the page became doc-2 with no attachment and no write", async () => {
+    let doc = "doc-1";
+    const { session, sent } = rig([email, file("e4", "Resume/CV", 30)]);
+    let helper: Helper | null = null;
+    const link = new PageEngineLink(session, (s: Snapshot) => void helper?.handleReader(s));
+    const reader: ReaderLink = { run: async () => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "r", at: 0, outcome: "ok", detail: null }) };
+    const routed = new RoutedReaderLink(reader, { engineFor: (id) => (id.startsWith("page:") ? link : null), engines: () => [link] });
+    // Heads say "some"; the scope question leaves Email unclear (so the Ask asks), and chooses the upload only on doc-2.
+    const askJev = async (req: Parameters<NonNullable<ConstructorParameters<typeof Helper>[0]["askJev"]>>[0]) => {
+      const answers = Object.fromEntries(
+        Object.entries(req.questions).map(([id, q]) => {
+          const ins = String(q.instructions);
+          if (req.purpose === "ask.heads") return [id, { choice: ({ route: "some", why: "nothingToFill", source: "any", whose: "user" } as Record<string, string>)[id] ?? "none", confidence: 0.95 }];
+          if (req.purpose === "ask.scope") return [id, { choice: ins.includes("file upload") ? (doc === "doc-2" ? "asks" : "not") : /field 'Email'/u.test(ins) ? "unclear" : "not", confidence: 0.95 }];
+          return [id, { choice: Object.keys(q.criteria).at(-1) ?? "none", confidence: 0.95 }];
+        }),
+      );
+      return { model: "t", inputTokens: 0, latencyMs: 0, costUsd: 0, answers };
+    };
+    helper = new Helper({ store: new Store(join(dir, "data")), askJev, shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: routed, ask: { maker: "heads" }, pageDocument: () => doc });
+    await link.run({ kind: "walk", pid: chrome.pid, windowId: W });
+    const q = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "q1", at: 1, instruction: "fill in my email and attach my resume", windowId: W }, "s1", true);
+    expect(q.type).toBe("askQuestion");
+    doc = "doc-2";
+    const question = q as Extract<typeof q, { type: "askQuestion" }>;
+    const r = await helper.handleAskAnswer({ type: "askAnswer", v: PROTOCOL_VERSION, requestId: "q2", at: 2, questionId: question.questionId, picks: [question.options[0]?.id ?? "o1"] }, "s1");
+    expect((r as { attach?: unknown }).attach ?? null).toBeNull();
+    expect(verbs(sent).filter((v) => v.kind === "pageAttachFile" || v.kind === "pageWrite" || v.kind === "pageInsertText")).toEqual([]);
   });
 
   it("attaches the file the user confirmed, verified by the page's file list", async () => {

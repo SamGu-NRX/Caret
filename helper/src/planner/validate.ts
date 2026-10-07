@@ -17,8 +17,7 @@ import type { Node, PlanErrorCode } from "../protocol.ts";
 import { secretIn, traceValue, type MemoryValue, type Trace } from "./trace.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { contractStale, provenanceStale, requireChecked, shapeRefusal, type CheckedValue } from "../fill/contract.ts";
-import { fieldFingerprint, scopeRefusal, type AskScope } from "../fill/ask-scope.ts";
-import type { Scoped } from "../fill/contract.ts";
+import { authorityRefusal, fieldFingerprint, scopeRefusal, type DocumentReader, type Origin } from "../fill/ask-scope.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
@@ -47,16 +46,21 @@ export interface CheckedPlan {
   handoff: { step: number; node: Node; label: string; why: HandoffWhy } | null;
   /** The step that attaches the file the user confirms (H5), at most one; null when the plan attaches none. */
   attach: { step: number; node: Node; label: string; wants: string; checked: CheckedValue } | null;
-  /** I2: the Ask's scope the plan was checked under, which a revalidation before the run passes again. */
-  scope?: AskScope;
+  /** I2: where the plan started (ask-scope.ts Origin), which every mint's authority matched; a revalidation passes it again. */
+  origin: Origin;
 }
 
 export interface PlanContext {
   model: ScreenModel;
   memory: readonly MemoryValue[];
   instruction: string;
-  /** I2: an Ask's settled scope (fill/ask-scope.ts): every write must be minted under it, into a field it holds as it read then. */
-  scoped?: Scoped;
+  /**
+   * I2: where the plan started, which every write's and attachment's mint must carry as its authority (ask-scope.ts
+   * authorityRefusal); an Ask's scope is checked again on the field as it reads now. Required: no plan is unscoped.
+   */
+  origin: Origin;
+  /** Which page document a window shows now (the owning helper's page engine), for an Ask's scope. */
+  documentOf?: DocumentReader | null;
 }
 
 /** The hand-off reason the risk table gives a control's label: its risk class, or unverifiable for a safe or unlabelled one. */
@@ -89,6 +93,15 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
   const writes: CheckedPlan["writes"] = [];
   let handoff: CheckedPlan["handoff"] = null;
   let attach: CheckedPlan["attach"] = null;
+  /** I2: the mint's authority is the plan's origin, and an Ask's holds the field as it reads now; else a loud refusal. */
+  const authorized = (mint: CheckedValue, w: WindowState, node: Node, at: string): void => {
+    const foreign = authorityRefusal(mint.authority, ctx.origin);
+    if (foreign !== null) throw new PlannerError("outOfScope", `${at}: ${foreign}`);
+    if (mint.authority.kind === "ask") {
+      const out = scopeRefusal({ field: { ...mint.field, fingerprint: fieldFingerprint(w, node.key) }, owner: mint.owner }, mint.authority.scope, ctx.documentOf ?? null);
+      if (out !== null) throw new PlannerError("outOfScope", `${at}: ${out}`);
+    }
+  };
   for (const [i, step] of plan.steps.entries()) {
     const at = `step ${i + 1} ('${step.says}')`;
     if (handoff !== null) throw new PlannerError("stepAfterHandoff", `${at} comes after the hand-off at step ${handoff.step + 1}, so it would never run`);
@@ -113,11 +126,7 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
       if (attach !== null) throw new PlannerError("unsupportedStep", `${at} attaches a second file; a planned task attaches one`);
       // I2 ruling A: the attachment's "attachment" mint (fill/contract.ts), by the key "attach", under the Ask's scope.
       const mint = requireChecked(checked.get("attach"), end.wants, node.key, w.window.windowId, at);
-      if (ctx.scoped !== undefined) {
-        if (mint.scope !== ctx.scoped.scope) throw new PlannerError("outOfScope", `${at}: its attachment was not checked under this Ask's scope`);
-        const out = scopeRefusal({ field: { ...mint.field, fingerprint: fieldFingerprint(w, node.key) }, owner: mint.owner }, ctx.scoped.scope, ctx.scoped.documentOf);
-        if (out !== null) throw new PlannerError("outOfScope", `${at}: ${out}`);
-      }
+      authorized(mint, w, node, at);
       attach = { step: i, node, label: (node.label ?? "").trim(), wants: end.wants, checked: mint };
       continue;
     }
@@ -143,12 +152,7 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
       if (stale !== null) throw new PlannerError("untracedValue", `${at}: ${stale}`);
       const bad = mint.verdict.by === "exempt" ? null : shapeRefusal(mint);
       if (bad !== null) throw new PlannerError("wrongKind", `${at}: ${bad}`);
-      // I2: under an Ask, the value was minted under this Ask's scope, for a field it holds, which reads now as it did then.
-      if (ctx.scoped !== undefined) {
-        if (mint.scope !== ctx.scoped.scope) throw new PlannerError("outOfScope", `${at}: its value was not checked under this Ask's scope`);
-        const out = scopeRefusal({ field: { ...mint.field, fingerprint: fieldFingerprint(w, node.key) }, owner: mint.owner }, ctx.scoped.scope, ctx.scoped.documentOf);
-        if (out !== null) throw new PlannerError("outOfScope", `${at}: ${out}`);
-      }
+      authorized(mint, w, node, at);
       writes.push({ step: i, node, value: end.value, trace, checked: mint });
       continue;
     }
@@ -159,7 +163,7 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
   }
   // The schema requires a step, so the loop bound a window.
   if (window === null) throw new PlannerError("schema", "the plan has no steps");
-  return { plan, window, writes, handoff, attach, mints: checked, ...(ctx.scoped === undefined ? {} : { scope: ctx.scoped.scope }) };
+  return { plan, window, writes, handoff, attach, mints: checked, origin: ctx.origin };
 }
 
 /** A step's raw value before its slots are filled: "{{v1}}" for a value a drafter minted. */

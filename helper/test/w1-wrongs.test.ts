@@ -2,6 +2,7 @@
 // Jev that picks the wrong candidate at 0.9 as live Jev did at 0.77 to 0.96; then the readers and the shared write check
 // the fixes rest on, each with one right answer per input, tested alone, with every example W1's review raised. All text
 // is synthetic fixture text.
+import { TEST_AUTHORITY } from "./mint.ts";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

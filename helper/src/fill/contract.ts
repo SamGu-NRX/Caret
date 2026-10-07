@@ -22,7 +22,7 @@ import { redactWindow } from "./redact.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
-import { fieldFingerprint, scopeRefusal, type AskScope, type DocumentReader } from "./ask-scope.ts";
+import { authorityRefusal, fieldFingerprint, scopeRefusal, type Authority, type DocumentReader, type Origin } from "./ask-scope.ts";
 import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind } from "./kinds.ts";
 import { writeMisfit, type ShapeSource } from "./writable.ts";
 import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
@@ -205,8 +205,8 @@ export interface CheckedValue extends Proposed {
   readonly [minted]: true;
   readonly verdict: Verdict;
   readonly at: number;
-  /** I2: the Ask's scope the value was minted under (ask-scope.ts); absent outside an Ask. The executor's guard rechecks it. */
-  readonly scope?: AskScope;
+  /** I2: who authorized the value (ask-scope.ts Authority), never absent; an Ask's carries its scope, which the guard rechecks. */
+  readonly authority: Authority;
 }
 
 export interface Refused {
@@ -246,14 +246,15 @@ export interface CheckOptions {
   /** An abort counts as the verifier being unavailable. */
   signal?: AbortSignal;
   cutoff?: number;
-  /** I2: the Ask's settled scope: a value outside it, for a field that changed since, or not the picked person's, is refused. */
-  scoped?: Scoped;
+  /** I2: who authorizes the values (ask-scope.ts Authority): an Ask's scope refuses a value outside it, for a field that changed since, or not the picked person's. */
+  authority: Authority;
+  /** Which page document a window shows now (the owning helper's page engine): an Ask's scope on a page holds nothing without it. */
+  documentOf?: DocumentReader | null;
 }
 
-/** I2: a scope to check against, and the owning helper's reader of which page document a window shows (null: none). */
-export interface Scoped {
-  readonly scope: AskScope;
-  readonly documentOf: DocumentReader | null;
+/** The scope check an authority asks for: an Ask's only. */
+function authorityScopeRefusal(p: Proposed, authority: Authority | undefined, documentOf: DocumentReader | null): string | null {
+  return authority?.kind === "ask" ? scopeRefusal(p, authority.scope, documentOf) : null;
 }
 
 /**
@@ -283,9 +284,18 @@ export function isChecked(x: unknown): x is CheckedValue {
   return typeof x === "object" && x !== null && mints.has(x);
 }
 
-function mint(p: Proposed, verdict: Verdict, now: number, scope: AskScope | undefined): CheckedValue {
-  const c = Object.freeze({ field: p.field, text: p.text, display: p.display, provenance: p.provenance, owner: p.owner, verdict, at: now, ...(scope === undefined ? {} : { scope }) }) as unknown as CheckedValue;
+/** Tests only (I2's authority property, test/i2-authority.test.ts): called with every mint as it is made. Null in the product. */
+let mintObserver: ((c: CheckedValue) => void) | null = null;
+export function setMintObserver(f: ((c: CheckedValue) => void) | null): void {
+  mintObserver = f;
+}
+
+function mint(p: Proposed, verdict: Verdict, now: number, authority: Authority): CheckedValue {
+  // Loud, whatever a caller's types say: a mint with no authority would read as authorized by nothing in particular.
+  if (authority === undefined || authority === null) throw new ContractError("unchecked", "a value was minted with no authority");
+  const c = Object.freeze({ field: p.field, text: p.text, display: p.display, provenance: p.provenance, owner: p.owner, verdict, at: now, authority }) as unknown as CheckedValue;
   mints.add(c);
+  mintObserver?.(c);
   return c;
 }
 
@@ -690,7 +700,7 @@ export async function checkValues(proposed: readonly Proposed[], o: CheckOptions
   const survivors: number[] = [];
   snaps.forEach((p, i) => {
     // I2: outside the Ask's scope first: such a value is refused whatever it is, and never reaches the verifier.
-    const out = o.scoped === undefined ? null : scopeRefusal(p, o.scoped.scope, o.scoped.documentOf);
+    const out = authorityScopeRefusal(p, o.authority, o.documentOf ?? null);
     if (out !== null) return void (results[i] = { proposed: proposed[i] as Proposed, why: "outOfScope", says: out });
     const why = neverTypedRefusal(p, o.instruction ?? "") ?? shapeRefusal(p) ?? textShapeRefusal(p);
     observer?.(p, why);
@@ -704,7 +714,7 @@ export async function checkValues(proposed: readonly Proposed[], o: CheckOptions
     const asks = v.asks[k] ?? null;
     if (asks === null) return void (results[i] = { proposed: original, why: "unverified", says: `Caret couldn't check '${clip(p.text)}' without sending more of its window than it may` });
     const confidence = Math.min(asks[0].confidence, asks[1].confidence);
-    results[i] = asks[0].choice === "exact" && asks[1].choice === "exact" && confidence >= cutoff ? mint(p, { by: "verifier", asks, confidence }, o.now, o.scoped?.scope) : { proposed: original, why: "notExact", says: refusalSays(p, asks, cutoff), asks };
+    results[i] = asks[0].choice === "exact" && asks[1].choice === "exact" && confidence >= cutoff ? mint(p, { by: "verifier", asks, confidence }, o.now, o.authority) : { proposed: original, why: "notExact", says: refusalSays(p, asks, cutoff), asks };
   });
   return { ok: results.filter(isChecked), refused: results.filter((r): r is Refused => !isChecked(r)), results, jev: v.jev };
 }
@@ -731,22 +741,22 @@ function deepFrozen<T>(x: T): T {
 const SHAPED: ReadonlySet<ExemptRule> = new Set(["recipientFromFrom"]);
 
 /** Why a value may not be minted under `rule`, or null: the Ask's scope (I2), the never-typed check, and for SHAPED rules shapeRefusal. */
-export function exemptRefusal(p: Proposed, rule: ExemptRule, instruction = "", scoped?: Scoped): string | null {
-  return (scoped === undefined ? null : scopeRefusal(p, scoped.scope, scoped.documentOf)) ?? (rule === "attachment" ? null : (neverTypedRefusal(p, instruction) ?? (SHAPED.has(rule) ? shapeRefusal(p) : null)));
+export function exemptRefusal(p: Proposed, rule: ExemptRule, instruction = "", authority?: Authority, documentOf: DocumentReader | null = null): string | null {
+  return authorityScopeRefusal(p, authority, documentOf) ?? (rule === "attachment" ? null : (neverTypedRefusal(p, instruction) ?? (SHAPED.has(rule) ? shapeRefusal(p) : null)));
 }
 
 /**
  * Mints without the verifier for a value whose exactness code settles (ExemptRule). Throws ContractError on a value
  * exemptRefusal refuses: a caller that may meet one asks exemptRefusal first; one that reaches here with it has a bug.
  */
-export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction = "", scoped?: Scoped): CheckedValue {
+export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction: string, authority: Authority, documentOf: DocumentReader | null = null): CheckedValue {
   // Frozen before it is judged, as checkValues does: what is judged is what is minted (W2 review).
   const p = snapshot(proposed);
-  const out = scoped === undefined ? null : scopeRefusal(p, scoped.scope, scoped.documentOf);
+  const out = authorityScopeRefusal(p, authority, documentOf);
   if (out !== null) throw new ContractError("outOfScope", out);
   const why = exemptRefusal(p, rule, instruction);
   if (why !== null) throw new ContractError(neverTypedRefusal(p, instruction) === null ? "shape" : "neverTyped", why);
-  return mint(p, { by: "exempt", rule }, now, scoped?.scope);
+  return mint(p, { by: "exempt", rule }, now, authority);
 }
 
 /**
@@ -874,19 +884,22 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
  * in the run's plan, its mint. Right before each dispatch the value must be the mint's text, and its source must still
  * say what it said (provenanceStale, read from `model()`); a value step with no mint is refused.
  */
-export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>, documentOf: DocumentReader | null = null): (step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null {
+export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>, origin: Origin, documentOf: DocumentReader | null): (step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null {
   return (step, value, target) => {
     const m = mints.get(step);
     if (!isChecked(m)) return "the value has no check from the write contract";
     if (m.text !== value) return "the value is not the one Caret checked";
+    // I2: the mint's authority must be the run's origin (an Ask's scope for an Ask's plan), never assumed.
+    const foreign = authorityRefusal(m.authority, origin);
+    if (foreign !== null) return foreign;
     // At dispatch the executor names the element it resolved: it must be the field checked, still asking the same (W2 review).
     if (target !== undefined && (target.node.key !== m.field.key || target.windowId !== m.field.windowId)) return "the field is not the one Caret checked the value for";
     if (target !== undefined && contractStale(target.node, m.field, value) !== null) return "the field now asks for something else than when its value was checked";
     // I2: a value minted under an Ask's scope is written only into a field that still reads as when the Ask was asked,
     // read from the window the executor resolved, right before the dispatch.
-    if (m.scope !== undefined && target !== undefined) {
+    if (m.authority.kind === "ask" && target !== undefined) {
       if (target.window === undefined) return "Caret can't see the field to check it is still the one the Ask was about";
-      const out = scopeRefusal({ field: { ...m.field, fingerprint: fieldFingerprint(target.window, m.field.key) }, owner: m.owner }, m.scope, documentOf);
+      const out = scopeRefusal({ field: { ...m.field, fingerprint: fieldFingerprint(target.window, m.field.key) }, owner: m.owner }, m.authority.scope, documentOf);
       if (out !== null) return out;
     }
     const stale = provenanceStale(model(), m.provenance);

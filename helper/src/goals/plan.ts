@@ -3,7 +3,7 @@
 // Nothing here acts. The digests are what an acceptance names, so a plan that changes in any way a user could care
 // about (order, target, value, where the value came from, what must hold first, what a press does, a warning) is
 // another plan that needs its own acceptance.
-import type { ScopeSet } from "../fill/ask-scope.ts";
+import type { Origin, ScopeSet } from "../fill/ask-scope.ts";
 import { createHash } from "node:crypto";
 import type * as z from "zod";
 import type { ValueOriginSchema } from "../codemode/types.ts";
@@ -254,6 +254,8 @@ export interface GoalPlan {
   /** I2: the Ask's settled scope the plan was made under (fill/ask-scope.ts); a fresh plan of the same goal keeps it. */
   /** I2 ruling C: an Ask's goal's scopes, one per window and document, settled once each and kept across replans. */
   scopes?: ScopeSet;
+  /** I2: where the plan started (ask-scope.ts Origin), which every write's and attachment's mint matches; the guard checks it. */
+  origin: Origin;
 }
 
 /** JSON with object keys sorted, so equal content always hashes equal. */

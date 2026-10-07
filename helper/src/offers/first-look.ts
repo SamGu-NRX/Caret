@@ -307,7 +307,7 @@ export class FirstLookRunner {
     const { plan, slots, checks } = fillPlan(this.deps.model, p);
     // The destinations were empty just now; one the user fills before the run's first read stops it. W2: each copied
     // value's source is rechecked right before its write (contract.ts guardFor).
-    return this.deps.run(offerKey, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, guardFor(() => this.deps.model, checks));
+    return this.deps.run(offerKey, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, guardFor(() => this.deps.model, checks, { kind: "fill", proposalId: p.id }, null));
   }
 
   // MARK: - pending

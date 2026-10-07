@@ -3,6 +3,7 @@
 // fill, the planner and Ask refuse exactly what memory refuses to keep; its label and shape rules are tested with
 // memory. Here: that every path agrees with it, and secretIn's reading of the instruction around a value. All numbers
 // are invented; the card numbers are standard test numbers.
+import { TEST_AUTHORITY } from "./mint.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";

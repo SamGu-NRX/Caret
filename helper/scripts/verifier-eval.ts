@@ -74,7 +74,7 @@ if (a.values.from !== undefined) {
     return r;
   };
   for (let i = 0; i < PASSES; i++) {
-    const r = await verifyProposed(proposed, { askJev: ask, ledger: null, now: Date.now() });
+    const r = await verifyProposed(proposed, { authority: { kind: "plan", offerKey: "verifier-eval" }, askJev: ask, ledger: null, now: Date.now() });
     passes.push(r.asks);
     process.stderr.write(`pass ${i + 1}: ${r.jev.requests} requests, $${r.jev.costUsd.toFixed(5)}\n`);
   }

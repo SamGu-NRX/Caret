@@ -230,9 +230,9 @@ describe("planWithCode under an Ask's scope (I2)", () => {
   it("mints only the scope's field when the program fills two, told nothing of the scope", async () => {
     const m = desk();
     const scope = scopeOn(m, [NAME]);
-    const d = await planWithCode("fill in my name and email", m, memory, { writer: writer(fillByText([["Full name", "Harper Quinlan"], ["Email", "harper.quinlan@example.com"]])), askJev: jev().ask, offerKey: "plan-1", windowId: "form", now: 2000, scoped: { scope, documentOf: null } });
+    const d = await planWithCode("fill in my name and email", m, memory, { writer: writer(fillByText([["Full name", "Harper Quinlan"], ["Email", "harper.quinlan@example.com"]])), askJev: jev().ask, offerKey: "plan-1", windowId: "form", now: 2000, authority: { kind: "ask", scope } });
     expect(d.checked.writes.map((w) => w.node.key)).toEqual([NAME]);
-    expect(d.checked.scope).toBe(scope);
+    expect(d.checked.origin).toEqual({ kind: "ask", scope });
   });
 
   it("as planAsk's fallback after the planner finds nothing: writes only the field Jev's scope ask chose", async () => {
@@ -247,7 +247,7 @@ describe("planWithCode under an Ask's scope (I2)", () => {
     };
     const d = await planAsk("fill in my name and email", desk(), memory, [], { askJev: ask, maker: headsIntentMaker(ask), writer: writer(fillByText([["Full name", "Harper Quinlan"], ["Email", "harper.quinlan@example.com"]])), offerKey: "plan-2", windowId: "form", now: 2000 });
     expect("checked" in d && d.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[NAME, "Harper Quinlan"]]);
-    expect("checked" in d && d.checked.scope?.fields).toEqual(new Set([NAME]));
+    expect("checked" in d && d.checked.origin.kind === "ask" && d.checked.origin.scope.fields).toEqual(new Set([NAME]));
     expect(EMAIL).toBeTruthy();
   });
 });

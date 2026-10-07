@@ -1,6 +1,7 @@
 // The planner (brief B16): instruction spans, value tracing and the plan check are each tested on
 // their own, since each has one right answer; then planTask with a fake Jev on a synthetic desk, and the
 // helper's planRequest, proposal and accept under an act grant. Everything here is invented.
+import { TEST_AUTHORITY } from "./mint.ts";
 import { answeringScope } from "./builders.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -115,7 +116,7 @@ describe("value tracing", () => {
 });
 
 describe("the plan check", () => {
-  const ctx = (instruction = "", memory = noMemory, model = desk()) => ({ model, memory, instruction });
+  const ctx = (instruction = "", memory = noMemory, model = desk()) => ({ model, memory, instruction, origin: TEST_AUTHORITY });
 
   it("passes a plan of traced writes and a hand-off, and reports each write's source", async () => {
     const p = plan([

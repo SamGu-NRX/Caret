@@ -711,7 +711,7 @@ export class PatternEngine {
     let r: TaskResult;
     try {
       // W2: each cell's mint, by its step (plan() puts cell i at step i), rechecked right before its write.
-      const guard = guardFor(() => this.deps.model, new Map(o.cells.map((c, i) => [i, c.checked])));
+      const guard = guardFor(() => this.deps.model, new Map(o.cells.map((c, i) => [i, c.checked])), { kind: "pattern", patternId: o.msg.patternId }, null);
       r = await this.deps.run(taskId, o.plan, o.slots, empty, { ...(unprompted ? { unprompted: true } : {}), family: familyOf(o.msg.kind), routineId: o.routineId, guard });
     } catch (e) {
       // A run that ends in an error (the reader refusing the last watch, say) is a failure like any other.
@@ -1076,7 +1076,7 @@ export class PatternEngine {
       if (src === undefined || nodeText(src).trim() !== c.value.trim()) return null;
       try {
         const provenance = { kind: "transfer" as const, srcWindowId: c.srcWindowId, srcKey: c.srcKey, rounds: 0, reshaped: m.used.length > 0 ? ("memory" as const) : null, value: c.value };
-        const checked = mintExempt({ field: fieldContract(w, node), text: m.value, display: m.value, provenance, owner: null }, "userTransfer", this.clock);
+        const checked = mintExempt({ field: fieldContract(w, node), text: m.value, display: m.value, provenance, owner: null }, "userTransfer", this.clock, "", { kind: "pattern", patternId });
         written.push({ ...c, written: m.value, dstShapeHash, memory: m.used, checked });
       } catch (e) {
         if (e instanceof ContractError) return null;

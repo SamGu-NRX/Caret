@@ -3,6 +3,7 @@
 // its field (fieldContract) with the provenance traceValue finds. A value the contract refuses is left unminted: when
 // validatePlan reaches it (no earlier rule refused the plan), the refusal is thrown as the PlannerError("wrongKind")
 // the drafter would have thrown.
+import type { Authority } from "../src/fill/ask-scope.ts";
 import { Plan } from "../src/executor/schema.ts";
 import { resolveLocally } from "../src/executor/target.ts";
 import { checkValues, ContractError, fieldContract, makeFieldContract, mintExempt, windowProvenance, type CheckedValue, type FieldContract, type Provenance } from "../src/fill/contract.ts";
@@ -26,7 +27,12 @@ export const exactJev: AskJev = async (req) => {
   return { model: "verify-stand-in", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "exact", confidence: 0.95 }])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
 };
 
-export async function validateMinted(raw: unknown, slots: Record<string, string>, ctx: PlanContext): Promise<CheckedPlan> {
+/** I2: the authority a test's own plans carry (ask-scope.ts Authority): a plan request planned without an Ask. */
+export const TEST_AUTHORITY: Authority = { kind: "plan", offerKey: "test" };
+
+export async function validateMinted(raw: unknown, slots: Record<string, string>, given: Omit<PlanContext, "origin"> & { origin?: Authority }): Promise<CheckedPlan> {
+  const ctx: PlanContext = { ...given, origin: given.origin ?? TEST_AUTHORITY };
+  const authority = given.origin ?? TEST_AUTHORITY;
   const parsed = Plan.safeParse(raw);
   if (!parsed.success) return validatePlan(raw, slots, ctx, new Map());
   const plan = structuredClone(parsed.data);
@@ -56,7 +62,7 @@ export async function validateMinted(raw: unknown, slots: Record<string, string>
     const t = traceValue(text, ctx.model, ctx.memory, ctx.instruction);
     // I1: a window value's provenance records the lines around it, as fill's does (contract.ts windowProvenance).
     const provenance: Provenance = t?.from === "window" ? windowProvenance(ctx.model.windows.get(t.windowId), { text, context: null, source: { windowId: t.windowId, nodeKey: t.nodeKey ?? "", appName: "", windowTitle: "" } }) : t?.from === "memory" ? { kind: "memory", id: t.id, label: "", part: null, whose: "user" } : { kind: "instruction", span: text };
-    const r = await checkValues([{ field, text, display: text, provenance, owner: null }], { askJev: exactJev, ledger: null, instruction: ctx.instruction, now: 0 });
+    const r = await checkValues([{ field, text, display: text, provenance, owner: null }], { askJev: exactJev, ledger: null, instruction: ctx.instruction, now: 0, authority });
     const ok = r.ok[0];
     if (ok !== undefined) mints.set(slot, ok);
     else refused.set(i, r.refused[0]?.says ?? "refused");
@@ -92,6 +98,8 @@ export function targetField(t: Omit<TargetBinding, "field">): FieldContract | un
  * without it, it records none, and the recheck before a write never holds it.
  */
 export async function minted(p: FillProposal, model?: ScreenModel): Promise<FillProposal> {
+  // I2: a fill proposal's values are its own: the user accepts the rows they see (authority "fill", by its id).
+  const authority: Authority = { kind: "fill", proposalId: p.id };
   for (const f of p.fields) {
     const text = f.value ?? (f.handoff?.writes === true ? f.handoff.value : null);
     if (text === null) continue;
@@ -101,10 +109,10 @@ export async function minted(p: FillProposal, model?: ScreenModel): Promise<Fill
     const source = f.source ?? f.handoff?.source ?? null;
     const provenance: Provenance = f.answer !== undefined ? { kind: "answer", id: f.answer.id, question: f.memory?.label ?? "" } : source !== null ? windowProvenance(model?.windows.get(source.windowId) ?? undefined, { text, context: null, source }) : { kind: "instruction", span: text };
     const proposed = { field, text, display: text, provenance, owner: null };
-    if (f.answer !== undefined) bindMint(f, p.windowId, mintExempt(proposed, "savedAnswerShown", 0));
-    else if (control !== "text" && control !== "combobox") bindMint(f, p.windowId, mintExempt(proposed, control === "checkbox" ? "boxFromLabelledLine" : control === "date" || control === "time" ? "resolverFormat" : "optionLabel", 0));
+    if (f.answer !== undefined) bindMint(f, p.windowId, mintExempt(proposed, "savedAnswerShown", 0, "", authority));
+    else if (control !== "text" && control !== "combobox") bindMint(f, p.windowId, mintExempt(proposed, control === "checkbox" ? "boxFromLabelledLine" : control === "date" || control === "time" ? "resolverFormat" : "optionLabel", 0, "", authority));
     else {
-      const r = await checkValues([proposed], { askJev: exactJev, ledger: null, now: 0 });
+      const r = await checkValues([proposed], { askJev: exactJev, ledger: null, now: 0, authority });
       const c = r.ok[0];
       if (c === undefined) throw new Error(`the write contract refused the test's value '${text}' for ${f.key}: ${r.refused[0]?.says}`);
       bindMint(f, p.windowId, c);

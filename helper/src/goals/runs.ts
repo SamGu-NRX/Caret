@@ -432,7 +432,7 @@ export class GoalRuns {
     try {
       // C1: a pick the page put back and the executor read back as it was is listed as the user's (leftNow), and the
       // segment's other steps still run.
-      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true, leaveFailedToYou: true, guard: guardFor(() => this.sourcesOf(run), runMints, this.deps.documentOf ?? null) }) };
+      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true, leaveFailedToYou: true, guard: guardFor(() => this.sourcesOf(run), runMints, run.plan.origin, this.deps.documentOf ?? null) }) };
     } catch (e) {
       // The executor refused the plan before its first step (PlanError): nothing was dispatched.
       const says = `${SAYS.error}: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`;
@@ -476,14 +476,16 @@ export class GoalRuns {
     // I2: under the Ask's scope the plan was made under; a field outside it, or changed since, takes no edit.
     // I2: under the scope the drafted value was minted under (the Ask's, or one settled for that window), against the
     // field as it reads now: an edit is a new write, so a field that changed since the Ask takes none.
-    const scope = run.mints.get(`${seg.index}:${s.ref}`)?.scope;
+    // The authority the drafted value was minted under: the Ask's scope for its window, or the goal's own.
+    const authority = run.mints.get(`${seg.index}:${s.ref}`)?.authority;
+    if (authority === undefined) return { refused: `step ${m.step + 1} has no check from the write contract` };
+    const scope = authority.kind === "ask" ? authority.scope : undefined;
     const base = proposedFor(s.target, value, text);
     const nowW = s.target.domain.kind === "window" ? this.deps.model.windows.get(s.target.domain.windowId) : undefined;
     const proposed: Proposed = scope === undefined ? base : { ...base, field: Object.freeze({ ...base.field, fingerprint: nowW === undefined ? null : fieldFingerprint(nowW, base.field.key) }) };
-    const scoped = scope === undefined ? undefined : { scope, documentOf: this.deps.documentOf ?? null };
-    const outside = exemptRefusal(proposed, "userTyped", run.plan.instruction, scoped);
+    const outside = exemptRefusal(proposed, "userTyped", run.plan.instruction, authority, this.deps.documentOf ?? null);
     if (outside !== null) return { refused: outside };
-    const checked = mintExempt(proposed, "userTyped", this.deps.now(), run.plan.instruction, scoped);
+    const checked = mintExempt(proposed, "userTyped", this.deps.now(), run.plan.instruction, authority, this.deps.documentOf ?? null);
     const step: GoalStep = { ...s, value, writes: text, says: `${s.target.label}: ${text}`, gate: "you", checked };
     run.mints.set(`${seg.index}:${s.ref}`, checked);
     const edited = segmentOf(run.plan.programHash, { index: seg.index, domain: seg.domain, reason: seg.reason, steps: seg.steps.map((x, k) => (k === i ? step : x)) }, run.plan.warnings);

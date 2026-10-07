@@ -2,6 +2,7 @@
 // findings, each reproduced: a source field relabelled after the check, a source sentence changed after acceptance
 // and before the first write, a value changed while the verifier was asked, a mint used in another window, a field
 // whose autocomplete changed, a source line whose labels changed around a value that stayed. All text is synthetic.
+import { TEST_AUTHORITY } from "./mint.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +21,7 @@ import { executorWindow, FakeApp, K, TITLE, WIN, wireButtons } from "./fake-app.
 
 const T0 = 1_790_000_000_000;
 const SRC = "6161-1";
-const opts = { askJev: async () => { throw new Error("the suite's stand-in verifier answers"); }, ledger: null, now: T0 } as const;
+const opts = { askJev: async () => { throw new Error("the suite's stand-in verifier answers"); }, ledger: null, now: T0, authority: TEST_AUTHORITY } as const;
 
 describe("an editable source field's label is part of its value's provenance (lead, G2 round 3 a)", () => {
   /** A form with Phone, and a window whose editable field labelled `label` holds the number. */
@@ -96,7 +97,7 @@ describe("a checked value's source is rechecked right before each write (lead, G
     const name = app.node(K("textfield:name~0"));
     if (name !== undefined) delete name.value;
     app.show();
-    await run("t-after", guardFor(() => helper.model, new Map([[0, mint]])));
+    await run("t-after", guardFor(() => helper.model, new Map([[0, mint]]), TEST_AUTHORITY, null));
     expect(writes()).toEqual([]);
     expect(progress("t-after").at(-1)?.stopReason).toBe("changed");
   });
@@ -149,22 +150,22 @@ describe("the W2 review's contract findings", () => {
   it("refuses at acceptance a field whose autocomplete changed since its value was checked (finding 6)", async () => {
     const m = desk("name", "First name: Mary Ann");
     const c = await minted(m);
-    expect(code(() => validatePlan(plan, { v1: "Mary Ann" }, { model: m, memory: [], instruction: "" }, new Map([["v1", c]])))).toBe("passed");
+    expect(code(() => validatePlan(plan, { v1: "Mary Ann" }, { origin: TEST_AUTHORITY, model: m, memory: [], instruction: "" }, new Map([["v1", c]])))).toBe("passed");
     m.apply(snap([field("form/full", "", { label: "Full name", autocomplete: "given-name" })], { at: T0 + 1000, windowId: "form", title: "Apply", focused: true }));
-    expect(code(() => validatePlan(plan, { v1: "Mary Ann" }, { model: m, memory: [], instruction: "" }, new Map([["v1", c]])))).toBe("unknownTarget");
+    expect(code(() => validatePlan(plan, { v1: "Mary Ann" }, { origin: TEST_AUTHORITY, model: m, memory: [], instruction: "" }, new Map([["v1", c]])))).toBe("unknownTarget");
   });
 
   it("refuses at acceptance a value whose source line changed around it (finding 7)", async () => {
     const m = desk(undefined, "First name: Mary Ann");
     const c = await minted(m);
-    expect(code(() => validatePlan(plan, { v1: "Mary Ann" }, { model: m, memory: [], instruction: "" }, new Map([["v1", c]])))).toBe("passed");
+    expect(code(() => validatePlan(plan, { v1: "Mary Ann" }, { origin: TEST_AUTHORITY, model: m, memory: [], instruction: "" }, new Map([["v1", c]])))).toBe("passed");
     m.apply(snap([text("note/l", "First name: Mary; Last name: Ann; Full name: Mary Ann")], { at: T0 + 1000, windowId: "note", title: "Notes", app: MAIL_APP }));
-    expect(code(() => validatePlan(plan, { v1: "Mary Ann" }, { model: m, memory: [], instruction: "" }, new Map([["v1", c]])))).toBe("untracedValue");
+    expect(code(() => validatePlan(plan, { v1: "Mary Ann" }, { origin: TEST_AUTHORITY, model: m, memory: [], instruction: "" }, new Map([["v1", c]])))).toBe("untracedValue");
   });
 
   it("keeps the executor's guard to the mint's own text (finding 1)", async () => {
     const [c] = (await checkValues([{ field: fc("k1"), text: "Kenji Watanabe", display: "Kenji Watanabe", provenance: { kind: "instruction", span: "Kenji Watanabe" }, owner: null }], opts)).ok;
-    const guard = guardFor(() => new ScreenModel(), new Map([[0, c as NonNullable<typeof c>]]));
+    const guard = guardFor(() => new ScreenModel(), new Map([[0, c as NonNullable<typeof c>]]), TEST_AUTHORITY, null);
     expect(guard(0, "Kenji Watanabe")).toBeNull();
     expect(guard(0, "REFUSED OR UNVERIFIED")).toMatch(/not the one Caret checked/u);
     expect(guard(1, "anything")).toMatch(/no check/u);
@@ -176,7 +177,7 @@ describe("the W2 second opinion's findings", () => {
 
   it("rechecks at dispatch that the resolved element is the field checked, still asking the same (finding 3)", async () => {
     const [c] = (await checkValues([{ field: field("name"), text: "Mary Ann", display: "Mary Ann", provenance: { kind: "instruction", span: "Mary Ann" }, owner: null }], opts)).ok;
-    const guard = guardFor(() => new ScreenModel(), new Map([[0, c as NonNullable<typeof c>]]));
+    const guard = guardFor(() => new ScreenModel(), new Map([[0, c as NonNullable<typeof c>]]), TEST_AUTHORITY, null);
     const node = (extra: Partial<Node>): Node => ({ key: "k1", parent: null, role: "AXTextField", label: "Name", autocomplete: "name", ...extra });
     expect(guard(0, "Mary Ann", { windowId: "form", node: node({}) })).toBeNull();
     expect(guard(0, "Mary Ann", { windowId: "other", node: node({}) })).toMatch(/not the one Caret checked/u);
@@ -185,7 +186,7 @@ describe("the W2 second opinion's findings", () => {
 
   it("freezes an exemption's value before judging it, so the caller's object cannot change the mint (finding 2)", () => {
     const provenance = { kind: "instruction" as const, span: "Canada" };
-    const c = mintExempt({ field: field(), text: "Canada", display: "Canada", provenance, owner: null }, "optionLabel", 0);
+    const c = mintExempt({ field: field(), text: "Canada", display: "Canada", provenance, owner: null }, "optionLabel", 0, "", TEST_AUTHORITY);
     provenance.span = "Mexico";
     expect(c.provenance).toEqual({ kind: "instruction", span: "Canada" });
     expect(Object.isFrozen(c.provenance)).toBe(true);
