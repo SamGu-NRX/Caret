@@ -146,4 +146,19 @@ describe("forgetting a source's values from a goal that ended (I6 review, GoalRu
     expect(kept?.left.find((l) => l.key === "k-choice")).toEqual({ windowId: WIN, key: "k-choice", label: "Team", why: "dropped", says: "'Team' is yours: Caret leaves setting it to you ('…' fits it)" });
     expect(kept?.segments[0]?.steps.map((s) => s.says)).toEqual(["Full name: …", "Email: …", "You press Next"]);
   });
+  it("G2 review: blanks the clause and the source texts a value was read from too", async () => {
+    const r = await rig({ controls: () => [...fields(), c("b1", "button", "Next")], title: "Apply: details" });
+    const { planPage } = await import("../src/goals/page-planner.ts");
+    const { macClock } = await import("../src/offers/event-time.ts");
+    const { jevPickingText } = await import("./builders.ts");
+    const { byLabel, WIN } = await import("./fake-page.ts");
+    const plan = await planPage(r.helper.model, { goalId: "g-clause", instruction: "fill out this form", windowId: WIN, scope: null, kind: "all", section: null, about: [], askJev: jevPickingText(byLabel, 0.95), now: Date.now(), clock: macClock(new Date()), readerSession: 0, pageDocument: (id) => r.host.registry.documentOf(id) });
+    // A value read with a clause and from a longer source text (as fill records them, FillField.basis).
+    for (const v of plan.inventory.values.values()) if (v.fill !== undefined) Object.assign(v.fill, { clause: "the clause Kestrel-7731 quoted", from: ["source text Kestrel-7732 split"], how: "whole" });
+    r.helper.goals.propose(plan, undefined, null);
+    r.helper.goals.readerRestarted();
+    r.helper.goals.forgetSource("g-clause", new Set(["note"]));
+    const all = JSON.stringify(r.helper.goals.planOf("g-clause"), (_, v: unknown) => (v instanceof Map ? [...v.entries()] : v));
+    expect(all).not.toMatch(/Kestrel-773/);
+  });
 });

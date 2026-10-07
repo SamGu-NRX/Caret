@@ -81,6 +81,9 @@ export interface ValueBinding {
     clause?: string;
     /** G2 review: digests of the source sentences that held the value (FillField.basis.sentences), taken again before a write. */
     sentences?: readonly string[];
+    /** G2 review: the source texts the value was read from and how it was derived (FillField.basis.from, .how). */
+    from?: readonly string[];
+    how?: string;
     /** G2: the memory identity that made the value the user's (FillField.basis.identity), which must still hold. */
     identity?: { memoryId: string; kind: "email" | "phone" | "name"; key: string };
   };

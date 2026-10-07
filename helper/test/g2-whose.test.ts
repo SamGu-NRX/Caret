@@ -71,14 +71,15 @@ describe("Greenhouse task page: the Location step's source check (G1 fix 1, froz
     // G2 review: the sentence Jev read the span with (it warns, "not Oregon", so it went whole) rides with the value, and
     // digests of the sentences that held it.
     expect(g?.basis?.clause).toBe(SENTENCE);
-    expect(g?.basis?.sentences).toEqual(sentenceDigests(note, "Portland"));
+    // The city was split from the span "Portland, Maine" of that sentence: its digests, and how it was split.
+    expect(g?.basis).toMatchObject({ from: ["Portland, Maine"], how: "address:city", sentences: sentenceDigests(note, "Portland, Maine") });
   });
 
   const SENTENCE = "I live in Portland, Maine, not Oregon. Recruiters keep mixing that up.";
   it("finds the note, unchanged, still gives that city: fill derived it from the line's span, and so does the check", () => {
     const sw = pageModel([location], note).windows.get("w4-note")!;
     // Failed before G2: the check derived a city only from the whole line, which is a sentence, not a place.
-    expect(sourceHolds(sw, NOTE_KEY, "Portland", null, "combobox", sentenceDigests(note, "Portland"))).toBe(true);
+    expect(sourceHolds(sw, NOTE_KEY, "Portland", null, "combobox", { sentences: sentenceDigests(note, "Portland") })).toBe(true);
   });
 
   it("still refuses a line that no longer gives the city, a line that gained a label, and a sentence with no place", () => {

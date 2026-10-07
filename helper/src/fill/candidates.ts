@@ -16,9 +16,25 @@ import { splitDate } from "./derive.ts";
  * never keeps. A page checkbox is editable too since D2-04 (engines/page-link.ts), but what it holds, "checked", is its
  * state, not text anyone typed.
  */
-function sourceField(node: Node): boolean {
-  return node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null && node.role !== "AXCheckBox";
+function sourceField(w: WindowState, node: Node): boolean {
+  return node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null && node.role !== "AXCheckBox" && !secretSourceField(w, node);
 }
+
+/**
+ * G2 review: an editable field whose label, nearest label or placeholder holds a secret marker (line-values.ts
+ * holdsSecret: "My password is hunter2") gives nothing at all, before any extraction reads it: not its value, not a line
+ * of it, not a typed value in it.
+ */
+function secretSourceField(w: WindowState, node: Node): boolean {
+  if (node.editable !== true) return false;
+  const hit = secretFields.get(node);
+  if (hit !== undefined) return hit;
+  const found = holdsSecret(node.label) || holdsSecret(node.placeholder) || holdsSecret(nearestText(w, node, true));
+  secretFields.set(node, found);
+  return found;
+}
+/** secretSourceField's answer per node: nodes are replaced with each snapshot, so a node's answer never goes stale. */
+const secretFields = new WeakMap<Node, boolean>();
 
 export interface Candidate {
   id: string;
@@ -439,7 +455,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (node !== undefined && !note(node, v.text, lineHolding(nodeText(node), v.text), valueKinds(v), null)) return;
     }
     for (const node of w.nodes.values()) {
-      const isSourceField = sourceField(node);
+      const isSourceField = sourceField(w, node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       for (const raw of nodeText(node).split(/\r?\n/)) {
         for (const sp of lineSpans(raw)) {
@@ -515,7 +531,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const node of w.nodes.values()) {
       if (outOfTime()) return false;
       stats.nodes++;
-      const isSourceField = sourceField(node);
+      const isSourceField = sourceField(w, node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
@@ -665,7 +681,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const node of w.nodes.values()) {
       if (full() || outOfTime()) return stop();
       stats.nodes++;
-      const isSourceField = sourceField(node);
+      const isSourceField = sourceField(w, node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
@@ -692,8 +708,9 @@ const constant =
  */
 function secretValue(w: WindowState, v: TypedValue): boolean {
   const node = w.nodes.get(v.nodeKey);
-  // G2 review: nor a reader's typed value on a line, or in a field whose label, that holds a secret marker (holdsSecret).
-  return valueKind(v.text) !== null || labelKind(node?.label) !== null || holdsSecret(node?.label) || (node !== undefined && holdsSecret(lineHolding(nodeText(node), v.text)));
+  // G2 review: nor a reader's typed value on a line that holds a secret marker, or in a field whose label, nearest label
+  // or placeholder holds one (holdsSecret, secretSourceField).
+  return valueKind(v.text) !== null || labelKind(node?.label) !== null || (node !== undefined && (secretSourceField(w, node) || holdsSecret(node.label) || holdsSecret(lineHolding(nodeText(node), v.text))));
 }
 
 /**
@@ -743,7 +760,7 @@ export function windowValues(w: WindowState): readonly TypedValue[] {
   const byNode = new Map<string, TypedValue[]>();
   for (const v of w.values) byNode.set(v.nodeKey, [...(byNode.get(v.nodeKey) ?? []), v]);
   for (const node of w.nodes.values()) {
-    if (!LINE_ROLES.has(node.role) && !sourceField(node)) continue;
+    if (!LINE_ROLES.has(node.role) && !sourceField(w, node)) continue;
     const reader = byNode.get(node.key) ?? [];
     const seen = new Set(reader.map((v) => v.text));
     for (const raw of nodeText(node).slice(0, MAX_SCAN).split(/\r?\n/)) {
@@ -850,7 +867,7 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
 export function labelledLines(w: WindowState): { label: string; value: string; node: Node }[] {
   const out: { label: string; value: string; node: Node }[] = [];
   for (const node of w.nodes.values()) {
-    const isSourceField = sourceField(node);
+    const isSourceField = sourceField(w, node);
     if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
     for (const raw of nodeText(node).split(/\r?\n/)) {
       // C1: a labelled line of any length, so a value read from a long one ("School: …, September 2016 to May 2020.")
@@ -1002,7 +1019,7 @@ export function countSpans(model: ScreenModel, targetWindowId: string): { spans:
   for (const w of model.windows.values()) {
     if (w.window.windowId === targetWindowId) continue;
     for (const node of w.nodes.values()) {
-      const isSourceField = sourceField(node);
+      const isSourceField = sourceField(w, node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       for (const raw of nodeText(node).split(/\r?\n/)) for (const s of lineSpans(raw)) seen.add(s.text);
     }

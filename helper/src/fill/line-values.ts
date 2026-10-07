@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import type { ValueKind } from "../protocol.ts";
 import { dateShaped, isNameLike, NAME_JOINERS, namesIn, ORG_SUFFIX, textKind, timeShaped } from "./kinds.ts";
 import { splitName, splitPlace } from "./derive.ts";
-import { labelKind, statedSecret, valueKind } from "../memory/sensitive.ts";
+import { labelKind, markedSecret, statedSecret, valueKind } from "../memory/sensitive.ts";
 
 /** A typed value found in a line: its text as written and where it starts. */
 export interface LineValue {
@@ -85,8 +85,22 @@ export function secretLine(line: string): boolean {
  * and a request that still carries one is refused before it is sent (privacy.ts assertNoSecrets).
  */
 export function holdsSecret(text: string | null | undefined): boolean {
-  return text !== null && text !== undefined && (secretLine(text) || statedSecret(text) !== null);
+  if (text === null || text === undefined || text === "") return false;
+  const hit = secretMemo.get(text);
+  if (hit !== undefined) return hit;
+  const found = secretLine(text) || statedSecret(text) !== null || markedSecret(text) !== null;
+  if (secretMemo.size >= MEMO_LINES) secretMemo.clear();
+  secretMemo.set(text, found);
+  return found;
 }
+/**
+ * holdsSecret's answers by text: the generator, the facts and the request check read the same lines many times.
+ * scripts/generator-bench.ts, 20 focuses per scene (evidence/screen/g2/whose/genbench-*): with this memo and the
+ * patterns compiled once, generator p50 1.0-2.5 ms as at 0ea0077, and 1 focus of 20 over GENERATOR_BUDGET_MS on the
+ * 5,500-span scene (0ea0077: 0); with neither, 19 of 20 on every scene. A focus over budget stops early and reports the
+ * window cut, so its fields withhold rather than guess.
+ */
+const secretMemo = new Map<string, boolean>();
 
 /** Lower wins when two values overlap, as the reader decides (TypedValues.swift priority). */
 const PRIORITY: Record<string, number> = { email: 0, url: 1, phone: 2, address: 3, date: 4 };
@@ -487,12 +501,29 @@ export function partAround(line: string, at: number, text: string): string | nul
  * sentences, travel with the proposal, so no more screen text reaches a consumer.
  */
 export function sentenceDigests(text: string, span: string): string[] {
-  const joined = text.split(/\r?\n/u).map(bareLine).filter((l) => l !== "").join(" ").replace(/\s+/gu, " ");
   const want = span.replace(/\s+/gu, " ").trim();
   if (want === "") return [];
   const out: string[] = [];
-  for (let at = joined.indexOf(want); at >= 0; at = joined.indexOf(want, at + 1)) {
-    out.push(createHash("sha256").update(sentenceAround(joined, at, want)).digest("hex").slice(0, 16));
+  for (const line of logicalLines(text)) {
+    for (let at = line.indexOf(want); at >= 0; at = line.indexOf(want, at + 1)) out.push(createHash("sha256").update(sentenceAround(line, at, want)).digest("hex").slice(0, 16));
+  }
+  return out;
+}
+
+/**
+ * A text's lines as the generator reads them (bareLine), a line joined to the one before when it goes on with that one's
+ * sentence (the one before ends with no ".", "!", "?", ";" or ":" and this one starts in lowercase), as candidates.ts
+ * lineFact reads a wrapped sentence. A note's lines that end with no stop stay apart: joined, every line of a list read
+ * as one sentence, and an edit to any line changed them all (G2 round-3: a changed Email line refused the Name line too).
+ */
+export function logicalLines(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.split(/\r?\n/u)) {
+    const l = bareLine(raw);
+    if (l === "") continue;
+    const prev = out[out.length - 1];
+    if (prev !== undefined && !/[.!?;:]$/u.test(prev) && /^\p{Ll}/u.test(l)) out[out.length - 1] = `${prev} ${l}`;
+    else out.push(l);
   }
   return out;
 }

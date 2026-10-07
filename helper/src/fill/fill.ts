@@ -657,7 +657,7 @@ type Pick =
   | { from: "window"; c: Candidate }
   | { from: "memory"; a: AboutValue }
   | { from: "instruction"; text: string }
-  | { from: "derived"; text: string; base: { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue } | { from: "instruction"; text: string }; also: Candidate | null };
+  | { from: "derived"; text: string; base: { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue } | { from: "instruction"; text: string }; also: Candidate | null; how?: Derivation };
 
 /** Words of a label that say its value is a person's: "Name:", "Traveler:", "To:", "Emergency contact:". Written for common labels, not measured. */
 const PERSON_LABEL = /\b(?:name|traveler|traveller|passenger|patient|guest|applicant|student|attendee|from|to|cc|reference|landlord|contact|recipient|sender|tenant|driver|member|employee|candidate|spouse|partner|roommate|manager|advisor)\b/i;
@@ -952,7 +952,7 @@ export async function proposeFill(
   // Values code derives for one field (derive.ts): a name's first, middle or last part for a field that asks
   // for it, a full name joined from labelled first and last names, and an address's parts. Each is offered only
   // in its field's question, beside the shared candidates, and keeps the candidate or memory entry it came from.
-  type Derived = { key: string; text: string; describe: string; base: Extract<Pick, { from: "derived" }>["base"]; also: Candidate | null };
+  type Derived = { key: string; text: string; describe: string; base: Extract<Pick, { from: "derived" }>["base"]; also: Candidate | null; how?: Derivation };
   const derived = new Map<string, Derived[]>();
   const memoryNames = scope !== undefined && !scope.memory ? [] : (opts.about ?? []).filter((a) => a.kind === "name");
   // C2 (lead decision 5): one address or date entry gives a part to each field that asks for that part of it.
@@ -961,17 +961,17 @@ export async function proposeFill(
     for (const f of fields) {
       if (f.part === null) continue;
       const list: Derived[] = [];
-      const add = (text: string | null, describe: string, base: Derived["base"], also: Candidate | null = null): void => {
+      const add = (text: string | null, describe: string, base: Derived["base"], also: Candidate | null = null, how?: Derivation): void => {
         if (text === null || text === "" || candidates.some((c) => c.text === text) || list.some((x) => x.text === text)) return;
-        list.push({ key: `${f.id}:${list.length}`, text, describe, base, also });
+        list.push({ key: `${f.id}:${list.length}`, text, describe, base, also, ...(how === undefined ? {} : { how }) });
       };
       const part = f.part;
       if (part === "first" || part === "middle" || part === "last" || part === "full") {
         for (const c of candidates) {
           const person = personName(c);
           if (person === null) continue;
-          if (part === "full") add(person === c.text ? null : person, `"${person}" (the ${PART_SAYS.full} in ${describeCandidate(c)})`, { from: "window", c });
-          else add(namePart(splitName(person), part), `"${namePart(splitName(person), part) ?? ""}" (the ${PART_SAYS[part]} in ${describeCandidate(c)})`, { from: "window", c });
+          if (part === "full") add(person === c.text ? null : person, `"${person}" (the ${PART_SAYS.full} in ${describeCandidate(c)})`, { from: "window", c }, null, { how: "whole", from: [person] });
+          else add(namePart(splitName(person), part), `"${namePart(splitName(person), part) ?? ""}" (the ${PART_SAYS[part]} in ${describeCandidate(c)})`, { from: "window", c }, null, { how: `name:${part}`, from: [person] });
         }
         if (part !== "full" && (scope?.person ?? null) === null) {
           for (const a of memoryNames) {
@@ -991,7 +991,7 @@ export async function proposeFill(
             const last = cs.filter((c) => fieldPart(c.context, false) === "last");
             if (first.length === 1 && last.length === 1 && adjacentLines(model, first[0] as Candidate, last[0] as Candidate)) {
               const [a, b] = [first[0] as Candidate, last[0] as Candidate];
-              add(joinName(a.text, b.text), `"${joinName(a.text, b.text)}" (the first name ${describeCandidate(a)} and the last name ${describeCandidate(b)}, joined)`, { from: "window", c: a }, b);
+              add(joinName(a.text, b.text), `"${joinName(a.text, b.text)}" (the first name ${describeCandidate(a)} and the last name ${describeCandidate(b)}, joined)`, { from: "window", c: a }, b, { how: "join", from: [a.text, b.text] });
             }
           }
         }
@@ -1000,7 +1000,7 @@ export async function proposeFill(
           const parts = part === "country" ? null : splitAddress(c.text);
           const place = PLACE_PARTS.has(part) ? splitPlace(c.text) : null;
           const v = parts?.[part as "street" | "unit" | "city" | "state" | "zip"] ?? place?.[part as "city" | "state" | "country"] ?? undefined;
-          if (v !== undefined && v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
+          if (v !== undefined && v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c }, null, { how: `address:${part}`, from: [c.text] });
         }
         if (part !== "country") {
           for (const a of memoryWhole) {
@@ -1013,7 +1013,7 @@ export async function proposeFill(
         for (const c of candidates) {
           if (!candidateKinds(model, c).has("date")) continue;
           const v = part === "day" ? (dateParts(c.text)?.day ?? null) : partOf(part, c.text);
-          if (v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
+          if (v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c }, null, { how: `date:${part}`, from: [c.text] });
         }
         for (const a of memoryWhole) {
           if (!fieldAsksForPart(a, f.name, part as "month" | "day" | "year", w.window.title)) continue;
@@ -1034,7 +1034,7 @@ export async function proposeFill(
         const m = /^[$€£¥]\s?(\d[\d,]*(?:\.\d{1,2})?)(?![\d,.])/u.exec(c.text);
         const n = m?.[1];
         if (n === undefined || candidates.some((x) => x.text === n) || list.some((x) => x.text === n)) continue;
-        list.push({ key: `${f.id}:${list.length}`, text: n, describe: `"${n}" (the number of ${describeCandidate(c)})`, base: { from: "window", c }, also: null });
+        list.push({ key: `${f.id}:${list.length}`, text: n, describe: `"${n}" (the number of ${describeCandidate(c)})`, base: { from: "window", c }, also: null, how: { how: "number", from: [c.text] } });
       }
       if (list.length > 0) derived.set(f.id, list);
     }
@@ -1101,6 +1101,14 @@ export async function proposeFill(
   // entry's label rides in the value question ("the user's own primary email, which the user told Caret"), as the entry
   // itself did before the window's same text replaced it (above), so it goes through the ledger as memory; an entry
   // whose label does not fit is no identity.
+  // G2 review: each candidate's source node text as Jev is shown it, taken now, before any ask: the model can change
+  // while the asks are out, and the recheck's sentence digests must be of what Jev judged.
+  const judged = new Map<string, string>();
+  const nodeKeyOf = (c: Candidate): string => `${c.source.windowId}\u0000${c.source.nodeKey}`;
+  const snapshotOf = (c: Candidate): void => {
+    const n = model.windows.get(c.source.windowId)?.nodes.get(c.source.nodeKey);
+    if (n !== undefined && !judged.has(nodeKeyOf(c))) judged.set(nodeKeyOf(c), nodeText(n));
+  };
   const memoryRead = scope === undefined || scope.memory;
   const ids = memoryRead ? identitiesOf(opts.about ?? []) : [];
   const userEmails = new Set(ids.filter((x) => x.kind === "email").map((x) => x.key));
@@ -1110,6 +1118,7 @@ export async function proposeFill(
     if (id !== null && ledger.memory([id.label])) c.identity = id;
     const sits = placementsOf(model, c, userEmails, userNames);
     if (sits.length > 0) c.placements = sits;
+    snapshotOf(c);
   }
   // S1: a saved answer is the user's memory, not screen text, and is declared and charged as memory, as an About value
   // is (lead decision 4). The question it was saved for and its first ANSWER_CRITERION_CHARS characters are what a match
@@ -1272,7 +1281,7 @@ export async function proposeFill(
   const byId = new Map<string, Pick>([
     ...candidates.map((c): [string, Pick] => [c.id, { from: "window", c }]),
     ...aboutSent.map((a): [string, Pick] => [aboutIds.get(a.id) ?? "", { from: "memory", a }]),
-    ...allDerived.map((d): [string, Pick] => [derivedIds.get(d.key) ?? "", { from: "derived", text: d.text, base: d.base, also: d.also }]),
+    ...allDerived.map((d): [string, Pick] => [derivedIds.get(d.key) ?? "", { from: "derived", text: d.text, base: d.base, also: d.also, ...(d.how === undefined ? {} : { how: d.how }) }]),
   ]);
   const pickText = (p: Pick): string => (p.from === "window" ? p.c.text : p.from === "memory" ? p.a.value : p.text);
   const readAsk = (r: JevResult, f: Field, mapId: (id: string) => string | undefined): FillAsk => {
@@ -1654,13 +1663,22 @@ export async function proposeFill(
     // against that part of the entry again (identityRefOf).
     const basisOf = line?.identity ?? (p?.from === "derived" ? (p.also?.identity ?? undefined) : undefined);
     const idPart = p?.from === "derived" && f.part !== null && NAME_PARTS.has(f.part) ? (f.part as "first" | "middle" | "last") : undefined;
-    // The sentences of the source that hold the value now (line-values.ts sentenceDigests), which a recheck takes again.
-    const srcNode = line === null ? undefined : model.windows.get(line.source.windowId)?.nodes.get(line.source.nodeKey);
-    const sentences = p === undefined || srcNode === undefined ? [] : sentenceDigests(nodeText(srcNode), pickText(p));
+    // What the value was read from, as Jev was shown it (`judged`, taken before the asks): the source texts and how code
+    // derived the value from them (Derivation), and digests of the sentences that held those texts (line-values.ts
+    // sentenceDigests), which the recheck takes again (offers/fill-popup.ts sourceHolds).
+    const how = p !== undefined && p.from === "derived" && p.base.from === "window" ? p.how : undefined;
+    const from: string[] = p === undefined || line === null ? [] : how !== undefined ? [...how.from] : p.from === "window" ? [p.c.text] : [];
+    const srcText = line === null ? undefined : judged.get(nodeKeyOf(line));
+    const sentences = srcText === undefined ? [] : from.flatMap((t) => sentenceDigests(srcText, t));
     const basis =
       p === undefined || got === null
         ? undefined
-        : { ...(basisOf === undefined ? {} : { identity: { memoryId: basisOf.memoryId, kind: basisOf.kind, key: basisOf.key, ...(idPart === undefined ? {} : { part: idPart }) } }), ...(line?.line == null ? {} : { clause: line.line }), ...(sentences.length === 0 ? {} : { sentences }) };
+        : {
+            ...(basisOf === undefined ? {} : { identity: { memoryId: basisOf.memoryId, kind: basisOf.kind, key: basisOf.key, ...(idPart === undefined ? {} : { part: idPart }) } }),
+            ...(line?.line == null ? {} : { clause: line.line }),
+            ...(sentences.length === 0 ? {} : { sentences }),
+            ...(from.length === 0 ? {} : { from, ...(how === undefined ? {} : { how: how.how }) }),
+          };
     return {
       ...empty,
       ...(basis === undefined || Object.keys(basis).length === 0 ? {} : { basis }),
@@ -1759,6 +1777,44 @@ function adjacentLines(model: ScreenModel, a: Candidate, b: Candidate): boolean 
   const i = at(a);
   const j = at(b);
   return i >= 0 && j >= 0 && Math.abs(i - j) === 1;
+}
+
+/**
+ * G2 review: how code derived a value from source texts, kept with the proposal (FillField.basis.from, .how) so a recheck
+ * derives it again from the source as it reads then (offers/fill-popup.ts sourceHolds). `how`: "whole" (the text
+ * itself, a display name of "Name <email>"), "name:first" / "name:middle" / "name:last", "join" (a first and a last name
+ * on two lines), "address:<part>" (an address's or a place's part), "date:<part>" (a date's month, day or year), or
+ * "number" (an amount without its sign).
+ */
+export interface Derivation {
+  how: string;
+  from: readonly string[];
+}
+
+/** The value derivation `how` gives from `from`, by the same code that offered it, or null. */
+export function derivePart(how: string, from: readonly string[]): string | null {
+  const [kind, part] = how.split(":") as [string, string | undefined];
+  const t = from[0] ?? "";
+  switch (kind) {
+    case "whole":
+      return t;
+    case "name":
+      return namePart(splitName(t), part as "first" | "middle" | "last");
+    case "join":
+      return from.length === 2 ? joinName(t, from[1] as string) : null;
+    case "address": {
+      const p = part as FillPart;
+      const parts = p === "country" ? null : splitAddress(t);
+      const place = PLACE_PARTS.has(p) ? splitPlace(t) : null;
+      return parts?.[p as "street" | "unit" | "city" | "state" | "zip"] ?? place?.[p as "city" | "state" | "country"] ?? null;
+    }
+    case "date":
+      return part === "day" ? (dateParts(t)?.day ?? null) : partOf(part as FillPart, t);
+    case "number":
+      return /^[$€£¥]\s?(\d[\d,]*(?:\.\d{1,2})?)(?![\d,.])/u.exec(t)?.[1] ?? null;
+    default:
+      return null;
+  }
 }
 
 /** The parts of a person's name a field can ask for, which a derived value is labelled as (writeRefused). */

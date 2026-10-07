@@ -513,7 +513,7 @@ export class GoalRuns {
     // I6: a value from the tab the user left is shown only while this goal still holds that tab's text.
     const sw = (this.deps.sourceModel?.(run.plan.goalId) ?? this.deps.model).windows.get(src.windowId);
     if (sw === undefined) return false;
-    if (v.fill !== undefined) return sourceHolds(sw, src.key, v.fill.span, v.fill.context, v.fill.control, v.fill.sentences);
+    if (v.fill !== undefined) return sourceHolds(sw, src.key, v.fill.span, v.fill.context, v.fill.control, v.fill);
     const node = sw.nodes.get(src.key);
     const want = v.event?.sentence ?? v.text;
     const typed = sw.values.some((x) => x.nodeKey === src.key && x.text === want);
@@ -1066,8 +1066,11 @@ export class GoalRuns {
     const quoted = new Set<string>();
     const fromTab = (v: ValueBinding | null): boolean => v !== null && ((v.source !== null && windows.has(v.source.windowId)) || (v.origin.kind === "span" && windows.has(v.origin.source)));
     const blank = (v: ValueBinding): ValueBinding => {
-      for (const t of [v.text, v.fill?.span ?? "", v.fill?.context ?? ""]) if (t.trim() !== "") quoted.add(t);
-      return { ...v, text: "", display: "", ...(v.fill === undefined ? {} : { fill: { ...v.fill, span: "", context: null } }) };
+      for (const t of [v.text, v.fill?.span ?? "", v.fill?.context ?? "", v.fill?.clause ?? "", ...(v.fill?.from ?? [])]) if (t.trim() !== "") quoted.add(t);
+      // G2 review: the clause and the source texts the value was read from are the tab's text too, and go with it.
+      if (v.fill === undefined) return { ...v, text: "", display: "" };
+      const { clause: _clause, from: _from, ...fill } = v.fill;
+      return { ...v, text: "", display: "", fill: { ...fill, span: "", context: null } };
     };
     // A left item's quoted value (a hand-off's), wherever the item went: the plan, the run's obligations, a carry.
     const items = [...run.plan.left, ...run.owed, ...[...this.carries.values()].filter((c) => c.goalId === goalId).flatMap((c) => c.owed)];

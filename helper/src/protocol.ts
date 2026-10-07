@@ -1516,6 +1516,13 @@ export const FillField = z.object({
        * values.ts sentenceDigests), which the recheck takes again: a changed or new sentence around the value refuses it.
        */
       sentences: z.array(z.string().min(1)).optional(),
+      /**
+       * G2 review: the source texts the value was read from as Jev was shown them, and how code derived the value from
+       * them (fill.ts Derivation: "name:first", "join", "address:city", …); absent `how`, the value is `from`'s one text.
+       * The recheck finds them in the source again and derives the value again.
+       */
+      from: z.array(z.string().min(1)).optional(),
+      how: z.string().min(1).optional(),
     })
     .optional(),
 })

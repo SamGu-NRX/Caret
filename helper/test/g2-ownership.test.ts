@@ -16,7 +16,8 @@ import { EngineSession } from "../src/engines/session.ts";
 import { buildFillPopup, fillPlan, recheckFill, sourceHolds, writtenFields } from "../src/offers/fill-popup.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
 import { assertNoSecrets, SecretInRequest } from "../src/privacy.ts";
-import { sentenceDigests } from "../src/fill/line-values.ts";
+import { bareLine, holdsSecret, sentenceDigests } from "../src/fill/line-values.ts";
+import { nodeText } from "../src/model.ts";
 import { buildDesk, loadCorpus } from "../scripts/realfill-corpus.ts";
 
 const HELPER = join(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -322,23 +323,28 @@ describe("G2 review findings", () => {
     const KEY = "com.apple.TextEdit/standard/textarea:~0";
     const was = "I live in Portland, Maine, not Oregon. Recruiters keep mixing that up.";
     const read = sentenceDigests(was, "Portland");
-    expect(sourceHolds(sw(was), KEY, "Portland", null, "combobox", read)).toBe(true);
-    expect(sourceHolds(sw("I no longer live in Portland, Maine, not Oregon. Recruiters keep mixing that up."), KEY, "Portland", null, "combobox", read)).toBe(false);
+    expect(sourceHolds(sw(was), KEY, "Portland", null, "combobox", { sentences: read })).toBe(true);
+    expect(sourceHolds(sw("I no longer live in Portland, Maine, not Oregon. Recruiters keep mixing that up."), KEY, "Portland", null, "combobox", { sentences: read })).toBe(false);
   });
 });
 
 describe("G2 review round 2: one disclosure rule", () => {
   const forty = expectation("forty").sources;
 
-  it("1: a source field whose label states a secret gives no context", async () => {
-    const name = control("e1", "Full name");
-    // An editable field in another app, labelled with a stated password, holding a name (its label is its context).
-    const field = { type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 900, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 500, 300] }, focused: true, root: null, nodes: [{ key: "other/standard/textfield:~0", parent: null, role: "AXTextField", value: "Robin Vale", editable: true, label: "My password is hunter2" }], values: [], focusedKey: null, stats: { walkMs: 0, visited: 1, truncated: false } } as Snapshot;
-    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
-    await proposeFill(desk([name], [field]), ask, WIN, keyOf(name), 2000);
-    const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.snippets]));
-    expect(sent).toContain("Robin Vale");
-    expect(sent).not.toContain("hunter2");
+  it("1: an editable source field whose label, nearest label or placeholder states a secret gives nothing", async () => {
+    const pw = control("e1", "Password hint");
+    const field = (extra: Record<string, string>, value: string): Snapshot => ({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 900, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 500, 300] }, focused: true, root: null, nodes: [{ key: "other/standard/textfield:~0", parent: null, role: "AXTextField", value, editable: true, ...extra }], values: [], focusedKey: null, stats: { walkMs: 0, visited: 1, truncated: false } }) as Snapshot;
+    for (const [extra, value] of [[{ label: "My password is hunter2" }, "hunter2"], [{ label: "My password is hunter2" }, "Robin Vale"], [{ placeholder: "token: hunter2" }, "hunter2"]] as const) {
+      const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+      try {
+        await proposeFill(desk([pw], [field(extra, value), noteWindow("Name: Kenji Watanabe")]), ask, WIN, keyOf(pw), 2000);
+      } catch (err) {
+        if (!(err instanceof Error && "why" in err)) throw err;
+      }
+      const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.snippets]));
+      expect(sent, JSON.stringify(extra)).not.toContain("hunter2");
+      expect(sent, JSON.stringify(extra)).not.toContain(value);
+    }
   });
 
   it("1: a value the anchor moves to the note the user just left never takes a block head that states a secret", async () => {
@@ -366,30 +372,54 @@ describe("G2 review round 2: one disclosure rule", () => {
     expect(() => assertNoSecrets({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field: 'Password'.", criteria: { none: "None." } } } })).not.toThrow();
   });
 
-  it("c: over every task page and corpus form, no request carries a secret line added to its sources", async () => {
-    const SECRETS = ["Password: hunter2", "PIN: 7319", "my password is violet-orchard-seven", "Card: 4111 1111 1111 1111", "Email: robin@example.test password: secret@example.test"];
-    const LEAKS = ["hunter2", "7319", "violet-orchard-seven", "4111", "secret@example.test"];
-    const pages = ["wizard-1", "wizard-2", "reveal", "forty", "greenhouse", "ashby"];
-    for (const page of pages) {
+  // G2 round-3 review: lines that name a secret anywhere, not only as their leading label, each beside an ordinary value.
+  const MARKED = ["password", "passcode", "PIN", "token", "secret", "API key", "private key", "SSN", "security code", "CVV", "access token", "routing number"].flatMap((m, i) => [
+    `Email: robin${i}@example.test staging authentication ${m}: Zq${i}x7Kw`,
+    `Phone: 555-01${String(10 + i)} and my ${m} is Rv${i}y3Lp`,
+    `Backup ${m} = Ht${i}m2Qc for the office`,
+  ]);
+
+  it("c: over every task page and corpus form, no request carries any text unique to a line the predicate flags", async () => {
+    /**
+     * The values of each flagged line found in no other line of the desk's sources or memory (its tokens with a digit:
+     * a secret, an email, a phone): what would show it leaked.
+     */
+    const tells = (sources: string[], memory: string[]): string[] => {
+      const lines = sources.flatMap((t) => t.split("\n")).map(bareLine).filter((l) => l !== "");
+      // A generated marked line counts as flagged whatever the predicate says, so a predicate that misses one fails here.
+      const marked = (l: string): boolean => holdsSecret(l) || MARKED.includes(l);
+      const flagged = lines.filter(marked);
+      const rest = [...lines.filter((l) => !marked(l)), ...memory].join(" \u0000 ").toLowerCase();
+      return [...new Set(flagged.flatMap((l) => l.split(/[\s,;:=]+/u)).filter((w) => w.length >= 4 && /\d/u.test(w) && !rest.includes(w.toLowerCase())))];
+    };
+    const check = (requests: JevRequest[], words: string[], where: string): void => {
+      const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.nouls ?? {}, r.snippets])).toLowerCase();
+      for (const w of words) expect(sent.includes(w.toLowerCase()), `${where}: '${w}'`).toBe(false);
+    };
+    const fields = [control("e1", "Email"), control("e2", "Full name"), control("e3", "Phone"), control("e4", "Start date"), control("e5", "Notes", "textarea")];
+    for (const page of ["wizard-1", "wizard-2", "reveal", "forty", "greenhouse", "ashby"]) {
       const e = expectation(page).sources;
-      const fields = [control("e1", "Email"), control("e2", "Full name"), control("e3", "Phone"), control("e4", "Start date"), control("e5", "Notes", "textarea")];
-      for (let k = 0; k < SECRETS.length; k++) {
+      for (let k = 0; k < MARKED.length; k += 3) {
         const lines = e.note.split("\n");
-        lines.splice(1 + k, 0, SECRETS[k] as string);
-        const mail = { ...e.email, body: `${e.email.body}\n${SECRETS[(k + 1) % SECRETS.length]}` };
+        lines.splice(1, 0, ...MARKED.slice(k, k + 3));
+        const note = lines.join("\n");
+        const mail = { ...e.email, body: `${e.email.body}\n${MARKED[(k + 3) % MARKED.length]}` };
+        const words = tells([note, mail.from, mail.to, mail.body], e.memory.map((m) => m.value));
+        expect(words.length, page).toBeGreaterThan(0);
         const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
-        await proposeFill(desk(fields, [mailWindow(mail), noteWindow(lines.join("\n"))]), ask, WIN, keyOf(fields[0] as PageControl), 2000, { about: memoryOf(page) });
-        const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.nouls ?? {}, r.snippets]));
-        for (const t of LEAKS) expect(sent, `${page} #${k}: ${t}`).not.toContain(t);
+        await proposeFill(desk(fields, [mailWindow(mail), noteWindow(note)]), ask, WIN, keyOf(fields[0] as PageControl), 2000, { about: memoryOf(page) });
+        check(requests, words, `${page} #${k}`);
       }
     }
-    // The corpus's 14 forms, each with its recorded source and decoys, and a note of the same secret lines beside them.
+    // The corpus's 14 forms, each with its recorded source and decoys, and a note of marked lines beside them.
     const corpus = loadCorpus(REALFILL);
     const snaps = readFileSync(join(HELPER, "fixtures", "recorded", "realfill-windows.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Snapshot);
     for (const form of corpus.forms) {
       const d = buildDesk(corpus, snaps, form);
-      const secretNote = { ...noteWindow(SECRETS.join("\n")), at: 999_999, window: { windowId: "secret-note", kind: "standard", title: "Accounts.txt", frame: [0, 0, 700, 500] as [number, number, number, number] } };
+      const secretNote = { ...noteWindow(MARKED.join("\n")), at: 999_999, window: { windowId: "secret-note", kind: "standard", title: "Accounts.txt", frame: [0, 0, 700, 500] as [number, number, number, number] } };
       d.model.apply(secretNote);
+      const sources = [...d.model.windows.values()].filter((x) => x.window.windowId !== d.form.window.windowId).flatMap((x) => [...x.nodes.values()].map((n) => nodeText(n)));
+      const words = tells(sources, d.about.map((a) => a.value));
       const trigger = [...d.form.nodes.values()].find((n) => n.editable === true && n.role === "AXTextField" && (n.value ?? "") === "")?.key;
       if (trigger === undefined) continue;
       const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
@@ -398,10 +428,15 @@ describe("G2 review round 2: one disclosure rule", () => {
       } catch (err) {
         if (!(err instanceof Error && "why" in err)) throw err;
       }
-      const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.nouls ?? {}, r.snippets]));
-      for (const t of LEAKS) expect(sent, `${form.id}: ${t}`).not.toContain(t);
+      check(requests, words, form.id);
     }
   }, 60_000);
+
+  it("2: a line that names a secret anywhere is flagged, and so is every generated one", () => {
+    for (const l of ["Email: robin@example.test staging authentication PIN: 7319", "Email: robin@example.test staging token: hunter2", ...MARKED]) expect(holdsSecret(l), l).toBe(true);
+    // Conservative by design (lead): "Pin it to the board" is dropped too. A word that only starts like a marker is not one.
+    for (const l of ["Email: robin@example.test", "Secretary: Dana Whitfield", "Passwordless sign-in works"]) expect(holdsSecret(l), l).toBe(false);
+  });
 });
 
 describe("G2 review round 2: provenance", () => {
@@ -441,7 +476,7 @@ describe("G2 review round 2: provenance", () => {
   });
 
   /** Whether `now` still gives `span` as fill read it from `was` (the digests fill records, then sourceHolds). */
-  const holds = (was: string, now: string, span: string): boolean => sourceHolds(sw(now), KEY, span, null, "text", sentenceDigests(was, span));
+  const holds = (was: string, now: string, span: string): boolean => sourceHolds(sw(now), KEY, span, null, "text", { sentences: sentenceDigests(was, span) });
 
   it("6: a new warning in the value's sentence, or a new sentence that holds it, refuses it", () => {
     const was = "Mobile 555-0164 (no landline anymore).";
@@ -480,5 +515,47 @@ describe("G2 review round 2: provenance", () => {
     expect(g.fields.length).toBeGreaterThan(5);
     const popup = JSON.stringify(buildFillPopup(m, g));
     expect(popup).toContain(`{"memory":"${entry.id}"}`);
+  });
+});
+
+describe("G2 review round 3: what the recheck compares", () => {
+  const KEY = "com.apple.TextEdit/standard/textarea:~0";
+
+  it("3: digests are of the source as Jev judged it, not as the model reads after the asks", async () => {
+    const email = control("e1", "Email");
+    const m = desk([email], [noteWindow("Email: robin@example.test")]);
+    const later = noteWindow("Email: robin@example.test is my old address");
+    let changed = false;
+    const { ask } = scripted({ Email: "robin@example.test" }, () => ({ choice: "user", confidence: 0.95 }));
+    // The note changes while the asks are out.
+    const racing: AskJev = async (req) => {
+      if (!changed) {
+        changed = true;
+        m.apply({ ...later, at: 950 });
+      }
+      return ask(req);
+    };
+    const p = await proposeFill(m, racing, WIN, keyOf(email), 2000);
+    const f = writtenFields(p).fields.find((x) => x.key === keyOf(email));
+    expect(f?.basis?.sentences).toEqual(sentenceDigests("Email: robin@example.test", "robin@example.test"));
+    // So the recheck, on the note as it reads now, refuses it.
+    expect(recheckFill(m, writtenFields(p), () => null)).not.toBeNull();
+  });
+
+  it("4: a value with double spaces and a full name joined from two lines recheck as unchanged, and fail once changed", async () => {
+    const full = control("e1", "Full name");
+    for (const [note, want, after] of [
+      ["Name: Robin  Vale", "Robin Vale", "Name: Robin Vane"],
+      ["First name: Kenji\nLast name: Watanabe", "Kenji Watanabe", "First name: Kenji\nLast name: Tanaka"],
+    ] as const) {
+      const m = desk([full], [noteWindow(note)]);
+      const { ask } = scripted({ "Full name": want }, () => ({ choice: "user", confidence: 0.95 }));
+      const p = await proposeFill(m, ask, WIN, keyOf(full), 2000);
+      const g = writtenFields(p);
+      expect(g.fields.find((x) => x.key === keyOf(full))?.value, note).toBe(want);
+      expect(recheckFill(m, g, () => null), note).toBeNull();
+      m.apply({ ...noteWindow(after), at: 2500 });
+      expect(recheckFill(m, g, () => null), after).not.toBeNull();
+    }
   });
 });

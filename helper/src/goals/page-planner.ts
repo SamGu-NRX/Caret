@@ -409,6 +409,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
         ...(f.memory === null ? {} : { memoryLabel: f.memory.label }),
         ...(f.basis?.clause === undefined ? {} : { clause: f.basis.clause }),
         ...(f.basis?.sentences === undefined ? {} : { sentences: f.basis.sentences }),
+        ...(f.basis?.from === undefined ? {} : { from: f.basis.from, ...(f.basis.how === undefined ? {} : { how: f.basis.how }) }),
         ...(f.basis?.identity === undefined ? {} : { identity: f.basis.identity }),
       },
     };

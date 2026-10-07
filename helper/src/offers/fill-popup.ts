@@ -11,9 +11,9 @@ import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
 import { labelledLines, lineGives, lineSpans } from "../fill/candidates.ts";
-import { bareLine, LABELLED, sentenceDigests } from "../fill/line-values.ts";
+import { bareLine, LABELLED, logicalLines, sentenceDigests } from "../fill/line-values.ts";
 import { splitAddress, splitPlace } from "../fill/derive.ts";
-import { conversionOf, describeInput, emptyInput, identityRefOf, memoryRefOf, memoryValue } from "../fill/fill.ts";
+import { conversionOf, derivePart, describeInput, emptyInput, identityRefOf, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import { identityKey } from "../fill/whose.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
@@ -253,30 +253,50 @@ function derivesSpan(line: string, span: string): boolean {
  *     "No" but says otherwise, and is still refused: a span inside a longer line passes only by that same derivation.
  *   - A text field's value: the node's text holds the span, or one of its typed values is it.
  */
-export function sourceHolds(sw: WindowState, nodeKey: string, span: string, context: string | null, control: string, sentences?: readonly string[]): boolean {
+export function sourceHolds(sw: WindowState, nodeKey: string, span: string, context: string | null, control: string, basis?: SourceBasis): boolean {
   const src = sw.nodes.get(nodeKey);
   if (src === undefined) return false;
   const text = nodeText(src);
-  // G2 review: the sentences that held the value when fill proposed it (FillField.basis.sentences) must hold it now, and
-  // no other: a sentence that changed around a value that stayed ("I no longer live in Portland, Maine", "Mobile
-  // 555-0164 is my old number", "Do not use: 555-0164") or a new one that holds it is not what the value was read from.
-  // Whatever an unchanged sentence says (a "but" inside a name's line, a field's own "Previous name:" label, a wrapped
-  // line, double spaces) passes, as it did when Jev read it. A value with no digests (from memory, or a helper before
-  // this) meets the rules below alone.
-  if (sentences !== undefined) {
-    const now = sentenceDigests(text, span);
-    const was = new Set(sentences);
-    if (now.length === 0 || now.some((d) => !was.has(d)) || sentences.some((d) => !now.includes(d))) return false;
+  // Text compared as the generator reads it: each line's white space made single (bareLine), lines joined by a space.
+  const norm = (t: string): string => t.replace(/\s+/gu, " ").trim();
+  const joined = logicalLines(text).join("\n");
+  const typedIs = (t: string): boolean => sw.values.some((v) => v.nodeKey === nodeKey && norm(v.text) === norm(t));
+  // G2 review: what the value was read from as Jev was shown it (FillField.basis). Each source text must be in the
+  // source again, the value must derive from them again by the same code (fill.ts derivePart: a first name from "Robin
+  // Vale", a full name joined from two lines), and the sentences that held them must be the same sentences, none changed
+  // and none new ("Mobile 555-0164 is my old number", "Do not use: 555-0164"), whatever an unchanged one says (a "but" in
+  // a name's line, a field's own label). A value with no basis (from memory, or a helper before this) meets the rules
+  // below alone.
+  const from = basis?.from;
+  if (from !== undefined) {
+    if (!from.every((t) => joined.includes(norm(t)) || typedIs(t))) return false;
+    const got = basis?.how === undefined ? (from[0] ?? null) : derivePart(basis.how, from);
+    if (got === null || norm(got) !== norm(span)) return false;
   }
+  if (basis?.sentences !== undefined) {
+    const now = (from ?? [span]).flatMap((t) => sentenceDigests(text, t));
+    const was = new Set(basis.sentences);
+    if (now.length === 0 || now.some((d) => !was.has(d)) || basis.sentences.some((d) => !now.includes(d))) return false;
+  }
+  const base = from?.[0] ?? span;
   // The reader's own typed values only: one code finds in a line (fill/candidates.ts windowValues) is checked by the line
   // as it reads now (lineGives in derivesSpan), so a line that gained a label naming it passes nothing (C1 review).
   const typed = sw.values.some((v) => v.nodeKey === nodeKey && v.text === span);
   if (context !== null) {
     const box = control === "checkbox";
-    return labelledLines(sw).some((l) => l.node.key === nodeKey && l.label === context && (box ? l.value === span : l.value.includes(span)));
+    return labelledLines(sw).some((l) => l.node.key === nodeKey && l.label === context && (box ? l.value === base : norm(l.value).includes(norm(base))));
   }
+  // A derivation found again above is the check for a control's or a text field's derived value.
+  if (from !== undefined) return true;
   if (control !== "text") return typed || text.split(/\r?\n/).some((l) => l.trim() === span.trim() || derivesSpan(l, span));
-  return text.includes(span) || typed;
+  return joined.includes(norm(span)) || typed;
+}
+
+/** G2 review: what a recheck holds a value's source to (FillField.basis): its source texts, their derivation, their sentences. */
+export interface SourceBasis {
+  sentences?: readonly string[];
+  from?: readonly string[];
+  how?: string;
 }
 
 /** Why one field of a proposal can no longer be filled as shown: `log` names keys for the log, `says` is the user's sentence. */
@@ -329,7 +349,7 @@ export function provenanceStale(model: ScreenModel, w: WindowState, f: GroundedF
     const now = about(id.memoryId);
     if (now === null || identityKey(id.kind, now.value) !== id.key) return { log: `memory entry ${id.memoryId} is no longer this identity`, says: "what you told Caret about yourself changed" };
   }
-  return sourceHolds(sw, key, f.span, f.context, f.control, f.basis?.sentences) ? null : { log: `the source ${key} changed`, says: "where Caret read its value changed" };
+  return sourceHolds(sw, key, f.span, f.context, f.control, f.basis) ? null : { log: `the source ${key} changed`, says: "where Caret read its value changed" };
 }
 
 /**
