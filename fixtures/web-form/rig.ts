@@ -389,15 +389,20 @@ export function groupStop(proc: ChildProcess): () => Promise<void> {
     if (count.unknown.length > 0) say(`Chrome's process group id ${pid} lists ${JSON.stringify(count.unknown)}, whose environment cannot be read; not signalled`);
     if (count.foreign.length > 0) say(`Chrome's process group id ${pid} also lists ${JSON.stringify(count.foreign)} without this launch's marker; not signalled`);
   };
+  /** Polls until nothing of the launch's is left or `ms` have passed (by the clock: each poll runs `ps`). */
+  const settle = async (ms: number): Promise<void> => {
+    const until = Date.now() + ms;
+    while (!empty() && Date.now() < until) await sleep(100);
+  };
   return async () => {
     if (gone) return;
     if (!empty()) {
       pass("SIGTERM");
-      for (let i = 0; i < 50 && !empty(); i++) await sleep(100);
+      await settle(5000);
     }
     if (!gone) {
       pass("SIGKILL");
-      for (let i = 0; i < 50 && !empty(); i++) await sleep(100);
+      await settle(5000);
       if (!gone) say(`Chrome's process group ${pid} still has members of this launch, or unreadable ones, after SIGKILL`);
     }
     report();

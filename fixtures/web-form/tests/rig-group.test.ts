@@ -33,7 +33,7 @@ function inChild(body: string, env: Record<string, string>): Record<string, unkn
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "caret-rig-group-")));
   // Stands in for Chrome: says it started, and what arrives on the DevTools request pipe (fd 3) goes back on fd 4.
-  script("fake-chrome", `#!/bin/sh\ntouch "$(dirname "$0")/started"\nIFS= read -r line <&3\necho "echo:$line" >&4\nwhile :; do sleep 1; done\n`);
+  script("fake-chrome", `#!/bin/sh\necho $$ > "$(dirname "$0")/chrome.pid"\ntouch "$(dirname "$0")/started"\nIFS= read -r line <&3\necho "echo:$line" >&4\nwhile :; do sleep 1; done\n`);
   script("register", `#!/bin/sh\nd=$(dirname "$0")\nif [ -e "$d/started" ]; then echo "$1 $2 AFTER-START" >> "$d/register.log"; else echo "$1 $2 before-start" >> "$d/register.log"; fi\n`);
   // pgrep, except that once "reused" exists it reports a member for any group: the id now names another group. The
   // member is the pid written in "reused", or 99999 when it is empty.
@@ -41,19 +41,20 @@ beforeEach(() => {
   // Stands in for a Chrome that exits by itself and leaves two processes in its group: a helper that inherited its
   // environment, and one started without the launch's marker.
   // Each child writes its pid itself, already running with its final environment, and the script waits for both.
-  script("fake-chrome-exits", `#!/bin/sh\nd=$(dirname "$0")\nsh -c 'echo $$ > "$0/helper.pid.tmp"; mv "$0/helper.pid.tmp" "$0/helper.pid"; exec sleep 600' "$d" &\nenv -u CARET_RIG_CHROME_OWNER sh -c 'echo $$ > "$0/foreign.pid.tmp"; mv "$0/foreign.pid.tmp" "$0/foreign.pid"; exec sleep 600' "$d" &\nwhile [ ! -e "$d/helper.pid" ] || [ ! -e "$d/foreign.pid" ]; do sleep 0.05; done\ntouch "$d/started"\nexit 0\n`);
+  script("fake-chrome-exits", `#!/bin/sh\nd=$(dirname "$0")\necho $$ > "$d/chrome.pid"\nsh -c 'echo $$ > "$0/helper.pid.tmp"; mv "$0/helper.pid.tmp" "$0/helper.pid"; exec sleep 600' "$d" &\nenv -u CARET_RIG_CHROME_OWNER sh -c 'echo $$ > "$0/foreign.pid.tmp"; mv "$0/foreign.pid.tmp" "$0/foreign.pid"; exec sleep 600' "$d" &\nwhile [ ! -e "$d/helper.pid" ] || [ ! -e "$d/foreign.pid" ]; do sleep 0.05; done\ntouch "$d/started"\nexit 0\n`);
   // ps, except that while "ps-fails" exists it fails as if it could not read anything (status 2, not 1: not "gone").
   script("ps", `#!/bin/sh\n[ -e "$(dirname "$0")/ps-fails" ] && { echo "ps: cannot read" >&2; exit 2; }\nexec /bin/ps "$@"\n`);
 });
 
 afterEach(() => {
-  // Teardown that does not depend on groupStop: the fakes' sleepers, by the exact pid each recorded, if still sleep.
-  for (const name of ["helper.pid", "foreign.pid", "stranger.pid"]) {
+  // Teardown that does not depend on groupStop: each process a fake recorded, by its exact pid, only while its command
+  // is still the one recorded (the sleepers, and the fake Chrome, whose whole group goes with it as its live leader).
+  for (const [name, command, group] of [["helper.pid", "sleep", false], ["foreign.pid", "sleep", false], ["stranger.pid", "sleep", false], ["chrome.pid", "fake-chrome", true]] as const) {
     const file = join(dir, name);
     if (!existsSync(file)) continue;
     const pid = Number(readFileSync(file, "utf8"));
     try {
-      if (execFileSync("/bin/ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8" }).trim().endsWith("sleep")) process.kill(pid, "SIGKILL");
+      if (execFileSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).includes(command)) process.kill(group ? -pid : pid, "SIGKILL");
     } catch {
       /* already gone */
     }
