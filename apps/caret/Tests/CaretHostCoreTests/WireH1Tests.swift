@@ -78,6 +78,27 @@ final class WireH1Tests: XCTestCase {
         guard case .offer = select(changed: ["mem-other"]) else { return XCTFail("another entry's change leaves it offered") }
     }
 
+    /// Review H1-1: the offer is already up when the user edits the identity entry the window's value rests on.
+    func testAShownValueRestingOnAnIdentityGoesDownWhenItsEntryChanges() {
+        let entry = "about-own-email"
+        let rig = FillRig()
+        rig.world.front(.email)
+        rig.propose(FillFx.proposal(identity: [.email: entry]))
+        XCTAssertEqual(rig.takeLog(), ["watch 5150", "offer \(FillFx.email) \(FillFx.caption) showLine"])
+        XCTAssertEqual(rig.arbiter.snapshot().current?.kind.fillOrigin?.identityMemoryID, entry)
+        let shownID = rig.machine.shownOfferID
+        rig.clock.advance(by: 1)
+        rig.machine.memoryChanged(id: "about-name")
+        XCTAssertEqual(rig.takeLog(), [], "another entry's change leaves it up")
+        XCTAssertEqual(rig.arbiter.snapshot().current?.id, shownID)
+        rig.machine.memoryChanged(id: entry)
+        XCTAssertEqual(rig.takeLog(), ["hide offer"])
+        XCTAssertNil(rig.arbiter.snapshot().current, "Tab passes through once the value is gone")
+        XCTAssertEqual(rig.machine.status.lastSkip, "memoryChanged")
+        rig.machine.fieldChanged(pid: Fx.app, at: 3)
+        XCTAssertNil(rig.arbiter.snapshot().current, "the held proposal is not offered from the changed identity again")
+    }
+
     func testTheNewWithheldReasonsOfferNothing() throws {
         let p = try identityProposal()
         let frame = Frame(x: 10, y: 10, width: 200, height: 24)
@@ -155,8 +176,10 @@ final class WireH1Tests: XCTestCase {
         let panel = PageTaskPanel(task: task, stoppable: false)
         let rows = panel.sections[0].lines
         XCTAssertEqual(rows.filter { $0.kind == .withheld }.map(\.text), sentences)
+        let field = try XCTUnwrap(rows.firstIndex { $0.kind == .field && $0.label == "Full name" && $0.text == "Robin Vale" }, "the write's field row")
         let firstWithheld = try XCTUnwrap(rows.firstIndex { $0.kind == .withheld })
-        XCTAssertTrue(rows[..<firstWithheld].allSatisfy { $0.kind != .withheld }, "withheld rows come after the fields")
+        XCTAssertLessThan(field, firstWithheld, "withheld rows come after the fields")
+        XCTAssertEqual(rows.count - firstWithheld, sentences.count, "and are the panel's last rows")
         XCTAssertTrue(rows[firstWithheld...].allSatisfy { $0.kind == .withheld && $0.state == nil && $0.label == nil })
         for s in sentences { XCTAssertTrue(panel.spoken.contains(s), "VoiceOver reads \(s)") }
     }

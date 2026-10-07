@@ -326,7 +326,8 @@ public final class FillMachine {
     }
 
     /// The user edited, paused or forgot a memory entry (`MemoryBook.onEntryChanged`). A value from
-    /// it that is up is taken down, and no proposal that came before is offered from it again.
+    /// it, or resting on it as the user's identity (H1), that is up is taken down, and no proposal that
+    /// came before is offered from it again.
     public func memoryChanged(id: String) {
         let now = clock.now
         memoryChangedAt = memoryChangedAt.filter { now.timeIntervalSince($0.value) <= Self.proposalMaxAge }
@@ -334,7 +335,7 @@ public final class FillMachine {
         // Only the offer on screen needs taking down now; a held proposal is skipped when it is
         // next evaluated. Evaluating another app here could withdraw an unrelated offer.
         guard let shownOfferID, let current = arbiter.snapshot().current, current.id == shownOfferID,
-              current.kind.fillOrigin?.memoryID == id else { return }
+              current.kind.fillOrigin?.restsOn(memory: id) == true else { return }
         evaluate(pid: current.target.pid, trigger: .other)
     }
 

@@ -44,6 +44,9 @@ public struct FillOrigin: Equatable, Sendable {
     /// proposal gives a value it can write, in one transaction (D2-04). True when the proposal has
     /// at least two (`FillSelection.fillAllWrites`); while false, Command-1 keeps the app's meaning.
     public var fillAll = false
+    /// G2, H1: the memory entry a window's value rests on because it is exactly the user's own identity there
+    /// (`FillField.basis.identity`). Editing, pausing or forgetting it takes the offer down, as for a value from memory.
+    public var identityMemoryID: String?
 
     public init(proposalID: String, windowID: String, fieldKey: String, source: Source, proposedAtMs: Int64) {
         self.proposalID = proposalID
@@ -101,6 +104,9 @@ public struct FillOrigin: Equatable, Sendable {
         if case .memory(let id) = source { return id }
         return nil
     }
+
+    /// The value came from memory entry `id`, or rests on it as the user's identity.
+    public func restsOn(memory id: String) -> Bool { memoryID == id || identityMemoryID == id }
 }
 
 public enum OfferKind: Equatable, Sendable {
@@ -226,6 +232,7 @@ public enum FillSelection {
         }
         var origin = FillOrigin(proposalID: proposal.id, windowID: proposal.windowId, fieldKey: field.key, source: from, proposedAtMs: proposal.at)
         origin.fillAll = fillAllWrites(proposal) >= minFillAll
+        origin.identityMemoryID = field.basis?.identity?.memoryId
         return .offer(field: field, origin: origin)
     }
 

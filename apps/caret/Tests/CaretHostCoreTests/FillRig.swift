@@ -102,9 +102,9 @@ enum FillFx {
 
     static func proposal(
         id: String = "fill-1", email: String? = FillFx.email, phone: String? = FillFx.phone, at: Int64 = 1_790_000_000_500,
-        fromMemory: [Fx.Element: String] = [:]
+        fromMemory: [Fx.Element: String] = [:], identity: [Fx.Element: String] = [:]
     ) -> FillProposal {
-        let json = line(id: id, email: email, phone: phone, at: at, fromMemory: fromMemory)
+        let json = line(id: id, email: email, phone: phone, at: at, fromMemory: fromMemory, identity: identity)
         guard case .fillProposal(let proposal) = try! HelperInbound.decode(Data(json.utf8)) else { fatalError("not a proposal") }
         return proposal
     }
@@ -114,10 +114,11 @@ enum FillFx {
         proposal(id: id, fromMemory: [.email: emailEntry])
     }
 
-    /// `fromMemory`: the fields whose value comes from an About entry (its id) rather than a window.
+    /// `fromMemory`: the fields whose value comes from an About entry (its id) rather than a window. `identity` (H1): the
+    /// window values that rest on an entry (its id) as the user's own email (`FillField.basis.identity`).
     static func line(
         id: String = "fill-1", email: String? = FillFx.email, phone: String? = FillFx.phone, at: Int64 = 1_790_000_000_500,
-        fromMemory: [Fx.Element: String] = [:]
+        fromMemory: [Fx.Element: String] = [:], identity: [Fx.Element: String] = [:]
     ) -> String {
         func field(_ element: Fx.Element, _ value: String?) -> String {
             let f = element.frame
@@ -126,7 +127,8 @@ enum FillFx {
             let memory = value.flatMap { _ in entry.map { #"{"id":"\#($0)","label":"Email","says":"what you told Caret"}"# } } ?? "null"
             let v = value.map { "\"\($0)\"" } ?? "null"
             let asks = #"{"choice":"\#(value == nil ? "none" : "c1")","confidence":0.9,"value":\#(v)}"#
-            return #"{"key":"k:\#(element.rawValue)","frame":[\#(f.minX),\#(f.minY),\#(f.width),\#(f.height)],"descriptor":"d","choice":"\#(value == nil ? "none" : "c1")","confidence":0.9,"value":\#(v),"source":\#(source),"memory":\#(memory),"withheld":null,"asks":[\#(asks),\#(asks)]}"#
+            let basis = identity[element].map { #","basis":{"identity":{"memoryId":"\#($0)","kind":"email","key":"\#(value ?? "")"}}"# } ?? ""
+            return #"{"key":"k:\#(element.rawValue)","frame":[\#(f.minX),\#(f.minY),\#(f.width),\#(f.height)],"descriptor":"d","choice":"\#(value == nil ? "none" : "c1")","confidence":0.9,"value":\#(v),"source":\#(source),"memory":\#(memory),"withheld":null,"asks":[\#(asks),\#(asks)]\#(basis)}"#
         }
         return #"{"type":"fillProposal","v":1,"id":"\#(id)","at":\#(at),"pid":5150,"windowId":"5150-1","bundleId":"dev.caret.fixture","triggerKey":"k:email","fields":[\#(field(.email, email)),\#(field(.phone, phone))],"candidates":4,"jev":{"model":"m","latencyMs":1,"inputTokens":1,"costUsd":0},"cutoff":0.75}"#
     }
