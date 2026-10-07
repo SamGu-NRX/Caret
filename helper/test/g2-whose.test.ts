@@ -12,7 +12,7 @@ import { sourceHolds, writtenFields } from "../src/offers/fill-popup.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot } from "../src/protocol.ts";
 import { field, jevPickingText, snap } from "./builders.ts";
 import { identitiesOf, identityOf } from "../src/fill/whose.ts";
-import { partAround } from "../src/fill/line-values.ts";
+import { partAround, sentenceDigests } from "../src/fill/line-values.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { SnippetLedger } from "../src/privacy.ts";
 
@@ -68,15 +68,17 @@ describe("Greenhouse task page: the Location step's source check (G1 fix 1, froz
     expect(f?.handoff?.context).toBeUndefined();
     const g = writtenFields(p).fields.find((x) => x.key === keyOf(location));
     expect(g).toMatchObject({ span: "Portland", context: null, control: "combobox" });
-    // G2 review: the sentence Jev read the span with (it warns, "not Oregon", so it went whole) rides with the value.
+    // G2 review: the sentence Jev read the span with (it warns, "not Oregon", so it went whole) rides with the value, and
+    // digests of the sentences that held it.
     expect(g?.basis?.clause).toBe(SENTENCE);
+    expect(g?.basis?.sentences).toEqual(sentenceDigests(note, "Portland"));
   });
 
   const SENTENCE = "I live in Portland, Maine, not Oregon. Recruiters keep mixing that up.";
   it("finds the note, unchanged, still gives that city: fill derived it from the line's span, and so does the check", () => {
     const sw = pageModel([location], note).windows.get("w4-note")!;
     // Failed before G2: the check derived a city only from the whole line, which is a sentence, not a place.
-    expect(sourceHolds(sw, NOTE_KEY, "Portland", null, "combobox", SENTENCE)).toBe(true);
+    expect(sourceHolds(sw, NOTE_KEY, "Portland", null, "combobox", sentenceDigests(note, "Portland"))).toBe(true);
   });
 
   it("still refuses a line that no longer gives the city, a line that gained a label, and a sentence with no place", () => {

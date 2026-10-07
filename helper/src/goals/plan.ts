@@ -79,6 +79,8 @@ export interface ValueBinding {
     memoryLabel?: string;
     /** G2: the source words Jev read the value with (FillField.basis.clause), which the source must still show. */
     clause?: string;
+    /** G2 review: digests of the source sentences that held the value (FillField.basis.sentences), taken again before a write. */
+    sentences?: readonly string[];
     /** G2: the memory identity that made the value the user's (FillField.basis.identity), which must still hold. */
     identity?: { memoryId: string; kind: "email" | "phone" | "name"; key: string };
   };

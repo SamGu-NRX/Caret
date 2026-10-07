@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { proposeFill } from "../src/fill/fill.ts";
+import { memoryWrites, proposeFill } from "../src/fill/fill.ts";
 import type { AboutValue } from "../src/fill/about.ts";
 import { aboutKind } from "../src/fill/about.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
@@ -15,8 +15,13 @@ import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { buildFillPopup, fillPlan, recheckFill, sourceHolds, writtenFields } from "../src/offers/fill-popup.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
+import { assertNoSecrets, SecretInRequest } from "../src/privacy.ts";
+import { sentenceDigests } from "../src/fill/line-values.ts";
+import { buildDesk, loadCorpus } from "../scripts/realfill-corpus.ts";
 
-const TASKS = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "fixtures", "web-form", "tasks", "expect");
+const HELPER = join(fileURLToPath(new URL(".", import.meta.url)), "..");
+const REALFILL = join(HELPER, "..", "fixtures", "realfill");
+const TASKS = join(HELPER, "..", "fixtures", "web-form", "tasks", "expect");
 type Mail = { from: string; to: string; subject: string; body: string };
 const expectation = (page: string): { sources: { note: string; email: Mail; memory: { key: string; value: string }[] } } => JSON.parse(readFileSync(join(TASKS, `${page}.json`), "utf8"));
 const memoryOf = (page: string): AboutValue[] =>
@@ -253,16 +258,16 @@ describe("G2 review findings", () => {
     }
   });
 
-  it("2: a clause that holds a secret is not sent; the span goes alone", async () => {
+  it("2: a line that holds a secret contributes nothing to a request, not even its email", async () => {
     const email = control("e1", "Email");
     // Short enough to go out whole as a "Label: value" span, as the review's repro is.
-    const line = "Email: robin@example.test password: hunter2 for the staging service";
-    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
-    await proposeFill(desk([email], [noteWindow(`Notes\n${line}`)]), ask, WIN, keyOf(email), 2000);
-    const sent = requests.flatMap((r) => Object.values(r.questions).flatMap((q) => [String(q.instructions), ...Object.values(q.criteria).map(String)]));
-    expect(sent.some((t) => t.includes('"robin@example.test" ('))).toBe(true);
-    expect(sent.filter((t) => t.includes("hunter2"))).toEqual([]);
-    expect(requests.flatMap((r) => r.snippets.map((x) => x.text)).filter((t) => t.includes("hunter2"))).toEqual([]);
+    for (const line of ["Email: robin@example.test password: hunter2 for the staging service", "Email: robin@example.test password: secret@example.test"]) {
+      const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+      await proposeFill(desk([email], [noteWindow(`Notes\n${line}\nName: Robin Vale`)]), ask, WIN, keyOf(email), 2000);
+      const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.snippets]));
+      for (const t of ["hunter2", "secret@example.test", "robin@example.test", "password"]) expect(sent, `${line}: ${t}`).not.toContain(t);
+      expect(sent).toContain("Robin Vale");
+    }
   });
 
   it("3: a value that is the user's identity keeps its memory entry: the recheck, the pop-up's ref and the write all name it", async () => {
@@ -315,11 +320,165 @@ describe("G2 review findings", () => {
   it("7: a source sentence that changed around a kept span no longer gives it", () => {
     const sw = (text: string) => desk([control("e1", "City")], [noteWindow(text)]).windows.get("w4-note")!;
     const KEY = "com.apple.TextEdit/standard/textarea:~0";
-    const was = "I live in Portland, Maine, not Oregon.";
-    expect(sourceHolds(sw(`${was} Recruiters keep mixing that up.`), KEY, "Portland", null, "combobox", was)).toBe(true);
-    expect(sourceHolds(sw("I no longer live in Portland, Maine, not Oregon."), KEY, "Portland", null, "combobox", was)).toBe(false);
-    // Read with no clause: a sentence that now warns about the span no longer gives it.
-    expect(sourceHolds(sw("Mobile 555-0164."), KEY, "555-0164", null, "text")).toBe(true);
-    expect(sourceHolds(sw("Mobile 555-0164 is my old number."), KEY, "555-0164", null, "text")).toBe(false);
+    const was = "I live in Portland, Maine, not Oregon. Recruiters keep mixing that up.";
+    const read = sentenceDigests(was, "Portland");
+    expect(sourceHolds(sw(was), KEY, "Portland", null, "combobox", read)).toBe(true);
+    expect(sourceHolds(sw("I no longer live in Portland, Maine, not Oregon. Recruiters keep mixing that up."), KEY, "Portland", null, "combobox", read)).toBe(false);
+  });
+});
+
+describe("G2 review round 2: one disclosure rule", () => {
+  const forty = expectation("forty").sources;
+
+  it("1: a source field whose label states a secret gives no context", async () => {
+    const name = control("e1", "Full name");
+    // An editable field in another app, labelled with a stated password, holding a name (its label is its context).
+    const field = { type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 900, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 500, 300] }, focused: true, root: null, nodes: [{ key: "other/standard/textfield:~0", parent: null, role: "AXTextField", value: "Robin Vale", editable: true, label: "My password is hunter2" }], values: [], focusedKey: null, stats: { walkMs: 0, visited: 1, truncated: false } } as Snapshot;
+    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+    await proposeFill(desk([name], [field]), ask, WIN, keyOf(name), 2000);
+    const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.snippets]));
+    expect(sent).toContain("Robin Vale");
+    expect(sent).not.toContain("hunter2");
+  });
+
+  it("1: a value the anchor moves to the note the user just left never takes a block head that states a secret", async () => {
+    const name = control("e1", "Full name");
+    // The mail is read first (a conversation's names go before other windows' lines), then the note the user just left
+    // labels the same name, and the anchor moves its description there (fill.ts labelledCandidate).
+    const mail = { ...forty.email, from: "Robin Vale <robin.vale@example.test>", to: "Jo Abernathy-Cole <jo.abernathycole@example.com>", body: "Hi Jo,\nRobin Vale here, as promised.\nRobin" };
+    const note = noteWindow("Password: hunter2\nName: Robin Vale");
+    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+    await proposeFill(desk([name], [mailWindow(mail), note]), ask, WIN, keyOf(name), 2000);
+    const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.snippets]));
+    expect(sent).toContain("Robin Vale");
+    expect(sent).not.toContain("hunter2");
+  });
+
+  it("b: a request that still carries a secret marker is refused where it is built, loudly and without the text", () => {
+    const req = { state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field.", criteria: { c1: `"Robin" (in a block that starts 'Password: hunter2')`, none: "None." } } } };
+    expect(() => assertNoSecrets(req)).toThrow(SecretInRequest);
+    expect(() => assertNoSecrets(req)).toThrow(/questions\.f1\.criteria\.c1/u);
+    try {
+      assertNoSecrets(req);
+    } catch (e) {
+      expect(String(e)).not.toContain("hunter2");
+    }
+    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field: 'Password'.", criteria: { none: "None." } } } })).not.toThrow();
+  });
+
+  it("c: over every task page and corpus form, no request carries a secret line added to its sources", async () => {
+    const SECRETS = ["Password: hunter2", "PIN: 7319", "my password is violet-orchard-seven", "Card: 4111 1111 1111 1111", "Email: robin@example.test password: secret@example.test"];
+    const LEAKS = ["hunter2", "7319", "violet-orchard-seven", "4111", "secret@example.test"];
+    const pages = ["wizard-1", "wizard-2", "reveal", "forty", "greenhouse", "ashby"];
+    for (const page of pages) {
+      const e = expectation(page).sources;
+      const fields = [control("e1", "Email"), control("e2", "Full name"), control("e3", "Phone"), control("e4", "Start date"), control("e5", "Notes", "textarea")];
+      for (let k = 0; k < SECRETS.length; k++) {
+        const lines = e.note.split("\n");
+        lines.splice(1 + k, 0, SECRETS[k] as string);
+        const mail = { ...e.email, body: `${e.email.body}\n${SECRETS[(k + 1) % SECRETS.length]}` };
+        const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+        await proposeFill(desk(fields, [mailWindow(mail), noteWindow(lines.join("\n"))]), ask, WIN, keyOf(fields[0] as PageControl), 2000, { about: memoryOf(page) });
+        const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.nouls ?? {}, r.snippets]));
+        for (const t of LEAKS) expect(sent, `${page} #${k}: ${t}`).not.toContain(t);
+      }
+    }
+    // The corpus's 14 forms, each with its recorded source and decoys, and a note of the same secret lines beside them.
+    const corpus = loadCorpus(REALFILL);
+    const snaps = readFileSync(join(HELPER, "fixtures", "recorded", "realfill-windows.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Snapshot);
+    for (const form of corpus.forms) {
+      const d = buildDesk(corpus, snaps, form);
+      const secretNote = { ...noteWindow(SECRETS.join("\n")), at: 999_999, window: { windowId: "secret-note", kind: "standard", title: "Accounts.txt", frame: [0, 0, 700, 500] as [number, number, number, number] } };
+      d.model.apply(secretNote);
+      const trigger = [...d.form.nodes.values()].find((n) => n.editable === true && n.role === "AXTextField" && (n.value ?? "") === "")?.key;
+      if (trigger === undefined) continue;
+      const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+      try {
+        await proposeFill(d.model, ask, d.form.window.windowId, trigger, 1_800_000_001_000, { about: d.about });
+      } catch (err) {
+        if (!(err instanceof Error && "why" in err)) throw err;
+      }
+      const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.nouls ?? {}, r.snippets]));
+      for (const t of LEAKS) expect(sent, `${form.id}: ${t}`).not.toContain(t);
+    }
+  }, 60_000);
+});
+
+describe("G2 review round 2: provenance", () => {
+  const forty = expectation("forty").sources;
+  const KEY = "com.apple.TextEdit/standard/textarea:~0";
+  const sw = (text: string) => desk([control("e1", "Phone")], [noteWindow(text)]).windows.get("w4-note")!;
+
+  it("3: a named-person Ask puts that person's email in a scoped 'Your email', and only with both asks saying it is theirs", async () => {
+    const email = control("e1", "Your email");
+    // The one email on screen is his, so no other rule (oneOfSeveral, personHasSeveral) has a say.
+    const m = desk([email], [noteWindow("Marcus Cole\nmarcus.cole@example.net")]);
+    const run = async (owner: (t: string) => Answer, person: string | null): Promise<string | null> => {
+      const { ask } = scripted({ "Your email": "marcus.cole@example.net" }, (t) => owner(t));
+      const scope = { fields: [keyOf(email)], windows: null, memory: true, instruction: person === null ? "fill my email" : "use Marcus's details", person, literals: new Map() };
+      return written(await proposeFill(m, ask, WIN, keyOf(email), 2000, { scope }), keyOf(email));
+    };
+    // Only his email itself is his: the whole emergency-contact line would be a second email of his, which the Ask must
+    // tell apart from the field's own words (fill.ts personHasSeveral).
+    expect(await run((t) => ({ choice: t === "marcus.cole@example.net" ? "person" : "other", confidence: 0.95 }), "Marcus")).toBe("marcus.cole@example.net");
+    expect(await run(() => ({ choice: "unclear", confidence: 0.95 }), "Marcus")).toBeNull();
+    // Outside a named-person Ask the user-owner rule stands.
+    expect(await run(() => ({ choice: "other", confidence: 0.95 }), null)).toBeNull();
+  });
+
+  it("4: a first and last name split from the user's full name name the entry and part in every execution step", async () => {
+    const first = control("e1", "First Name");
+    const last = control("e2", "Last Name");
+    const g = expectation("greenhouse").sources;
+    const about = [{ id: "about-name", label: "full name", value: "Dmitri Halvorsen", kind: "name" as const }];
+    const { ask } = scripted({ "First Name": "Dmitri", "Last Name": "Halvorsen" }, () => ({ choice: "unclear", confidence: 0.5 }));
+    const m = desk([first, last], [mailWindow(g.email), noteWindow(g.note)]);
+    const p = await proposeFill(m, ask, WIN, keyOf(first), 2000, { about });
+    const steps = fillPlan(m, writtenFields(p)).plan.steps;
+    expect(steps.map((s) => (s as { memory?: string }).memory)).toEqual(["about-name#first~identity", "about-name#last~identity"]);
+    expect(memoryWrites("Dmitri Halvorsen", "first", "Dmitri", "identity")).toBe(true);
+    expect(memoryWrites("Dima Halvorsen", "first", "Dmitri", "identity")).toBe(false);
+  });
+
+  /** Whether `now` still gives `span` as fill read it from `was` (the digests fill records, then sourceHolds). */
+  const holds = (was: string, now: string, span: string): boolean => sourceHolds(sw(now), KEY, span, null, "text", sentenceDigests(was, span));
+
+  it("6: a new warning in the value's sentence, or a new sentence that holds it, refuses it", () => {
+    const was = "Mobile 555-0164 (no landline anymore).";
+    expect(holds(was, was, "555-0164")).toBe(true);
+    expect(holds(was, "Mobile 555-0164 is my old number.", "555-0164")).toBe(false);
+    expect(holds(was, "Do not use: 555-0164", "555-0164")).toBe(false);
+    expect(holds(was, `${was}\nDo not use: 555-0164`, "555-0164")).toBe(false);
+    const ref = "Put me down as Elena Varga; the best way to reach me is my cell, 555-0139, or this email.";
+    expect(holds(ref, ref.replace("or this email.", "but not after May."), "555-0139")).toBe(false);
+  });
+
+  it("7: an unchanged value passes: a wrapped sentence, double spaces, a multiline address, a 'but' or its own label", () => {
+    for (const [was, span] of [
+      ["Orientation for new volunteers is Sunday,\nOctober 18, 2026, so start then.", "October 18, 2026"],
+      ["Mobile  555-0164 (no landline anymore).", "555-0164"],
+      ["2210 Willow Bend Drive\nApt 5B\nPortland, Oregon 97214", "Apt 5B"],
+      ["Previous name: Ana Ruiz", "Ana Ruiz"],
+      ["Name: Josephine Abernathy-Cole, but everyone calls me Jo.", "Josephine"],
+      ["Work authorization: authorized to work in the United States. I do not need visa sponsorship.\nLocation: Oakland, California, United States", "United States"],
+    ] as const) {
+      expect(holds(was, was, span), was).toBe(true);
+      // The same text as the reader reads it again with its line breaks and spacing changed reads the same.
+      expect(holds(was, was.replace(/\n/gu, "\n  ").replace(/ {2}/gu, " "), span), was).toBe(true);
+    }
+  });
+
+  it("8: a pop-up names the identity entry of every row, past 'and N more' too", async () => {
+    const fields = ["Phone", "City", "ZIP code", "Apartment", "Street", "Mobile phone", "Email"].map((n, i) => control(`e${i + 1}`, n));
+    const about = memoryOf("forty");
+    const entry = about.find((a) => a.value === "jo.abernathycole@example.com") as AboutValue;
+    const pick: Record<string, string> = { Phone: "555-0164", City: "Portland", "ZIP code": "97214", Apartment: "Apt 5B", Street: "2210 Willow Bend Drive", "Mobile phone": "555-0164", Email: "jo.abernathycole@example.com" };
+    const { ask } = scripted(pick, () => ({ choice: "user", confidence: 0.95 }));
+    const m = desk(fields, [mailWindow(forty.email), noteWindow(forty.note)]);
+    const p = await proposeFill(m, ask, WIN, keyOf(fields[0] as PageControl), 2000, { about });
+    const g = writtenFields(p);
+    expect(g.fields.length).toBeGreaterThan(5);
+    const popup = JSON.stringify(buildFillPopup(m, g));
+    expect(popup).toContain(`{"memory":"${entry.id}"}`);
   });
 });

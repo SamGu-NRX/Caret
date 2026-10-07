@@ -8,6 +8,7 @@
 import type { WindowState } from "./model.ts";
 import type { Node } from "./protocol.ts";
 import { isConversation } from "./conversation.ts";
+import { holdsSecret } from "./fill/line-values.ts";
 
 /**
  * Distinct characters of one window's text that one request may carry. The bound comes from the
@@ -738,4 +739,29 @@ export class SnippetLedger {
   chars(windowId: string): number {
     return this.entries.get(windowId)?.chars ?? 0;
   }
+}
+
+/** G2 review: a request that would carry a secret marker (assertNoSecrets). */
+export class SecretInRequest extends Error {}
+
+/**
+ * G2 review: the one disclosure rule every request meets before it is sent: no text in its state, questions or yes/no
+ * questions holds a secret marker (fill/line-values.ts holdsSecret), neither a whole string nor any text quoted inside
+ * one (a candidate's description quotes its label, line and block head as 'text'). The candidate generator, fill and the
+ * planner drop such lines and labels where they read them; this is the guarantee behind those filters, so a text one of
+ * them misses stops the request loudly instead of reaching Jev. Throws SecretInRequest naming the question, never the
+ * text.
+ */
+export function assertNoSecrets(req: { state: unknown; questions: Record<string, unknown>; nouls?: Record<string, unknown> }): void {
+  const check = (where: string, v: unknown): void => {
+    if (typeof v === "string") {
+      if (holdsSecret(v) || [...v.matchAll(/'([^']{2,})'|"([^"]{2,})"/gu)].some((m) => holdsSecret(m[1] ?? m[2]))) throw new SecretInRequest(`a Jev request's ${where} holds a secret marker; it was not sent`);
+      return;
+    }
+    if (Array.isArray(v)) v.forEach((x, i) => check(`${where}[${i}]`, x));
+    else if (typeof v === "object" && v !== null) for (const [k, x] of Object.entries(v)) check(`${where}.${k}`, x);
+  };
+  check("state", req.state);
+  check("questions", req.questions);
+  check("nouls", req.nouls ?? {});
 }

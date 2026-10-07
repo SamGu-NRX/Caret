@@ -1508,8 +1508,14 @@ export const FillField = z.object({
    */
   basis: z
     .object({
-      identity: z.object({ memoryId: z.string().min(1), kind: z.enum(["email", "phone", "name"]), key: z.string().min(1) }).optional(),
+      // `part`: the value is that part of the identity (a first or last name split from a full name), as FillMemory.part.
+      identity: z.object({ memoryId: z.string().min(1), kind: z.enum(["email", "phone", "name"]), key: z.string().min(1), part: z.enum(["first", "middle", "last"]).optional() }).optional(),
       clause: z.string().min(1).optional(),
+      /**
+       * G2 review: a digest of each sentence of the source node that held the value when it was proposed (fill/line-
+       * values.ts sentenceDigests), which the recheck takes again: a changed or new sentence around the value refuses it.
+       */
+      sentences: z.array(z.string().min(1)).optional(),
     })
     .optional(),
 })

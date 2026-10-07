@@ -11,8 +11,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { AboutValue } from "../fill/about.ts";
 import type { AskJev } from "../fill/jev.ts";
-import { conversionOf, FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
-import { identityKey } from "../fill/whose.ts";
+import { conversionOf, FILLABLE_ROLES, FillError, identityRefOf, MAX_FIELDS, memoryRefOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { isAnswerField } from "../fill/answers.ts";
@@ -396,10 +395,10 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
             ? { kind: "derived", inputs: [], resolver: "fill/when", version: RESOLVER_VERSION, parametersDigest: shortDigest(f.span) }
             : { kind: "span", snapshot: "s1", source: f.source?.windowId ?? "instruction", startUTF16: 0, endUTF16: f.span.length, digest: shortDigest(f.span) },
       source: f.source === null || src === undefined ? null : { windowId: f.source.windowId, key: f.source.nodeKey, revision: windowRevision(src) },
-      // G2: a window's value that is exactly the user's identity names its entry too (FillField.basis), so the write is
-      // checked against the entry again (executor memoryHolds, conversion "identity"); a part split from one is checked
-      // before each segment instead (runs.ts precheck, fill.identity).
-      memory: f.memory !== null ? memoryRefOf(f.memory, conversionOf(f.control)) : f.basis?.identity !== undefined && identityKey(f.basis.identity.kind, f.span) === f.basis.identity.key ? memoryRefOf({ id: f.basis.identity.memoryId }, "identity") : null,
+      // G2: a window's value that is the user's identity, or a part split from one, names its entry too (fill.ts
+      // identityRefOf), so the write is checked against the entry again (executor memoryHolds, conversion "identity"),
+      // and before each segment (runs.ts precheck, fill.identity).
+      memory: f.memory !== null ? memoryRefOf(f.memory, conversionOf(f.control)) : identityRefOf(f, f.value),
       event: null,
       draft: null,
       owner: f.memory !== null || f.basis?.identity !== undefined ? "user" : null,
@@ -409,6 +408,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
         control: f.control,
         ...(f.memory === null ? {} : { memoryLabel: f.memory.label }),
         ...(f.basis?.clause === undefined ? {} : { clause: f.basis.clause }),
+        ...(f.basis?.sentences === undefined ? {} : { sentences: f.basis.sentences }),
         ...(f.basis?.identity === undefined ? {} : { identity: f.basis.identity }),
       },
     };

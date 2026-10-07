@@ -13,7 +13,7 @@ import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillFi
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, PLACEMENT_SAYS, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
-import { SnippetLedger, type Declared } from "../privacy.ts";
+import { assertNoSecrets, SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
@@ -21,6 +21,7 @@ import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, in
 import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { takesOneValue, writeMisfit } from "./writable.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
+import { holdsSecret, sentenceDigests } from "./line-values.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -486,6 +487,9 @@ export function buildFillRequest(
     ...(declared.consented === undefined ? {} : { consented: declared.consented }),
     ...(Object.keys(subjects).length === 0 ? {} : { subjects }),
   };
+  // G2 review: fill's requests meet the one disclosure rule as they are built, so a test or a canned engine sees a miss
+  // too (privacy.ts assertNoSecrets; the Jev client checks every request again before it is sent).
+  assertNoSecrets(req);
   // A staged request (B24) carries only some of the asked text: it declares only the snippets it sends, as the
   // planner's requests do (privacy.test.ts fails a request that declares text it does not send). The ledger
   // still charged their windows for all of them, which errs on the side of saying less.
@@ -792,7 +796,8 @@ export async function proposeFill(
   const plainAsk = scope !== undefined && scope.wholeForm === true && scope.windows === null && scope.memory && scope.person === null && scope.literals.size === 0 && (scope.consented?.size ?? 0) === 0;
   // An Ask's instruction is in every question; it may quote a window, which pays for what it quotes.
   if (scope !== undefined && !plainAsk && !ledger.plan([scope.instruction])) throw new FillError("instructionTooLong", "the instruction quotes more of an open window than one question to Jev may carry");
-  const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
+  // G2 review: a title or a field's texts that hold a secret marker are never sent (line-values.ts holdsSecret).
+  const title = !holdsSecret(w.window.title) && ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   type Field = {
     id: string;
     node: Node;
@@ -838,7 +843,7 @@ export async function proposeFill(
     const c = x.form;
     const label = c === null ? d.label : c.label;
     const texts = c === null ? [d.label, d.nearest, d.placeholder, d.section] : [c.label, label === null ? d.nearest : null, d.section, ...(c.options ?? [])];
-    if (!ledger.take(w, "descriptor", texts)) {
+    if (texts.some(holdsSecret) || !ledger.take(w, "descriptor", texts)) {
       if (n.key === triggerKey && scope === undefined) throw new FillError("labelTooLong", `the descriptor of the focused field in window ${windowId} is longer than the window's share of a question`);
       continue;
     }
@@ -1352,7 +1357,11 @@ export async function proposeFill(
   const otherPerson = (f: Field, p: Pick): boolean => {
     // A value the instruction spells out is the user's own choice for the field.
     if (p.from === "instruction" || (p.from === "derived" && p.base.from === "instruction")) return false;
-    // An Ask that names a person: a personal field takes only a window value both asks say is theirs.
+    // An Ask that names a person: a personal field takes only a window value both asks say is theirs. Lead decision (G2
+    // review): this overrides a field's own "your" wording ("Your email" takes Marcus's email for "use Marcus's
+    // details"), since the user said whose details to use and sees the preview before Tab. It holds only for the fields
+    // the Ask scoped (FillScope.fields, every field a scoped fill asks about); outside a named-person Ask, the user-owner
+    // rule below stands.
     if (namedPerson !== null && owners && f.personal) {
       const base = windowOf(p);
       const second = p.from === "derived" ? p.also : null;
@@ -1641,8 +1650,17 @@ export async function proposeFill(
     const text = f.control === "text" && p !== undefined && got !== null;
     // G2: what the value rests on besides its source (FillField.basis): the identity code decided it by, of the window
     // value it is or was split from, and the line Jev read that value with.
+    // A part code split from an identity (a first name from the user's full name) names its part, so the write is checked
+    // against that part of the entry again (identityRefOf).
     const basisOf = line?.identity ?? (p?.from === "derived" ? (p.also?.identity ?? undefined) : undefined);
-    const basis = p === undefined || got === null ? undefined : { ...(basisOf === undefined ? {} : { identity: { memoryId: basisOf.memoryId, kind: basisOf.kind, key: basisOf.key } }), ...(line?.line == null ? {} : { clause: line.line }) };
+    const idPart = p?.from === "derived" && f.part !== null && NAME_PARTS.has(f.part) ? (f.part as "first" | "middle" | "last") : undefined;
+    // The sentences of the source that hold the value now (line-values.ts sentenceDigests), which a recheck takes again.
+    const srcNode = line === null ? undefined : model.windows.get(line.source.windowId)?.nodes.get(line.source.nodeKey);
+    const sentences = p === undefined || srcNode === undefined ? [] : sentenceDigests(nodeText(srcNode), pickText(p));
+    const basis =
+      p === undefined || got === null
+        ? undefined
+        : { ...(basisOf === undefined ? {} : { identity: { memoryId: basisOf.memoryId, kind: basisOf.kind, key: basisOf.key, ...(idPart === undefined ? {} : { part: idPart }) } }), ...(line?.line == null ? {} : { clause: line.line }), ...(sentences.length === 0 ? {} : { sentences }) };
     return {
       ...empty,
       ...(basis === undefined || Object.keys(basis).length === 0 ? {} : { basis }),
@@ -1699,8 +1717,9 @@ export function memoryValue(value: string, part: FillMemory["part"]): string | n
  * step from memory had to write the entry's text as typed, so a page goal stopped at Tab on any of these.
  */
 export function memoryWrites(value: string, part: FillMemory["part"], written: string, conv: MemoryConversion = "exact"): boolean {
-  // G2: a window's value that is the user's identity (whose.ts) holds while the entry is still that identity.
-  if (conv === "identity") return sameIdentity(value, written);
+  // G2: a window's value that is the user's identity (whose.ts) holds while the entry is still that identity, and a part
+  // split from one while the entry still gives that part.
+  if (conv === "identity") return part === undefined ? sameIdentity(value, written) : memoryValue(value, part) === written;
   const gives = memoryValue(value, part);
   if (gives === null) return false;
   if (gives === written) return true;
@@ -1754,6 +1773,19 @@ const MEMORY_PARTS: ReadonlySet<string> = new Set<FillMemoryPart>(["first", "mid
  */
 export function memoryRefOf(m: { id: string; part?: FillMemory["part"] }, conv: MemoryConversion = "exact"): string {
   return `${m.part === undefined ? m.id : `${m.id}#${m.part}`}${conv === "exact" ? "" : `~${conv}`}`;
+}
+
+/**
+ * G2: the memory reference a write names when its value is a window's text that is the user's identity, or a part split
+ * from one (FillField.basis.identity): "id~identity" or "id#first~identity", which the executor checks against the entry
+ * right before the write (memoryWrites). Null when the value has no identity basis, or is neither the whole identity
+ * nor a named part (a recheck before the run still holds it to the entry, offers/fill-popup.ts provenanceStale).
+ */
+export function identityRefOf(f: { basis?: FillField["basis"]; memory: FillMemory | null }, written: string): string | null {
+  const id = f.basis?.identity;
+  if (f.memory !== null || id === undefined) return null;
+  if (id.part !== undefined) return memoryRefOf({ id: id.memoryId, part: id.part }, "identity");
+  return sameIdentity(written, id.key) ? memoryRefOf({ id: id.memoryId }, "identity") : null;
 }
 
 /** The entry id and the part a step's memory reference names (memoryRefOf). */

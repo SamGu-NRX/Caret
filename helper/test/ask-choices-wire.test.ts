@@ -128,6 +128,18 @@ describe("Ask questions in the helper (B29)", () => {
     expect(app.node(K("group:billing/textfield:city~0"))?.value).toBeUndefined();
   });
 
+  it("G2 review: refuses the acceptance once the line its value was read from warns about it, and writes nothing", async () => {
+    const q = AskQuestion.parse(await helper.handlePlanRequest(request, "s1", true));
+    const r = PlanProposal.parse(await helper.handleAskAnswer(answer(q.questionId, ["o2"]), "s1"));
+    expect(r).toMatchObject({ outcome: "proposed" });
+    // The value is still on screen, so the plan's own trace check passes; the sentences it was read from now warn.
+    const M = (x: string): string => `dev.caret.mail/standard/${x}`;
+    await helper.handleReader(snap([text(M("statictext:ship to: austin~0"), "Ship to: Austin, but not anymore"), text(M("statictext:city: austin~0"), "City: Austin is the old one")], { at: 600, windowId: REF, title: "Order 48213", app: MAIL_APP }));
+    const done = await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: r.offerKey ?? "", actionId: "run", overrides: {}, at: clock });
+    expect(done).toBeNull();
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(0);
+  });
+
   it("takes an answer once, from the connection asked, before it lapses, and only as listed", async () => {
     const q = AskQuestion.parse(await helper.handlePlanRequest(request, "s1", true));
     const gone = (r: unknown) => expect(PlanProposal.parse(r)).toMatchObject({ outcome: "error", error: { code: "questionGone" } });

@@ -11,9 +11,9 @@ import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
 import { labelledLines, lineGives, lineSpans } from "../fill/candidates.ts";
-import { bareLine, LABELLED, sentenceAround, WARNS } from "../fill/line-values.ts";
+import { bareLine, LABELLED, sentenceDigests } from "../fill/line-values.ts";
 import { splitAddress, splitPlace } from "../fill/derive.ts";
-import { conversionOf, describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
+import { conversionOf, describeInput, emptyInput, identityRefOf, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import { identityKey } from "../fill/whose.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
@@ -32,7 +32,7 @@ export const MAX_FILL_ROWS = 5;
  * from, which a recheck looks for in the source again, on the line labelled `context` when the value came from a
  * "Label: value" line (FillHandoff.context); `display` is how the pop-up says the value.
  */
-type GroundedField = FillField & { value: string; span: string; display: string; context: string | null } & ({ source: FillSource; memory: null } | { source: null; memory: FillMemory });
+export type GroundedField = FillField & { value: string; span: string; display: string; context: string | null } & ({ source: FillSource; memory: null } | { source: null; memory: FillMemory });
 
 /** A field of the form that Caret leaves to the user: its name, and the value Caret would use when it has one. */
 export interface YourField {
@@ -170,14 +170,17 @@ function yoursBlock(model: ScreenModel, windowId: string, yours: readonly YourFi
 export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPopup {
   const fields = p.fields;
   const windows = fields.flatMap((f) => (f.source === null ? [] : [f.source]));
+  // G2 review: a value that rests on an identity in memory names that entry too, in every row, shown or past "and N more",
+  // so editing or forgetting it withdraws the offer (helper.ts refersToMemory).
   const memories = [...new Set(fields.flatMap((f) => (f.memory === null ? [] : [f.memory.id])))];
+  const identities = [...new Set(fields.flatMap((f) => (f.basis?.identity === undefined ? [] : [f.basis.identity.memoryId])))].filter((id) => !memories.includes(id));
   const told = fields.some((f) => f.memory !== null && !isAnswer(f));
   const saved = fields.filter(isAnswer).length;
   // The source line names each window once, then what the user told Caret: "from Mail, Invoice 2041 and what you told Caret".
-  const refs: PopupRef[] = [...[...new Set(windows.map((s) => `${s.windowId}/${s.nodeKey}`))].map((node) => ({ node })), ...memories.map((memory) => ({ memory }))];
+  const refs: PopupRef[] = [...[...new Set(windows.map((s) => `${s.windowId}/${s.nodeKey}`))].map((node) => ({ node })), ...[...memories, ...identities].map((memory) => ({ memory }))];
   // One window and nothing from memory: the first field's source node stands for the window, as before B17.
   const first = windows[0];
-  const oneWindow = memories.length === 0 && first !== undefined && windows.every((s) => s.windowId === first.windowId);
+  const oneWindow = memories.length === 0 && identities.length === 0 && first !== undefined && windows.every((s) => s.windowId === first.windowId);
   const source: PopupRef = oneWindow ? nodeRef(first.windowId, first.nodeKey) : refs.length === 1 ? (refs[0] as PopupRef) : { rule: "sources", derived: refs };
   const text = [...new Set(windows.map(sourceText)), ...(told ? [ABOUT_SAYS] : []), ...(saved === 0 ? [] : [saved === 1 ? ANSWER_SAYS : `${ANSWER_SAYS}s`])].join(" and ");
   // S1: every saved answer is in a row the pop-up shows, never in "and N more", and its value is the whole answer: it
@@ -250,16 +253,21 @@ function derivesSpan(line: string, span: string): boolean {
  *     "No" but says otherwise, and is still refused: a span inside a longer line passes only by that same derivation.
  *   - A text field's value: the node's text holds the span, or one of its typed values is it.
  */
-export function sourceHolds(sw: WindowState, nodeKey: string, span: string, context: string | null, control: string, clause?: string): boolean {
+export function sourceHolds(sw: WindowState, nodeKey: string, span: string, context: string | null, control: string, sentences?: readonly string[]): boolean {
   const src = sw.nodes.get(nodeKey);
   if (src === undefined) return false;
-  // G2 review: the words Jev read the value with must still be there, so a sentence that changed around a span that
-  // stayed ("I no longer live in Portland, Maine") no longer gives it. A value read with no clause was read from a
-  // sentence that warned of nothing (a warning sends its sentence whole, candidates.ts lineFact): one whose sentence
-  // now warns is no longer read the same way.
-  const lines = nodeText(src).split(/\r?\n/u).map(bareLine);
-  if (clause !== undefined && !lines.some((l) => l.includes(clause))) return false;
-  if (clause === undefined && !lines.some((l) => sentenceGives(l, span))) return false;
+  const text = nodeText(src);
+  // G2 review: the sentences that held the value when fill proposed it (FillField.basis.sentences) must hold it now, and
+  // no other: a sentence that changed around a value that stayed ("I no longer live in Portland, Maine", "Mobile
+  // 555-0164 is my old number", "Do not use: 555-0164") or a new one that holds it is not what the value was read from.
+  // Whatever an unchanged sentence says (a "but" inside a name's line, a field's own "Previous name:" label, a wrapped
+  // line, double spaces) passes, as it did when Jev read it. A value with no digests (from memory, or a helper before
+  // this) meets the rules below alone.
+  if (sentences !== undefined) {
+    const now = sentenceDigests(text, span);
+    const was = new Set(sentences);
+    if (now.length === 0 || now.some((d) => !was.has(d)) || sentences.some((d) => !now.includes(d))) return false;
+  }
   // The reader's own typed values only: one code finds in a line (fill/candidates.ts windowValues) is checked by the line
   // as it reads now (lineGives in derivesSpan), so a line that gained a label naming it passes nothing (C1 review).
   const typed = sw.values.some((v) => v.nodeKey === nodeKey && v.text === span);
@@ -267,18 +275,13 @@ export function sourceHolds(sw: WindowState, nodeKey: string, span: string, cont
     const box = control === "checkbox";
     return labelledLines(sw).some((l) => l.node.key === nodeKey && l.label === context && (box ? l.value === span : l.value.includes(span)));
   }
-  if (control !== "text") return typed || nodeText(src).split(/\r?\n/).some((l) => l.trim() === span.trim() || derivesSpan(l, span));
-  return nodeText(src).includes(span) || typed;
-}
-
-/** Whether a line holds `span` in a sentence that warns of nothing but the span itself (line-values.ts WARNS). */
-function sentenceGives(line: string, span: string): boolean {
-  for (let at = line.indexOf(span); at >= 0; at = line.indexOf(span, at + 1)) if (!WARNS.test(sentenceAround(line, at, span).replace(span, " "))) return true;
-  return false;
+  if (control !== "text") return typed || text.split(/\r?\n/).some((l) => l.trim() === span.trim() || derivesSpan(l, span));
+  return text.includes(span) || typed;
 }
 
 /** Why one field of a proposal can no longer be filled as shown: `log` names keys for the log, `says` is the user's sentence. */
-type FieldStale = { log: string; says: string };
+export type FieldStale = { log: string; says: string };
+
 
 function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, about: AboutNow, answer: AnswerNow, page: PageContext | null): FieldStale | null {
   const node = w.nodes.get(f.key);
@@ -286,6 +289,17 @@ function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, abou
   const input = emptyInput(w, f.key);
   if (input === null) return { log: `the field ${f.key} is no longer empty`, says: "it's no longer empty" };
   if (describeInput(w, input) !== f.descriptor) return { log: `the field ${f.key} now reads differently`, says: "it reads differently now" };
+  return provenanceStale(model, w, f, about, answer, page);
+}
+
+/**
+ * Why a field's value no longer rests on what it was read from, or null: its saved answer, memory entry, identity or
+ * source, as recheckField checks them after the destination. G2 review: an Ask's accepted plan writes into fields it
+ * may change, so it checks only this (helper.ts acceptPlan).
+ */
+export function provenanceStale(model: ScreenModel, w: WindowState, f: GroundedField, about: AboutNow, answer: AnswerNow, page: PageContext | null): FieldStale | null {
+  const node = w.nodes.get(f.key);
+  if (node === undefined) return { log: `the field ${f.key} is gone`, says: "the field is gone" };
   if (f.source === null && f.answer !== undefined) {
     // S1: the answer as answers.md holds it now must still be the text shown, word for word, for the same question, and
     // still pass the guards on the page as it is now: its organization, and a maxlength the page may have lowered.
@@ -315,7 +329,7 @@ function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, abou
     const now = about(id.memoryId);
     if (now === null || identityKey(id.kind, now.value) !== id.key) return { log: `memory entry ${id.memoryId} is no longer this identity`, says: "what you told Caret about yourself changed" };
   }
-  return sourceHolds(sw, key, f.span, f.context, f.control, f.basis?.clause) ? null : { log: `the source ${key} changed`, says: "where Caret read its value changed" };
+  return sourceHolds(sw, key, f.span, f.context, f.control, f.basis?.sentences) ? null : { log: `the source ${key} changed`, says: "where Caret read its value changed" };
 }
 
 /**
@@ -395,9 +409,9 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       // A part of a remembered name names its part ("about-1#first"), so the check splits the entry the same way.
       // C2 review: a control's value names the conversion it went through ("~option", "~date"), which the check reads too.
       ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory, conversionOf(f.control)) }),
-      // G2: a value that is the user's identity is checked against its entry again right before it is written too; a
-      // part split from one is checked before the run (recheckFill), as no entry text is that part.
-      ...(f.memory === null && f.basis?.identity !== undefined && identityKey(f.basis.identity.kind, f.span) === f.basis.identity.key ? { memory: memoryRefOf({ id: f.basis.identity.memoryId }, "identity") } : {}),
+      // G2: a value that is the user's identity, or a part split from one, is checked against its entry again right before
+      // it is written too (fill.ts identityRefOf).
+      ...(identityRefOf(f, f.value) === null ? {} : { memory: identityRefOf(f, f.value) as string }),
       end: {
         kind: "valueEquals" as const,
         window: { bundleId: p.bundleId, title: "{{title}}", ...(w?.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: p.windowId } : {}) },

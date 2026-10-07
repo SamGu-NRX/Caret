@@ -79,7 +79,7 @@ import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
-import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFields, recheckFill, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
+import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, provenanceStale, recheckFields, recheckFill, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
 import { aboutValues, type AboutValue } from "./fill/about.ts";
 import type { PopupSpecT } from "./popup.ts";
 import { describeField } from "./fill/descriptor.ts";
@@ -1793,6 +1793,17 @@ export class Helper {
       // title is another window, and the destinations' expected values were read from the first.
       const proposed = p.draft.checked.window.window.windowId;
       if (now.window.window.windowId !== proposed) return { refused: `unknownWindow: the window the plan was made for (${proposed}) closed; nothing was written` };
+      // G2 review: every value an Ask's fill read is checked against what it was read from again, as a Fill all's are
+      // (offers/fill-popup.ts provenanceStale): "Mobile 555-0164" is not written once the note says "Do not use: 555-0164".
+      // The destinations may hold values an Ask changes, so only the values are checked here; the plan's own end states
+      // read the destinations.
+      const fill = "fill" in p.draft ? (p.draft as { fill: FillProposal | null }).fill : null;
+      if (fill !== null) {
+        for (const f of writtenFields(fill).fields) {
+          const stale = provenanceStale(sources, now.window, f, this.aboutNow, this.answerText, this.opts.pageContext?.(fill.windowId) ?? null);
+          if (stale !== null) return { refused: `sourceChanged: ${stale.log}; nothing was written` };
+        }
+      }
     } catch (e) {
       if (e instanceof PlannerError) return { refused: `${e.code}: ${e.message}; nothing was written` };
       throw e;

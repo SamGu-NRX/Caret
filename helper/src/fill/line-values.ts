@@ -9,6 +9,7 @@
 // stops there because those spans have edges punctuation or a closed list sets: a name run, a remark's bracket, a
 // state's name. A phrase in a sentence ("Started at Tallgrass Mechatronics in August") has no such edge, and where it
 // ends would be a guess. The patterns are written for common note and mail text, not measured on a corpus.
+import { createHash } from "node:crypto";
 import type { ValueKind } from "../protocol.ts";
 import { dateShaped, isNameLike, NAME_JOINERS, namesIn, ORG_SUFFIX, textKind, timeShaped } from "./kinds.ts";
 import { splitName, splitPlace } from "./derive.ts";
@@ -78,10 +79,10 @@ export function secretLine(line: string): boolean {
 }
 
 /**
- * G2 review: whether a text code would send beside a span (a clause, a block's head, a section) holds a secret: a line
- * secretLine refuses, or a stated one ("password: hunter2", "my PIN is 7319", memory/sensitive.ts statedSecret). A
- * clause can reach past what a line offered whole: "Email: robin@example.test password: hunter2 for the staging …"
- * is too long to be a span, and its email's clause sent the password.
+ * G2 review: whether a text holds a secret marker: a line secretLine refuses (a value Caret never types, by its shape or
+ * its label), or a stated secret ("password: hunter2", "my PIN is 7319", memory/sensitive.ts statedSecret). One rule for
+ * every text that could reach Jev: a line or a label that holds one contributes nothing to a request (candidates.ts),
+ * and a request that still carries one is refused before it is sent (privacy.ts assertNoSecrets).
  */
 export function holdsSecret(text: string | null | undefined): boolean {
   return text !== null && text !== undefined && (secretLine(text) || statedSecret(text) !== null);
@@ -119,7 +120,9 @@ function scanValues(line: string): readonly LineValue[] {
 }
 
 function scan(line: string): LineValue[] {
-  if (secretLine(line)) return [];
+  // G2 review: a line that states a secret contributes nothing, not even its other typed values ("Email: robin@example.test
+  // password: secret@example.test" offered secret@example.test as an email).
+  if (holdsSecret(line)) return [];
   const hits: { text: string; kind: ValueKind; at: number }[] = [];
   const scan = (re: RegExp, kind: ValueKind, trim = false): void => {
     for (const m of line.matchAll(re)) {
@@ -473,6 +476,25 @@ export function partAround(line: string, at: number, text: string): string | nul
   if (!word(k)) [a, b] = [Math.max(0, k - 1), Math.min(cuts.length - 1, k + 1)];
   const part = clause.slice(cuts[a]?.[0] ?? 0, cuts[b]?.[1] ?? clause.length).trim().replace(/[.!?;,]+$/u, "");
   return part === text || part === "" ? null : part;
+}
+
+/**
+ * G2 review: a short digest of each sentence of `text` that holds `span`, in order: the text's lines as the generator reads
+ * them (bareLine) joined by a space, so a sentence a line break wraps reads as one. A fill records them for the value it
+ * proposes (FillField.basis.sentences) and the recheck before a write takes them again (offers/fill-popup.ts
+ * sourceHolds): a sentence that changed around a value that stayed ("Mobile 555-0164 is my old number", "Do not use:
+ * 555-0164") or a new sentence that holds it no longer reads as what the value was read from. The digests, not the
+ * sentences, travel with the proposal, so no more screen text reaches a consumer.
+ */
+export function sentenceDigests(text: string, span: string): string[] {
+  const joined = text.split(/\r?\n/u).map(bareLine).filter((l) => l !== "").join(" ").replace(/\s+/gu, " ");
+  const want = span.replace(/\s+/gu, " ").trim();
+  if (want === "") return [];
+  const out: string[] = [];
+  for (let at = joined.indexOf(want); at >= 0; at = joined.indexOf(want, at + 1)) {
+    out.push(createHash("sha256").update(sentenceAround(joined, at, want)).digest("hex").slice(0, 16));
+  }
+  return out;
 }
 
 /**

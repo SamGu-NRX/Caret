@@ -2692,6 +2692,14 @@
                           "key": {
                             "type": "string",
                             "minLength": 1
+                          },
+                          "part": {
+                            "type": "string",
+                            "enum": [
+                              "first",
+                              "middle",
+                              "last"
+                            ]
                           }
                         },
                         "required": [
@@ -2704,6 +2712,13 @@
                       "clause": {
                         "type": "string",
                         "minLength": 1
+                      },
+                      "sentences": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
                       }
                     },
                     "additionalProperties": false

@@ -513,7 +513,7 @@ export class GoalRuns {
     // I6: a value from the tab the user left is shown only while this goal still holds that tab's text.
     const sw = (this.deps.sourceModel?.(run.plan.goalId) ?? this.deps.model).windows.get(src.windowId);
     if (sw === undefined) return false;
-    if (v.fill !== undefined) return sourceHolds(sw, src.key, v.fill.span, v.fill.context, v.fill.control, v.fill.clause);
+    if (v.fill !== undefined) return sourceHolds(sw, src.key, v.fill.span, v.fill.context, v.fill.control, v.fill.sentences);
     const node = sw.nodes.get(src.key);
     const want = v.event?.sentence ?? v.text;
     const typed = sw.values.some((x) => x.nodeKey === src.key && x.text === want);

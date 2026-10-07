@@ -253,7 +253,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   };
 
   const windows = [...model.windows.values()]
-    .filter((w) => w.window.windowId !== targetWindowId && o.exclude?.has(w.window.windowId) !== true)
+    // G2 review: a window whose title holds a secret marker gives nothing: every candidate of it names its title.
+    .filter((w) => w.window.windowId !== targetWindowId && o.exclude?.has(w.window.windowId) !== true && !holdsSecret(w.window.title))
     .sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
   const justLeft = model.windowBefore(targetWindowId);
   const recency = (w: WindowState): Recency =>
@@ -279,7 +280,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const missed = new Set<string>();
   /** The candidate for a span, with every fact about it worked out. */
   const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string): Candidate => {
-    const ctx = timed("context", context);
+    // G2 review: a label or nearby text that holds a secret marker is no context (line-values.ts holdsSecret).
+    const ctx = unlessSecret(timed("context", context));
     const labelled = labelledSpan(node, text, ctx);
     // A span that must go with its line's words (line-values.ts LineText.with, or a clause its line warns in) carries them
     // from the start, charged with it; any other clause waits until every span is in.
@@ -689,7 +691,9 @@ const constant =
  * one ("Password" holding "hunter2"; B25 review).
  */
 function secretValue(w: WindowState, v: TypedValue): boolean {
-  return valueKind(v.text) !== null || labelKind(w.nodes.get(v.nodeKey)?.label) !== null;
+  const node = w.nodes.get(v.nodeKey);
+  // G2 review: nor a reader's typed value on a line, or in a field whose label, that holds a secret marker (holdsSecret).
+  return valueKind(v.text) !== null || labelKind(node?.label) !== null || holdsSecret(node?.label) || (node !== undefined && holdsSecret(lineHolding(nodeText(node), v.text)));
 }
 
 /**
@@ -853,7 +857,7 @@ export function labelledLines(w: WindowState): { label: string; value: string; n
       // is checked by its label as one from a short one is (offers/fill-popup.ts sourceHolds).
       const line = bareLine(raw);
       const m = LABELLED.exec(line);
-      if (m?.[1] === undefined || m[2] === undefined || !/[\p{L}\p{N}]/u.test(m[2]) || sensitiveKind(m[1], m[2]) !== null) continue;
+      if (m?.[1] === undefined || m[2] === undefined || !/[\p{L}\p{N}]/u.test(m[2]) || sensitiveKind(m[1], m[2]) !== null || holdsSecret(line)) continue;
       out.push({ label: m[1].trim(), value: m[2].trim(), node });
     }
   }
@@ -871,8 +875,8 @@ export function labelledCandidate(w: WindowState, node: Node, text: string, labe
     kind,
     context: label,
     labelled: true,
-    section: sectionAround(w, node),
-    blockHead: blockHead(w, node, text),
+    section: unlessSecret(sectionAround(w, node)),
+    blockHead: unlessSecret(blockHead(w, node, text)),
     recency,
     source: { pid: w.app.pid, windowId: w.window.windowId, bundleId: w.app.bundleId, appName: w.app.name, windowTitle: w.window.title, nodeKey: node.key, kind },
   };
