@@ -179,7 +179,8 @@ export type OptionLink = "inText" | "sameWords" | "inOption" | "stateCode";
  *   the hand-off's rule (optionInText). Not a number option: a bare number inside other words counts something else as
  *   easily ("2 semesters" for "Number of occupants");
  * - "sameWords": the same words in another order or punctuation ("Intro to Web Development (CIS 140)" for "CIS 140 -
- *   Intro to Web Development"), its numbers in the same order: "2026-02-01" is not "2026-01-02" (V4 review);
+ *   Intro to Web Development"), its numbers in the same order: "2026-02-01" is not "2026-01-02", "5pm-9am" not "9am-5pm"
+ *   (V4 reviews);
  * - "inOption": all of a text of two or more words, in order, inside the option ("Intro to Web Development");
  * - "stateCode": a US state by its name where the menu lists postal codes, or the reverse ("Texas" for "TX"), only for a
  *   menu the caller knows asks for a US state (`usState`): a country menu's "GA" is Gabon (V4 review). A code is read only
@@ -207,8 +208,8 @@ export function optionLink(options: readonly string[], text: string, usState = f
     if (/^[A-Z]{1,3}$/u.test(o.trim())) return asWritten.has(o.trim());
     return w.length > 0 && !(w.length === 1 && /^\d+$/u.test(w[0] as string)) && line.includes(` ${w.join(" ")} `);
   });
-  // Words in any order, numbers in theirs.
-  const shape = (ws: readonly string[]): string => `${ws.filter((w) => !/^\d+$/u.test(w)).sort().join(" ")}|${ws.filter((w) => /^\d+$/u.test(w)).join(" ")}`;
+  // Words in any order; a token holding a digit in its own order ("5pm-9am" is not "9am-5pm": re-review).
+  const shape = (ws: readonly string[]): string => `${ws.filter((w) => !/\p{N}/u.test(w)).sort().join(" ")}|${ws.filter((w) => /\p{N}/u.test(w)).join(" ")}`;
   const sameWords = real.filter((o) => shape(wordsOf(o)) === shape(said));
   const inOption = said.length < 2 ? [] : real.filter((o) => ` ${wordsOf(o).join(" ")} `.includes(line));
   const asName = usState ? US_STATE_CODES.get(norm(text).replace(/\.$/u, "")) : undefined;
@@ -252,6 +253,22 @@ const ANY_FIELD: ReadonlySet<string> = new Set(["this", "that", "these", "those"
 export function namesField(request: string, asked: readonly (string | null)[]): boolean {
   const field = new Set(asked.flatMap((t) => (t === null ? [] : wordsOf(t))).filter((w) => w.length >= 3 && !ANY_FIELD.has(w)));
   return wordsOf(request).some((w) => field.has(w));
+}
+
+/**
+ * Words that say what kind or form a value has, not what it is for: shared alone, they tie no source line to a menu
+ * (V4 re-review: "Move-in date" does not name "Graduation date month"). "Reference" is not one: it names a person's role.
+ */
+const KIND_ONLY: ReadonlySet<string> = new Set(["date", "day", "days", "month", "year", "time", "hour", "email", "mail", "phone", "telephone", "tel", "mobile", "cell", "fax", "number", "address", "street", "url", "website", "link", "name", "first", "last", "full", "amount", "total", "price", "code", "type", "other", "select", "choose"]);
+
+/**
+ * V4 review: whether a source line's label ties the line to a menu: a word of the menu's label, nearest label or heading
+ * that says what the menu is for ("Reference" for "Reference relationship"), not one any form uses (ANY_FIELD) or one that
+ * only names a value's kind (KIND_ONLY).
+ */
+export function labelTies(label: string, asked: readonly (string | null)[]): boolean {
+  const field = new Set(asked.flatMap((t) => (t === null ? [] : wordsOf(t))).filter((w) => w.length >= 3 && !ANY_FIELD.has(w) && !KIND_ONLY.has(w)));
+  return wordsOf(label).some((w) => field.has(w));
 }
 
 /** Short words that name no option on their own. */

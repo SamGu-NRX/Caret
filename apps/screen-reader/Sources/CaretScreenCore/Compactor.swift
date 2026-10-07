@@ -179,8 +179,14 @@ public struct Compactor {
     private func visit(_ n: RawNode, chain: [String], parent: String?, parentRole: String?, state: inout State) {
         if Roles.popUpMenu(n.role, parentRole: parentRole) {
             // V4: the menu itself is collapsed; its items attach to the pop-up button, as the helper reads options
-            // (fill/controls.ts formControls: AXMenuItem children of an AXPopUpButton). A submenu stays dropped.
-            for c in n.children where c.role == "AXMenuItem" { visit(c, chain: chain, parent: parent, parentRole: n.role, state: &state) }
+            // (fill/controls.ts formControls: AXMenuItem children of an AXPopUpButton). Each item is kept as a leaf: its
+            // title is the option, and text inside it would read as a value the window states (V4 re-review). A submenu
+            // goes with it.
+            for c in n.children where c.role == "AXMenuItem" {
+                var item = c
+                item.children = []
+                visit(item, chain: chain, parent: parent, parentRole: n.role, state: &state)
+            }
             return
         }
         if Roles.skipped.contains(n.role) { return }

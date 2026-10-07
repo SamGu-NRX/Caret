@@ -8,9 +8,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { Snapshot, type Node, type TypedValue } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, Snapshot, type Node, type PageControl, type PageSnapshot, type TypedValue } from "../src/protocol.ts";
 import { ScreenModel } from "../src/model.ts";
-import { formControls, optionLink } from "../src/fill/controls.ts";
+import { formControls, labelTies, optionLink } from "../src/fill/controls.ts";
+import { toWindowSnapshot } from "../src/engines/page-link.ts";
+import { EngineSession } from "../src/engines/session.ts";
 import { mintOf, proposeFill, type FillScope } from "../src/fill/fill.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
 import type { AskJev } from "../src/fill/jev.ts";
@@ -99,10 +101,20 @@ describe("optionLink: the one option a source text names without being it", () =
       [["Alabama", "California"], "ca"],
       // One word inside an option says too little.
       [["Spouse or partner", "Parent", "Child"], "spouse"],
-      // V4 review: the same numbers in another order are another date.
+      // V4 reviews: the same numbers in another order are another date, the same hours another shift.
       [["2026-01-02", "2026-03-04"], "2026-02-01"],
+      [["9am-5pm", "10am-6pm"], "5pm-9am"],
     ];
     expect(table.map(([o, t]) => [t, optionLink(o, t, true)])).toEqual(table.map(([, t]) => [t, null]));
+  });
+
+  it("ties a source line to a menu by a word that says what the menu is for, never by a kind word alone (V4 re-review)", () => {
+    expect([
+      labelTies("Reference", ["Reference relationship", null, null]),
+      labelTies("Move-in date", ["Graduation date month", null, "Education"]),
+      labelTies("Emergency contact", ["Relationship to patient", null, "Emergency contact"]),
+      labelTies("Phone", ["Mobile phone number", null, null]),
+    ]).toEqual([true, false, true, false]);
   });
 
   it("reads a state's postal code only for a menu that asks for a US state (V4 review: a country menu's GA is Gabon)", () => {
@@ -190,6 +202,8 @@ describe("a menu's option named by a source, through fill (G3's examples)", () =
   });
 });
 
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
 describe("V4 review: what a linked option must not do", () => {
   const F = (k: string): string => `com.google.Chrome/standard/${k}`;
   const web: Node = { key: F("webarea"), parent: null, role: "AXWebArea", label: "Form" };
@@ -214,10 +228,44 @@ describe("V4 review: what a linked option must not do", () => {
     return { offered, field: p.fields.find((f) => f.key.endsWith(`/${label.toLowerCase().replace(/\W+/gu, "")}`) || f.descriptor.includes(`'${label}'`)) };
   };
 
-  it("never treats a pop-up's option as a value the window states", () => {
-    const form = [web, first, ...menu("when", "Delivery", ["Oct 17, 2026", "Oct 18, 2026"], 60)];
-    const m = desk([], form, [{ kind: "date", text: "Oct 17, 2026", nodeKey: F("when/item0") }, { kind: "date", text: "Oct 18, 2026", nodeKey: F("when/item1") }]);
-    expect(m.windows.get("5150-7")?.values).toEqual([]);
+  it("never treats a pop-up's option, or text inside one, as a value the window states", () => {
+    const inside: Node = { key: F("when/item1/text"), parent: F("when/item1"), role: "AXStaticText", label: "Oct 18, 2026" };
+    const form = [web, first, ...menu("when", "Delivery", ["Oct 17, 2026", "Oct 18, 2026"], 60), inside];
+    const m = desk([], form, [{ kind: "date", text: "Oct 17, 2026", nodeKey: F("when/item0") }, { kind: "date", text: "Oct 18, 2026", nodeKey: inside.key }]);
+    const w = m.windows.get("5150-7");
+    expect(w?.values).toEqual([]);
+    expect([w?.nodes.has(F("when/item1")), w?.nodes.has(inside.key)]).toEqual([true, false]);
+  });
+
+  it("still gives a birthday's month whose date the kind check reads as a phone (re-review: oneOfSeveral judges links only)", async () => {
+    const note = ["Date of birth: 04-22-1990", "Phone: (512) 555-0147"];
+    const form: Node[] = [web, first, { key: F("dob"), parent: web.key, role: "AXGroup", subrole: "AXFieldset", label: "Date of birth" }, { key: F("dobm"), parent: F("dob"), role: "AXPopUpButton", label: "Month", editable: true, frame: [100, 60, 200, 24] }, ...MONTHS.map((o, i): Node => ({ key: F(`dobm/item${i}`), parent: F("dobm"), role: "AXMenuItem", label: o }))];
+    const m = new ScreenModel();
+    m.apply(snap([field("te/note", note.join("\n"), { role: "AXTextArea" })], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true, values: [{ kind: "date", text: "04-22-1990", nodeKey: "te/note" }] }));
+    m.apply(snap(form, { at: 2000, windowId: "5150-7", title: "Intake", app: { pid: 5150, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true }));
+    const p = await proposeFill(m, jevPickingText((_id, ins) => (ins.includes("Label: 'Month'") ? "April" : null)), "5150-7", F("first"), 3000);
+    expect(p.fields.find((f) => f.key === F("dobm"))?.handoff?.value).toBe("April");
+  });
+
+  it("sends an option that matches only by case to the verifier, never minting it as the option's own label (re-review)", async () => {
+    const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+    const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+    const control = (id: string, kind: PageControl["kind"], name: string, options?: string[]): PageControl => ({ id, key: `form[f]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#f", rect: [0, 0, 100, 20], value: "", ...(options === undefined ? {} : { options: [{ value: "", label: "Select...", selected: true }, ...options.map((o) => ({ value: o, label: o, selected: false }))] }) });
+    const page: PageSnapshot = {
+      type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply",
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/apply", navGen: 1, title: "Apply", headings: ["Apply"], iframes: [], excluded: {}, truncated: false, controls: [control("e1", "text", "First name"), control("e2", "select", "Portfolio", ["https://example.org/Profile", "https://example.org/work"])] }],
+      missing: [],
+      focused: { frameId: 0, id: "e1", selection: [0, 0] },
+    };
+    const m = new ScreenModel();
+    m.apply(snap([field("te/note", "Portfolio: https://example.org/profile", { role: "AXTextArea" })], { at: 900, windowId: "7001-1", title: "Notes.txt", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true }));
+    m.apply(toWindowSnapshot(page, session, 1));
+    const p = await proposeFill(m, jevPickingText((_id, ins) => (ins.includes("Label: 'Portfolio'") ? "https://example.org/profile" : null)), "page:eng1:7", "f0/form[f]/text:first name~0", 3000);
+    const portfolio = p.fields.find((f) => f.key.includes("portfolio")) as (typeof p.fields)[number];
+    expect(portfolio.handoff?.value).toBe("https://example.org/Profile");
+    const minted = mintOf(portfolio);
+    expect(minted?.verdict.by).toBe("verifier");
+    expect((minted?.provenance as { says?: string }).says).toBe(`Caret took "https://example.org/profile" to be the option 'https://example.org/Profile', written differently`);
   });
 
   it("offers no option for a word in an untied line ('a friend referred me' for Relationship)", async () => {

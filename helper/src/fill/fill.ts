@@ -18,7 +18,7 @@ import { assertNoSecrets, SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
-import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
+import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
 import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
@@ -1169,8 +1169,9 @@ export async function proposeFill(
   // pick states at most one choice. A value the instruction spells out for the menu is linked too ("Texas" in "put Texas for
   // state"). Radio groups keep their visible buttons and controlValue's reading of a pick.
   // V4 review: an option found among other words of a longer text ("inText") is linked only when the text is tied to this
-  // menu: a line labelled with a word of its label or section ("Reference: …, my manager at Ridgeline" for "Reference
-  // relationship"), a memory entry labelled so, or a part or literal derived for this field. Untied, "a friend referred
+  // menu: a line labelled with a word of its label or section that says what it is for (controls.ts labelTies: "Reference:
+  // …, my manager at Ridgeline" for "Reference relationship", never "date" alone), a memory entry labelled so, or a part or
+  // literal derived for this field. Untied, "a friend referred
   // me" offered Relationship "Friend" and a move-in date's "March" offered Graduation date month (guard adversary). A text
   // that is the option in other words (sameWords, inOption) names it by itself; a state's postal code is read only for a
   // menu that asks for a state (fill part "state").
@@ -1188,8 +1189,8 @@ export async function proposeFill(
       };
       // A derived value with no choice of its own is this field's part, or its literal: tied to it.
       for (const d of [...list]) if (d.chose === undefined) link(d.text, d.describe, d.base, d.also, true);
-      for (const c of candidates) link(c.text, describeCandidate(c), { from: "window", c }, null, c.context !== null && namesField(c.context, asked));
-      for (const a of f.about) link(a.value, describeAbout(a), { from: "memory", a }, null, namesField(a.label, asked));
+      for (const c of candidates) link(c.text, describeCandidate(c), { from: "window", c }, null, c.context !== null && labelTies(c.context, asked));
+      for (const a of f.about) link(a.value, describeAbout(a), { from: "memory", a }, null, labelTies(a.label, asked));
       if (list.length > 0) derived.set(f.id, list);
     }
   }
@@ -1600,8 +1601,9 @@ export async function proposeFill(
    * either Portfolio or GitHub.
    */
   const oneOfSeveral = (f: Field, p: Pick): boolean => {
-    // V4 review: a menu's option code linked from a window value meets the rule as that value would.
-    if (p.from === "derived" && f.control === "select" && p.base.from === "window") return oneOfSeveral(f, p.base);
+    // V4 review: a menu's option code linked from a window value (optionLink) meets the rule as that value would. Only a link:
+    // a date's or an address's part is judged as before (re-review: a birthday's month would meet the phone rule).
+    if (p.from === "derived" && p.chose?.how === "optionNamed" && p.base.from === "window") return oneOfSeveral(f, p.base);
     // A value the user's instruction spells out for this field is their choice among them (B27 review).
     if (p.from !== "window" || p.c.labelled !== true || p.c.context === null || literalOf(f) === p.c.text) return false;
     const kind = textKind(p.c.text);
@@ -1676,7 +1678,10 @@ export async function proposeFill(
         if ([text, c?.context ?? null, clause].some((t) => t !== null && leavesChoiceOpen(t, o))) return { why: "ambiguous" };
         // V3 review: a year menu's or a month menu's option read through a two-digit year's century ("Aug '30") is a choice.
         const century = byPiece === null && byDate !== null ? stated(readMonth(text, refYear)) : undefined;
-        if (exact !== null) return { value: exact, display: exact, writes: page && !press, ...(century === undefined ? {} : { chose: century }) };
+        // V4 re-review: only an option written exactly as the pick is the pick (optionLabel). One matchOption found by case,
+        // spacing or NFKC ("…/profile" for "…/Profile") is code's reading, said to the verifier.
+        const respelled = whole !== null && whole.trim() !== text.trim() ? { says: `Caret took "${text}" to be the option '${whole}', written differently`, also: null, how: "optionNamed" as const } : undefined;
+        if (exact !== null) return { value: exact, display: exact, writes: page && !press, ...(century === undefined ? (respelled === undefined ? {} : { chose: respelled }) : { chose: century }) };
         return { value: o, display: o, writes: false, chose: { says: `Caret took "${text}" to name the option '${o}'`, also: null } };
       }
       case "checkbox": {

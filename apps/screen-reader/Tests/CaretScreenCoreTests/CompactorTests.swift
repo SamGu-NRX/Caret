@@ -56,7 +56,7 @@ import Testing
             RawNode(role: "AXPopUpButton", title: "Degree", value: "Select...", children: [
                 RawNode(role: "AXMenu", children: [
                     RawNode(role: "AXMenuItem", title: "Select..."),
-                    RawNode(role: "AXMenuItem", title: "Bachelor's Degree"),
+                    RawNode(role: "AXMenuItem", title: "Bachelor's Degree", children: [RawNode(role: "AXStaticText", value: "Oct 17, 2026")]),
                     RawNode(role: "AXMenuItem", title: "Master's Degree", children: [RawNode(role: "AXMenu", children: [RawNode(role: "AXMenuItem", title: "MBA")])]),
                 ]),
             ]),
