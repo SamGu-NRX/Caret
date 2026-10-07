@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { guardFor, setCheckObserver } from "../src/fill/contract.ts";
-import { fillPlan, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
+import { fillPlan, recheckFields, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { buildInventory } from "../src/goals/inventory.ts";
 import { lowerGoal } from "../src/goals/lower.ts";
 import { planPage } from "../src/goals/page-planner.ts";
@@ -258,5 +258,23 @@ describe("confirmation fields follow the rule of the field they confirm (lead ru
   });
   it.each(["Confirm alternate email", "Re-enter backup email", "Confirmar correo alternativo", "보조 이메일 확인"])("%s confirms an alternate, so it never takes the primary's value", async (label) => {
     expect(await confirm(label)).toBeNull();
+  });
+});
+
+describe("R3 follow-up: the acceptance recheck keeps the veto's own reason", () => {
+  it("says the saved email, not a primary field, when the saved Email changes to the alternate's value", async () => {
+    const model = desk([field("work", "work@example.test", { label: "Work email", frame: [100, 80, 200, 24] }), alternate()]);
+    let saved: AboutValue[] = [{ id: "a1", label: "Email", kind: "email", value: "first@example.test" }];
+    const p = await proposeFill(model, jevPickingText((_, ins) => (/Alternate email/u.test(ins) ? EMAIL : null)), FORM, "alternate", 3000, { derive: false, about: saved });
+    expect(p.fields.find((f) => f.key === "alternate")?.value).toBe(EMAIL);
+    const grounded = writtenFields(p, model.windows.get(FORM));
+    const aboutNow = (id: string): AboutValue | null => saved.find((a) => a.id === id) ?? null;
+    saved = [{ ...(saved[0] as AboutValue), value: EMAIL }];
+    const reader = (): readonly AboutValue[] => saved;
+    expect(recheckFill(model, grounded, aboutNow, undefined, null, reader)).toBe("the field alternate: it would repeat your saved email address");
+    const r = recheckFields(model, grounded, aboutNow, undefined, null, reader);
+    if ("stale" in r) throw new Error(r.stale);
+    expect(r.dropped).toEqual([{ key: "alternate", log: "the field alternate: it would repeat your saved email address" }]);
+    expect(r.proposal.yours[0]).toMatchObject({ key: "alternate", why: "it would repeat your saved email address" });
   });
 });

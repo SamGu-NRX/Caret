@@ -239,7 +239,9 @@ function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, abou
   // V6 B3: an alternate field's value against the form's primary fields and the user's saved values as they read at
   // acceptance (alternate.ts). Without a saved-values reader an alternate field's value is refused, never assumed.
   const repeats = alternateStale(w, f.checked, saved);
-  return repeats === null ? null : { log: `the field ${f.key} would repeat a primary field's value`, says: repeats };
+  // The veto's own reason, which names what the value repeats (a field by its redacted name, the form's main value of a
+  // kind, or the user's saved value of a kind) and never quotes the value: first-look shows the log line to the user.
+  return repeats === null ? null : { log: `the field ${f.key}: ${repeats}`, says: repeats };
 }
 
 /**
