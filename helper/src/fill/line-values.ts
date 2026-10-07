@@ -362,10 +362,22 @@ const PERSON_LABEL = /\b(?:name|contact|reference|referee|landlord|manager|spous
 export function lineTexts(line: string): LineText[] {
   if (secretLine(line)) return [];
   const out: LineText[] = [];
+  // The same span found by two readings is one span with what both say about it: the first-part reading gives "Reception
+  // Desk" bare, and the parts reading gives it again with the whole value to quote and as a part of it (partOf). Keeping
+  // only the first reading lost both, so a part could be written whole into a prose field and lose its qualifier ("Lumen
+  // Labs, lab technician (for my sister)"; W1 round-2 review). The longer quote holds the shorter one's words.
   const add = (text: string, label: string | null, quote?: string, partOf?: string): void => {
     const t = text.trim().replace(/[.,;:!?]+$/u, "");
-    if (t.length < 2 || !line.includes(t) || out.some((o) => o.text === t)) return;
-    out.push({ text: t, label, ...(quote === undefined ? {} : { with: quote }), ...(partOf === undefined ? {} : { partOf }) });
+    if (t.length < 2 || !line.includes(t)) return;
+    const i = out.findIndex((o) => o.text === t);
+    const prior = out[i];
+    if (prior === undefined) {
+      out.push({ text: t, label, ...(quote === undefined ? {} : { with: quote }), ...(partOf === undefined ? {} : { partOf }) });
+      return;
+    }
+    const withText = [prior.with, quote].filter((q): q is string => q !== undefined).sort((x, y) => y.length - x.length)[0];
+    const whole = [prior.partOf, partOf].filter((q): q is string => q !== undefined).sort((x, y) => y.length - x.length)[0];
+    out[i] = { text: t, label: prior.label ?? label, ...(withText === undefined ? {} : { with: withText }), ...(whole === undefined ? {} : { partOf: whole }) };
   };
   const m = LABELLED.exec(line);
   const label = m?.[1]?.trim() ?? null;

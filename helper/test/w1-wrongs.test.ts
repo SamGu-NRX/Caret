@@ -166,6 +166,26 @@ describe("W1 review: parts keep what their line says about them", () => {
   });
 });
 
+describe("W1 round-2 review: one span found twice keeps what both readings say", () => {
+  it("keeps 'Reception Desk' a part, quoting its whole value, though the first-part reading found it bare", async () => {
+    const value = "Reception Desk, ring twice";
+    expect(lineTexts(`Delivery instructions: ${value}`).find((t) => t.text === "Reception Desk")).toEqual({ text: "Reception Desk", label: "Delivery instructions", with: value, partOf: value });
+    const m = noteDesk(`Delivery instructions: ${value}\n`, [field("form/notes", "", { role: "AXTextArea", label: "Delivery instructions" })]);
+    const p = await proposeFill(m, picking("Delivery instructions", "Reception Desk"), "form", "form/notes", T0, { rand: () => 0 });
+    expect(fieldOf(p, "form/notes")).toMatchObject({ value: null, withheld: "wrongKind" });
+  });
+
+  it("keeps the qualifier beside 'Lumen Labs' from 'Lumen Labs, lab technician (for my sister)'", async () => {
+    const value = "Lumen Labs, lab technician (for my sister)";
+    const texts = lineTexts(`work: ${value}`);
+    for (const part of ["Lumen Labs", "lab technician"]) expect(texts.find((t) => t.text === part)).toEqual({ text: part, label: "work", with: value, partOf: value });
+    const m = noteDesk(`work: ${value}\n`, [field("form/company", "", { label: "Current employer" })]);
+    const seen: JevRequest[] = [];
+    await proposeFill(m, picking("Current employer", "none", seen), "form", "form/company", T0, { rand: () => 0 });
+    expect(options(seen, "Current employer").find((o) => o.startsWith('"Lumen Labs" ('))).toContain("for my sister");
+  });
+});
+
 describe("severalValues", () => {
   it.each([
     ["Brightline Dental Labs, lab technician, $5,200/mo gross", ["Brightline Dental Labs", "lab technician", "$5,200/mo gross"]],
