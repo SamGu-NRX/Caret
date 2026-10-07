@@ -11,6 +11,7 @@ import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { LineClient, until } from "./socket-reader.ts";
+import type { AskJev } from "../src/fill/jev.ts";
 import { areaKey, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, type CannedStep, type GoalScene } from "./goal-desk.ts";
 
 const EMAIL = "priya.raman@northwind.example";
@@ -163,5 +164,48 @@ describe("goalEdit on the socket", () => {
     expect(other.received.filter((m) => (m as { type: string }).type === "error")).toEqual([]);
     host.close();
     other.close();
+  });
+});
+
+// I2: an Ask's goal edits are held to the scope the drafted value was minted under (fill/ask-scope.ts).
+describe("goalEdit under an Ask's scope (I2)", () => {
+  async function askPreviewed(from = "6161-2"): Promise<{ sc: GoalScene; first: Segment }> {
+    const values = standInJev({ noul: 0.99 });
+    // Heads say plan; the scope ask chooses Message alone, so the program's To is left out.
+    const askJev: AskJev = async (req) => {
+      if (req.purpose === "ask.heads") return { model: "t", inputTokens: 0, latencyMs: 0, costUsd: 0, answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: { route: "plan", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none", confidence: 0.95 }])) };
+      if (req.purpose === "ask.scope") return { model: "t", inputTokens: 0, latencyMs: 0, costUsd: 0, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: /[Tt]he field 'Message'/u.test(String(q.instructions)) ? "asks" : "not", confidence: 0.95 }])) };
+      return values(req);
+    };
+    const sc = goalScene({ scripts: [REPLY], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev, ask: { maker: "heads" } });
+    scenes.push(sc);
+    const first = (await sc.helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "a1", at: sc.desk.at, instruction: "write the message saying I'm in", windowId: from }, sc.session, true, true)) as GoalProgress;
+    if (first.type !== "goalProgress" || first.event !== "segment") throw new Error(`no preview: ${JSON.stringify(first)}`);
+    return { sc, first };
+  }
+
+  it("from the email, a window with no field: settles the reply window's scope when the goal writes there (ruling 5)", async () => {
+    const { sc, first } = await askPreviewed("6161-1");
+    expect(first.steps.some((s) => s.says.startsWith("To:"))).toBe(false);
+    expect(first.steps.some((s) => s.kind === "write" && "drafted" in s)).toBe(true);
+    expect(JSON.stringify(first)).toContain("the Ask did not ask Caret to fill");
+    expect(sc.desk.writes).toEqual([]);
+  });
+
+  it("drops the write Jev did not choose, and takes the user's words over the draft it did", async () => {
+    const { sc, first } = await askPreviewed();
+    expect(first.steps.some((s) => s.says.startsWith("To:"))).toBe(false);
+    const step = first.steps.findIndex((s) => s.kind === "write" && "drafted" in s);
+    expect(sc.helper.handleGoalEdit(edit(first, { step }), sc.session)).toMatchObject({ event: "segment" });
+  });
+
+  it("refuses the edit once the drafted field reads differently than when the Ask was asked", async () => {
+    const { sc, first } = await askPreviewed();
+    const step = first.steps.findIndex((s) => s.kind === "write" && "drafted" in s);
+    const w = replyWindow();
+    sc.desk.show({ ...w, nodes: [{ key: "dev.caret.mailfixture/standard/heading:other~0", parent: null, role: "AXHeading", label: "Internal note" }, ...w.nodes] });
+    const r = sc.helper.handleGoalEdit(edit(first, { step }), sc.session);
+    expect(r).not.toMatchObject({ event: "segment", digest: expect.any(String), steps: expect.arrayContaining([expect.objectContaining({ says: `Message: ${MINE}` })]) });
+    expect(sc.desk.writes).toEqual([]);
   });
 });

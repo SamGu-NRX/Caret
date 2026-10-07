@@ -98,14 +98,30 @@ export type WhoseReading =
 const FORM_NOUN = "form|application|app|order|registration|enrollment|enrolment|request|ticket|booking|reservation|rsvp|signup|survey|questionnaire|checkout|paperwork";
 
 const RELATION_SPAN = /^(?:my|our)\s+(\S+)$/iu;
+/** A third-person pronoun for someone other than the user: "his cell", "she wants", "add them". */
+const THIRD_PERSON = /\b(?:he|him|his|she|her|hers|they|them|their|theirs)\b/iu;
+
+/**
+ * I3 lead ruling (B26 heldout2-11, "add his cell number too"): whether the request points at someone other than the user,
+ * by a third-person pronoun, a relation ("my sister") or a name it gives as a person, and does not name the user beside
+ * them ("me and Bea"). Such a request never offers the user as the person it means (choices.ts personChoices): "you"
+ * cannot be what "his" means. Words only in its source phrases ("from Morgan's email") point at no one.
+ */
+export function pointsAtOther(snap: IntentSnapshot): boolean {
+  const instruction = snap.instruction;
+  const fw = fieldWords(instruction);
+  if (USER_TOO.test(fw)) return false;
+  return THIRD_PERSON.test(fw) || snap.persons.some((p) => !onlyInSources(instruction, p.span));
+}
+
 /** The user named beside someone else: "for me and Bea", "Bea and I", "both of us". */
 const USER_TOO = /\b(?:me|myself|i)\s+(?:and|&|\+)\s+\S|\S\s+(?:and|&|\+)\s+(?:me|myself|i)\b|\bboth of us\b|\bthe two of us\b|\bus both\b/iu;
 
 /**
  * Whose details the instruction asks for, by code. `others` are the people on screen and in memory (peopleOnScreen).
- * `someoneElses` is whether code's scope reading read a kind as someone else's ("his number", "her email").
+ * One person per Ask: two names, two relations or two people in its sources ask which one, never fill for both.
  */
-export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate[], memory: readonly MemoryValue[], someoneElses: boolean): WhoseReading {
+export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate[], memory: readonly MemoryValue[]): WhoseReading {
   const instruction = snap.instruction;
   // A name right before a form noun names the form, not a person: "the Northgate application" (A1 held-out B25). Any other
   // place keeps it a person, a word of the form's title or not ("the RSVP for Jun or Bea"; A1 fix-check).
@@ -126,8 +142,8 @@ export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate
   if (relations.length > 1) return { kind: "ask", candidates: relations.map((p) => p.span), why: "the instruction names more than one relation" };
   // No one named: a pronoun for someone's details is the one other person in the instruction's sources.
   const fw = fieldWords(instruction);
-  if (!someoneElses && !PRONOUN_DETAILS.test(fw) && !PRONOUN.test(fw)) return { kind: "user", why: "no one else is named" };
-  if (!someoneElses && !PRONOUN_DETAILS.test(fw)) return { kind: "unread", why: "a pronoun that may not be about details" };
+  if (!PRONOUN_DETAILS.test(fw) && !PRONOUN.test(fw)) return { kind: "user", why: "no one else is named" };
+  if (!PRONOUN_DETAILS.test(fw)) return { kind: "unread", why: "a pronoun that may not be about details" };
   if (restrictsSources(instruction)) return { kind: "ask", candidates: [], why: "the instruction keeps Caret to its own words" };
   const sourceIds = new Set(snap.named.map((n) => n.windowId));
   const inSources = sourceIds.size === 0 ? others : others.filter((p) => p.windowIds.some((id) => sourceIds.has(id)));

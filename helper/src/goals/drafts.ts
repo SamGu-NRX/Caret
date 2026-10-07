@@ -747,7 +747,7 @@ export async function confirmClaims(instruction: string, drafts: readonly { text
     const carried = snippets.filter((x) => sent.includes(x.text));
     const charged: Record<string, number> = {};
     for (const x of carried) charged[x.windowId] = (charged[x.windowId] ?? 0) + x.text.length;
-    return { state: { instruction, task: "Caret checks that a short text it drafted for the user adds nothing the user did not ask to say." }, questions: {}, nouls, snippets: carried, charged };
+    return { purpose: "draft.check", state: { instruction, task: "Caret checks that a short text it drafted for the user adds nothing the user did not ask to say." }, questions: {}, nouls, snippets: carried, charged };
   };
   let r: Awaited<ReturnType<AskJev>>[];
   try {

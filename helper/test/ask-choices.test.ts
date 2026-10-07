@@ -3,6 +3,7 @@
 // and nothing else trusted: Jev still chooses every value, sources stay what the user picked, and must-refuse asks
 // stay refusals. Imports only what existed before B29, so each test fails on the old code instead of failing to load.
 // All text is synthetic.
+import { answeringScope } from "./builders.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
@@ -42,14 +43,20 @@ const memory = { values: () => MEMORY };
 const about = [{ id: "about-1", label: "Name", value: "Elena Vance", kind: "name" as const }];
 
 /** Jev picking the candidate `pick` names for each field question, "user" for whose, yes for every confirm. */
-function jevBy(pick: (q: string) => string | null, owner: (d: string) => string = () => "unclear"): { ask: AskJev; seen: JevRequest[] } {
+/** G2 review: by default the user's own values (Elena's) are hers, and anyone else's are unclear. */
+const elenas = (d: string): string => (/elena/iu.test(/"(.*?)" \(/su.exec(d)?.[1] ?? "") ? "user" : "unclear");
+function jevBy(pick: (q: string) => string | null, owner: (d: string) => string = elenas): { ask: AskJev; seen: JevRequest[] } {
   const seen: JevRequest[] = [];
   const ask: AskJev = async (req) => {
     seen.push(req);
+    // I2 ruling D: the per-field scope question every route asks: every field it is asked about.
+    if (req.purpose === "ask.scope") return answeringScope(async () => { throw new Error("unreachable"); })(req);
     const answers = Object.fromEntries(
       Object.entries(req.questions).map(([id, q]) => {
         const ins = String(q.instructions);
-        if (id.endsWith("_whose")) return [id, { choice: "user", confidence: 0.9 }];
+        // G2 review: a field that wants the user's details takes only a value both asks call the user's; a landlord's
+        // field wants someone else's.
+        if (id.endsWith("_whose")) return [id, { choice: /landlord/iu.test(ins) ? "other" : "user", confidence: 0.9 }];
         if (id.endsWith("_owner")) return [id, { choice: owner(ins), confidence: 0.9 }];
         if ("yes" in q.criteria) return [id, { choice: "yes", confidence: 0.9 }];
         const want = pick(ins);
@@ -161,7 +168,7 @@ describe("Ask asks which fields, with the fields that fit as choices (B29)", () 
 
   it("turns the whole-form fallback's 'which fields' into the same question, and never trusts a writer's reading of a picked field", async () => {
     // "Fill only Email; do not change Full name": B28b's exclusion word, and Jev confirms nothing, so it asked which fields.
-    const no: AskJev = async (req) => ({ model: "t", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "no", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 });
+    const no: AskJev = answeringScope(async (req) => ({ model: "t", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "no", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 }));
     const e = await fail(planAsk("fill only email; do not change full name", desk(), memory, about, { askJev: no, maker: maker({ scope: "all" }), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
     const q = questionOf(e) as Q;
     // "name" fits Landlord name too: the options are what the words fit, and the user picks.
@@ -289,7 +296,7 @@ describe("re-check: the fields a continued Ask fills must read as the question s
     const q = questionOf(await fail(planAsk(instruction, desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((x) => ({ route: "ask", why: "whichFields", fields: ["Landlord name", "Landlord phone"].map((n) => x.fields.find((f) => f.name === n)?.ref ?? "?") })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }))) as Q;
     const name = q.options.find((c) => c.option.label === "Landlord name")?.option.id as string;
     const m = at([], (ns) => ns.map((n) => (n.key === KEY("landlord phone") ? { ...n, label: "Office phone" } : n)));
-    const d = await answer(q, [name], { model: m, ask: jevBy((x) => (x.includes("'Landlord name'") ? "Gary Pruitt" : null), () => "user").ask, instruction });
+    const d = await answer(q, [name], { model: m, ask: jevBy((x) => (x.includes("'Landlord name'") ? "Gary Pruitt" : null), () => "other").ask, instruction });
     expect(d.checked.writes.map((w) => w.node.key)).toEqual([KEY("landlord name")]);
   });
 });
@@ -390,11 +397,12 @@ describe("second re-check: what a continued Ask compares, and when (B29)", () =>
     const q = questionOf(await fail(planAsk(instruction, m, memory, about, { askJev: jevBy(() => null).ask, maker: maker((x) => ({ route: "ask", why: "whichFields", fields: [ref(x, "Landlord name"), ref(x, "Landlord phone")] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }))) as Q;
     formSnap(m, (ns) => ns.filter((n) => n.key !== KEY("landlord phone")));
     const name = q.options.find((c) => c.option.label === "Landlord name")?.option.id as string;
-    const d = await answer(q, [name], { model: m, ask: jevBy((x) => (x.includes("'Landlord name'") ? "Gary Pruitt" : null), () => "user").ask, instruction });
+    const d = await answer(q, [name], { model: m, ask: jevBy((x) => (x.includes("'Landlord name'") ? "Gary Pruitt" : null), () => "other").ask, instruction });
     expect(d.checked.writes.map((w) => w.node.key)).toEqual([KEY("landlord name")]);
   });
 });
 
+// I3 lead ruling: a request that points at someone else ("his cell", "Gary's cell") never offers the user ("you").
 describe("Ask asks whose details, with the user and the people on screen (B29)", () => {
   const instruction = "add his cell number in the landlord phone";
 
@@ -403,23 +411,23 @@ describe("Ask asks whose details, with the user and the people on screen (B29)",
     expect(e.message).toBe(SAYS.whichPerson);
     const q = questionOf(e) as Q;
     expect(q).toMatchObject({ part: "person", text: "Whose details go in?", pick: "one" });
-    expect(q.options.map((c) => c.option)).toEqual([{ kind: "you", id: "o1" }, { kind: "person", id: "o2", name: "Gary Pruitt" }]);
+    expect(q.options.map((c) => c.option)).toEqual([{ kind: "person", id: "o1", name: "Gary Pruitt" }]);
     const j = jevBy((s) => (s.includes("'Landlord phone'") ? "(512) 555-0177" : null), (c) => (c.includes("(512) 555-0177") ? "person" : "unclear"));
-    const d = await answer(q, ["o2"], { model: desk({ mail: true }), ask: j.ask, instruction });
+    const d = await answer(q, ["o1"], { model: desk({ mail: true }), ask: j.ask, instruction });
     expect(d.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[KEY("landlord phone"), "(512) 555-0177"]]);
     expect(JSON.stringify(j.seen.map((r) => r.state))).toContain("Gary Pruitt");
   });
 
   it("lists a person once, by the longest name: 'Gary' in the instruction and 'Gary Pruitt' on a mail", async () => {
     const e = await fail(planAsk("put Gary's cell in the landlord phone", desk({ mail: true }), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ route: "ask", why: "whichPerson", fields: [s.fields.find((f) => f.name === "Landlord phone")?.ref ?? "?"] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
-    expect(questionOf(e)?.options.map((c) => c.option)).toEqual([{ kind: "you", id: "o1" }, { kind: "person", id: "o2", name: "Gary Pruitt" }]);
+    expect(questionOf(e)?.options.map((c) => c.option)).toEqual([{ kind: "person", id: "o1", name: "Gary Pruitt" }]);
   });
 
   // A1 decision 2: a note's line that names someone beside a role ("Landlord: Gary Pruitt") puts them among the options.
   it("asks with the person a note names beside a role, when no mail names anyone (A1)", async () => {
     const e = await fail(planAsk(instruction, desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ fields: [s.fields.find((f) => f.name === "Landlord phone")?.ref ?? "?"] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
     expect(e.message).toBe(SAYS.whichPerson);
-    expect(questionOf(e)?.options.map((c) => c.option)).toEqual([{ kind: "you", id: "o1" }, { kind: "person", id: "o2", name: "Gary Pruitt" }]);
+    expect(questionOf(e)?.options.map((c) => c.option)).toEqual([{ kind: "person", id: "o1", name: "Gary Pruitt" }]);
   });
 
   it("refuses as before when no one is named in the instruction or on screen", async () => {

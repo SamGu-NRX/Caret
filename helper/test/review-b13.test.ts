@@ -20,6 +20,9 @@ import { PROTOCOL_VERSION, type AppRef, type FillProposal, type HelperMessage, t
 import type { AskJev } from "../src/fill/jev.ts";
 import { field, snap, text, value } from "./builders.ts";
 import { FORM_KEY, MESSAGES, SCHEDULE_FORM as FORM, chatWindow, notesWindow, scheduleForm } from "./desks.ts";
+import { minted } from "./mint.ts";
+/** W2: writtenFields on a hand-built proposal whose written fields the write contract minted first (test/mint.ts). */
+const writtenMinted = async (p: FillProposal, ...rest: Parameters<typeof writtenFields> extends [unknown, ...infer R] ? R : never): Promise<ReturnType<typeof writtenFields>> => writtenFields(await minted(p), ...rest);
 
 // The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and
 // change an answer these tests check (candidates.ts setGeneratorClock).
@@ -283,7 +286,7 @@ describe("B13 review: a field that changes meaning while Jev answers", () => {
     }
   });
 
-  it("F9: recheckFill refuses a proposal whose field reads differently now", () => {
+  it("F9: recheckFill refuses a proposal whose field reads differently now", async () => {
     const m = new ScreenModel();
     const rec = loadRecording("offers-fill.ndjson");
     for (const msg of rec) if (msg.type === "snapshot") m.apply(msg);
@@ -291,7 +294,7 @@ describe("B13 review: a field that changes meaning while Jev answers", () => {
     const src = rec.find((x): x is Snapshot => x.type === "snapshot" && x.window.windowId === "6160-1") as Snapshot;
     const emailNode = src.values.find((v) => v.kind === "email");
     expect(emailNode).toBeDefined();
-    const p = writtenFields({
+    const p = await writtenMinted({
       type: "fillProposal",
       v: PROTOCOL_VERSION,
       id: "p1",

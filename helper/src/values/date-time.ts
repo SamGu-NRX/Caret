@@ -297,7 +297,8 @@ function referenceDate(ctx: ResolveContext): Temporal.PlainDate | string {
  * ("en-US-u-ca-gregory" is en-US). A tag with no region, or a region where both orders are common (Canada),
  * is unknown and asks.
  */
-function dateOrder(locale: string | undefined): "dmy" | "mdy" | null {
+/** The order a locale writes a numeric date's month and day in, or null when it is unknown or mixed (V3: fill reads numeric dates by it too). */
+export function dateOrder(locale: string | undefined): "dmy" | "mdy" | null {
   if (locale === undefined) return null;
   const key = languageRegion(locale);
   if (key === null) return null;
@@ -336,7 +337,14 @@ function resolveDateTok(tok: DateTok, text: string, ctx: ResolveContext): Choice
     case "numeric": {
       if (tok.twoDigitYear) return none(`"${text}" has a two-digit year`);
       if (tok.sep === "." && tok.y === null) return none(`"${text}" is not a date without a year`);
-      const order = tok.sep === "." ? "dmy" : dateOrder(ctx.sourceLocale);
+      // V3 review: the order is an assumption unless the numbers settle it (one over 12, or both the same), and it is said
+      // as one: a format the source states beside the date (ctx.sourceDateOrder), else the source's locale. A dotted date
+      // is no longer read day first by convention: with no evidence it asks, as a slashed one does. A stated format that
+      // the numbers or the locale contradict asks too.
+      const intrinsic = tok.a > 12 ? "dmy" : tok.b > 12 ? "mdy" : tok.a === tok.b ? "mdy" : null;
+      const stated = ctx.sourceDateOrder ?? null;
+      const byLocale = dateOrder(ctx.sourceLocale);
+      const said = (c: Choice<Temporal.PlainDate>, why: string): Choice<Temporal.PlainDate> => (c.kind === "one" ? one(c.value, [why, ...c.assumptions]) : c);
       const read = (mo: number, d: number): Choice<Temporal.PlainDate> => {
         if (tok.y !== null) {
           const date = plainDate(tok.y, mo, d);
@@ -345,8 +353,16 @@ function resolveDateTok(tok: DateTok, text: string, ctx: ResolveContext): Choice
         if (plainDate(2024, mo, d) === null) return none(`there is no date ${text}`);
         return yearless(mo, d, ctx, text);
       };
-      if (order === "mdy") return read(tok.a, tok.b);
-      if (order === "dmy") return read(tok.b, tok.a);
+      if (stated !== null && byLocale !== null && stated !== byLocale) return many(`Is "${text}" month first or day first? The format beside it and the source's locale disagree.`, []);
+      const order = stated ?? byLocale;
+      if (order !== null) {
+        // A format or a locale the numbers contradict ("13/04/2026" in en-US) reads no date at all: never swapped.
+        if (intrinsic !== null && intrinsic !== order && tok.a !== tok.b) return none(`there is no date ${text} in the order its source writes dates`);
+        const first = order === "mdy" ? "month first" : "day first";
+        const read1 = order === "mdy" ? read(tok.a, tok.b) : read(tok.b, tok.a);
+        // Numbers that settle the order themselves need no assumption; otherwise the order's source is said.
+        return intrinsic !== null ? read1 : said(read1, stated !== null ? `${first}: the format the source states beside "${text}"` : `${first}: the source's locale, ${ctx.sourceLocale}`);
+      }
       // Unknown source locale: both orders, as a question, unless they name the same day.
       const readings = [read(tok.a, tok.b), read(tok.b, tok.a)];
       const dates = readings.flatMap(valuesOf);

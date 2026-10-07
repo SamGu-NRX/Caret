@@ -11,7 +11,8 @@
     "start": "node src/main.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "tsc -p tsconfig.json && vitest run",
-    "schema": "node src/export-schema.ts"
+    "schema": "node src/export-schema.ts",
+    "guard-adversary": "node scripts/guard-adversary.ts"
   },
   "dependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "0.32.0",

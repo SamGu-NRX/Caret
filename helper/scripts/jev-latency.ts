@@ -13,6 +13,7 @@ import { CacheRefused } from "../src/engines/decide/cache.ts";
 import { JevGatewayPolicyError, JEV_GATEWAY_MODEL, LAYA_FREE_MODEL, jevFailureKind, jevSettings, loadJevKey, makeJevClient, type JevProvider, type JevRequest } from "../src/fill/jev.ts";
 
 export const SMALL_REQUEST: JevRequest = {
+  purpose: "probe.latency",
   state: "The fixture asks for an email address.",
   questions: { q: { type: "choice", instructions: "Choose the email address.", criteria: { email: "alex@example.test", none: "No email address." } } },
   snippets: [], charged: {}, retry429: false,
@@ -53,7 +54,7 @@ export function fixtureFillRequest(recordText: string): JevRequest {
     }
     questions[id] = { type: "choice", instructions: `The user asked "fill out this form". Which candidate belongs in the ${field.control} field '${field.label}'? Choose none if no candidate fits.`, criteria };
   }
-  const req: JevRequest = { state: { form: form.fields, windows }, questions, snippets: [], charged: {}, retry429: false };
+  const req: JevRequest = { purpose: "probe.latency", state: { form: form.fields, windows }, questions, snippets: [], charged: {}, retry429: false };
   fixtureRequests.add(JSON.stringify(req));
   return req;
 }

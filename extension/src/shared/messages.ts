@@ -41,6 +41,8 @@ export interface PageControl {
   entry?: "typed" | "pasted" | "other";
   /** H14, file inputs only: the accept attribute's extensions and MIME types, lowercased (walker.ts acceptOf). */
   accept?: string[];
+  /** W2: the autocomplete attribute's field name, when it is one Caret reads (walker.ts autocompleteOf). */
+  autocomplete?: string;
 }
 
 export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "notSameElement" | "excluded" | "unsupported" | "error" | "siteOff";

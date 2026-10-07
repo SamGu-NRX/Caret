@@ -34,6 +34,67 @@ async function fillFirst(r: Rig, instruction = "fill out this form from my note"
 }
 
 describe("a whole-form goal carries across the user's Next (P3)", () => {
+  // I2 lead ruling (revised): a carry is the goal's own state. While the goal waits on its "You press Next" hand-off,
+  // the next document in the same tab on the same origin is the carry; any other change pauses it and settles nothing.
+  it("stops, says the page changed, and settles nothing when the next document is on another origin", async () => {
+    const r = await rig();
+    const first = await fillFirst(r);
+    expect(first.steps.at(-1)?.says).toMatch(/^You press /u);
+    const before = r.asked.length;
+    r.page.origin = "https://elsewhere.example";
+    await r.next(page2, "Somewhere else", "/landing");
+    await settle(r);
+    expect(segments(r).some((x) => x.reason === "nextPage")).toBe(false);
+    expect(goalMessages(r).some((m) => m.event === "stopped" && m.goalId === first.goalId && /page changed/u.test((m as Stopped).says))).toBe(true);
+    expect(r.asked.slice(before).some((q) => q.purpose === "ask.scope")).toBe(false);
+  });
+
+  // I2 (final review reproduction): the page navigates to another origin during the goal's final walk. The goal must not
+  // arm a carry that pairs the old document with the new origin, which the next snapshot would carry and settle.
+  it("arms no carry when the page navigated to another origin during the goal's final walk", async () => {
+    const r = await rig();
+    const s = (await r.ask("fill out this form from my note")) as Segment;
+    const page = r.page as unknown as { snapshot: (id: string) => unknown };
+    const walked = page.snapshot.bind(r.page);
+    let moved = false;
+    page.snapshot = (id: string) => {
+      // The goal's final walk: the second walk after the segment's last write (the first is that write's own read-back).
+      const verbs = r.page.verbs.map((v) => v.kind);
+      const writes = s.steps.filter((x) => x.kind === "write").length;
+      let seen = 0;
+      const last = verbs.findIndex((k) => k !== "pageWalk" && ++seen === writes);
+      const wrote = last >= 0 && verbs.slice(last + 1).filter((k) => k === "pageWalk").length >= 2;
+      if (wrote && !moved) {
+        moved = true;
+        r.page.origin = "https://elsewhere.example";
+        r.page.goTo(page2, "Somewhere else", "/landing");
+      }
+      return walked(id);
+    };
+    const before = r.asked.length;
+    await r.accept(s);
+    await settle(r);
+    expect(moved).toBe(true);
+    // Another snapshot of the new page, as the reader sends: nothing may carry to it now.
+    expect((await r.host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");
+    await settle(r);
+    expect(segments(r).some((x) => x.reason === "nextPage")).toBe(false);
+    expect(r.asked.slice(before).some((q) => q.purpose === "ask.scope")).toBe(false);
+    expect(goalMessages(r).some((m) => m.event === "stopped" && /page changed/u.test((m as Stopped).says))).toBe(true);
+  });
+
+  it("does not carry a reload of a page whose goal offered no hand-off, and settles nothing", async () => {
+    // A form with no forward control: its goal ends with "The rest is yours", not "You press …", so nothing waits on it.
+    const r = await rig({ controls: () => mixedControls().filter((x) => x.kind !== "button") });
+    const first = await fillFirst(r);
+    expect(first.steps.some((s) => /^You press /u.test(s.says))).toBe(false);
+    const before = r.asked.length;
+    await r.next(page2, "Apply: step 2", "/two");
+    await settle(r);
+    expect(segments(r).some((x) => x.reason === "nextPage")).toBe(false);
+    expect(r.asked.slice(before).some((q) => q.purpose === "ask.scope")).toBe(false);
+  });
+
   it("offers the next page as a fresh preview with reason nextPage, which one more Tab fills", async () => {
     const r = await rig();
     const first = await fillFirst(r);
@@ -70,6 +131,8 @@ describe("a whole-form goal carries across the user's Next (P3)", () => {
     // Fill asked Jev about the new page's fields: values were chosen again, not carried.
     const fresh = r.asked.slice(before);
     expect(fresh.length).toBeGreaterThan(0);
+    // I2 ruling: the new page's scope is settled afresh by Jev's scope ask, never the old page's reused.
+    expect(fresh.some((q) => q.purpose === "ask.scope")).toBe(true);
     expect(fresh.some((q) => JSON.stringify(q.questions).includes("Email"))).toBe(true);
   });
 
@@ -148,7 +211,9 @@ describe("the P3 review's carry findings", () => {
   /** A page with nothing the sources fill: a question Caret has no value for. */
   const nothing = (): PageControl[] => [c("z1", "text", "Favorite robot", { value: "" }), c("z2", "button", "Next")];
 
-  it("goes on to the page after one it found nothing for", async () => {
+  // I2 lead ruling (revised): one carry per hand-off. A page Caret found nothing for offers no "You press Next" of its
+  // own, so the page after it is not carried (before I2 the carry waited on, and wizard-3 was filled).
+  it("does not go on to the page after one it found nothing for: that page offered no hand-off", async () => {
     const r = await rig();
     await fillFirst(r);
     await r.next(nothing, "Apply: step 2", "/two");
@@ -156,18 +221,17 @@ describe("the P3 review's carry findings", () => {
     expect(segments(r).some((m) => m.reason === "nextPage")).toBe(false);
     await r.next(page2, "Apply: step 3", "/three");
     await settle(r);
-    expect((segments(r).at(-1) as Segment).reason).toBe("nextPage");
+    expect(segments(r).some((m) => m.reason === "nextPage")).toBe(false);
   });
 
-  it("leaves a page it found nothing for to the ambient offer", async () => {
+  it("leaves a page it found nothing for to the ambient offer, and waits for no page after it", async () => {
     const r = await rig();
     await fillFirst(r);
     await r.next(nothing, "Apply: step 2", "/two");
     await settle(r);
     const doc = r.host.registry.documentOf(WIN);
     expect(r.helper.goals.carrying(WIN, doc)).toBe(false);
-    // Still waiting for the page after it.
-    expect(r.helper.goals.carrying(WIN, null)).toBe(true);
+    expect(r.helper.goals.carrying(WIN, null)).toBe(false);
   });
 
   it("offers nothing a fresh plan finished planning for after its host left", async () => {

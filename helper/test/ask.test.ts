@@ -4,14 +4,14 @@
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { proposeFill, type FillScope } from "../src/fill/fill.ts";
-import type { AskJev, JevRequest } from "../src/fill/jev.ts";
+import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { checkIntent, intentSnapshot, personSpans, type AskIntent, type IntentSnapshot } from "../src/planner/intent.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft } from "../src/planner/ask.ts";
 import { asksForWholeForm } from "../src/planner/scope-words.ts";
 import { BY_WORD, REVIEWED } from "./b28-reviewed.ts";
 import type { IntentMaker } from "../src/planner/intent-makers.ts";
 import { intentInput, jevIntentMaker, writerIntentMaker } from "../src/planner/intent-makers.ts";
-import { FIELD_FLOOR, HEAD_FLOOR, headsIntentMaker, headsRequest, readHeads, tieLiterals } from "../src/planner/intent-heads.ts";
+import { HEAD_FLOOR, headsIntentMaker, headsRequest, readHeads, scopeId, tieLiterals } from "../src/planner/intent-heads.ts";
 import { intentResponseFormat, IntentInputSchema } from "../src/writer/intent-prompt.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { SAYS, SaidError } from "../src/planner/says.ts";
@@ -168,7 +168,11 @@ function jevBy(pick: (q: string) => string | null, owner: (d: string) => string 
     const answers = Object.fromEntries(
       Object.entries(req.questions).map(([id, q]) => {
         const ins = String(q.instructions);
-        if (id.endsWith("_whose")) return [id, { choice: "user", confidence: 0.9 }];
+        // I2 ruling D: Jev's per-field scope question, asked on every route: every field it is asked about.
+        if (req.purpose === "ask.scope") return [id, { choice: "asks", confidence: 0.9 }];
+        // G2 review: a field that wants the user's details takes only a value both asks call the user's; a landlord's
+        // field wants someone else's.
+        if (id.endsWith("_whose")) return [id, { choice: /landlord/iu.test(ins) ? "other" : "user", confidence: 0.9 }];
         if (id.endsWith("_owner")) return [id, { choice: owner(ins), confidence: 0.9 }];
         if ("yes" in q.criteria) return [id, { choice: confirm(ins), confidence: 0.9 }];
         const want = pick(ins);
@@ -303,121 +307,79 @@ describe("the intent makers", () => {
   });
 });
 
-describe("the heads intent maker (P1)", () => {
-  /** One heads answer: each head by id at `conf` (0.9 unless given), nouls by id (0 unless given). */
-  const answer = (heads: Record<string, string>, nouls: Record<string, number> = {}, conf: Record<string, number> = {}) => (s: IntentSnapshot) => {
+describe("the heads intent maker (P1, A3)", () => {
+  /** The heads at `conf` (0.9 unless given), each by id, else the first option; the scope ask by `asks`, both wordings at 0.99. */
+  const answer = (s: IntentSnapshot, heads: Record<string, string>, conf: Record<string, number> = {}): JevResult => {
     const req = headsRequest(s);
     const answers = Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: heads[id] ?? Object.keys(req.questions[id]?.criteria ?? {})[0] ?? "none", confidence: conf[id] ?? 0.9 }]));
-    return { model: "jev-test", answers, nouls: Object.fromEntries(Object.keys(req.nouls ?? {}).map((id) => [id, nouls[id] ?? 0])), inputTokens: 100, latencyMs: 1, costUsd: 0 };
+    return { model: "jev-test", answers, inputTokens: 100, latencyMs: 1, costUsd: 0 };
   };
-  const read = (instruction: string, heads: Record<string, string>, nouls: Record<string, number> = {}, conf: Record<string, number> = {}): AskIntent => {
+  const scoped = (s: IntentSnapshot, asks: readonly string[]): [JevResult, JevResult] => {
+    const one: JevResult = { model: "jev-test", answers: Object.fromEntries(s.fields.map((f) => [scopeId(f.ref), { choice: asks.includes(f.name) ? "asks" : "not", confidence: 0.99 }])), inputTokens: 10, latencyMs: 1, costUsd: 0 };
+    return [one, one];
+  };
+  const everyField = (s: IntentSnapshot): string[] => s.fields.map((f) => f.name);
+  const read = (instruction: string, heads: Record<string, string>, asks: (s: IntentSnapshot) => readonly string[] = everyField, conf: Record<string, number> = {}): AskIntent => {
     const s = snapOf(instruction);
-    return readHeads(s, answer(heads, nouls, conf)(s));
+    return readHeads(s, answer(s, heads, conf), scoped(s, asks(s)));
   };
 
-  it("asks everything in one request: the heads as choices, one yes/no per field, no section head on a form without sections", () => {
-    const s = snapOf("fill this out from my note");
-    const req = headsRequest(s);
-    // A1: code reads this as the whole form, so the request also asks whether that reading is right.
-    expect(Object.keys(req.questions).sort()).toEqual(["reading", "scope", "source", "whose", "why"]);
-    expect(Object.keys(req.questions.reading?.criteria ?? {})).toEqual(["code", "some", "none"]);
-    expect(Object.keys(req.questions.scope?.criteria ?? {})).toEqual(["all", "fields", "plan", "unclear", "refuse"]);
-    expect(Object.keys(req.nouls ?? {})).toEqual(s.fields.map((f) => `n_${f.ref}`));
-    expect(req.questions.source?.criteria).toHaveProperty("w1");
-    expect(req.snippets).toEqual(s.ledger.declared().snippets);
-  });
-
-  it("makes its intent from exactly one Jev request", async () => {
-    const s = snapOf("fill this out");
-    const seen: JevRequest[] = [];
-    const ask: AskJev = async (req) => (seen.push(req), answer({ scope: "all", source: "any", whose: "user" })(s));
-    const r = await headsIntentMaker(ask).make(s);
-    const calls = seen.length;
-    expect(calls).toBe(1);
-    expect([r.use.maker, r.use.calls]).toEqual(["heads", 1]);
-    expect(r.intent).toMatchObject({ route: "fill", scope: "all", sources: ["any"], whose: "user" });
-  });
-
-  it("reads the whole form, a plan or a refusal from the scope head at its floor", () => {
-    expect(read("fill this out from my note", { scope: "all", source: "w1", whose: "user" })).toMatchObject({ route: "fill", scope: "all", sources: ["w1"], whose: "user" });
-    expect(read("submit it", { scope: "plan" })).toMatchObject({ route: "plan", scope: "none" });
-    expect(read("pay for it", { scope: "refuse", why: "payment" })).toMatchObject({ route: "refuse", why: "payment" });
+  it("reads a plan or a refusal from the route head at its floor", () => {
+    // A plan carries Jev's fields, for a page host that fills its form instead (ask.ts).
+    expect(read("submit it", { route: "plan" })).toMatchObject({ route: "plan", scope: "list", agreed: true });
+    expect(read("pay for it", { route: "refuse", why: "payment" })).toMatchObject({ route: "refuse", why: "payment" });
     // A refusal whose reason is under the floor is said generally; checkIntent still names a never-typed kind itself.
-    expect(read("pay for it", { scope: "refuse", why: "payment" }, {}, { why: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "refuse", why: "nothingToFill" });
-    // Under the floor, or unclear, with no reading of code's the model agrees with: which fields? The other parts that
-    // settled stand.
-    expect(read("fill this out from my note", { scope: "all", source: "w1", reading: "some" }, {}, { scope: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"], sources: ["w1"] });
-    expect(read("do the thing", { scope: "unclear", source: "any" })).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"] });
-    // A refuse or plan under the floor is not taken either: it asks.
-    expect(read("submit it", { scope: "plan" }, {}, { scope: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "ask", open: ["fields"] });
-  });
-
-  // P2: live, Jev chose the whole form for "fill out this form" on all 19 corpus and W4 pages, under the floor on 17. A1:
-  // code reads the instruction first, and the model's choice of that reading settles it whatever the scope head's margin.
-  it("settles code's reading when the model chooses it, under the scope head's floor too, and asks when it does not", () => {
-    const low = { scope: HEAD_FLOOR - 0.2 };
-    expect(read("fill out this form", { scope: "all", source: "any", whose: "user" }, {}, low)).toMatchObject({ route: "fill", scope: "all", agreed: true });
-    expect(read("fill out this form", { scope: "fields", source: "any", reading: "some" }, {}, low)).toMatchObject({ route: "ask", why: "whichFields" });
-    expect(read("fill this out from my note", { scope: "all", source: "any" }, {}, low)).toMatchObject({ route: "fill", scope: "all", agreed: true });
-    const s = snapOf("just do my contact info up top");
-    expect(read("just do my contact info up top", { scope: "all", source: "any" }, {}, low)).toMatchObject({ route: "fill", scope: "list", fields: [refOf(s, "Full name"), refOf(s, "Email")], agreed: true });
-    expect(read("just do my contact info up top", { scope: "all", source: "any", reading: "other" }, {}, low)).toMatchObject({ route: "ask", why: "whichFields" });
-  });
-
-  it("lists the fields whose yes/no clears the field floor, and asks when none does", () => {
-    // "lease" is a word code does not read (scope-reading.ts), so the heads decide as before A1.
-    const said = "the landlord part of the lease";
-    const s = snapOf(said);
-    const ref = (n: string) => refOf(s, n);
-    expect(read(said, { scope: "fields", source: "any" }, { [`n_${ref("Landlord name")}`]: FIELD_FLOOR, [`n_${ref("Landlord phone")}`]: 0.97, [`n_${ref("Email")}`]: FIELD_FLOOR - 0.01 })).toMatchObject({ route: "fill", scope: "list", fields: [ref("Landlord name"), ref("Landlord phone")] });
-    expect(read(said, { scope: "fields", source: "any" }, { [`n_${ref("Landlord name")}`]: 0.9 })).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"] });
+    expect(read("pay for it", { route: "refuse", why: "payment" }, everyField, { why: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "refuse", why: "nothingToFill" });
   });
 
   it("reads an unsettled source by the instruction's words: every source, the windows it names, or a question when it limits them", () => {
     const low = { source: HEAD_FLOOR - 0.01 };
-    expect(read("fill this out", { scope: "all", source: "w2" }, {}, low)).toMatchObject({ route: "fill", sources: [] });
+    expect(read("fill this out", { route: "fill", source: "w2" }, everyField, low)).toMatchObject({ route: "fill", sources: [] });
     const s = snapOf("fill this out from my rental notes");
     const notes = s.windows.find((w) => w.title === "Rental notes.txt");
     expect(s.named.map((n) => n.windowId)).toEqual([notes?.windowId]);
-    expect(read("fill this out from my rental notes", { scope: "all", source: "w2" }, {}, low)).toMatchObject({ route: "fill", sources: [notes?.ref] });
-    expect(read("fill this out, only use what I typed", { scope: "all", source: "w1" }, {}, low)).toMatchObject({ route: "ask", why: "whichSource", open: ["source"] });
+    expect(read("fill this out from my rental notes", { route: "fill", source: "w2" }, everyField, low)).toMatchObject({ route: "fill", sources: [notes?.ref] });
+    expect(read("fill this out, only use what I typed", { route: "fill", source: "w1" }, everyField, low)).toMatchObject({ route: "ask", why: "whichSource", open: ["source"] });
   });
 
   it("puts the instruction's own sources before a settled source head (P1 review)", () => {
     // Named windows stand for "any" or another window, settled or not: checkIntent reads "any" as every window.
     const s = snapOf("fill my email from my rental notes");
     const notes = s.windows.find((w) => w.title === "Rental notes.txt")?.ref;
-    expect(read("fill my email from my rental notes", { scope: "all", source: "any" })).toMatchObject({ route: "fill", sources: [notes] });
-    expect(read("fill my email from my rental notes", { scope: "all", source: s.windows.find((w) => w.title === "Draft.txt")?.ref ?? "" })).toMatchObject({ route: "fill", sources: [notes] });
+    const email = (): string[] => ["Email"];
+    expect(read("fill my email from my rental notes", { route: "fill", source: "any" }, email)).toMatchObject({ route: "fill", sources: [notes] });
+    expect(read("fill my email from my rental notes", { route: "fill", source: s.windows.find((w) => w.title === "Draft.txt")?.ref ?? "" }, email)).toMatchObject({ route: "fill", sources: [notes] });
     // An instruction that keeps Caret to its own words takes only "instruction"; anything else is asked.
-    expect(read("fill my email, only use what I typed", { scope: "all", source: "any" })).toMatchObject({ route: "ask", why: "whichSource", open: ["source"] });
-    expect(read("fill my email, only use what I typed", { scope: "all", source: "memory" })).toMatchObject({ route: "ask", open: ["source"] });
-    expect(read("fill my email, only use what I typed", { scope: "all", source: "instruction" })).toMatchObject({ route: "fill", sources: ["instruction"] });
+    expect(read("fill my email, only use what I typed", { route: "fill", source: "any" }, email)).toMatchObject({ route: "ask", why: "whichSource", open: ["source"] });
+    expect(read("fill my email, only use what I typed", { route: "fill", source: "memory" }, email)).toMatchObject({ route: "ask", open: ["source"] });
+    expect(read("fill my email, only use what I typed", { route: "fill", source: "instruction" }, email)).toMatchObject({ route: "fill", sources: ["instruction"] });
   });
 
   it("asks whose details for someone unnamed, or for an unsettled answer when someone is named; the user's own otherwise", () => {
-    // A relation with no memory entry is not code's to settle (people.ts): the head decides, as before A1.
-    expect(read("add my sister's number", { scope: "all", source: "any", whose: "unclear" })).toMatchObject({ route: "ask", why: "otherPersonUnnamed", open: ["person"] });
-    expect(read("add my sister's number", { scope: "all", source: "any", whose: "p1" }, {}, { whose: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "ask", why: "whichPerson", open: ["person"] });
-    expect(read("add my sister's number", { scope: "all", source: "any", whose: "p1" })).toMatchObject({ route: "fill", whose: "p1" });
-    expect(read("fill this out", { scope: "all", source: "any", whose: "user" }, {}, { whose: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "fill", whose: "user" });
+    // A relation with no memory entry is not code's to settle (people.ts): the head decides.
+    expect(read("add my sister's number", { route: "fill", source: "any", whose: "unclear" })).toMatchObject({ route: "ask", why: "otherPersonUnnamed", open: ["person"] });
+    expect(read("add my sister's number", { route: "fill", source: "any", whose: "p1" }, everyField, { whose: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "ask", why: "whichPerson", open: ["person"] });
+    expect(read("add my sister's number", { route: "fill", source: "any", whose: "p1" })).toMatchObject({ route: "fill", whose: "p1" });
+    expect(read("fill this out", { route: "fill", source: "any", whose: "user" }, everyField, { whose: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "fill", whose: "user" });
     // A1 decision 2: a name the instruction says is whose details go in, whatever the head; a pronoun is the one other
     // person on screen (the note's landlord line here).
-    expect(read("use Gary for this", { scope: "all", source: "any", whose: "p1" }, {}, { whose: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "fill", whose: "p1" });
-    expect(read("add his number", { scope: "all", source: "any", whose: "unclear" })).toMatchObject({ route: "fill", whose: "user", person: "Gary Pruitt" });
+    expect(read("use Gary for this", { route: "fill", source: "any", whose: "p1" }, everyField, { whose: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "fill", whose: "p1" });
+    expect(read("add his number", { route: "fill", source: "any", whose: "unclear" })).toMatchObject({ route: "fill", whose: "user", person: "Gary Pruitt" });
   });
 
-  it("ties a spelled-out value to the one field in scope its clause names, and to nothing when two fields tie", () => {
+  it("ties a spelled-out value to the one field in scope its clause names, and to nothing when two in scope tie", () => {
     const s = snapOf("make the delivery 8:15");
-    const scoped = s.fields.filter((f) => !f.filled && f.neverTyped === null);
-    expect(tieLiterals(s, scoped)).toEqual([{ field: refOf(s, "Delivery time"), text: "8:15" }]);
+    const scope = s.fields.filter((f) => !f.filled && f.neverTyped === null);
+    expect(tieLiterals(s, scope)).toEqual([{ field: refOf(s, "Delivery time"), text: "8:15" }]);
     const two = snapOf("set landlord to Gary Pruitt");
     expect(tieLiterals(two, two.fields.filter((f) => !f.filled && f.neverTyped === null))).toEqual([]);
     const named = snapOf("set landlord phone to 512-555-0193");
     expect(tieLiterals(named, named.fields.filter((f) => !f.filled && f.neverTyped === null))).toEqual([{ field: refOf(named, "Landlord phone"), text: "512-555-0193" }]);
+    // Two fields tie and Jev chose one of them: the value goes to that one.
+    expect(tieLiterals(two, two.fields.filter((f) => f.name === "Landlord name"))).toEqual([{ field: refOf(two, "Landlord name"), text: "Gary Pruitt" }]);
   });
 
-  it("never ties a value to a field in scope when its clause names another field of the form (P1 review)", () => {
+  it("never ties a value to a field in scope when its clause names another field of the form better (P1 review)", () => {
     const s = snapOf('set Full name to "Alice" and fill landlord name');
     expect(tieLiterals(s, s.fields.filter((f) => f.name === "Landlord name"))).toEqual([]);
     expect(tieLiterals(s, s.fields.filter((f) => f.name === "Full name" || f.name === "Landlord name"))).toEqual([{ field: refOf(s, "Full name"), text: "Alice" }]);
@@ -429,17 +391,21 @@ describe("the heads intent maker (P1)", () => {
     expect(tieLiterals(one, one.fields.filter((f) => f.name === "Delivery time"))).toEqual([{ field: refOf(one, "Delivery time"), text: "8:15" }]);
   });
 
-  it("goes through planAsk's confirmation as the writer's intent does: a listed field the instruction does not name stands only on Jev's yes", async () => {
+  it("goes through planAsk with no further confirmation of the fields Jev chose", async () => {
     const pick = (q: string): string | null => (q.includes("'Email'") ? "elena.vance@example.com" : q.includes("'Full name'") ? "Elena Vance" : null);
-    const rest = jevBy(pick, () => "user", (q) => (q.includes("'Full name'") ? "no" : "yes"));
-    const s0 = snapOf("my email please");
-    const heads = answer({ scope: "fields", source: "any", whose: "user" }, { [`n_${refOf(s0, "Email")}`]: 0.99, [`n_${refOf(s0, "Full name")}`]: 0.99 });
+    const rest = jevBy(pick, () => "user", () => "no");
     let headCalls = 0;
-    const ask: AskJev = async (req) => ("scope" in req.questions ? (headCalls++, heads(snapOf("my email please"))) : rest.ask(req));
+    const ask: AskJev = async (req) => {
+      const s = snapOf("my email please");
+      if ("route" in req.questions) return (headCalls++, answer(s, { route: "fill", source: "any", whose: "user" }));
+      if (Object.keys(req.questions).every((id) => id.startsWith("s_"))) return scoped(s, ["Email"])[0];
+      return rest.ask(req);
+    };
     const d = await planAsk("my email please", desk(), memory, about, { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "h1", windowId: "form", now: 2000 });
     expect(headCalls).toBe(1);
-    expect(d.maker).toMatchObject({ maker: "heads", calls: 1 });
+    expect(d.maker).toMatchObject({ maker: "heads", calls: 3 });
     expect(d.checked.writes.map((w) => w.node.key)).toEqual([KEY("email")]);
+    expect(rest.seen.filter((r) => Object.values(r.questions).some((q) => "yes" in q.criteria))).toHaveLength(0);
   });
 });
 
@@ -561,7 +527,8 @@ describe("what an Ask says when it refuses or asks (B26 lead decision 3)", () =>
     const form = m.windows.get("form") as never as { nodes: Map<string, Node> };
     const page2 = [...form.nodes.values(), node(`${P}/button:submit~0`, "AXButton", { parent: `${P}/webarea:~0`, label: "Submit application", frame: [100, 400, 100, 20] })];
     m.apply(snap(page2, { at: 1100, windowId: "form", title: "Apply", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: KEY("full name") }));
-    const press: AskJev = async (req) => ({ model: "t", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: Object.entries(q.criteria).find(([, d]) => d?.includes("Submit"))?.[0] ?? "none", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 });
+    // I2: the scope ask (every maker's plan settles its fields) chooses no field: the plan is a press alone.
+    const press: AskJev = async (req) => ({ model: "t", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: req.purpose === "ask.scope" ? "not" : Object.entries(q.criteria).find(([, d]) => d?.includes("Submit"))?.[0] ?? "none", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 });
     const e = await planAsk("ok that all looks right, hit submit", m, memory, about, { askJev: press, maker: maker({ route: "plan", scope: "none" }), writer: null, offerKey: "s1", windowId: "form", now: 2000 }).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(AskRefused);
     expect((e as AskRefused).code).toBe("unsupportedStep");
@@ -676,7 +643,8 @@ describe("what B26's blind held-out-2 run found", () => {
 
   it("confirms a writer's list of every empty field as the whole form, with one question", async () => {
     const pick = (q: string): string | null => (q.includes("'Landlord name'") ? "Gary Pruitt" : q.includes("'Landlord phone'") ? "(512) 555-0193" : null);
-    const jev = jevBy(pick, () => "user", () => "yes");
+    // G2 review: the landlord's name and phone are someone else's, as the landlord's fields want.
+    const jev = jevBy(pick, () => "other", () => "yes");
     const every = (s: IntentSnapshot): string[] => s.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
     const d = await planAsk("fill out the landlord application from my note", desk(), memory, about, { askJev: jev.ask, maker: maker((s) => ({ fields: every(s) })), writer: null, offerKey: "h2-1", windowId: "form", now: 2000 });
     const confirms = jev.seen.filter((r) => Object.values(r.questions).some((q) => "yes" in q.criteria));
@@ -1048,8 +1016,9 @@ describe("planAsk for a goal-planning host", () => {
     const j = jevBy(() => null);
     const d = await planAsk("add the meeting to my calendar and draft a reply saying I'm in", desk(), memory, about, goals(maker({ route: "plan", scope: "none" }), j.ask));
     expect(d).toMatchObject({ route: "goal", windowId: "form", intent: { route: "plan" } });
-    // The single-window planner and the code-mode writer are not a second path: nothing asked Jev.
-    expect(j.seen).toEqual([]);
+    // The single-window planner and the code-mode writer are not a second path: Jev was asked only the scope ask that
+    // settles the goal's fields (I2 ruling: every maker's plan is held to a scope).
+    expect(j.seen.map((r) => r.purpose)).toEqual(["ask.scope", "ask.scope"]);
   });
 
   it("keeps a fill intent a scoped fill", async () => {

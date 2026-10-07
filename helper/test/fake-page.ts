@@ -109,7 +109,7 @@ export class FakePage {
   snapshot(id: string): PageSnapshot {
     return {
       type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: Date.now(), tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: this.title,
-      frames: [{ frameId: 0, parentFrameId: -1, documentId: this.documentId, origin: "http://127.0.0.1:4310", path: this.path, navGen: this.navGen, title: this.title, headings: [], iframes: [], excluded: {}, truncated: false, controls: structuredClone(this.controls) }],
+      frames: [{ frameId: 0, parentFrameId: -1, documentId: this.documentId, origin: this.origin, path: this.path, navGen: this.navGen, title: this.title, headings: [], iframes: [], excluded: {}, truncated: false, controls: structuredClone(this.controls) }],
       missing: [],
       focused: this.focusedId === null ? null : { frameId: 0, id: this.focusedId, selection: [0, 0] },
     };
@@ -135,6 +135,9 @@ export class FakePage {
     this.controls = this.make();
     this.files.clear();
   }
+
+  /** The page's origin; a test moves it to another to stand for a redirect away (I2's carry rule). */
+  origin = "http://127.0.0.1:4310";
 
   /** P3: the user's own Next: a new document with another form (`make`), title and path; what reload() puts back from then on. */
   goTo(make: () => PageControl[], title: string, path: string): void {

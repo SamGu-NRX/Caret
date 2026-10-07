@@ -1,6 +1,7 @@
 // H10: a page's fields where the host can see them. Page controls get screen frames from the walk's view of the window
 // (measured in the rig VM: evidence/host/h10/probe), the host hears which page field the user is in (pageField), and Ask
 // plans in the page of the tab the user is in, never in Accessibility's view of the browser. Every name here is invented.
+import { answeringScope } from "./builders.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -106,7 +107,7 @@ describe("the page field the user is in, for the host", () => {
     const focus: unknown[] = [];
     let helper: Helper;
     const host = pageHost({ path: join(dir, "page.sock"), secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) } as never, apply: (m) => void helper.handleReader(m), warn: () => {} });
-    helper = new Helper({ store, askJev: () => Promise.reject(new Error("no Jev here")), shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, calendar: null, publish: (m) => published.push(m), warn: () => {} });
+    helper = new Helper({ store, askJev: answeringScope(() => Promise.reject(new Error("no Jev here"))), shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, calendar: null, publish: (m) => published.push(m), warn: () => {} });
     const handle = helper.handleReader.bind(helper);
     helper.handleReader = (m) => {
       if (m.type === "focus") focus.push(m);
@@ -177,7 +178,7 @@ describe("Ask in a browser a page engine covers (H10)", () => {
     let helper: Helper;
     const host = pageHost({ path: join(dir, "page.sock"), secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) } as never, apply: (m) => void helper.handleReader(m), warn: () => {} });
     helper = new Helper({
-      store, askJev: () => Promise.reject(new Error("no Jev here")), shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => published.push(m), warn: () => {},
+      store, askJev: answeringScope(() => Promise.reject(new Error("no Jev here"))), shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => published.push(m), warn: () => {},
       pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined,
       pageFront: o.front ?? ((pid, frame) => pageFront(host.registry, pid, frame)),
     });

@@ -2,7 +2,7 @@
 // CARET_ENV_FILE. Gateway uses only CARET_JEV_GATEWAY_KEY, never the writer's AI_GATEWAY_API_KEY.
 import { readFileSync } from "node:fs";
 import * as z from "zod";
-import type { Snippet } from "../privacy.ts";
+import { assertNoSecrets, type Snippet } from "../privacy.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
 
@@ -124,7 +124,20 @@ export interface NoulQuestion {
   criteria?: { true: string; false: string };
 }
 
+/**
+ * What a request asks, by its builder (W1). Never sent. Question ids repeat across builders ("f1" is a fill value, an
+ * Ask's field confirmation and a plan check's field) and so do option sets (yes/no), so an evaluation's canned engine
+ * answers by this and the question's id (engines/decide/canned.ts), and refuses a request whose purpose it has no rule
+ * for rather than answering it with silence.
+ */
+export type JevPurpose =
+  | "fill.whose" | "fill.values" | "fill.verify" | "ask.heads" | "ask.scope" | "ask.confirm" | "intent.route" | "intent.fields" | "plan.verify" | "codeplan.asksAbout"
+  | "planner.window" | "planner.fields" | "savedFile.match" | "codemode.choice" | "draft.check" | "event.card" | "pattern.naming"
+  | "executor.target" | "route.judge" | "route.task" | "route.pick" | "pending.change" | "pending.look" | "probe.latency";
+
 export interface JevRequest {
+  /** What the request asks (JevPurpose); absent only in tests' hand-built requests, which no canned engine answers. */
+  purpose?: JevPurpose;
   state: string | Record<string, unknown>;
   questions: Record<string, ChoiceQuestion>;
   /**
@@ -152,6 +165,12 @@ export interface JevRequest {
    * CONSENTED). Never sent; privacy.test.ts holds every other window to its usual rules.
    */
   consented?: readonly string[];
+  /**
+   * G2: for each whose-value question (fill.ts ownerId), the text of the value it asks about, so an evaluation harness
+   * answers from the value itself and never parses it back out of the question (page-loop-eval.ts canned Jev). Never
+   * sent: the text is already in the question, through the ledger.
+   */
+  subjects?: Readonly<Record<string, string>>;
 }
 
 const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number(), probabilities: z.record(z.string(), z.number()).optional() }).loose();
@@ -285,6 +304,8 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
     }
     const ids = Object.keys(req.nouls ?? {});
     if (ids.some((id) => id in req.questions)) throw new Error("Jev request repeats a question id between its choices and its yes/no questions");
+    // G2 review: no request leaves with a secret marker in it, whichever builder made it (privacy.ts assertNoSecrets).
+    assertNoSecrets(req);
     const wire = wireBody(req, route.model);
     if (route.provider === "gateway") {
       wire.providerOptions = { gateway: { only: [checkGatewayModel(route.model)] } };

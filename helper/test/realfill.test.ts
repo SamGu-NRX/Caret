@@ -288,9 +288,13 @@ describe("proposeFill on a real-shaped form (B24)", () => {
     const phoneQuestions = requests.flatMap((r) => Object.entries(r.questions).filter(([, q]) => String(q.instructions).includes("'Phone'") && !Object.keys(q.criteria).includes("user")));
     expect(phoneQuestions).toHaveLength(2);
     for (const [, q] of phoneQuestions) expect(Object.values(q.criteria).join(" ")).not.toContain("(415) 555-0162");
-    // An unsettled owner vetoes nothing when memory holds no value of the kind: Jev cannot know who the user is.
+    // G2 review: in a field both asks say wants the user's details, an unsettled owner withholds too, memory or not: a
+    // value goes there only when it is the user's identity or both asks call it the user's.
     const unclear = await proposeFill(m, jevPickingText(pick, 0.9, () => "user", () => "unclear"), "form", `${P}/textfield:customer name~0`, 2000);
-    expect(fieldOf(unclear, "textfield:phone")).toMatchObject({ value: "(415) 555-0162", withheld: null });
+    expect(fieldOf(unclear, "textfield:phone")).toMatchObject({ value: null, withheld: "otherPerson" });
+    // With the field's details unsettled too, it vetoes nothing: Jev cannot know who the user is.
+    const neither = await proposeFill(m, jevPickingText(pick, 0.9, () => "unclear", () => "unclear"), "form", `${P}/textfield:customer name~0`, 2000);
+    expect(fieldOf(neither, "textfield:phone")).toMatchObject({ value: "(415) 555-0162", withheld: null });
   });
 
   it("holds a window's email of unsettled owner from a field that wants the user's, when the user's own email is in memory", async () => {

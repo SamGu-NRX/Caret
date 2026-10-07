@@ -454,7 +454,7 @@ describe("executor", () => {
     const u = await helper.executor.undo("t1");
     expect(app.node(K("textfield:name~0"))?.value).toBe("Danas");
     expect(u.restored).toBe(0);
-    expect(u.notRestored).toEqual([{ step: 0, reason: "the field changed while Caret wrote it and may hold your typing, so Caret left it as it is" }]);
+    expect(u.notRestored).toEqual([{ step: 0, reason: 'the field changed while Caret wrote it and may hold your typing, so Caret left it as it is; the field now holds "Danas"; before the write it held ""' }]);
     expect(ledger).toEqual([expect.objectContaining({ before: "", after: "Dana", mayIncludeInput: true })]);
     // No restore was sent: undo refused from the field it read, before any write.
     expect(acts().filter((v) => v.kind === "write" && v.sameAs !== undefined)).toEqual([]);

@@ -76,7 +76,7 @@ export const NAME_TERM = "#name";
 const NAME_WORDS = /\b(?:name|company|organi[sz]ation|employer|business|firm|title|position|role)\b/;
 
 /** Lowercase words that can sit inside a name: "Head of Operations", "Acme & Sons", "Ana de la Cruz". */
-const NAME_JOINERS = new Set(["of", "and", "&", "the", "for", "de", "del", "della", "da", "di", "du", "la", "le", "van", "von", "der", "den", "y", "bin", "al"]);
+export const NAME_JOINERS: ReadonlySet<string> = new Set(["of", "and", "&", "the", "for", "de", "del", "della", "da", "di", "du", "la", "le", "van", "von", "der", "den", "y", "bin", "al"]);
 /** A capitalized word of a name: letters, with apostrophes, hyphens and a closing period ("O'Neil", "Mary-Jane", "Ltd."). */
 const NAME_WORD = /^\p{Lu}[\p{L}'’-]*\.?$/u;
 /** Assumed bounds on a name's words and length; a longer line is a sentence or a heading. */
@@ -205,7 +205,7 @@ const DATE_PART: ReadonlyMap<string, RegExp> = new Map([
 ]);
 const ORGANIZATION = /\b(?:company|employer|organi[sz]ation)\b/;
 /** A label that spells out a date's format: "Moved in (MM/YYYY)", "Start date (DD.MM.YYYY)". */
-const DATE_FORMAT = /\b(?:mm|dd|yyyy|yy)(?:\s*[/.-]\s*(?:mm|dd|yyyy|yy))+\b/iu;
+export const DATE_FORMAT = /\b(?:mm|dd|yyyy|yy)(?:\s*[/.-]\s*(?:mm|dd|yyyy|yy))+\b/iu;
 /** A label that shows the currency beside the field, so the field takes the number alone: "Monthly rent ($)". */
 export const CURRENCY_SHOWN = /\(\s*(?:\$|€|£|¥|usd|eur|gbp)\s*\)/iu;
 /** A company's name: up to eight words with no brackets, @ or sentence punctuation ("Ridgeline Outdoor Co", "Acme, Inc.", "3M"). */
@@ -215,7 +215,7 @@ const ORG_NAME = /^(?=(?:\S+\s*){1,8}$)[^()[\]{}@<>;:!?$€£¥]+$/u;
  * else after a comma is a list: B25's larger note budget offered "Brightline Dental Labs, lab technician, $5,200/mo
  * gross", and live Jev put it in Current employer (evidence/screen/b25/fill-dev-1; a rule tuned on the B24 corpus).
  */
-const ORG_SUFFIX = /^(?:inc|llc|ltd|limited|co|corp|corporation|company|gmbh|plc|llp|lp|pllc|pc|sa|s\.a|ag|bv|nv|pty(?: ltd)?|srl|oy|ab|as|kk)\.?$/iu;
+export const ORG_SUFFIX = /^(?:inc|llc|ltd|limited|co|corp|corporation|company|gmbh|plc|llp|lp|pllc|pc|sa|s\.a|ag|bv|nv|pty(?: ltd)?|srl|oy|ab|as|kk)\.?$/iu;
 const orgName = (v: string): boolean => ORG_NAME.test(v) && v.split(",").slice(1).every((p) => ORG_SUFFIX.test(p.trim()));
 /** Kinds of value that have their own shape: none of them is a city, a street line or a name. */
 const SHAPED: ReadonlySet<TextKind> = new Set(["email", "url", "phone", "amount", "address", "street"]);

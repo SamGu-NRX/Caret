@@ -8,7 +8,7 @@ import type { PopupBlock, PopupRef, PopupSpecT } from "../popup.ts";
 import { MAX_FILL_ROWS } from "../offers/fill-popup.ts";
 import { fieldName, type PlanDraft } from "./planner.ts";
 import type { Trace } from "./trace.ts";
-import { saysFor } from "./says.ts";
+import { saysFor, saysUnsureField } from "./says.ts";
 
 const node = (windowId: string, key: string): { node: string } => ({ node: `${windowId}/${key}` });
 
@@ -85,6 +85,15 @@ export function planSpec(d: PlanDraft): PopupSpecT {
   // The fields Caret never types (B25).
   if ((d.leftToYou ?? null) !== null) {
     blocks.push({ type: "facts", rows: [{ label: "You type", value: { text: d.leftToYou as string, ref: { rule: "plan", derived: [{ node: windowId }] } } }] });
+  }
+  // I3: the fields Jev wasn't sure the request asks for, each the user's with its sentence, as fill's "You set" rows are.
+  const unsure = d.unsure ?? [];
+  if (unsure.length > 0) {
+    const shown = unsure.slice(0, MAX_FILL_ROWS);
+    const rows = shown.map((u, i) => ({ label: i === 0 ? "Left to you" : "", value: { text: saysUnsureField(u.name), ref: { rule: "fieldLabel", derived: [node(windowId, u.key)] } }, secondary: true as const }));
+    const more = unsure.length - shown.length;
+    if (more > 0) rows.push({ label: "", value: { text: `and ${more} more`, ref: { rule: "count", derived: unsure.slice(MAX_FILL_ROWS).map((u) => node(windowId, u.key)) } }, secondary: true });
+    blocks.push({ type: "facts", rows });
   }
   const h = d.checked.handoff;
   // A hand-off step that only carries an Ask's controls is listed above, not as a press.

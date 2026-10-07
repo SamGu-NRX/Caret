@@ -2,16 +2,18 @@
 // program writer. Fill's one round decides every field's value (proposeFill: both wordings agreeing at FILL_CUTOFF, the
 // owner veto, the cut rules and its control rules), and its agreed picks become a DraftPlan in document order, lowered
 // by lowerGoal as any goal is, so the page gets D2-06's digest-bound acceptance, receipts, precheck, revocation, replan
-// and "left" accounting. A step lowered from fill's own pick for its own field is gate "fill" (gates.ts markFilled) and
+// and "left" accounting. A step lowered from fill's own pick for its own field is gate "fill" (its value carries fill's write-contract mint) and
 // is not asked Jev's value question again; the code gates (never-typed, misfit, a message's recipient and subject) still
 // run. Caret presses nothing on a page: what the user presses is theirs, and so is every field fill withheld, a kind
 // Caret never types, and a form's fields past what one fill asks about (the size hand-off), each named before Tab.
 // Nothing here acts.
+import { scopeKey, type AskScope, type DocumentReader, type ScopeSet } from "../fill/ask-scope.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { AboutValue } from "../fill/about.ts";
 import type { AskJev } from "../fill/jev.ts";
-import { conversionOf, FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FILLABLE_ROLES, FillError, identityRefOf, MAX_FIELDS, memoryRefOf, mintOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { ContractError, fieldContract, requireChecked, type FieldContract } from "../fill/contract.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { isAnswerField } from "../fill/answers.ts";
@@ -20,7 +22,7 @@ import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import type { EventClock } from "../offers/event-time.ts";
 import { writtenFields } from "../offers/fill-popup.ts";
 import { fieldName } from "../planner/planner.ts";
-import { saysNoValue } from "../planner/says.ts";
+import { saysNoValue, UNSURE_FIELD } from "../planner/says.ts";
 import { handoffWhy } from "../planner/validate.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import type { DraftPlan } from "../codemode/types.ts";
@@ -104,6 +106,11 @@ export interface PlanPageOptions {
   /** Which fields the scope takes, for the reveal continuation (runs.ts): every empty control, a section's, or a list. */
   kind: PageGoal["kind"];
   section: string | null;
+  /**
+   * I3: the empty fields an Ask's scope ask left unclear or below its cutoff, that it neither fills nor asks about: each
+   * is the user's, said before Tab (planner/ask.ts AskGoal.page.unsure). Never in `scope`.
+   */
+  unsure?: readonly string[];
   /** What the user told Caret (fill/about.ts), as a Fill all offers it. */
   about: readonly AboutValue[];
   askJev: AskJev;
@@ -116,8 +123,15 @@ export interface PlanPageOptions {
   carried?: Pick<Replan, "owed">;
   /** The controls a finished page goal's writes revealed (runs.ts afterReveal): this plan's only fields. */
   revealed?: readonly string[];
+  /**
+   * I2 ruling C: an Ask's goal's scopes (fill/ask-scope.ts ScopeSet); the page's own, for its window and document, holds
+   * fill's mints, the goal gate and which file controls get attach rows. Absent with no Ask.
+   */
+  scopes?: ScopeSet;
+  /** Which page document a window shows now (the helper's page engine). */
+  documentOf?: DocumentReader | null;
   /** Test seams of proposeFill (its shuffles' randomness, the proposal id). */
-  fill?: Pick<FillOptions, "rand" | "newId">;
+  fill?: Pick<FillOptions, "rand" | "newId" | "trace">;
   /**
    * P3: what each file control in scope offers in its attach row, for a host that shows attach rows (protocol
    * GOAL_FILES_CAPABILITY): a saved file a Jev choice matched (helper.ts), else "choose". Absent: the host cannot show
@@ -129,7 +143,7 @@ export interface PlanPageOptions {
 }
 
 /** A value fill would write, with what it was read from: a Fill all's GroundedField, or a value the instruction spells out. */
-type Written = Pick<ReturnType<typeof writtenFields>["fields"][number], "key" | "control" | "value" | "display" | "span" | "context" | "source" | "memory">;
+type Written = Pick<ReturnType<typeof writtenFields>["fields"][number], "key" | "control" | "value" | "display" | "span" | "context" | "source" | "memory" | "checked" | "basis">;
 
 /** An empty control of a page fill can ask about, in document order: what a page goal may fill. */
 interface PageInput {
@@ -227,6 +241,11 @@ const WITHHELD_SAYS: Record<string, string> = {
   wrongKind: "the value Caret found doesn't fit it",
   otherPerson: "the value Caret found is someone else's",
   ambiguous: "the value Caret found could mean more than one thing",
+  // W2 (fill/contract.ts).
+  notExact: "the value Caret found isn't exactly what the field asks for",
+  unverified: "Caret couldn't check this value just now",
+  // I2 (fill/ask-scope.ts): past the Ask's settled fields, or changed since the Ask.
+  outOfScope: "the Ask did not ask Caret to fill it",
 };
 
 /**
@@ -238,6 +257,11 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   if (w === undefined) throw new GoalError("nothingToDo", "the page closed");
   if (w.window.kind !== PAGE_WINDOW_KIND) throw new GoalError("schema", "a page plan needs a page window", o.windowId);
   const document = o.pageDocument(o.windowId);
+  // I2: the page's scope in the Ask's goal's set, for this window and the document it shows now; none, nothing is written.
+  const pageScope: AskScope | undefined = o.scopes === undefined ? undefined : o.scopes.scopes[scopeKey(o.windowId, o.documentOf === undefined || o.documentOf === null ? null : o.documentOf(o.windowId))];
+  // I2 ruling: an Ask's goal never mints under a goal's own authority. With no scope of the Ask for this page and the
+  // document it shows now (a continued Ask on another document, a carry that settled nothing), it plans nothing, loudly.
+  if (o.scopes !== undefined && pageScope === undefined) throw new GoalError("nothingToDo", "The Ask settled no field of this page, so Caret fills nothing here", `no scope of Ask ${o.scopes.askId} for ${o.windowId} on its document now`);
   if (document === null) throw new GoalError("nothingToDo", "Caret can't tell which page this is, so it won't plan a fill of it");
   const instruction = o.instruction ?? "Fill this page";
 
@@ -265,6 +289,11 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       else if (o.carried === undefined && n !== undefined && (n.value ?? "") !== "" && neverTypedNode(w, n) === null) leave(n, "it already holds something, and Caret fills only empty fields here");
     }
   }
+  // I3: the fields Jev wasn't sure the request asks for, when still empty, and never one the scope takes.
+  for (const k of o.unsure ?? []) {
+    const n = w.nodes.get(k);
+    if (n !== undefined && (n.value ?? "") === "" && !wanted.some((x) => x.node.key === k)) leave(n, UNSURE_FIELD);
+  }
   // Fields of a kind Caret never types that the scope takes are named before Tab.
   const scopeKeys = o.scope === null || o.kind === "all" ? null : new Set(o.kind === "list" ? o.scope.fields : []);
   for (const n of neverTyped) {
@@ -278,6 +307,8 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       ? []
       : fileControls(w).filter((n) => {
           if (o.attached?.has(n.key) === true) return false;
+          // I2 ruling E: an Ask's goal offers an attach row only for an upload field its scope question chose.
+          if (o.scopes !== undefined) return pageScope?.fields.has(n.key) === true;
           if (o.revealed !== undefined) return o.revealed.includes(n.key);
           if (o.scope === null || o.kind === "all") return true;
           if (o.kind === "section") return sectionOf(n) === o.section;
@@ -314,7 +345,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
         // With no scope, the part's own fields (C2 review: a fill on focus asks about the 20 nearest the trigger, which
         // on a long form of look-alike fields were not the part's).
         const which = scope === undefined ? { only: part.map((x) => x.node.key) } : { scope };
-        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}) }), error: null };
+        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), authority: o.scopes === undefined || pageScope === undefined ? { kind: "goal", goalId: o.goalId } : { kind: "ask", scope: pageScope }, documentOf: o.documentOf ?? null }), error: null };
       } catch (e) {
         if (e instanceof FillError) return { part, scope, proposal: null, error: e };
         throw e;
@@ -336,8 +367,9 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     for (const f of proposal.fields) {
       const said = scope?.literals.get(f.key);
       if (writes.has(f.key) || said === undefined || f.asks[0]?.value !== said) continue;
-      if (f.control === "text" && f.value === said && f.source === null && f.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: said, display: said, span: said, context: null, source: null, memory: null });
-      else if (f.handoff !== null && f.handoff.writes === true && f.handoff.source === null && f.handoff.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: f.handoff.value, display: f.handoff.display, span: said, context: null, source: null, memory: null });
+      // W2: with the mint the write contract made for that very field (fill.ts mintOf).
+      if (f.control === "text" && f.value === said && f.source === null && f.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: said, display: said, span: said, context: null, source: null, memory: null, checked: requireChecked(mintOf(f), said, f.key, o.windowId, `field ${f.key}`) });
+      else if (f.handoff !== null && f.handoff.writes === true && f.handoff.source === null && f.handoff.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: f.handoff.value, display: f.handoff.display, span: said, context: null, source: null, memory: null, checked: requireChecked(mintOf(f), f.handoff.value, f.key, o.windowId, `field ${f.key}`) });
     }
     for (const f of proposal.fields) {
       if (writes.has(f.key)) continue;
@@ -380,7 +412,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     // Named as runs.ts sameField reads it again before each write: a text field or web dropdown by fieldName, any
     // other control by formControls' label.
     const named = x.control === "text" || x.control === "combobox";
-    const t: TargetBinding = { ref: `t${++ref}`, domain, key: n.key, role: n.role, label: named ? fieldName(w, n) : (x.label ?? ""), own: named ? (d.label ?? d.nearest ?? d.placeholder ?? "") : (x.label ?? ""), placeholder: n.placeholder ?? null, control: x.control, value: "", options: x.options };
+    const t: TargetBinding = { ref: `t${++ref}`, domain, key: n.key, role: n.role, label: named ? fieldName(w, n) : (x.label ?? ""), own: named ? (d.label ?? d.nearest ?? d.placeholder ?? "") : (x.label ?? ""), placeholder: n.placeholder ?? null, control: x.control, value: "", options: x.options, field: f.checked.field };
     const src = f.source === null ? undefined : (o.sources ?? model).windows.get(f.source.windowId);
     if (f.source !== null && src === undefined) continue;
     const resolved = x.control === "date" || x.control === "time";
@@ -395,11 +427,24 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
             ? { kind: "derived", inputs: [], resolver: "fill/when", version: RESOLVER_VERSION, parametersDigest: shortDigest(f.span) }
             : { kind: "span", snapshot: "s1", source: f.source?.windowId ?? "instruction", startUTF16: 0, endUTF16: f.span.length, digest: shortDigest(f.span) },
       source: f.source === null || src === undefined ? null : { windowId: f.source.windowId, key: f.source.nodeKey, revision: windowRevision(src) },
-      memory: f.memory === null ? null : memoryRefOf(f.memory, conversionOf(f.control)),
+      // G2: a window's value that is the user's identity, or a part split from one, names its entry too (fill.ts
+      // identityRefOf), so the write is checked against the entry again (executor memoryHolds, conversion "identity"),
+      // and before each segment (runs.ts precheck, fill.identity).
+      memory: f.memory !== null ? memoryRefOf(f.memory, conversionOf(f.control)) : identityRefOf(f, f.value),
       event: null,
       draft: null,
-      owner: f.memory !== null ? "user" : null,
-      fill: { span: f.span, context: f.context, control: f.control, ...(f.memory === null ? {} : { memoryLabel: f.memory.label }) },
+      owner: f.memory !== null || f.basis?.identity !== undefined ? "user" : null,
+      fill: {
+        span: f.span,
+        context: f.context,
+        control: f.control,
+        ...(f.memory === null ? {} : { memoryLabel: f.memory.label }),
+        ...(f.basis?.identity === undefined ? {} : { identity: f.basis.identity }),
+      },
+      // W2: fill's mint for this value in this field, which lowering passes on without asking again. I1: its provenance
+      // carries the source-line digests G2 kept in `fill` (contract.ts Provenance), so they are not copied here again.
+      provenance: f.checked.provenance,
+      checked: f.checked,
     };
     targets.set(t.ref, t);
     values.set(v.ref, v);
@@ -412,7 +457,14 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   const attach: { target: TargetBinding; file: AttachOffer }[] = [];
   for (const n of files) {
     const label = (n.label ?? "").trim();
-    const t: TargetBinding = { ref: `t${++ref}`, domain, key: n.key, role: n.role, label, own: label, placeholder: n.placeholder ?? null, control: "file", value: "", options: null };
+    // I2 ruling A: its field contract, so the attachment is minted as a write is (goals/lower.ts), fingerprint included.
+    let field: FieldContract | undefined;
+    try {
+      field = fieldContract(w, n);
+    } catch (e) {
+      if (!(e instanceof ContractError)) throw e;
+    }
+    const t: TargetBinding = { ref: `t${++ref}`, domain, key: n.key, role: n.role, label, own: label, placeholder: n.placeholder ?? null, control: "file", value: "", options: null, ...(field === undefined ? {} : { field }) };
     targets.set(t.ref, t);
     attach.push({ target: t, file: o.attachOffer === undefined ? { source: "choose" } : await o.attachOffer(w, n, label) });
   }
@@ -423,7 +475,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   // 5. Lowering, with fill's picks gated by fill. 6. The planning's identity.
   const programHash = sha256(canonical({ planner: PAGE_PLANNER, instruction, scopeKind: o.kind, section: o.section, revealed: o.revealed ?? null, revision: windowRevision(w), document, fields: asked.map((x) => x.node.key), parts: parts.map((p) => p.length), files: files.map((n) => n.key) }));
   const draft: DraftPlan = { basedOn: windowRevision(w), window: o.windowId, steps, choices: [], drafts: [], programDigest: programHash };
-  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, gated, carried: [...(o.carried?.owed ?? []), ...left], attach, handoffRow: row, parts: stepParts });
+  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, carried: [...(o.carried?.owed ?? []), ...left], attach, handoffRow: row, parts: stepParts, ...(o.scopes === undefined ? {} : { scopes: o.scopes, documentOf: o.documentOf ?? null }) });
   const page: PageGoal = {
     windowId: o.windowId,
     scope: o.scope ?? { fields: [], windows: null, memory: true, instruction, person: null, literals: new Map() },

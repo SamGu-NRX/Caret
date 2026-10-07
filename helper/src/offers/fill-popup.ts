@@ -7,12 +7,12 @@
 // running are the helper's.
 import { ABOUT_SAYS, type AboutValue } from "../fill/about.ts";
 import { PAGE_SUBROLE, PROTOCOL_VERSION, type FillField, type FillMemory, type FillProposal, type FillSource, type OfferPopup } from "../protocol.ts";
-import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
+import type { ScreenModel, WindowState } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
-import { labelledLines, lineGives } from "../fill/candidates.ts";
-import { splitAddress, splitPlace } from "../fill/derive.ts";
-import { conversionOf, describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
+import { conversionOf, describeInput, emptyInput, identityRefOf, memoryRefOf, memoryValue, mintOf } from "../fill/fill.ts";
+import { contractStale, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
+import { identityKey } from "../fill/whose.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import { offerField } from "./field.ts";
@@ -28,9 +28,10 @@ export const MAX_FILL_ROWS = 5;
  * A field Caret writes, with its value in the form the field takes it: a text field's text, or (D2-04) a control's
  * option name, PAGE_CHECKED, or date or time in the input's own format. `span` is the source text the value was read
  * from, which a recheck looks for in the source again, on the line labelled `context` when the value came from a
- * "Label: value" line (FillHandoff.context); `display` is how the pop-up says the value.
+ * "Label: value" line (FillHandoff.context); `display` is how the pop-up says the value. `checked` is the write
+ * contract's mint for exactly this value in this field (fill/contract.ts), which fillPlan requires.
  */
-type GroundedField = FillField & { value: string; span: string; display: string; context: string | null } & ({ source: FillSource; memory: null } | { source: null; memory: FillMemory });
+type GroundedField = FillField & { value: string; span: string; display: string; context: string | null; checked: CheckedValue } & ({ source: FillSource; memory: null } | { source: null; memory: FillMemory });
 
 /** A field of the form that Caret leaves to the user: its name, and the value Caret would use when it has one. */
 export interface YourField {
@@ -64,6 +65,8 @@ const isAnswer = (f: FillField): boolean => f.answer !== undefined && f.answer.w
  * native select, radio group, checkbox, date, time or custom dropdown). Left to the user: every other field of the
  * proposal, with the value Caret would use when it has one, and, when `w` (the form's window) is given, the form's
  * empty controls fill never asks about: a file input, a consent or sign-up box, a control past the question's cap.
+ * Each field written carries the write contract's mint proposeFill made for that very field object (fill.ts mintOf);
+ * a field without one throws ContractError: a proposal that was copied or built by hand is never written.
  */
 export function writtenFields(p: FillProposal, w?: WindowState, opts: { answers?: boolean } = {}): GroundedProposal {
   const fields: GroundedField[] = [];
@@ -80,12 +83,12 @@ export function writtenFields(p: FillProposal, w?: WindowState, opts: { answers?
     }
     if (isAnswer(f)) answers++;
     if (f.control === "text" && f.value !== null && (f.source !== null || f.memory !== null)) {
-      fields.push({ ...f, value: f.value, span: f.value, display: f.value, context: null } as GroundedField);
+      fields.push({ ...f, value: f.value, span: f.value, display: f.value, context: null, checked: requireChecked(mintOf(f), f.value, f.key, p.windowId, `field ${f.key}`) } as GroundedField);
       continue;
     }
     const h = f.handoff;
     if (h !== null && h.writes === true && (h.source !== null || h.memory !== null)) {
-      fields.push({ ...f, handoff: null, value: h.value, source: h.source, memory: h.memory, span: span ?? h.value, display: h.display, context: h.context ?? null } as GroundedField);
+      fields.push({ ...f, handoff: null, value: h.value, source: h.source, memory: h.memory, span: span ?? h.value, display: h.display, context: h.context ?? null, checked: requireChecked(mintOf(f), h.value, f.key, p.windowId, `field ${f.key}`) } as GroundedField);
       continue;
     }
     const ref = h === null ? null : sourceRef(h.source, h.memory, span ?? h.value);
@@ -118,8 +121,15 @@ export function fillPopupEligible(p: FillProposal): boolean {
 
 /** Where a field's value came from, as a pop-up ref. */
 function valueRef(f: GroundedField): PopupRef {
-  return sourceRef(f.source, f.memory, f.span) as PopupRef;
+  const ref = sourceRef(f.source, f.memory, f.span) as PopupRef;
+  // G2: a value that is the user's identity rests on its memory entry too, so editing or forgetting the entry withdraws
+  // the offer (helper.ts refersToMemory).
+  const id = f.basis?.identity;
+  return id === undefined ? ref : { rule: IDENTITY_RULE, derived: [ref, { memory: id.memoryId }] };
 }
+
+/** G2: the rule a value names when it is the window's text that is exactly the user's own identity in memory. */
+export const IDENTITY_RULE = "identity";
 
 const nodeRef = (windowId: string, key: string): { node: string } => ({ node: `${windowId}/${key}` });
 
@@ -161,14 +171,17 @@ function yoursBlock(model: ScreenModel, windowId: string, yours: readonly YourFi
 export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPopup {
   const fields = p.fields;
   const windows = fields.flatMap((f) => (f.source === null ? [] : [f.source]));
+  // G2 review: a value that rests on an identity in memory names that entry too, in every row, shown or past "and N more",
+  // so editing or forgetting it withdraws the offer (helper.ts refersToMemory).
   const memories = [...new Set(fields.flatMap((f) => (f.memory === null ? [] : [f.memory.id])))];
+  const identities = [...new Set(fields.flatMap((f) => (f.basis?.identity === undefined ? [] : [f.basis.identity.memoryId])))].filter((id) => !memories.includes(id));
   const told = fields.some((f) => f.memory !== null && !isAnswer(f));
   const saved = fields.filter(isAnswer).length;
   // The source line names each window once, then what the user told Caret: "from Mail, Invoice 2041 and what you told Caret".
-  const refs: PopupRef[] = [...[...new Set(windows.map((s) => `${s.windowId}/${s.nodeKey}`))].map((node) => ({ node })), ...memories.map((memory) => ({ memory }))];
+  const refs: PopupRef[] = [...[...new Set(windows.map((s) => `${s.windowId}/${s.nodeKey}`))].map((node) => ({ node })), ...[...memories, ...identities].map((memory) => ({ memory }))];
   // One window and nothing from memory: the first field's source node stands for the window, as before B17.
   const first = windows[0];
-  const oneWindow = memories.length === 0 && first !== undefined && windows.every((s) => s.windowId === first.windowId);
+  const oneWindow = memories.length === 0 && identities.length === 0 && first !== undefined && windows.every((s) => s.windowId === first.windowId);
   const source: PopupRef = oneWindow ? nodeRef(first.windowId, first.nodeKey) : refs.length === 1 ? (refs[0] as PopupRef) : { rule: "sources", derived: refs };
   const text = [...new Set(windows.map(sourceText)), ...(told ? [ABOUT_SAYS] : []), ...(saved === 0 ? [] : [saved === 1 ? ANSWER_SAYS : `${ANSWER_SAYS}s`])].join(" and ");
   // S1: every saved answer is in a row the pop-up shows, never in "and N more", and its value is the whole answer: it
@@ -205,57 +218,36 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
   };
 }
 
-/**
- * Whether a part code derives from a whole unlabelled line is exactly `span` (P2): a place's city, state or country
- * (derive.ts splitPlace), or an address's street, unit, city, state or ZIP (splitAddress). The derivation fill made is
- * made again on the line as it reads now, so a line that is no longer the place is not enough however much of it is
- * left. A line that gained a label is not this line: "Do not use: Oakland, California, United States" passes nothing
- * (P2 review). A value from a labelled line is checked by its label instead (sourceHolds).
- */
-function derivesSpan(line: string, span: string): boolean {
-  // C1: a span, typed value or date part fill's generator reads in the line (fill/candidates.ts lineGives).
-  if (lineGives(line, span)) return true;
-  const t = line.trim();
-  const place = splitPlace(t);
-  if (place !== null && (place.city === span || place.state === span || place.country === span)) return true;
-  const address = splitAddress(t);
-  return address !== null && Object.values(address).includes(span);
-}
-
-/**
- * Whether a source window still shows a fill value the way fill read it: `span` is the source text the value was read
- * from, `context` the label of its "Label: value" line (FillHandoff.context), `control` what it was read for. Shared by
- * recheckFill and a page goal's precheck (P2, goals/runs.ts), so both hold a value to one rule.
- *   - From a "Label: value" line: that very line must still hold the span; a box's line must still say exactly it.
- *     "Valid driving license: no" beside "Needs renewal: yes" still shows "yes", but no longer says it (D2-04 review).
- *   - A control's value from an unlabelled line: a line that is the span, the same typed value, or (P2) a line whose
- *     place or address still derives the span (derivesSpan). "I have a valid driving license? No." holds the old span
- *     "No" but says otherwise, and is still refused: a span inside a longer line passes only by that same derivation.
- *   - A text field's value: the node's text holds the span, or one of its typed values is it.
- */
-export function sourceHolds(sw: WindowState, nodeKey: string, span: string, context: string | null, control: string): boolean {
-  const src = sw.nodes.get(nodeKey);
-  if (src === undefined) return false;
-  // The reader's own typed values only: one code finds in a line (fill/candidates.ts windowValues) is checked by the line
-  // as it reads now (lineGives in derivesSpan), so a line that gained a label naming it passes nothing (C1 review).
-  const typed = sw.values.some((v) => v.nodeKey === nodeKey && v.text === span);
-  if (context !== null) {
-    const box = control === "checkbox";
-    return labelledLines(sw).some((l) => l.node.key === nodeKey && l.label === context && (box ? l.value === span : l.value.includes(span)));
-  }
-  if (control !== "text") return typed || nodeText(src).split(/\r?\n/).some((l) => l.trim() === span.trim() || derivesSpan(l, span));
-  return nodeText(src).includes(span) || typed;
-}
-
 /** Why one field of a proposal can no longer be filled as shown: `log` names keys for the log, `says` is the user's sentence. */
-type FieldStale = { log: string; says: string };
+export type FieldStale = { log: string; says: string };
 
+/**
+ * Why one field can no longer be filled as shown, or null: its destination is gone, no longer empty or reads
+ * differently; what its value rests on changed (valueStale); or (W2) the field asks for something else than when its
+ * value was checked (contract.ts contractStale: its input kind, autocomplete field name or maxlength).
+ */
 function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, about: AboutNow, answer: AnswerNow, page: PageContext | null): FieldStale | null {
   const node = w.nodes.get(f.key);
   if (node === undefined) return { log: `the field ${f.key} is gone`, says: "the field is gone" };
   const input = emptyInput(w, f.key);
   if (input === null) return { log: `the field ${f.key} is no longer empty`, says: "it's no longer empty" };
   if (describeInput(w, input) !== f.descriptor) return { log: `the field ${f.key} now reads differently`, says: "it reads differently now" };
+  const value = valueStale(model, w, f, about, answer, page);
+  if (value !== null) return value;
+  return contractStale(node, f.checked.field, f.value) === null ? null : { log: `the field ${f.key} now asks for something else`, says: "it asks for something else now" };
+}
+
+/**
+ * Why a field's value no longer rests on what it was read from, or null: its saved answer, memory entry, identity or
+ * source, as recheckField checks them after the destination. G2 review: an Ask's accepted plan writes into fields it
+ * may change, so it checks only this (helper.ts acceptPlan). A window's value is held to its write-contract provenance
+ * (fill/contract.ts provenanceStale), the one recheck of a source, which also runs right before each write (guardFor).
+ * I1: that replaced sourceHolds here, which G2 had made hold the value to its own copy of the same source record
+ * (FillField.basis.lines, .from, .how).
+ */
+export function valueStale(model: ScreenModel, w: WindowState, f: GroundedField, about: AboutNow, answer: AnswerNow, page: PageContext | null): FieldStale | null {
+  const node = w.nodes.get(f.key);
+  if (node === undefined) return { log: `the field ${f.key} is gone`, says: "the field is gone" };
   if (f.source === null && f.answer !== undefined) {
     // S1: the answer as answers.md holds it now must still be the text shown, word for word, for the same question, and
     // still pass the guards on the page as it is now: its organization, and a maxlength the page may have lowered.
@@ -276,16 +268,21 @@ function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, abou
     }
     return null;
   }
-  const sw = model.windows.get(f.source.windowId);
   const key = f.source.nodeKey;
-  if (sw === undefined || sw.nodes.get(key) === undefined) return { log: `the source ${key} is gone`, says: "where Caret read its value is gone" };
-  return sourceHolds(sw, key, f.span, f.context, f.control) ? null : { log: `the source ${key} changed`, says: "where Caret read its value changed" };
+  // G2: a value code decided was the user's by their identity in memory holds only while the entry is still that identity.
+  const id = f.basis?.identity;
+  if (id !== undefined) {
+    const now = about(id.memoryId);
+    if (now === null || identityKey(id.kind, now.value) !== id.key) return { log: `memory entry ${id.memoryId} is no longer this identity`, says: "what you told Caret about yourself changed" };
+  }
+  const stale = provenanceStale(model, f.checked.provenance);
+  return stale === null ? null : { log: `the source ${key} changed: ${stale}`, says: "where Caret read its value changed" };
 }
 
 /**
  * Why the fill can no longer be done as shown, or null. Every destination must still be there, empty (no text, no
  * box ticked, no option picked) and described as it was when Jev was asked, and every source must still show what
- * the value was read from (sourceHolds). A value from memory must still be what that entry holds: forgetting, pausing
+ * the value was read from (valueStale). A value from memory must still be what that entry holds: forgetting, pausing
  * or editing it ends the offer. The first field that fails says why; recheckFields drops each one instead.
  */
 export function recheckFill(model: ScreenModel, p: GroundedProposal, about: AboutNow, answer: AnswerNow = () => null, page: PageContext | null = null): string | null {
@@ -327,7 +324,7 @@ export function recheckFields(model: ScreenModel, p: GroundedProposal, about: Ab
  * that follows the country) comes after it. Every string read from the screen (title, labels, values) is passed as a
  * slot, so braces in it are never read as a placeholder.
  */
-export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan; slots: Record<string, string> } {
+export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan; slots: Record<string, string>; checks: ReadonlyMap<number, CheckedValue> } {
   const w = model.windows.get(p.windowId);
   const slots: Record<string, string> = { title: w?.window.title ?? "" };
   const declared: Record<string, string> = { title: "the form window's title" };
@@ -336,6 +333,8 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
   const order = new Map([...(w?.nodes.keys() ?? [])].map((k, i) => [k, i]));
   const fields = [...p.fields].sort((a, b) => (order.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.key) ?? Number.MAX_SAFE_INTEGER));
   const steps = fields.map((f, i) => {
+    // W2: the write contract's mint for exactly this value in this field, or ContractError (fill/contract.ts).
+    requireChecked(f.checked, f.value, f.key, p.windowId, `field ${f.key}`);
     slots[`v${i}`] = f.value;
     slots[`l${i}`] = fieldLabel(model, p.windowId, f.key);
     // A value from memory is no window's text, so no window is charged when a question quotes it.
@@ -359,6 +358,9 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       // A part of a remembered name names its part ("about-1#first"), so the check splits the entry the same way.
       // C2 review: a control's value names the conversion it went through ("~option", "~date"), which the check reads too.
       ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory, conversionOf(f.control)) }),
+      // G2: a value that is the user's identity, or a part split from one, is checked against its entry again right before
+      // it is written too (fill.ts identityRefOf).
+      ...(identityRefOf(f, f.value) === null ? {} : { memory: identityRefOf(f, f.value) as string }),
       end: {
         kind: "valueEquals" as const,
         window: { bundleId: p.bundleId, title: "{{title}}", ...(w?.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: p.windowId } : {}) },
@@ -367,5 +369,6 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       },
     };
   });
-  return { plan: { id: p.id, title: `Fill ${p.fields.length} fields`, slots: declared, sources, steps }, slots };
+  // W2: each step's mint by its index, for the executor's guard right before each write (contract.ts guardFor).
+  return { plan: { id: p.id, title: `Fill ${p.fields.length} fields`, slots: declared, sources, steps }, slots, checks: new Map(fields.map((f, i) => [i, f.checked])) };
 }

@@ -72,6 +72,9 @@ public struct PlanProposal: Codable, Equatable, Sendable {
         case unseenWindow
         /// B29: the question an askAnswer names is unknown to this connection, expired or already answered.
         case questionGone
+        /// I2: a write outside the Ask's settled fields, or into a field that changed since the Ask. The helper sends it
+        /// only to a host whose hello lists `askScope` (protocol.ts ASK_SCOPE_CAPABILITY); any other gets unknownWindow.
+        case outOfScope
     }
     public struct Window: Codable, Equatable, Sendable {
         public var pid: Int

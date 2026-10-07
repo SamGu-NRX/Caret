@@ -1,1 +1,0 @@
-B28-G2: Ask sentences in planner/says.ts; Jev confidence = top-two margin; routed producers hold offers; Fill all writes handoffs with writes:true; scope words are allowlists; VM walks judged by results.json; goal steps only via goalAccept; pid-posted keys skip the tap.

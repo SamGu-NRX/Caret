@@ -3,8 +3,9 @@
 //   - a field or value of a kind Caret never types (memory/sensitive.ts: card and account numbers, passwords, codes,
 //     government IDs, API keys) is never written;
 //   - the value's kind fits the field (fill/kinds.ts misfit, its number-field rule included);
-//   - Jev confirms the value belongs in the field: Ask's question in both its wordings, both answers agreeing at
-//     PLAN_CUTOFF, which is fill's FILL_CUTOFF, with fill's owner veto for a field that takes a person's details.
+//   - W2: a page write meets the write contract (fill/contract.ts checkValues, from lower.ts): code's checks and the
+//     categorical verifier; jevGate then asks only fill's owner veto for a field that takes a person's details, and,
+//     for a calendar event (no page write), whether it belongs there, both wordings agreeing at PLAN_CUTOFF.
 // A write that fails is dropped from the plan, and the preview says why in one sentence (lower.ts). Text Caret
 // composed is checked by goals/drafts.ts instead of Jev's field question; its never-typed check is here.
 //
@@ -15,10 +16,10 @@
 // keeps the code checks (see markDerived). G2's live probes had Jev under the 0.75 floor on exactly these values.
 //
 // P2 (plans/fast-browser.md, gate "fill"): a page plan's values were chosen by proposeFill itself, both wordings
-// agreeing at FILL_CUTOFF with the owner veto, so lowering skips Jev's question for them and keeps the code checks
-// (see markFilled). Whether verifyWrites would have dropped any such pick is measured in P2's disagreement report.
+// agreeing at FILL_CUTOFF with the owner veto, and minted by the write contract there (W2: the mint replaced the
+// markFilled identity mark), so lowering passes the mint through and asks nothing again.
 import type { AskJev } from "../fill/jev.ts";
-import { fieldKinds, misfit, NUMBER_FIELD } from "../fill/kinds.ts";
+import { fieldKinds, NUMBER_FIELD } from "../fill/kinds.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { verifyWrites } from "../planner/codeplan.ts";
 import { secretIn } from "../planner/trace.ts";
@@ -52,24 +53,6 @@ export function markDerived<T extends ValueBinding | GoalStep>(x: T): T {
 /** Whether the helper itself built this value or step as derived (markDerived); a copy never is. */
 export function isDerived(x: ValueBinding | GoalStep): boolean {
   return derived.has(x);
-}
-
-/**
- * Steps lowering gated by fill's own agreement (P2, gate "fill"): the page planner hands lowering the very value object
- * proposeFill agreed on for each target (LowerOptions.gated), and lowering marks the step it built from that pair. By
- * object identity, as `derived` above, so neither a program's plain data nor a copy can claim fill's gate and skip Jev.
- */
-const filled = new WeakSet<object>();
-
-/** Marks a step lowering built from a pick fill agreed on for its target, and returns it. Only lower.ts calls this. */
-export function markFilled(x: GoalStep): GoalStep {
-  filled.add(x);
-  return x;
-}
-
-/** Whether lowering marked this step as gated by fill (markFilled); a copy never is. */
-export function isFilled(x: GoalStep): boolean {
-  return filled.has(x);
 }
 
 const WEEKDAY_OR_MONTH = /^(?:mon|tues?|wed|thu(?:rs)?|fri|sat|sun)(?:day|nesday|urday)?$|^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)$/u;
@@ -130,8 +113,9 @@ export function codeGate(t: TargetBinding, written: string, source: string, as: 
     const prose = t.role === "AXTextArea" ? ![...kinds].some((k) => k !== "id") : PROSE_FIELD.test(t.own) && kinds.size === 0 && !NUMBER_FIELD.test(t.own.toLowerCase()) && !/\bname\b/iu.test(t.own);
     return t.control === "text" && prose ? null : "Caret writes drafts only in a field for a message or a description";
   }
-  if (as === "event" || t.control !== "text") return null;
-  return misfit(written, [t.label]);
+  // W2: a copied value's kind and shape are the write contract's (fill/contract.ts checkValues, from lower.ts), with the
+  // field and provenance it carries; options, dates and events are minted under their named exemptions there.
+  return null;
 }
 
 export interface JevWrite {
@@ -174,7 +158,8 @@ export async function jevGate(instruction: string, writes: readonly JevWrite[], 
       instruction,
       writes.map((w) => {
         const name = w.target.control === "calendar" ? `the ${w.target.label} calendar` : w.target.label;
-        return { key: w.ref, field: { name, label: name }, value: { display: shown(w), window: w.value.source?.windowId ?? null, owner: w.value.owner } };
+        // W2: a page write's exactness is the write contract's (lower.ts checkValues); only an event asks its value here.
+        return { key: w.ref, field: { name, label: name }, value: { display: shown(w), window: w.value.source?.windowId ?? null, owner: w.value.owner }, askValue: w.target.control === "calendar" };
       }),
       askJev,
       ledger,

@@ -3,6 +3,7 @@
 // Ask's own offer or goal sees it; its sources are checked against it at acceptance, so text that expired before Tab
 // writes nothing; and it goes when the offer or goal ends. The worker's own rules are played by the fake engine, as in
 // tab-source.test.ts. Every name and value is invented.
+import { answeringScope } from "./builders.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,6 +116,9 @@ describe("an Ask reads the tab the user just left (I6)", () => {
     const pick = jevPickingText((_, ins) => PICK[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null, 0.95);
     // Confirmation questions (planner/ask.ts confirmScope) answer yes; everything else is fill's.
     const jev: AskJev = async (req) => {
+      // I2 ruling D: the per-field scope question every route asks, before any source is read: every field it is asked
+      // about. Not counted: these tests count the questions that read the tab.
+      if (req.purpose === "ask.scope") return answeringScope(async () => { throw new Error("unreachable"); })(req);
       jevCalls++;
       const r = await pick(req);
       for (const [id, q] of Object.entries(req.questions)) if ("yes" in q.criteria) r.answers[id] = { choice: "yes", confidence: 0.95 };
@@ -251,7 +255,7 @@ describe("an Ask reads the tab the user just left (I6)", () => {
 
     it("logs a page plan's refusal by its code alone when the plan read the tab", async () => {
       // Jev is unsure of every value: the planner refuses with a sentence that may quote what it read.
-      (helper as unknown as { ask: AskJev }).ask = async (req) => ({ answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "none", confidence: 0.2 }])), costUsd: 0, latencyMs: 0 }) as never;
+      (helper as unknown as { ask: AskJev }).ask = answeringScope(async (req) => ({ answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "none", confidence: 0.2 }])), costUsd: 0, latencyMs: 0 }) as never);
       const g = await askGoal();
       // Said as the planner's own refusal, not as text that expired (the release in pagePlan's catch comes after that check).
       expect(g).toMatchObject({ event: "stopped", says: "Caret found nothing to put in First name, Last name or Email." });

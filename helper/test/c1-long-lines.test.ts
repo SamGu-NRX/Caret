@@ -7,7 +7,7 @@ import { collectCandidates, describeCandidate } from "../src/fill/candidates.ts"
 import { proposeFill } from "../src/fill/fill.ts";
 import type { JevRequest } from "../src/fill/jev.ts";
 import { datePart, splitAddress, splitDate } from "../src/fill/derive.ts";
-import { sourceHolds } from "../src/offers/fill-popup.ts";
+import { holds } from "./recheck.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, jevPickingText, snap, text } from "./builders.ts";
 
@@ -102,31 +102,35 @@ describe("what a value inside a line carries, and what it never offers", () => {
 });
 
 describe("the recheck reads a line the way fill read it", () => {
-  const src = (t: string) => {
+  const src = (t: string): ScreenModel => {
     const m = new ScreenModel();
     m.apply(snap([text("dev.caret.notes/standard/statictext:a~0", t)], { at: 1, windowId: "8-1" }));
-    return m.windows.get("8-1") as NonNullable<ReturnType<ScreenModel["windows"]["get"]>>;
+    return m;
   };
-  const key = "dev.caret.notes/standard/statictext:a~0";
+  const at = { windowId: "8-1", nodeKey: "dev.caret.notes/standard/statictext:a~0" };
+  // I1: the recheck is the write contract's (fill/contract.ts provenanceStale): `span` read from `was` beside `context`.
+  const held = (was: string, now: string, span: string, context: string | null = null): boolean => holds(src, at, was, now, span, context);
+  const SCHOOL = "School: Lakeshore Polytechnic Institute, B.S. Electrical Engineering, September 2016 to May 2020.";
+  const GRADUATED = "Graduated in May 2020 from Lakeshore, and the transcript is at home with my parents somewhere.";
 
-  it("holds a date's month from a labelled line whose label does not name the date", () => {
-    expect(sourceHolds(src("School: Lakeshore Polytechnic Institute, B.S. Electrical Engineering, September 2016 to May 2020."), key, "May", null, "select")).toBe(true);
-    expect(sourceHolds(src("Graduated in May 2020 from Lakeshore, and the transcript is at home with my parents somewhere."), key, "2020", null, "select")).toBe(true);
+  it("holds a date from a long line, unchanged", () => {
+    expect(held(SCHOOL, SCHOOL, "May 2020")).toBe(true);
+    expect(held(GRADUATED, GRADUATED, "May 2020")).toBe(true);
   });
 
   it("refuses a line that now has a label naming the value", () => {
-    expect(sourceHolds(src("Do not use: May 2020"), key, "May", null, "select")).toBe(false);
+    expect(held("May 2020", "Do not use: May 2020", "May 2020")).toBe(false);
     // C1 review: a value code found in a line (not the reader's typed value) is checked by the line as it reads now.
-    expect(sourceHolds(src("Do not use: May 2027"), key, "May 2027", null, "select")).toBe(false);
-    expect(sourceHolds(src("Do not use: 555-0147"), key, "555-0147", null, "combobox")).toBe(false);
-    expect(sourceHolds(src("Graduating in May 2027 from Lakeshore, with the transcript to follow by mail, I hope."), key, "May 2027", null, "select")).toBe(true);
-    expect(sourceHolds(src("Do not use: Oakland, California, United States"), key, "Oakland, California, United States", null, "combobox")).toBe(false);
+    expect(held("Graduating in May 2027.", "Do not use: May 2027", "May 2027")).toBe(false);
+    expect(held("555-0147", "Do not use: 555-0147", "555-0147")).toBe(false);
+    expect(held("Oakland, California, United States", "Do not use: Oakland, California, United States", "Oakland, California, United States")).toBe(false);
   });
 
   it("checks a value from a long labelled line by its label", () => {
-    const line = "School: Lakeshore Polytechnic Institute, B.S. Electrical Engineering, September 2016 to May 2020.";
-    expect(sourceHolds(src(line), key, "Lakeshore Polytechnic Institute", "School", "combobox")).toBe(true);
-    expect(sourceHolds(src(line.replace("School:", "Not my school:")), key, "Lakeshore Polytechnic Institute", "School", "combobox")).toBe(false);
+    expect(held(SCHOOL, SCHOOL, "Lakeshore Polytechnic Institute", "School")).toBe(true);
+    // Its lines read as recorded, so the label is what refuses it.
+    const relabelled = SCHOOL.replace("School:", "Not my school:");
+    expect(held(relabelled, relabelled, "Lakeshore Polytechnic Institute", "School")).toBe(false);
   });
 });
 

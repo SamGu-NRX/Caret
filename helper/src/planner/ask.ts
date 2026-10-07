@@ -11,18 +11,22 @@
 //     AskAsks, a refusal that carries the question. The user's pick comes back as AskOptions.resume, which continues
 //     the same intent with that part fixed through every check below.
 // Nothing here acts.
+import { randomUUID } from "node:crypto";
+import { unnamedTargets } from "./targets.ts";
+import { settleFields } from "./intent-heads.ts";
+import { askScope, fieldFingerprint, type AskScope, type Authority, type DocumentReader, type Settled } from "../fill/ask-scope.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
-import type { AskOption, FillField, FillProposal, Node } from "../protocol.ts";
+import { MAX_ASK_OPTIONS, type AskOption, type FillField, type FillProposal, type Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
-import { conversionOf, FillError, memoryRefOf, PAGE_WINDOW_KIND, proposeFill, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FillError, identityRefOf, memoryRefOf, mintOf, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
 import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, wordsOf, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
-import { SAYS, SaidError, Unclear, jevFailedError, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure, type AskPart } from "./says.ts";
+import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure, saysUnsureFields, type AskPart } from "./says.ts";
 import { choicesFor, type Choice } from "./choices.ts";
 import { fieldWords } from "./sources.ts";
 import { asksForWholeForm, exclusionsIn, namedSection } from "./scope-words.ts";
@@ -39,6 +43,16 @@ export interface AskOptions {
   windowId?: string;
   now?: number;
   rand?: (n: number) => number;
+  /**
+   * I2: which page document a window shows now (the helper's page engine). The Ask's scope records the document its
+   * question was asked on, and every check of the scope reads the document through this; without it, a page's scope
+   * holds nothing on any page.
+   */
+  documentOf?: DocumentReader;
+  /** I2: what this request's scope question already settled (the direct attach rule's, helper.ts), used in place of asking again. */
+  settled?: Settled;
+  /** W1: passed to the fill step's proposal (FillOptions.trace), for evaluation harnesses only. */
+  fillTrace?: FillOptions["trace"];
   /** Fault-injection seam for the planner evaluation (PlanTaskOptions.beforeCheck). */
   beforeCheck?: () => Promise<void>;
   /**
@@ -64,6 +78,8 @@ export interface AskOptions {
 /** The snapshot refs an intent names, by what they stand for, so it can be read against a later snapshot. */
 interface SnapRefs {
   fields: Record<string, string>;
+  /** I2: upload field refs (IntentSnapshot.uploads) to their keys. */
+  uploads: Record<string, string>;
   windows: Record<string, string>;
   persons: Record<string, string>;
   sections: Record<string, string>;
@@ -72,6 +88,8 @@ interface SnapRefs {
 /** What continues an Ask after a question: the instruction, the form, the maker's intent and the picks so far. */
 export interface AskResume {
   instruction: string;
+  /** I2: the Ask's id (AskScope.askId), kept by every question it asks. */
+  askId?: string;
   windowId: string;
   intent: AskIntent;
   refs: SnapRefs;
@@ -85,6 +103,14 @@ export interface AskResume {
    * text field, got past a check of the intent's named fields only).
    */
   seen: { title: string; fields: Record<string, string> };
+  /** I2 ruling B: the page document the first question was asked on, read when its snapshot was taken (null: none). */
+  document: string | null;
+  /**
+   * I2: the field and upload keys the per-field scope question settled before this question was asked (the fields it
+   * chose and the ones it offers); absent when it had not been asked yet. A continued Ask never asks it again: its scope
+   * is these, narrowed by the user's picks.
+   */
+  scopeKeys?: string[];
 }
 
 /** One question an Ask asks (B29): its part, text and options, the form it is about, and what continues it. */
@@ -122,7 +148,13 @@ export interface AskGoal {
    * the ones named), for the reveal continuation; a scope narrowed by Jev's confirmation is a list. Absent for a goal
    * about native windows, which the writer plans.
    */
-  page?: { scope: FillScope; trigger: string; kind: "all" | "section" | "list"; section: string | null };
+  page?: { scope: FillScope; trigger: string; kind: "all" | "section" | "list"; section: string | null; unsure?: readonly string[] };
+  /** I2: the Ask's settled scope, which the goal's write contract and goal gate enforce (fill/ask-scope.ts). */
+  askScope?: AskScope;
+  /** I2: the Ask's id, which every scope the goal holds carries (a window with no field gives no scope of its own). */
+  askId: string;
+  /** I2: whether the goal continues an Ask that asked a question: it settles nothing (helper.ts takes no settle ticket). */
+  resumed: boolean;
 }
 
 /**
@@ -154,6 +186,7 @@ export class AskAsks extends AskRefused {
 
 const refsOf = (snap: IntentSnapshot): SnapRefs => ({
   fields: Object.fromEntries(snap.fields.map((f) => [f.ref, f.key])),
+  uploads: Object.fromEntries(snap.uploads.map((f) => [f.ref, f.key])),
   windows: Object.fromEntries(snap.windows.map((w) => [w.ref, w.windowId])),
   persons: Object.fromEntries(snap.persons.map((p) => [p.ref, p.span])),
   sections: Object.fromEntries(snap.sections.map((x) => [x.ref, x.name])),
@@ -164,23 +197,30 @@ const changed = (what: string): never => {
   throw new SaidError("unknownWindow", SAYS.windowChanged, `since Caret asked, ${what}`);
 };
 
+/** What a field is, as a continued Ask compares it and as the Ask's scope records it (fill/ask-scope.ts fieldFingerprint). */
+const fieldSeen = (w: WindowState, f: IntentField): string => fieldFingerprint(w, f.key);
+
 /**
- * What a field is, as a continued Ask compares it: what fill reads of it (its name, section, label, nearest text and
- * placeholder, control, role and subrole), its exact value and states, and each child's role, label, value and states (a
- * select's options, a radio group's buttons; a disabled radio option is one fill skips, third check). Second re-check: a placeholder, an option's value and a changed value all got past a
- * fingerprint of name, section and "holds text".
+ * I2 ruling: a field no name reads is in no Ask's inventory (targets.ts), so the Ask says it left such fields to the
+ * user, after what it left for other reasons; null when there is nothing to say.
  */
-function fieldSeen(w: WindowState, f: IntentField): string {
-  const n = w.nodes.get(f.key);
-  if (n === undefined) return "gone";
-  const d = describeField(w, n);
-  const children = [...w.nodes.values()].filter((c) => c.parent === f.key).map((c) => [c.role, c.label ?? null, c.value ?? null, c.states ?? []]);
-  return JSON.stringify([f.name, f.section, d.label, d.nearest, d.placeholder, f.control, n.role, n.subrole ?? null, n.value ?? "", n.states ?? [], children]);
+function withUnnamed(left: string | null, w: WindowState): string | null {
+  const n = unnamedTargets(w).length;
+  if (n === 0) return left;
+  const says = `${n === 1 ? "A field with no name is" : `${n} fields with no name are`} yours to fill.`;
+  return left === null ? says : `${left} ${says}`;
+}
+
+/** A planner's refusal, with the fields no name reads said as the user's (withUnnamed): an Ask never writes them. */
+function saidWithUnnamed(e: unknown, w: WindowState): unknown {
+  if (!(e instanceof PlannerError) || unnamedTargets(w).length === 0) return e;
+  const said = withUnnamed(e instanceof SaidError ? e.message : saysFor(e.code), w) as string;
+  return new SaidError(e.code, said, e.message);
 }
 
 /** What a question records of the form; a later question of the same Ask keeps the first one's record of each field. */
 function seenOf(snap: IntentSnapshot, earlier: AskResume["seen"] | undefined): AskResume["seen"] {
-  const now = Object.fromEntries(snap.fields.map((f) => [f.key, fieldSeen(snap.window, f)]));
+  const now = Object.fromEntries([...snap.fields, ...snap.uploads].map((f) => [f.key, fieldSeen(snap.window, f)]));
   return earlier === undefined ? { title: snap.window.window.title, fields: now } : { title: earlier.title, fields: { ...now, ...earlier.fields } };
 }
 
@@ -219,14 +259,22 @@ function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot, fi
   return {
     ...intent,
     fields: intent.fields.filter(kept).map(field),
+    ...(intent.options === undefined ? {} : { options: intent.options.filter(kept).map(field) }),
+    // I3: the fields Jev settled stay in scope through the pick, so one that is gone changes the form under the question.
+    ...(intent.sure === undefined ? {} : { sure: intent.sure.map(field) }),
+    ...(intent.unsure === undefined ? {} : { unsure: intent.unsure.filter((r) => snap.fields.some((f) => f.key === refs.fields[r])).map(field) }),
     sources: intent.sources.map(source),
     whose: whose(intent.whose),
     section: section === undefined ? intent.section : (snap.sections.find((x) => x.name === section)?.ref ?? changed(`the section ${intent.section} is gone`)),
     literals: intent.literals.filter((l) => kept(l.field)).map((l) => ({ ...l, field: field(l.field) })),
+    ...(intent.uploads === undefined ? {} : { uploads: intent.uploads.map((r) => snap.uploads.find((u) => u.key === refs.uploads[r])?.ref ?? changed(`the upload field ${r} is gone`)) }),
   };
 }
 
-/** An intent whose scope is no longer code's agreed reading, once planAsk rewrites it. */
+/** Whether the intent's fields are Jev's scope ask's (intent-heads.ts): chosen in both wordings, or offered to ask. */
+const fromJev = (intent: AskIntent): boolean => intent.agreed === true || intent.options !== undefined;
+
+/** An intent whose scope is no longer the fields Jev chose, once planAsk rewrites it. */
 function withoutAgreement(intent: AskIntent): AskIntent {
   const { agreed: _, ...rest } = intent;
   return rest;
@@ -254,7 +302,10 @@ function applyFixed(intent: AskIntent, fixed: AskFixed, snap: IntentSnapshot): A
   let open = openParts(intent);
   let it: AskIntent = intent;
   if (fixed.fields !== undefined) {
-    const refs = fixed.fields.map((k) => snap.fields.find((f) => f.key === k)?.ref ?? changed("a field you picked is gone"));
+    // I3: the fields Jev settled beside the question (`sure`) stay; the user's pick adds to them.
+    const picked = fixed.fields.map((k) => snap.fields.find((f) => f.key === k)?.ref ?? changed("a field you picked is gone"));
+    const keep = new Set([...(intent.sure ?? []), ...picked]);
+    const refs = snap.fields.filter((f) => keep.has(f.ref)).map((f) => f.ref);
     it = { ...it, scope: "list", section: "none", fields: refs, literals: it.literals.filter((l) => refs.includes(l.field)) };
     open = open.filter((p) => p !== "fields");
   }
@@ -324,10 +375,17 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   const fixed: AskFixed = resume?.fixed ?? {};
   const makerName = resume?.makerName ?? o.maker.name;
   let intent: AskIntent;
+  // I2 ruling B: the page document the question is asked on, read with the snapshot, before any planning awaits; a
+  // continued Ask keeps its first question's.
+  const documentOf = o.documentOf ?? null;
+  // I2 ruling: one request, one settlement: a settlement this request already made on this window (the direct attach
+  // rule's, helper.ts) is used, with its id, document and fingerprints, and the scope question is not asked again.
+  const presettled = resume === undefined && o.settled !== undefined && o.settled.windowId === w.window.windowId ? o.settled : undefined;
+  const document = resume !== undefined ? resume.document : presettled !== undefined ? presettled.document : documentOf === null ? null : documentOf(w.window.windowId);
   try {
     snap = intentSnapshot(instruction, model, w, memory.values());
     // A continued Ask reads the maker's intent against the form as it is now, and asks the maker nothing.
-    made = resume === undefined ? await o.maker.make(snap) : { intent: remapIntent(resume.intent, resume.refs, snap, fixed.fields !== undefined), use: resume.maker };
+    made = resume === undefined ? await o.maker.make(snap, undefined, presettled) : { intent: remapIntent(resume.intent, resume.refs, snap, fixed.fields !== undefined), use: resume.maker };
     intent = applyFixed(made.intent, fixed, snap);
     // A window with no field at all (the email the user is reading) has nothing to fill or to ask which fields of, so
     // for a host that runs goals an Ask from it is about other windows: a fill or an unsettled intent is a plan, which
@@ -339,19 +397,73 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     throw e;
   }
   const use = made.use;
-  // P2: on a page with fields, for a host that runs goals, a fill or a plan is planned by the page planner; a plan is
-  // read as a fill of the whole form, which Jev must confirm the instruction asks for (confirmScope, as an inferred
-  // whole form), and Caret still presses nothing on the page.
+  // I2 rulings: the Ask's own id, which its scope and every mint's authority carry; a continued Ask keeps it, carries
+  // the scope its first question froze, and is on the document that question was asked on, or it goes no further
+  // (no goal, no settling: settlement is a fresh Ask's or a carry's, helper.ts).
+  const askId = resume?.askId ?? presettled?.askId ?? randomUUID();
+  if (resume !== undefined) {
+    if (resume.scopeKeys === undefined || resume.askId === undefined) throw new AskRefused(new SaidError("questionGone", SAYS.questionGone, "the question carries no settled scope"), null, null);
+    const docNow = documentOf === null ? null : documentOf(w.window.windowId);
+    if (docNow !== resume.document) throw new AskRefused(new SaidError("unknownWindow", SAYS.windowChanged, "the page is another document than the one the question was asked on"), null, null);
+  }
+  // I2: the keys the per-field scope question settled, frozen for a continued Ask: a resumed Ask's own record, else the
+  // heads maker's scope ask (its intent's chosen and offered fields and chosen uploads), else none until settleFields.
+  let frozen: string[] | undefined = resume?.scopeKeys;
+  const settledKeys = (): string[] | undefined => {
+    if (frozen !== undefined) return frozen;
+    if (made.intent.settled !== undefined) {
+      const k = (r: string): string | undefined => snap.fields.find((f) => f.ref === r)?.key ?? snap.uploads.find((u) => u.ref === r)?.key;
+      return made.intent.settled.flatMap((r) => k(r) ?? []);
+    }
+    if (!fromJev(intent)) return undefined;
+    const key = (r: string): string | undefined => snap.fields.find((f) => f.ref === r)?.key ?? snap.uploads.find((u) => u.ref === r)?.key;
+    return [...new Set([...intent.fields, ...(intent.options ?? []), ...(intent.uploads ?? [])].flatMap((r) => key(r) ?? []))];
+  };
+  // P2: on a page with fields, for a host that runs goals, a fill or a plan is planned by the page planner, and Caret
+  // still presses nothing on the page. Another maker's plan is read as a fill of the whole form, which Jev must confirm
+  // the instruction asks for (confirmScope, as an inferred whole form). A3: a heads-maker plan fills Jev's fields from
+  // the sources and for the person it read, after asking what it left open (intent-heads.ts).
   const pageGoal = o.goals === true && w.window.kind === PAGE_WINDOW_KIND && snap.fields.length > 0;
   const planAsAll = pageGoal && intent.route === "plan";
-  if (planAsAll) intent = { ...withoutAgreement(intent), route: "fill", why: "none", scope: "list", fields: [], literals: [] };
+  if (planAsAll) {
+    const pending = (intent.pageOpen ?? []).filter((p) => fixed[p] === undefined);
+    intent = !fromJev(intent)
+      ? { ...withoutAgreement(intent), route: "fill", why: "none", scope: "list", fields: [], literals: [] }
+      : pending.length > 0
+        ? { ...intent, route: "ask", why: ASKED_WHY[pending[0] as AskPart], open: pending }
+        : { ...intent, route: "fill", why: "none" };
+  }
+  // I2 (review of the A3 merge): any other plan from Jev's scope ask is held to Jev's fields, or the user's pick, by the
+  // Ask's scope (below, enforced by the write contract). Before it, the native planner rebuilt its own field list from
+  // the instruction's words: "fill the form and submit" with only Name chosen wrote Name and Email, and an "unclear"
+  // Email was written without asking. The planner is asked only about those fields (nativeFields), which saves
+  // questions about writes the contract would refuse. A part left open is asked first, as for a page goal. Fields open
+  // with nothing to offer means Jev chose no field: the plan may only hand off a press ("hit submit"), so nothing is asked.
+  let nativeFields: string[] | undefined;
+  // A window with no field (the email a reply goal starts from) gives no scope: the goal settles one on the window it
+  // writes in (helper.ts settleScopeFor), never an empty one from here.
+  if (!planAsAll && intent.route === "plan" && snap.fields.length > 0 && fromJev(intent)) {
+    const offersFields = (intent.options ?? []).length > 0;
+    const pending = (intent.pageOpen ?? []).filter((p) => fixed[p] === undefined && (p !== "fields" || offersFields));
+    nativeFields = pending.includes("fields") ? [] : intent.fields.map((r) => snap.fields.find((f) => f.ref === r)?.key ?? changed(`the field ${r} is gone`));
+    if (pending.length > 0 && (pending.includes("fields") || nativeFields.length > 0)) intent = { ...intent, route: "ask", why: ASKED_WHY[pending[0] as AskPart], open: pending };
+  }
   /** The question for an unclear part, when it is not one the user already picked and code can list its candidates. */
   const question = (e: Unclear): AskQuestionDraft | string => {
     if (fixed[e.part] !== undefined) return `the user already picked the ${e.part}`;
-    const r = choicesFor(e.part, snap, model, scopeFields(intent, snap), now);
+    // A3: an intent from Jev's scope ask offers exactly the fields Jev left unclear or chose, never fields code picked.
+    const offered = intent.options === undefined ? null : intent.options.map((r) => snap.fields.find((f) => f.ref === r) ?? changed(`the field ${r} is gone`));
+    // I2 rulings: no question is saved for an Ask whose scope is not settled; every question carries that scope, and
+    // offers (and looks for sources of) the settled fields only.
+    const settled = settledKeys();
+    if (settled === undefined) return "the Ask's scope was not settled";
+    const r = choicesFor(e.part, snap, model, scopeFields(intent, snap), now, offered, new Set(settled));
     if (r.choices === null) return r.why;
+    // I3: a fields question beside fields Jev settled says those are filled whatever the pick.
+    const sure = e.part === "fields" ? (intent.sure ?? []).map((ref) => snap.fields.find((f) => f.ref === ref)?.name ?? changed(`the field ${ref} is gone`)) : [];
     return {
       ...r.choices,
+      ...(sure.length === 0 ? {} : { text: asksFieldsBeside(sure) }),
       window: { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title },
       resume: {
         instruction,
@@ -361,7 +473,10 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
         maker: use,
         makerName,
         fixed,
-        seen: seenOf(snap, resume?.seen),
+        seen: seenOf(snap, resume?.seen ?? (presettled === undefined ? undefined : { title: w.window.title, fields: { ...presettled.seen } })),
+        document,
+        askId,
+        scopeKeys: settled,
       },
     };
   };
@@ -369,6 +484,13 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     if (e instanceof PlannerError) {
       e.windowId ??= w.window.windowId;
       if (e instanceof Unclear) {
+        // I3 lead ruling: Jev settled no field and offers more than one question lists. Nothing is filled, and the
+        // sentence names those fields as the user's, never "which fields?".
+        const offered = intent.options ?? [];
+        if (e.part === "fields" && fixed.fields === undefined && (intent.sure ?? []).length === 0 && offered.length > MAX_ASK_OPTIONS) {
+          const names = offered.map((ref) => snap.fields.find((f) => f.ref === ref)?.name ?? ref);
+          throw new AskRefused(new SaidError("unsure", saysUnsureFields(names), `${e.detail}; no question: ${offered.length} fields Jev offers, more than one question lists, and Jev settled none`), intent, use);
+        }
         const q = question(e);
         if (typeof q !== "string") throw new AskAsks(e, intent, use, q);
         throw new AskRefused(new Unclear(e.part, e.message, `${e.detail}; no question: ${q}`), intent, use);
@@ -377,6 +499,42 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     }
     throw e;
   };
+  /** I3: fields the writer's or staged maker's settlement left to the user (unsure), beside the heads maker's intent.unsure. */
+  let unsureLeft: IntentField[] = [];
+  // I2 ruling (order): an Ask settles its scope before it asks any question. The heads maker's scope ask is in its intent;
+  // the writer's and the staged maker's fields are asked here, every field and upload field of the form in one
+  // question, before code reads the intent, so every question carries the frozen scope (AskResume.scopeKeys). Fields
+  // left unclear are asked about first. No whole-form confirmation stands in for this question.
+  if (frozen === undefined && made.intent.settled === undefined && !fromJev(intent)) {
+    if (snap.fields.length === 0 && snap.uploads.length === 0) frozen = [];
+    else if (fixed.fields === undefined) {
+      let settled: Awaited<ReturnType<typeof settleFields>>;
+      if (presettled !== undefined) {
+        const of = (keys: readonly string[]): IntentField[] => [...snap.fields, ...snap.uploads].filter((f) => keys.includes(f.key));
+        settled = { asks: of(presettled.asks), unclear: of(presettled.unclear) };
+      } else
+        try {
+          settled = await settleFields(snap, askJev);
+        } catch (e) {
+          return refused(e);
+        }
+      const unclear = settled.unclear.filter((f) => f.upload !== true);
+      frozen = [...settled.asks, ...unclear].map((f) => f.key);
+      // I3 lead ruling, as the heads maker reads it (intent-heads.ts): the fields Jev chose are filled; the unclear ones
+      // are asked about beside them when one question lists them all, else each is left to the user, said.
+      const sure = snap.fields.filter((f) => settled.asks.includes(f));
+      if (unclear.length > MAX_ASK_OPTIONS && sure.length > 0) {
+        frozen = settled.asks.map((f) => f.key);
+        unsureLeft = unclear;
+      } else if (unclear.length > 0) {
+        const sureRefs = sure.map((f) => f.ref);
+        intent = { ...intent, options: (sure.length > 0 ? unclear : snap.fields.filter((f) => unclear.includes(f))).map((f) => f.ref), ...(sure.length > 0 ? { sure: sureRefs } : {}) };
+        // A continued Ask reads the maker's intent again (AskResume.intent): the settled fields go with it.
+        if (sure.length > 0) made = { ...made, intent: { ...made.intent, sure: sureRefs } };
+        return refused(new Unclear("fields", SAYS.whichFields, `Jev left ${unclear.map((f) => `'${f.name}'`).join(", ")} unclear`));
+      }
+    }
+  }
   // The words that may name fields are the instruction without its source phrases (sources.ts): "from my note"
   // never names the form's "Add a gift note" (B25 held-08).
   const words = fieldWords(instruction);
@@ -408,7 +566,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // plain "all", it stood without any confirmation when no field word named a field ("fill only the first box"; B26's
   // second review).
   const empties = snap.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
-  // A1: a scope the model agreed is code's reading (scope-reading.ts) needs no further confirmation, here or below.
+  // A3: fields Jev chose in both wordings of its scope ask (intent-heads.ts) need no further confirmation, here or below.
   const agreed = intent.agreed === true && fixed.fields === undefined;
   const listsAll = oneAnswer && !agreed && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
   let checked: ReturnType<typeof checkIntent>;
@@ -418,6 +576,16 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     return refused(e);
   }
   const extra = { intent, maker: use, fill: null };
+  /** I3: the fields left to the user because Jev wasn't sure the request asks for them, never one the Ask writes. */
+  const unsureOf = (writes: Iterable<string>): { key: string; name: string }[] => {
+    const writing = new Set(writes);
+    const fields = [...unsureLeft, ...(intent.unsure ?? []).flatMap((r) => snap.fields.find((f) => f.ref === r) ?? [])];
+    return fields.filter((f) => !writing.has(f.key)).map((f) => ({ key: f.key, name: f.name }));
+  };
+  const withUnsure = (writes: Iterable<string>): { unsure?: { key: string; name: string }[] } => {
+    const u = unsureOf(writes);
+    return u.length === 0 ? {} : { unsure: u };
+  };
   // A plan whose one step hands the user a press does nothing for them ("hit submit"), so it is said, not offered:
   // "Submitting is yours to do." (B26 lead decision 3; B25's held-out run showed the user nothing for it).
   const onlyPress = (d: PlanDraft): never | null => {
@@ -474,16 +642,54 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // H11: a plan intent is a goal only when a writer can plan it. Since L1 there is none by default, and without one a
   // goal refuses every native plan ("no plan writer") that planTask below would still make; a page fill is a goal
   // (planPage, below) and needs no writer.
-  if (checked.route === "plan" && o.goals === true && o.writer !== null) return { route: "goal", intent, maker: use, windowId: w.window.windowId };
+  // I2 rulings D and order: the frozen scope (settled above, or a continued Ask's) holds the writer's and the staged
+  // maker's routes: a fill keeps only the fields it settled, a plan writes only those or the user's picks.
+  let uploadKeys: string[] = (intent.uploads ?? []).flatMap((r) => snap.uploads.find((u) => u.ref === r)?.key ?? []);
+  const settledNow = settledKeys();
+  if (!fromJev(intent) && settledNow !== undefined && (checked.route === "fill" || checked.route === "plan")) {
+    if (fixed.fields === undefined) uploadKeys = settledNow.filter((k) => snap.uploads.some((u) => u.key === k));
+    if (checked.route === "fill" && fixed.fields === undefined) {
+      try {
+        checked = narrowed(checked, (f) => settledNow.includes(f.key), () => new SaidError("nothingToDo", SAYS.whichFields, "Jev's scope question chose none of the fields the instruction was read to ask for"));
+      } catch (e) {
+        return refused(e);
+      }
+    } else if (checked.route === "plan" && nativeFields === undefined) {
+      // A pick is the intent's list now (applyFixed): the user's fields with the ones Jev settled beside the question.
+      nativeFields = fixed.fields === undefined ? settledNow.filter((k) => snap.fields.some((f) => f.key === k)) : intent.fields.map((r) => snap.fields.find((f) => f.ref === r)?.key ?? changed(`the field ${r} is gone`));
+    }
+  }
+  const fieldKeys = checked.route === "fill" ? checked.fields.map((f) => f.key) : (nativeFields ?? []);
+  // Only keys the scope question settled: a continued Ask's picks narrow its frozen scope and never widen it.
+  const scopeKeys = [...fieldKeys, ...uploadKeys].filter((k) => settledNow === undefined || settledNow.includes(k));
+  let scope: AskScope;
+  try {
+    // A window with no field gives a scope of no field: it authorizes nothing (a goal settles each window it writes in).
+    scope = askScope(w.window.windowId, document, scopeKeys, resume?.seen.fields ?? { ...seenOf(snap, undefined).fields, ...(presettled?.seen ?? {}) }, fixed.person?.kind === "person" ? fixed.person.name : null, askId, fixed.fields ?? []);
+  } catch (e) {
+    return refused(new SaidError("unknownWindow", SAYS.windowChanged, e instanceof Error ? e.message : String(e)));
+  }
+  // I2: every write an Ask plans carries the Ask's authority, its scope, never none.
+  const authority: Authority = { kind: "ask", scope };
+  const asked = { authority, documentOf };
+
+  // H11: a plan intent is a goal only when a writer can plan it. Since L1 there is none by default, and without one a
+  // goal refuses every native plan ("no plan writer") that planTask below would still make; a page fill is a goal
+  // (planPage, below) and needs no writer.
+  // I2 ruling: no goal is handed off for a page that became another document since the Ask's scope was settled, fresh
+  // Ask or continued: the goal would settle again on the new one.
+  const movedOn = (): boolean => documentOf !== null && documentOf(w.window.windowId) !== document;
+  if (checked.route === "plan" && o.goals === true && o.writer !== null && movedOn()) return refused(new SaidError("unknownWindow", SAYS.windowChanged, "the page became another document while Caret planned"));
+  if (checked.route === "plan" && o.goals === true && o.writer !== null) return { route: "goal", intent, maker: use, windowId: w.window.windowId, askId, resumed: resume !== undefined, ...(snap.fields.length === 0 ? {} : { askScope: scope }) };
   if (checked.route === "plan") {
     try {
-      const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }) });
-      return onlyPress(d) ?? { ...d, ...extra, route: "plan" };
+      const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }), ...(nativeFields === undefined ? {} : { fields: nativeFields }), ...asked });
+      return onlyPress(d) ?? { ...d, ...extra, route: "plan", leftToYou: withUnnamed(d.leftToYou ?? null, w), ...withUnsure(d.checked.writes.map((x) => x.node.key)) };
     } catch (e) {
-      if (!(e instanceof PlannerError) || (e.code !== "unsure" && e.code !== "nothingToDo") || o.writer === null) return refused(e);
+      if (!(e instanceof PlannerError) || (e.code !== "unsure" && e.code !== "nothingToDo") || o.writer === null) return refused(saidWithUnnamed(e, w));
       try {
-        const d = await planWithCode(instruction, model, memory, { writer: o.writer, askJev, offerKey: o.offerKey, windowId: w.window.windowId, now });
-        return onlyPress(d) ?? { ...d, ...extra, route: "plan" };
+        const d = await planWithCode(instruction, model, memory, { writer: o.writer, askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(nativeFields === undefined ? {} : { fields: nativeFields }), ...asked });
+        return onlyPress(d) ?? { ...d, ...extra, route: "plan", leftToYou: withUnnamed(d.leftToYou ?? null, w), ...withUnsure(d.checked.writes.map((x) => x.node.key)) };
       } catch (e2) {
         if (e2 instanceof PlannerError) return refused(new SaidError(e.code, e instanceof SaidError ? e.message : saysFor(e.code), `${e.message}; the plan writer did not help either: ${e2.message}`));
         throw e2;
@@ -500,18 +706,20 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       return refused(e);
     }
   }
+  if (pageGoal && checked.route === "fill" && movedOn()) return refused(new SaidError("unknownWindow", SAYS.windowChanged, "the page became another document while Caret planned"));
   if (pageGoal && checked.route === "fill") {
     const whole = fixed.fields === undefined && !bySection && (inferredAll || listsAll || intent.scope === "all");
     const section = bySection ? sectionName : intent.scope === "section" && fixed.fields === undefined ? (snap.sections.find((x) => x.ref === intent.section)?.name ?? null) : null;
     const narrowed = bySection ? checked.fields.length !== sectionBefore : checked.fields.length !== scopedBefore;
     const kind = narrowed ? "list" : whole ? "all" : section !== null ? "section" : "list";
-    return { route: "goal", intent, maker: use, windowId: w.window.windowId, page: { scope: checked.scope, trigger: checked.trigger, kind, section: kind === "section" ? section : null } };
+    const unsure = unsureOf(checked.scope.fields).map((f) => f.key);
+    return { route: "goal", intent, maker: use, windowId: w.window.windowId, page: { scope: uploadKeys.length === 0 ? checked.scope : { ...checked.scope, fields: [...checked.scope.fields, ...uploadKeys] }, trigger: checked.trigger, kind, section: kind === "section" ? section : null, ...(unsure.length === 0 ? {} : { unsure }) }, askId, resumed: resume !== undefined, ...(snap.fields.length === 0 ? {} : { askScope: scope }) };
   }
   // I6: the sources the fill reads, which may hold the tab the user just left, read now that a fill needs them.
   const sourceModel = o.fillModel === undefined ? model : await o.fillModel(w.window.windowId);
   let p: FillProposal;
   try {
-    p = await proposeFill(sourceModel, askJev, w.window.windowId, checked.trigger, now, { about, scope: checked.scope, newId: () => o.offerKey, ...(o.rand === undefined ? {} : { rand: o.rand }) });
+    p = await proposeFill(sourceModel, askJev, w.window.windowId, checked.trigger, now, { about, scope: checked.scope, newId: () => o.offerKey, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.fillTrace === undefined ? {} : { trace: o.fillTrace }), ...asked });
   } catch (e) {
     if (e instanceof FillError) return refused(new SaidError("nothingToDo", SAYS.nothingOnScreen, `the fill found nothing: ${e.message}`));
     return refused(e);
@@ -540,7 +748,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   if (writes.length === 0 && controls.length === 0) {
     const unsure = p.fields.filter((f) => f.withheld === "disagree" || f.withheld === "lowConfidence");
     if (unsure.length > 0) return refused(new SaidError("unsure", saysUnsure(unsure.map(name)), `Jev was not sure enough about ${unsure.map((f) => `${name(f)} (${f.withheld === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`));
-    const left = leftToYouSays(checked.leftToYou);
+    const left = withUnnamed(leftToYouSays(checked.leftToYou), w);
     return refused(new SaidError("nothingToDo", `${saysNoValue(checked.fields.map((f) => f.name))}${left === null ? "" : ` ${left}`}`, `no value for ${checked.fields.map((f) => f.name).join(", ")} on screen, in memory or in the instruction`));
   }
 
@@ -556,6 +764,8 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       end: { kind: "valueEquals", window: sel, target: { key: f.key, describe: `the ${name(f)} field` }, value: `{{${slot}}}` },
       // A value copied from memory names its entry, so the executor checks it is still there before writing (B17).
       ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory, conversionOf(f.control)) }),
+      // G2: a window's value that is exactly the user's identity is checked against its entry right before it is written.
+      ...(identityRefOf(f, f.value as string) === null ? {} : { memory: identityRefOf(f, f.value as string) as string }),
     };
   });
   // A plan needs a step; with only controls to set, it is one hand-off that names the first of them.
@@ -566,10 +776,15 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   }
   const plan: Plan = { id: o.offerKey, title: instruction.replace(/\s+/g, " ").trim().slice(0, 100), slots: slotNames, steps };
   await o.beforeCheck?.();
-  const ctx: PlanContext = { model: sourceModel, memory: memory.values(), instruction };
+  const ctx: PlanContext = { model: sourceModel, memory: memory.values(), instruction, origin: authority, documentOf };
   let checkedPlan: ReturnType<typeof validatePlan>;
   try {
-    checkedPlan = validatePlan(plan, slots, ctx);
+    // W2: the write contract's mint fill made for each written field (fill.ts mintOf), by the step's slot.
+    const mints = new Map(writes.flatMap((f, i) => {
+      const m = mintOf(f);
+      return m === undefined ? [] : [[`v${i + 1}`, m] as const];
+    }));
+    checkedPlan = validatePlan(plan, slots, ctx, mints);
   } catch (e) {
     return refused(e);
   }
@@ -585,7 +800,8 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     withheld: p.fields.flatMap((f) => (f.withheld === "disagree" || f.withheld === "lowConfidence" ? [{ name: name(f), why: f.withheld }] : [])),
     jev: { calls: jev.calls, costUsd: jev.costUsd, latencyMs: p.jev.latencyMs + use.latencyMs },
     controls: controls.map((f) => ({ key: f.key, name: name(f), value: f.handoff?.value ?? "", display: f.handoff?.display ?? "" })),
-    leftToYou: leftToYouSays(checked.leftToYou),
+    leftToYou: withUnnamed(leftToYouSays(checked.leftToYou), w),
+    ...withUnsure(checked.fields.map((f) => f.key)),
     route: "fill",
     intent,
     maker: use,
@@ -667,7 +883,7 @@ function jevConfirms(instruction: string, snap: IntentSnapshot, askJev: AskJev):
         questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](instruction, f.name), criteria: { ...CONFIRM } };
       });
       const sent = JSON.stringify([instruction, questions]);
-      return { state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
+      return { purpose: "ask.confirm", state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
     };
     const [a, b] = await Promise.all([askJev(req(0)), askJev(req(1))]);
     return (id) => {

@@ -231,6 +231,7 @@ export function namingRequest(f: RoutineFacts, windows: Iterable<WindowState>, w
   const declared = ledger.declared();
   return {
     req: {
+      purpose: "pattern.naming",
       state: { into: facts.dstApp, intoFields: dstLabels, from: facts.srcApps, fromSections: srcLabels.map((x) => x.text), timesSeen: facts.count },
       questions: { name: { type: "choice", instructions, criteria } },
       snippets: declared.snippets,

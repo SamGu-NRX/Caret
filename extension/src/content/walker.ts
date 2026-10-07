@@ -344,6 +344,11 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       const accept = acceptOf(f.el.accept);
       if (accept !== undefined) c.accept = accept;
     }
+    // W2: what the page itself says a text field takes (its autocomplete token), which Caret's write check reads.
+    if (f.el instanceof HTMLInputElement || f.el instanceof HTMLTextAreaElement || f.el instanceof HTMLSelectElement) {
+      const token = autocompleteOf(f.el.getAttribute("autocomplete") ?? "");
+      if (token !== undefined) c.autocomplete = token;
+    }
     if (f.shadow !== undefined) c.shadow = f.shadow;
     controls.push(c);
     onKept(f.el, c);
@@ -368,6 +373,21 @@ export function acceptOf(raw: string): string[] | undefined {
     if (out.length === MAX_ACCEPT) break;
   }
   return out.length === 0 ? undefined : out;
+}
+
+/** W2: the autocomplete field names Caret reads (HTML's autofill detail tokens), each one value's meaning. */
+export const AUTOCOMPLETE_TOKENS = ["name", "given-name", "additional-name", "family-name", "nickname", "organization", "organization-title", "street-address", "address-line1", "address-line2", "address-level1", "address-level2", "country", "country-name", "postal-code", "email", "tel", "tel-national", "url", "bday", "bday-day", "bday-month", "bday-year"] as const;
+export type AutocompleteToken = (typeof AUTOCOMPLETE_TOKENS)[number];
+
+/**
+ * W2: the field name of an autocomplete attribute ("section-work shipping given-name" gives "given-name"), lowercased,
+ * when it is one Caret reads (AUTOCOMPLETE_TOKENS); undefined for "on", "off", an unknown token or none. A read-only
+ * attribute of the page's own control: no user content.
+ */
+export function autocompleteOf(raw: string): AutocompleteToken | undefined {
+  const words = raw.trim().toLowerCase().split(/\s+/u).filter((w) => w !== "" && w !== "webauthn");
+  const name = words.at(-1);
+  return name !== undefined && (AUTOCOMPLETE_TOKENS as readonly string[]).includes(name) ? (name as AutocompleteToken) : undefined;
 }
 
 /** The element with focus, looking through shadow roots, open or closed. */

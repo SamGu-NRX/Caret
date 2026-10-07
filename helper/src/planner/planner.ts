@@ -16,14 +16,18 @@
 //      step Caret takes: code cannot predict what a press changes, so it could not verify it.
 //   4. validatePlan checks the plan against the screen model and memory as they are once Jev answered.
 // Nothing here acts. The helper offers the plan, and it runs only after the user accepts it.
+import { writableTargets } from "./targets.ts";
+import type { Authority, DocumentReader } from "../fill/ask-scope.ts";
 import { randomInt } from "node:crypto";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
-import { FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
+import { candidateProvenance, FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
+import { checkValues, ContractError, fieldContract, isChecked, VerifierUnavailable, type CheckedValue, type CheckOptions, type FieldContract, type Owner, type Proposed, type Provenance } from "../fill/contract.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { addressParts, misfit } from "../fill/kinds.ts";
+import { addressParts } from "../fill/kinds.ts";
+import { writeMisfit } from "../fill/writable.ts";
 import { fieldPart, splitAddress, splitName } from "../fill/derive.ts";
 import { inWebArea } from "../fill/controls.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
@@ -66,6 +70,20 @@ export interface PlanTaskOptions {
   cutoff?: number;
   /** Called after Jev's last answer and before the plan is checked. Fault injection for the evaluation only. */
   beforeCheck?: () => Promise<void>;
+  /**
+   * I2: the fields Jev is asked about, by node key: an Ask's fields as Jev's scope ask chose them or the user picked them
+   * (ask.ts nativeFields), in place of the planner's own reading of which fields the instruction names, which saves
+   * questions about fields the write contract would refuse (`scope`). Absent, the planner reads it as before. Empty: no
+   * field, so only a press can be planned.
+   */
+  fields?: readonly string[];
+  /**
+   * I2: who authorizes the plan's writes (ask-scope.ts Authority): an Ask's scope, which the write contract and
+   * validatePlan enforce; absent, this plan request itself (kind "plan", by its offer key).
+   */
+  authority?: Authority;
+  /** Which page document a window shows now (the owning helper's page engine), for an Ask's scope. */
+  documentOf?: DocumentReader | null;
 }
 
 /** One question's two answers, as text: a value, a window or button label, or keep and none. */
@@ -85,12 +103,16 @@ export interface PlanDraft {
   controls?: readonly { key: string; name: string; value: string; display: string }[];
   /** Fields an Ask left to the user because Caret never types them, as a sentence (ask.ts); null or absent for none. */
   leftToYou?: string | null;
+  /** I3: fields an Ask left to the user because Jev wasn't sure the request asks for them (ask.ts); each is said in the pop-up. */
+  unsure?: readonly { key: string; name: string }[];
 }
 
 interface Option {
   id: string;
   text: string;
   describe: string;
+  /** W2: where the value was read, as the write contract carries it (fill/contract.ts). */
+  provenance: Provenance;
 }
 
 export interface Field {
@@ -190,7 +212,7 @@ async function planIn(
   const outranked = outrankedFields(instruction, fields);
   const named = new Set(fields.filter((f) => (relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.label)) && !outranked.has(f.node.key)).map((f) => f.node.key));
   const wholeForm = asksToFillForm(instruction);
-  const askedFields = fields.filter((f) => taken.has(f.node.key) && (wholeForm || named.has(f.node.key)));
+  const askedFields = fields.filter((f) => taken.has(f.node.key) && (o.fields !== undefined ? o.fields.includes(f.node.key) : wholeForm || named.has(f.node.key)));
   const askedButtons = buttons.filter((b) => taken.has(b.key));
   const values = valueOptions(instruction, model, w, memory.values(), ledger, o.now ?? Date.now());
   if ((askedFields.length === 0 || values.length === 0) && askedButtons.length === 0) {
@@ -207,7 +229,7 @@ async function planIn(
   const second = { values: shuffled(values, rand).map((v, i) => ({ ...v, id: `k${i + 1}` })), buttons: shuffled(askedButtons, rand).map((b, i) => ({ ...b, id: `d${i + 1}` })) };
   // A field is offered only the values that fit it: B17's held-out live pass wrote a whole address into
   // Billing City when the address was the only value it was offered. validatePlan checks the same rule.
-  const fitting = (f: Field, vs: readonly Option[]): Option[] => vs.filter((v) => misfit(v.text, [f.label]) === null);
+  const fitting = (f: Field, vs: readonly Option[]): Option[] => vs.filter((v) => writeMisfit(v.text, { labelWords: [f.label] }) === null);
   const [r1, r2] = await ask(
     ...sentOnly([
       fieldRequest(instruction, w, title, questioned, (f) => fitting(f, values), askedButtons, 0, declared),
@@ -236,15 +258,25 @@ async function planIn(
     return t1;
   };
   const byId = (xs: readonly { id: string; text: string }[]): Map<string, string> => new Map(xs.map((x) => [x.id, x.text]));
-  const writes: { field: Field; value: string }[] = [];
+  const agreedWrites: { field: Field; value: string }[] = [];
+  /** W2: by field key, where its agreed value was read (the option of that text). */
+  const read = new Map<string, Provenance>();
   for (const f of questioned) {
     const v = agreed(f.id, f.name, byId(fitting(f, values)), byId(fitting(f, second.values)), KEEP);
-    if (v !== null) writes.push({ field: f, value: v });
+    if (v === null) continue;
+    agreedWrites.push({ field: f, value: v });
+    read.set(f.node.key, (values.find((x) => x.text === v) as Option).provenance);
   }
+  // W2: each value meets the write contract once, in its field, with where it was read (fill/contract.ts); a value it
+  // refuses is withheld, as an unsure one is.
+  const minted = await mintWrites(agreedWrites.map(({ field, value }) => ({ key: field.node.key, w, node: field.node, name: field.name, text: value, provenance: read.get(field.node.key) as Provenance, owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now(), authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null });
+  for (const r of minted.refused) withheld.push({ name: r.name, why: "lowConfidence" });
+  const writes = agreedWrites.filter((x) => minted.mints.has(x.field.node.key));
   const pressLabel = askedButtons.length === 0 ? null : agreed("press", "press", byId(askedButtons.map((b) => ({ id: b.id, text: b.key }))), byId(second.buttons.map((b) => ({ id: b.id, text: b.key }))), NONE);
   const press = pressLabel === null ? null : (askedButtons.find((b) => b.key === pressLabel) ?? null);
   if (press !== null) answers.press = [press.label, press.label];
   if (writes.length === 0 && press === null) {
+    if (minted.refused.length > 0 && agreedWrites.length === minted.refused.length) throw allRefused(minted.refused);
     if (withheld.length > 0) throw new PlannerError("unsure", `Jev was not sure enough about ${withheld.map((x) => `${x.name} (${x.why === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`);
     throw new PlannerError("nothingToDo", "Jev found nothing in your instruction to write or press here");
   }
@@ -265,9 +297,10 @@ async function planIn(
   }
   const plan: Plan = { id: o.offerKey, title: titleOf(instruction), slots: slotNames, steps };
 
+  const mints = new Map(writes.map(({ field }, i) => [`v${i + 1}`, minted.mints.get(field.node.key) as CheckedValue]));
   await o.beforeCheck?.();
-  const ctx: PlanContext = { model, memory: memory.values(), instruction };
-  const checked = validatePlan(plan, slots, ctx);
+  const ctx: PlanContext = { model, memory: memory.values(), instruction, origin: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null };
+  const checked = validatePlan(plan, slots, ctx, mints);
   // The plan names its window by app and title; one that replaced the chosen window while Jev answered is another window.
   if (checked.window.window.windowId !== w.window.windowId) throw new PlannerError("unknownWindow", `'${w.window.title}' closed while Caret planned, and another window took its title`);
   // A value copied from a window charges that window when a target question quotes it (Plan.sources).
@@ -282,6 +315,48 @@ async function planIn(
   });
   const withSources: Plan = { ...plan, steps: steps2, ...(Object.keys(sources).length === 0 ? {} : { sources }) };
   return { plan: withSources, slots, checked, answers, withheld, jev };
+}
+
+/**
+ * W2: the write contract's mints for a drafted plan's writes, by the caller's key (fill/contract.ts checkValues), each
+ * checked in its field as fieldContract reads it, with where its value was read. A value the contract refuses is
+ * returned in `refused`, so the caller drops that write, as verifyWrites dropped an unconfirmed one before W2. Throws
+ * PlannerError("notEditable") for a field Caret never types, and PlannerError("jevFailed") when the verifier cannot
+ * answer: nothing is written then.
+ */
+export async function mintWrites(writes: readonly { key: string; w: WindowState; node: Node; name: string; text: string; provenance: Provenance; owner: Owner }[], o: CheckOptions): Promise<{ mints: Map<string, CheckedValue>; refused: { key: string; name: string; says: string; why: string }[] }> {
+  const proposed: Proposed[] = [];
+  for (const x of writes) {
+    let field: FieldContract;
+    try {
+      field = fieldContract(x.w, x.node);
+    } catch (e) {
+      if (e instanceof ContractError) throw new PlannerError("notEditable", `${x.name}: ${e.message}`);
+      throw e;
+    }
+    proposed.push({ field, text: x.text, display: x.text, provenance: x.provenance, owner: x.owner });
+  }
+  let r: Awaited<ReturnType<typeof checkValues>>;
+  try {
+    r = await checkValues(proposed, o);
+  } catch (e) {
+    if (e instanceof VerifierUnavailable) throw new PlannerError("jevFailed", `Caret couldn't check the plan's values: ${e.message}`);
+    throw e;
+  }
+  const mints = new Map<string, CheckedValue>();
+  const refused: { key: string; name: string; says: string; why: string }[] = [];
+  r.results.forEach((x, i) => {
+    const w = writes[i] as (typeof writes)[number];
+    if (isChecked(x)) mints.set(w.key, x);
+    else refused.push({ key: w.key, name: w.name, says: x.says, why: x.why });
+  });
+  return { mints, refused };
+}
+
+/** The refusal of a plan whose every write the write contract refused: wrongKind when code refused one, else unsure. */
+export function allRefused(refused: readonly { name: string; says: string; why: string }[]): PlannerError {
+  const first = refused.find((x) => x.why === "wrongKind") ?? refused[0];
+  return new PlannerError(first?.why === "wrongKind" ? "wrongKind" : "unsure", `${first?.name ?? "a field"}: ${first?.says ?? "Caret's check refused the value"}`);
 }
 
 /**
@@ -379,7 +454,9 @@ export function fieldName(w: WindowState, n: Node): string {
 
 export function writableFields(w: WindowState): Field[] {
   const out: Field[] = [];
-  for (const n of w.nodes.values()) {
+  // I2 ruling: the one inventory the intent snapshot reads (targets.ts), so the planner writes no field the scope
+  // question could not ask about; a field with no readable name is not in it.
+  for (const { node: n } of writableTargets(w)) {
     if (out.length >= MAX_PLAN_FIELDS) break;
     // A field Caret never types (an SSN, a card number, a password or a code) is the user's, as fill leaves it (B25).
     if (n.editable !== true || !FILLABLE_ROLES.has(n.role) || n.states?.includes("secure") || neverTypedNode(w, n) !== null) continue;
@@ -446,14 +523,15 @@ export function requestedWindow(model: ScreenModel, req: { windowId?: string | u
 function valueOptions(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number): Option[] {
   const out: Option[] = [];
   const seen = new Set<string>();
-  const add = (text: string, describe: string, max = MAX_PLAN_VALUES): void => {
+  const add = (text: string, describe: string, provenance: Provenance, max = MAX_PLAN_VALUES): void => {
     if (out.length >= max || seen.has(text)) return;
     seen.add(text);
-    out.push({ id: `v${out.length + 1}`, text, describe });
+    out.push({ id: `v${out.length + 1}`, text, describe, provenance });
   };
+  const entry = (m: MemoryValue): Provenance => ({ kind: "memory", id: m.id, label: m.label, part: null, whose: m.whose ?? null });
   const spans = instructionValues(instruction);
-  if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`);
-  for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`);
+  if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`, { kind: "instruction", span: s });
+  for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`, entry(m));
   // A remembered name's first and last parts, split by code (fill/derive.ts, B24), for First and Last name
   // fields: "fill my name and email" on a form with split name fields found no value for either (Q1 bug 11).
   for (const m of memory) {
@@ -462,11 +540,11 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
     const s = splitName(m.text);
     if (s.kind !== "split") continue;
     for (const [part, text] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) {
-      if (text !== null) add(text, `"${text}" (the ${part} in the user's memory: ${m.label} "${m.text}")`);
+      if (text !== null) add(text, `"${text}" (the ${part} in the user's memory: ${m.label} "${m.text}")`, { kind: "derived", how: "namePart", base: entry(m), also: null });
     }
   }
   const cands = generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger);
-  for (const c of cands) add(c.text, describeCandidate(c));
+  for (const c of cands) add(c.text, describeCandidate(c), candidateProvenance(model, c));
   // A whole address fits no City or Street field (kinds.ts misfit), so its parts are offered too: B17's and
   // B18's held-out sets asked for the city or street of an address the windows show only whole (a change
   // tuned on those sets). Each part is a span of the same line, so it traces to it. They have their own
@@ -478,13 +556,14 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
   for (const c of cands) {
     const split = unitField ? splitAddress(c.text) : null;
     if (split !== null) {
-      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: candidateProvenance(model, c), also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
       continue;
     }
     const parts = addressParts(c.text);
     if (parts === null) continue;
-    add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
-    if (parts.city !== null) add(parts.city, `"${parts.city}" (the city of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+    const whole = candidateProvenance(model, c);
+    add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+    if (parts.city !== null) add(parts.city, `"${parts.city}" (the city of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
   }
   return out;
 }
@@ -520,6 +599,7 @@ async function chooseWindow(
   const first = listed.map((w, i) => ({ id: `w${i + 1}`, w }));
   const second = shuffled(first, rand).map((x, i) => ({ id: `x${i + 1}`, w: x.w }));
   const req = (list: typeof first, wording: 0 | 1): JevRequest => ({
+    purpose: "planner.window",
     state: { instruction, task: "Caret is about to plan the user's instruction in one of the user's open windows." },
     questions: {
       window: {
@@ -574,6 +654,7 @@ function fieldRequest(instruction: string, w: WindowState, title: string | null,
     };
   }
   return {
+    purpose: "planner.fields",
     state: {
       instruction,
       window: title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`,
