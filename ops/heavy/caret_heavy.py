@@ -191,11 +191,15 @@ def _browser_inputs(source, w4=False):
     return specs
 
 
+def _binaries_from(parser):
+    parser.add_argument("--binaries-from", metavar="WORKTREE",
+                        help="seal the bridge, its test host and Chrome for Testing from this worktree instead of the "
+                             "pinned one (a measurement worktree or W1's baseline has no bridge build of its own)")
+
+
 def _canned_options(parser):
     _tag(parser)
-    parser.add_argument("--binaries-from", metavar="WORKTREE",
-                        help="seal the bridge and Chrome for Testing from this worktree instead of the pinned one "
-                             "(W1's baseline has none of its own)")
+    _binaries_from(parser)
 
 
 def _canned_plan(args, worktree, rev, paths):
@@ -209,12 +213,13 @@ def _live_options(parser):
                         help="the eval's own --spend-limit, and the most the day's Jev ledger may grow (USD)")
     parser.add_argument("--heldout", metavar="DIR",
                         help="run the held-out task pages in DIR (sealed: recorded by digest only)")
+    _binaries_from(parser)
 
 
 def _live_plan(args, worktree, rev, paths):
     if not 0 < args.spend_limit <= 0.25:
         raise manifest.ManifestError("--spend-limit must be above 0 and at most $0.25")
-    inputs = _browser_inputs(worktree)
+    inputs = _browser_inputs(os.path.realpath(args.binaries_from) if args.binaries_from else worktree)
     argv = [args.tag, "{:.4f}".format(args.spend_limit)]
     if args.heldout:
         inputs.append(spec("heldout-pages", "sealed", args.heldout, "heldout"))

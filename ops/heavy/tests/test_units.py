@@ -719,3 +719,41 @@ class SwiftInputsTest(Temp):
             caret_heavy.keytype_inputs(main, rev, source)
         with self.assertRaisesRegex(manifest.ManifestError, "no keytype checkout"):
             caret_heavy.keytype_inputs(main, rev, os.path.join(self.root, "nowhere"))
+
+
+class BinariesFromTest(Temp):
+    """canned-sets and live-tasks (task pages or --heldout) seal the bridge, its test host and Chrome for Testing from
+    --binaries-from's worktree when given, else from the pinned one, and the manifest pins what was sealed."""
+
+    def binaries(self, where):
+        for rel in ("bridge/.build/release/caret-bridge", "bridge/.build/release/caret-bridge-testhost",
+                    "fixtures/web-form/.browsers/chrome/Chrome"):
+            self.write("{}/{}".format(where, rel), "{} {}\n".format(where, rel))
+        return os.path.join(self.root, where)
+
+    def test_live_and_canned_seal_binaries_from_the_named_worktree(self):
+        pinned, other = self.binaries("pinned"), self.binaries("other")
+        heldout = os.path.join(self.root, "heldout")
+        os.makedirs(heldout)
+        self.write("heldout/manifest.json", "[]")
+        paths = caret_heavy.default_paths(os.path.join(self.root, "state"))
+        cases = [("live-tasks", argparse.Namespace(tag="t", spend_limit=0.1, heldout=None, binaries_from=other)),
+                 ("live-tasks", argparse.Namespace(tag="t", spend_limit=0.1, heldout=heldout, binaries_from=other)),
+                 ("live-tasks", argparse.Namespace(tag="t", spend_limit=0.1, heldout=None, binaries_from=None)),
+                 ("canned-sets", argparse.Namespace(tag="t", binaries_from=other))]
+        for n, (recipe, args) in enumerate(cases):
+            with self.subTest(n):
+                _argv, specs, _env = caret_heavy.RECIPES[recipe].plan_args(args, pinned, "a" * 40, paths)
+                source = os.path.realpath(args.binaries_from or pinned)
+                bins = {s["name"]: s for s in specs if s["name"] in ("bridge", "bridge-testhost", "chrome-for-testing")}
+                self.assertEqual(sorted(bins), ["bridge", "bridge-testhost", "chrome-for-testing"])
+                self.assertTrue(all(s["path"].startswith(source + os.sep) for s in bins.values()), bins)
+                self.assertEqual("heldout-pages" in [s["name"] for s in specs], bool(getattr(args, "heldout", None)))
+                if recipe == "live-tasks":
+                    sealed = caret_heavy.seal_inputs(list(bins.values()), os.path.join(self.root, "inputs-{}".format(n)))
+                    self.assertEqual(manifest.check(sealed), [])
+                    with open(os.path.join(self.root, "inputs-{}".format(n), "bridge/caret-bridge")) as fh:
+                        self.assertTrue(fh.read().startswith("other" if args.binaries_from else "pinned"))
+        done = subprocess.run([sys.executable, os.path.join(HEAVY, "caret_heavy.py"), "enqueue", "live-tasks", "--help"],
+                              capture_output=True, text=True)
+        self.assertIn("--binaries-from", done.stdout)
