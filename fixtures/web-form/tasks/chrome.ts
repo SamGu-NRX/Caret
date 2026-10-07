@@ -1,13 +1,14 @@
 // Headless Chrome for Testing for the task pages' own tests and journeys (F1): a temporary profile, the network sink
 // as its proxy, a DevTools pipe, and no extension. accept.ts has the same pieces but runs its whole acceptance when
 // imported, so the few needed are here. The pinned build and cache are accept.ts's (CFT_BUILD, .browsers/).
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { Browser, computeExecutablePath, detectBrowserPlatform, install } from "@puppeteer/browsers";
+import { groupStop, spawnChrome } from "../rig.ts";
 
 export const CFT_BUILD = "154.0.8037.92";
 const CACHE = fileURLToPath(new URL("../.browsers", import.meta.url));
@@ -168,24 +169,13 @@ export async function launchHeadless(extra: string[] = []): Promise<Headless> {
     ...extra,
     "about:blank",
   ];
-  const proc = spawn(exe, flags, { detached: true, stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
-  const pid = proc.pid;
-  if (pid === undefined) throw new Error("Chrome for Testing did not start");
+  // I4 review: through rig.ts, so under caret-heavy this Chrome's group is registered before it runs, and its stop
+  // waits for the whole group as launch()'s does.
+  const proc = spawnChrome(exe, flags, process.env, ["ignore", "ignore", "ignore", "pipe", "pipe"]);
   const cdp = new Cdp(proc.stdio[3] as Writable, proc.stdio[4] as Readable);
+  const stopGroup = groupStop(proc);
   const stop = async (): Promise<void> => {
-    if (proc.exitCode === null && proc.signalCode === null) {
-      try {
-        process.kill(-pid, "SIGTERM");
-      } catch {
-        /* already gone */
-      }
-      for (let i = 0; i < 50 && proc.exitCode === null && proc.signalCode === null; i++) await new Promise((r) => setTimeout(r, 100));
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        /* already gone */
-      }
-    }
+    await stopGroup();
     rmSync(profile, { recursive: true, force: true });
   };
   const open = async (url: string): Promise<Tab> => {

@@ -248,14 +248,29 @@ export function launch(exe: string, profile: string, urls: string[], env: NodeJS
     ...(devtools ? ["--remote-debugging-pipe"] : []),
     ...urls,
   ];
-  const stdio: ("ignore" | "pipe")[] = devtools ? ["ignore", "pipe", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"];
-  // The hold: the next descriptor after the DevTools pipes carries one line, written once the group is registered.
+  const proc = spawnChrome(exe, flags, env, devtools ? ["ignore", "pipe", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"]);
+  const cdp = devtools ? new Cdp(proc.stdio[3] as Writable, proc.stdio[4] as Readable) : null;
+  const out = createWriteStream(log, { flags: "a" });
+  proc.stdout?.pipe(out);
+  proc.stderr?.pipe(out);
+  const stop = groupStop(proc);
+  undo.push({ what: `Chrome for Testing pid ${proc.pid}`, fn: stop });
+  return { proc, stop, cdp };
+}
+
+/**
+ * Chrome for Testing as the leader of its own process group. Every Chrome a fixture starts goes through here (launch,
+ * and tasks/chrome.ts launchHeadless), so under caret-heavy none runs before its group is registered: a shell holds
+ * Chrome until one line arrives on the descriptor after `stdio`'s, written once the group is registered, then execs
+ * Chrome in place (same pid, same group).
+ */
+export function spawnChrome(exe: string, flags: string[], env: NodeJS.ProcessEnv, stdio: ("ignore" | "pipe")[]): ChildProcess {
   const go = stdio.length;
   const proc = REGISTER === undefined
     ? spawn(exe, flags, { env, detached: true, stdio })
     : spawn("/bin/sh", ["-c", `IFS= read -r _ <&${go} || exit 97; exec ${go}<&-; exec "$@"`, "chrome-held", exe, ...flags], { env, detached: true, stdio: [...stdio, "pipe"] });
+  if (proc.pid === undefined) throw new Error("Chrome for Testing did not start");
   if (REGISTER !== undefined) {
-    if (proc.pid === undefined) throw new Error("Chrome for Testing did not start");
     try {
       register("group", String(proc.pid));
     } catch (e) {
@@ -264,16 +279,34 @@ export function launch(exe: string, profile: string, urls: string[], env: NodeJS
     }
     (proc.stdio[go] as Writable).end("G\n");
   }
-  const cdp = devtools ? new Cdp(proc.stdio[3] as Writable, proc.stdio[4] as Readable) : null;
-  const out = createWriteStream(log, { flags: "a" });
-  proc.stdout?.pipe(out);
-  proc.stderr?.pipe(out);
+  return proc;
+}
+
+/**
+ * Stops the process group `proc` leads: SIGTERM, up to 5 s for the whole group to empty (Chrome's helpers can outlive
+ * it), then SIGKILL and a report of any survivor. An unreadable group listing counts as not empty.
+ * The group's id is the leader's pid, which the system does not reuse while the group has a member. So once the group
+ * is seen empty, or the leader has been reaped and its pid is another process's, the id may name someone else's group:
+ * `gone` latches and nothing is signalled after it (I4 review: accept.ts stops a browser, and cleanup stops it again).
+ */
+export function groupStop(proc: ChildProcess): () => Promise<void> {
   const pid = proc.pid;
-  if (pid === undefined) throw new Error("Chrome for Testing did not start");
-  // Done only when the whole group is empty, not just its leader: Chrome's helpers can outlive it. An unreadable
-  // group listing counts as not empty.
-  const empty = (): boolean => groupMembers(pid)?.length === 0;
-  const stop = async (): Promise<void> => {
+  if (pid === undefined) throw new Error("no process group to stop: the process did not start");
+  let gone = false;
+  const pidTaken = (): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === "EPERM";
+    }
+  };
+  const empty = (): boolean => {
+    const reaped = proc.exitCode !== null || proc.signalCode !== null;
+    if (!gone && ((reaped && pidTaken()) || groupMembers(pid)?.length === 0)) gone = true;
+    return gone;
+  };
+  return async () => {
     if (empty()) return;
     try {
       process.kill(-pid, "SIGTERM");
@@ -290,8 +323,6 @@ export function launch(exe: string, profile: string, urls: string[], env: NodeJS
     for (let i = 0; i < 50 && !empty(); i++) await sleep(100);
     if (!empty()) say(`Chrome's process group ${pid} still has members ${JSON.stringify(groupMembers(pid))} after SIGKILL`);
   };
-  undo.push({ what: `Chrome for Testing pid ${pid}`, fn: stop });
-  return { proc, stop, cdp };
 }
 
 /** The frontmost app's display name, by LaunchServices; the run aborts if Chrome for Testing ever takes it. */
