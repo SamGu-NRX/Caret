@@ -2755,28 +2755,6 @@
                           "key"
                         ],
                         "additionalProperties": false
-                      },
-                      "clause": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "lines": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "from": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "how": {
-                        "type": "string",
-                        "minLength": 1
                       }
                     },
                     "additionalProperties": false
