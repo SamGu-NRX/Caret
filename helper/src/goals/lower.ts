@@ -541,8 +541,9 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   // Jev's question for every copied value still in the plan (drafts are drafts.ts's, derived values code's), both
   // wordings, fill's floor.
   let unconfirmed: Map<string, string>;
+  let gateUse: { calls: number; costUsd: number; latencyMs: number };
   try {
-    unconfirmed = await jevGate(
+    ({ unconfirmed, jev: gateUse } = await jevGate(
       instruction,
       steps.flatMap((x) => {
         if (x.gate !== "jev" || x.value === null) return [];
@@ -551,7 +552,9 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       }),
       o.askJev,
       o.ledger,
-    );
+      // HA2: the notes frozen at plan time; an inventory without them withholds every user value read from a window.
+      inv.notes ?? new Map(),
+    ));
   } catch (e) {
     if (e instanceof JevUnavailable) throw new GoalError("unchecked", "Caret couldn't check the plan's values with Jev just now", e.message);
     throw e;
@@ -651,7 +654,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   }
   const segments = cut(draft.programDigest, steps, warnings, o.parts);
   if (segments.length > MAX_SEGMENTS) throw new GoalError("tooManySegments", `the plan needs ${segments.length} separate acceptances; Caret offers at most ${MAX_SEGMENTS}`);
-  return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv, ...(set === undefined ? {} : { scopes: set }), origin: originNow() };
+  return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv, ...(set === undefined ? {} : { scopes: set }), origin: originNow(), ...(gateUse.calls === 0 ? {} : { jev: gateUse }) };
 }
 
 /**

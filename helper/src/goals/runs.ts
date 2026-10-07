@@ -1181,6 +1181,8 @@ export class GoalRuns {
     const plan = structuredClone(run.plan);
     const values = new Map([...plan.inventory.values].map(([k, v]) => [k, fromTab(v) ? blank(v) : v]));
     const texts = new Map([...plan.inventory.texts].filter(([k]) => !windows.has(k)));
+    // HA2: and the source notes frozen for the value gate (keyed "windowId\u0000nodeKey", codeplan.ts noteKey).
+    const notes = new Map([...(plan.inventory.notes ?? [])].filter(([k]) => !windows.has(k.slice(0, k.indexOf("\u0000")))));
     for (const seg of plan.segments) {
       for (const s of seg.steps) {
         if (s.value === null || !fromTab(s.value)) continue;
@@ -1198,7 +1200,7 @@ export class GoalRuns {
       for (const s of seg.steps) s.says = scrub(s.says);
       seg.slots = Object.fromEntries(Object.entries(seg.slots).map(([k, v]) => [k, seg.plan.sources?.[k] !== undefined && windows.has(seg.plan.sources[k] as string) ? "" : scrub(v)]));
     }
-    const next: GoalPlan = { ...plan, inventory: { ...plan.inventory, values, texts }, warnings: plan.warnings.map(scrub), left: plan.left.map(scrubItem) };
+    const next: GoalPlan = { ...plan, inventory: { ...plan.inventory, values, texts, notes }, warnings: plan.warnings.map(scrub), left: plan.left.map(scrubItem) };
     for (const seg of next.segments) deepFreeze(seg);
     run.plan = next;
     run.owed = run.owed.map(scrubItem);

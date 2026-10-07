@@ -12,6 +12,11 @@ import type { WriterPort } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import { field, node, snap } from "./builders.ts";
 import { STAND_IN } from "./setup/verifier.ts";
+import { buildInventory } from "../src/goals/inventory.ts";
+import { GoalError, lowerGoal } from "../src/goals/lower.ts";
+import type { GoalInventory, GoalPlan } from "../src/goals/plan.ts";
+import type { DraftPlan } from "../src/codemode/types.ts";
+import { macClock } from "../src/offers/event-time.ts";
 
 // As codeplan.test.ts: the sandbox's per-run limits are widened so a loaded machine does not time a program out.
 vi.mock("../src/codemode/sandbox.ts", async (importOriginal) => {
@@ -119,5 +124,61 @@ describe.each([
   it("still writes them from a note that fits, once Jev saw it and said 'user'", async () => {
     const got = await via([...OPENING, `Phone: ${PHONE}`, `Email: ${EMAIL}`].join("\n"), jev());
     expect(got.sort()).toEqual([EMAIL, PHONE].sort());
+  });
+});
+
+describe("HA2 through a writer goal (lowerGoal and its value gate, goals/gates.ts jevGate)", () => {
+  /** A writer's plan that copies the note's phone and email into the form, lowered against the inventory frozen now. */
+  async function goal(note: string, ask: AskJev, change?: (inv: GoalInventory) => GoalInventory): Promise<GoalPlan | GoalError> {
+    const model = desk(note);
+    const inv = buildInventory(model, { instruction: INSTRUCTION, windows: ["form"], memory: [], calendar: null, clock: macClock(new Date(2000)), now: 2000, readerSession: 1 });
+    const target = (label: string): string => [...inv.inventory.targets.values()].find((t) => t.label === label)?.ref ?? "";
+    const value = (text: string): string => [...inv.inventory.values.values()].find((v) => v.text === text)?.ref ?? "";
+    const steps: DraftPlan["steps"] = [{ ref: "a", kind: "fill", target: target("Phone"), value: value(PHONE) }, { ref: "b", kind: "fill", target: target("Email"), value: value(EMAIL) }];
+    expect(steps.every((x) => x.kind === "fill" && x.target !== "" && x.value !== "")).toBe(true);
+    const draft: DraftPlan = { basedOn: inv.inventory.revisions.get("form") ?? "", window: "form", steps, choices: [], drafts: [], programDigest: "b".repeat(64) };
+    return lowerGoal("ha2-goal", INSTRUCTION, draft, change === undefined ? inv.inventory : change(inv.inventory), { askJev: ask, ledger: inv.ledger }).catch((e: unknown) => {
+      if (e instanceof GoalError) return e;
+      throw e;
+    });
+  }
+  const writes = (g: GoalPlan | GoalError): string[] => (g instanceof GoalError ? [] : g.segments.flatMap((x) => x.steps.flatMap((y) => (y.kind === "write" && y.writes !== null ? [y.writes] : []))));
+
+  it("writes neither the card's phone nor its email when the note disclaims them", async () => {
+    const got = writes(await goal(DISCLAIMED, jev()));
+    expect(got).not.toContain(PHONE);
+    expect(got).not.toContain(EMAIL);
+  });
+
+  it("writes neither from a note too long to show whole, even with 'user' and 'exact' at confidence 1", async () => {
+    const got = writes(await goal(TOO_LONG, jev(() => "user")));
+    expect(got).not.toContain(PHONE);
+    expect(got).not.toContain(EMAIL);
+  });
+
+  it("writes neither when the inventory froze no note for them, even with 'user' and 'exact' at confidence 1", async () => {
+    const fits = [...OPENING, `Phone: ${PHONE}`, `Email: ${EMAIL}`].join("\n");
+    const got = writes(await goal(fits, jev(() => "user"), (inv) => ({ ...inv, notes: new Map() })));
+    expect(got).toEqual([]);
+  });
+
+  it("writes them from a note that fits, once Jev saw it and said 'user', and counts the gate's two requests", async () => {
+    const g = await goal([...OPENING, `Phone: ${PHONE}`, `Email: ${EMAIL}`].join("\n"), jev());
+    expect(writes(g).sort()).toEqual([EMAIL, PHONE].sort());
+    expect(g instanceof GoalError ? null : g.jev?.calls).toBe(2);
+  });
+});
+
+describe("HA2: the owner checks count toward the draft's Jev use", () => {
+  it("adds the planner's two owner-check requests to its calls", async () => {
+    const purposes: string[] = [];
+    const counted: AskJev = async (req) => {
+      purposes.push(req.purpose ?? "");
+      return jev()(req);
+    };
+    const d = await planTask(INSTRUCTION, desk([...OPENING, `Phone: ${PHONE}`, `Email: ${EMAIL}`].join("\n")), { values: () => [] }, { askJev: counted, offerKey: "ha2-plan", windowId: "form", now: 2000 });
+    expect(purposes.filter((p) => p === "plan.verify")).toHaveLength(2);
+    // The write contract's verifier (fill.verify) is counted by its own use record (fill/contract.ts VerifyUse), not here.
+    expect(d.jev.calls).toBe(purposes.filter((p) => p !== "fill.verify").length);
   });
 });

@@ -13,6 +13,7 @@ import type { CheckedValue, FieldContract, Provenance } from "../fill/contract.t
 import type { HandoffWhy } from "./capabilities.ts";
 import type { OwedField } from "./left.ts";
 import type { ReadableField, SavedValue } from "../fill/alternate.ts";
+import type { SourceNote } from "../planner/codeplan.ts";
 
 export type ValueOrigin = z.infer<typeof ValueOriginSchema>;
 
@@ -123,6 +124,13 @@ export interface GoalInventory {
    * hand-built inventory without it is read from its targets alone. Never sent.
    */
   alternates?: { fields: ReadonlyMap<string, readonly ReadableField[]>; saved: readonly SavedValue[] };
+  /**
+   * HA2: each value's source node, as the redacted view showed it when the goal was planned, by noteKey (codeplan.ts
+   * frozenNotes): the whole note the value gate's owner questions show (gates.ts jevGate), charged to its window's budget
+   * only when sent. A value whose note is not here is withheld from a field that wants the user's details. Never sent
+   * otherwise.
+   */
+  notes?: ReadonlyMap<string, SourceNote>;
 }
 
 /** `attach` (P2 adds the kind; P3 lowers it): a file the user confirmed in the preview, put in a page's file control. */
@@ -263,6 +271,8 @@ export interface GoalPlan {
   scopes?: ScopeSet;
   /** I2: where the plan started (ask-scope.ts Origin), which every write's and attachment's mint matches; the guard checks it. */
   origin: Origin;
+  /** HA2: what the value gate's requests to Jev cost while lowering (gates.ts jevGate); absent when it asked none. */
+  jev?: { calls: number; costUsd: number; latencyMs: number };
 }
 
 /** JSON with object keys sorted, so equal content always hashes equal. */

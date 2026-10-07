@@ -686,6 +686,15 @@ export class SnippetLedger {
     }
   }
 
+  /**
+   * HA2: takes texts from the window this ledger knows by id, or false when it knows none: a goal's value gate charges a
+   * note frozen at plan time (GoalInventory.notes) to its window's budget without holding that window itself.
+   */
+  takeFrom(windowId: string, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
+    const w = this.known.get(windowId);
+    return w === undefined ? false : this.take(w, kind, texts);
+  }
+
   take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
     const p = this.price(w, texts);
     if (p === null) return false;

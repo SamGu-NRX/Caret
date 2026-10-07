@@ -297,7 +297,8 @@ describe("planTask", () => {
     // owner checks (plan.verify) come after, since Name and Email take a person's details.
     expect(jev.requests.filter((r) => r.purpose !== "plan.verify")).toHaveLength(2);
     expect(jev.requests.filter((r) => r.purpose === "plan.verify")).toHaveLength(2);
-    expect(d.jev.calls).toBe(2);
+    // HA2: the owner checks' two requests count toward the draft's Jev use.
+    expect(d.jev.calls).toBe(4);
   });
 
   it("asks which window when several could carry the task, and skips the question when the host names one", async () => {

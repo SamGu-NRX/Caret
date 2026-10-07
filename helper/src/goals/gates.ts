@@ -21,7 +21,7 @@
 import type { AskJev } from "../fill/jev.ts";
 import { fieldKinds, NUMBER_FIELD } from "../fill/kinds.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
-import { verifyWrites } from "../planner/codeplan.ts";
+import { noteKey, sourceRefs, verifyWrites, type CheckUse, type SourceNote } from "../planner/codeplan.ts";
 import { secretIn } from "../planner/trace.ts";
 import type { SnippetLedger } from "../privacy.ts";
 import type { GoalStep, TargetBinding, ValueBinding } from "./plan.ts";
@@ -145,33 +145,42 @@ function shown(w: JevWrite): string {
  * The writes Jev does not confirm, by step ref, each with the sentence the preview shows. With no Jev, every write is
  * unconfirmed. Throws JevUnavailable when the request fails: code does not guess on Jev's behalf.
  */
-export async function jevGate(instruction: string, writes: readonly JevWrite[], askJev: AskJev | null, ledger: SnippetLedger): Promise<Map<string, string>> {
+export async function jevGate(instruction: string, writes: readonly JevWrite[], askJev: AskJev | null, ledger: SnippetLedger, notes: ReadonlyMap<string, SourceNote>): Promise<{ unconfirmed: Map<string, string>; jev: CheckUse }> {
   const out = new Map<string, string>();
-  if (writes.length === 0) return out;
+  const none: CheckUse = { calls: 0, costUsd: 0, latencyMs: 0 };
+  if (writes.length === 0) return { unconfirmed: out, jev: none };
   if (askJev === null) {
     for (const w of writes) out.set(w.ref, `Caret couldn't ask Jev whether '${clip(w.written)}' belongs there`);
-    return out;
+    return { unconfirmed: out, jev: none };
   }
+  /**
+   * HA2: the notes a value was read from, as the goal's inventory froze them at plan time (GoalInventory.notes); null when
+   * one was not frozen, which withholds the value from a field that wants the user's details (verifyWrites).
+   */
+  const notesOf = (v: ValueBinding): SourceNote[] | null => {
+    const refs = v.provenance !== undefined ? sourceRefs(v.provenance) : v.source === null ? [] : [{ windowId: v.source.windowId, nodeKey: v.source.key }];
+    const got = refs.map((r) => notes.get(noteKey(r.windowId, r.nodeKey)));
+    return got.every((n): n is SourceNote => n !== undefined) ? got : null;
+  };
   let dropped: Set<string>;
+  let jev: CheckUse;
   try {
-    dropped = await verifyWrites(
+    ({ dropped, jev } = await verifyWrites(
       instruction,
       writes.map((w) => {
         const name = w.target.control === "calendar" ? `the ${w.target.label} calendar` : w.target.label;
         // W2: a page write's exactness is the write contract's (lower.ts checkValues); only an event asks its value here.
-        // HA2: a goal's inventory froze no source node's text, so this gate cannot show a value's whole note ("notRead");
-        // the rule is not applied here. A page plan's values arrive with fill's mints and never reach this gate; a writer
-        // goal's copied values do (flagged to the lead as the remaining whose path).
-        return { key: w.ref, field: { name, label: name }, value: { display: shown(w), window: w.value.source?.windowId ?? null, owner: w.value.owner, notes: "notRead" as const }, askValue: w.target.control === "calendar" };
+        // HA2 (lead decision): a writer goal's copied value meets fill's whole-note rule with the notes frozen at plan time.
+        return { key: w.ref, field: { name, label: name }, value: { display: shown(w), window: w.value.source?.windowId ?? null, owner: w.value.owner, notes: notesOf(w.value) }, askValue: w.target.control === "calendar" };
       }),
       askJev,
       ledger,
-    );
+    ));
   } catch (e) {
     throw new JevUnavailable(e instanceof Error ? e.message.slice(0, 200) : String(e));
   }
   for (const w of writes) if (dropped.has(w.ref)) out.set(w.ref, `Jev didn't confirm '${clip(w.written)}' belongs there`);
-  return out;
+  return { unconfirmed: out, jev };
 }
 
 export class JevUnavailable extends Error {}

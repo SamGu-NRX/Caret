@@ -480,7 +480,9 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     attach.push({ target: t, file: o.attachOffer === undefined ? { source: "choose" } : await o.attachOffer(w, n, label) });
   }
   // V6 B2: lowering's alternate-field veto reads the user's About entries, as fill's did.
-  const inventory: GoalInventory = { ...inv.inventory, targets, values, alternates: { fields: inv.inventory.alternates?.fields ?? new Map(), saved: o.about } };
+  // HA2: no source notes are frozen here. Fill's values carry its mints (gate "fill") and never reach the value gate, and
+  // the plan keeps none of the tab's text beyond the values and spans fill chose (I6).
+  const inventory: GoalInventory = { ...inv.inventory, targets, values, alternates: { fields: inv.inventory.alternates?.fields ?? new Map(), saved: o.about }, notes: new Map() };
   // I6: who goes on after Caret's steps, as the plan's last row.
   const row = handoffRow(w, domain, [...[...gated.keys()].map((r) => (targets.get(r) as TargetBinding).key), ...attach.map((a) => a.target.key)]);
 

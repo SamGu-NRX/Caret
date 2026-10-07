@@ -280,7 +280,7 @@ async function planIn(
   // note went into the user's Phone on the value questions alone. A value Jev calls another's, or whose note did not
   // fit, is withheld as an unsure one is. Asked only when a field takes a person's details.
   const windowOf = (pr: Provenance): string | null => (pr.kind === "window" ? pr.windowId : pr.kind === "derived" ? (windowOf(pr.base) ?? (pr.also === null ? null : windowOf(pr.also))) : null);
-  const dropped = await verifyWrites(
+  const { dropped, jev: owners } = await verifyWrites(
     instruction,
     agreedWrites.map(({ field, value }) => {
       const pr = read.get(field.node.key) as Provenance;
@@ -289,6 +289,10 @@ async function planIn(
     o.askJev,
     ledger,
   );
+  // Their requests count toward the draft's Jev use, as every other request of this plan does.
+  jev.calls += owners.calls;
+  jev.costUsd += owners.costUsd;
+  jev.latencyMs += owners.latencyMs;
   for (const x of agreedWrites) if (dropped.has(x.field.node.key)) withheld.push({ name: x.field.name, why: "lowConfidence" });
   const ownedWrites = agreedWrites.filter((x) => !dropped.has(x.field.node.key));
   // W2: each value meets the write contract once, in its field, with where it was read (fill/contract.ts); a value it

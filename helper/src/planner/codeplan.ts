@@ -231,7 +231,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   // are the same person's (fill's owner veto); a write that fails is dropped. Live, the writer put the user's own
   // phone in Reference phone and an RSVP sender's email in the user's Email (asks-dev-3). Whether the value is exactly
   // the field's is the write contract's verifier, below (W2: it replaced this check's yes/no value question).
-  const dropped = await verifyWrites(instruction, kept.flatMap((f) => {
+  const { dropped, jev: owners } = await verifyWrites(instruction, kept.flatMap((f) => {
     const field = fields[Number(f.target.slice(1)) - 1];
     const value = values[Number(f.value.slice(1)) - 1];
     return field === undefined || value === undefined ? [] : [{ key: f.ref, field, value: { ...value, notes: sourceNotes(model, value.provenance) } }];
@@ -284,7 +284,8 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
     checked,
     answers: {},
     withheld: [],
-    jev: { calls: ran.stats.chooseCalls, costUsd: 0, latencyMs: 0 },
+    // HA2: the owner checks' requests count, as the chooser's do.
+    jev: { calls: ran.stats.chooseCalls + owners.calls, costUsd: owners.costUsd, latencyMs: owners.latencyMs },
     writer: use,
   };
 }
@@ -331,9 +332,12 @@ function personalField(label: string): boolean {
   return fieldPart(label) !== null || asksCountry(label) || [...fieldKinds([label])].some((k) => k === "email" || k === "phone" || k === "address");
 }
 
-/** HA2: the whole text a value was read from, as the redacted view shows its source node, and that view. */
+/**
+ * HA2: the whole text a value was read from, as the redacted view shows its source node, and its window's id, which the
+ * ledger charges it to (SnippetLedger.takeFrom). No window is held, so a goal inventory that freezes notes keeps only them.
+ */
 export interface SourceNote {
-  w: WindowState;
+  windowId: string;
   text: string;
 }
 
@@ -343,16 +347,57 @@ export interface SourceNote {
  * for a value from the instruction or memory, which no owner question judges.
  */
 export function sourceNotes(model: ScreenModel, pr: Provenance): SourceNote[] | null {
-  if (pr.kind === "window") {
-    const w = viewOf(model, pr.windowId);
-    const node = w?.nodes.get(pr.nodeKey);
-    const text = node === undefined ? "" : nodeText(node).trim();
-    return w === undefined || text === "" ? null : [{ w, text }];
+  const out: SourceNote[] = [];
+  for (const r of sourceRefs(pr)) {
+    const n = readNote(model, r.windowId, r.nodeKey);
+    if (n === null) return null;
+    out.push(n);
   }
+  return out;
+}
+
+/** HA2: the window nodes a value was read from: a window provenance's, and a derived value's base's and extra source's. */
+export function sourceRefs(pr: Provenance): { windowId: string; nodeKey: string }[] {
+  if (pr.kind === "window") return [{ windowId: pr.windowId, nodeKey: pr.nodeKey }];
   if (pr.kind !== "derived") return [];
-  const base = sourceNotes(model, pr.base);
-  const also = pr.also === null ? [] : sourceNotes(model, pr.also);
-  return base === null || also === null ? null : [...base, ...also];
+  return [...sourceRefs(pr.base), ...(pr.also === null ? [] : sourceRefs(pr.also))];
+}
+
+/** HA2: one source node's whole text as the redacted view shows it, with that view; null when it cannot be read. */
+export function readNote(model: ScreenModel, windowId: string, nodeKey: string): SourceNote | null {
+  const w = viewOf(model, windowId);
+  const node = w?.nodes.get(nodeKey);
+  const text = node === undefined ? "" : nodeText(node).trim();
+  return w === undefined || text === "" ? null : { windowId, text };
+}
+
+/** HA2: the key a goal inventory freezes a source node's note under (GoalInventory.notes). */
+export const noteKey = (windowId: string, nodeKey: string): string => `${windowId}\u0000${nodeKey}`;
+
+/**
+ * HA2: each value's source notes as the redacted view shows them now, by noteKey: what a goal inventory freezes at plan
+ * time, for its gate's owner questions (goals/gates.ts jevGate). A node that cannot be read is left out, and a value
+ * whose note is missing is withheld there.
+ */
+export function frozenNotes(model: ScreenModel, values: Iterable<{ provenance?: Provenance; source: { windowId: string; key: string } | null }>): Map<string, SourceNote> {
+  const out = new Map<string, SourceNote>();
+  for (const v of values) {
+    const refs = v.provenance !== undefined ? sourceRefs(v.provenance) : v.source === null ? [] : [{ windowId: v.source.windowId, nodeKey: v.source.key }];
+    for (const r of refs) {
+      const k = noteKey(r.windowId, r.nodeKey);
+      if (out.has(k)) continue;
+      const n = readNote(model, r.windowId, r.nodeKey);
+      if (n !== null) out.set(k, n);
+    }
+  }
+  return out;
+}
+
+/** What verifyWrites' requests cost, for a draft's or a goal's Jev usage. */
+export interface CheckUse {
+  calls: number;
+  costUsd: number;
+  latencyMs: number;
 }
 
 const VERIFY = { yes: "Yes: this is the value this field asks for.", no: "No: it is another value, another person's, or not what this field asks for." } as const;
@@ -366,11 +411,11 @@ export interface WriteToVerify {
   key: string;
   field: { name: string; label: string };
   /**
-   * HA2: `notes` are the whole texts a window value was read from (sourceNotes), which both owner questions must show
-   * for the owner judgement to count; null when a source could not be read. "notRead" only for a caller that holds no
-   * screen model to read them from (goals/gates.ts jevGate, flagged to the lead): there the rule is not applied.
+   * HA2: `notes` are the whole texts a window value was read from (sourceNotes, or a goal inventory's frozen ones), which
+   * both owner questions must show for the owner judgement to count; null when a source could not be read. A window
+   * value given no notes is treated as unread: it never passes.
    */
-  value: { display: string; window: unknown; owner: "user" | "other" | null; notes: readonly SourceNote[] | null | "notRead" };
+  value: { display: string; window: unknown; owner: "user" | "other" | null; notes: readonly SourceNote[] | null };
   /**
    * Whether Jev is asked if the value belongs in the field (the `c` question). W2: a page write's exactness is the
    * write contract's verifier (fill/contract.ts checkValues), so only a calendar event, which no page step writes,
@@ -387,22 +432,22 @@ export interface WriteToVerify {
  * the value is another's (fill.ts WHOSE_CRITERIA and OWNER_CRITERIA, at WHOSE_CUTOFF); a value from memory is
  * the user's, and one written in the instruction is the user's own choice.
  */
-export async function verifyWrites(instruction: string, writes: readonly WriteToVerify[], askJev: AskJev, ledger: SnippetLedger): Promise<Set<string>> {
+export async function verifyWrites(instruction: string, writes: readonly WriteToVerify[], askJev: AskJev, ledger: SnippetLedger): Promise<{ dropped: Set<string>; jev: CheckUse }> {
   instruction = instructionForModel(instruction);
   // W2: nothing to ask when no write asks its value and none takes a person's details.
-  if (writes.every((x) => x.askValue !== true && !personalField(x.field.label))) return new Set();
+  if (writes.every((x) => x.askValue !== true && !personalField(x.field.label))) return { dropped: new Set(), jev: { calls: 0, costUsd: 0, latencyMs: 0 } };
   // HA2 (lead decision 3): fill's rule on this path. Both owner questions about a window value name the whole notes it
   // was read from, sent once in the state (source_notes) and charged to their windows' unchanged budgets; a value whose
   // notes do not fit, or could not be read, is dropped below when its field wants the user's details.
   const notes = new Map<string, string>();
   const noteIds = writes.map((x): string[] | null => {
-    if (!personalField(x.field.label) || x.value.window === null || x.value.notes === "notRead") return [];
-    if (x.value.notes === null) return null;
+    if (!personalField(x.field.label) || x.value.window === null) return [];
+    if (x.value.notes === null || x.value.notes.length === 0) return null;
     const ids: string[] = [];
     for (const n of x.value.notes) {
       let id = [...notes].find(([, t]) => t === n.text)?.[0];
       if (id === undefined) {
-        if (!ledger.take(n.w, "candidate", [n.text])) return null;
+        if (!ledger.takeFrom(n.windowId, "candidate", [n.text])) return null;
         id = `note ${notes.size + 1}`;
         notes.set(id, n.text);
       }
@@ -462,9 +507,9 @@ export async function verifyWrites(instruction: string, writes: readonly WriteTo
     const is = x.value.window === null ? x.value.owner : agreed(`v${i + 1}`, OWNER_CRITERIA, WHOSE_CUTOFF);
     if (wants !== null && is !== null && wants !== "unclear" && is !== "unclear" && wants !== is) return void out.add(x.key);
     // HA2: an owner judgement about a window value counts only when both questions showed its whole notes.
-    if (wants === "user" && x.value.window !== null && x.value.notes !== "notRead" && !shown(i)) out.add(x.key);
+    if (wants === "user" && x.value.window !== null && !shown(i)) out.add(x.key);
   });
-  return out;
+  return { dropped: out, jev: { calls: 2, costUsd: (r[0]?.costUsd ?? 0) + (r[1]?.costUsd ?? 0), latencyMs: Math.max(r[0]?.latencyMs ?? 0, r[1]?.latencyMs ?? 0) } };
 }
 
 /** Every string a request carries in its state and questions. */

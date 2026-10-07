@@ -13,7 +13,7 @@ import { ContractError, fieldContract, type FieldContract } from "../fill/contra
 import type { Node } from "../protocol.ts";
 import { eventCandidate, sentences, spansIn } from "../offers/event-card.ts";
 import type { EventClock } from "../offers/event-time.ts";
-import { valueList, type Value } from "../planner/codeplan.ts";
+import { frozenNotes, valueList, type Value } from "../planner/codeplan.ts";
 import { writableFields } from "../planner/planner.ts";
 import type { MemoryValue } from "../planner/trace.ts";
 import { SnippetLedger, WINDOW_CHARS } from "../privacy.ts";
@@ -199,7 +199,8 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   }
   // V6 B2: the user's own values of a kind, for the alternate-field veto; a person's entry is not the user's.
   const saved = savedValuesOf(o.memory);
-  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed, alternates: { fields: readable, saved } }, ledger };
+  // HA2: every value's source note, frozen now, for the value gate's owner questions (gates.ts jevGate).
+  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed, alternates: { fields: readable, saved }, notes: frozenNotes(model, values.values()) }, ledger };
 }
 
 /**
