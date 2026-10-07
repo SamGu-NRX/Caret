@@ -14,10 +14,13 @@ import type { DraftPlan } from "../src/codemode/types.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import type { Node, PageControl } from "../src/protocol.ts";
 import { field, jevPickingText, node, snap, text, value } from "./builders.ts";
+import { alternateReason } from "../src/fill/alternate.ts";
 import { c } from "./fake-page.ts";
 import { closeRigs, rig, WIN } from "./page-rig.ts";
 import { standInJev } from "./goal-desk.ts";
-import { mintWrites } from "../src/planner/planner.ts";
+import { mintWrites, planTask } from "../src/planner/planner.ts";
+import type { AboutValue } from "../src/fill/about.ts";
+import type { JevRequest } from "../src/fill/jev.ts";
 
 afterEach(() => {
   closeRigs();
@@ -94,7 +97,7 @@ describe("the native planner's mints meet the same check", () => {
     const w = model.windows.get(FORM);
     if (w === undefined) throw new Error("no form");
     const write = (key: string, name: string) => ({ key, w, node: w.nodes.get(key) as Node, name, text: EMAIL, provenance: { kind: "instruction" as const, span: EMAIL }, owner: null });
-    const r = await mintWrites([write("email", "Email"), write("alternate", "Alternate email")], { askJev: jevPickingText(() => null), ledger: null, now: 3000, authority: { kind: "plan", offerKey: "o1" } });
+    const r = await mintWrites([write("email", "Email"), write("alternate", "Alternate email")], { askJev: jevPickingText(() => null), ledger: null, now: 3000, authority: { kind: "plan", offerKey: "o1" } }, []);
     expect([...r.mints.keys()]).toEqual(["email"]);
     expect(r.refused).toEqual([{ key: "alternate", name: "Alternate email", says: "it would repeat your Email", why: "notExact" }]);
   });
@@ -125,12 +128,13 @@ describe("B3: a primary that changes after the proposal", () => {
     expect(p.fields.find((f) => f.key === "alternate")?.value).toBe(EMAIL);
     const grounded = writtenFields(p, model.windows.get(FORM));
     const { checks } = fillPlan(model, grounded);
-    expect(recheckFill(model, grounded, () => null)).toBeNull();
+    const none = (): readonly AboutValue[] => [];
+    expect(recheckFill(model, grounded, () => null, undefined, null, none)).toBeNull();
     model.apply(snap(form(EMAIL), { at: 4000, windowId: FORM, focused: true }));
-    expect(recheckFill(model, grounded, () => null)).toMatch(/repeat/);
+    expect(recheckFill(model, grounded, () => null, undefined, null, none)).toMatch(/repeat/);
     const w = model.windows.get(FORM);
     const target = w === undefined ? undefined : { windowId: FORM, node: w.nodes.get("alternate") as Node, window: w };
-    expect(guardFor(() => model, checks, { kind: "fill", proposalId: p.id }, null)(0, EMAIL, target)).toMatch(/repeat/);
+    expect(guardFor(() => model, checks, { kind: "fill", proposalId: p.id }, null, none)(0, EMAIL, target)).toMatch(/repeat/);
   });
 
   it("does not write a page's Alternate email when the Email changes to the same value mid-run", async () => {
@@ -160,5 +164,99 @@ describe("B4: primaries Caret can read but not write", () => {
     const model = desk([primary, alternate()]);
     const p = await proposeFill(model, jevPickingText((_, ins) => (/Alternate email/u.test(ins) ? EMAIL : null)), FORM, "alternate", 3000, { derive: false });
     expect(p.fields.find((f) => f.key === "alternate")?.value).toBeNull();
+  });
+});
+
+// MARK: - re-review blockers
+
+const CANARY = "SYNTHETIC-REVIEW-CANARY";
+
+describe("R1: a primary's raw label never becomes display text", () => {
+  it("names a primary the redacted view drops by its kind, and no request or reason carries its label", async () => {
+    const model = desk([node("email", "AXTextField", { label: `Email API key: ${CANARY}`, value: EMAIL, frame: [100, 80, 200, 24] }), alternate()]);
+    const sent: JevRequest[] = [];
+    const pick = jevPickingText((_, ins) => (/Alternate email/u.test(ins) ? EMAIL : null));
+    const p = await proposeFill(model, async (req) => (sent.push(req), pick(req)), FORM, "alternate", 3000, { derive: false });
+    const f = p.fields.find((x) => x.key === "alternate");
+    expect(f?.value).toBeNull();
+    expect(f === undefined ? null : alternateReason(f)).toBe("Caret left Alternate email: it would repeat the form's main email.");
+    expect(JSON.stringify(sent)).not.toContain(CANARY);
+  });
+
+  it("keeps the canary out of a page plan's warnings and requests", async () => {
+    const controls = (): PageControl[] => [c("e1", "email", `Email API key: ${CANARY}`, { value: EMAIL }), c("e2", "email", "Alternate email", { value: "" })];
+    const r = await rig({ controls, note: `Email: ${EMAIL}`, picks: { "Alternate email": EMAIL } });
+    const ask: AskJev = jevPickingText((_, ins) => (/Label: 'Alternate email'/u.test(ins) ? EMAIL : null), 0.95);
+    const sent: JevRequest[] = [];
+    const run = planPage(r.helper.model, { goalId: "g-canary", instruction: "fill out this form", windowId: WIN, scope: null, kind: "all", section: null, about: [], askJev: async (q) => (sent.push(q), ask(q)), now: Date.now(), clock: macClock(new Date()), readerSession: 0, pageDocument: (id) => r.host.registry.documentOf(id) });
+    const said = await run.then((plan) => JSON.stringify([plan.warnings, plan.left, plan.segments.map((x) => x.steps.map((y) => y.says))]), (e: unknown) => String(e instanceof Error ? e.message : e));
+    expect(said).not.toContain(CANARY);
+    expect(said).not.toContain(`Alternate email: ${EMAIL}`);
+    expect(JSON.stringify(sent)).not.toContain(CANARY);
+  });
+});
+
+describe("R2: the native planner checks the user's saved primary identity", () => {
+  it("refuses the saved Email in Alternate email when the form's primary is a different Work email", async () => {
+    const model = desk([field("work", "work@example.test", { label: "Work email", frame: [100, 40, 200, 24] }), alternate()], "Nothing here");
+    const memory = { values: () => [{ id: "about-1", label: "Email", text: EMAIL, whose: "user" as const }] };
+    // The planner's value question: the saved email for Alternate email, keep for every other field.
+    const ask: AskJev = async (req) => ({
+      model: "jev-test",
+      answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => {
+        const ins = String(q.instructions);
+        const hit = /Alternate email/u.test(ins) && !/Work email/u.test(ins) ? Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${EMAIL}"`))?.[0] : undefined;
+        return [id, { choice: hit ?? ("keep" in q.criteria ? "keep" : (Object.keys(q.criteria)[0] ?? "none")), confidence: 0.95 }];
+      })),
+      inputTokens: 10, latencyMs: 1, costUsd: 0,
+    });
+    const run = planTask("put my email in Alternate email", model, memory, { askJev: ask, offerKey: "o-r2", windowId: FORM, now: 3000 });
+    const written = await run.then((d) => d.checked.writes.map((w) => w.value), (e: unknown) => [String(e)]);
+    expect(written.join(" ")).not.toContain(EMAIL);
+    expect(written.join(" ")).toMatch(/repeat your saved email address/u);
+  });
+});
+
+describe("R3: saved-identity changes after the preview are rechecked", () => {
+  const form = (): Node[] => [field("email", "work@example.test", { label: "Email", frame: [100, 80, 200, 24] }), alternate()];
+  async function previewed(about: AboutValue[]) {
+    const model = desk(form());
+    const p = await proposeFill(model, jevPickingText((_, ins) => (/Alternate email/u.test(ins) ? EMAIL : null)), FORM, "alternate", 3000, { derive: false, about });
+    expect(p.fields.find((f) => f.key === "alternate")?.value).toBe(EMAIL);
+    const grounded = writtenFields(p, model.windows.get(FORM));
+    const { checks } = fillPlan(model, grounded);
+    const w = model.windows.get(FORM);
+    const target = w === undefined ? undefined : { windowId: FORM, node: w.nodes.get("alternate") as Node, window: w };
+    return { model, grounded, checks, target, id: p.id };
+  }
+  const first: AboutValue = { id: "a1", label: "Email", kind: "email", value: "first@example.test" };
+  it.each([
+    ["an edit of the saved Email", [first], [{ ...first, value: EMAIL }]],
+    ["a new saved email", [first], [first, { id: "a2", label: "Personal email", kind: "email", value: EMAIL }]],
+    ["a backup relabelled as the Email", [first, { id: "a2", label: "Backup email", kind: "email", value: EMAIL }], [{ ...first, label: "Old email" }, { id: "a2", label: "Email", kind: "email", value: EMAIL }]],
+  ] as [string, AboutValue[], AboutValue[]][])("refuses at acceptance and at dispatch after %s", async (_, before, after) => {
+    let saved = before;
+    const reader = (): readonly AboutValue[] => saved;
+    const x = await previewed(before);
+    const aboutNow = (id: string): AboutValue | null => saved.find((a) => a.id === id) ?? null;
+    expect(recheckFill(x.model, x.grounded, aboutNow, undefined, null, reader)).toBeNull();
+    expect(guardFor(() => x.model, x.checks, { kind: "fill", proposalId: x.id }, null, reader)(0, EMAIL, x.target)).toBeNull();
+    saved = after;
+    expect(recheckFill(x.model, x.grounded, aboutNow, undefined, null, reader)).toMatch(/repeat/);
+    expect(guardFor(() => x.model, x.checks, { kind: "fill", proposalId: x.id }, null, reader)(0, EMAIL, x.target)).toMatch(/repeat/);
+  });
+});
+
+describe("confirmation fields follow the rule of the field they confirm (lead ruling)", () => {
+  async function confirm(label: string) {
+    const model = desk([field("email", EMAIL, { label: "Email", frame: [100, 80, 200, 24] }), field("alternate", "", { label, frame: [100, 40, 200, 24] })]);
+    const p = await proposeFill(model, jevPickingText((_, ins) => (ins.includes(`'${label}'`) ? EMAIL : null)), FORM, "alternate", 3000, { derive: false });
+    return p.fields.find((f) => f.key === "alternate")?.value;
+  }
+  it.each(["Confirm email", "Second email confirmation"])("%s confirms the primary, so it takes the primary's value", async (label) => {
+    expect(await confirm(label)).toBe(EMAIL);
+  });
+  it.each(["Confirm alternate email", "Re-enter backup email", "Confirmar correo alternativo", "보조 이메일 확인"])("%s confirms an alternate, so it never takes the primary's value", async (label) => {
+    expect(await confirm(label)).toBeNull();
   });
 });

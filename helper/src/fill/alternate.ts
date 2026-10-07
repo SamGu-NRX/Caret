@@ -11,6 +11,9 @@
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { fieldKinds } from "./kinds.ts";
 import { PROMPT } from "./controls.ts";
+import { redactWindow } from "./redact.ts";
+import { aboutKind } from "./about.ts";
+import { secretText } from "../memory/sensitive.ts";
 import type { WindowState } from "../model.ts";
 import type { FillField, Node } from "../protocol.ts";
 
@@ -50,9 +53,11 @@ function kindsIn(name: string): AlternateKind[] {
 }
 
 /**
- * The kinds a field is an alternate of: a secondary marker in its own name, unless the name confirms. A confirmation
- * that uses only an ordinal ("Second email confirmation", "Email again") is exempt; one that also says alternate,
- * backup or the like ("Confirm alternate email") is still an alternate, since its value must not be the primary's either.
+ * The kinds a field is an alternate of: a secondary marker in its own name, unless the name confirms. Lead ruling (V6
+ * re-review): a confirmation field follows the rule of the field it confirms. "Confirm email" and "Second email
+ * confirmation" (an ordinal used for "a second time") confirm the primary, so they are exempt and take its value;
+ * "Confirm alternate email", "Re-enter backup email", "Confirmar correo alternativo" and "보조 이메일 확인" confirm an
+ * alternate, so they are held to the alternate rule and never take the primary's value.
  */
 export function alternateKinds(label: string | null): readonly AlternateKind[] {
   return secondaryName(label) ? kindsIn(ownName(label)) : [];
@@ -124,7 +129,13 @@ export function sameValue(kind: AlternateKind, a: string, b: string): boolean {
 /** A field of the form as Caret reads it, whether or not Caret could write it: a read-only one and a dropdown count. */
 export interface ReadableField {
   key: string;
+  /** Its name in the raw window, for comparison only: it may hold what the redacted view hides, so it is never said. */
   name: string;
+  /**
+   * Its name as the redacted view shows it (fill/redact.ts), the only name a reason may say; null when that view drops
+   * the field or its name reads as a secret. V6 re-review: a primary labelled "Email API key: …" reached the preview.
+   */
+  shown: string | null;
   /** What it holds now; "" when empty or showing a dropdown's prompt. */
   value: string;
 }
@@ -138,9 +149,14 @@ const TEXT_ROLES: ReadonlySet<string> = new Set(["AXTextField", "AXTextArea", "A
  */
 export function readableFields(w: WindowState): ReadableField[] {
   const out: ReadableField[] = [];
+  const view = redactWindow(w);
+  const nameIn = (x: WindowState, n: Node): string | null => {
+    const d = describeField(x, n);
+    return d.label ?? d.nearest ?? d.placeholder;
+  };
   const named = (n: Node, value: string): void => {
-    const d = describeField(w, n);
-    out.push({ key: n.key, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field", value });
+    const seen = view.nodes.get(n.key);
+    out.push({ key: n.key, name: nameIn(w, n) ?? "unnamed field", shown: seen === undefined ? null : sayable(nameIn(view, seen)), value });
   };
   for (const n of w.nodes.values()) {
     if (n.states?.includes("secure") === true) continue;
@@ -169,6 +185,25 @@ export interface SavedValue {
   kind: string;
 }
 
+/** The user's saved values as they are now: the write contract's dependency on them, read again at acceptance and dispatch. */
+export type SavedReader = () => readonly SavedValue[];
+
+/**
+ * The saved values the veto compares with, from planner or goal memory: the user's own entries, by About's kind
+ * (about.ts aboutKind), never a person's. The goal inventory and the native planner both classify through here.
+ */
+export function savedValuesOf(memory: readonly { label: string; text: string; whose?: "user" | "other" }[]): SavedValue[] {
+  return memory.flatMap((m) => {
+    const kind = m.whose === "other" ? null : aboutKind(m.label, m.text);
+    return kind === null ? [] : [{ label: m.label, value: m.text, kind }];
+  });
+}
+
+/** A name a reason may say: one with text that does not read as a secret (memory/sensitive.ts secretText). */
+function sayable(name: string | null): string | null {
+  return name === null || name.trim() === "" || secretText(name) ? null : name;
+}
+
 export interface AlternateVeto {
   /** Completes "Caret left <field>: …" without its period; never quotes the value. */
   says: string;
@@ -184,6 +219,7 @@ export interface AlternateForm {
 }
 
 const KIND_SAYS: Record<AlternateKind, string> = { email: "email address", phone: "phone number", address: "address" };
+const MAIN_SAYS: Record<AlternateKind, string> = { email: "email", phone: "phone number", address: "address" };
 
 /**
  * Why `write` may not go in its field, or null. `kinds` are the field's alternate kinds, read from its name by default;
@@ -197,8 +233,9 @@ export function alternateVeto(write: AlternateWrite, form: AlternateForm, kinds:
     const writes = form.writes.filter((x) => x.key !== write.key && primaryKinds(x.name).includes(kind));
     // A form with no primary field of the kind is exempt: the only email field may be labelled alternate.
     if (fields.length === 0 && writes.length === 0) continue;
-    const field = [...fields.map((f) => ({ key: f.key, name: f.name, value: f.value })), ...writes.map((x) => ({ key: x.key, name: x.name, value: x.text }))].find((p) => p.value.trim() !== "" && sameValue(kind, p.value, write.text));
-    if (field !== undefined) return { says: `it would repeat your ${field.name}`, repeats: { field: field.key } };
+    const field = [...fields.map((f) => ({ key: f.key, shown: f.shown, value: f.value })), ...writes.map((x) => ({ key: x.key, shown: sayable(x.name), value: x.text }))].find((p) => p.value.trim() !== "" && sameValue(kind, p.value, write.text));
+    // Named only by what the redacted view shows; otherwise by its kind, so raw comparison data never becomes text.
+    if (field !== undefined) return { says: field.shown === null ? `it would repeat the form's main ${MAIN_SAYS[kind]}` : `it would repeat your ${field.shown}`, repeats: { field: field.key } };
     // Only the user's primary values: an entry the user labelled as a backup ("Backup email") is the alternate's to take.
     if (form.saved.some((s) => s.kind === kind && !secondaryName(s.label) && sameValue(kind, s.value, write.text))) return { says: `it would repeat your saved ${KIND_SAYS[kind]}`, repeats: { saved: kind } };
   }
@@ -243,14 +280,17 @@ export class PartPicks {
 }
 
 /**
- * V6 B3: the write contract's dependency on the primary, rechecked at acceptance and right before each dispatch: why
- * a checked value may no longer go in its alternate field, read from the form `w` as it is now, or null. `kinds` are
- * the alternate kinds its FieldContract carried. With no form to read, an alternate value is refused.
+ * V6 B3: the write contract's dependency on the primary and on the user's saved values, rechecked at acceptance and
+ * right before each dispatch: why a checked value may no longer go in its alternate field, read from the form `w` and
+ * from `saved` as they are now, or null. The kinds are the ones its FieldContract carried. With no form or no saved
+ * values to read, an alternate value is refused.
  */
-export function alternateStale(w: WindowState | undefined, c: { text: string; field: { key: string; name: string; alternate: readonly AlternateKind[] } }): string | null {
+export function alternateStale(w: WindowState | undefined, c: { text: string; field: { key: string; name: string; alternate: readonly AlternateKind[] } }, saved: SavedReader | null): string | null {
   if (c.field.alternate.length === 0) return null;
   if (w === undefined) return "Caret can't see the form to check this value against its primary field";
-  const v = alternateVeto({ key: c.field.key, name: c.field.name, text: c.text }, { fields: readableFields(w), writes: [], saved: [] }, c.field.alternate);
+  // V6 re-review: the user's saved values as they are now (an edit, a new entry, a relabelled backup), not at the proposal.
+  if (saved === null) return "Caret can't read your saved details to check this value against them";
+  const v = alternateVeto({ key: c.field.key, name: c.field.name, text: c.text }, { fields: readableFields(w), writes: [], saved: saved() }, c.field.alternate);
   return v === null ? null : v.says;
 }
 

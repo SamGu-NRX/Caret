@@ -683,7 +683,7 @@ function alternateRefusals(draft: DraftPlan, inv: GoalInventory, drafted: Readon
   const out = new Map<string, string>();
   for (const [windowId, xs] of byWindow) {
     const frozen = inv.alternates?.fields.get(windowId);
-    const fields = frozen ?? [...inv.targets.values()].flatMap((t) => (t.domain.kind === "window" && t.domain.windowId === windowId && t.control !== "button" && t.control !== "file" ? [{ key: t.key, name: nameOf(t), value: t.value }] : []));
+    const fields = frozen ?? [...inv.targets.values()].flatMap((t) => (t.domain.kind === "window" && t.domain.windowId === windowId && t.control !== "button" && t.control !== "file" ? [{ key: t.key, name: nameOf(t), shown: nameOf(t), value: t.value }] : []));
     const vetoes = alternateVetoes({ fields, writes: xs.map((x) => x.write), saved: inv.alternates?.saved ?? [] });
     for (const x of xs) {
       const veto = vetoes.get(x.write.key);

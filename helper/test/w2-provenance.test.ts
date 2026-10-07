@@ -97,7 +97,7 @@ describe("a checked value's source is rechecked right before each write (lead, G
     const name = app.node(K("textfield:name~0"));
     if (name !== undefined) delete name.value;
     app.show();
-    await run("t-after", guardFor(() => helper.model, new Map([[0, mint]]), TEST_AUTHORITY, null));
+    await run("t-after", guardFor(() => helper.model, new Map([[0, mint]]), TEST_AUTHORITY, null, null));
     expect(writes()).toEqual([]);
     expect(progress("t-after").at(-1)?.stopReason).toBe("changed");
   });
@@ -165,7 +165,7 @@ describe("the W2 review's contract findings", () => {
 
   it("keeps the executor's guard to the mint's own text (finding 1)", async () => {
     const [c] = (await checkValues([{ field: fc("k1"), text: "Kenji Watanabe", display: "Kenji Watanabe", provenance: { kind: "instruction", span: "Kenji Watanabe" }, owner: null }], opts)).ok;
-    const guard = guardFor(() => new ScreenModel(), new Map([[0, c as NonNullable<typeof c>]]), TEST_AUTHORITY, null);
+    const guard = guardFor(() => new ScreenModel(), new Map([[0, c as NonNullable<typeof c>]]), TEST_AUTHORITY, null, null);
     expect(guard(0, "Kenji Watanabe")).toBeNull();
     expect(guard(0, "REFUSED OR UNVERIFIED")).toMatch(/not the one Caret checked/u);
     expect(guard(1, "anything")).toMatch(/no check/u);
@@ -177,7 +177,7 @@ describe("the W2 second opinion's findings", () => {
 
   it("rechecks at dispatch that the resolved element is the field checked, still asking the same (finding 3)", async () => {
     const [c] = (await checkValues([{ field: field("name"), text: "Mary Ann", display: "Mary Ann", provenance: { kind: "instruction", span: "Mary Ann" }, owner: null }], opts)).ok;
-    const guard = guardFor(() => new ScreenModel(), new Map([[0, c as NonNullable<typeof c>]]), TEST_AUTHORITY, null);
+    const guard = guardFor(() => new ScreenModel(), new Map([[0, c as NonNullable<typeof c>]]), TEST_AUTHORITY, null, null);
     const node = (extra: Partial<Node>): Node => ({ key: "k1", parent: null, role: "AXTextField", label: "Name", autocomplete: "name", ...extra });
     expect(guard(0, "Mary Ann", { windowId: "form", node: node({}) })).toBeNull();
     expect(guard(0, "Mary Ann", { windowId: "other", node: node({}) })).toMatch(/not the one Caret checked/u);

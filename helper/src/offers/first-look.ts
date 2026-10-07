@@ -279,7 +279,7 @@ export class FirstLookRunner {
         continue;
       }
       asked++;
-      const p = stillGrounded(model, r.value, this.deps.aboutNow);
+      const p = stillGrounded(model, r.value, this.deps.aboutNow, this.deps.about);
       if (p === null) continue;
       const w = model.windows.get(p.windowId);
       if (w === undefined) continue;
@@ -301,13 +301,13 @@ export class FirstLookRunner {
   }
 
   private async acceptFill(offerKey: string, p: GroundedProposal): Promise<AcceptResult> {
-    const stale = recheckFill(this.deps.model, p, this.deps.aboutNow);
+    const stale = recheckFill(this.deps.model, p, this.deps.aboutNow, undefined, null, this.deps.about);
     this.deps.withdraw(offerKey, stale === null ? "taken" : "stale");
     if (stale !== null) return { refused: `${stale}; nothing was written` };
     const { plan, slots, checks } = fillPlan(this.deps.model, p);
     // The destinations were empty just now; one the user fills before the run's first read stops it. W2: each copied
     // value's source is rechecked right before its write (contract.ts guardFor).
-    return this.deps.run(offerKey, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, guardFor(() => this.deps.model, checks, { kind: "fill", proposalId: p.id }, null));
+    return this.deps.run(offerKey, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, guardFor(() => this.deps.model, checks, { kind: "fill", proposalId: p.id }, null, this.deps.about));
   }
 
   // MARK: - pending
@@ -452,7 +452,7 @@ function emptyFields(w: WindowState): string[] {
 }
 
 /** The proposal with only fields still empty whose source is still open, when that leaves a pop-up's worth; else null. */
-function stillGrounded(model: ScreenModel, p: FillProposal, aboutNow: AboutNow): GroundedProposal | null {
+function stillGrounded(model: ScreenModel, p: FillProposal, aboutNow: AboutNow, saved: () => readonly AboutValue[]): GroundedProposal | null {
   const w = model.windows.get(p.windowId);
   if (w === undefined || !fillPopupEligible(p)) return null;
   // The fields Caret writes: text, and in a page the engine owns, the controls it writes (D2-04); the pop-up lists the rest.
@@ -462,7 +462,7 @@ function stillGrounded(model: ScreenModel, p: FillProposal, aboutNow: AboutNow):
     return n !== undefined && (n.value ?? "") === "" && (f.source === null || model.windows.has(f.source.windowId));
   });
   const q = { ...written, fields };
-  return fields.length >= 2 && recheckFill(model, q, aboutNow) === null ? q : null;
+  return fields.length >= 2 && recheckFill(model, q, aboutNow, undefined, null, saved) === null ? q : null;
 }
 
 function sourceText(app: string, title: string): string {

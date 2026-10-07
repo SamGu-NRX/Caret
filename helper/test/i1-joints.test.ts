@@ -196,7 +196,7 @@ describe("I1 joint 4: a source line edited after acceptance stops the write", ()
     // After acceptance, before the write: the value's own line is unchanged, a warning goes in under it. W2's sentence
     // digests, which saw only the value's own sentence, would have let it through.
     showSource("Contact: Dana Reyes\nDo not use this name, it is my old one\nCity: Austin");
-    await run("t-i1", plan, slots, guardFor(() => helper.model, checks, { kind: "fill", proposalId: g.id }, null));
+    await run("t-i1", plan, slots, guardFor(() => helper.model, checks, { kind: "fill", proposalId: g.id }, null, null));
     expect(app.verbs.filter((v) => v.kind === "write")).toEqual([]);
     expect(progress("t-i1").at(-1)?.stopReason).toBe("changed");
   });
@@ -210,7 +210,7 @@ describe("I1 joint 4: a source line edited after acceptance stops the write", ()
     const { plan, slots, checks } = fillPlan(helper.model, g);
     // Outside the value's line and the line after it: only the sentence digests see it.
     showSource("Contact: Dana Reyes\nand this is my current\nname, do not use it.");
-    await run("t-i1-wrap", plan, slots, guardFor(() => helper.model, checks, { kind: "fill", proposalId: g.id }, null));
+    await run("t-i1-wrap", plan, slots, guardFor(() => helper.model, checks, { kind: "fill", proposalId: g.id }, null, null));
     expect(app.verbs.filter((v) => v.kind === "write")).toEqual([]);
     expect(progress("t-i1-wrap").at(-1)?.stopReason).toBe("changed");
   });

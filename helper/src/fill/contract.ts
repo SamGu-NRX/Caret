@@ -30,7 +30,7 @@ import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { secretIn } from "../planner/trace.ts";
 import type { AskJev, JevRequest } from "./jev.ts";
 import { assertNoSecrets, SnippetLedger } from "../privacy.ts";
-import { alternateKinds, alternateStale, type AlternateKind } from "./alternate.ts";
+import { alternateKinds, alternateStale, type AlternateKind, type SavedReader } from "./alternate.ts";
 
 /** The page walk's text input kind (protocol.ts PageControlKind), projected into Node by toWindowSnapshot; null through Accessibility. */
 export type InputKind = "text" | "email" | "tel" | "url" | "number" | "search" | "date" | "time" | "datetime" | "month" | "week" | "textarea" | null;
@@ -954,7 +954,7 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
  * in the run's plan, its mint. Right before each dispatch the value must be the mint's text, and its source must still
  * say what it said (provenanceStale, read from `model()`); a value step with no mint is refused.
  */
-export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>, origin: Origin, documentOf: DocumentReader | null): (step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null {
+export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>, origin: Origin, documentOf: DocumentReader | null, saved: SavedReader | null): (step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null {
   return (step, value, target) => {
     const m = mints.get(step);
     if (!isChecked(m)) return "the value has no check from the write contract";
@@ -975,7 +975,7 @@ export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, Ch
     // V6 B3: an alternate field's value against the form's primary fields as they read right before the dispatch, in the
     // window the executor resolved. A check with no target (the executor's look ahead) leaves it to the dispatch's own.
     if (target !== undefined) {
-      const repeats = alternateStale(target.window, m);
+      const repeats = alternateStale(target.window, m, saved);
       if (repeats !== null) return `Caret left '${clip(m.field.name)}': ${repeats}`;
     }
     const stale = provenanceStale(model(), m.provenance);

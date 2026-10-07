@@ -669,6 +669,7 @@ export class Helper {
       forgetFile: (taskId) => this.files.forget(taskId),
       onAttached: (a) => this.offerFileSave(a),
       aboutNow: (id) => this.aboutNow(id),
+      savedNow: () => this.aboutValues(),
       // I6: a page goal's sources may be the tab the user left, which its plan read and holds until the goal ends.
       sourceModel: (goalId) => this.fillModel(goalId),
       ended: (goalId) => this.goalEnded(goalId),
@@ -1929,7 +1930,7 @@ export class Helper {
       if (e instanceof PlannerError) return { refused: `${e.code}: ${e.message}; nothing was written` };
       throw e;
     }
-    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true, guard: guardFor(guardModel, mints, p.draft.checked.origin, this.documentReader()) });
+    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true, guard: guardFor(guardModel, mints, p.draft.checked.origin, this.documentReader(), () => this.aboutValues()) });
   }
 
   private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings" | "stale"): void {
@@ -2171,7 +2172,7 @@ export class Helper {
     const p = checked.p;
     this.bindNew(taskId, session);
     const { plan, slots, checks } = fillPlan(this.model, p);
-    const guard = guardFor(this.guardSources(m.proposalId), checks, { kind: "fill", proposalId: m.proposalId }, this.documentReader());
+    const guard = guardFor(this.guardSources(m.proposalId), checks, { kind: "fill", proposalId: m.proposalId }, this.documentReader(), () => this.aboutValues());
     // P4: the run carries its values as slots; the text they were read from is not needed past this point.
     this.tabSource?.release(m.proposalId);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
@@ -3197,7 +3198,7 @@ export class Helper {
     }
     const p = checked.p;
     const { plan, slots, checks } = fillPlan(this.model, p);
-    const guard = guardFor(this.guardSources(p.id), checks, { kind: "fill", proposalId: p.id }, this.documentReader());
+    const guard = guardFor(this.guardSources(p.id), checks, { kind: "fill", proposalId: p.id }, this.documentReader(), () => this.aboutValues());
     this.withdrawFill(p.id, "taken");
     const answers = p.fields.flatMap((f) => (f.answer === undefined ? [] : [{ answerId: f.answer.id, windowId: p.windowId, key: f.key }]));
     if (answers.length > 0) {
@@ -3215,7 +3216,7 @@ export class Helper {
    * empty for the user, and the log names why.
    */
   private recheckKept(p: GroundedProposal): { p: GroundedProposal } | { refused: string } {
-    const r = recheckFields(this.fillModel(p.id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    const r = recheckFields(this.fillModel(p.id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null, () => this.aboutValues());
     if ("stale" in r || r.dropped.length > 0) this.whyGone(p);
     if ("stale" in r) return { refused: `${r.stale}; nothing was written` };
     if (r.proposal.fields.length === 0) return { refused: `${r.dropped[0]?.log ?? "no field is left to fill"}; nothing was written` };
@@ -3235,7 +3236,7 @@ export class Helper {
     for (const [id, { p, form }] of this.fillPopups) {
       if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;
       const w = this.model.windows.get(p.windowId);
-      let changed = recheckFill(this.fillModel(id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null) !== null;
+      let changed = recheckFill(this.fillModel(id), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null, () => this.aboutValues()) !== null;
       if (!changed && w !== undefined) {
         try {
           changed = `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form;
@@ -3270,7 +3271,7 @@ export class Helper {
   private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[], owner: string): { stale: string } | { p: GroundedProposal } {
     if (focuses.some((f) => !inFillForm(p, f.windowId, f.key))) return { stale: "focus left the form" };
     // P2: a field whose recheck fails is the user's, with why; the pop-up still needs two fields Caret writes (fillPopupEligible).
-    const r = recheckFields(this.fillModel(owner), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null);
+    const r = recheckFields(this.fillModel(owner), p, this.aboutNow, this.answerText, this.opts.pageContext?.(p.windowId) ?? null, () => this.aboutValues());
     if ("stale" in r) return r;
     if (r.proposal.fields.length < 2) return { stale: r.dropped[0]?.log ?? "fewer than two fields are left to fill" };
     if (r.dropped.length > 0) this.opts.store.count("fill.recheck_dropped", r.dropped.length);

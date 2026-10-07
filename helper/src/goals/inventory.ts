@@ -21,8 +21,7 @@ import { RESOLVER_VERSION } from "../values/resolve.ts";
 import { allowedEffects } from "./capabilities.ts";
 import { markDerived } from "./gates.ts";
 import { owedFields, type OwedField } from "./left.ts";
-import { readableFields, type ReadableField, type SavedValue } from "../fill/alternate.ts";
-import { aboutKind } from "../fill/about.ts";
+import { readableFields, savedValuesOf, type ReadableField } from "../fill/alternate.ts";
 import type { GoalControl, GoalDomain, GoalInventory, ReadValue, TargetBinding, ValueBinding, ValueOrigin } from "./plan.ts";
 
 /** Windows one goal may act in. With the calendar, that is the writer's four snapshots (PlanInputSchema). */
@@ -199,10 +198,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     snapshots.push({ snapshot: `s${snapshots.length + 1}`, window: `w${snapshots.length + 1}`, revision: "calendar", title: `Calendar '${o.calendar}'`, targets: [{ ref, label: o.calendar, kind: "calendar", canFill: true, options: [], allowedPressEffects: [] }], values: [], questions: [] });
   }
   // V6 B2: the user's own values of a kind, for the alternate-field veto; a person's entry is not the user's.
-  const saved: SavedValue[] = o.memory.flatMap((m) => {
-    const kind = m.whose === "other" ? null : aboutKind(m.label, m.text);
-    return kind === null ? [] : [{ label: m.label, value: m.text, kind }];
-  });
+  const saved = savedValuesOf(o.memory);
   return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed, alternates: { fields: readable, saved } }, ledger };
 }
 

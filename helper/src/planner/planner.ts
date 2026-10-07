@@ -28,7 +28,7 @@ import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { candidateProvenance, FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
 import { checkValues, ContractError, fieldContract, isChecked, VerifierUnavailable, type CheckedValue, type CheckOptions, type FieldContract, type Owner, type Proposed, type Provenance } from "../fill/contract.ts";
-import { alternateVetoes, readableFields } from "../fill/alternate.ts";
+import { alternateVetoes, readableFields, savedValuesOf, type SavedValue } from "../fill/alternate.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts } from "../fill/kinds.ts";
@@ -275,7 +275,7 @@ async function planIn(
   }
   // W2: each value meets the write contract once, in its field, with where it was read (fill/contract.ts); a value it
   // refuses is withheld, as an unsure one is.
-  const minted = await mintWrites(agreedWrites.map(({ field, value }) => ({ key: field.node.key, w, node: field.node, name: field.name, text: value, provenance: read.get(field.node.key) as Provenance, owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now(), authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null });
+  const minted = await mintWrites(agreedWrites.map(({ field, value }) => ({ key: field.node.key, w, node: field.node, name: field.name, text: value, provenance: read.get(field.node.key) as Provenance, owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now(), authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null }, savedValuesOf(memory.values()));
   for (const r of minted.refused) withheld.push({ name: r.name, why: "lowConfidence" });
   const writes = agreedWrites.filter((x) => minted.mints.has(x.field.node.key));
   const pressLabel = askedButtons.length === 0 ? null : agreed("press", "press", byId(askedButtons.map((b) => ({ id: b.id, text: b.key }))), byId(second.buttons.map((b) => ({ id: b.id, text: b.key }))), NONE);
@@ -330,13 +330,13 @@ async function planIn(
  * PlannerError("notEditable") for a field Caret never types, and PlannerError("jevFailed") when the verifier cannot
  * answer: nothing is written then.
  */
-export async function mintWrites(writes: readonly { key: string; w: WindowState; node: Node; name: string; text: string; provenance: Provenance; owner: Owner }[], o: CheckOptions): Promise<{ mints: Map<string, CheckedValue>; refused: { key: string; name: string; says: string; why: string }[] }> {
+export async function mintWrites(writes: readonly { key: string; w: WindowState; node: Node; name: string; text: string; provenance: Provenance; owner: Owner }[], o: CheckOptions, saved: readonly SavedValue[]): Promise<{ mints: Map<string, CheckedValue>; refused: { key: string; name: string; says: string; why: string }[] }> {
   // V6: the alternate-field veto (fill/alternate.ts), over every write of the plan into each window, before any value is
   // checked: an Alternate email never repeats the plan's Email or a primary field the window shows.
   const vetoed = new Map<string, string>();
   for (const id of new Set(writes.map((x) => x.w.window.windowId))) {
     const here = writes.filter((x) => x.w.window.windowId === id);
-    const vetoes = alternateVetoes({ fields: readableFields((here[0] as (typeof writes)[number]).w), writes: here.map((x) => ({ key: x.node.key, name: x.name, text: x.text })), saved: [] });
+    const vetoes = alternateVetoes({ fields: readableFields((here[0] as (typeof writes)[number]).w), writes: here.map((x) => ({ key: x.node.key, name: x.name, text: x.text })), saved });
     for (const x of here) {
       const v = vetoes.get(x.node.key);
       if (v !== undefined) vetoed.set(x.key, v.says);

@@ -3,6 +3,7 @@
 // learns preferences from the user's edits to values it filled. No model is called anywhere here.
 // An offer that speaks goes out as a patternOffer and, for the host, as one alternatives message per
 // cell (loopNext) or one action line (loopFinish, routine) whose accept is the same take.
+import { aboutValues } from "../fill/about.ts";
 import { performance } from "node:perf_hooks";
 import { nodeText, type Change, type ScreenModel } from "../model.ts";
 import {
@@ -711,7 +712,7 @@ export class PatternEngine {
     let r: TaskResult;
     try {
       // W2: each cell's mint, by its step (plan() puts cell i at step i), rechecked right before its write.
-      const guard = guardFor(() => this.deps.model, new Map(o.cells.map((c, i) => [i, c.checked])), { kind: "pattern", patternId: o.msg.patternId }, null);
+      const guard = guardFor(() => this.deps.model, new Map(o.cells.map((c, i) => [i, c.checked])), { kind: "pattern", patternId: o.msg.patternId }, null, () => aboutValues(this.deps.memory.active("about")));
       r = await this.deps.run(taskId, o.plan, o.slots, empty, { ...(unprompted ? { unprompted: true } : {}), family: familyOf(o.msg.kind), routineId: o.routineId, guard });
     } catch (e) {
       // A run that ends in an error (the reader refusing the last watch, say) is a failure like any other.

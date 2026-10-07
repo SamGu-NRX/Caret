@@ -1,3 +1,4 @@
+import { savedValuesOf } from "../fill/alternate.ts";
 import { instructionForModel, instructionView } from "../fill/redact.ts";
 import { viewOf } from "../fill/candidates.ts";
 import { assertNoSecrets } from "../privacy.ts";
@@ -248,7 +249,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   const minted = await mintWrites(unvetoed.map((f) => {
     const { field, value } = pairOf(f) as { field: Field; value: Value };
     return { key: f.ref, w, node: field.node, name: field.name, text: value.text, provenance: value.provenance, owner: value.owner };
-  }), { askJev: o.askJev, ledger, instruction, now, authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null });
+  }), { askJev: o.askJev, ledger, instruction, now, authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null }, savedValuesOf(memoryValues));
   const checkedFills = unvetoed.filter((f) => minted.mints.has(f.ref));
   if (checkedFills.length === 0) throw allRefused(minted.refused);
   const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: w.window.windowId } : {}) };

@@ -12,7 +12,7 @@ import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
 import { conversionOf, describeInput, emptyInput, identityRefOf, memoryRefOf, memoryValue, mintOf } from "../fill/fill.ts";
 import { contractStale, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
-import { alternateStale } from "../fill/alternate.ts";
+import { alternateStale, type SavedReader } from "../fill/alternate.ts";
 import { identityKey } from "../fill/whose.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
@@ -227,7 +227,7 @@ export type FieldStale = { log: string; says: string };
  * differently; what its value rests on changed (valueStale); or (W2) the field asks for something else than when its
  * value was checked (contract.ts contractStale: its input kind, autocomplete field name or maxlength).
  */
-function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, about: AboutNow, answer: AnswerNow, page: PageContext | null): FieldStale | null {
+function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, about: AboutNow, answer: AnswerNow, page: PageContext | null, saved: SavedReader | null): FieldStale | null {
   const node = w.nodes.get(f.key);
   if (node === undefined) return { log: `the field ${f.key} is gone`, says: "the field is gone" };
   const input = emptyInput(w, f.key);
@@ -236,8 +236,9 @@ function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, abou
   const value = valueStale(model, w, f, about, answer, page);
   if (value !== null) return value;
   if (contractStale(node, f.checked.field, f.value) !== null) return { log: `the field ${f.key} now asks for something else`, says: "it asks for something else now" };
-  // V6 B3: an alternate field's value against the form's primary fields as they read at acceptance (alternate.ts).
-  const repeats = alternateStale(w, f.checked);
+  // V6 B3: an alternate field's value against the form's primary fields and the user's saved values as they read at
+  // acceptance (alternate.ts). Without a saved-values reader an alternate field's value is refused, never assumed.
+  const repeats = alternateStale(w, f.checked, saved);
   return repeats === null ? null : { log: `the field ${f.key} would repeat a primary field's value`, says: repeats };
 }
 
@@ -289,11 +290,11 @@ export function valueStale(model: ScreenModel, w: WindowState, f: GroundedField,
  * the value was read from (valueStale). A value from memory must still be what that entry holds: forgetting, pausing
  * or editing it ends the offer. The first field that fails says why; recheckFields drops each one instead.
  */
-export function recheckFill(model: ScreenModel, p: GroundedProposal, about: AboutNow, answer: AnswerNow = () => null, page: PageContext | null = null): string | null {
+export function recheckFill(model: ScreenModel, p: GroundedProposal, about: AboutNow, answer: AnswerNow = () => null, page: PageContext | null = null, saved: SavedReader | null = null): string | null {
   const w = model.windows.get(p.windowId);
   if (w === undefined) return "the form's window closed";
   for (const f of p.fields) {
-    const stale = recheckField(model, w, f, about, answer, page);
+    const stale = recheckField(model, w, f, about, answer, page, saved);
     if (stale !== null) return stale.log;
   }
   return null;
@@ -304,14 +305,14 @@ export function recheckFill(model: ScreenModel, p: GroundedProposal, about: Abou
  * longer cancels the whole fill (P1: on W4's saved Greenhouse pages one Country value refused every field). `stale`
  * only when the form's window closed. `dropped` lists each field left out, with the log's words.
  */
-export function recheckFields(model: ScreenModel, p: GroundedProposal, about: AboutNow, answer: AnswerNow = () => null, page: PageContext | null = null): { proposal: GroundedProposal; dropped: { key: string; log: string }[] } | { stale: string } {
+export function recheckFields(model: ScreenModel, p: GroundedProposal, about: AboutNow, answer: AnswerNow = () => null, page: PageContext | null = null, saved: SavedReader | null = null): { proposal: GroundedProposal; dropped: { key: string; log: string }[] } | { stale: string } {
   const w = model.windows.get(p.windowId);
   if (w === undefined) return { stale: "the form's window closed" };
   const fields: GroundedField[] = [];
   const yours: YourField[] = [...p.yours];
   const dropped: { key: string; log: string }[] = [];
   for (const f of p.fields) {
-    const stale = recheckField(model, w, f, about, answer, page);
+    const stale = recheckField(model, w, f, about, answer, page, saved);
     if (stale === null) {
       fields.push(f);
       continue;
