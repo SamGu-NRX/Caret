@@ -248,6 +248,10 @@ public final class SurfaceMachine {
     public internal(set) var toastGrantID: UInt64?
     /// The task ⌘Z asked the helper to undo; its `undone` progress gets the last word.
     var undoing: String?
+    /// Whether the result line reports an inline insert (S2), which owns its ⌘Z and status itself.
+    var inlineResult: Bool { result?.taskID.hasPrefix(Self.inlineTaskPrefix) == true }
+    static let inlineTaskPrefix = "inline-"
+
     /// The inline insert's grant ⌘Z handed to the insertion queue, and the result line that asked
     /// (S2). Its answer is drawn only while that line still owns the panel; ending the line ends it.
     var inlineUndo: (grant: UInt64, taskID: String)?
@@ -874,9 +878,13 @@ public final class SurfaceMachine {
             toastInfo = nil
             cancelResultTimer()
             takeLineDown(exit: 0.08)
+            // An inline result's line is its ownership: dismissed, it owns nothing more (S2).
+            if inlineResult { endResult() }
         } else if resultTimer != nil, undoing == nil, snapshot.statusLine?.id != resultStatusID {
             cancelResultTimer()
             takeLineDown(exit: 0.08)
+            // Its pending undo too: a late answer draws nothing (S2 focused check).
+            if inlineResult { endResult() }
         }
         publish()
     }
@@ -897,6 +905,16 @@ public final class SurfaceMachine {
     /// The frontmost app's focused field changed. An offer bound to another field of that app is
     /// withdrawn: its panel describes a field the user has left.
     public func focusChanged(_ identity: TargetIdentity?) {
+        // An inline insert's result line is about the field written (S2): focus on another field or
+        // window of its app ends it, and with it ⌘Z, at once rather than at the watch's next recheck.
+        if inlineResult, let result, let identity, identity.pid == result.target.pid,
+           identity.elementID != result.target.elementID || identity.windowID != result.target.windowID {
+            stopWatch()
+            endResult()
+            takeLineDown(exit: 0.08)
+            count("surface.inline.focusLeft")
+            publish()
+        }
         guard let shown, let identity, identity.pid == shown.offer.target.pid,
               identity.elementID != shown.offer.target.elementID else { return }
         arbiter.invalidate(offerID: shown.offerID)

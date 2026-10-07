@@ -198,6 +198,19 @@ final class FillMachineTests: XCTestCase {
         XCTAssertNil(rig.arbiter.snapshot().current)
     }
 
+    /// F4: a ⌘Z start delivered late, after a newer fill's toast took the slot, belongs to the old
+    /// grant: the newer toast keeps its own ⌘Z.
+    func testALateUndoStartLeavesANewerToastsGrant() {
+        let rig = toastUp()
+        let current = rig.machine.toastGrantID
+        XCTAssertNotNil(current)
+        var older = rig.arbiter.snapshot().toast!
+        older.id = current! &+ 100
+        rig.machine.undoStarted(older)
+        XCTAssertEqual(rig.machine.toastGrantID, current)
+        XCTAssertEqual(rig.machine.status.toast?.grantID, current)
+    }
+
     func testAnUndoThatFindsTheFieldChangedSaysSo() {
         let rig = toastUp()
         guard case .undo(let grant) = rig.arbiter.handleKeyDown(Fx.cmdZ(), now: rig.clock.now) else { return XCTFail("⌘Z did not take the grant") }

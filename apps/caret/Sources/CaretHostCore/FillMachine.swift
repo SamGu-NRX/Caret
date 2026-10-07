@@ -645,6 +645,9 @@ public final class FillMachine {
             emit(.undoTask(taskID))
             count("fill.helperFill.undo")
         }
+        // Only the toast whose grant this is: a start delivered after a newer fill's toast took the
+        // slot leaves that toast its own ⌘Z (S2 focused check).
+        guard toast?.grantID == grant.id else { return emit(.publish) }
         toast?.grantID = nil
         status.toast?.grantID = nil
         emit(.publish)

@@ -56,7 +56,7 @@ extension SurfaceMachine {
         let line = WorkLine(
             LineContent(figure: .error, text: text, emphasis: .plain, hints: grant == nil ? [] : [Hint(key: "⌘Z", label: "Undo")]), text: text
         )
-        let taskID = "inline-\(r.claim.claimID)"
+        let taskID = "\(Self.inlineTaskPrefix)\(r.claim.claimID)"
         result = Result(taskID: taskID, target: target, anchor: anchor, line: line)
         var lifetime = FillMachine.errorLifetime
         if let grant {
@@ -72,7 +72,8 @@ extension SurfaceMachine {
         lineText = text
         figure = line.content.figure
         showPanel(.line(line.content), text: text, placement: .atField(field: anchor.field, caret: anchor.caret, pid: target.pid, entering: true))
-        startWatch(.line, target: target, anchors: [CGPoint(x: caret.midX, y: caret.midY)], requireFocus: false, field: anchor.field)
+        // Focus required: in another field or window of the app, the line describes a field the user left.
+        startWatch(.line, target: target, anchors: [CGPoint(x: caret.midX, y: caret.midY)], requireFocus: true, field: anchor.field)
         cancelResultTimer()
         let grantID = toastGrantID
         let statusID = resultStatusID
@@ -91,8 +92,16 @@ extension SurfaceMachine {
         guard let id = toastGrantID, id == grant.id, let result else { return }
         toastGrantID = nil
         inlineUndo = (grant.id, result.taskID)
+        holdStatus(.result, for: result)
         toastInfo = DebugState.Toast(kind: "undoing", caption: WorkLines.undoing.text, grantID: nil)
         showResult(WorkLines.undoing, lifetime: 10)
+    }
+
+    /// The line's status slot, for a state with no ⌘Z: Esc closes it and typing dismisses it, and
+    /// either ends the result (`offerChanged`), pending undo included.
+    func holdStatus(_ kind: StatusLine.Kind, for result: Result) {
+        if let id = resultStatusID { arbiter.clearStatus(id: id) }
+        resultStatusID = arbiter.showStatus(StatusLine(pid: result.target.pid, kind: kind, offerKey: result.taskID))
     }
 
     /// The insertion queue's answer to the inline line's ⌘Z. It may reach main before the tap's
@@ -109,7 +118,7 @@ extension SurfaceMachine {
             return
         }
         inlineUndo = nil
-        guard result?.taskID == owner else { return }
+        guard let result, result.taskID == owner else { return }
         let text: String
         switch (ok, error) {
         case (true, _): text = partial ? "Took out the part that went in" : "Undone"
@@ -118,6 +127,7 @@ extension SurfaceMachine {
         default: text = says.map(FillMachine.sentence) ?? "The field changed after Caret wrote it, so Caret left it as it is."
         }
         let line = WorkLine(LineContent(figure: ok ? .still : .error, text: text, emphasis: .plain), text: text)
+        holdStatus(ok ? .result : .error, for: result)
         toastInfo = DebugState.Toast(kind: ok ? "undone" : "error", caption: text, grantID: nil)
         count("surface.inline.undo.\(ok ? (partial ? "partial" : "done") : "refused")")
         showResult(line, lifetime: ok ? 2 : FillMachine.errorLifetime)

@@ -396,7 +396,7 @@ final class InsertionExecutor: @unchecked Sendable {
 
     /// An AX text write's answer. `kAXErrorCannotComplete` is the messaging failure (the app did
     /// not answer in time), not a refusal: the app may have applied the write.
-    private static func axAnswer(_ error: AXError) -> WriteFallback.AXAnswer {
+    fileprivate static func axAnswer(_ error: AXError) -> WriteFallback.AXAnswer {
         switch error {
         case .success: return .accepted
         case .cannotComplete: return .uncertain
@@ -527,47 +527,40 @@ final class InsertionExecutor: @unchecked Sendable {
             authority.isLive(authorization) && policy.allowsLive(pid: pid) && ProcessStart.of(pid) == processStart
         }
         guard stillTarget() else { return done(false, "targetNotAllowed") }
-        guard let live = FieldReader.read(element) else {
-            return done(false, "fieldUnreadable", says: grant.unconfirmed ? "Caret could not read the field; before the write it held \(UnconfirmedInsert.quoted(grant.priorValue))" : nil)
+        // Every write below asks the target and then ⌘Z's input mark immediately before it is sent
+        // (`GuardedUndo`), with the value and selection proven before the text write.
+        let app = AXUndoTarget(
+            element: element,
+            refusal: { stillTarget() ? nil : (authority.isLive(authorization) ? "targetNotAllowed" : "revoked") },
+            quiet: { [status] in status.inputMark() == mark }
+        )
+        let outcome = GuardedUndo.run(grant, on: app, settleTimeout: pasteSettleTimeout)
+        done(outcome.ok, outcome.error, partial: outcome.partial, says: outcome.says)
+    }
+
+    /// The written element as `GuardedUndo` drives it: Accessibility reads, selection and text writes.
+    private final class AXUndoTarget: UndoTarget {
+        let element: AXUIElement
+        let refusalNow: () -> String?
+        let quietNow: () -> Bool
+
+        init(element: AXUIElement, refusal: @escaping () -> String?, quiet: @escaping () -> Bool) {
+            self.element = element
+            refusalNow = refusal
+            quietNow = quiet
         }
-        // An unconfirmed write's field that is left as it is: what it holds and held (S1).
-        func leftAlone(_ held: String) -> String? {
-            grant.unconfirmed ? "\(UnconfirmedInsert.contents(before: grant.priorValue, held: held)); Caret left it as it is" : nil
+
+        func refusal() -> String? { refusalNow() }
+        func quiet() -> Bool { quietNow() }
+        func read() -> InsertionGuard.LiveField? { FieldReader.read(element)?.liveField }
+        func select(_ selection: UTF16Selection) -> Bool {
+            AXRead.setRange(kAXSelectedTextRangeAttribute, location: selection.start, length: selection.end - selection.start, on: element) == .success
         }
-        let revert: UndoGuard.Revert
-        switch UndoGuard.approve(grant, live: live.liveField) {
-        case .failure(.fieldChanged): return done(false, UndoGuard.Rejection.fieldChanged.code, says: leftAlone(live.value))
-        case .failure(let rejection): return done(false, rejection.code)
-        case .success(let r): revert = r
+        func replaceSelection(_ text: String) -> WriteFallback.AXAnswer {
+            InsertionExecutor.axAnswer(AXRead.setString(kAXSelectedTextAttribute, text, on: element))
         }
-        // No key or click since ⌘Z: one would be the user's, and the restore must not cross it.
-        let quiet = { [status] in status.inputMark() == mark }
-        guard quiet() else { return done(false, UndoGuard.Rejection.inputDuringUndo.code) }
-        guard stillTarget() else { return done(false, authority.isLive(authorization) ? "targetNotAllowed" : "revoked") }
-        guard AXRead.setRange(kAXSelectedTextRangeAttribute, location: revert.start, length: revert.length, on: element) == .success else {
-            return done(false, "writeRefused")
-        }
-        // The guard judged one read. Before anything is deleted, prove what would be: the field
-        // still holds exactly that value, unit for unit, its selection is exactly the span, and the
-        // user has been quiet. Otherwise report and write nothing; only a selection this undo made,
-        // over an unchanged field, is put back.
-        let selected = FieldReader.read(element)
-        if let rejection = selected.map({ UndoGuard.recheck(revert, approvedValue: live.value, now: $0.liveField, quiet: quiet()) }) ?? .fieldChanged {
-            if let selected, UTF16Text.same(selected.value, live.value), selected.selection == UTF16Selection(start: revert.start, end: revert.start + revert.length) {
-                AXRead.setRange(kAXSelectedTextRangeAttribute, location: live.selection.start, length: live.selection.end - live.selection.start, on: element)
-            }
-            return done(false, rejection.code, says: rejection == .fieldChanged ? selected.flatMap { leftAlone($0.value) } : nil)
-        }
-        guard stillTarget() else { return done(false, authority.isLive(authorization) ? "targetNotAllowed" : "revoked") }
-        // A restore the app did not answer may still apply: it is waited for like one it took.
-        let answer = Self.axAnswer(AXRead.setString(kAXSelectedTextAttribute, revert.restore, on: element))
-        guard answer != .refused else { return done(false, "writeRefused") }
-        let deadline = Date().addingTimeInterval(pasteSettleTimeout)
-        repeat {
-            if let value = FieldReader.read(element)?.value, UndoGuard.restored(revert, value: value) { return done(true, nil, partial: revert.partialWrite) }
-            Thread.sleep(forTimeInterval: 0.02)
-        } while Date() < deadline
-        done(false, answer == .uncertain ? WriteFallback.writeUncertain : "writeMismatch")
+        func sleep(_ seconds: TimeInterval) { Thread.sleep(forTimeInterval: seconds) }
+        var now: Date { Date() }
     }
 
     // MARK: - Range edits (writing fixes)
@@ -665,10 +658,16 @@ final class InsertionExecutor: @unchecked Sendable {
             let outcome = NativeUndo.run(grant, on: target)
             return done(outcome == .reverted, outcome.error)
         }
-        guard stillTarget() else { return done(false, authority.isLive(authorization) ? "targetNotAllowed" : "revoked") }
+        // The AX restore asks ⌘Z's input mark after the target before each of its writes, as an
+        // insert's undo does (`GuardedUndo.permit`): the fix's range must not cross the user's input.
+        let quiet = { [status] in status.inputMark() == mark }
+        let refusal = { () -> String? in
+            GuardedUndo.permit(refusal: stillTarget() ? nil : (authority.isLive(authorization) ? "targetNotAllowed" : "revoked"), quiet: quiet())
+        }
+        if let refused = refusal() { return done(false, refused) }
         guard let before = FieldReader.read(element) else { return done(false, "fieldUnreadable") }
         if case .failure(let refusal) = undo.validate(Self.rangeLive(before), phase: .observed) { return done(false, refusal.code) }
-        switch applyRange(undo, element: element, before: before, stillTarget: stillTarget, refusal: { authority.isLive(authorization) ? "targetNotAllowed" : "revoked" }) {
+        switch applyRange(undo, element: element, before: before, stillTarget: { refusal() == nil }, refusal: { refusal() ?? UndoGuard.Rejection.inputDuringUndo.code }) {
         case .failed(let code): done(false, code)
         case .applied: done(true, nil)
         }

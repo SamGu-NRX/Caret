@@ -217,6 +217,59 @@ final class UnconfirmedInsertReviewTests: XCTestCase {
         XCTAssertNil(typed.arbiter.snapshot().statusLine)
     }
 
+    // MARK: - Focused check: ownership follows the field
+
+    /// F2: focus moved to another field or window of the same app. The line describes a field the
+    /// user left, so it goes and ⌘Z is the host's again: at once on the focus change, and on the
+    /// watch's next recheck when the app posts no focus notification.
+    func testAnInlineLineLetsGoWhenFocusLeavesItsField() {
+        let rig = SurfaceRig()
+        rig.screen.front(.email)
+        rig.machine.inlineInsertionFinished(Self.inline(Self.ghostClaim(), held: "summ"))
+        rig.takeLog()
+        rig.machine.focusChanged(Fx.identity(.email, window: "w42"))
+        XCTAssertEqual(rig.takeLog(), ["hide 0.08"])
+        XCTAssertNil(rig.arbiter.snapshot().toast)
+        XCTAssertNil(rig.machine.toastGrantID)
+
+        let watched = SurfaceRig()
+        watched.screen.front(.email)
+        watched.machine.inlineInsertionFinished(Self.inline(Self.ghostClaim(), held: "summ"))
+        watched.takeLog()
+        watched.screen.focused[Fx.app] = Fx.field(.email, window: Fx.twinWindow)
+        watched.clock.advance(by: 0.6)
+        XCTAssertNil(watched.arbiter.snapshot().toast, "the watch requires the written field's focus")
+        XCTAssertNil(watched.machine.toastGrantID)
+    }
+
+    /// F3: "Undoing" and an undo's refusal are result lines with no ⌘Z: Esc closes them, typing
+    /// takes them down, and either ends the line's ownership, so the undo's late answer draws nothing.
+    func testInlineUndoLinesTakeEscAndEndTheirOwnership() {
+        let rig = SurfaceRig()
+        rig.screen.front(.email)
+        rig.machine.inlineInsertionFinished(Self.inline(Self.ghostClaim(), held: "summ"))
+        guard case .undo(let grant) = rig.arbiter.handleKeyDown(Fx.cmdZ(), now: rig.clock.now) else { return XCTFail("⌘Z is not Caret's") }
+        rig.machine.undoStarted(grant)
+        rig.takeLog()
+        XCTAssertNotNil(rig.arbiter.snapshot().statusLine, "Undoing holds a status slot")
+        rig.press(Fx.esc())
+        XCTAssertEqual(rig.takeLog(), ["hide 0.08"])
+        rig.machine.inlineUndoFinished(grantID: grant.id, ok: true, error: nil, partial: true, says: nil)
+        XCTAssertEqual(rig.takeLog(), [], "dismissing the line ended the pending undo's ownership")
+
+        let refused = SurfaceRig()
+        refused.screen.front(.email)
+        refused.machine.inlineInsertionFinished(Self.inline(Self.ghostClaim(), held: "summ"))
+        guard case .undo(let g) = refused.arbiter.handleKeyDown(Fx.cmdZ(), now: refused.clock.now) else { return XCTFail("⌘Z is not Caret's") }
+        refused.machine.undoStarted(g)
+        refused.machine.inlineUndoFinished(grantID: g.id, ok: false, error: "fieldChanged", partial: false, says: nil)
+        refused.takeLog()
+        XCTAssertNotNil(refused.arbiter.snapshot().statusLine, "the refusal holds a status slot")
+        refused.press(Fx.type("a"))
+        XCTAssertEqual(refused.takeLog(), ["hide 0.08"])
+        XCTAssertNil(refused.machine.lineText)
+    }
+
     func testAnUnrecognizedInlineInsertIsDescribedAndLeft() {
         let rig = SurfaceRig()
         rig.screen.front(.email)
