@@ -98,7 +98,7 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
   };
   const jev = o.jev === undefined ? canned : o.jev(canned);
   let helper: Helper;
-  const host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), warn: () => {} });
+  const host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
   helper = new Helper({
     store,
     askJev: jev,

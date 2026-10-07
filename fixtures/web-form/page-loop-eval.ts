@@ -655,7 +655,7 @@ async function main(): Promise<number> {
   let helper: Helper;
   const secret = newLaunchSecret();
   const warnings: string[] = [];
-  const host = pageHost({ path: sockPath, secret, reader: noReader, apply: (m) => void helper.handleReader(m), warn: (l) => void warnings.push(l), onTiming: (t) => void timings.push({ ...t, page: page?.id ?? "", stage }) });
+  const host = pageHost({ path: sockPath, secret, reader: noReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: (l) => void warnings.push(l), onTiming: (t) => void timings.push({ ...t, page: page?.id ?? "", stage }) });
   const published: HelperMessage[] = [];
   helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, pageDocument: (id) => host.registry.documentOf(id), pageContext: (id) => host.registry.contextOf(id), calendar: null, publish: (m) => void published.push(m), warn: (l) => void warnings.push(l), ...(GOAL ? { ask: { maker: "heads" as const } } : {}), ...(JOURNEY !== null ? { goalFiles: true } : {}),
     // I6: the load journey measures each page's own verdict, so the hour's offer budget (four, balanced) is lifted: P3's

@@ -106,7 +106,7 @@ describe("the page field the user is in, for the host", () => {
     const published: HelperMessage[] = [];
     const focus: unknown[] = [];
     let helper: Helper;
-    const host = pageHost({ path: join(dir, "page.sock"), secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) } as never, apply: (m) => void helper.handleReader(m), warn: () => {} });
+    const host = pageHost({ path: join(dir, "page.sock"), secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) } as never, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
     helper = new Helper({ store, askJev: answeringScope(() => Promise.reject(new Error("no Jev here"))), shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, calendar: null, publish: (m) => published.push(m), warn: () => {} });
     const handle = helper.handleReader.bind(helper);
     helper.handleReader = (m) => {
@@ -176,7 +176,7 @@ describe("Ask in a browser a page engine covers (H10)", () => {
   async function build(o: { front?: (pid: number) => Promise<string | null> } = {}) {
     const published: HelperMessage[] = [];
     let helper: Helper;
-    const host = pageHost({ path: join(dir, "page.sock"), secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) } as never, apply: (m) => void helper.handleReader(m), warn: () => {} });
+    const host = pageHost({ path: join(dir, "page.sock"), secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) } as never, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
     helper = new Helper({
       store, askJev: answeringScope(() => Promise.reject(new Error("no Jev here"))), shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => published.push(m), warn: () => {},
       pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined,
@@ -235,7 +235,7 @@ describe("Ask in a browser a page engine covers (H10)", () => {
 
   it("finds no page in a tab that is not the active tab of a focused window", async () => {
     const model = new ScreenModel();
-    const host = pageHost({ path: join(dir, "p2.sock"), secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) } as never, apply: (m) => void (m.type === "snapshot" ? model.apply(m) : undefined), warn: () => {} });
+    const host = pageHost({ path: join(dir, "p2.sock"), secret: randomBytes(32), reader: { run: async () => ({ type: "verbResult", v: 1, id: "r", at: 0, outcome: "ok", detail: null }) } as never, apply: (m) => void (m.type === "snapshot" ? model.apply(m) : undefined), purge: (s) => void model.apply(s), warn: () => {} });
     const { session } = rig((id) => ({ ...snapshot(id), inFocusedWindow: false }));
     host.registry.add(session);
     session.receive(hello);

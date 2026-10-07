@@ -82,7 +82,7 @@ async function rig(onChoose: (v: Extract<PageVerb, { kind: "pageChooseOption" }>
     return r;
   };
   let helper: Helper;
-  const host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), warn: () => {} });
+  const host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
   helper = new Helper({ store, askJev: jev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => void published.push(m), warn: () => {}, ask: { maker: "writer", writer: intentWriter() }, pageDocument: (id) => host.registry.documentOf(id) });
   wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
   host.registry.add(page.session);

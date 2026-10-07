@@ -10,6 +10,7 @@ import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts
 import { sensitiveKind } from "../memory/sensitive.ts";
 import { excludedValue, withholdValues } from "./exclude.ts";
 import { ANY_PATH, childGlob, shapeOf, UNNAMED, type Slot } from "./shapes.ts";
+import { switchedOffCount } from "./read-policy.ts";
 import { describeField, type FieldDescriptor } from "../fill/descriptor.ts";
 import type { Node } from "../protocol.ts";
 
@@ -36,6 +37,8 @@ function viewText(view: WindowState): string {
     add(n.value);
     add(n.placeholder);
   }
+  // A typed value the view keeps (a date or time the reader read off a line, in its own words) is the view's too.
+  for (const v of view.values) add(v.text);
   s = `\u0000${lines.join("\u0000")}\u0000`;
   VIEW_TEXT.set(view, s);
   return s;
@@ -43,7 +46,7 @@ function viewText(view: WindowState): string {
 
 /**
  * Whether the redacted view shows `text`: each of its lines, whitespace collapsed and a cut's ellipsis taken off, stands
- * inside one line of the view (its title, or a kept node's label, value or placeholder).
+ * inside one line of the view (its title, a kept node's label, value or placeholder, or a typed value it keeps).
  */
 export function viewHolds(view: WindowState, text: string): boolean {
   const pieces = text.split(/\r?\n/u).map((raw) => flat(raw).replace(/^…|…$/gu, "")).filter((x) => x !== "");
@@ -56,6 +59,20 @@ export function viewHolds(view: WindowState, text: string): boolean {
 const REMOVED_WORDS = new WeakMap<WindowState, ReadonlySet<string>>();
 /** A word as a value is written: letters and digits, with the joining marks keys, codes and handles use inside. */
 const VALUE_WORD = /[\p{L}\p{N}][\p{L}\p{N}._@#$%&*!+/-]*[\p{L}\p{N}]/gu;
+
+/**
+ * A text's value-shaped words, lower-cased: each whole word (VALUE_WORD) and each part of one between its joining marks,
+ * so "hunter2" is a word of "https://hunter2@example.test" as of "hunter2" (PV2 re-review).
+ */
+function valueWords(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of text.matchAll(VALUE_WORD)) {
+    const w = m[0].toLowerCase();
+    out.add(w);
+    for (const part of w.split(/[._@#$%&*!+/-]+/u)) if (part !== "") out.add(part);
+  }
+  return out;
+}
 
 /**
  * The words of a raw window's removed lines (lines its redacted view does not show) that look like values, not prose: at
@@ -73,10 +90,7 @@ function removedValueWords(raw: WindowState): ReadonlySet<string> {
   const lines = [raw.window.title, ...[...raw.nodes.values()].flatMap((n) => [n.label, n.value, n.placeholder])].flatMap((t) => (t === undefined || t === "" ? [] : t.split(/\r?\n/u)));
   for (const line of lines) {
     if (flat(line) === "" || viewHolds(view, line)) continue;
-    for (const m of line.matchAll(VALUE_WORD)) {
-      const w = m[0];
-      if (w.length >= 4 && /\p{N}|[._@#$%&*!+/-]|\p{Ll}\p{Lu}/u.test(w) && !shown.includes(w.toLowerCase())) words.add(w.toLowerCase());
-    }
+    for (const w of valueWords(line)) if (w.length >= 4 && /\p{N}|[._@#$%&*!+/-]|\p{Ll}\p{Lu}/u.test(w) && !shown.includes(w)) words.add(w);
   }
   REMOVED_WORDS.set(raw, (out = words));
   return out;
@@ -224,6 +238,8 @@ export class Disclosure extends SnippetLedger {
   readonly [IS_DISCLOSURE] = true;
   /** Every text minted for this request, with the reasons it was minted under. */
   private readonly mints = new Map<string, Set<MintReason>>();
+  /** privacy/read-policy.ts switchedOffCount when this Disclosure was made: verify refuses once it moves. */
+  private readonly policy = switchedOffCount();
   /**
    * Each way a text was minted, as the set of reasons that one minting carried. The same string may be minted twice for
    * different reasons (a count "2" Caret wrote and a "2" a field shows): a shape's slot accepts a text when one way of
@@ -416,7 +432,7 @@ export class Disclosure extends SnippetLedger {
         if (w !== undefined && !viewHolds(redactWindow(w), run)) return false;
       }
       // And a shorter value-shaped word only a removed line shows ("The note says hunter2").
-      const said = new Set([...piece.matchAll(VALUE_WORD)].map((m) => m[0].toLowerCase()));
+      const said = valueWords(piece);
       if (said.size > 0) for (const w of this.known.values()) for (const word of removedValueWords(w)) if (said.has(word)) return false;
     }
     return true;
@@ -515,19 +531,15 @@ export class Disclosure extends SnippetLedger {
     const ws = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x !== "");
     if (ws.length === 0 && text.trim() !== "") return null;
     for (const w of ws) if (!shown.has(w) && !/^\d+(?:st|nd|rd|th|am|pm|h)?$/u.test(w) && !DERIVED_WORDS.has(w)) return null;
-    // A basis was never priced, so what the derivation shows of its window is charged to that window here (PV2 review):
-    // each of its words the basis shows, as that word stands in the basis, so a word already taken costs nothing and a
-    // derivation that repeats a long prose line whole does not fit the window's budget, as the line itself would not.
-    // Caret's own words (codeWords, and the calendar and joining words of DERIVED_WORDS) reveal nothing of the window.
-    const own = new Set([...codeWords.map((w) => w.toLowerCase()), ...DERIVED_WORDS]);
+    // A basis was never priced, so what the derivation shows of its window is charged to that window here (PV2
+    // review and re-review): every character of every word of the derived text that the basis also shows, repeats
+    // included, whether or not code could have written that word itself. A word is free only when the basis does not show
+    // it, so code wrote it. A template's own words go in by t`` around the derivation, never through it.
     for (const b of bases) {
       if (!(b instanceof Basis) || b.view === null) continue;
-      const lower = b.text.toLowerCase();
-      const shownWords = [...new Set(text.split(/[^\p{L}\p{N}]+/u).filter((x) => x !== "" && !own.has(x.toLowerCase())))].flatMap((x) => {
-        const at = lower.indexOf(x.toLowerCase());
-        return at < 0 ? [] : [b.text.slice(at, at + x.length)];
-      });
-      if (shownWords.length > 0 && !this.take(b.view, "candidate", shownWords)) return null;
+      const shownWords = new Set(b.text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x !== ""));
+      const chars = text.split(/[^\p{L}\p{N}]+/u).filter((x) => x !== "" && shownWords.has(x.toLowerCase())).reduce((n, x) => n + x.length, 0);
+      if (chars > 0 && !this.chargeDerived(b.view, b.text, chars, text)) return null;
     }
     return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
   }
@@ -628,12 +640,16 @@ export class Disclosure extends SnippetLedger {
    * the body in paths: "" for a Jev wire body, "input" for a writer's input.
    */
   verify(purpose: string, body: unknown, root = ""): void {
+    // The user switched an app or a site off since this request's text was read (PV2 re-review): none of it is sent,
+    // whichever window it came from, since what was read before the switch is not rechecked text by text.
+    if (switchedOffCount() !== this.policy) throw new UnmintedText(`${purpose}: an app or a site was switched off after this request was built; it was not sent`);
     const shape = shapeOf(purpose);
     if (shape === null) throw new OutOfShape(`${purpose} has no request shape (privacy/shapes.ts), so nothing in it may be sent; it was not sent`);
     const check = (path: string, glob: string, v: string): void => {
-      // A state sent as one JSON text (Disclosure.jsonText) is checked as the value that text writes, at the same path:
-      // parsed from the text itself, so a change to the object it was written from after the fact changes nothing.
-      if (this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob);
+      // A whole state sent as one JSON text (Disclosure.jsonText; engines/decide/harness.ts layaState) is checked as the
+      // state that text writes, parsed from the text itself. Only there: anywhere else a JSON text is a text like any
+      // other, held to its own slot's reasons and length (PV2 re-review).
+      if (path === "state" && glob === "state" && this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob);
       const slot: Slot | undefined = shape[glob] ?? shape[ANY_PATH];
       if (slot === undefined) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
       if (v.length > slot.max) {

@@ -3,7 +3,7 @@
 import type { AppRef, Node, Snapshot, TypedValue, WindowRef } from "./protocol.ts";
 import { PAGE_WINDOW_KIND } from "./engines/windows.ts";
 import { admitNode, admitTitle, admitValues, inherited } from "./privacy/exclude.ts";
-import { appOff, DEFAULT_APPS_OFF } from "./privacy/read-policy.ts";
+import { appOff, DEFAULT_APPS_OFF, noteSwitchedOff } from "./privacy/read-policy.ts";
 
 export interface WindowState {
   app: AppRef;
@@ -63,6 +63,7 @@ export class ScreenModel {
 
   /** Sets the apps whose windows never enter the model, and closes any of their windows it holds. */
   setAppsOff(prefixes: readonly string[], at = Date.now()): void {
+    if (prefixes.some((p) => !this.appsOff.includes(p))) noteSwitchedOff();
     this.appsOff = [...prefixes];
     for (const [id, w] of [...this.windows]) if (appOff(w.app.bundleId, this.appsOff)) this.close(id, at);
   }
@@ -290,9 +291,10 @@ function mergeCutWalk(prior: Map<string, Node>, sent: readonly Node[]): Map<stri
 
 /**
  * SC1 2a: the nodes a snapshot brought, as the model keeps them (privacy/exclude.ts admitNode): an excluded control
- * without its value, every value in a secret format withheld. When that excluded a group, every node the model holds is
- * admitted again, in document order: a snapshot may list a child before its parent, and a cut walk or a partial one may
- * mark a group whose children the model kept from before (PV2 review), which inherit its exclusion all the same.
+ * without its value, every value in a secret format withheld. When a node it brought is excluded, editable or not,
+ * every node the model holds is admitted again, in document order: a snapshot may list a child before its parent, and a
+ * cut walk or a partial one may mark a node whose descendants the model kept from before (PV2 review and re-review),
+ * which inherit its exclusion all the same.
  */
 function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[]): void {
   let groupExcluded = false;
@@ -301,7 +303,7 @@ function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[]): void {
     if (n === undefined) continue;
     const a = admitNode(n, inherited(nodes, n));
     if (a !== n) nodes.set(f.key, a);
-    if (a.excluded !== undefined && a.editable !== true) groupExcluded = true;
+    if (a.excluded !== undefined) groupExcluded = true;
   }
   if (!groupExcluded) return;
   for (const [k, n] of nodes) {

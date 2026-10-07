@@ -182,14 +182,23 @@ function union(rects: readonly (readonly [number, number, number, number])[]): [
  * checkbox holds PAGE_CHECKED while ticked and "" while not, and is editable the same way. So the executor reads,
  * writes, verifies and undoes both as it does a text field.
  */
+/**
+ * Whether a tab's page is at a site Caret may read: its top frame reported, and its origin not switched off. The one
+ * check every reader of a tab's walk makes before it takes the tab's title, frames or headings (SC1 2a).
+ */
+export function topFrameOn(s: PageSnapshot, off: ReadonlySet<string>): boolean {
+  const top = s.frames.find((f) => f.parentFrameId < 0);
+  return top !== undefined && !off.has(top.origin);
+}
+
 export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: number): Snapshot {
   const nodes: Node[] = [];
   let focusedKey: string | null = null;
   const view = s.view ?? null;
   // SC1 2a: a frame at a site the user turned Caret off for never enters the model, whatever the engine sent. A tab whose
-  // top frame is at such a site is that site's page: none of its frames enters, nor its title (PV2 review).
-  const top = s.frames.find((f) => f.parentFrameId < 0);
-  const tabOff = top !== undefined && session.offSites.has(top.origin);
+  // top frame is at such a site is that site's page: none of its frames enters, nor its title (PV2 review). A walk with
+  // no report from its top frame is of a site Caret cannot know, so it fails closed the same way (PV2 re-review).
+  const tabOff = !topFrameOn(s, session.offSites);
   const kept = new Set(tabOff ? [] : s.frames.filter((f) => !session.offSites.has(f.origin)).map((f) => f.frameId));
   for (const f of s.frames) {
     if (!kept.has(f.frameId)) continue;
@@ -429,9 +438,9 @@ export class PageEngineLink implements ReaderLink {
     session.onSnapshot = (s) => this.apply(toWindowSnapshot(s, session, ++this.seq));
   }
 
-  /** Reads a tab's last walk into the model again, under the sites now switched off (EngineRegistry.setSitesOff). */
-  reread(s: PageSnapshot): void {
-    this.apply(toWindowSnapshot(s, this.session, ++this.seq));
+  /** A tab's last walk as the model takes it under the sites now switched off, for EngineRegistry.setSitesOff's purge. */
+  readAgain(s: PageSnapshot): Snapshot {
+    return toWindowSnapshot(s, this.session, ++this.seq);
   }
 
   /** A page command, timed; a walk's answer carries the extension's own time in its snapshot. */

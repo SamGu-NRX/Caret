@@ -106,7 +106,7 @@ describe("W3 page findings, helper side", () => {
     dir = mkdtempSync(join(tmpdir(), "caret-w3-"));
     store = new Store(join(dir, "data"));
     page = new FakePage();
-    host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), warn: () => {} });
+    host = pageHost({ path: join(dir, "page.sock"), secret: Buffer.alloc(32, 1), reader: okReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: () => {} });
     helper = new Helper({ store, askJev: () => Promise.reject(new Error("no Jev here")), shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: () => {}, warn: () => {} });
     wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
     host.registry.add(page.session);

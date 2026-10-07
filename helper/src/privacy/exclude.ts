@@ -171,15 +171,17 @@ export function inherited(nodes: ReadonlyMap<string, Node>, n: Node): Inherited 
 
 /**
  * A control whose content Caret never carries, because its declared purpose says so: a secure field, a page control the
- * walker marked, an editable control inside an excluded one, or an editable control whose own label, placeholder, or
+ * walker marked, any node inside an excluded one, or an editable control whose own label, placeholder, or
  * nearest group's name ends in a sensitive kind (memory/sensitive.ts labelKind: "Card number", "SSN"; not "Password
  * hint"). Null for every other node.
  */
 export function excludedNode(n: Node, from: Inherited = {}): NodeExclusion | null {
   if (n.excluded !== undefined) return n.excluded;
   if (n.states?.includes("secure") === true || n.role === "AXSecureTextField") return "secure";
+  // Everything inside an excluded node is its content, editable or not (PV2 re-review).
+  if (from.excluded !== undefined) return from.excluded;
   if (n.editable !== true) return null;
-  return from.excluded ?? labelKind(n.label) ?? labelKind(n.placeholder) ?? labelKind(from.label);
+  return labelKind(n.label) ?? labelKind(n.placeholder) ?? labelKind(from.label);
 }
 
 /** Whether a page exclusion is one the walker sends as a marked control; it drops the rest before they leave the frame. */

@@ -39,7 +39,7 @@ describe("T-P3: the boundary's casts and internals stay under src/privacy/", () 
   const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
   const RULES: [string, RegExp][] = [
     ["a cast to ModelText or ModelValue", /\bas\s+(?:unknown\s+as\s+)?[^;,)\n]*\bModel(?:Text|Value)\b/u],
-    ["a private Disclosure member", /\[\s*["'](?:record|recordWays|composedWays|mints|ways|asJson|reasons|fromView|keptByViews|asTaken|asPlan|asMemory|walk)["']\s*\]/u],
+    ["a private Disclosure member", /\[\s*["'](?:record|recordWays|composedWays|mints|ways|asJson|policy|reasons|fromView|keptByViews|asTaken|asPlan|asMemory|walk|chargeDerived)["']\s*\]/u],
     ["a Basis made by hand", /\bnew\s+Basis\s*\(/u],
     ["own() of a cast value", /\.own\([^)]*\bas\s+(?:never|any|unknown)\b/u],
     ["a legacy minter", /\.legacy\s*\(/u],

@@ -129,10 +129,15 @@ export function personIn(sentence: string, people: readonly MemoryValue[]): stri
 
 /** "Coffee with Dana": the sentence's event word and person, or "Meet Dana" when it names no kind of event. */
 export function eventTitle(sentence: string, person: string): string {
+  const word = eventWord(sentence);
+  return word === null ? `Meet ${person}` : `${word} with ${person}`;
+}
+
+/** The kind of event a sentence names ("Coffee"), capitalized as eventTitle puts it first; null when it names none. */
+export function eventWord(sentence: string): string | null {
   const lower = sentence.toLowerCase();
   const word = EVENT_WORDS.find((w) => new RegExp(`\\b${w}\\b`).test(lower));
-  if (word === undefined) return `Meet ${person}`;
-  return `${word[0]?.toUpperCase()}${word.slice(1)} with ${person}`;
+  return word === undefined ? null : `${word[0]?.toUpperCase()}${word.slice(1)}`;
 }
 
 /**

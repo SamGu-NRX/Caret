@@ -117,7 +117,7 @@ let helper: Helper;
 if (!args["no-page"] && secret === null) warn("no --auth-fd: page.sock not started, since its handshake needs the launch secret");
 const pages: PageHost | null = args["no-page"] || secret === null
   ? null
-  : pageHost({ path: args["page-socket"] ?? defaultPageSocket(args.socket), secret, reader: readerSocket, apply: (m) => void helper.handleReader(m), warn });
+  : pageHost({ path: args["page-socket"] ?? defaultPageSocket(args.socket), secret, reader: readerSocket, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn });
 const appsOff = readAppsOff(args["deny-list"]);
 helper = new Helper({
   store,

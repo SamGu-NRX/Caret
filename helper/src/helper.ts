@@ -133,7 +133,7 @@ import { labelledLines } from "./fill/candidates.ts";
 import { fieldAsksFor } from "./fill/about.ts";
 import { AnswerError, answerFor, answerNow, capture, OFFER_MIN_CHARS, OFFER_SAYS, putAnswer, savedAnswers, savedSays, type SavedAnswer } from "./memory/answers.ts";
 import { guardAnswer, pageText, type PageContext } from "./fill/answers.ts";
-import type { ValueKind } from "./protocol.ts";
+import type { Snapshot, ValueKind } from "./protocol.ts";
 import { OFFER_WHEN, sentences, type EventCandidate, type SentenceSource } from "./offers/event-card.ts";
 import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
@@ -3296,6 +3296,18 @@ export class Helper {
    * withdrawn as stale. It no longer matches when a destination is gone or filled, a source stops
    * showing its value (recheckFill), or the form gained or lost a field.
    */
+  /**
+   * SC1 2a, when a site is switched off (engines/registry.ts setSitesOff): the page window's text is replaced from its
+   * last walk without that site's frames, before anything else hears of it. Not a reader message: no change, close,
+   * pattern, task or routing handler sees what it removes. A fill pop-up that showed a value from it is then withdrawn as
+   * stale (checkFills reads the purged model), and every request built before the switch is refused when it is sent
+   * (privacy/read-policy.ts noteSwitchedOff).
+   */
+  purgeWindow(s: Snapshot): void {
+    this.model.apply(s);
+    this.checkFills(s.window.windowId);
+  }
+
   private checkFills(windowId: string): void {
     for (const [id, { p, form }] of this.fillPopups) {
       if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;

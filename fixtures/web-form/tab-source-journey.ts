@@ -171,7 +171,7 @@ async function main(): Promise<number> {
   let helper: Helper;
   const secret = newLaunchSecret();
   const warnings: string[] = [];
-  const host = pageHost({ path: sockPath, secret, reader: noReader, apply: (m) => void helper.handleReader(m), warn: (l) => void warnings.push(l) });
+  const host = pageHost({ path: sockPath, secret, reader: noReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn: (l) => void warnings.push(l) });
   // Every read the helper makes for a fill, kept here in memory only to check what it took; never written out.
   const fillReads: PageResult[] = [];
   const base = pageTabReader(host.registry);

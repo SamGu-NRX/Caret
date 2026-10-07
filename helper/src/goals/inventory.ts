@@ -12,7 +12,7 @@ import type { PlanningSnapshot } from "../codemode/types.ts";
 import { formControls, type FormControl } from "../fill/controls.ts";
 import { ContractError, fieldContract, type FieldContract } from "../fill/contract.ts";
 import type { Node } from "../protocol.ts";
-import { eventCandidate, sentences, spansIn } from "../offers/event-card.ts";
+import { eventCandidate, eventWord, sentences, spansIn } from "../offers/event-card.ts";
 import type { EventClock } from "../offers/event-time.ts";
 import { valueList, type Value } from "../planner/codeplan.ts";
 import { mintFieldName, writableFields } from "../planner/planner.ts";
@@ -243,13 +243,23 @@ function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventCl
       if (c === null || c.time.kind !== "resolved") continue;
       // The writer reads the event, not its sentence: what is charged is what the display reveals of the window,
       // the person's name and the date and time spans.
-      if (!ledger.take(w, "candidate", [c.person, ...spans])) continue;
+      // Each date and time the reader typed on this node that the spans join, as the view keeps it.
+      const parts = w.values.filter((v) => v.nodeKey === n.key && (v.kind === "date" || v.kind === "time") && spans.some((x) => x.includes(v.text))).map((v) => v.text);
+      if (!ledger.take(w, "candidate", [c.person, ...parts])) continue;
       const time = c.time.time;
       // The title and time are code's reading of the sentence: each word one the sentence shows, a number or a calendar word.
       const sentenceBasis = d.basis(w, sentence);
-      // "Meet" and "with" are the title's template words (offers/event-card.ts eventTitle), Caret's own.
-      const said = sentenceBasis === null ? null : d.derived(sentenceBasis, c.title, ["meet", "with"]);
-      const when = sentenceBasis === null ? null : d.derived(sentenceBasis, time.says, ["utc"]);
+      // The title as offers/event-card.ts eventTitle writes it: Caret's template words around the person (taken above)
+      // and the kind of event the sentence names (charged as a derivation from it).
+      const person = d.candidate(w, c.person);
+      const kind = eventWord(sentence);
+      const word = kind === null || sentenceBasis === null ? null : d.derived(sentenceBasis, kind);
+      const titled = person === null || (kind !== null && word === null) ? null : word === null ? d.t`Meet ${person}` : d.t`${word} with ${person}`;
+      // Never a title other than the one the event carries (eventTitle's); none at all rather than another.
+      const said = titled === c.title ? titled : null;
+      // The time as code says it, read from the dates and times taken above (already charged), not from the sentence.
+      const partTexts = parts.map((x) => d.candidate(w, x)).filter((x): x is ModelText => x !== null);
+      const when = partTexts.length === 0 || partTexts.length !== parts.length ? null : d.derived(partTexts, time.says, ["utc"]);
       const from = d.descriptor(w, w.window.title);
       if (said === null || when === null || from === null) continue;
       const ref = nextRef();

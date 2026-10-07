@@ -2044,7 +2044,7 @@ async function main(): Promise<number> {
   let helper: Helper;
   // One launch secret for this run, as src/launch.ts makes; the bridge reads the page key derived from it.
   const launchSecret = newLaunchSecret();
-  const host = pageHost({ path: sockPath, secret: launchSecret, reader: noReader, apply: (m) => void helper.handleReader(m), warn });
+  const host = pageHost({ path: sockPath, secret: launchSecret, reader: noReader, apply: (m) => void helper.handleReader(m), purge: (s) => helper.purgeWindow(s), warn });
   const published: HelperMessage[] = [];
   // D2-06: goal plans come from a canned writer whose programs batch 6 queues before each request.
   const goalScripts: CannedStep[][] = [];

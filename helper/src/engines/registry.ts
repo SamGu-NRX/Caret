@@ -6,13 +6,19 @@
 import type { PageExclusion, Snapshot, WindowClosed } from "../protocol.ts";
 import { PROTOCOL_VERSION } from "../protocol.ts";
 import type { EngineDirectory, ReaderLink } from "../executor/means.ts";
-import { PageEngineLink, type VerbTiming } from "./page-link.ts";
+import { PageEngineLink, topFrameOn, type VerbTiming } from "./page-link.ts";
 import type { EngineSession } from "./session.ts";
 import { pageWindowId, parsePageWindow } from "./windows.ts";
+import { noteSwitchedOff } from "../privacy/read-policy.ts";
 
 export interface RegistryHooks {
   /** Applies a page window's snapshot to the screen model (Helper.handleReader). */
   apply(m: Snapshot | WindowClosed): void;
+  /**
+   * Replaces a page window's text in the screen model when a site was switched off (Helper.purgeWindow), before anything
+   * else hears of it, and as no window close or change: no pattern, offer or task handler reads what it removes.
+   */
+  purge(s: Snapshot): void;
   /** Told each page command's timing (P1: page-link.ts VerbTiming). */
   onTiming?(t: VerbTiming): void;
 }
@@ -67,22 +73,21 @@ export class EngineRegistry implements EngineDirectory {
   }
 
   /**
-   * Sets "Not on this site" and sends it to every engine that has said hello. What the model already holds of a site
-   * now switched off goes too (PV2 review): each tab showing such a site closes in the model and is read in again from
-   * its last walk, without that site's frames, or not at all when its top frame is that site's.
+   * Sets "Not on this site" and sends it to every engine that has said hello. When a site is newly off (PV2 review and
+   * re-review): every request built before now is refused when sent (privacy/read-policy.ts noteSwitchedOff), and each
+   * tab showing that site is purged first, its text replaced from its last walk without that site's frames (nothing at
+   * all when its top frame is that site's), by the purge hook, never as a window close.
    */
   setSitesOff(origins: readonly string[]): void {
     const before = new Set(this.offSites);
     this.offSites = [...new Set(origins)].sort();
     const now = this.offSites.filter((o) => !before.has(o));
+    if (now.length > 0) noteSwitchedOff();
     for (const e of this.sessions.values()) {
-      if (e.session.hello === null) continue;
-      e.session.sitesOff(this.offSites);
-      for (const [tabId, tab] of e.session.tabs) {
-        if (!tab.frames.some((f) => now.includes(f.origin))) continue;
-        this.hooks.apply({ type: "windowClosed", v: PROTOCOL_VERSION, at: Date.now(), windowId: pageWindowId(e.session.info.engine, tabId) });
-        e.link.reread(tab);
-      }
+      // The engine's session filters every later walk by the new list, so it takes it before the purge reads one again.
+      e.session.offSites = new Set(this.offSites);
+      for (const tab of e.session.tabs.values()) if (tab.frames.some((f) => now.includes(f.origin))) this.hooks.purge(e.link.readAgain(tab));
+      if (e.session.hello !== null) e.session.sitesOff(this.offSites);
     }
   }
 
@@ -125,9 +130,10 @@ export class EngineRegistry implements EngineDirectory {
     const tab = w === null ? undefined : this.sessions.get(w.engine)?.session.tabs.get(w.tabId);
     if (tab === undefined) return null;
     const top = tab.frames.find((f) => f.parentFrameId < 0);
-    // SC1 2a: nothing of a tab whose top frame is at a site switched off, and no heading of a frame that is (PV2 review).
+    // SC1 2a: nothing of a tab whose top frame is at a site switched off or unreported, and no heading of a frame at a
+    // site switched off (PV2 review and re-review).
     const off = new Set(this.offSites);
-    if (top !== undefined && off.has(top.origin)) return null;
+    if (top === undefined || !topFrameOn(tab, off)) return null;
     const frames = tab.frames.filter((f) => !off.has(f.origin));
     const site = top === undefined || top.origin === "null" ? null : `${top.origin}${top.path}`;
     const excluded: Partial<Record<PageExclusion, number>> = {};

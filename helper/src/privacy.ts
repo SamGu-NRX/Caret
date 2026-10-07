@@ -686,6 +686,24 @@ export class SnippetLedger {
     }
   }
 
+  /**
+   * Charges window `w` `chars` characters of its line `line` that a text derived from that line reveals (privacy/
+   * disclosure.ts Disclosure.derived), and declares the derived text under the window: every character the derived text
+   * shows of the line, repeats included, with no credit for what was taken before. Prose when the line is. False,
+   * charging nothing, when it would take the window over its budget or its prose share.
+   */
+  protected chargeDerived(w: WindowState, line: string, chars: number, text: string): boolean {
+    this.know(w);
+    const e = this.entry(w);
+    const prose = e.share.prose !== null && line.length > CARD_LINE_CHARS ? chars : 0;
+    if (e.chars + chars > e.share.budget) return false;
+    if (e.share.prose !== null && e.prose + prose > e.share.prose) return false;
+    e.chars += chars;
+    e.prose += prose;
+    this.snippets.push({ windowId: w.window.windowId, kind: "candidate", text });
+    return true;
+  }
+
   take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
     const p = this.price(w, texts);
     if (p === null) return false;
