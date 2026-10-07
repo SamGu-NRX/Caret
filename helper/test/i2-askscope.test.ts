@@ -245,7 +245,7 @@ describe("the writer goal (review reproduction 1)", () => {
     const steps = (r as Extract<GoalProgress, { event: "segment" }>).steps.map((s) => s.says);
     expect(steps.some((s) => s.startsWith("Name"))).toBe(true);
     expect(steps.some((s) => s.startsWith("Email"))).toBe(false);
-    expect(JSON.stringify(r)).toContain("the Ask did not ask Caret to fill");
+    expect(JSON.stringify(r)).toContain("your request didn't ask Caret to fill");
     expect(fieldKey(SUPPORT, "Email")).toBeTruthy();
   });
 });

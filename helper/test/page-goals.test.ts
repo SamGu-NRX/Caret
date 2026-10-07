@@ -161,7 +161,7 @@ describe("the size hand-off (P2), in parts since C2", () => {
     // may carry), so Q41 and Q61 past it are the user's, said as such, and the plan has two parts, not four.
     expect(preview).toMatchObject({ segments: 2 });
     expect(preview.warnings.some((w) => /Caret fills 80 fields of a form, 20 at a time, so 5 more are yours: 'Q81'/.test(w))).toBe(true);
-    expect(preview.warnings).toContain("'Q41' is yours: the Ask did not ask Caret to fill it.");
+    expect(preview.warnings).toContain("'Q41' is yours: your request didn't ask Caret to fill it.");
   });
 });
 
