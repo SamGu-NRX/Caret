@@ -591,12 +591,12 @@ describe("G2 round 4: the redacted view, generated", () => {
   it("no request carries a value planted beside a marker word, whatever the separator, quoting or role", async () => {
     const r = rng(7);
     const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(r() * xs.length)] as T;
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 240; i++) {
       const planted = `Qv${i}x${Math.floor(r() * 9000 + 1000)}`;
       const m = pick(MARKERS);
       const [o, c] = pick(QUOTES) as [string, string];
       const line = `${pick(["", "my ", "Staging ", "Email: robin@example.test "])}${m}${pick(SEPS)}${o}${planted}${c}`;
-      const role = pick(["note", "mail", "label", "placeholder", "nearest", "cell"] as const);
+      const role = pick(["note", "mail", "label", "placeholder", "nearest", "cell", "cellLabel", "split", "blankOpener"] as const);
       const at = [20, 40, 120, 20] as [number, number, number, number];
       const source: Snapshot =
         role === "note" ? noteWindow(`Notes\n${line}\nName: Kenji Watanabe`)
@@ -606,6 +606,9 @@ describe("G2 round 4: the redacted view, generated", () => {
               role === "label" ? [{ key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, label: `${m}${pick(SEPS)}`, frame: at }]
               : role === "placeholder" ? [{ key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, placeholder: m, frame: at }]
               : role === "nearest" ? [{ key: "o/l", parent: null, role: "AXStaticText", value: `${o}${m}${c}`, frame: at }, { key: "o/f", parent: null, role: pick(["AXTextField", "AXStaticText", "AXCell"]), ...(r() < 0.5 ? { editable: true as const } : {}), value: planted, frame: [150, 40, 120, 20] }]
+              : role === "cellLabel" ? [{ key: "o/c", parent: null, role: pick(["AXCell", "AXStaticText"]), label: `${o}${m}${c}`, value: planted, ...(r() < 0.5 ? { frame: at } : {}) }]
+              : role === "split" ? [{ key: "o/t", parent: null, role: "AXTextArea", editable: true as const, value: `Notes\n${m.split(/[\s_-]+/u).join("\n")}${pick(SEPS)}${o}${planted}${c}\nCity: Austin`, frame: at }]
+              : role === "blankOpener" ? [{ key: "o/t", parent: null, role: "AXTextArea", editable: true as const, value: `Notes${pick(["\n", "\r\n"])}${m}:${pick(["\n\n", "\r\n\r\n", "\n \n"])}${o}${planted}${c}\nCity: Austin`, frame: at }]
               : [{ key: "o/c", parent: null, role: "AXCell", value: line, frame: at }],
           } as Snapshot);
       const name = control("e1", "Full name");
@@ -760,7 +763,7 @@ describe("G2 round 6: what the view keeps", () => {
 });
 
 describe("G2 round 6: a label that opens its node's value", () => {
-  it("drops the value's first line of a static text whose label names a secret and opens it", () => {
+  it("takes a static text or cell whose own label names a secret, value and all", () => {
     const m = new ScreenModel();
     m.apply({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 600, 300] }, focused: false, root: null, nodes: [
       { key: "o/a", parent: null, role: "AXStaticText", label: "Password", value: "violet-orchard-seven", frame: [20, 40, 300, 20] },
@@ -770,6 +773,59 @@ describe("G2 round 6: a label that opens its node's value", () => {
     const all = [...v.nodes.values()].map((n) => nodeText(n)).join("\n");
     expect(all).not.toContain("violet-orchard-seven");
     expect(all).not.toContain("7319");
-    expect(all).toContain("City: Austin");
+    // Lead (G2 round 6 review): an own label that names a secret takes the node whole, its other lines too.
+    expect(all).not.toContain("City: Austin");
+  });
+});
+
+describe("G2 round 6 review: own labels, documents, and older gaps", () => {
+  const win = (nodes: Snapshot["nodes"], values: Snapshot["values"] = []): Snapshot => ({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 600, 300] }, focused: false, root: null, nodes, values, focusedKey: null, stats: { walkMs: 0, visited: nodes.length, truncated: false } }) as Snapshot;
+  const view = (s: Snapshot) => {
+    const m = new ScreenModel();
+    m.apply(s);
+    return redactWindow(m.windows.get("other")!);
+  };
+  const shown = (s: Snapshot): string => [...view(s).nodes.values()].map((n) => nodeText(n)).join("\n");
+  const sentBeside = async (s: Snapshot): Promise<string> => {
+    const name = control("e1", "Full name");
+    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+    await proposeFill(desk([name, control("e2", "Email")], [s, noteWindow("Name: Kenji Watanabe")]), ask, WIN, keyOf(name), 2000);
+    expect(requests.length).toBeGreaterThan(0);
+    return JSON.stringify(requests.map((r) => [r.state, r.questions, r.nouls ?? {}, r.snippets]));
+  };
+  const EMAIL = "violet.orchard.seven.backup.account@example.test";
+
+  it("BLOCKER: a node whose own label or placeholder names a secret goes with its value, whatever its role", async () => {
+    for (const node of [
+      { key: "o/c", parent: null, role: "AXCell", label: "Password", value: EMAIL, frame: [20, 40, 300, 20] as [number, number, number, number] },
+      { key: "o/s", parent: null, role: "AXStaticText", label: "Password", value: EMAIL },
+      { key: "o/p", parent: null, role: "AXCell", placeholder: "Password", value: EMAIL, frame: [20, 40, 300, 20] as [number, number, number, number] },
+    ]) {
+      expect(shown(win([node])), node.key).not.toContain(EMAIL);
+      expect(await sentBeside(win([node])), node.key).not.toContain(EMAIL);
+    }
+  });
+
+  it("a document labels nothing: a field beside it keeps its value; a one-line secret label beside a document takes it", () => {
+    const doc = { key: "o/d", parent: null, role: "AXStaticText", label: "Name: Kenji\nPassword: violet-orchard-seven\nCity: Austin", frame: [20, 40, 200, 60] as [number, number, number, number] };
+    const beside = { key: "o/f", parent: null, role: "AXTextField", editable: true as const, value: "Robin Vale", frame: [230, 60, 160, 20] as [number, number, number, number] };
+    const t = shown(win([doc, beside]));
+    expect(t).toContain("Robin Vale");
+    expect(t).not.toContain("violet-orchard-seven");
+    const pin = { key: "o/l", parent: null, role: "AXStaticText", value: "PIN", frame: [20, 10, 60, 20] as [number, number, number, number] };
+    expect(shown(win([pin, { ...doc, label: "Name: Kenji\n7319\nCity: Austin" }]))).not.toContain("7319");
+  });
+
+  it("a marker split across a line break, and an opener over blank lines, take their value", () => {
+    for (const text of ["Notes\nAPI\nkey: violet-orchard-seven\nCity: Austin", "Notes\nPassword:\n\n\nviolet-orchard-seven\nCity: Austin", "Notes\r\nPassword:\r\n\r\nviolet-orchard-seven\r\nCity: Austin"]) {
+      const t = shown(win([{ key: "o/t", parent: null, role: "AXTextArea", editable: true, value: text, frame: [0, 0, 400, 200] }]));
+      expect(t, JSON.stringify(text)).not.toContain("violet-orchard-seven");
+      expect(t, JSON.stringify(text)).toContain("City: Austin");
+    }
+  });
+
+  it("a typed value whose line endings differ from its node's still goes with its dropped line", () => {
+    const v = view(win([{ key: "o/t", parent: null, role: "AXTextArea", editable: true, value: "Password:\n4410 Speedway\napt 2, Austin, TX 78751", frame: [0, 0, 400, 200] }], [{ kind: "address", text: "4410 Speedway\r\napt 2, Austin, TX 78751", nodeKey: "o/t" }]));
+    expect(v.values).toEqual([]);
   });
 });

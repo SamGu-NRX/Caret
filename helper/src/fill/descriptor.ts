@@ -139,16 +139,20 @@ export function nearestLabel(w: WindowState, target: Node, labelOnly = false): {
 export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean): Set<string> {
   const out = new Set<string>();
   const all = allTexts(w);
-  const hits = all.filter((e) => marked(e.t));
-  if (hits.length === 0) return out;
-  // A one-line text that names a secret is a label, and goes; a text of several lines is a document, whose own lines the
-  // redacted view drops one by one (G2 round 6: "Name: Kenji Watanabe\nPassword: …\nPhone: …" lost its name and phone).
-  for (const e of hits) if (!e.document) out.add(e.key);
+  // A one-line text that names a secret is a label: it goes, and so does each node it is nearest to. A text of several
+  // lines is a document, whose own lines the redacted view drops one by one, and which labels nothing (G2 round 6: a
+  // document lost its name and phone, and then took "Robin Vale" beside it).
+  const labels = all.filter((e) => !e.document && marked(e.t));
+  if (labels.length === 0) return out;
+  const isDocument = new Set(all.filter((e) => e.document).map((e) => e.key));
+  for (const e of labels) out.add(e.key);
+  const isMarkedLabel = (key: string, t: string): boolean => !isDocument.has(key) && marked(t);
   for (const n of w.nodes.values()) {
     const f = n.frame;
-    if (f === undefined || out.has(n.key) || hits.some((e) => e.key === n.key)) continue;
+    // A document is checked too: a one-line label naming a secret beside it takes it whole.
+    if (f === undefined || out.has(n.key)) continue;
     const [fx, fy, , fh] = f;
-    const near = hits.some((e) => {
+    const near = labels.some((e) => {
       const [x, y, wd, h] = e.frame;
       const sameRow = Math.abs(y + h / 2 - (fy + fh / 2)) <= Math.max(fh, h) / 2 && x + wd <= fx + 4 && fx - (x + wd) <= MAX_LEFT_GAP;
       const below = y + h <= fy + 4 && overlapsHorizontally(e.frame, f) && fy - (y + h) <= MAX_ABOVE_GAP;
@@ -157,7 +161,7 @@ export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean):
     if (!near) continue;
     const full = nearestIn(all, n);
     const shown = [nearestLabel(w, n, false), nearestLabel(w, n, true)];
-    if ((full !== null && marked(full.t)) || shown.some((l) => l !== null && marked(l.t))) out.add(n.key);
+    if ((full !== null && isMarkedLabel(full.key, full.t)) || shown.some((l) => l !== null && isMarkedLabel(l.key, l.t))) out.add(n.key);
   }
   return out;
 }

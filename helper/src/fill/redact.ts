@@ -18,7 +18,7 @@
 // "Incident question: use the token-leak story, write it fresh.", whose key is none: 0 right values lost.
 import type { WindowState } from "../model.ts";
 import type { Node, TypedValue } from "../protocol.ts";
-import { markerEnds, secretText } from "../memory/sensitive.ts";
+import { markerEnds, markerWord, secretText } from "../memory/sensitive.ts";
 import { nodesLabelledBy } from "./descriptor.ts";
 
 export { secretText };
@@ -29,49 +29,53 @@ function opensValue(line: string): boolean {
 }
 
 /**
- * A text less the lines it must not give (secretText, and a line a marked opener above it opens), and the indexes of the
- * lines it dropped; the text unchanged when it gives all. `openedAbove`: a line before the text (its node's label) opened
- * a value, so the text's first line goes.
+ * A text less the lines it must not give, and the indexes of the lines it dropped; the text unchanged when it gives all.
+ * A line goes when it is secret (secretText), when a marker runs across its line break ("API" then "key: …"), or when an
+ * opener above it takes it: an opener ("Password:", "my private key", "PIN is") takes the next line that is not blank,
+ * the blank ones between with it, and a line it takes opens in turn ("Password:" then "PIN:" then "violet-orchard-seven").
  */
-function keptText(text: string, openedAbove = false): { kept: string; dropped: Set<number> } {
-  if (!openedAbove && !text.split(/\r?\n/u).some((l) => secretText(l))) return { kept: text, dropped: new Set() };
+function keptText(text: string): { kept: string; dropped: Set<number> } {
+  const lines = text.split(/\r?\n/u);
+  const secret = lines.map((l) => secretText(l));
+  for (let i = 1; i < lines.length; i++) {
+    if (!secret[i - 1] && !secret[i] && markerWord(`${lines[i - 1]} ${lines[i]}`)) secret[i - 1] = secret[i] = true;
+  }
+  if (!secret.some((x) => x)) return { kept: text, dropped: new Set() };
+  const dropped = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    if (!secret[i]) continue;
+    dropped.add(i);
+    // The opener reads the line as a whole, a marker that ran across from the line above included.
+    let open = opensValue(lines[i] as string) || (i > 0 && secret[i - 1] === true && opensValue(`${lines[i - 1]} ${lines[i]}`));
+    let j = i;
+    while (open && j + 1 < lines.length) {
+      j++;
+      dropped.add(j);
+      if ((lines[j] as string).trim() === "") continue;
+      open = opensValue(lines[j] as string);
+    }
+    i = Math.max(i, j);
+  }
   const parts = text.split(/(\r?\n)/u);
   const out: string[] = [];
-  const dropped = new Set<number>();
-  for (let i = 0; i < parts.length; i += 2) {
-    const l = parts[i] as string;
-    // The first line goes when a line above this text opened it (the node's label), and opens in turn.
-    if (i === 0 && openedAbove) {
-      dropped.add(0);
-      for (let open = opensValue(l); open && i + 2 < parts.length; ) {
-        i += 2;
-        dropped.add(i / 2);
-        open = opensValue(parts[i] as string);
-      }
-      continue;
-    }
-    if (!secretText(l)) {
-      out.push(l, parts[i + 1] ?? "");
-      continue;
-    }
-    dropped.add(i / 2);
-    // G2 round 5: an opener takes the next line, and a line it takes opens in turn ("Password:" then "PIN:" then
-    // "violet-orchard-seven"): each value-opening line drops the one after it.
-    for (let open = opensValue(l); open && i + 2 < parts.length; ) {
-      i += 2;
-      dropped.add(i / 2);
-      open = opensValue(parts[i] as string);
-    }
-  }
+  for (let k = 0; k < parts.length; k += 2) if (!dropped.has(k / 2)) out.push(parts[k] as string, parts[k + 1] ?? "");
   return { kept: out.join("").replace(/\r?\n$/u, ""), dropped };
 }
 
-/** Whether a place where `value` stands in `text` covers one of the line indexes `dropped` (G2 round 6: by line, not text). */
+/**
+ * Whether a place where `value` stands in `text` covers one of the line indexes `dropped` (G2 round 6: by line, not
+ * text). Line endings are compared as "\n" (a reader's value can say "\r\n" where its node says "\n"), and a value
+ * not found in a text that lost lines counts as covering one: where it stood cannot be shown to be kept.
+ */
 function coversDropped(text: string, value: string, dropped: ReadonlySet<number>): boolean {
   if (dropped.size === 0 || value === "") return false;
-  for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
-    const first = text.slice(0, at).split(/\r?\n/u).length - 1;
-    const last = first + value.split(/\r?\n/u).length - 1;
+  const t = text.replace(/\r\n/gu, "\n");
+  const v = value.replace(/\r\n/gu, "\n");
+  const at0 = t.indexOf(v);
+  if (at0 < 0) return true;
+  for (let at = at0; at >= 0; at = t.indexOf(v, at + 1)) {
+    const first = t.slice(0, at).split("\n").length - 1;
+    const last = first + v.split("\n").length - 1;
     for (let i = first; i <= last; i++) if (dropped.has(i)) return true;
   }
   return false;
@@ -105,15 +109,14 @@ function build(w: WindowState): WindowState {
   /** Each kept node's texts, with the lines each lost, which no typed value of it may stand on. */
   const lost = new Map<string, { text: string; dropped: Set<number> }[]>();
   for (const n of w.nodes.values()) {
-    // A field's own label or placeholder that names a secret takes the field and its value; any other node's label is
-    // its content, redacted line by line below (G2 round 6).
-    if (dropped.has(n.key) || (n.editable === true && (secretText(n.label) || secretText(n.placeholder)))) continue;
+    // A node's own label or placeholder, as attributes, that names a secret takes the node and its value, whatever its
+    // role (G2 round 6 review: a cell labelled "Password" holding an email). A static text whose only text is its label
+    // has that label as its content, redacted line by line below, as any document's.
+    const labelIsContent = n.editable !== true && n.value === undefined;
+    if (dropped.has(n.key) || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) continue;
     // The node with its texts' secret lines gone. A node that gives no text, and had some, is gone with them.
     const l = n.label === undefined ? undefined : keptText(n.label);
-    // A text's label and value read as one (model.ts nodeText): a label that opens a value ("Password", "PIN:") takes the
-    // value's first line too, which keptText on the value alone cannot see.
-    const opener = n.editable !== true && n.label !== undefined && opensValue(n.label.split(/\r?\n/u).at(-1) ?? "") && secretText(n.label);
-    const v = n.value === undefined ? undefined : keptText(n.value, opener);
+    const v = n.value === undefined ? undefined : keptText(n.value);
     const value = v?.kept;
     const label = l?.kept;
     const gone = [...(v === undefined || n.value === undefined ? [] : [{ text: n.value, dropped: v.dropped }]), ...(l === undefined || n.label === undefined ? [] : [{ text: n.label, dropped: l.dropped }])].filter((x) => x.dropped.size > 0);
