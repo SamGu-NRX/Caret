@@ -29,6 +29,33 @@ export const FORBIDDEN_NM = [join(SUPPORT, "Google", "Chrome", "NativeMessagingH
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+// ---- caret-heavy custody (ops/heavy, branch ops/heavy-queue) ----
+// Under a caret-heavy job, the job's recovery owner must know every launchd job and Chrome's process group before
+// they start, so that a cleanup which outlives this process (the supervisor's, or the recovery owner's after the
+// supervisor died) stops them by exact label and verified identity. Outside caret-heavy these variables are unset and
+// nothing here changes.
+/** "<python> <flags> <register.py>": the job's registration command (supervise.py; its paths hold no spaces). */
+const REGISTER = process.env.CARET_HEAVY_REGISTER;
+/** Every launchd label this job starts must begin with it. */
+export const LAUNCHD_PREFIX = process.env.CARET_HEAVY_LAUNCHD_PREFIX;
+
+/** Registers a resource with the recovery owner and returns once it is journalled; throws if it was refused. */
+function register(kind: "launchd" | "group", value: string): void {
+  if (REGISTER === undefined) return;
+  const [cmd, ...args] = REGISTER.split(" ");
+  if (cmd === undefined) throw new Error("CARET_HEAVY_REGISTER is empty");
+  execFileSync(cmd, [...args, kind, value], { stdio: ["ignore", "ignore", "pipe"] });
+}
+
+/** Members of process group `pgid`: a list, or null when pgrep failed for any reason but "none". */
+function groupMembers(pgid: number): number[] | null {
+  try {
+    return execFileSync("pgrep", ["-g", String(pgid)], { encoding: "utf8" }).split("\n").filter((x) => x !== "").map(Number);
+  } catch (e) {
+    return (e as { status?: number }).status === 1 ? [] : null;
+  }
+}
+
 // ---- cleanup registry: everything this run creates is undone here, in reverse order ----
 export const undo: { what: string; fn: () => Promise<void> | void }[] = [];
 export async function cleanup(): Promise<void> {
@@ -100,6 +127,7 @@ const xml = (s: string): string => s.replaceAll("&", "&amp;").replaceAll("<", "&
  * in this run's private directory; it is booted out at cleanup. Resolves once its log says it is listening.
  */
 export async function launchdJob(dir: string, label: string, service: string, program: string[], log: string, env: Record<string, string> = {}): Promise<void> {
+  if (LAUNCHD_PREFIX !== undefined && !label.startsWith(LAUNCHD_PREFIX)) throw new Error(`launchd label ${label} is not under this job's prefix ${LAUNCHD_PREFIX}`);
   const plist = join(dir, `${label}.plist`);
   const envXml = Object.keys(env).length === 0 ? "" : `<key>EnvironmentVariables</key><dict>${Object.entries(env).map(([k, v]) => `<key>${xml(k)}</key><string>${xml(v)}</string>`).join("")}</dict>\n`;
   writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
@@ -113,6 +141,7 @@ export async function launchdJob(dir: string, label: string, service: string, pr
 ${envXml}</dict></plist>
 `, { mode: 0o600 });
   const domain = `gui/${process.getuid?.() ?? 501}`;
+  register("launchd", label);  // before bootstrap: once the recovery owner journals it, it can boot it out
   execFileSync("launchctl", ["bootstrap", domain, plist], { stdio: "pipe" });
   undo.push({
     what: `launchd job ${label}`,
@@ -197,7 +226,11 @@ export class Cdp {
   }
 }
 
-/** Headless Chrome for Testing on `profile`; its own process group, so stopping it stops every helper process too. */
+/**
+ * Headless Chrome for Testing on `profile`; its own process group, so stopping it stops every helper process too.
+ * Under caret-heavy, Chrome is held by a shell until its group is registered with the job's recovery owner; if the
+ * registration fails, or this process dies first, Chrome never starts.
+ */
 /** `extension`: the unpacked extension directory to load, or null for none. */
 export function launch(exe: string, profile: string, urls: string[], env: NodeJS.ProcessEnv, extension: string | null, log: string, extra: string[] = [], devtools = false): Running {
   const flags = [
@@ -215,26 +248,47 @@ export function launch(exe: string, profile: string, urls: string[], env: NodeJS
     ...(devtools ? ["--remote-debugging-pipe"] : []),
     ...urls,
   ];
-  const proc = spawn(exe, flags, { env, detached: true, stdio: devtools ? ["ignore", "pipe", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"] });
+  const stdio: ("ignore" | "pipe")[] = devtools ? ["ignore", "pipe", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"];
+  // The hold: the next descriptor after the DevTools pipes carries one line, written once the group is registered.
+  const go = stdio.length;
+  const proc = REGISTER === undefined
+    ? spawn(exe, flags, { env, detached: true, stdio })
+    : spawn("/bin/sh", ["-c", `IFS= read -r _ <&${go} || exit 97; exec ${go}<&-; exec "$@"`, "chrome-held", exe, ...flags], { env, detached: true, stdio: [...stdio, "pipe"] });
+  if (REGISTER !== undefined) {
+    if (proc.pid === undefined) throw new Error("Chrome for Testing did not start");
+    try {
+      register("group", String(proc.pid));
+    } catch (e) {
+      process.kill(-proc.pid, "SIGKILL");
+      throw new Error(`Chrome's process group was not registered, so it was never started: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    (proc.stdio[go] as Writable).end("G\n");
+  }
   const cdp = devtools ? new Cdp(proc.stdio[3] as Writable, proc.stdio[4] as Readable) : null;
   const out = createWriteStream(log, { flags: "a" });
   proc.stdout?.pipe(out);
   proc.stderr?.pipe(out);
   const pid = proc.pid;
   if (pid === undefined) throw new Error("Chrome for Testing did not start");
+  // Done only when the whole group is empty, not just its leader: Chrome's helpers can outlive it. An unreadable
+  // group listing counts as not empty.
+  const empty = (): boolean => groupMembers(pid)?.length === 0;
   const stop = async (): Promise<void> => {
-    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    if (empty()) return;
     try {
       process.kill(-pid, "SIGTERM");
     } catch {
-      return;
+      /* the group emptied meanwhile, or only zombies remain */
     }
-    for (let i = 0; i < 50 && proc.exitCode === null && proc.signalCode === null; i++) await sleep(100);
+    for (let i = 0; i < 50 && !empty(); i++) await sleep(100);
+    if (empty()) return;
     try {
       process.kill(-pid, "SIGKILL");
     } catch {
       /* already gone */
     }
+    for (let i = 0; i < 50 && !empty(); i++) await sleep(100);
+    if (!empty()) say(`Chrome's process group ${pid} still has members ${JSON.stringify(groupMembers(pid))} after SIGKILL`);
   };
   undo.push({ what: `Chrome for Testing pid ${pid}`, fn: stop });
   return { proc, stop, cdp };
