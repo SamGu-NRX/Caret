@@ -1015,6 +1015,58 @@ VZ_NAME = ("/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCSe
            "com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine")
 
 
+class VmInventoryIsStrict(unittest.TestCase):
+    """The recovery owner's vm resource: a failed lookup is UNKNOWN, Lume is matched by its command, and only the job's
+    own rig-run can register a VM."""
+
+    class Probes(object):
+        def __init__(self, argvs):
+            self.argvs = argvs  # pid -> argv
+
+        def user_pids(self, uid):
+            return list(self.argvs)
+
+        def usage(self, pid):
+            return (1, 500)
+
+        def procargs(self, pid):
+            return (self.argvs[pid], [])
+
+    vm = {"id": "vm:rig-run-123", "type": "vm", "name": "rig-run-123", "since": 100}
+
+    def test_a_clone_that_cannot_be_looked_up_is_unknown(self):
+        import tempfile
+        d = tempfile.mkdtemp(prefix="caret-vm-")
+        self.addCleanup(subprocess.run, ["rm", "-rf", d])
+        real = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            if path == os.path.join(d, "rig-run-123"):
+                raise PermissionError(13, "Permission denied", path)
+            return real(path, *args, **kwargs)
+        with mock.patch.object(recovery.os, "lstat", side_effect=lstat):
+            self.assertEqual(recovery.vm_state(self.Probes({}), self.vm, d)[0], procs.UNKNOWN)
+        self.assertEqual(recovery.vm_state(self.Probes({}), self.vm, d)[0], procs.ABSENT)
+
+    def test_lume_is_matched_by_its_command_not_by_its_words(self):
+        probes = self.Probes({
+            10: ["/x/lume", "clone", "run", "rig-run-123"],                  # not running this VM
+            11: ["/x/lume", "run", "rig-run-123", "--display", "none"],      # rig-run's own `lume run`
+            12: ["/bin/bash", "/x/lume", "run", "rig-run-123"],              # a lume script through its interpreter
+            13: ["/x/lume", "run", "rig-run-1234"],                          # another VM
+            14: ["/x/notlume", "run", "rig-run-123"],
+        })
+        state, found = recovery.vm_processes(probes, self.vm)
+        self.assertEqual((state, [p for p, _ in found["lume"]]), (procs.PRESENT, [11, 12]))
+
+    def test_only_the_jobs_own_rig_run_can_register_its_vm(self):
+        owner = recovery.Owner.__new__(recovery.Owner)
+        with mock.patch.object(owner, "_verified", return_value={123}, create=True):
+            owner._check_vm_owner({"name": "rig-run-123"})
+            with self.assertRaisesRegex(ValueError, "not one of this job's processes"):
+                owner._check_vm_owner({"name": "rig-run-999"})
+
+
 class Test7VirtualizationOutlivesLume(Custody):
     """Design test 7, on the live queue (401c4d1): a VM job hands the queue's lease, obliged to its attempt, to rig-run
     (a fake rig-run in managed mode). A stand-in Virtualization process, started outside the job as launchd starts the

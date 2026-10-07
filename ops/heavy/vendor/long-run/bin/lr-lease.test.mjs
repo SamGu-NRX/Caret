@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { acquire, release, renew, renewByToken, ack, oblige, clear, reap, readLeases, readPolicy, decision, parsePressure, parseSwap, parseQuiet, machineReaders } from './lr-lease-core.mjs';
 
 const bin = path.dirname(fileURLToPath(import.meta.url));
@@ -339,6 +340,35 @@ test('clear removes any lease, only with a reason, and logs who cleared what and
     ['op2', 5, second.id, undefined, 'stale after a crash']]);
   assert.ok(log.every(e => Number.isFinite(e.at)));
   assert.ok(!fs.readFileSync(path.join(directory, 'clears.ndjson'), 'utf8').includes(token));
+});
+
+test('clear logs the whole entry through short writes, and a failed log keeps the lease and leaves no partial line', t => {
+  const directory = fixture(t);
+  const cjsFs = createRequire(import.meta.url)('node:fs');
+  const realWrite = cjsFs.writeSync;
+  const patch = writeSync => { cjsFs.writeSync = writeSync; syncBuiltinESMExports(); };
+  t.after(() => patch(realWrite));
+  const operator = { user: 'operator', pid: 4242 };
+  const first = acquire(directory, policy, readers(), request).lease;
+  // At most 5 bytes per call: the entry must still be written whole.
+  patch((fd, buffer, offset = 0, length = buffer.length - offset) => realWrite(fd, buffer, offset, Math.min(5, length)));
+  assert.deepEqual(clear(directory, first.id, 'checked: nothing left', operator), { cleared: true });
+  patch(realWrite);
+  const log = () => fs.readFileSync(path.join(directory, 'clears.ndjson'), 'utf8');
+  assert.deepEqual(log().trim().split('\n').map(JSON.parse).map(e => e.lease.id), [first.id]);
+  // A write that fails partway: nothing is unlinked and the partial line is cut back.
+  const second = acquire(directory, policy, readers(), request).lease;
+  let calls = 0;
+  patch((fd, buffer, offset = 0, length = buffer.length - offset) => {
+    if (++calls > 1) throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+    return realWrite(fd, buffer, offset, Math.min(7, length));
+  });
+  assert.throws(() => clear(directory, second.id, 'checked: nothing left', operator), /no space/);
+  patch(realWrite);
+  assert.deepEqual(readLeases(directory).map(l => l.id), [second.id]);
+  assert.deepEqual(log().trim().split('\n').map(JSON.parse).map(e => e.lease.id), [first.id]);
+  assert.deepEqual(clear(directory, second.id, 'checked again', operator), { cleared: true });
+  assert.deepEqual(log().trim().split('\n').map(JSON.parse).map(e => e.lease.id), [first.id, second.id]);
 });
 
 test('CLI: the token travels on stdin only', t => {

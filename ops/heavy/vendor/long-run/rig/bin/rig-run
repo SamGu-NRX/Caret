@@ -294,9 +294,12 @@ fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' "$RIG_HEAVY_LOCK_FD" "$HEAVY_LOC
 }
 
 # Why the handed heavy lease cannot be used (empty when it can): it must be listed, kind heavy, cleanup-required, not
-# quarantined, and obliged to CARET_HEAVY_ATTEMPT when that is set. A failed status lists nothing, so it fails closed.
+# quarantined, and obliged to CARET_HEAVY_ATTEMPT when that is set. Fails closed: a status that fails, or a list the
+# parser cannot read (it then exits nonzero), is a reason too.
 handed_problem() {
-  "$LEASE" status 2>/dev/null | python3 -c 'import json, sys
+  local listing
+  listing=$("$LEASE" status 2>/dev/null) || { echo "lr-lease status failed"; return 0; }
+  printf '%s\n' "$listing" | python3 -c 'import json, sys
 want, attempt = sys.argv[1], sys.argv[2]
 for line in sys.stdin:
     if not line.startswith("{"):
@@ -309,7 +312,7 @@ for line in sys.stdin:
     elif not r.get("cleanupRequired"): print("not cleanup-required: the job must oblige it before handing it over")
     elif attempt and r.get("attempt") != attempt: print("obliged to attempt %s, not %s" % (r.get("attempt"), attempt))
     sys.exit(0)
-print("no such lease")' "$HANDED_HEAVY" "${CARET_HEAVY_ATTEMPT:-}"
+print("no such lease")' "$HANDED_HEAVY" "${CARET_HEAVY_ATTEMPT:-}" 2>/dev/null || echo "the lease list could not be read"
 }
 
 STEP=lease

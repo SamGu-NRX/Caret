@@ -241,11 +241,24 @@ export function clear(directory, id, reason, operator) {
   }
   const lease = readLeases(directory).find(record => record.id === id);
   if (!lease) return { reason: 'no such lease' };
-  const entry = JSON.stringify({ at: Date.now(), user: operator.user, pid: operator.pid, lease, reason: reason.trim() });
+  const entry = Buffer.from(JSON.stringify({ at: Date.now(), user: operator.user, pid: operator.pid, lease,
+    reason: reason.trim() }) + '\n');
+  // The whole entry is written and fsync'd before the lease goes. A write that fails partway is cut back, so the log
+  // never holds a partial line and the lease stays.
   const fd = fs.openSync(path.join(directory, 'clears.ndjson'), 'a', 0o600);
   try {
-    fs.writeSync(fd, entry + '\n');
-    fs.fsyncSync(fd);
+    const start = fs.fstatSync(fd).size;
+    try {
+      for (let done = 0; done < entry.length;) {
+        const n = fs.writeSync(fd, entry, done, entry.length - done);
+        if (!(n > 0)) throw new Error('clears.ndjson: a write made no progress');
+        done += n;
+      }
+      fs.fsyncSync(fd);
+    } catch (error) {
+      try { fs.ftruncateSync(fd, start); fs.fsyncSync(fd); } catch { /* the original error is the one to report */ }
+      throw error;
+    }
   } finally {
     fs.closeSync(fd);
   }

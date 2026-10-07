@@ -378,8 +378,7 @@ def vm_processes(probes, resource):
                     unreadable.append(pid)
                 continue
             argv = got[0]
-            # Lume itself, or a lume script run through its interpreter (argv[1]), running this VM.
-            if any(os.path.basename(arg) == "lume" for arg in argv[:2]) and "run" in argv and resource["name"] in argv:
+            if runs_vm(argv, resource["name"]):
                 found["lume"].append((pid, usage[1]))
             elif argv and VZ_PATTERN in argv[0] and usage[1] >= resource["since"]:
                 found["virtualization"].append((pid, usage[1]))
@@ -390,15 +389,37 @@ def vm_processes(probes, resource):
     return (procs.PRESENT if found["lume"] or found["virtualization"] else procs.ABSENT), found
 
 
+def runs_vm(argv, name):
+    """Whether argv is `lume run NAME ...`: Lume itself (rig-run runs `$LUME run "$VM" --display none ...`), or a lume
+    script through its interpreter, where lume is argv[1]."""
+    for at in (0, 1):
+        if len(argv) >= at + 3 and os.path.basename(argv[at]) == "lume":
+            return argv[at + 1] == "run" and argv[at + 2] == name
+    return False
+
+
+def clone_state(clones_dir, name):
+    """(ABSENT|PRESENT|UNKNOWN, detail) of the VM's clone directory: only "no such file" is ABSENT."""
+    clone = os.path.join(clones_dir, name)
+    try:
+        os.lstat(clone)
+    except FileNotFoundError:
+        return procs.ABSENT, "clone {} gone".format(clone)
+    except OSError as ex:
+        return procs.UNKNOWN, "clone {} cannot be looked up: {}".format(clone, ex)
+    return procs.PRESENT, "clone {} present".format(clone)
+
+
 def vm_state(probes, resource, clones_dir):
     """(ABSENT|PRESENT|UNKNOWN, detail): the VM's clone directory, its Lume process and its Virtualization processes."""
     state, found = vm_processes(probes, resource)
     if state == procs.UNKNOWN:
         return state, found
-    clone = os.path.join(clones_dir, resource["name"])
-    if os.path.lexists(clone) or state == procs.PRESENT:
-        return procs.PRESENT, "clone {} {}; lume {}; Virtualization {}".format(
-            clone, "present" if os.path.lexists(clone) else "gone", found["lume"], found["virtualization"])
+    clone, clone_detail = clone_state(clones_dir, resource["name"])
+    if clone == procs.UNKNOWN:
+        return clone, clone_detail
+    if clone == procs.PRESENT or state == procs.PRESENT:
+        return procs.PRESENT, "{}; lume {}; Virtualization {}".format(clone_detail, found["lume"], found["virtualization"])
     return procs.ABSENT, "no clone, Lume or Virtualization process"
 
 
@@ -709,7 +730,7 @@ class Owner:
                         raise ValueError("group {} was not started by this job (its leader is no live child of the "
                                          "job's processes)".format(resource["pgid"]))
                 elif resource["type"] == "vm":
-                    pass  # since was filled in from the job's marker above
+                    self._check_vm_owner(resource)
                 elif resource["type"] != "launchd":
                     raise ValueError("a recipe registers launchd jobs, its own process groups and rig VMs only")
                 return self._register(resource)
@@ -770,6 +791,13 @@ class Owner:
         if msg.get("op") in ("adopt", "clean", "status"):
             return {"ok": True, "state": "clean"}
         raise ValueError("{} after CLEAN".format(msg.get("op")))
+
+    def _check_vm_owner(self, resource):
+        """A VM is named rig-run-<pid> after the rig-run that makes it, which must be one of this job's verified
+        processes: a member cannot nominate another run's VM for this owner to stop."""
+        pid = int(resource["name"][len("rig-run-"):])
+        if pid not in self._verified():
+            raise ValueError("{} is not one of this job's processes".format(resource["name"]))
 
     def _job_since(self):
         """When the job's processes began (the marker's since), which bounds a VM's Virtualization processes."""
@@ -856,7 +884,7 @@ class Owner:
         if state == procs.PRESENT:
             signal_identities(self.probes, found["lume"], sig)
         if sig == signal.SIGKILL and state != procs.UNKNOWN and not found["lume"] \
-                and os.path.lexists(os.path.join(self.paths["lume_clones"], resource["name"])):
+                and clone_state(self.paths["lume_clones"], resource["name"])[0] == procs.PRESENT:
             done = subprocess.run([self.paths["rig_stop"], "--orphans", "--grace", "15"], stdin=subprocess.DEVNULL,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180)
             self.log("rig-stop --orphans for {} exited {}: {}".format(resource["name"], done.returncode,
