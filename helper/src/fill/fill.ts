@@ -24,6 +24,7 @@ import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, in
 import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
+import { alternateKey, alternateKind, ownAlternateValue, primaryKind, setAlternateReason } from "./alternate.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type Reading } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
@@ -1891,6 +1892,36 @@ export async function proposeFill(
       asks: [a1, a2],
     };
   });
+
+  // The permitted heldout-1872a37-n1 run log records the user's primary email in Alternate email.
+  // Identity ownership and an exact verifier answer did not catch it. A secondary field must differ
+  // from its primary and the user's own value; remove the pick before checkValues can approve it.
+  // Inspect filled and unasked inputs too: formFields deliberately omits already populated fields.
+  const primaryFields = [...w.nodes.values()].flatMap((node) => {
+    if (node.editable !== true || !FILLABLE_ROLES.has(node.role) || node.states?.includes("secure")) return [];
+    const d = describeField(w, node);
+    const name = d.label ?? d.nearest ?? d.placeholder;
+    const kind = primaryKind(name);
+    return kind === null || alternateKind(name) !== null ? [] : [{ node, name: name ?? "unnamed field", kind }];
+  });
+  for (const [i, pick] of picksOf) {
+    const f = fields[i] as Field;
+    const kind = alternateKind(f.name);
+    if (kind === null) continue;
+    const primaries = primaryFields.filter((p) => p.kind === kind && p.node.key !== f.node.key);
+    if (primaries.length === 0) continue;
+    const key = alternateKey(kind, pick.text);
+    const repeated = primaries.find((p) => {
+      const proposed = picksOf.get(fields.findIndex((x) => x.node.key === p.node.key))?.text;
+      return [p.node.value, proposed].some((v) => v !== undefined && v.trim() !== "" && alternateKey(kind, v) === key);
+    });
+    if (repeated === undefined && !ownAlternateValue(kind, pick.text, opts.about ?? [])) continue;
+    const primary = repeated ?? primaries[0]!;
+    const held: FillField = { ...out[i]!, choice: NONE, value: null, source: null, memory: null, handoff: null, basis: undefined, withheld: "notExact" };
+    setAlternateReason(held, `Caret left ${f.name}: it would repeat your ${primary.name}.`);
+    out[i] = held;
+    picksOf.delete(i);
+  }
 
   /** Each candidate's source text as Jev was shown it (`judged`, taken before the asks), for its provenance's digests. */
   const judgedText = (c: Candidate): string | undefined => judged.get(nodeKeyOf(c));
