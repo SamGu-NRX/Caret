@@ -1,0 +1,1 @@
+Under HOLD, typecheck Swift without swift build: swiftc -emit-module CaretScreenCore into /tmp, then CaretHostCore via find (it has subdirs) with -I that dir; tests need the platform Developer Frameworks (-F) and -plugin-path .../host/plugins/testing (H1).

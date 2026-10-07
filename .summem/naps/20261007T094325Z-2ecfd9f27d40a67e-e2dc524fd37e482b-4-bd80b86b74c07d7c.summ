@@ -1,0 +1,1 @@
+A2-I3: Ask scope = Jev's per-field scope ask, code only vetoes (A2's reading rules failed); reword -> rerun ask-scope-eval.ts; $0 replays: CARET_JEV_CACHE_MODE=replay, no CARET_ENV_FILE, nonzero --spend-limit; resolver date guesses go to the verifier.
