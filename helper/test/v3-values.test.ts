@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { mintOf, proposeFill, type FillScope } from "../src/fill/fill.ts";
-import { provenanceStale, setTestVerifier } from "../src/fill/contract.ts";
+import { mintExempt, provenanceStale, setTestVerifier } from "../src/fill/contract.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { dateOrderHint, datePart, dateParts, partFits } from "../src/fill/derive.ts";
 import { datedBySent, readClock, readDate, sentLineFor, splitMoment } from "../src/fill/when.ts";
@@ -225,8 +225,8 @@ describe("a slot offered as a date with a time (B24 ask-19)", () => {
   it("writes the date, its year from when the message was sent, and the time, each checked by the verifier with that choice said", async () => {
     const { date, time } = await run(MAIL);
     expect([date.handoff?.value, date.handoff?.writes, time.handoff?.value, time.handoff?.writes]).toEqual(["2026-10-17", true, "08:45", true]);
-    for (const f of [date, time]) {
-      expect(mintOf(f)).toMatchObject({ verdict: { by: "verifier" }, provenance: { kind: "derived", how: "datePart", base: { kind: "window", span: "Saturday, October 17 at 8:45am" }, also: { kind: "window", span: "Thu, Oct 15, 2026, 10:22 AM" } } });
+    for (const [f, how] of [[date, "datePart"], [time, "timePart"]] as const) {
+      expect(mintOf(f)).toMatchObject({ verdict: { by: "verifier" }, provenance: { kind: "derived", how, base: { kind: "window", span: "Saturday, October 17 at 8:45am" }, also: { kind: "window", span: "Thu, Oct 15, 2026, 10:22 AM" } } });
       expect((mintOf(f)?.provenance as { says?: string }).says).toContain("the year 2026 is assumed");
     }
   });
@@ -427,5 +427,36 @@ describe("review round 1: a year read from when a message was sent", () => {
     } finally {
       setTestVerifier(STAND_IN);
     }
+  });
+});
+
+describe("lead conditions on the contract change", () => {
+  const ORIGIN = "http://127.0.0.1:4310";
+  const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+  const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+  const control = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `form[svc]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#svc", rect: [0, 0, 100, 20], value: "" });
+  const fill = async (lines: string[], span: string) => {
+    const m = new ScreenModel();
+    m.apply(snap([field("mail/body", lines.join("\n"), { role: "AXTextArea" })], { at: 900, windowId: "mail", title: "Re", app: { pid: 7002, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true, values: [value("date", span, "mail/body")] }));
+    m.apply(toWindowSnapshot({ type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Book", frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: ORIGIN, path: "/b", navGen: 1, title: "Book", headings: [], iframes: [], excluded: {}, truncated: false, controls: [control("e1", "text", "Mileage"), control("e2", "date", "Preferred date"), control("e3", "time", "Preferred time")] }], missing: [], focused: { frameId: 0, id: "e1", selection: [0, 0] } }, session, 1));
+    const p = await proposeFill(m, jevPickingText((_id, ins) => (ins.includes("'Preferred date'") || ins.includes("'Preferred time'") ? span : null)), "page:eng1:7", "f0/form[svc]/text:mileage~0", Date.UTC(2026, 9, 15, 18), { resolve: DENVER });
+    const at = (k: string) => p.fields.find((f) => f.key.includes(k)) as (typeof p.fields)[number];
+    return { date: at("date:preferred date"), time: at("time:preferred time") };
+  };
+  const MAIL = (span: string) => ["From: Chris Delgado <cdelgado@example.com>", "Date: Thu, Oct 15, 2026, 10:22 AM", "", `I have ${span} open.`];
+
+  it("never mints a value whose provenance states a choice under an exemption", async () => {
+    const { date } = await fill(MAIL("Saturday, October 17 at 8:45am"), "Saturday, October 17 at 8:45am");
+    const m = mintOf(date)!;
+    const proposed = { field: m.field, text: m.text, display: m.display, provenance: m.provenance, owner: m.owner };
+    expect(() => mintExempt(proposed, "resolverFormat", 4000)).toThrow(expect.objectContaining({ name: "ContractError", code: "chosen" }));
+  });
+
+  it("names a time taken from a date and time as the time, and a whole date written in its format as resolved", async () => {
+    const parts = await fill(MAIL("Saturday, October 17 at 8:45am"), "Saturday, October 17 at 8:45am");
+    expect([(mintOf(parts.date)?.provenance as { how?: string }).how, (mintOf(parts.time)?.provenance as { how?: string }).how]).toEqual(["datePart", "timePart"]);
+    // A whole date with its year: a plain conversion, minted under resolverFormat as "resolved".
+    const whole = await fill(MAIL("October 17, 2026"), "October 17, 2026");
+    expect(mintOf(whole.date)).toMatchObject({ verdict: { by: "exempt", rule: "resolverFormat" }, provenance: { kind: "derived", how: "resolved" } });
   });
 });

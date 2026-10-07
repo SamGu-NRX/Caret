@@ -22,7 +22,7 @@ import { asksCountry, asksPlace, dateOrderHint, dateParts, datePart, datePartOf,
 import { autocompletePart, checkValues, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { secretText } from "../memory/sensitive.ts";
-import { clockTime, datedBySent, readClock, readDate, readDateTime, readMonth, sentLineFor, type SentLine } from "./when.ts";
+import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type SentLine } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 import type { SavedAnswer } from "../memory/answers.ts";
@@ -1864,12 +1864,26 @@ export function bindMint(f: FillField, windowId: string, c: CheckedValue): FillF
 /** The exemption a control's written value is minted under: an option's own label, a box's state, a resolved date. */
 const EXEMPT_BY_CONTROL: Record<Control, ExemptRule | null> = { text: null, combobox: null, select: "optionLabel", radio: "optionLabel", checkbox: "boxFromLabelledLine", date: "resolverFormat", time: "resolverFormat" };
 
+/** The text a pick was read as. */
+function pickSpan(p: Pick): string {
+  return p.from === "window" ? p.c.text : p.from === "memory" ? p.a.value : p.text;
+}
+
+/**
+ * V3: how a date or time input's value came from its span: the date part or the time part of a span that names both
+ * ("Saturday, October 17 at 8:45am"), else the whole value resolved into the input's format.
+ */
+function controlHow(control: "date" | "time", written: string, span: string): DeriveHow {
+  if (splitMoment(span) === null || written.includes("T")) return "resolved";
+  return control === "time" ? "timePart" : "datePart";
+}
+
 /** How code derived a part for a field, by the part the field takes. */
 function deriveHow(part: FillPart | null, written: string, base: string, control: Control | null = null): DeriveHow {
   if (part === "first" || part === "middle" || part === "last" || part === "full") return "namePart";
   if (part === "month" || part === "day" || part === "year") return "datePart";
-  // V3: a date or time input's value read from a span (when.ts), and an option a word of a span names (controls.ts optionNamedBy).
-  if (control === "date" || control === "time") return "datePart";
+  // V3: a date or time input's value read from a span (when.ts controlHow), and an option a word of a span names (controls.ts optionNamedBy).
+  if (control === "date" || control === "time") return controlHow(control, written, base);
   if ((control === "select" || control === "radio") && part === null && written !== base) return "optionFromPart";
   if (part === "country") return "placePart";
   if (part === "street" || part === "unit" || part === "city" || part === "state" || part === "zip") return "addressPart";
@@ -1894,7 +1908,7 @@ function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, writte
   if (chose !== undefined) {
     // V3: the value as derived, with the choice code made said, and the extra source it read (a send line) as `also`.
     const own = provenanceOf(model, p, part, written, judged, control);
-    const d: Extract<Provenance, { kind: "derived" }> = own.kind === "derived" ? own : { kind: "derived", how: control === "date" || control === "time" ? "datePart" : "optionFromPart", base: own, also: null };
+    const d: Extract<Provenance, { kind: "derived" }> = own.kind === "derived" ? own : { kind: "derived", how: control === "date" || control === "time" ? controlHow(control, written, pickSpan(p)) : "optionFromPart", base: own, also: null };
     return { ...d, also: chose.also ?? d.also, says: chose.says };
   }
   const cand = (c: Candidate): Provenance => candidateProvenance(model, c, judged(c) ?? "");
@@ -1904,10 +1918,11 @@ function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, writte
     const own = base(p);
     // A web dropdown asked for a place with its country (placeWithCountry) writes more than the pick's text. V3: a date or
     // time input writes the date or the time its span names, a part of a date with a time (when.ts).
-    return written === (p.from === "window" ? p.c.text : p.from === "memory" ? p.a.value : p.text) ? own : { kind: "derived", how: control === "date" || control === "time" ? "datePart" : "placeWithCountry", base: own, also: null };
+    const span = p.from === "window" ? p.c.text : p.from === "memory" ? p.a.value : p.text;
+    return written === span ? own : { kind: "derived", how: control === "date" || control === "time" ? controlHow(control, written, span) : "placeWithCountry", base: own, also: null };
   }
   const b = base(p.base);
-  const how = written !== p.text ? (control === "date" || control === "time" ? "datePart" : "placeWithCountry") : deriveHow(part, p.text, b.kind === "window" ? b.span : "", control);
+  const how = written !== p.text ? (control === "date" || control === "time" ? controlHow(control, written, p.text) : "placeWithCountry") : deriveHow(part, p.text, b.kind === "window" ? b.span : "", control);
   return { kind: "derived", how, base: b, also: p.also === null ? null : cand(p.also) };
 }
 

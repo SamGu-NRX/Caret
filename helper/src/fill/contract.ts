@@ -92,7 +92,11 @@ export function autocompletePart(token: AutocompleteToken | null | undefined): F
   return token == null ? null : (AUTOCOMPLETE_PART[token] ?? null);
 }
 
-export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "placeWithCountry" | "optionFromPart";
+/**
+ * V3: "timePart" is the time of a span that names a date and a time; "resolved" is a whole date, time or date and time
+ * written in its input's own format (when.ts), no part taken.
+ */
+export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart";
 
 /** Where a value came from, carried unchanged from the moment it was read to the step that writes it. */
 export type Provenance =
@@ -262,7 +266,8 @@ export class VerifierUnavailable extends Error {
 }
 
 export class ContractError extends Error {
-  readonly code: "unchecked" | "textMismatch" | "targetMismatch" | "shape" | "neverTyped";
+  /** V3: "chosen" when a value whose provenance states a choice code made (Provenance.says) reaches an exemption. */
+  readonly code: "unchecked" | "textMismatch" | "targetMismatch" | "shape" | "neverTyped" | "chosen";
   constructor(code: ContractError["code"], message: string) {
     super(message);
     this.name = "ContractError";
@@ -490,7 +495,7 @@ export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean)
     case "transfer":
       return "a value the user copied there before";
     case "derived": {
-      const how: Record<DeriveHow, string> = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", placeWithCountry: "the place with its country", optionFromPart: "the option for a part" };
+      const how: Record<DeriveHow, string> = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part" };
       const plain = `${how[pr.how]} in ${provenanceSays(pr.base, admitted)}`;
       return pr.says === undefined ? plain : `${plain}${pr.also === null ? "" : `, and ${provenanceSays(pr.also, admitted)}`}; ${pr.says}`;
     }
@@ -740,9 +745,19 @@ export function exemptRefusal(p: Proposed, rule: ExemptRule, instruction = ""): 
  * Mints without the verifier for a value whose exactness code settles (ExemptRule). Throws ContractError on a value
  * exemptRefusal refuses: a caller that may meet one asks exemptRefusal first; one that reaches here with it has a bug.
  */
+/** V3: the first choice a provenance states (Provenance.says), in it or in any source it was derived from; null when none. */
+export function statedChoice(pr: Provenance): string | null {
+  if (pr.kind !== "derived") return null;
+  return pr.says ?? statedChoice(pr.base) ?? (pr.also === null ? null : statedChoice(pr.also));
+}
+
 export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction = ""): CheckedValue {
   // Frozen before it is judged, as checkValues does: what is judged is what is minted (W2 review).
   const p = snapshot(proposed);
+  // V3 (lead): a value code derived by a choice (an assumed year, an order a hint gave, an option a word names) is judged by
+  // the verifier, never minted as a plain conversion; reaching here is a bug in the caller.
+  const chose = statedChoice(p.provenance);
+  if (chose !== null) throw new ContractError("chosen", `'${clip(p.text)}' was derived by a choice code made (${clip(chose)}), so only the verifier may check it, not the ${rule} exemption`);
   const why = exemptRefusal(p, rule, instruction);
   if (why !== null) throw new ContractError(neverTypedRefusal(p, instruction) === null ? "shape" : "neverTyped", why);
   return mint(p, { by: "exempt", rule }, now);
