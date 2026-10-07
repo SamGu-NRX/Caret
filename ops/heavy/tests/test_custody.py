@@ -300,6 +300,25 @@ class Test6And9QuarantineHoldsEverything(Custody):
         self.assert_all_released(first)
 
 
+class AdoptionIsAllOrNothing(unittest.TestCase):
+    def test_a_refused_descriptor_leaves_none_of_the_others_kept(self):
+        import fcntl
+        import tempfile
+        d = tempfile.mkdtemp(prefix="caret-adopt-")
+        self.addCleanup(subprocess.run, ["rm", "-rf", d])
+        slot, heavy = os.path.join(d, "slot.lock"), os.path.join(d, "heavy.lock")
+        good = os.open(slot, os.O_RDWR | os.O_CREAT)
+        fcntl.flock(good, fcntl.LOCK_EX)
+        unlocked = os.open(heavy, os.O_RDWR | os.O_CREAT)  # holds no lock: refused
+        self.addCleanup(os.close, unlocked)
+        owner = recovery.Owner.__new__(recovery.Owner)
+        owner.paths, owner.fds = {"slot_lock": slot, "heavy_lock": heavy}, {}
+        with self.assertRaises(procs.Refusal):
+            owner._adopt_locks(["slot", "heavy"], [good, unlocked])
+        self.assertEqual(owner.fds, {})
+        os.close(good)
+
+
 class Test8PidReuseAndStaleRecords(unittest.TestCase):
     class Probes:
         def __init__(self):

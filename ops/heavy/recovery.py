@@ -392,10 +392,12 @@ class Owner:
         return uid == os.getuid() and pid in self._verified()
 
     def _adopt_locks(self, names, fds):
-        if len(names) != len(fds):
+        if len(names) != len(fds) or len(set(names)) != len(names):
             raise ValueError("{} lock names for {} descriptors".format(len(names), len(fds)))
+        # Every descriptor is checked before any is kept: on a refusal the caller closes them all.
         for name, fd in zip(names, fds):
             procs.inherited_lock_fd(self.paths[LOCK_PATHS[name]], fd)  # same file, and this open file holds it
+        for name, fd in zip(names, fds):
             old = self.fds.pop(name, None)
             if old is not None:
                 os.close(old)
