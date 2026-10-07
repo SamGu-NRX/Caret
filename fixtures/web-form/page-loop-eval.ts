@@ -70,6 +70,7 @@ import { CFT_BUILD, Cdp, HOST_NAME, chrome, cleanup, designated, launch, launchd
 import { NetworkSink, type Oracle, type Scored } from "./oracle.ts";
 import { FixtureSite } from "./server.ts";
 import { TASK_PAGES, loadExpectation, taskPage, type Expectation } from "./tasks/site.ts";
+import { fieldWhoseAnswer, loadOwners, ownersOf, ownershipAnswers, UNCLEAR, valueOwnerAnswer, type Owners } from "./owners.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = join(HERE, "..", "..");
@@ -94,6 +95,10 @@ const { values: args } = parseArgs({
     "w4-dir": { type: "string", default: join(W4, "real") },
     "w4-key": { type: "string", default: join(W4, "replay", "key.json") },
     "w4-note": { type: "string", default: join(W4, "replay", "note.txt") },
+    /** G2: whose each page's values are (owners.json), which canned Jev answers fill's ownership questions from. */
+    owners: { type: "string", default: join(HERE, "owners.json") },
+    /** G2: the same for W4's saved pages, kept beside W4's key. */
+    "w4-owners": { type: "string", default: join(W4, "replay", "owners.json") },
     /** Writes every Jev question and answer to this NDJSON file (synthetic and public form text only). */
     "log-jev": { type: "string" },
     /** fill: P1's Fill all (Command-1). goal: P2's Ask on the page, planned by the page planner. */
@@ -163,11 +168,15 @@ interface Page {
   about: { label: string; value: string }[];
   /** A task page's expectations by data-oracle name (tasks/expect/<page>.json); the oracle scores against these. */
   expected?: Record<string, string>;
+  /** G2: whose the page's values are, from owners.json, its memory entries among the user's; null when the file has no entry. */
+  owners: Owners | null;
 }
 
 // ---- pages ----
 const corpus = loadCorpus(args.corpus);
 const asks = loadAsks(args.corpus, corpus);
+const ownerTruth = loadOwners(args.owners, true);
+const w4OwnerTruth = loadOwners(args["w4-owners"], false);
 const recorded = readFileSync(args.windows, "utf8").trim().split("\n").map((l) => Snapshot.parse(JSON.parse(l)));
 const recordedFor = (title: string): Snapshot => {
   const hits = recorded.filter((s) => s.window.title === title || s.window.title.startsWith(`${title} - `));
@@ -182,6 +191,7 @@ const corpusPage = (f: CorpusForm): Page => ({
   instruction: asks.find((x) => x.form === f.id && x.expected !== "refuse")?.instruction ?? "fill in everything you can from my notes",
   sources: [...corpus.decoys, f.source].flatMap((s) => (s.kind === "memory" ? [] : [recordedFor(s.title ?? "")])),
   about: f.source.kind === "memory" ? f.source.about : [],
+  owners: ownersOf(ownerTruth, f.id, f.source.kind === "memory" ? f.source.about.map((a) => a.value) : []),
 });
 const w4Key = existsSync(args["w4-key"]) ? (JSON.parse(readFileSync(args["w4-key"], "utf8")) as { sites: Record<string, { label: string; expected: string; accept?: string[] }[]> }).sites : {};
 const w4Note = existsSync(args["w4-note"]) ? readFileSync(args["w4-note"], "utf8") : "";
@@ -208,6 +218,7 @@ const w4Page = (site: string): Page => ({
   instruction: "fill in this application from my notes",
   sources: [noteWindow(w4Note)],
   about: [],
+  owners: ownersOf(w4OwnerTruth, site, []),
 });
 /** A task page's email as Mail shows it: its header lines and its body as static text, top to bottom. */
 const mailWindow = (m: Expectation["sources"]["email"]): Snapshot => {
@@ -242,6 +253,8 @@ const taskPageOf = (name: string): Page => {
     sources: [mailWindow(e.sources.email), noteWindow(e.sources.note)],
     about: e.sources.memory.map((m) => ({ label: m.key, value: m.value })),
     expected: e.expected,
+    // The memory entries stay the user's when --sources labelled replaces the page's sources and memory.
+    owners: ownersOf(ownerTruth, name, e.sources.memory.map((m) => m.value)),
   };
 };
 const wanted = args.pages?.split(",");
@@ -251,6 +264,8 @@ const pages: Page[] = (
     : [...corpus.forms.map(corpusPage), ...(existsSync(args["w4-dir"]) ? W4_SITES.filter((s) => existsSync(join(args["w4-dir"], `${s}.html`))).map(w4Page) : [])]
 ).filter((p) => wanted === undefined || wanted.includes(p.id));
 if (pages.length === 0) throw new Error("no pages to run");
+const noTruth = pages.filter((p) => p.owners === null).map((p) => p.id);
+if (CANNED && noTruth.length > 0) throw new Error(`canned Jev answers ownership from ${args.owners} (W4: ${args["w4-owners"]}), which has no entry for ${noTruth.join(", ")}`);
 
 // ---- the site: the corpus forms and W4's saved markup, on 127.0.0.1; any POST is counted and refused ----
 let posts = 0;
@@ -471,19 +486,30 @@ async function taskKeyFor(ins: string): Promise<Expect | undefined> {
   return undefined;
 }
 
-/** Canned Jev: Ask's heads read the whole form from any source for the user; each fill question takes the answer key's value. */
+/**
+ * Canned Jev: Ask's heads read the whole form from any source for the user; each fill question takes the answer key's
+ * value. G2: each ownership question takes owners.json's answer at 0.95, or unclear at 0.5 where it says nothing: whose
+ * details a field asks for (`_whose`) by the field's key, whose a value is (`_owner`) by its text. An Ask that names a
+ * person asks whether a value is theirs; owners.json does not say who that person is, so only the user's is answered.
+ */
 const canned: AskJev = async (req: JevRequest): Promise<JevResult> => {
   if ("scope" in req.questions) {
     const pick: Record<string, string> = { scope: "all", source: "any", whose: "user", why: "nothingToFill", section: "none" };
     return { model: "canned", answers: Object.fromEntries(Object.keys(req.questions).map((k) => [k, { choice: pick[k] ?? "none", confidence: 0.9 }])), nouls: Object.fromEntries(Object.keys(req.nouls ?? {}).map((k) => [k, 0])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
   }
   const entries = Object.entries(req.questions);
-  const filled = (k: string, q: (typeof entries)[number][1]): boolean => !(k.endsWith("_whose") || k.endsWith("_owner") || ("yes" in q.criteria && "no" in q.criteria));
+  const filled = (k: string, q: (typeof entries)[number][1]): boolean => !(k.endsWith("_owner") || ("yes" in q.criteria && "no" in q.criteria));
   const instructionsOf = (q: (typeof entries)[number][1]): string => (typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions));
   const keys = await Promise.all(entries.map(([k, q]) => (!filled(k, q) ? undefined : TASKS ? taskKeyFor(instructionsOf(q)) : keyFor(instructionsOf(q)))));
+  const owners = page?.owners ?? null;
+  const sameField = (listed: string, field: string): boolean => (TASKS ? listed === field : normLabel(listed) === normLabel(field));
   const answers = Object.fromEntries(
     entries.map(([k, q], i) => {
-      if (k.endsWith("_whose") || k.endsWith("_owner")) return [k, { choice: "user", confidence: 0.95 }];
+      if (k.endsWith("_whose")) return [k, fieldWhoseAnswer(keys[i]?.label ?? null, owners, sameField)];
+      if (k.endsWith("_owner")) return [k, valueOwnerAnswer(instructionsOf(q), q.criteria, owners)];
+      // The goal gate's own ownership questions (planner/codeplan.ts verifyWrites) name a field only by its name, which
+      // the harness does not map to a key.
+      if (ownershipAnswers(q.criteria)) return [k, { ...UNCLEAR }];
       if ("yes" in q.criteria && "no" in q.criteria) return [k, { choice: "no", confidence: 0.95 }];
       const e = keys[i];
       const quoted = (t: string | null): string | null => (t === null ? null : (/^"([^"]*)"/u.exec(t)?.[1] ?? null));
