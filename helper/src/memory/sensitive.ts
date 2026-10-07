@@ -230,3 +230,32 @@ export function secretText(text: string | null | undefined): boolean {
   return found;
 }
 const SECRET_MEMO = new Map<string, boolean>();
+
+/**
+ * G2: whether two consecutive lines carry a marker phrase split by their line break ("API" then "key: …"): the first line
+ * ends with the phrase's first word(s), and the second starts with the rest, followed by nothing, a separator or a value.
+ * A heading never joins a labelled record: "Card" then "Number of attendees: 4" names no card number, since the second
+ * line's label is more than the phrase's rest (G2 round 7 review).
+ */
+export function markerAcross(first: string, second: string): boolean {
+  const a = first.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "");
+  const b = second.toLowerCase();
+  if (a.length === 0) return false;
+  for (const [, phrases] of LABEL_PHRASES) {
+    for (const p of phrases) {
+      for (let k = 1; k < p.length; k++) {
+        const head = p.slice(0, k);
+        if (a.length < k || !head.every((w, j) => a[a.length - k + j] === w)) continue;
+        const rest = p.slice(k).map((w) => w.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("[\\s_-]+");
+        const label = /^\s*([^:]{1,32}):\s*\S/u.exec(second)?.[1]?.trim().toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "");
+        if (label !== undefined && label.join(" ") !== p.slice(k).join(" ") && label.join(" ") !== `${p.slice(k).join(" ")}s`) continue;
+        if (new RegExp(`^\\s*${rest}s?(?![\\p{L}\\p{N}])\\s*(?:$|[:=\\-–—>]|\\bis\\b|\\bwas\\b|[\\p{L}\\p{N}"'(\\[<\`])`, "u").test(b)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** G2: a PEM fence line: "-----BEGIN … PRIVATE KEY-----" opens a block that runs to its "-----END … PRIVATE KEY-----". */
+export const PEM_BEGIN = /^\s*-{3,}\s*BEGIN\b[^-]*PRIVATE KEY\s*-{3,}\s*$/iu;
+export const PEM_END = /^\s*-{3,}\s*END\b[^-]*PRIVATE KEY\s*-{3,}\s*$/iu;

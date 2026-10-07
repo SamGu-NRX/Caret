@@ -829,3 +829,50 @@ describe("G2 round 6 review: own labels, documents, and older gaps", () => {
     expect(v.values).toEqual([]);
   });
 });
+
+describe("G2 round 7: last fixes", () => {
+  const win = (nodes: Snapshot["nodes"], values: Snapshot["values"] = []): Snapshot => ({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 600, 300] }, focused: false, root: null, nodes, values, focusedKey: null, stats: { walkMs: 0, visited: nodes.length, truncated: false } }) as Snapshot;
+  const view = (s: Snapshot) => {
+    const m = new ScreenModel();
+    m.apply(s);
+    return redactWindow(m.windows.get("other")!);
+  };
+  const shown = (s: Snapshot): string => [...view(s).nodes.values()].map((n) => nodeText(n)).join("\n");
+  const area = (value: string) => [{ key: "o/t", parent: null, role: "AXTextArea", editable: true as const, value, frame: [0, 0, 400, 200] as [number, number, number, number] }];
+
+  it("a reader value whole in one attribute is kept though another lost lines", () => {
+    const v = view(win([{ key: "o/c", parent: null, role: "AXCell", label: "Mailing address: 4410 Speedway", value: "Password:\nviolet-orchard-seven\nCity: Austin", frame: [0, 0, 400, 80] }], [{ kind: "address", text: "4410 Speedway", nodeKey: "o/c" }]));
+    expect(v.values.map((x) => x.text)).toEqual(["4410 Speedway"]);
+  });
+
+  it("a private key block goes through its END fence, and END opens nothing", () => {
+    const t = shown(win(area("Keys\n-----BEGIN RSA PRIVATE KEY-----\nMIIEow3fakekeybody\nAbCdEf123456\n-----END RSA PRIVATE KEY-----\n\nName: Kenji Watanabe\nCity: Austin")));
+    expect(t).not.toContain("MIIEow3fakekeybody");
+    expect(t).not.toContain("AbCdEf123456");
+    expect(t).toContain("Name: Kenji Watanabe");
+    expect(t).toContain("City: Austin");
+  });
+
+  it("joins a split marker only across its own words, never a heading to a labelled record", () => {
+    expect(shown(win(area("Event\nCard\nNumber of attendees: 4")))).toContain("Number of attendees: 4");
+    for (const text of ["Notes\nAPI\nkey: violet-orchard-seven", "Notes\nmy private\nkey violet-orchard-seven", "Notes\nAPI\nkey\nviolet-orchard-seven"]) expect(shown(win(area(text))), JSON.stringify(text)).not.toContain("violet-orchard-seven");
+  });
+
+  it("a container labelled for a secret takes everything under it", () => {
+    const t = shown(win([
+      { key: "o/g", parent: null, role: "AXGroup", label: "Recovery codes", frame: [0, 0, 400, 200] },
+      { key: "o/g/a", parent: "o/g", role: "AXStaticText", value: "violet-orchard-seven", frame: [10, 10, 200, 20] },
+      { key: "o/x", parent: null, role: "AXStaticText", value: "City: Austin", frame: [0, 220, 200, 20] },
+    ]));
+    expect(t).toContain("City: Austin");
+    const g = shown(win([
+      { key: "o/g", parent: null, role: "AXGroup", label: "Password", frame: [0, 0, 400, 200] },
+      { key: "o/g/a", parent: "o/g", role: "AXStaticText", value: "violet-orchard-seven", frame: [10, 300, 200, 20] },
+      { key: "o/g/b", parent: "o/g/a", role: "AXStaticText", value: "deeper-secret-value", frame: [10, 330, 200, 20] },
+      { key: "o/x", parent: null, role: "AXStaticText", value: "City: Austin", frame: [0, 400, 200, 20] },
+    ]));
+    expect(g).not.toContain("violet-orchard-seven");
+    expect(g).not.toContain("deeper-secret-value");
+    expect(g).toContain("City: Austin");
+  });
+});
