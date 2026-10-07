@@ -20,6 +20,7 @@ import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { ROUTE_CUTOFF } from "./intent-makers.ts";
 import type { AskIntent, IntentField, IntentSnapshot } from "./intent.ts";
 import { relevance } from "./planner.ts";
+import { dateShaped, timeShaped } from "../fill/kinds.ts";
 import { fieldWords, restrictsSources } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
 import { jevFailedError, type AskPart } from "./says.ts";
@@ -38,8 +39,11 @@ export const HEAD_FLOOR = ROUTE_CUTOFF;
  */
 export const SCOPE_CUTOFF = 0.5;
 
+// "all" and "some" both fill; which fields is the scope ask's. "all" also says the request narrows nothing, so fill may
+// ask values as Fill all does (FillScope.wholeForm) when every empty field is in scope.
 const ROUTE: Record<string, string> = {
-  fill: "Put values into fields of this form: the whole form, a part of it, or particular fields (Caret asks which fields separately).",
+  all: "Fill every empty field of the form Caret can: the whole form, or everything Caret knows, with nothing said about particular values.",
+  some: "Fill some fields of this form: a part of it, particular fields, or particular values (Caret asks which fields separately).",
   plan: "More than filling fields with values that already exist: press a button, submit, send, add an event to the calendar, write a message, reply or description in new words, or a task of several steps.",
   refuse: "Something Caret must not or cannot do here: pay, give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.",
 };
@@ -130,7 +134,8 @@ export function scopeRequest(snap: IntentSnapshot, wording: 0 | 1): JevRequest {
   const questions: JevRequest["questions"] = {};
   for (const f of snap.fields) questions[scopeId(f.ref)] = { type: "choice", instructions: SCOPE_WORDINGS[wording](snap.instruction, fieldContext(snap, f)), criteria: { ...SCOPE_OPTIONS } };
   const state = { instruction: snap.instruction, form: formTitle(snap), task: "Caret checks, field by field, which fields of the form the user's request asks it to fill in or change." };
-  const sent = JSON.stringify([state, questions]);
+  // Raw text, not JSON: a heading with a quote or a backslash is sent, so its snippet must be declared (A3 review 2).
+  const sent = [state.instruction, state.form, ...Object.values(questions).map((q) => q.instructions)].join("\n");
   return { state, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
 }
 
@@ -162,9 +167,9 @@ const CLAUSE = /\s*(?:;|\.(?=\s|$)|,|\s+and\s+)\s*/iu;
  * ties 8:15 to Preferred delivery time. The clause is the text around the value up to the nearest clause breaks, so a
  * quoted value may hold commas. The field must be among the fields of the whole form the clause names best, and the
  * only one of them in `scoped`: "set Full name to Alice and fill Company" ties Alice to nothing when only Company is
- * in scope (P1 review).
- * A clause that names no field of the form ties its value to the one field in scope, when the instruction spells out
- * one value. A tie only offers the value in that field's fill question; Jev still chooses it there. It never puts a
+ * in scope (P1 review). A clause that names no field of the form ties a time or a date to the one time or date field
+ * in scope ("saturday works, at 9:30"), else its value to the one field in scope when the instruction spells out one
+ * value. A tie only offers the value in that field's fill question; Jev still chooses it there. It never puts a
  * field in scope: `scoped` are fields Jev chose or offered.
  */
 export function tieLiterals(snap: IntentSnapshot, scoped: readonly IntentField[]): { field: string; text: string }[] {
@@ -182,7 +187,14 @@ export function tieLiterals(snap: IntentSnapshot, scoped: readonly IntentField[]
       // names Preferred delivery time and Delivery instructions alike, and only the time is in scope).
       const top = named.filter((x) => x.n === (named[0] as { n: number }).n).map((x) => x.f).filter((f) => scoped.includes(f));
       if (top.length === 1) field = top[0];
-    } else if (snap.literals.length === 1 && scoped.length === 1) field = scoped[0];
+    } else {
+      // A clause that names no field: a time or a date ties to the one time or date field in scope ("saturday works, at
+      // 9:30"), else the one value to the one field in scope.
+      const control = timeShaped(span) ? "time" : dateShaped(span) ? "date" : null;
+      const ofKind = control === null ? [] : scoped.filter((f) => f.control === control);
+      if (ofKind.length === 1) field = ofKind[0];
+      else if (snap.literals.length === 1 && scoped.length === 1) field = scoped[0];
+    }
     if (field !== undefined && !out.some((l) => l.field === field.ref)) out.push({ field: field.ref, text: span });
   }
   return out;
@@ -242,20 +254,20 @@ export function readHeads(snap: IntentSnapshot, heads: JevResult, scope: readonl
     // Nothing settled: offer any field either wording said the request asks for, below the cutoff or not agreed.
     offered = scope === null ? [] : snap.fields.filter((f) => scope.some((r) => r.answers[scopeId(f.ref)]?.choice === "asks"));
     // Every field "not" in both wordings, on a fill Jev settled: the form has no field the instruction asks for.
-    if (offered.length === 0 && route === "fill" && scope !== null) return { ...base, route: "refuse", why: "noSuchField", scope: "none" };
+    if (offered.length === 0 && (route === "all" || route === "some") && scope !== null) return { ...base, route: "refuse", why: "noSuchField", scope: "none" };
     open.push("fields");
   }
-  // Every empty field chosen: still a list of exactly those fields (a page goal's "all" would take inputs past the
-  // snapshot, goals/page-planner.ts), whose values fill asks as Fill all does (FillScope.wholeForm).
+  // Every empty field chosen, on a route Jev settled as the whole form: still a list of exactly those fields (a page
+  // goal's "all" would take inputs past the snapshot, goals/page-planner.ts), whose values fill asks as Fill all does
+  // (FillScope.wholeForm). Every field chosen alone is not enough: "use my work email" on a form with one Email field
+  // must keep its words in the value question (A3 review 2).
   const empties = snap.fields.filter((f) => !f.filled);
-  const wholeForm = chosen.length > 0 && chosen.length === empties.length && empties.every((f) => chosen.includes(f));
+  const wholeForm = route === "all" && chosen.length > 0 && chosen.length === empties.length && empties.every((f) => chosen.includes(f));
   const jevFields = {
     scope: "list" as const,
     fields: open.includes("fields") ? [] : chosen.map((f) => f.ref),
     ...(open.includes("fields") ? { options: offered.map((f) => f.ref) } : { agreed: true as const, ...(wholeForm ? { wholeForm: true as const } : {}) }),
   };
-  // A plan carries Jev's fields, so a page host that fills a plan's form fills only those, or asks (ask.ts).
-  if (route === "plan") return { ...base, route: "plan", why: "none", ...jevFields };
   // In scope for tying values: the chosen fields, or the offered ones when the fields are asked (applyFixed keeps a
   // literal only on a field the user then picks).
   const typable = (open.includes("fields") ? offered : chosen).filter((f) => f.neverTyped === null);
@@ -298,6 +310,9 @@ export function readHeads(snap: IntentSnapshot, heads: JevResult, scope: readonl
   }
 
   const parts = { ...jevFields, section: "none", sources, whose: person ?? "user", literals, ...(named === undefined ? {} : { person: named }) };
+  // A plan carries Jev's fields and what was read of sources and whose, with the parts left open, so a page host that
+  // fills a plan's form fills only those fields, from those sources, or asks first (ask.ts planAsAll).
+  if (route === "plan") return { route: "plan", why: "none", ...parts, ...(open.length > 0 ? { pageOpen: open } : {}) };
   if (open.length > 0) {
     const first = open[0] as AskPart;
     const why = first === "fields" ? "whichFields" : first === "source" ? "whichSource" : unnamed ? "otherPersonUnnamed" : "whichPerson";

@@ -68,6 +68,11 @@ export interface AskIntent {
    */
   wholeForm?: true;
   /**
+   * A3: on a plan from the heads maker, the parts its fill would leave open, in the order to ask them. A page host that
+   * fills the plan's form instead asks these first (ask.ts planAsAll); every other consumer plans and ignores them.
+   */
+  pageOpen?: readonly AskPart[];
+  /**
    * A1: whose details go in, as code resolved them to a name the instruction does not spell (people.ts): the one other
    * person in its sources, or a memory entry for the relation it names. Takes the place of a person ref in `whose`.
    */

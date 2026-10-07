@@ -17,7 +17,7 @@ import { PlannerError } from "../src/planner/validate.ts";
 import type { MemoryValue } from "../src/planner/trace.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { rng } from "./large-scene.ts";
-import { field, snap } from "./builders.ts";
+import { field, node, snap } from "./builders.ts";
 
 beforeEach(() => setGeneratorClock(() => 0));
 afterEach(() => setGeneratorClock(null));
@@ -38,10 +38,10 @@ const scopeOf = (s: IntentSnapshot, asks: readonly string[], second: (name: stri
   const first = (n: string): A => ({ choice: asks.includes(n) ? "asks" : "not", confidence: 0.99 });
   return [wording(s, first), wording(s, (n) => second(n) ?? first(n))];
 };
-/** The heads answered at 0.9: route fill, source any, whose user, unless `heads` says otherwise. */
+/** The heads answered at 0.9: route some (a fill of particular fields), source any, whose user, unless `heads` says otherwise. */
 const headsOf = (s: IntentSnapshot, heads: Record<string, string> = {}): JevResult => {
   const req = headsRequest(s);
-  const dflt: Record<string, string> = { route: "fill", why: "nothingToFill", source: "any", whose: "user" };
+  const dflt: Record<string, string> = { route: "some", why: "nothingToFill", source: "any", whose: "user" };
   return { model: "jev-test", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: heads[id] ?? dflt[id] ?? "none", confidence: 0.9 }])), inputTokens: 10, latencyMs: 1, costUsd: 0 };
 };
 const names = (s: IntentSnapshot, refs: readonly string[]): string[] => refs.map((r) => s.fields.find((f) => f.ref === r)?.name ?? r);
@@ -73,6 +73,16 @@ describe("the scope ask's requests", () => {
     const d = snapOn("airline-passenger", "my birthday");
     const month = d.fields.find((f) => f.name === "Month");
     expect(month && fieldContext(d, month)).toMatchObject({ group: "Date of birth", role: "pop-up menu" });
+  });
+
+  it("declares every piece of screen text a scope request sends, a heading with quotes included (A3 review 2)", () => {
+    const m = deskOf("hubspot-contact").model;
+    m.apply(snap([node("pg/h", "AXHeading", { label: 'Applicant "primary" \\ one' }), field("pg/email", "", { label: "Email" })], { at: T0 + 1000, windowId: "page:a3:4", kind: "page", focused: true }));
+    const w = m.windows.get("page:a3:4");
+    if (w === undefined) throw new Error("no page");
+    const s = intentSnapshot("my email", m, w, []);
+    expect(s.fields[0]?.heading).toBe('Applicant "primary" \\ one');
+    for (const wd of [0, 1] as const) expect(scopeRequest(s, wd).snippets.map((x) => x.text)).toEqual(expect.arrayContaining(['Applicant "primary" \\ one', "Email"]));
   });
 
   it("sends the heads and both wordings together, three requests", async () => {
@@ -128,13 +138,16 @@ describe("which fields: Jev's, never code's", () => {
     expect(names(s, split.options ?? [])).toEqual(["Emergency contact name"]);
     expect(readHeads(s, headsOf(s), scopeOf(s, []))).toMatchObject({ route: "refuse", why: "noSuchField" });
     // With the route unsettled, nothing is claimed about the form: which fields?
-    const low = { ...headsOf(s), answers: { ...headsOf(s).answers, route: { choice: "fill", confidence: 0.5 } } };
+    const low = { ...headsOf(s), answers: { ...headsOf(s).answers, route: { choice: "some", confidence: 0.5 } } };
     expect(readHeads(s, low, scopeOf(s, []))).toMatchObject({ route: "ask", why: "whichFields", options: [] });
   });
 
-  it("lists every empty field chosen, never the whole form, and asks their values as Fill all does", () => {
+  it("lists every empty field chosen, never the whole form, and asks their values as Fill all does only on a whole-form route", () => {
     const s = snapOn("hubspot-contact", "fill out this contact form");
-    const i = readHeads(s, headsOf(s), scopeOf(s, s.fields.map((f) => f.name)));
+    // Every field chosen alone is not a request that narrows nothing (A3 review 2: "use my work email" on a form whose
+    // one email field is every empty field must keep its words in the value question).
+    expect(readHeads(s, headsOf(s), scopeOf(s, s.fields.map((f) => f.name))).wholeForm).toBeUndefined();
+    const i = readHeads(s, headsOf(s, { route: "all" }), scopeOf(s, s.fields.map((f) => f.name)));
     expect(i).toMatchObject({ route: "fill", scope: "list", fields: s.fields.map((f) => f.ref), agreed: true, wholeForm: true });
     const checked = checkIntent(i, s);
     expect(checked.route === "fill" && checked.scope.wholeForm).toBe(true);
@@ -216,6 +229,9 @@ describe("the vetoes", () => {
     const other = readHeads(r, headsOf(r), scopeOf(r, ["Mobile phone"]));
     expect(other.literals).toEqual([]);
     expect(names(r, other.fields)).toEqual(["Mobile phone"]);
+    // A clause that names no field: a time ties to the one time field in scope (A3 review 2).
+    const c = snapOn("car-service-booking", "saturday works, at 9:30");
+    expect(readHeads(c, headsOf(c), scopeOf(c, ["Preferred date", "Preferred time"])).literals).toEqual([{ field: c.fields.find((f) => f.name === "Preferred time")?.ref, text: "9:30" }]);
     // A literal that is not a span of the instruction is refused by checkIntent.
     expect(() => checkIntent({ ...readHeads(s, headsOf(s), scopeOf(s, ["Preferred delivery time"])), literals: [{ field: time ?? "", text: "9:15" }] }, s)).toThrow(PlannerError);
   });
@@ -271,7 +287,7 @@ describe("through planAsk", () => {
       const answers = Object.fromEntries(
         Object.entries(req.questions).map(([id, q]) => {
           const ins = String(q.instructions);
-          if (id === "route") return [id, { choice: "fill", confidence: 0.9 }];
+          if (id === "route") return [id, { choice: "some", confidence: 0.9 }];
           if (id === "source") return [id, { choice: "any", confidence: 0.9 }];
           // Ines's values are hers, and an emergency contact field wants someone else's; the rest is the user's.
           if (id.endsWith("_owner") && "person" in q.criteria && /Ines/u.test(ins)) return [id, { choice: "person", confidence: 0.9 }];
@@ -333,6 +349,43 @@ describe("through planAsk", () => {
     const asked = await go(planJev([], ["Full name"])).catch((x: unknown) => x);
     expect(asked).toBeInstanceOf(AskAsks);
     expect((asked as AskAsks).question.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Full name"]);
+  });
+
+  it("fills a plan's page form from the sources it read, and asks what it left open first (A3 review 2)", async () => {
+    const m = deskOf("hubspot-contact").model;
+    m.apply(snap([field("pg/name", "", { label: "Full name" }), field("pg/email", "", { label: "Email" })], { at: T0 + 1000, windowId: "page:a3:2", kind: "page", focused: true }));
+    const planJev = (heads: Record<string, string>): AskJev => {
+      const inner = jevFor(["Full name", "Email"]).ask;
+      return async (req) => {
+        const r = await inner(req);
+        if (!("route" in req.questions)) return r;
+        const answers: Record<string, { choice: string; confidence: number }> = { ...r.answers, route: { choice: "plan", confidence: 0.9 } };
+        for (const [k, v] of Object.entries(heads)) answers[k] = { choice: v, confidence: 0.9 };
+        return { ...r, answers };
+      };
+    };
+    const go = (instruction: string, ask: AskJev) => planAsk(instruction, m, { values: () => [] }, [], { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "a3q", windowId: "page:a3:2", now: T0 + 2000, goals: true });
+    const own = await go("register me, don't read other windows", planJev({ source: "instruction" }));
+    expect(own).toMatchObject({ route: "goal", page: { kind: "list", scope: { memory: false } } });
+    expect((own as { page: { scope: { windows: Set<string> | null } } }).page.scope.windows).toEqual(new Set());
+    const which = await go("register me, don't read other windows", planJev({ source: "any" })).catch((x: unknown) => x);
+    expect(which).toBeInstanceOf(AskRefused);
+    expect((which as AskRefused).message).toBe(SAYS.whichSource);
+  });
+
+  it("refuses a continued Ask whose field now sits under another heading (A3 review 2)", async () => {
+    const m = deskOf("hubspot-contact").model;
+    const page = (heading: string) => snap([node("pg/h", "AXHeading", { label: heading }), field("pg/email", "", { label: "Email" }), field("pg/phone", "", { label: "Phone" })], { at: T0 + 1000, windowId: "page:a3:3", kind: "page", focused: true });
+    m.apply(page("Applicant"));
+    const jev = jevFor([], {}, ["Email"]);
+    const go = (resume?: Parameters<typeof planAsk>[4]["resume"]) => planAsk("my email", m, { values: () => [] }, [], { askJev: jev.ask, maker: headsIntentMaker(jev.ask), writer: null, offerKey: "a3h", windowId: "page:a3:3", now: T0 + 2000, goals: true, ...(resume === undefined ? {} : { resume }) });
+    const e = await go().catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(AskAsks);
+    const q = (e as AskAsks).question;
+    m.apply(page("Emergency contact"));
+    const after = await go({ ...q.resume, fixed: { ...q.resume.fixed, ...q.options[0]?.fixes } }).catch((x: unknown) => x);
+    expect(after).toBeInstanceOf(AskRefused);
+    expect((after as AskRefused).detail).toMatch(/changed/u);
   });
 
   it("still refuses what Ask refuses, with its sentence", async () => {

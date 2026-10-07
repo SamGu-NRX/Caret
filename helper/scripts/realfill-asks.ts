@@ -144,8 +144,10 @@ const oracle: AskJev = async (req) => {
       answers[id] = { choice: keys.includes(k) ? k : (keys.at(-1) ?? "none"), confidence: 0.99 };
     };
     // A must-refuse ask's head refuses with its reason, or plans a press, as a model that recognises refusals would.
-    if (id === "route") pick(ask?.reason === "submit" || ask?.reason === "send" ? "plan" : ask?.expected === "refuse" && ask.reason !== undefined ? "refuse" : "fill");
-    else if (id.startsWith("s_") && "asks" in q.criteria) pick(wanted(labelIn(ins) ?? "") ? "asks" : "not");
+    // A fill route is the whole form when the ask expects a value for every field of it.
+    if (id === "route") pick(ask?.reason === "submit" || ask?.reason === "send" ? "plan" : ask?.expected === "refuse" && ask.reason !== undefined ? "refuse" : form !== undefined && form.fields.every((f) => wanted(f.label)) ? "all" : "some");
+    // The scope ask's label, which may hold an apostrophe ("Guest's full name"), ends where the wording goes on.
+    else if (id.startsWith("s_") && "asks" in q.criteria) pick(wanted(/[Tt]he field '(.*?)'(?: is a |\. Kind: )/u.exec(ins)?.[1] ?? "") ? "asks" : "not");
     else if (id === "why") pick(ask?.reason === "payment" ? "payment" : ask?.reason === "neverTyped" ? "neverTyped" : ask?.reason === "noSuchField" ? "noSuchField" : "nothingToFill");
     else if (id === "source") pick("any");
     else if (id === "whose") pick("user");

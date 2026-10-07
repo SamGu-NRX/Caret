@@ -99,9 +99,9 @@ const asks = [...new Set(rows.map((r) => r.id))];
 const inScope = (r: Row, c: number): boolean => r.w0.choice === "asks" && r.w1.choice === "asks" && Math.min(r.w0.confidence, r.w1.confidence) >= c;
 const isUnclear = (r: Row): boolean => r.w0.choice === "unclear" || r.w1.choice === "unclear";
 
-interface Score { cutoff: number; fills: number; exact: number; asked: number; recall: number; extra: number; missed: number; extraAny: number; missedAny: number }
+interface Score { cutoff: number; fills: number; exact: number; asked: number; recall: number; refused: number; extra: number; missed: number; extraAny: number; missedAny: number }
 function score(c: number, set: string): Score {
-  const s: Score = { cutoff: c, fills: 0, exact: 0, asked: 0, recall: 0, extra: 0, missed: 0, extraAny: 0, missedAny: 0 };
+  const s: Score = { cutoff: c, fills: 0, exact: 0, asked: 0, recall: 0, refused: 0, extra: 0, missed: 0, extraAny: 0, missedAny: 0 };
   for (const id of asks) {
     const fs = rows.filter((r) => r.id === id && (set === "all" || r.set === set));
     if (fs.length === 0) continue;
@@ -110,6 +110,12 @@ function score(c: number, set: string): Score {
     const missed = fs.filter((r) => r.label === "asked" && !inScope(r, c)).length;
     s.extraAny += extra;
     s.missedAny += missed;
+    // No field chosen, none unclear and no "asks" from either wording: readHeads refuses (noSuchField) on a settled fill
+    // route rather than ask, so it is counted apart.
+    if (!fs.some(isUnclear) && chosen.length === 0 && !fs.some((r) => r.w0.choice === "asks" || r.w1.choice === "asks")) {
+      s.refused++;
+      continue;
+    }
     if (fs.some(isUnclear) || chosen.length === 0) {
       s.asked++;
       const offered = fs.some(isUnclear) ? fs.filter((r) => inScope(r, c) || isUnclear(r)) : fs.filter((r) => r.w0.choice === "asks" || r.w1.choice === "asks");
@@ -128,9 +134,9 @@ const GRID = [0.3, 0.4, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0
 const table = (set: string): string[] => [
   `### ${set} (${asks.filter((id) => rows.some((r) => r.id === id && (set === "all" || r.set === set))).length} asks)`,
   "",
-  "| cutoff | fills | exact fills | extra fields in fills | missed fields in fills | asked | asked with every asked field offered | extra, every ask | missed, every ask |",
-  "|---|---|---|---|---|---|---|---|---|",
-  ...GRID.map((c) => score(c, set)).map((s) => `| ${s.cutoff} | ${s.fills} | ${s.exact} | ${s.extra} | ${s.missed} | ${s.asked} | ${s.recall} | ${s.extraAny} | ${s.missedAny} |`),
+  "| cutoff | fills | exact fills | extra fields in fills | missed fields in fills | asked | asked with every asked field offered | no field asked (refused) | extra, every ask | missed, every ask |",
+  "|---|---|---|---|---|---|---|---|---|---|",
+  ...GRID.map((c) => score(c, set)).map((s) => `| ${s.cutoff} | ${s.fills} | ${s.exact} | ${s.extra} | ${s.missed} | ${s.asked} | ${s.recall} | ${s.refused} | ${s.extraAny} | ${s.missedAny} |`),
   "",
 ];
 const c = a.cutoff === undefined ? SCOPE_CUTOFF : Number(a.cutoff);
@@ -140,7 +146,8 @@ const detail = asks.map((id) => {
   const unclear = fs.filter(isUnclear);
   const extra = fs.filter((r) => inScope(r, c) && r.label === "not");
   const missed = fs.filter((r) => r.label === "asked" && !inScope(r, c));
-  return `| ${id} | ${unclear.length > 0 || !fs.some((r) => inScope(r, c)) ? "asks" : "fills"} | ${unclear.map(show).join("; ")} | ${extra.map(show).join("; ")} | ${missed.map(show).join("; ")} |`;
+  const outcome = unclear.length > 0 ? "asks" : fs.some((r) => inScope(r, c)) ? "fills" : fs.some((r) => r.w0.choice === "asks" || r.w1.choice === "asks") ? "asks" : "refuses";
+  return `| ${id} | ${outcome} | ${unclear.map(show).join("; ")} | ${extra.map(show).join("; ")} | ${missed.map(show).join("; ")} |`;
 });
 const md = [
   "# Scope ask against hand labels (A3)",
