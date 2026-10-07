@@ -152,7 +152,7 @@ const command = (file, args, env) => execFileSync(file, args, {
 }).trim();
 // UTC removes the repeated local hour at the end of daylight saving time; C keeps month names English.
 const psEnv = Object.freeze({ TZ: 'UTC', LC_ALL: 'C' });
-const psColumns = 'pid=,ppid=,uid=,lstart=,command=';
+const psColumns = 'pid=,ppid=,pgid=,uid=,lstart=,command=';
 const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 export function parseMemory(text) {
@@ -278,6 +278,61 @@ export function ownerTargets(lease, owner, tracked, table, ctx) {
   return reachable.filter(t => allowed.has(`${t.pid}:${t.startMs}`));
 }
 
+// A lease's stopTarget (set by its owner through lr-lease target) names the process group doing the leased work.
+// mem-guard then stops that group and never the owner, whose liveness still decides whether the lease counts.
+// Start times are compared exactly: lr-lease records the leader's start with the same whole-second ps lstart reading
+// this table uses, so any difference, even one second, means a different process.
+const targetOf = target => ({ pgid: target.pgid, leaderStartMs: target.leaderStartMs });
+
+// The processes to signal for a stop target, from one process snapshot taken before the lease was read.
+// - The group part counts only while the lease is current (present, not quarantined, same target).
+//   - If a row with pid pgid exists with the recorded start time, the number is still held by the original leader,
+//     live or a zombie (the queue keeps its leader unreaped until the group is empty), so no other group can have it:
+//     every live member counts, including one reparented to launchd.
+//   - If that row is gone, the number may have been reused, so only members that descend from the owner by ppid
+//     count. The runner spawned its job; a process that later took the number elsewhere cannot qualify.
+//   - A row with pid pgid but another start time means the number now belongs to a later process: the group part is
+//     stale and contributes nothing.
+// - Processes seen in an earlier step of the same stop stay members while they are the same process (pid and start
+//   time), whatever the lease or group now says: a setsid child that ignored SIGTERM is still the job's.
+// The owner and protected processes are never members. An empty or stale result is skipped and never turned back
+// into a stop of the owner, whose other queued work is not the problem.
+export function targetMembers(target, owner, table, ctx, tracked = [], leaseCurrent = true) {
+  const byPid = new Map(table.map(p => [p.pid, p]));
+  const members = [], listed = new Set();
+  const add = t => {
+    if (listed.has(t.pid) || t.pid === owner.pid) return;
+    listed.add(t.pid);
+    members.push({ pid: t.pid, startMs: t.startMs, pgid: byPid.get(t.pid).pgid });
+  };
+  let stale = null;
+  if (leaseCurrent) {
+    const leader = byPid.get(target.pgid);
+    if (leader && leader.startMs !== target.leaderStartMs) {
+      stale = 'stop target stale: its leader pid now belongs to a later process';
+    } else {
+      let group = table.filter(p => p.pgid === target.pgid && p.command !== '<defunct>');
+      if (!leader) {
+        const ownerRow = byPid.get(owner.pid);
+        const descendants = new Set(ownerRow ? tree([ownerRow], table, ctx).map(t => t.pid) : []);
+        group = group.filter(p => descendants.has(p.pid));
+      }
+      if (group.some(p => p.startMs < target.leaderStartMs)) {
+        stale = 'stop target stale: a member started before its leader';
+      } else {
+        for (const t of tree(group, table, ctx)) add(t);
+      }
+    }
+  }
+  for (const t of tracked) if (verifiedRow(byPid.get(t.pid), t, ctx)) add(t);
+  if (members.length) return { members };
+  return { skip: stale ?? 'stop target has no members' };
+}
+
+const sameTarget = (a, b) => Boolean(a && b) && a.pgid === b.pgid && a.leaderStartMs === b.leaderStartMs;
+// A quarantining release keeps the record, so quarantine also means the owner has let the group go.
+const targetCurrent = (lease, target) => Boolean(lease) && lease.state !== 'quarantined' && sameTarget(lease.stopTarget, target);
+
 // A leased owner whose parent is launchd (ppid 1) stays eligible: the lease is
 // the opt-in, and a job reparented after its launching shell exited is still that job.
 function verifiedOwner(lease, byPid, ctx, now) {
@@ -310,7 +365,7 @@ export function decide(history, leases, table, state, now) {
   const current = history.at(-1);
   if (!known(current)) return { type: 'unknown', reason: 'machine reading unavailable or invalid' };
   const reason = danger(history, state.unattended);
-  if (state.pending) return decidePending(reason, table, state, current.mono);
+  if (state.pending) return decidePending(reason, table, state, current.mono, leases);
   if (!reason) return { type: 'none', reason: 'no danger' };
   if (!table || !leases) return { type: 'alert', reason: `${reason}; victim inventory unavailable` };
   if (state.lastStepAt != null && current.mono - state.lastStepAt < CONFIG.stepMs) {
@@ -327,6 +382,16 @@ export function decide(history, leases, table, state, now) {
       skipped.push({ lease: lease.id, run: lease.run, ownerPid: lease.ownerPid, reason: owner.skip });
       continue;
     }
+    if (lease.stopTarget) {
+      const target = lease.state === 'quarantined' ? { skip: 'lease quarantined: its owner already saw the group empty' }
+        : targetMembers(lease.stopTarget, owner.row, table, state);
+      if (target.skip) {
+        skipped.push({ lease: lease.id, run: lease.run, ownerPid: lease.ownerPid, reason: target.skip });
+        continue;
+      }
+      return { type: 'term', reason, lease: leaseSummary(lease), owner: identity(owner.row),
+        stopTarget: targetOf(lease.stopTarget), members: target.members, ...(skipped.length ? { skipped } : {}) };
+    }
     const hook = hookFor(lease);
     const members = CONFIG.ownerOnlyRuns.includes(lease.run) ? [identity(owner.row)] : tree([owner.row], table, state);
     return { type: 'term', reason, lease: leaseSummary(lease), owner: identity(owner.row),
@@ -335,12 +400,13 @@ export function decide(history, leases, table, state, now) {
   return { type: 'alert', reason: `${reason}; no live leased job to stop`, ...(skipped.length ? { skipped } : {}) };
 }
 
-function decidePending(reason, table, state, mono) {
+function decidePending(reason, table, state, mono, leases) {
   const pending = state.pending;
   if (!table) {
     return reason ? { type: 'alert', reason: `${reason}; process table unavailable for the pending stop` }
       : { type: 'none', reason: 'no danger; process table unavailable' };
   }
+  if (pending.stopTarget) return decideTargetPending(reason, table, state, mono, leases);
   const base = { lease: pending.lease, owner: pending.owner };
   const row = table.find(p => p.pid === pending.owner.pid);
   // Gone: missing, a zombie, or the pid now belongs to a process that started
@@ -365,11 +431,11 @@ function decidePending(reason, table, state, mono) {
 
 export function parseProcessTable(text) {
   return text.split('\n').filter(line => line.trim()).map(line => {
-    const match = /^\s*(\d+)\s+(\d+)\s+(-?\d+)\s+[A-Z][a-z]{2}\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})(?:\s+(.*))?$/.exec(line);
-    const month = months.indexOf(match?.[4]);
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+[A-Z][a-z]{2}\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})(?:\s+(.*))?$/.exec(line);
+    const month = months.indexOf(match?.[5]);
     if (!match || month < 0) throw new Error('unreadable process table');
-    const [, pid, ppid, uid, , day, hour, minute, second, year, text = ''] = match;
-    return { pid: Number(pid), ppid: Number(ppid), uid: Number(uid),
+    const [, pid, ppid, pgid, uid, , day, hour, minute, second, year, text = ''] = match;
+    return { pid: Number(pid), ppid: Number(ppid), pgid: Number(pgid), uid: Number(uid),
       startMs: Date.UTC(Number(year), month, Number(day), Number(hour), Number(minute), Number(second)), command: text.trim() };
   });
 }
@@ -670,8 +736,91 @@ function describeHook(result) {
 
 // Effects are injected so tests never touch real processes. effects.context
 // carries uid, home and guardPid for the protection re-check.
+// A targeted stop follows the owner ladder's timing, but each step rebuilds the members from the verified group in a
+// fresh snapshot, so a process forked into the group after a SIGTERM is still reached. It is finished when the group
+// has no members, or when the owner is gone: a dead runner's lease no longer counts, exactly as for an untargeted one.
+// The owner releases the lease itself once it sees the group empty, so a finished targeted stop releases nothing.
+function decideTargetPending(reason, table, state, mono, leases) {
+  const pending = state.pending;
+  const base = { lease: pending.lease, owner: pending.owner, stopTarget: pending.stopTarget };
+  // The target is only as current as its lease. Once the owner released the lease, which it does after seeing the
+  // group empty, the group number may be reused, so a released or retargeted lease ends the stop without signals.
+  if (!leases) return { type: 'alert', reason: 'lease inventory unavailable for the pending targeted stop', ...base };
+  const leaseCurrent = targetCurrent(leases.find(lease => lease.id === pending.lease.id), pending.stopTarget);
+  const row = table.find(p => p.pid === pending.owner.pid);
+  if (!row || row.command === '<defunct>' || row.startMs > pending.owner.startMs) {
+    return { type: 'finished', reason: 'owner exited; its lease no longer counts', ...base };
+  }
+  if (!verifiedRow(row, pending.owner, state)) {
+    return { type: 'ineligible', reason: 'owner not eligible: identity changed or it became a protected process', ...base };
+  }
+  const tracked = [...(pending.members ?? []), ...(pending.targets ?? [])];
+  const found = targetMembers(pending.stopTarget, pending.owner, table, state, tracked, leaseCurrent);
+  if (found.skip === 'stop target has no members') {
+    return { type: 'finished', reason: leaseCurrent ? 'stop target group and its tracked processes are gone'
+      : 'lease released or retargeted, and no tracked process remains', ...base };
+  }
+  if (found.skip) return { type: 'ineligible', reason: found.skip, ...base };
+  if (!reason) return { type: 'none', reason: 'no danger; waiting for the stopped group to exit' };
+  const since = Math.max(pending.stageAt, state.dangerSince ?? Infinity);
+  if (!(mono - since >= CONFIG.killMs)) return { type: 'wait', reason: `${reason}; waiting for 45 seconds of continued danger` };
+  if (pending.stage === 'owner') return { type: 'escalate', reason, ...base, targets: found.members };
+  if (pending.stage === 'tree') return { type: 'kill', reason, ...base, targets: found.members };
+  return { type: 'alert', reason: `${reason}; stopped group still present after SIGKILL` };
+}
+
+// Signals a targeted stop's members, never the owner. The owner is re-verified first, and the members are rebuilt
+// from one fresh snapshot; each is then checked by pid and start time immediately before its signal.
+function performTarget(action, effects) {
+  const signal = action.type === 'kill' ? 'SIGKILL' : 'SIGTERM';
+  const ineligible = reason => ({ ...action, type: 'ineligible', signal, signalled: [], reason });
+  if (!verifiedRow(effects.identify(action.owner.pid), action.owner, effects.context)) {
+    return ineligible('owner not eligible at signal time: exited, identity changed or it became a protected process');
+  }
+  // Snapshot first, lease second (see readInventory). An unreadable inventory cannot confirm the group, so then only
+  // tracked processes are signalled.
+  let table;
+  try { table = effects.table(); }
+  catch { return { ...action, type: 'alert', reason: `${action.reason}; process table unavailable before signalling` }; }
+  let leaseCurrent = false;
+  try { leaseCurrent = targetCurrent(effects.leases().find(lease => lease.id === action.lease.id), action.stopTarget); }
+  catch { /* leaseCurrent stays false */ }
+  const tracked = [...(action.members ?? []), ...(action.targets ?? [])];
+  const found = targetMembers(action.stopTarget, action.owner, table, effects.context, tracked, leaseCurrent);
+  if (found.skip) return ineligible(found.skip);
+  const signalled = [], skippedPids = [];
+  for (const target of found.members) {
+    const row = Number.isSafeInteger(target.pid) && target.pid > 1 ? effects.identify(target.pid) : null;
+    // Same pid, start time and process group as the snapshot the members came from.
+    if (!verifiedRow(row, target, effects.context) || row.pgid !== target.pgid || row.pid === action.owner.pid) {
+      skippedPids.push(target.pid);
+      continue;
+    }
+    if (effects.signal(target.pid, signal)) signalled.push(target.pid);
+    else skippedPids.push(target.pid);
+  }
+  // Both fields carry the fresh set, so the pending stop tracks members first seen at this step.
+  return { ...action, signal, signalled, skippedPids, members: found.members, targets: found.members };
+}
+
+// Why an owner stop decided earlier must not go ahead, or null. The lease may have gained a stop target since the
+// decision, or have been released while the same owner, a runner, went on to a job whose lease has one. Either way
+// the processes to stop are a group, not the owner. Any other case, including an unreadable inventory, leaves today's
+// behaviour for every run that never sets a target.
+function ownerStopCalledOff(action, effects) {
+  let leases;
+  try { leases = effects.leases(); } catch { return null; }
+  const current = leases.find(lease => lease.id === action.lease.id);
+  if (current?.stopTarget) return 'lease gained a stop target; the next decision stops its group instead of the owner';
+  if (!current && leases.some(lease => lease.ownerPid === action.owner.pid && lease.stopTarget)) {
+    return 'lease released and its owner now runs a job with a stop target';
+  }
+  return null;
+}
+
 export async function perform(action, dryRun, effects) {
   if (dryRun || !['term', 'escalate', 'kill', 'finished'].includes(action.type)) return action;
+  if (action.stopTarget) return action.type === 'finished' ? { ...action, released: false } : performTarget(action, effects);
   if (action.type === 'finished') {
     // decide returns finished only after a fresh snapshot shows the owner gone or reused.
     let orphans = {};
@@ -749,6 +898,10 @@ export async function perform(action, dryRun, effects) {
       skippedPids.push(target.pid);
       continue;
     }
+    // The decision may come from a lease read before the owner set a stop target, or released since. The owner is
+    // first in order, so calling the step off here means nothing has been signalled.
+    const calledOff = target.pid === action.owner.pid ? ownerStopCalledOff(action, effects) : null;
+    if (calledOff) return { ...result, type: 'ineligible', signal, signalled: [], reason: calledOff };
     // Accepted residual risk: the identity check above and the signal below are
     // two operations, and macOS has no identity-bound signal (no pidfd). The pid
     // could in principle exit and be reused in between. macOS assigns pids in
@@ -853,11 +1006,15 @@ export function createGuard(io) {
     // An ineligible owner was not acted on, so it does not use up the 90-second spacing.
     if (planned.type === 'term' && result.type !== 'ineligible') state.lastStepAt = at;
     if (result.type === 'term') {
-      state.pending = { lease: result.lease, owner: result.owner, members: result.members, stage: 'owner', stageAt: at };
+      state.pending = { lease: result.lease, owner: result.owner, members: result.members, stage: 'owner', stageAt: at,
+        ...(result.stopTarget ? { stopTarget: result.stopTarget } : {}) };
     } else if (result.type === 'escalate') state.pending = { ...state.pending, targets: result.targets, stage: 'tree', stageAt: at };
     else if (result.type === 'kill') {
+      // A targeted SIGKILL step carries the members it found, including one first seen in its snapshot and skipped at
+      // its own check, so the stop is not declared finished while that process lives.
       state.pending = { ...state.pending, stage: 'killed', stageAt: at,
-        ownerKilled: Boolean(result.signalled?.includes(state.pending.owner.pid)) };
+        ownerKilled: Boolean(result.signalled?.includes(state.pending.owner.pid)),
+        ...(state.pending.stopTarget && result.targets ? { targets: result.targets } : {}) };
     } else if (['finished', 'hook-released', 'ineligible'].includes(result.type)) state.pending = null;
   }
 
@@ -1087,7 +1244,10 @@ async function main(args) {
     readFootprints: () => readFootprints(),
     notify: postNotification,
     recordRunaway: (action, reading) => writeRunawayRecord(directory, action, reading),
-    readInventory: () => ({ leases: readLeases(leaseDirectory), table: readProcessTable() }),
+    // The process table is read before the leases. A lease still present after the snapshot was not yet released when
+    // the snapshot was taken, so its owner had not moved on to a later job: the snapshot's processes in its target
+    // group are that lease's job, not a later one that reused the number.
+    readInventory: () => { const table = readProcessTable(); return { table, leases: readLeases(leaseDirectory) }; },
     wallNow: () => Date.now(),
     monoNow: () => performance.now(),
     writeReading: entry => appendLog(path.join(directory, 'readings.log'), entry),

@@ -182,8 +182,9 @@ def relay(plan_path, plan_digest, plan):
     return code
 
 
-# The run name heavy-job-queue gives the lease it takes for each job (its _acquire_lease). oblige checks it, so a wrong
-# lease ID cannot make another run's lease cleanup-required.
+# The run name heavy-job-queue gives the lease it takes for each job (its _acquire_lease), used when the queue does not
+# pass HEAVY_JOB_QUEUE_LEASE_RUN (before ac3e70c). oblige checks it, so a wrong lease ID cannot make another run's lease
+# cleanup-required.
 QUEUE_LEASE_RUN = "heavy-job-queue"
 
 # lr-lease's own vm decision, read-only: no lease is taken. It runs the lr-lease-core.mjs beside the lr-lease the plan
@@ -195,8 +196,8 @@ QUEUE_LEASE_RUN = "heavy-job-queue"
 # reap()'s complete source, with its START_TOLERANCE_MS line, must hash to a pinned digest, so any change to the test
 # mirrored here is "admission unknown". A missing export or another arity fails loudly too (exit 3).
 REAP_SOURCE_SHA256 = (
-    # ~/.long-run/bin/lr-lease-core.mjs as installed 2026-10-07 (and ops/heavy/vendor/long-run), and the same with the
-    # proposed stop-target patch (agent-heavy-job-queue docs/proposals/lr-lease-stop-target), which leaves reap alone.
+    # ~/.long-run/bin/lr-lease-core.mjs as installed 2026-10-07, before and after the stop-target patch (installed
+    # 22:17Z, vendored in ops/heavy/vendor/long-run): that patch leaves reap() and START_TOLERANCE_MS byte for byte.
     "bcab31fcaeb7e954572248320bc88bdf4b6d05ce3a5003d0d6daf9c5ae51f1c9",
 )
 VM_CHECK_JS = r"""
@@ -616,7 +617,7 @@ class Supervisor:
             # The queue releases its lease once the relay's group is empty, which its SIGKILL of the relay after 10 s
             # makes true while cleanup may still run. Obliged, that release quarantines the lease instead, until this
             # attempt's token acknowledges the clean (the vendored lr-lease; with the live one, _hold_reservation).
-            got = self._lease_cmd("oblige", self.queue_lease, "--run", QUEUE_LEASE_RUN, "--attempt", self.attempt,
+            got = self._lease_cmd("oblige", self.queue_lease, "--run", self._queue_lease_run(), "--attempt", self.attempt,
                                   "--cleanup-token-sha256", recovery.token_sha256(self.token))
             if got.returncode != 0:
                 self._release()
@@ -639,6 +640,25 @@ class Supervisor:
                                 "obliged": self.lease_obliged, "renewals": 0,
                                 "renew_failures": [], "queue_lease": self.queue_lease}
         return None
+
+    def _queue_lease_run(self):
+        """The run name to oblige the queue's lease with. A queue from ac3e70c on passes HEAVY_JOB_QUEUE_LEASE_RUN, which
+        is used, and must be the lease record's own run: a disagreement refuses rather than oblige the wrong lease. An
+        older queue passes nothing, and names every lease QUEUE_LEASE_RUN."""
+        named = os.environ.get("HEAVY_JOB_QUEUE_LEASE_RUN")
+        if not named:
+            return QUEUE_LEASE_RUN
+        try:
+            record = next((r for r in procs.lease_records(self.paths["lr_lease"]) if r["id"] == self.queue_lease), None)
+        except OSError as ex:
+            raise procs.Refusal("cannot read the queue's lease {} to check HEAVY_JOB_QUEUE_LEASE_RUN: {}".format(
+                self.queue_lease, ex)) from None
+        if record is None:
+            raise procs.Refusal("the queue's lease {} is not listed by lr-lease".format(self.queue_lease))
+        if record.get("run") != named:
+            raise procs.Refusal("HEAVY_JOB_QUEUE_LEASE_RUN is {} but the queue's lease {} is run {}".format(
+                named, self.queue_lease, record.get("run")))
+        return named
 
     def _queue_lease(self):
         """The heavy lease the queue took for this job (heavy-job-queue 401c4d1 and later), when it is live.

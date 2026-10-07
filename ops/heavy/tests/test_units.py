@@ -1106,3 +1106,35 @@ class VmAdmissionTest(Temp):
                 self.assertEqual(plan["admission"], {"kind": "vm", "queue_min_free_gib": vm_floor + 6 + 2,
                                                      "vm_floor_gib": vm_floor, "est_mem_gib": 6, "est_disk_gib": 2,
                                                      "source": policy, "policy_sha256": digest})
+
+
+class QueueLeaseRunTest(Temp):
+    """The run name the supervisor obliges the queue's lease with: HEAVY_JOB_QUEUE_LEASE_RUN when the queue passes it
+    (heavy-job-queue ac3e70c and later), which must be the lease record's own run; heavy-job-queue otherwise."""
+
+    def supervisor(self, run_in_record):
+        import supervise
+        lease_id = "11111111-2222-4333-8444-555555555555"
+        status = self.write("lr-lease", "#!/bin/sh\n[ \"$1\" = status ] || exit 2\necho 'Readings (stub)'\necho 'Leases: 1'\n"
+                                        "echo '{}'\n".format(json.dumps({"id": lease_id, "run": run_in_record, "kind": "heavy"})))
+        os.chmod(status, 0o755)
+        sup = supervise.Supervisor.__new__(supervise.Supervisor)
+        sup.paths, sup.queue_lease = {"lr_lease": status}, lease_id
+        return sup
+
+    def test_the_named_run_is_used_and_must_be_the_records(self):
+        import procs
+        sup = self.supervisor("heavy-job-queue-v2")
+        with mock.patch.dict(os.environ, {"HEAVY_JOB_QUEUE_LEASE_RUN": "heavy-job-queue-v2"}):
+            self.assertEqual(sup._queue_lease_run(), "heavy-job-queue-v2")
+        with mock.patch.dict(os.environ, {"HEAVY_JOB_QUEUE_LEASE_RUN": "someone-else"}):
+            with self.assertRaisesRegex(procs.Refusal, "HEAVY_JOB_QUEUE_LEASE_RUN"):
+                sup._queue_lease_run()
+
+    def test_without_it_an_older_queues_run_name_and_no_lookup(self):
+        import supervise
+        sup = self.supervisor("heavy-job-queue")
+        sup.paths = {"lr_lease": "/nonexistent/lr-lease"}  # not consulted
+        env = {k: v for k, v in os.environ.items() if k != "HEAVY_JOB_QUEUE_LEASE_RUN"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(sup._queue_lease_run(), supervise.QUEUE_LEASE_RUN)

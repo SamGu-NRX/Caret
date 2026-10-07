@@ -59,6 +59,18 @@ export function machineReaders(root) {
       const at = Date.parse(`${text.replace(/\s+/g, ' ')} UTC`);
       return Number.isFinite(at) ? at : null;
     },
+    // The process group of pid and that process's start time, from one ps call, or null when ps cannot say.
+    // setStopTarget uses it to check that pid leads its own group and to record the leader's identity.
+    processGroup: pid => {
+      let text;
+      try {
+        text = execFileSync('/bin/ps', ['-o', 'pgid=,lstart=', '-p', String(pid)],
+          { encoding: 'utf8', timeout: 10000, env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).trim();
+      } catch { return null; }
+      const match = /^(\d+)\s+(.+)$/.exec(text);
+      const startMs = match ? Date.parse(`${match[2].replace(/\s+/g, ' ')} UTC`) : NaN;
+      return match && Number.isFinite(startMs) ? { pgid: Number(match[1]), startMs } : null;
+    },
   };
 }
 
@@ -78,6 +90,9 @@ export function readPolicy(file) {
   return policy;
 }
 
+const validStopTarget = target => target !== null && typeof target === 'object' && Number.isInteger(target.pgid) &&
+  target.pgid > 1 && nonnegative(target.leaderStartMs) && nonnegative(target.setAt);
+
 export function readLeases(directory) {
   return fs.readdirSync(directory).filter(name => validId(name.replace(/\.json$/, '')) && name.endsWith('.json')).map(name => {
     const file = path.join(directory, name);
@@ -88,7 +103,8 @@ export function readLeases(directory) {
         !nonnegative(lease.estMemGB) || !nonnegative(lease.estDiskGB) || !nonnegative(lease.expiresAt) ||
         (lease.cleanupRequired !== undefined && (lease.cleanupRequired !== true || !ATTEMPT.test(lease.attempt ?? '') ||
           !HEX64.test(lease.tokenSha256 ?? ''))) ||
-        (lease.state !== undefined && (lease.state !== 'quarantined' || lease.cleanupRequired !== true))) {
+        (lease.state !== undefined && (lease.state !== 'quarantined' || lease.cleanupRequired !== true)) ||
+        (lease.stopTarget !== undefined && !validStopTarget(lease.stopTarget))) {
       throw new Error(`invalid lease record: ${name}`);
     }
     return lease;
@@ -264,6 +280,29 @@ export function clear(directory, id, reason, operator) {
   }
   fs.unlinkSync(path.join(directory, `${id}.json`));
   return { cleared: true };
+}
+
+// Names the process group that does the leased work, so mem-guard can stop that group instead of the owner. The
+// owner stays the lease's liveness: a dead or reused owner still means mem-guard skips the lease. Only the owner may
+// set it, once, on an active lease, and only for a live process that leads its own group; lr-lease reads that leader's
+// start time itself, in the same ps format mem-guard compares against. There is no clear: the owner releases the
+// lease once the group is empty, which removes the target with it.
+export function setStopTarget(directory, readers, id, ownerPid, pgid) {
+  if (!validId(id)) throw new Error('invalid lease ID');
+  if (!Number.isInteger(ownerPid) || ownerPid <= 0) throw new Error('--owner-pid must be a positive integer');
+  if (!Number.isInteger(pgid) || pgid <= 1) throw new Error('--pgid must be an integer above 1');
+  const lease = readLeases(directory).find(record => record.id === id);
+  if (!lease) return { reason: 'no such lease' };
+  if (lease.state === 'quarantined') return { reason: 'lease is quarantined' };
+  if (lease.ownerPid !== ownerPid) return { reason: `lease is owned by pid ${lease.ownerPid}, not ${ownerPid}` };
+  if (!readers.pidAlive(ownerPid)) return { reason: 'owner pid is dead' };
+  if (lease.stopTarget) return { reason: `lease already has stop target pgid ${lease.stopTarget.pgid}` };
+  const leader = readers.processGroup(pgid);
+  if (!leader) return { reason: `pid ${pgid} is not running` };
+  if (leader.pgid !== pgid) return { reason: `pid ${pgid} does not lead its own process group (its group is ${leader.pgid})` };
+  const targeted = { ...lease, stopTarget: { pgid, leaderStartMs: leader.startMs, setAt: readers.now() } };
+  writeLease(directory, targeted, 'target');
+  return { lease: targeted };
 }
 
 // Renewal by whoever holds the token (the recovery owner after the original owner died), for an active lease only.

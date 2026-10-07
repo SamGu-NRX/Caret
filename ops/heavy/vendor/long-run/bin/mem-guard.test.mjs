@@ -710,21 +710,22 @@ test('swap and snapshot parsers expose byte units, carry both clocks, and mark m
   assert.equal(readSnapshot(() => 'not a sysctl', undefined, now, mono0).unknown, true);
 });
 
-test('process table comes from one UTC ps call and parses pid, ppid, uid, start and command', () => {
-  const text = '  101    50   501 Sat Oct  3 08:00:00 2026     /bin/bash /x/run.sh --token secret\n' +
-    '    7     1    -2 Thu Jan  1 00:00:05 2026 /usr/libexec/thing\n  300   101   501 Sat Oct  3 08:00:01 2026     <defunct>\n';
+test('process table comes from one UTC ps call and parses pid, ppid, pgid, uid, start and command', () => {
+  const text = '  101    50   101   501 Sat Oct  3 08:00:00 2026     /bin/bash /x/run.sh --token secret\n' +
+    '    7     1     7    -2 Thu Jan  1 00:00:05 2026 /usr/libexec/thing\n  300   101   101   501 Sat Oct  3 08:00:01 2026     <defunct>\n';
   const calls = [];
   const rows = readProcessTable((...args) => { calls.push(args); return text; });
-  assert.deepEqual(calls, [['/bin/ps', ['-axo', 'pid=,ppid=,uid=,lstart=,command='], { TZ: 'UTC', LC_ALL: 'C' }]]);
-  assert.deepEqual(rows[0], { pid: 101, ppid: 50, uid: 501, startMs: Date.UTC(2026, 9, 3, 8, 0, 0), command: '/bin/bash /x/run.sh --token secret' });
+  assert.deepEqual(calls, [['/bin/ps', ['-axo', 'pid=,ppid=,pgid=,uid=,lstart=,command='], { TZ: 'UTC', LC_ALL: 'C' }]]);
+  assert.deepEqual(rows[0], { pid: 101, ppid: 50, pgid: 101, uid: 501, startMs: Date.UTC(2026, 9, 3, 8, 0, 0), command: '/bin/bash /x/run.sh --token secret' });
   assert.deepEqual([rows[1].uid, rows[1].startMs], [-2, Date.UTC(2026, 0, 1, 0, 0, 5)]);
   assert.equal(rows[2].command, '<defunct>');
   assert.throws(() => parseProcessTable('garbage'), /unreadable/);
-  assert.throws(() => parseProcessTable('1 1 1 Sat Foo  3 08:00:00 2026 x'), /unreadable/);
+  assert.throws(() => parseProcessTable('1 1 1 1 Sat Foo  3 08:00:00 2026 x'), /unreadable/);
+  assert.throws(() => parseProcessTable('  101    50   501 Sat Oct  3 08:00:00 2026 /bin/bash'), /unreadable/, 'the old five-column form');
 });
 
 test('identifyProcess returns only the asked-for pid and treats any failure as unverified', () => {
-  const row = '  101    50   501 Sat Oct  3 08:00:00 2026 /bin/bash run.sh';
+  const row = '  101    50   101   501 Sat Oct  3 08:00:00 2026 /bin/bash run.sh';
   assert.equal(identifyProcess(101, () => row).startMs, Date.UTC(2026, 9, 3, 8, 0, 0));
   assert.equal(identifyProcess(102, () => row), null);
   assert.equal(identifyProcess(101, () => { throw new Error('exit 1'); }), null);
@@ -1316,4 +1317,342 @@ test('real signal: SIGTERM reaches a verified child; a mismatched start time is 
   assert.equal(sent.signal, 'SIGTERM');
   assert.deepEqual(sent.signalled, [pid]);
   assert.deepEqual(await exited, { code: null, signal: 'SIGTERM' });
+});
+
+// Stop targets. The owner is the queue runner (ownerRow, pid 101). Its job leads group 201; 202 is in that group;
+// 203 is 202's child that left the group with setsid. The job started after the lease was created.
+const leaderStartMs = createdAt + 2000;
+const jobLeader = { pid: 201, ppid: 101, pgid: 201, uid: 501, startMs: leaderStartMs, command: '/usr/bin/python3 job.py' };
+const jobMember = { pid: 202, ppid: 201, pgid: 201, uid: 501, startMs: leaderStartMs + 1000, command: '/usr/bin/node build.mjs' };
+const jobEscapee = { pid: 203, ppid: 202, pgid: 203, uid: 501, startMs: leaderStartMs + 2000, command: '/usr/bin/node worker.mjs' };
+const runnerRow = { ...ownerRow, pgid: 101 };
+const jobTable = [shellRow, runnerRow, jobLeader, jobMember, jobEscapee];
+const targetLease = { ...lease, run: 'heavy-job-queue', stopTarget: { pgid: 201, leaderStartMs, setAt: createdAt + 3000 } };
+const pids = list => list.map(t => t.pid);
+
+test('stop target: the job group and its escapee are stopped; the runner never is', async () => {
+  const term = run(nightDanger(), [targetLease], jobTable);
+  assert.equal(term.type, 'term');
+  assert.deepEqual(term.stopTarget, { pgid: 201, leaderStartMs });
+  assert.equal(term.owner.pid, 101, 'the owner stays the identity of the stop');
+  assert.deepEqual(pids(term.members).sort(), [201, 202, 203]);
+  const effects = fakeEffects({ rows: jobTable, leases: () => [targetLease] });
+  const result = await perform(term, false, effects);
+  assert.deepEqual(effects.calls.map(c => c[1]).sort(), [201, 202, 203]);
+  assert.ok(effects.calls.every(c => c[0] === 'signal' && c[2] === 'SIGTERM'));
+  assert.ok(!effects.calls.some(c => c[1] === 101), 'the runner is never signalled');
+  assert.deepEqual(result.signalled.sort(), [201, 202, 203]);
+});
+
+for (const [name, table, reason] of [
+  ['its leader pid now belongs to a later process', [shellRow, runnerRow, { ...jobLeader, startMs: leaderStartMs + 5000 }, jobMember],
+    /leader pid now belongs to a later process/],
+  ['the group is empty', [shellRow, runnerRow], /no members/],
+]) {
+  test(`stop target is skipped, and the owner is not stopped instead, when ${name}`, async () => {
+    const decision = run(nightDanger(), [targetLease], table);
+    assert.equal(decision.type, 'alert');
+    assert.match(decision.skipped[0].reason, reason);
+    const effects = fakeEffects({ rows: table, leases: () => [targetLease] });
+    await perform(decision, false, effects);
+    assert.deepEqual(effects.calls, []);
+  });
+}
+
+test('stop target: a dead or reused owner means the lease is skipped, as for an untargeted lease', () => {
+  const dead = run(nightDanger(), [targetLease], [shellRow, jobLeader, jobMember]);
+  assert.equal(dead.type, 'alert');
+  assert.match(dead.skipped[0].reason, /owner not running/);
+  const reused = run(nightDanger(), [targetLease], [shellRow, { ...runnerRow, startMs: createdAt + 60000 }, jobLeader]);
+  assert.equal(reused.type, 'alert');
+  assert.match(reused.skipped[0].reason, /owner pid reused/);
+});
+
+test('stop target ladder: each step rebuilds the group, SIGKILL reaches only the group, and finishing releases nothing', async () => {
+  const target = { pgid: 201, leaderStartMs };
+  const state = stage => ({ dangerSince: mono0 - CONFIG.killMs, pending: { lease: { id: targetLease.id, run: targetLease.run,
+    kind: 'heavy', createdAt }, owner: id(runnerRow), members: [], stopTarget: target, stage, stageAt: mono0 - CONFIG.killMs } });
+  // A process forked into the group after the SIGTERM is reached by the next step.
+  const late = { pid: 204, ppid: 201, pgid: 201, uid: 501, startMs: leaderStartMs + 40000, command: '/bin/sleep 60' };
+  const table = [...jobTable, late];
+  assert.equal(run(nightDanger(), [targetLease], table, { ...state('owner'), dangerSince: mono0 - 44999 }).type, 'wait');
+  const escalate = run(nightDanger(), [targetLease], table, state('owner'));
+  assert.equal(escalate.type, 'escalate');
+  assert.deepEqual(pids(escalate.targets).sort(), [201, 202, 203, 204]);
+  const kill = run(nightDanger(), [targetLease], table, state('tree'));
+  assert.equal(kill.type, 'kill');
+  const effects = fakeEffects({ rows: table, leases: () => [targetLease] });
+  await perform(kill, false, effects);
+  assert.deepEqual(effects.calls.map(c => c[1]).sort(), [201, 202, 203, 204]);
+  assert.ok(effects.calls.every(c => c[2] === 'SIGKILL'));
+  // The group is gone and the runner lives on: finished, and the runner, not mem-guard, releases the lease.
+  const finished = run(sequence(3, 1), [targetLease], [shellRow, runnerRow], state('killed'));
+  assert.equal(finished.type, 'finished');
+  const done = fakeEffects({ rows: [shellRow, runnerRow] });
+  const performed = await perform(finished, false, done);
+  assert.deepEqual(done.calls, []);
+  assert.equal(performed.released, false);
+});
+
+test('stop target: the guard loop stops the group, keeps the runner and its lease, and clears the pending stop', async () => {
+  const h = harness({ inventory: { leases: [targetLease], table: jobTable } });
+  for (let i = 0; i < 3; i++) await h.step();
+  assert.deepEqual(h.calls.map(c => c[1]).sort(), [201, 202, 203]);
+  assert.equal(h.guard.state.pending.stopTarget.pgid, 201);
+  h.clock.inventory = { leases: [targetLease], table: [shellRow, runnerRow] };
+  const result = await h.step({ pressure: 1 });
+  assert.equal(result.type, 'finished');
+  assert.equal(h.guard.state.pending, null);
+  assert.ok(!h.calls.some(c => c[0] === 'release'), 'mem-guard leaves the release to the runner');
+  assert.ok(!h.calls.some(c => c[1] === 101));
+});
+
+test('stop target: an owner that exits mid-ladder finishes the stop without signals or release', async () => {
+  const target = { pgid: 201, leaderStartMs };
+  const state = { dangerSince: mono0 - CONFIG.killMs, pending: { lease: { id: targetLease.id, run: targetLease.run, kind: 'heavy', createdAt },
+    owner: id(runnerRow), members: [], stopTarget: target, stage: 'owner', stageAt: mono0 - CONFIG.killMs } };
+  const finished = run(nightDanger(), [targetLease], [shellRow, jobLeader, jobMember], state);
+  assert.equal(finished.type, 'finished');
+  const effects = fakeEffects({ rows: [shellRow, jobLeader, jobMember] });
+  await perform(finished, false, effects);
+  assert.deepEqual(effects.calls, []);
+});
+
+// Review fixes (Astra, 2026-10-07).
+const pendingTarget = (stage, changes = {}) => ({ dangerSince: mono0 - CONFIG.killMs, pending: { lease: { id: targetLease.id,
+  run: targetLease.run, kind: 'heavy', createdAt }, owner: id(runnerRow), members: [], stopTarget: { pgid: 201, leaderStartMs },
+  stage, stageAt: mono0 - CONFIG.killMs, ...changes } });
+
+test('review: an owner stop decided from a lease read before its target was set is called off', async () => {
+  const untargeted = { ...targetLease, stopTarget: undefined };
+  const term = run(nightDanger(), [untargeted], jobTable);
+  assert.deepEqual([term.type, term.owner.pid, term.stopTarget], ['term', 101, undefined]);
+  const effects = fakeEffects({ rows: jobTable, leases: () => [targetLease] });
+  const result = await perform(term, false, effects);
+  assert.equal(result.type, 'ineligible');
+  assert.match(result.reason, /gained a stop target/);
+  assert.deepEqual(effects.calls, [], 'the runner is not signalled');
+});
+
+test('review: a released or retargeted lease ends a pending targeted stop, even with a reused group in view', async () => {
+  // Group 201's leader is gone; an unrelated later process now sits in a reused group 201.
+  const reused = { pid: 250, ppid: 1, pgid: 201, uid: 501, startMs: leaderStartMs + 600000, command: '/bin/sleep 600' };
+  const table = [shellRow, runnerRow, reused];
+  const released = run(nightDanger(), [], table, pendingTarget('tree'));
+  assert.equal(released.type, 'finished');
+  const retargeted = run(nightDanger(), [{ ...targetLease, stopTarget: { pgid: 777, leaderStartMs, setAt: createdAt } }], table,
+    pendingTarget('tree'));
+  assert.equal(retargeted.type, 'finished');
+  assert.equal(run(nightDanger(), null, table, pendingTarget('tree')).type, 'alert', 'no inventory, no signals');
+  const effects = fakeEffects({ rows: table, leases: () => [] });
+  // Tracked identities come from earlier steps of this stop: the original job, long gone.
+  const performed = await perform({ ...released, type: 'kill', targets: [id(jobMember)] }, false, effects);
+  assert.equal(performed.type, 'ineligible');
+  assert.deepEqual(effects.calls, []);
+});
+
+test('review: a setsid escapee that ignored SIGTERM stays a target after its group is gone', async () => {
+  const orphan = { ...jobEscapee, ppid: 1 };
+  const table = [shellRow, runnerRow, orphan];
+  const escalate = run(nightDanger(), [targetLease], table, pendingTarget('owner', { members: [id(jobLeader), id(jobMember), id(jobEscapee)] }));
+  assert.equal(escalate.type, 'escalate');
+  assert.deepEqual(pids(escalate.targets), [203]);
+  const kill = run(nightDanger(), [targetLease], table, pendingTarget('tree', { targets: escalate.targets }));
+  const effects = fakeEffects({ rows: table, leases: () => [targetLease] });
+  await perform(kill, false, effects);
+  assert.deepEqual(effects.calls, [['signal', 203, 'SIGKILL']]);
+  const gone = run(nightDanger(), [targetLease], [shellRow, runnerRow], pendingTarget('killed', { targets: escalate.targets }));
+  assert.equal(gone.type, 'finished');
+  // A reused pid 203 is a different process and is not tracked.
+  const reusedPid = run(nightDanger(), [targetLease], [shellRow, runnerRow, { ...orphan, startMs: orphan.startMs + 90000 }],
+    pendingTarget('killed', { targets: escalate.targets }));
+  assert.equal(reusedPid.type, 'finished');
+});
+
+test('review: a member whose process group changed between snapshot and signal is skipped', async () => {
+  const term = run(nightDanger(), [targetLease], jobTable);
+  const moved = { ...jobMember, pgid: 999 };
+  const effects = fakeEffects({ rows: jobTable, leases: () => [targetLease],
+    identify: pid => (pid === 202 ? moved : jobTable.find(p => p.pid === pid) ?? null) });
+  const result = await perform(term, false, effects);
+  assert.ok(!effects.calls.some(c => c[1] === 202));
+  assert.ok(result.skippedPids.includes(202));
+  assert.deepEqual(result.signalled.sort(), [201, 203]);
+});
+
+// Second review round (Astra, 2026-10-07).
+test('review 2: a reused group number cannot pull in a process that does not descend from the runner', async () => {
+  // The lease is still current, the original leader is gone, and an unrelated process sits in group 201.
+  const unrelated = { pid: 260, ppid: 1, pgid: 201, uid: 501, startMs: leaderStartMs + 600000, command: '/bin/sleep 600' };
+  const decision = run(nightDanger(), [targetLease], [shellRow, runnerRow, unrelated]);
+  assert.equal(decision.type, 'alert');
+  assert.match(decision.skipped[0].reason, /no members/);
+  const kill = run(nightDanger(), [targetLease], [shellRow, runnerRow, unrelated], pendingTarget('tree'));
+  assert.equal(kill.type, 'finished');
+  const effects = fakeEffects({ rows: [shellRow, runnerRow, unrelated], leases: () => [targetLease] });
+  const performed = await perform({ ...kill, type: 'kill', targets: [] }, false, effects);
+  assert.equal(performed.type, 'ineligible');
+  assert.deepEqual(effects.calls, []);
+});
+
+test('review 2: a tracked escapee is still stopped after the runner released the lease', async () => {
+  const orphan = { ...jobEscapee, ppid: 1 };
+  const table = [shellRow, runnerRow, orphan];
+  const tracked = { members: [id(jobLeader), id(jobMember), id(jobEscapee)] };
+  const escalate = run(nightDanger(), [], table, pendingTarget('owner', tracked));
+  assert.deepEqual([escalate.type, pids(escalate.targets)], ['escalate', [203]]);
+  const effects = fakeEffects({ rows: table, leases: () => [] });
+  await perform({ ...escalate, type: 'kill' }, false, effects);
+  assert.deepEqual(effects.calls, [['signal', 203, 'SIGKILL']]);
+  assert.equal(run(nightDanger(), [], [shellRow, runnerRow], pendingTarget('killed', tracked)).type, 'finished');
+});
+
+test('review 2: a quarantined targeted lease is never a new victim and leaves a pending stop with tracked processes only', () => {
+  const quarantined = { ...targetLease, state: 'quarantined', cleanupRequired: true };
+  const decision = run(nightDanger(), [quarantined], jobTable);
+  assert.equal(decision.type, 'alert');
+  assert.match(decision.skipped[0].reason, /quarantined/);
+  const pending = run(nightDanger(), [quarantined], jobTable, pendingTarget('owner', { members: [id(jobMember)] }));
+  assert.deepEqual([pending.type, pids(pending.targets)], ['escalate', [202]]);
+});
+
+test('review 2: the owner re-check happens at its own signal, and an unreadable inventory keeps today\'s behaviour', async () => {
+  const untargeted = { ...targetLease, stopTarget: undefined };
+  const term = run(nightDanger(), [untargeted], jobTable);
+  const unreadable = fakeEffects({ rows: jobTable, leases: () => { throw new Error('EIO'); } });
+  const result = await perform(term, false, unreadable);
+  assert.deepEqual(unreadable.calls, [['signal', 101, 'SIGTERM']]);
+  assert.equal(result.type, 'term');
+  // The decision came from an inventory read before the runner set its target; by signal time the lease has one.
+  const racing = fakeEffects({ rows: jobTable, leases: () => [targetLease] });
+  const calledOff = await perform(term, false, racing);
+  assert.equal(calledOff.type, 'ineligible');
+  assert.deepEqual(racing.calls, []);
+});
+
+test('review 2: through the guard loop, a child first seen at the escalation signal is still killed after it leaves the group', async () => {
+  // 206 appears only in the snapshot the escalation step takes when it signals, not in the decision's inventory.
+  const child206 = { pid: 206, ppid: 202, pgid: 201, uid: 501, startMs: leaderStartMs + 20000, command: '/bin/sleep 60' };
+  let h, extra = [];
+  const rows = () => [...h.clock.inventory.table, ...extra];
+  h = harness({ inventory: { leases: [targetLease], table: jobTable },
+    effects: { table: () => rows(), identify: pid => rows().find(p => p.pid === pid) ?? null } });
+  const until = async type => {
+    for (let i = 0; i < 20; i++) { const r = await h.step(); if (r.type === type) return r; }
+    assert.fail(`no ${type} step`);
+  };
+  await until('term');
+  for (let i = 0; i < 8; i++) assert.equal((await h.step()).type, 'wait');
+  extra = [child206];
+  const escalate = await h.step();
+  assert.equal(escalate.type, 'escalate');
+  assert.ok(escalate.signalled.includes(206));
+  assert.ok(h.guard.state.pending.targets.some(t => t.pid === 206), 'the escalation step carries 206 into the pending stop');
+  // 206 leaves the group and is reparented; only tracking can still reach it.
+  extra = [];
+  h.clock.inventory = { leases: [targetLease], table: [...jobTable, { ...child206, ppid: 1, pgid: 206 }] };
+  const kill = await until('kill');
+  assert.ok(kill.signalled.includes(206), 'the SIGKILL step reaches the tracked child');
+});
+
+test('with the leader still holding the number, a member older than the leader makes the target stale and nothing is signalled', async () => {
+  const older = { ...jobMember, startMs: leaderStartMs - 5000 };
+  const table = [shellRow, runnerRow, jobLeader, older];
+  const decision = run(nightDanger(), [targetLease], table);
+  assert.equal(decision.type, 'alert');
+  assert.match(decision.skipped[0].reason, /member started before its leader/);
+  const effects = fakeEffects({ rows: table, leases: () => [targetLease] });
+  await perform(decision, false, effects);
+  assert.deepEqual(effects.calls, []);
+});
+
+// Third review round (Astra, 2026-10-07).
+test('review 3: a released lease whose runner moved on to a targeted job calls the owner stop off; other runs keep today\'s behaviour', async () => {
+  const untargeted = { ...targetLease, stopTarget: undefined };
+  const term = run(nightDanger(), [untargeted], jobTable);
+  const jobB = { ...targetLease, id: 'lease-b', stopTarget: { pgid: 301, leaderStartMs, setAt: createdAt } };
+  const movedOn = fakeEffects({ rows: jobTable, leases: () => [jobB] });
+  const calledOff = await perform(term, false, movedOn);
+  assert.equal(calledOff.type, 'ineligible');
+  assert.match(calledOff.reason, /owner now runs a job with a stop target/);
+  assert.deepEqual(movedOn.calls, []);
+  const released = fakeEffects({ rows: jobTable, leases: () => [] });
+  await perform(term, false, released);
+  assert.deepEqual(released.calls, [['signal', 101, 'SIGTERM']], 'an owner with no targeted lease is stopped as today');
+});
+
+test('review 3: while the leader is held (alive or a zombie) every group member counts, including a reparented one', () => {
+  const zombieLeader = { ...jobLeader, command: '<defunct>' };
+  const orphan = { ...jobMember, ppid: 1 };
+  const decision = run(nightDanger(), [targetLease], [shellRow, runnerRow, zombieLeader, orphan]);
+  assert.deepEqual([decision.type, pids(decision.members)], ['term', [202]]);
+  // The same orphan with the leader row gone is reachable only by descent, which it no longer has.
+  assert.equal(run(nightDanger(), [targetLease], [shellRow, runnerRow, orphan]).type, 'alert');
+});
+
+test('review 3: a stale group still leaves tracked escapees to stop', () => {
+  const replacement = { ...jobLeader, startMs: leaderStartMs + 600000 };
+  const orphan = { ...jobEscapee, ppid: 1 };
+  const escalate = run(nightDanger(), [targetLease], [shellRow, runnerRow, replacement, orphan],
+    pendingTarget('owner', { members: [id(jobEscapee)] }));
+  assert.deepEqual([escalate.type, pids(escalate.targets)], ['escalate', [203]]);
+});
+
+test('review 3: a targeted step takes its process snapshot before reading the lease', async () => {
+  const order = [];
+  const term = run(nightDanger(), [targetLease], jobTable);
+  const effects = fakeEffects({ rows: jobTable, table: () => { order.push('table'); return jobTable; },
+    leases: () => { order.push('leases'); return [targetLease]; } });
+  await perform(term, false, effects);
+  assert.deepEqual(order.slice(0, 2), ['table', 'leases']);
+});
+
+// Fresh Sol audit of the final patches (2026-10-07).
+test('audit: a reused group number whose new leader started in the neighbouring second is stale, not a target', async () => {
+  // Unrelated, launchd-parented, one whole ps second after the recorded leader.
+  const impostor = { pid: 201, ppid: 1, pgid: 201, uid: 501, startMs: leaderStartMs + 1000, command: '/bin/sleep 600' };
+  const table = [shellRow, runnerRow, impostor];
+  const decision = run(nightDanger(), [targetLease], table);
+  assert.equal(decision.type, 'alert');
+  assert.match(decision.skipped[0].reason, /leader pid now belongs to a later process/);
+  const effects = fakeEffects({ rows: table, leases: () => [targetLease] });
+  await perform({ type: 'term', reason: 'test', lease: { id: targetLease.id, run: targetLease.run, kind: 'heavy', createdAt },
+    owner: id(runnerRow), stopTarget: { pgid: 201, leaderStartMs }, members: [] }, false, effects);
+  assert.deepEqual(effects.calls, []);
+});
+
+test('audit: a group member one ps second older than its leader makes the target stale', () => {
+  const older = { ...jobMember, startMs: leaderStartMs - 1000 };
+  const decision = run(nightDanger(), [targetLease], [shellRow, runnerRow, jobLeader, older]);
+  assert.equal(decision.type, 'alert');
+  assert.match(decision.skipped[0].reason, /member started before its leader/);
+});
+
+test('audit: through the guard loop, a child first seen at SIGKILL stays tracked until it is gone', async () => {
+  const late = { pid: 205, ppid: 202, pgid: 201, uid: 501, startMs: leaderStartMs + 30000, command: '/bin/sleep 60' };
+  let h;
+  // 205 joins another group between the SIGKILL snapshot and its own per-pid check, so it is skipped there.
+  const identify = pid => {
+    const row = h.clock.inventory.table.find(p => p.pid === pid) ?? null;
+    return pid === 205 && row ? { ...row, pgid: 999 } : row;
+  };
+  h = harness({ inventory: { leases: [targetLease], table: jobTable }, effects: { identify } });
+  const until = async type => {
+    for (let i = 0; i < 20; i++) { const r = await h.step(); if (r.type === type) return r; }
+    assert.fail(`no ${type} step`);
+  };
+  await until('term');
+  await until('escalate');
+  h.clock.inventory = { leases: [targetLease], table: [...jobTable, late] };
+  const kill = await until('kill');
+  assert.ok(kill.skippedPids.includes(205), 'the regrouped child is skipped at its own check');
+  assert.ok(h.guard.state.pending.targets.some(t => t.pid === 205), 'but it stays tracked in the pending stop');
+  // The group is gone and the runner released the lease; 205 lives on, reparented and regrouped.
+  h.clock.inventory = { leases: [], table: [shellRow, runnerRow, { ...late, ppid: 1, pgid: 999 }] };
+  const after = await h.step();
+  assert.notEqual(after.type, 'finished');
+  assert.notEqual(h.guard.state.pending, null);
+  h.clock.inventory = { leases: [], table: [shellRow, runnerRow] };
+  assert.equal((await h.step()).type, 'finished');
+  assert.equal(h.guard.state.pending, null);
 });

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { acquire, release, renew, renewByToken, ack, oblige, clear, reap, readLeases, readPolicy, decision, parsePressure, parseSwap, parseQuiet, machineReaders } from './lr-lease-core.mjs';
+import { acquire, release, renew, renewByToken, ack, oblige, clear, setStopTarget, reap, readLeases, readPolicy, decision, parsePressure, parseSwap, parseQuiet, machineReaders } from './lr-lease-core.mjs';
 
 const bin = path.dirname(fileURLToPath(import.meta.url));
 // Tests pin the counts they assert. The live policy's thresholds are reused, but its counts are tuned
@@ -490,4 +490,87 @@ test('real PID liveness reader recognizes a child after exit', async () => {
     proc.on('close', resolve);
   });
   assert.equal(machineReaders(bin).pidAlive(proc.pid), false);
+});
+
+// Stop target. readers.processGroup reports { pgid, startMs } for a pid, or null when it is not running.
+const leaderStart = readings.now - 500;
+function targetReaders(overrides = {}) {
+  return { ...readers(), processGroup: pid => ({ pgid: pid, startMs: leaderStart }), ...overrides };
+}
+
+test('the owner names a live group leader as its stop target once', t => {
+  const directory = fixture(t);
+  const { lease } = acquire(directory, policy, readers(), request);
+  const { lease: targeted } = setStopTarget(directory, targetReaders(), lease.id, process.pid, 4242);
+  assert.deepEqual(targeted.stopTarget, { pgid: 4242, leaderStartMs: leaderStart, setAt: readings.now });
+  assert.deepEqual(readLeases(directory), [targeted]);
+  assert.equal(targeted.ownerPid, process.pid, 'the owner stays the lease liveness');
+  assert.match(setStopTarget(directory, targetReaders(), lease.id, process.pid, 4243).reason, /already has stop target pgid 4242/);
+});
+
+for (const [name, setup, reason] of [
+  ['a missing lease', () => ({ id: '00000000-0000-4000-8000-000000000000' }), /no such lease/],
+  ['another owner', () => ({ owner: process.pid + 1 }), /owned by pid/],
+  ['a dead owner', () => ({ readers: targetReaders({ pidAlive: () => false }) }), /owner pid is dead/],
+  ['a pgid that is not running', () => ({ readers: targetReaders({ processGroup: () => null }) }), /is not running/],
+  ['a pid that is not its group leader', () => ({ readers: targetReaders({ processGroup: () => ({ pgid: 7, startMs: leaderStart }) }) }),
+    /does not lead its own process group \(its group is 7\)/],
+]) {
+  test(`stop target refused for ${name}`, t => {
+    const directory = fixture(t);
+    const { lease } = acquire(directory, policy, readers(), request);
+    const case_ = setup();
+    const result = setStopTarget(directory, case_.readers ?? targetReaders(), case_.id ?? lease.id, case_.owner ?? process.pid, 4242);
+    assert.match(result.reason, reason);
+    assert.equal(readLeases(directory)[0].stopTarget, undefined);
+  });
+}
+
+test('stop target refused on a quarantined lease', t => {
+  const directory = fixture(t);
+  const { lease } = acquire(directory, policy, readers(), request);
+  oblige(directory, lease.id, request.run, 'a1', 'a'.repeat(64));
+  release(directory, lease.id);
+  assert.match(setStopTarget(directory, targetReaders(), lease.id, process.pid, 4242).reason, /quarantined/);
+});
+
+test('readLeases rejects a malformed stop target and accepts a record without one', t => {
+  const directory = fixture(t);
+  const { lease } = acquire(directory, policy, readers(), request);
+  assert.equal(readLeases(directory)[0].stopTarget, undefined);
+  for (const bad of [null, 'x', { pgid: 1, leaderStartMs: 0, setAt: 0 }, { pgid: 4.5, leaderStartMs: 0, setAt: 0 },
+    { pgid: 42, leaderStartMs: -1, setAt: 0 }, { pgid: 42, leaderStartMs: 0 }]) {
+    fs.writeFileSync(path.join(directory, `${lease.id}.json`), JSON.stringify({ ...lease, stopTarget: bad }));
+    assert.throws(() => readLeases(directory), /invalid lease record/, JSON.stringify(bad));
+  }
+});
+
+test('isolated CLI target records a real detached group leader and refuses a non-leader', async t => {
+  const home = fixture(t);
+  const root = path.join(home, '.long-run');
+  fs.mkdirSync(root);
+  const cliPolicy = structuredClone(policy);
+  for (const kind of Object.keys(cliPolicy.kinds)) cliPolicy.kinds[kind].diskFloorGB = 0;
+  fs.writeFileSync(path.join(root, 'lease-policy.json'), JSON.stringify(cliPolicy));
+  const env = { ...process.env, HOME: home };
+  const lr = args => spawnSync(path.join(bin, 'lr-lease'), args, { env, encoding: 'utf8' });
+  // detached makes the child lead a new process group; the plain child stays in this test's group.
+  const leader = spawn('/bin/sleep', ['30'], { detached: true, stdio: 'ignore' });
+  const member = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
+  t.after(() => { leader.kill('SIGKILL'); member.kill('SIGKILL'); });
+  const granted = lr(['acquire', '--run', 'cli-target', '--kind', 'heavy', '--est-mem', '0', '--est-disk', '0',
+    '--owner-pid', String(process.pid)]);
+  assert.equal(granted.status, 0, granted.stdout);
+  const id = granted.stdout.trim();
+  const refused = lr(['target', id, '--owner-pid', String(process.pid), '--pgid', String(member.pid)]);
+  assert.equal(refused.status, 75);
+  assert.match(refused.stdout, /does not lead its own process group/);
+  const set = lr(['target', id, '--owner-pid', String(process.pid), '--pgid', String(leader.pid)]);
+  assert.equal(set.status, 0, set.stdout);
+  const [record] = readLeases(path.join(root, 'leases'));
+  assert.equal(record.stopTarget.pgid, leader.pid);
+  assert.equal(record.stopTarget.leaderStartMs % 1000, 0, 'ps lstart has whole-second resolution');
+  assert.ok(Math.abs(record.stopTarget.leaderStartMs - Date.now()) < 60000);
+  assert.equal(lr(['release', id]).status, 0);
+  assert.equal(readLeases(path.join(root, 'leases')).length, 0);
 });
