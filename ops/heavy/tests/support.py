@@ -252,16 +252,23 @@ class World(unittest.TestCase):
     def recovery_agents(self, job_id):
         return [label for label, _ in procs.launchd_jobs("caret-heavy-recovery.{}.".format(job_id))]
 
-    def contender_blocked(self):
-        """True while a separate process cannot take the slot or heavy.lock: exclusion checked by contention,
-        not by a recorded status (design section 4)."""
+    def lock_busy(self, path):
+        """True while a separate process cannot take *path*'s lock: exclusion checked by contention, not by a
+        recorded status (design section 4). One contender per lock, so a held slot never hides a free heavy.lock."""
         code = ("import fcntl, os, sys\n"
-                "for p in sys.argv[1:]:\n"
-                "    fd = os.open(p, os.O_RDONLY | os.O_CREAT, 0o644)\n"
-                "    try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
-                "    except BlockingIOError: sys.exit(1)\n"
+                "fd = os.open(sys.argv[1], os.O_RDONLY | os.O_CREAT, 0o644)\n"
+                "try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                "except BlockingIOError: sys.exit(1)\n"
                 "sys.exit(0)\n")
-        return subprocess.run([PY, "-c", code, self.paths["slot_lock"], self.paths["heavy_lock"]]).returncode == 1
+        return subprocess.run([PY, "-c", code, path]).returncode == 1
+
+    def contender_blocked(self):
+        """Both slot.lock and heavy.lock are held."""
+        return self.lock_busy(self.paths["slot_lock"]) and self.lock_busy(self.paths["heavy_lock"])
+
+    def both_free(self):
+        """Neither slot.lock nor heavy.lock is held."""
+        return not self.lock_busy(self.paths["slot_lock"]) and not self.lock_busy(self.paths["heavy_lock"])
 
     def leases(self):
         folder = os.path.join(self.home, ".long-run/leases")

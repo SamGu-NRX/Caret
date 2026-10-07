@@ -298,11 +298,17 @@ class GroupWatch:
         return added
 
     def inventory(self):
-        """(ABSENT|PRESENT|UNKNOWN, detail)."""
+        """(ABSENT|PRESENT|UNKNOWN, detail), after a fresh tick."""
         try:
             self.tick()
         except OSError as ex:
             return UNKNOWN, "probe failed: {}".format(ex)
+        return self.state()
+
+    def state(self, error=None):
+        """(ABSENT|PRESENT|UNKNOWN, detail) as of the last tick; *error* is that tick's failure, if any."""
+        if error is not None:
+            return UNKNOWN, "probe failed: {}".format(error)
         if self.unverified:
             return UNKNOWN, "group {} has members of unverified identity {}".format(self.pgid, self.unverified)
         if self.live_verified:

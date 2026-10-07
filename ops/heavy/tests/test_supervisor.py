@@ -114,7 +114,7 @@ class Cancellation(World):
         for kind in ("detached-group", "empty-env-child", "orphan"):
             self.assertFalse(self.alive(spawned[kind]), kind)
         self.assertEqual(self.labels(job_id), [])
-        self.assertTrue(self.wait_for(lambda: not self.contender_blocked(), 15))
+        self.assertTrue(self.wait_for(self.both_free, 15))
         self.assertTrue(self.wait_for(lambda: not self.recovery_agents(job_id), 15))
         self.assertEqual(self.leases(), [])
 
@@ -583,7 +583,7 @@ class VmPath(World):
             subprocess.run([self.paths["lr_lease"], "release", lease["id"]], env=self.env, check=True)
         self.assertTrue(self.wait_for(lambda: any(r["event"] == "clean" for r in self.journal(job_id)), 120),
                         self.queue_log(job_id))
-        self.assertTrue(self.wait_for(lambda: not self.contender_blocked(), 20))
+        self.assertTrue(self.wait_for(self.both_free, 20))
 
 
 @unittest.skipUnless(os.environ.get("CARET_HEAVY_VM_TEST") == "1",

@@ -24,7 +24,7 @@ class QueueHoldsTheLease(World):
         self.assertEqual((outcome["exit"], outcome["cleanup"]), (0, "clean"), outcome["reason"])
         self.assertEqual((outcome["lease"]["id"], outcome["lease"]["queue_lease"]), (None, lease["id"]))
         self.assertTrue(self.wait_for(lambda: self.leases() == [], 20))
-        self.assertTrue(self.wait_for(lambda: not self.contender_blocked(), 20))
+        self.assertTrue(self.wait_for(self.both_free, 20))
 
     def test_vm_jobs_are_refused_at_enqueue_while_the_queue_holds_the_heavy_lease(self):
         with self.assertRaisesRegex(manifest.ManifestError, "rig-run's own heavy lease"):

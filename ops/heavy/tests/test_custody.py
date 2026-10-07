@@ -36,7 +36,7 @@ class Custody(World):
     def assert_all_released(self, job_id):
         # The live queue leaves a dead runner's lease for lr-lease's reaper (heavy-job-queue 401c4d1).
         subprocess.run([self.paths["lr_reap"]], env=self.env, stdout=subprocess.DEVNULL, check=True)
-        self.assertTrue(self.wait_for(lambda: not self.contender_blocked(), 20), "a lock is still held")
+        self.assertTrue(self.wait_for(self.both_free, 20), "a lock is still held")
         self.assertTrue(self.wait_for(lambda: not self.recovery_agents(job_id), 20), self.recovery_agents(job_id))
         self.assertEqual(self.marked(job_id), [])
         self.assertEqual(self.labels(job_id), [])
@@ -298,6 +298,81 @@ class Test6And9QuarantineHoldsEverything(Custody):
         self.assertEqual(self.run_queue("--once", "--max-wait", "120").wait(timeout=300), 0)
         self.assertEqual(self.job(second)["state"], "succeeded")
         self.assert_all_released(first)
+
+
+class JournalReplay(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp(prefix="caret-journal-")
+        self.addCleanup(subprocess.run, ["rm", "-rf", self.dir])
+        self.path = os.path.join(self.dir, "journal.ndjson")
+
+    def test_a_torn_tail_is_repaired_before_the_next_append_survives_replay(self):
+        j = recovery.Journal(self.path)
+        j.append({"event": "adopted"})
+        with open(self.path, "ab") as fh:
+            fh.write(b'{"event": "regis')  # a crash mid-append
+        self.assertEqual([r["event"] for r in j.load(repair=True)], ["adopted"])
+        j.append({"event": "register"})  # acknowledged after the restart
+        self.assertEqual([r["event"] for r in recovery.Journal(self.path).load()], ["adopted", "register"])
+
+    def test_interior_corruption_is_refused_not_skipped(self):
+        with open(self.path, "wb") as fh:
+            fh.write(b'{"event": "adopted"}\nnot json\n{"event": "register"}\n')
+        with self.assertRaises(recovery.JournalCorrupt):
+            recovery.Journal(self.path).load(repair=True)
+
+    def test_short_writes_are_completed(self):
+        real = os.write
+        with mock.patch.object(recovery.os, "write", side_effect=lambda fd, data: real(fd, bytes(data[:3]))):
+            recovery.Journal(self.path).append({"event": "adopted", "supervisor": [1, 2]})
+        self.assertEqual(recovery.Journal(self.path).load()[0]["supervisor"], [1, 2])
+
+
+class DiscoveryIsJournalled(unittest.TestCase):
+    def test_an_identity_learned_while_answering_is_journalled_before_the_reply(self):
+        import tempfile
+        d = tempfile.mkdtemp(prefix="caret-discover-")
+        self.addCleanup(subprocess.run, ["rm", "-rf", d])
+        probes = Test8PidReuseAndStaleRecords.Probes()
+        probes.procs[500] = (100, 1, 500, [])
+        owner = recovery.Owner.__new__(recovery.Owner)
+        owner.probes, owner.journal = probes, recovery.Journal(os.path.join(d, "journal.ndjson"))
+        owner.resources, owner.watches = {}, {}
+        owner._track({"id": "recipe", "type": "group", "pgid": 500, "leader": [500, 100]})
+        probes.procs[501] = (110, 500, 500, [])  # a child, seen first by the inventory below
+        results = owner.inventory()
+        self.assertEqual(results["recipe"][0], procs.PRESENT)
+        members = [r for r in owner.journal.load() if r["event"] == "members"]
+        self.assertEqual([tuple(m) for r in members for m in r["add"]], [(501, 110)])
+        owner._tick_groups()  # a later tick must not be the first to journal it, nor journal it twice
+        self.assertEqual(len([r for r in owner.journal.load() if r["event"] == "members"]), 1)
+
+
+class OwnerSurvivesCleanupFailures(unittest.TestCase):
+    def test_a_launchctl_timeout_during_cleanup_is_unknown_and_the_descriptors_stay(self):
+        import tempfile
+        d = tempfile.mkdtemp(prefix="caret-owner-")
+        self.addCleanup(subprocess.run, ["rm", "-rf", d])
+        probes = Test8PidReuseAndStaleRecords.Probes()
+        owner = recovery.Owner.__new__(recovery.Owner)
+        owner.probes, owner.journal = probes, recovery.Journal(os.path.join(d, "journal.ndjson"))
+        owner.plan = {"lease": {"renew_s": 300, "ttl_min": 15}, "test": {}}
+        owner.paths, owner.profile = {"lr_lease": "/nonexistent/lr-lease"}, {"term_grace_s": 0}
+        owner.resources, owner.watches, owner.fds = {}, {}, {"slot": 99}
+        owner.lease, owner.token, owner.attempt = None, None, "a" * 32
+        owner.supervisor, owner.state = [424242, 1], "cleanup"  # the supervisor is gone
+        owner.term_at = owner.next_kill = None
+        owner.lease_renewed = 0
+        owner._track({"id": "launchd-prefix", "type": "launchd-prefix", "prefix": "caret-heavy.caret-x."})
+        timeout = subprocess.TimeoutExpired(["launchctl"], 20)
+        with mock.patch.object(procs, "launchd_jobs", side_effect=timeout), \
+                mock.patch.object(procs, "launchd_bootout", side_effect=timeout):
+            for _ in range(3):
+                owner._tick()  # must not raise
+            self.assertEqual(owner.inventory()["launchd-prefix"][0], procs.UNKNOWN)
+        self.assertIn(owner.state, ("cleanup", "quarantined"))
+        self.assertEqual(owner.fds, {"slot": 99})
 
 
 class AdoptionIsAllOrNothing(unittest.TestCase):

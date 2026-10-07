@@ -130,8 +130,17 @@ def peer(sock):
     return struct.unpack_from("I", cred, 4)[0], pid
 
 
+class JournalCorrupt(Exception):
+    """A record other than the last cannot be read: refuse to act on a history with a hole in it."""
+
+
 class Journal:
-    """Append-only, one JSON object per line, fsync'd before anything is acknowledged. Never holds the token."""
+    """Append-only, one JSON object per line, fsync'd before anything is acknowledged. Never holds the token.
+
+    Only the owner holding owner.lock writes it. A crash can leave the last line incomplete; load(repair=True)
+    truncates that torn tail before any further append, so a record acknowledged after a restart is never hidden
+    behind it. An unreadable line anywhere else raises JournalCorrupt.
+    """
 
     def __init__(self, path):
         self.path = path
@@ -139,11 +148,12 @@ class Journal:
     def append(self, record):
         if "token" in record:
             raise ValueError("the journal never holds the token")
-        line = (json.dumps(dict(record, at=utc_now()), sort_keys=True) + "\n").encode()
+        line = memoryview((json.dumps(dict(record, at=utc_now()), sort_keys=True) + "\n").encode())
         new = not os.path.exists(self.path)
         fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
-            os.write(fd, line)
+            while line:
+                line = line[os.write(fd, line):]
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -154,19 +164,27 @@ class Journal:
             finally:
                 os.close(dfd)
 
-    def load(self):
+    def load(self, repair=False):
         try:
             with open(self.path, "rb") as fh:
-                lines = fh.read().split(b"\n")
+                data = fh.read()
         except FileNotFoundError:
             return []
+        lines = data.split(b"\n")
+        complete, tail = lines[:-1], lines[-1]
         out = []
-        for line in lines:
-            if line.strip():
-                try:
-                    out.append(json.loads(line))
-                except ValueError:
-                    break  # a torn last line from a crash mid-append: everything before it stands
+        for n, line in enumerate(complete):
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                raise JournalCorrupt("{} line {} is unreadable".format(self.path, n + 1)) from None
+        if tail and repair:
+            fd = os.open(self.path, os.O_WRONLY)
+            try:
+                os.ftruncate(fd, len(data) - len(tail))
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         return out
 
 
@@ -244,14 +262,17 @@ def settle_lease(lr_lease, lease, token, attempt, env=None):
     state, detail = procs.lease_state(lr_lease, lease["id"], env=env)
     if state != procs.PRESENT:
         return state, detail
-    if lease.get("cleanup"):
-        if token is None:
-            return procs.UNKNOWN, "a cleanup-required lease needs the token, which this process does not hold"
-        done = subprocess.run([lr_lease, "ack", lease["id"], "--attempt", attempt], input=token + "\n",
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-    else:
-        done = subprocess.run([lr_lease, "release", lease["id"]], stdin=subprocess.DEVNULL,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    try:
+        if lease.get("cleanup"):
+            if token is None:
+                return procs.UNKNOWN, "a cleanup-required lease needs the token, which this process does not hold"
+            done = subprocess.run([lr_lease, "ack", lease["id"], "--attempt", attempt], input=token + "\n",
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env, timeout=60)
+        else:
+            done = subprocess.run([lr_lease, "release", lease["id"]], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env, timeout=60)
+    except (OSError, subprocess.SubprocessError) as ex:
+        return procs.UNKNOWN, "lease settlement failed: {!r}".format(ex)
     if done.returncode != 0:
         return procs.UNKNOWN, "lease settlement exited {}: {}".format(done.returncode, done.stdout.strip()[:200])
     return procs.lease_state(lr_lease, lease["id"], env=env)
@@ -275,13 +296,12 @@ class Owner:
         self.term_at = self.next_kill = self.next_retry = None
         self.lease_renewed = time.monotonic()
         self.clients = {}
-        self._restore()
 
     def log(self, message):
         say("recovery", message)
 
     def _restore(self):
-        for rec in self.journal.load():
+        for rec in self.journal.load(repair=True):
             ev = rec.get("event")
             if ev == "adopted":
                 self.supervisor = rec["supervisor"]
@@ -308,6 +328,7 @@ class Owner:
         except BlockingIOError:
             self.log("another recovery owner holds this job; exiting")
             return 0
+        self._restore()  # only the holder of owner.lock reads (and may repair) the journal
         if self.state == "clean":
             self.log("journal says CLEAN; nothing to hold")
             self._bootout_self()
@@ -321,14 +342,19 @@ class Owner:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)  # only the journal's CLEAN ends custody, never a stray TERM
         self.log("listening on {} (state {})".format(self.sock_path, self.state))
         while self.state != "clean":
-            readable, _, _ = select.select([listener, *self.clients], [], [], TICK)
-            for sock in readable:
-                if sock is listener:
-                    conn, _ = listener.accept()
-                    self.clients[conn] = Reader(conn)
-                else:
-                    self._serve(sock)
-            self._tick()
+            # Custody ends only with CLEAN: any other failure is logged and the loop carries on, holding the locks.
+            try:
+                readable, _, _ = select.select([listener, *self.clients], [], [], TICK)
+                for sock in readable:
+                    if sock is listener:
+                        conn, _ = listener.accept()
+                        self.clients[conn] = Reader(conn)
+                    else:
+                        self._serve(sock)
+                self._tick()
+            except Exception as ex:  # noqa: BLE001
+                self.log("loop error, retrying: {!r}".format(ex))
+                time.sleep(TICK)
         for fd in self.fds.values():
             os.close(fd)
         self.fds = {}
@@ -376,16 +402,24 @@ class Owner:
         uid, pid = peer(sock)
         return uid == os.getuid() and self.supervisor is not None and pid == self.supervisor[0]
 
+    def _tick_groups(self):
+        """Ticks every group watch and journals each newly learned identity before anything acts on it, so a
+        restarted owner knows every process this one knew. Returns ({verified pids}, {resource: probe error})."""
+        verified, failed = set(), {}
+        for rid, watch in self.watches.items():
+            try:
+                added = watch.tick()
+            except OSError as ex:
+                failed[rid] = ex
+                continue
+            if added:
+                self.journal.append({"event": "members", "id": rid, "add": added})
+            verified.update(watch.live_verified)
+        return verified, failed
+
     def _verified(self):
         """Every live process of the job's registered groups, by verified identity."""
-        verified = set()
-        for watch in self.watches.values():
-            try:
-                watch.tick()
-            except OSError:
-                continue
-            verified.update(watch.live_verified)
-        return verified
+        return self._tick_groups()[0]
 
     def _from_member(self, sock):
         uid, pid = peer(sock)
@@ -481,11 +515,12 @@ class Owner:
     # Inventory and cleanup
 
     def inventory(self):
+        _verified, failed = self._tick_groups()
         results = {}
         for rid, resource in self.resources.items():
             kind = resource["type"]
             if kind == "group":
-                results[rid] = list(self.watches[rid].inventory())
+                results[rid] = list(self.watches[rid].state(failed.get(rid)))
             elif kind == "launchd":
                 results[rid] = list(procs.launchd_state(resource["label"]))
             elif kind == "launchd-prefix":
@@ -496,13 +531,7 @@ class Owner:
         return results
 
     def _tick(self):
-        for rid, watch in self.watches.items():
-            try:
-                added = watch.tick()
-            except OSError:
-                continue
-            if added:
-                self.journal.append({"event": "members", "id": rid, "add": added})
+        self._tick_groups()
         if self.state == "custody" and self.supervisor is not None \
                 and same_process(self.probes, self.supervisor) is False:
             self.journal.append({"event": "stopping", "reason": "the supervisor died"})
@@ -514,19 +543,24 @@ class Owner:
         self._renew_if_due()
 
     def _stop(self, sig):
+        """One stop pass over every resource. A failure stops nothing else: it is logged, and the inventory that
+        follows reports what is still there (UNKNOWN when it cannot tell)."""
         for rid, resource in self.resources.items():
             kind = resource["type"]
-            if kind == "group":
-                self.watches[rid].signal(sig)
-            elif kind == "marker":
-                state, found = marked_state(self.probes, resource)
-                if state == procs.PRESENT:
-                    signal_identities(self.probes, found, sig)
-            else:
-                labels = [resource["label"]] if kind == "launchd" else \
-                    [label for label, _ in procs.launchd_jobs(resource["prefix"])]
-                for label in labels:
-                    procs.launchd_bootout(label)
+            try:
+                if kind == "group":
+                    self.watches[rid].signal(sig)
+                elif kind == "marker":
+                    state, found = marked_state(self.probes, resource)
+                    if state == procs.PRESENT:
+                        signal_identities(self.probes, found, sig)
+                else:
+                    labels = [resource["label"]] if kind == "launchd" else \
+                        [label for label, _ in procs.launchd_jobs(resource["prefix"])]
+                    for label in labels:
+                        procs.launchd_bootout(label)
+            except Exception as ex:  # noqa: BLE001 - the owner must outlive any one failed stop
+                self.log("stopping {} failed: {!r}".format(rid, ex))
 
     def _cleanup_step(self):
         now = time.monotonic()
@@ -559,9 +593,12 @@ class Owner:
         if time.monotonic() - self.lease_renewed < self.plan["lease"]["renew_s"]:
             return
         self.lease_renewed = time.monotonic()
-        subprocess.run([self.paths["lr_lease"], "renew", self.lease["id"], "--attempt", self.attempt,
-                        "--ttl", str(self.plan["lease"]["ttl_min"])], input=self.token + "\n",
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+        try:
+            subprocess.run([self.paths["lr_lease"], "renew", self.lease["id"], "--attempt", self.attempt,
+                            "--ttl", str(self.plan["lease"]["ttl_min"])], input=self.token + "\n",
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as ex:
+            self.log("lease renewal failed: {!r}".format(ex))
 
 
 def main(plan, argv):
