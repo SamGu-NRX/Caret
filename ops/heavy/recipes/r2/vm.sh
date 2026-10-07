@@ -10,7 +10,7 @@ H=${1:?usage: vm.sh h11|h14 JOB-DIR WAIT ALLOWANCE PRIOR-SPEND CONFIG|-}
 JOB=${2:?job dir}; WAIT=${3:?wait}; ALLOW=${4:?allowance}; PRIOR=${5:?prior spend}; CONFIG=${6:?config or -}
 case "$H" in h11|h14) ;; *) echo "vm: harness must be h11 or h14" >&2; exit 64 ;; esac
 CONTROL="$JOB/payload/spend-control.json"
-"$PY" -I -c 'import datetime, json, sys
+py -c 'import datetime, json, sys
 from pathlib import Path
 allow, prior = float(sys.argv[2]), float(sys.argv[3])
 day = datetime.date.today().isoformat()
@@ -22,7 +22,7 @@ controls = {"hostDay": day, "hostLedger": str(ledger), "hostLedgerLines": len(ro
 Path(sys.argv[1]).write_text(json.dumps(controls, indent=2) + "\n")' "$CONTROL" "$ALLOW" "$PRIOR" > "$OUT/spend-control.log" 2>&1
 check prepare spend-control --log "$OUT/spend-control.log" --exit $? || finish
 cp "$CONTROL" "$OUT/spend-control.json"
-CAP=$("$PY" -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["capUsd"])' "$CONTROL")
+CAP=$(py -c 'import json, sys; print(json.load(open(sys.argv[1]))["capUsd"])' "$CONTROL")
 
 args=(--job "$JOB" --harness "$H" --wait "$WAIT")
 [ "$CONFIG" = - ] || args+=(--config "$CONFIG")
@@ -43,7 +43,7 @@ if [ -n "$RUN" ] && [ -d "$RUN" ]; then
   done
   [ -d "$RUN/out/jev-spend" ] && cp -R "$RUN/out/jev-spend" "$OUT/rig-run/out/"
 fi
-LIMIT=$("$PY" -I -c 'import sys; print("%.6f" % (float(sys.argv[1]) - float(sys.argv[2])))' "$ALLOW" "$PRIOR")
+LIMIT=$(py -c 'import sys; print("%.6f" % (float(sys.argv[1]) - float(sys.argv[2])))' "$ALLOW" "$PRIOR")
 check r2 --harness "$H" --run "$OUT/rig-run" --rev "$CARET_HEAVY_REV" --exit "$rc" --spend-limit "$LIMIT" \
   ${H11_OPTIONS:+--options "$H11_OPTIONS"}
 finish

@@ -14,7 +14,7 @@ install_deps helper fixtures/web-form extension || finish
 DAY=$(date +%Y-%m-%d)
 LEDGER="$HOME/Library/Application Support/CaretV2/jev-spend/$DAY.ndjson"
 N0=$( [ -f "$LEDGER" ] && wc -l < "$LEDGER" | tr -d ' ' || echo 0 )
-CAP=$("$PY" -I -c 'import json, os, sys
+CAP=$(py -c 'import json, os, sys
 p = sys.argv[1]
 rows = [json.loads(l) for l in open(p) if l.strip()] if os.path.exists(p) else []
 print("%.4f" % (sum(r["usd"] for r in rows) + float(sys.argv[2])))' "$LEDGER" "$LIMIT")

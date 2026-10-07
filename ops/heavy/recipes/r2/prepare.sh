@@ -20,7 +20,7 @@ mkdir -p "$WORK"
 check prepare build --log "$OUT/build.log" --exit $? || finish
 if [ "$H" = h11 ]; then /bin/bash "$HD/stage.sh" "$WORK" "$@"; else /bin/bash "$HD/stage.sh" "$WORK"; fi > "$OUT/stage.log" 2>&1
 check prepare stage --log "$OUT/stage.log" --exit $? || finish
-"$PY" -I -B -c 'import json, sys
+py -c 'import json, sys
 sys.path.insert(0, sys.argv[1])
 import manifest
 json.dump(manifest.record("payload", "payload", sys.argv[2], rev=sys.argv[3]), open(sys.argv[4], "w"), indent=1)' \

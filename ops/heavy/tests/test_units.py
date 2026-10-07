@@ -60,6 +60,46 @@ class ManifestTest(Temp):
                 self.assertEqual(len(problems), 1)
                 self.assertIn("tree t changed since enqueue", problems[0])
 
+    def test_tree_digest_records_directories_even_empty_ones(self):
+        self.write("t/a.txt", "one\n")
+        tree = os.path.join(self.root, "t")
+        entry = manifest.record("t", "tree", tree)
+        os.makedirs(os.path.join(tree, "new-empty-dir"))
+        self.assertEqual(len(manifest.check([entry])), 1)
+
+    def test_symlinks_must_resolve_inside_the_tree(self):
+        self.write("t/a.txt", "one\n")
+        self.write("outside.txt", "secret\n")
+        tree = os.path.join(self.root, "t")
+        os.makedirs(os.path.join(tree, "sub"))
+        os.symlink("../a.txt", os.path.join(tree, "sub/inside"))
+        manifest.record("t", "tree", tree)  # an in-tree link is fine
+        for name, target in (("escape", "../outside.txt"), ("absolute", os.path.join(self.root, "outside.txt")),
+                             ("dangling", "missing.txt"), ("dir-escape", "..")):
+            with self.subTest(name):
+                link = os.path.join(tree, name)
+                os.symlink(target, link)
+                with self.assertRaisesRegex(manifest.ManifestError, "symlink"):
+                    manifest.record("t", "tree", tree)
+                os.unlink(link)
+
+    def test_no_bytecode_is_read_from_beside_a_module(self):
+        """An unchecked-hash .pyc beside a module runs instead of its source, unless pycache_prefix points elsewhere."""
+        import py_compile
+        mod = self.write("m/mod.py", "print('source')\n")
+        evil = self.write("evil.py", "print('bytecode from outside the manifest')\n")
+        pyc = os.path.join(self.root, "m/__pycache__/mod.{}.pyc".format(sys.implementation.cache_tag))
+        py_compile.compile(evil, cfile=pyc, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+        code = "import sys; sys.path.insert(0, {!r}); import mod".format(os.path.dirname(mod))
+        plain = subprocess.run([caret_heavy.PYTHON, "-I", "-B", "-c", code], capture_output=True, text=True).stdout
+        self.assertEqual(plain.strip(), "bytecode from outside the manifest")  # the hole being closed
+        flags = caret_heavy.PY_FLAGS
+        guarded = subprocess.run([caret_heavy.PYTHON, *flags, "-c", code], capture_output=True, text=True).stdout
+        self.assertEqual(guarded.strip(), "source")
+        self.assertEqual(caret_heavy.boot_argv(caret_heavy.PYTHON, "/p", "d")[1:1 + len(flags)], list(flags))
+        with open(os.path.join(HEAVY, "recipes/lib.sh")) as fh:
+            self.assertIn("-X pycache_prefix=/var/empty", fh.read())
+
     def test_sealed_tree_messages_name_no_file(self):
         self.write("held/tasks/expect/secret-page-name.json", "{}")
         entry = manifest.record("heldout-pages", "sealed", os.path.join(self.root, "held"))
@@ -364,8 +404,9 @@ class ProfileAndEnqueueTest(Temp):
                 self.assertEqual(float(head[head.index("--timeout") + 1]), prof.queue_timeout_s)
                 self.assertEqual("--wait-flock" in head, name == "caret-vm")
                 tail = argv[argv.index("--") + 1:]
-                self.assertEqual(tail[:4], [caret_heavy.PYTHON, "-I", "-B", "-c"])
-                self.assertEqual(tail[5:], ["/plans/caret-x.json", "c" * 64, "relay"])
+                n = len(caret_heavy.PY_FLAGS)
+                self.assertEqual(tail[:n + 2], [caret_heavy.PYTHON, *caret_heavy.PY_FLAGS, "-c"])
+                self.assertEqual(tail[n + 3:], ["/plans/caret-x.json", "c" * 64, "relay"])
 
     def test_live_recipes_need_an_env_file_and_offline_ones_get_none(self):
         paths = caret_heavy.default_paths(os.path.join(self.root, "state"))

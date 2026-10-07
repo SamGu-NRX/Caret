@@ -335,6 +335,8 @@ class Supervisor:
             "PATH": ":".join(["/opt/homebrew/bin", os.path.join(home, ".npm-global/bin"),
                               "/usr/bin", "/bin", "/usr/sbin", "/sbin"]),
             "LANG": "en_US.UTF-8", "TMPDIR": os.environ.get("TMPDIR", "/tmp"), "TERM": "dumb",
+            # Any Python the recipe starts without -I neither writes bytecode nor reads it from beside a module.
+            "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPYCACHEPREFIX": "/var/empty",
             procs.MARK_VAR: self.mark,
             "CARET_HEAVY_LAUNCHD_PREFIX": self.launchd_prefix,
             "CARET_HEAVY_JOB_ID": self.plan["job_id"], "CARET_HEAVY_PLAN_SHA256": self.plan_digest,

@@ -21,7 +21,7 @@ ARG=${2:-}
 
 evidence() { # evidence NAME WRONG-COUNT
   mkdir -p "$OUT/$1"
-  "$PY" -I -c 'import json, sys
+  py -c 'import json, sys
 rows = [{"id": "p1", "walk": {"commandMs": 1}, "wrong": [], "error": None},
         {"id": "p2", "walk": {"commandMs": 1}, "wrong": ["Email: x (key: y)"] * int(sys.argv[2]), "error": None}]
 json.dump({"rows": rows, "presses": 0, "posts": 0, "spent": 0}, open(sys.argv[1], "w"))' "$OUT/$1/page-loop.json" "$2"
@@ -29,9 +29,9 @@ json.dump({"rows": rows, "presses": 0, "posts": 0, "spent": 0}, open(sys.argv[1]
 }
 
 spawn() {
-  "$PY" -I -c 'import os, time; os.setsid(); time.sleep(600)' &
+  py -c 'import os, time; os.setsid(); time.sleep(600)' &
   echo "detached-group $!" >> "$OUT/spawned.txt"
-  "$PY" -I -c 'import os, time
+  py -c 'import os, time
 if os.fork(): os._exit(0)
 os.setsid()
 if os.fork(): os._exit(0)
@@ -71,7 +71,7 @@ case "$MODE" in
   env-dump) env > "$OUT/env.txt"; evidence set 0; check page-loop set --exit 0; finish ;;
   lock-proof)
     # The same check rig-run's take_heavy_lock makes before using an inherited descriptor.
-    "$PY" -I -c 'import fcntl, os, sys
+    py -c 'import fcntl, os, sys
 fd, path = int(sys.argv[1]), sys.argv[2]
 if not os.path.samestat(os.fstat(fd), os.stat(path)): sys.exit(1)
 probe = os.open(path, os.O_RDONLY)

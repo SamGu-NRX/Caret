@@ -43,6 +43,9 @@ import manifest  # noqa: E402
 
 HOME = os.path.expanduser("~")
 PYTHON = "/opt/homebrew/opt/python@3.14/bin/python3.14"
+# Isolated, writes no bytecode, and reads none from beside a module: with pycache_prefix at /var/empty (root-owned, empty)
+# Python looks for .pyc files only there, so a .pyc planted next to a sealed module can never run in its place.
+PY_FLAGS = ("-I", "-B", "-X", "pycache_prefix=/var/empty")
 QUEUE = "/Users/samgu/Programming Projects/agent-heavy-job-queue-20261001/scripts/heavy-job-queue.py"
 QUEUE_DEFAULT_STATE = os.path.join(HOME, "Library/Application Support/AgentSetup/heavy-job-queue")
 SCHEMA = 1
@@ -381,7 +384,7 @@ sys.exit(supervise.main(plan_path, plan_digest, plan, sys.argv[3:]))
 
 
 def boot_argv(python, plan_path, plan_digest, *rest):
-    return [python, "-I", "-B", "-c", BOOT, plan_path, plan_digest, *rest]
+    return [python, *PY_FLAGS, "-c", BOOT, plan_path, plan_digest, *rest]
 
 
 # Plans

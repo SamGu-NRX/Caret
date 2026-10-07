@@ -58,13 +58,21 @@ def file_sha256(path):
 
 
 def tree_digest(root, skip_top=()):
-    """(sha256, files, bytes) over every entry under *root*, in a fixed order, except top-level *skip_top* names."""
+    """(sha256, files, bytes) over every entry under *root*, in a fixed order, except top-level *skip_top* names.
+
+    Every directory is a line of its own, so an added empty directory changes the digest. A symlink is
+    recorded by its target text and must resolve to an existing path inside *root*: a link out of the
+    tree, or a dangling one, would let content the digest never read stand in for the input.
+    """
     if not os.path.isdir(root) or os.path.islink(root):
         raise ManifestError("{} is not a directory".format(root))
+    real_root = os.path.realpath(root)
     lines, files, total = [], 0, 0
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames.sort()
         rel_dir = os.path.relpath(dirpath, root)
+        if rel_dir != ".":
+            lines.append("d\0{}\n".format(os.path.normpath(rel_dir)))
         for name in sorted(filenames + [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]):
             path = os.path.join(dirpath, name)
             rel = os.path.normpath(os.path.join(rel_dir, name))
@@ -72,6 +80,9 @@ def tree_digest(root, skip_top=()):
                 continue
             st = os.lstat(path)
             if stat.S_ISLNK(st.st_mode):
+                resolved = os.path.realpath(path)
+                if not resolved.startswith(real_root + os.sep) or not os.path.exists(resolved):
+                    raise ManifestError("symlink {} under {} does not resolve inside it".format(rel, root))
                 lines.append("l\0{}\0{}\n".format(rel, os.readlink(path)))
             elif stat.S_ISREG(st.st_mode):
                 lines.append("f\0{}\0{}\0{}\n".format(rel, file_sha256(path), "x" if st.st_mode & 0o111 else "-"))
