@@ -1,1 +1,0 @@
-Executor replaces whole fields (caret/selection/append insertion lives in host or extension, outside its undo ledger). Every Ask route asks Jev's per-field scope question (ask.scope) first: wrap a test Jev stand-in with answeringScope (helper/test/builders.ts).
