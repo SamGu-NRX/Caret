@@ -302,7 +302,9 @@ describe("G2 review finding 4: the gates read what a control will hold", () => {
     expect(step?.writes).toBe("Canada");
     expect(isChecked(step?.checked)).toBe(true);
     expect(step?.checked).toMatchObject({ text: "Canada", verdict: { by: "verifier" }, provenance: { kind: "window", span: "canada" } });
-    expect(jev.asked).toEqual([]);
+    // HA2 (lead decision 2): a country is a person's detail, so the gate asks whose the field and the value are; it asks no
+    // yes/no about the value itself.
+    expect(jev.asked.filter((q) => /right one for it|belong in this field/u.test(q))).toEqual([]);
   });
 });
 

@@ -293,8 +293,10 @@ describe("planTask", () => {
     expect(d.slots).toEqual({ v1: "Dana Whitfield", v2: "sam@example.com", v3: "Lisbon" });
     expect(d.plan.sources).toEqual({ v1: REF });
     expect(d.checked.writes.map((w) => w.trace.from)).toEqual(["window", "memory", "instruction"]);
-    // Two windows have fields or buttons? Only the executor window does, so no window question was asked.
-    expect(jev.requests).toHaveLength(2);
+    // Two windows have fields or buttons? Only the executor window does, so no window question was asked. HA2: the two
+    // owner checks (plan.verify) come after, since Name and Email take a person's details.
+    expect(jev.requests.filter((r) => r.purpose !== "plan.verify")).toHaveLength(2);
+    expect(jev.requests.filter((r) => r.purpose === "plan.verify")).toHaveLength(2);
     expect(d.jev.calls).toBe(2);
   });
 
@@ -304,10 +306,11 @@ describe("planTask", () => {
     const jev = plannerJev({ window: TITLE, fields: { Name: "Dana Whitfield" } });
     const d = await planTask("Set Name to Dana Whitfield", m, mem(), opts(jev));
     expect(d.answers.window).toEqual([WIN, WIN]);
-    expect(jev.requests).toHaveLength(4);
+    // HA2: Name takes a person's details, so the owner check's two requests (plan.verify) follow; they are not counted.
+    expect(jev.requests.filter((r) => r.purpose !== "plan.verify")).toHaveLength(4);
     const direct = plannerJev({ fields: { Name: "Dana Whitfield" } });
     await planTask("Set Name to Dana Whitfield", m, mem(), opts(direct, { windowId: WIN }));
-    expect(direct.requests).toHaveLength(2);
+    expect(direct.requests.filter((r) => r.purpose !== "plan.verify")).toHaveLength(2);
     await expect(planTask("Set Name to Dana Whitfield", m, mem(), opts(plannerJev({}), {}))).rejects.toMatchObject({ code: "noWindow" });
   });
 

@@ -159,7 +159,10 @@ export async function jevGate(instruction: string, writes: readonly JevWrite[], 
       writes.map((w) => {
         const name = w.target.control === "calendar" ? `the ${w.target.label} calendar` : w.target.label;
         // W2: a page write's exactness is the write contract's (lower.ts checkValues); only an event asks its value here.
-        return { key: w.ref, field: { name, label: name }, value: { display: shown(w), window: w.value.source?.windowId ?? null, owner: w.value.owner }, askValue: w.target.control === "calendar" };
+        // HA2: a goal's inventory froze no source node's text, so this gate cannot show a value's whole note ("notRead");
+        // the rule is not applied here. A page plan's values arrive with fill's mints and never reach this gate; a writer
+        // goal's copied values do (flagged to the lead as the remaining whose path).
+        return { key: w.ref, field: { name, label: name }, value: { display: shown(w), window: w.value.source?.windowId ?? null, owner: w.value.owner, notes: "notRead" as const }, askValue: w.target.control === "calendar" };
       }),
       askJev,
       ledger,

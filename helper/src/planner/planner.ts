@@ -29,6 +29,7 @@ import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { candidateProvenance, FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
 import { checkValues, ContractError, fieldContract, isChecked, VerifierUnavailable, type CheckedValue, type CheckOptions, type FieldContract, type Owner, type Proposed, type Provenance } from "../fill/contract.ts";
 import { alternateVetoes, readableFields, savedValuesOf, type SavedValue } from "../fill/alternate.ts";
+import { sourceNotes, verifyWrites } from "./codeplan.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts } from "../fill/kinds.ts";
@@ -273,16 +274,33 @@ async function planIn(
     agreedWrites.push({ field: f, value: v });
     read.set(f.node.key, (values.find((x) => x.text === v) as Option).provenance);
   }
+  // HA2 (lead decision 3): the planner asks whose its values are, as the code writer does (codeplan.ts verifyWrites), and
+  // under fill's rule: an owner judgement about a window value counts only when both owner questions showed the whole
+  // note it was read from. Before HA2 this path asked no owner question at all, so another person's phone in the user's
+  // note went into the user's Phone on the value questions alone. A value Jev calls another's, or whose note did not
+  // fit, is withheld as an unsure one is. Asked only when a field takes a person's details.
+  const windowOf = (pr: Provenance): string | null => (pr.kind === "window" ? pr.windowId : pr.kind === "derived" ? (windowOf(pr.base) ?? (pr.also === null ? null : windowOf(pr.also))) : null);
+  const dropped = await verifyWrites(
+    instruction,
+    agreedWrites.map(({ field, value }) => {
+      const pr = read.get(field.node.key) as Provenance;
+      return { key: field.node.key, field: { name: field.name, label: field.label }, value: { display: (values.find((x) => x.text === value) as Option).describe, window: windowOf(pr), owner: pr.kind === "memory" ? pr.whose : null, notes: sourceNotes(model, pr) } };
+    }),
+    o.askJev,
+    ledger,
+  );
+  for (const x of agreedWrites) if (dropped.has(x.field.node.key)) withheld.push({ name: x.field.name, why: "lowConfidence" });
+  const ownedWrites = agreedWrites.filter((x) => !dropped.has(x.field.node.key));
   // W2: each value meets the write contract once, in its field, with where it was read (fill/contract.ts); a value it
   // refuses is withheld, as an unsure one is.
-  const minted = await mintWrites(agreedWrites.map(({ field, value }) => ({ key: field.node.key, w, node: field.node, name: field.name, text: value, provenance: read.get(field.node.key) as Provenance, owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now(), authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null }, savedValuesOf(memory.values()));
+  const minted = await mintWrites(ownedWrites.map(({ field, value }) => ({ key: field.node.key, w, node: field.node, name: field.name, text: value, provenance: read.get(field.node.key) as Provenance, owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now(), authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null }, savedValuesOf(memory.values()));
   for (const r of minted.refused) withheld.push({ name: r.name, why: "lowConfidence" });
-  const writes = agreedWrites.filter((x) => minted.mints.has(x.field.node.key));
+  const writes = ownedWrites.filter((x) => minted.mints.has(x.field.node.key));
   const pressLabel = askedButtons.length === 0 ? null : agreed("press", "press", byId(askedButtons.map((b) => ({ id: b.id, text: b.key }))), byId(second.buttons.map((b) => ({ id: b.id, text: b.key }))), NONE);
   const press = pressLabel === null ? null : (askedButtons.find((b) => b.key === pressLabel) ?? null);
   if (press !== null) answers.press = [press.label, press.label];
   if (writes.length === 0 && press === null) {
-    if (minted.refused.length > 0 && agreedWrites.length === minted.refused.length) throw allRefused(minted.refused);
+    if (minted.refused.length > 0 && ownedWrites.length === minted.refused.length) throw allRefused(minted.refused);
     if (withheld.length > 0) throw new PlannerError("unsure", `Jev was not sure enough about ${withheld.map((x) => `${x.name} (${x.why === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`);
     throw new PlannerError("nothingToDo", "Jev found nothing in your instruction to write or press here");
   }

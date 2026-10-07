@@ -78,7 +78,7 @@ describe("page-loop-eval's canned engine", () => {
           return null;
         });
         // W2: the value question goes only with a calendar event now (goals/gates.ts jevGate); asked here so its rule is met.
-        const writes = (p?.fields ?? []).filter((f) => f.value !== null).map((f, i) => ({ key: `s${i}`, field: { name: f.descriptor, label: f.descriptor }, value: { display: `"${f.value as string}"`, window: f.source?.windowId ?? null, owner: null }, askValue: true }));
+        const writes = (p?.fields ?? []).filter((f) => f.value !== null).map((f, i) => ({ key: `s${i}`, field: { name: f.descriptor, label: f.descriptor }, value: { display: `"${f.value as string}"`, window: f.source?.windowId ?? null, owner: null, notes: "notRead" as const }, askValue: true }));
         if (writes.length > 0) await verifyWrites(instruction, writes, ask, new SnippetLedger(desk.model.windows.values()));
         for (const r of seen) for (const id of [...Object.keys(r.questions), ...Object.keys(r.nouls ?? {})]) kinds.add(questionKind(r, id));
       }

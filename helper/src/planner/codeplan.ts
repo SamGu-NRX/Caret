@@ -14,9 +14,9 @@ import { assertNoSecrets } from "../privacy.ts";
 // fill (plan section 5, "Unknown presses remain handoffs"; this batch hands off none).
 import type { Authority, DocumentReader } from "../fill/ask-scope.ts";
 import { createHash } from "node:crypto";
-import type { ScreenModel, WindowState } from "../model.ts";
+import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
-import { fieldPart, namePart, splitAddress, splitName } from "../fill/derive.ts";
+import { asksCountry, fieldPart, namePart, splitAddress, splitName } from "../fill/derive.ts";
 import { fieldKinds, isNameLike } from "../fill/kinds.ts";
 import { candidateProvenance, OWNER_CRITERIA, WHOSE_CRITERIA, WHOSE_CUTOFF } from "../fill/fill.ts";
 import type { CheckedValue, Provenance } from "../fill/contract.ts";
@@ -234,7 +234,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   const dropped = await verifyWrites(instruction, kept.flatMap((f) => {
     const field = fields[Number(f.target.slice(1)) - 1];
     const value = values[Number(f.value.slice(1)) - 1];
-    return field === undefined || value === undefined ? [] : [{ key: f.ref, field, value }];
+    return field === undefined || value === undefined ? [] : [{ key: f.ref, field, value: { ...value, notes: sourceNotes(model, value.provenance) } }];
   }), o.askJev, ledger);
   const unvetoed = kept.filter((f) => !dropped.has(f.ref));
   if (unvetoed.length === 0) throw new PlannerError("unsure", "Jev said every value the plan program chose is another person's");
@@ -325,9 +325,34 @@ async function confirmFields(instruction: string, unnamed: readonly Field[], ask
   return out;
 }
 
-/** A field that takes a person's details: a name or a part of one, an email, a phone or an address. */
+/** A field that takes a person's details: a name or a part of one, an email, a phone, an address or a part of one. */
 function personalField(label: string): boolean {
-  return fieldPart(label) !== null || [...fieldKinds([label])].some((k) => k === "email" || k === "phone" || k === "address");
+  // HA2 (lead decision 2): a country is a part of a person's address too.
+  return fieldPart(label) !== null || asksCountry(label) || [...fieldKinds([label])].some((k) => k === "email" || k === "phone" || k === "address");
+}
+
+/** HA2: the whole text a value was read from, as the redacted view shows its source node, and that view. */
+export interface SourceNote {
+  w: WindowState;
+  text: string;
+}
+
+/**
+ * HA2: the notes a value was read from: each window source's whole node (a derived value's base and extra source too),
+ * from the redacted view. Null when a window source can no longer be read: then no owner question can show it. Empty
+ * for a value from the instruction or memory, which no owner question judges.
+ */
+export function sourceNotes(model: ScreenModel, pr: Provenance): SourceNote[] | null {
+  if (pr.kind === "window") {
+    const w = viewOf(model, pr.windowId);
+    const node = w?.nodes.get(pr.nodeKey);
+    const text = node === undefined ? "" : nodeText(node).trim();
+    return w === undefined || text === "" ? null : [{ w, text }];
+  }
+  if (pr.kind !== "derived") return [];
+  const base = sourceNotes(model, pr.base);
+  const also = pr.also === null ? [] : sourceNotes(model, pr.also);
+  return base === null || also === null ? null : [...base, ...also];
 }
 
 const VERIFY = { yes: "Yes: this is the value this field asks for.", no: "No: it is another value, another person's, or not what this field asks for." } as const;
@@ -340,7 +365,12 @@ const VERIFY = { yes: "Yes: this is the value this field asks for.", no: "No: it
 export interface WriteToVerify {
   key: string;
   field: { name: string; label: string };
-  value: { display: string; window: unknown; owner: "user" | "other" | null };
+  /**
+   * HA2: `notes` are the whole texts a window value was read from (sourceNotes), which both owner questions must show
+   * for the owner judgement to count; null when a source could not be read. "notRead" only for a caller that holds no
+   * screen model to read them from (goals/gates.ts jevGate, flagged to the lead): there the rule is not applied.
+   */
+  value: { display: string; window: unknown; owner: "user" | "other" | null; notes: readonly SourceNote[] | null | "notRead" };
   /**
    * Whether Jev is asked if the value belongs in the field (the `c` question). W2: a page write's exactness is the
    * write contract's verifier (fill/contract.ts checkValues), so only a calendar event, which no page step writes,
@@ -361,6 +391,29 @@ export async function verifyWrites(instruction: string, writes: readonly WriteTo
   instruction = instructionForModel(instruction);
   // W2: nothing to ask when no write asks its value and none takes a person's details.
   if (writes.every((x) => x.askValue !== true && !personalField(x.field.label))) return new Set();
+  // HA2 (lead decision 3): fill's rule on this path. Both owner questions about a window value name the whole notes it
+  // was read from, sent once in the state (source_notes) and charged to their windows' unchanged budgets; a value whose
+  // notes do not fit, or could not be read, is dropped below when its field wants the user's details.
+  const notes = new Map<string, string>();
+  const noteIds = writes.map((x): string[] | null => {
+    if (!personalField(x.field.label) || x.value.window === null || x.value.notes === "notRead") return [];
+    if (x.value.notes === null) return null;
+    const ids: string[] = [];
+    for (const n of x.value.notes) {
+      let id = [...notes].find(([, t]) => t === n.text)?.[0];
+      if (id === undefined) {
+        if (!ledger.take(n.w, "candidate", [n.text])) return null;
+        id = `note ${notes.size + 1}`;
+        notes.set(id, n.text);
+      }
+      ids.push(id);
+    }
+    return ids;
+  });
+  const noteSays = (i: number): string => {
+    const ids = noteIds[i];
+    return ids === null || ids === undefined || ids.length === 0 ? "" : ` The whole text it was read from is ${ids.join(" and ")} in source_notes; whose it is depends on all of that text.`;
+  };
   const declared = ledger.declared();
   const req = (wording: 0 | 1): JevRequest => {
     const questions: JevRequest["questions"] = {};
@@ -375,13 +428,25 @@ export async function verifyWrites(instruction: string, writes: readonly WriteTo
       };
       if (!personalField(x.field.label)) return;
       questions[`f${i + 1}`] = { type: "choice", instructions: wording === 0 ? `The user asked: "${instruction}". A form has the field '${x.field.name}'. Whose details does this field ask for?` : `Field: '${x.field.name}'. Instruction: "${instruction}". Is this field for the details of the user filling in the form, of someone else, or can you not tell?`, criteria: { ...WHOSE_CRITERIA } };
-      if (x.value.window !== null) questions[`v${i + 1}`] = { type: "choice", instructions: wording === 0 ? `A value on the user's screen: ${x.value.display} Whose details is it?` : `Whose details is this value, the user's or someone else's? ${x.value.display}`, criteria: { ...OWNER_CRITERIA } };
+      if (x.value.window !== null) questions[`v${i + 1}`] = { type: "choice", instructions: wording === 0 ? `A value on the user's screen: ${x.value.display}${noteSays(i)} Whose details is it?` : `Whose details is this value, the user's or someone else's? ${x.value.display}${noteSays(i)}`, criteria: { ...OWNER_CRITERIA } };
     });
-    return sentOnly(assertNoSecrets({ purpose: "plan.verify", state: { instruction: instructionForModel(instruction), task: "Caret checks each value a drafted plan would write before offering the plan." }, questions, snippets: declared.snippets, charged: declared.charged }));
+    const state = { instruction: instructionForModel(instruction), task: "Caret checks each value a drafted plan would write before offering the plan.", ...(notes.size === 0 ? {} : { source_notes: Object.fromEntries(notes) }) };
+    return sentOnly(assertNoSecrets({ purpose: "plan.verify", state, questions, snippets: declared.snippets, charged: declared.charged }));
+  };
+  const reqs = [req(0), req(1)] as const;
+  /** HA2: whether both requests, as built, show every note of write `i` in its owner question and carry it whole. */
+  const shown = (i: number): boolean => {
+    const ids = noteIds[i];
+    if (ids === null || ids === undefined) return false;
+    return reqs.every((q) => {
+      const ins = String(q.questions[`v${i + 1}`]?.instructions ?? "");
+      const sent = (q.state as { source_notes?: Record<string, string> }).source_notes ?? {};
+      return (ids.length === 0 || ins.includes(`${ids.join(" and ")} in source_notes`)) && ids.every((id) => sent[id] === notes.get(id));
+    });
   };
   let r: Awaited<ReturnType<AskJev>>[];
   try {
-    r = await Promise.all([askJev(req(0)), askJev(req(1))]);
+    r = await Promise.all([askJev(reqs[0]), askJev(reqs[1])]);
   } catch (e) {
     throw jevFailedError(e);
   }
@@ -395,7 +460,9 @@ export async function verifyWrites(instruction: string, writes: readonly WriteTo
     if (!personalField(x.field.label)) return;
     const wants = agreed(`f${i + 1}`, WHOSE_CRITERIA, WHOSE_CUTOFF);
     const is = x.value.window === null ? x.value.owner : agreed(`v${i + 1}`, OWNER_CRITERIA, WHOSE_CUTOFF);
-    if (wants !== null && is !== null && wants !== "unclear" && is !== "unclear" && wants !== is) out.add(x.key);
+    if (wants !== null && is !== null && wants !== "unclear" && is !== "unclear" && wants !== is) return void out.add(x.key);
+    // HA2: an owner judgement about a window value counts only when both questions showed its whole notes.
+    if (wants === "user" && x.value.window !== null && x.value.notes !== "notRead" && !shown(i)) out.add(x.key);
   });
   return out;
 }
