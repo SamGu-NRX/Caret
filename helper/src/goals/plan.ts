@@ -141,8 +141,8 @@ export interface GoalStep {
    * question (lead decision 3), "derived" for a value the helper built with nothing to choose (G3: the To lowering adds
    * with the answered message's sender, an event inventory.ts derived), which passed the code checks without Jev. "fill"
    * (P2) for a value proposeFill chose for that very field, its two wordings agreeing at FILL_CUTOFF with the owner veto
-   * (goals/page-planner.ts), which skips Jev's second question and keeps the code checks; only an object lowering marked
-   * (gates.ts markFilled) may carry it. "you" for the user's own words typed over a draft in the preview (H9, runs.ts
+   * (goals/page-planner.ts), which carries fill's write-contract mint for that field (W2: the mint replaced the
+   * markFilled mark) and is asked nothing again. "you" for the user's own words typed over a draft in the preview (H9, runs.ts
    * edit), which pass the draft's field and never-typed checks and no fact check. Null for presses and hand-offs. GoalRuns.propose refuses a write or calendar step that has none, and a "derived" step
    * gates.ts did not mark (isDerived).
    */

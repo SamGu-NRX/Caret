@@ -1,7 +1,7 @@
 // B24: Ask with natural phrasing through the code-mode writer (planner/codeplan.ts). A fake writer returns a
 // fixed program; the sandbox runs it for real; a stand-in Jev answers the checks. The plan must be the planner's
 // own shape, checked by validatePlan, and every write the writer chose must pass code's and Jev's checks.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { ScreenModel } from "../src/model.ts";
 import { planWithCode } from "../src/planner/codeplan.ts";
@@ -10,6 +10,8 @@ import type { WriterPort, WriterRequest } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { field, node, snap, text } from "./builders.ts";
+import { setTestVerifier } from "../src/fill/contract.ts";
+import { STAND_IN } from "./setup/verifier.ts";
 
 // F2's memory-value check got "guest compute passed 250 ms" rather than its expected refusal.
 // The worker charges wall time inside QuickJS slices, including time it is descheduled.
@@ -76,7 +78,9 @@ function jev(o: { yes?: (q: string) => boolean; others?: readonly string[] } = {
     const answers: Record<string, { choice: string; confidence: number }> = {};
     for (const [id, q] of Object.entries(req.questions)) {
       const ins = String(q.instructions);
-      if ("yes" in q.criteria) answers[id] = { choice: (o.yes ?? (() => true))(ins) ? "yes" : "no", confidence: 0.9 };
+      // W2: the write contract's verifier (fill/contract.ts) is asked what `yes` says of the value: exact, or another's.
+      if (req.purpose === "fill.verify") answers[id] = { choice: (o.yes ?? (() => true))(ins) ? "exact" : "other", confidence: 0.9 };
+      else if ("yes" in q.criteria) answers[id] = { choice: (o.yes ?? (() => true))(ins) ? "yes" : "no", confidence: 0.9 };
       else if (id.startsWith("v")) answers[id] = { choice: (o.others ?? ["labelled 'Reference"]).some((x) => ins.includes(x)) ? "other" : "user", confidence: 0.9 };
       else answers[id] = { choice: ins.includes("Reference") ? "other" : "user", confidence: 0.9 };
     }
@@ -87,6 +91,10 @@ function jev(o: { yes?: (q: string) => boolean; others?: readonly string[] } = {
 
 const memory = { values: () => [] };
 const run = (program: string, instruction: string, j = jev(), seen: WriterRequest[] = []) => planWithCode(instruction, desk(), memory, { writer: writer(program, seen), askJev: j.ask, offerKey: "plan-1", windowId: "form", now: 2000 });
+
+// W2: the write contract's verifier asks this file's stand-in Jev (jev below), not the suite's stand-in.
+beforeAll(() => setTestVerifier(null));
+afterAll(() => setTestVerifier(STAND_IN));
 
 describe("planWithCode", () => {
   it("turns the program's fills into the planner's checked plan, values traced to the note", async () => {
@@ -134,8 +142,8 @@ describe("planWithCode", () => {
     await expect(run(fillByText([]), "fill my name")).rejects.toThrow(PlannerError);
   });
 
-  it("drops a value from a window that Jev does not confirm is the field's", async () => {
-    await expect(run(fillByText([["Reference name", "Simone Achebe"]]), "do the reference section from my notes", jev({ yes: () => false }))).rejects.toThrow(/did not confirm/);
+  it("drops a value from a window that the write contract's verifier does not call the field's", async () => {
+    await expect(run(fillByText([["Reference name", "Simone Achebe"]]), "do the reference section from my notes", jev({ yes: () => false }))).rejects.toThrow(/isn't this field's value/);
   });
 });
 
@@ -166,10 +174,10 @@ describe("planWithCode, review fixes (B24)", () => {
   it("checks a value from memory as it checks one from a window, and keeps a person from memory out of the user's field", async () => {
     const remembered = { values: () => [{ id: "about-1", label: "Personal email", text: "private@example.org", whose: "user" as const }, { id: "person-1", label: "Simone", text: "Simone Achebe", whose: "other" as const }] };
     const program = (label: string, text: string) => fillByText([[label, text]]);
-    // Jev says the personal address is not the value Email asks for: the write is dropped.
-    await expect(planWithCode("fill in my email", desk(), remembered, { writer: writer(program("Email", "private@example.org")), askJev: jev({ yes: (q) => !q.includes("private@example.org") }).ask, offerKey: "plan-1", windowId: "form", now: 2000 })).rejects.toThrow(/did not confirm/);
+    // The verifier says the personal address is not the value Email asks for: the write is dropped (W2).
+    await expect(planWithCode("fill in my email", desk(), remembered, { writer: writer(program("Email", "private@example.org")), askJev: jev({ yes: (q) => !q.includes("private@example.org") }).ask, offerKey: "plan-1", windowId: "form", now: 2000 })).rejects.toThrow(/isn't this field's value/);
     // A remembered person in the user's Full name: the field wants the user's, the entry is someone else's.
-    await expect(planWithCode("put the name in", desk(), remembered, { writer: writer(program("Full name", "Simone Achebe")), askJev: jev().ask, offerKey: "plan-1", windowId: "form", now: 2000 })).rejects.toThrow(/did not confirm/);
+    await expect(planWithCode("put the name in", desk(), remembered, { writer: writer(program("Full name", "Simone Achebe")), askJev: jev().ask, offerKey: "plan-1", windowId: "form", now: 2000 })).rejects.toThrow(/another person's/);
   });
 
   it("records what the writer request disclosed, and its checks declare only what they send", async () => {

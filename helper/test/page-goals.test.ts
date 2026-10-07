@@ -229,6 +229,7 @@ describe("the fill gate cannot be borrowed (P2)", () => {
     const ask: AskJev = jevPickingText(byLabel, 0.95);
     const plan = await planPage(r.helper.model, { goalId: "g-copy", instruction: "fill out this form", windowId: WIN, scope: null, kind: "all", section: null, about: [], askJev: ask, now: Date.now(), clock: macClock(new Date()), readerSession: 0, pageDocument: (id) => r.host.registry.documentOf(id) });
     expect(plan.segments[0]?.steps.filter((s) => s.row !== true).every((s) => s.gate === "fill")).toBe(true);
-    expect(() => r.helper.goals.propose(structuredClone(plan), undefined, null)).toThrow(/without passing the value gates/);
+    // W2: a copy carries no write-contract mint (fill/contract.ts isChecked), so it is refused as unchecked.
+    expect(() => r.helper.goals.propose(structuredClone(plan), undefined, null)).toThrow(/without passing the value gates|has no check from the write contract/);
   });
 });

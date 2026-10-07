@@ -26,8 +26,8 @@ import { MAX_FIELDS } from "../fill/fill.ts";
 import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
-import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived, markFilled } from "./gates.ts";
-import { checkValues, ContractError, exemptRefusal, mintExempt, requireChecked, VerifierUnavailable, type CheckedValue, type ExemptRule, type Proposed } from "../fill/contract.ts";
+import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
+import { checkValues, ContractError, exemptRefusal, isChecked, mintExempt, requireChecked, VerifierUnavailable, type CheckedValue, type ExemptRule, type Proposed } from "../fill/contract.ts";
 import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
@@ -196,12 +196,7 @@ export interface LowerOptions {
   ledger: SnippetLedger;
   /** Writes a stopped goal this plan replaces meant and did not make (runs.ts): those this plan leaves out are left. */
   carried?: readonly LeftItem[];
-  /**
-   * P2: by target ref, the very value object proposeFill agreed on for that target (goals/page-planner.ts). A fill of
-   * exactly that pair is gate "fill": Jev's question is not asked again, and every code check still runs. A message's
-   * recipient or subject field is dropped for such a value rather than refusing the plan (fill reads no message).
-   */
-  gated?: ReadonlyMap<string, ValueBinding>;
+
   /**
    * P3: a page plan's file controls, each with the file its row offers (page-planner.ts). Each becomes an attach step
    * after every other step, so an attach the user leaves without a file (runs.ts drops it from the run) holds up nothing.
@@ -311,8 +306,9 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         continue;
       }
       if (v.draft !== null) draftCheck(v, frozenBasis(instruction, v, inv));
-      // By identity: the value object fill agreed on for this target, never a look-alike (gates.ts markFilled).
-      const byFill = o.gated?.get(t.ref) === v;
+      // W2: the value carries the write contract's mint fill made for this very field (page-planner.ts); a mint is an
+      // object only checkValues and mintExempt make, so neither a program's plain data nor a copy can claim it.
+      const byFill = isChecked(v.checked) && v.checked.field.key === t.key && v.checked.field.windowId === (t.domain.kind === "window" ? t.domain.windowId : "");
       // Who a message goes to and its subject are the user's (B30) for fill's values too, but a fill is not a plan of
       // the message: the field is left, not the plan refused, and only its own label makes it one (on a page, an email
       // field near a Send button is a contact form's, not a To).
@@ -350,7 +346,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         else if (t.control !== "text") checked = mintExempt(proposedFor(t, v, lowered.writes), EXEMPT_GOAL[t.control] ?? "optionLabel", now, instruction);
       }
       const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered, ...(checked === undefined ? {} : { checked }) };
-      steps.push(gate === "derived" ? markDerived(step) : gate === "fill" ? markFilled(step) : step);
+      steps.push(gate === "derived" ? markDerived(step) : step);
       lastPress = null;
       continue;
     }

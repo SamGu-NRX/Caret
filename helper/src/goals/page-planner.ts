@@ -2,7 +2,7 @@
 // program writer. Fill's one round decides every field's value (proposeFill: both wordings agreeing at FILL_CUTOFF, the
 // owner veto, the cut rules and its control rules), and its agreed picks become a DraftPlan in document order, lowered
 // by lowerGoal as any goal is, so the page gets D2-06's digest-bound acceptance, receipts, precheck, revocation, replan
-// and "left" accounting. A step lowered from fill's own pick for its own field is gate "fill" (gates.ts markFilled) and
+// and "left" accounting. A step lowered from fill's own pick for its own field is gate "fill" (its value carries fill's write-contract mint) and
 // is not asked Jev's value question again; the code gates (never-typed, misfit, a message's recipient and subject) still
 // run. Caret presses nothing on a page: what the user presses is theirs, and so is every field fill withheld, a kind
 // Caret never types, and a form's fields past what one fill asks about (the size hand-off), each named before Tab.
@@ -431,7 +431,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   // 5. Lowering, with fill's picks gated by fill. 6. The planning's identity.
   const programHash = sha256(canonical({ planner: PAGE_PLANNER, instruction, scopeKind: o.kind, section: o.section, revealed: o.revealed ?? null, revision: windowRevision(w), document, fields: asked.map((x) => x.node.key), parts: parts.map((p) => p.length), files: files.map((n) => n.key) }));
   const draft: DraftPlan = { basedOn: windowRevision(w), window: o.windowId, steps, choices: [], drafts: [], programDigest: programHash };
-  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, gated, carried: [...(o.carried?.owed ?? []), ...left], attach, handoffRow: row, parts: stepParts });
+  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, carried: [...(o.carried?.owed ?? []), ...left], attach, handoffRow: row, parts: stepParts });
   const page: PageGoal = {
     windowId: o.windowId,
     scope: o.scope ?? { fields: [], windows: null, memory: true, instruction, person: null, literals: new Map() },

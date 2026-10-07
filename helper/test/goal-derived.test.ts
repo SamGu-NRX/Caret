@@ -13,6 +13,8 @@ import type { GoalInventory, ValueBinding } from "../src/goals/plan.ts";
 import { macClock } from "../src/offers/event-time.ts";
 import type { GoalProgress } from "../src/protocol.ts";
 import { cannedProgram, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, textField, textKey, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { setTestVerifier } from "../src/fill/contract.ts";
+import { STAND_IN } from "./setup/verifier.ts";
 
 const scenes: GoalScene[] = [];
 afterEach(async () => {
@@ -145,13 +147,18 @@ describe("a derived value with a choice left in it goes to Jev", () => {
 });
 
 describe("a value the writer picked still goes to Jev", () => {
-  it("asks Jev about the sender when the program itself put it in To, and leaves To to the user when Jev says no", async () => {
-    const jev = standInJev({ belongs: (q) => !q.includes("'To'") });
-    const sc = scene({ scripts: [[{ fill: { window: "Re: Order", target: "To", value: EMAIL } }, MESSAGE]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: jev });
-    const g = preview(await sc.request("draft a reply to Priya saying I'm in"));
-    expect(jev.asked.filter((q) => q.includes(`"${EMAIL}" (the sender of the message this reply answers`))).toHaveLength(2);
-    expect(says(g)).toEqual(["Message: I'm in."]);
-    expect(g.warnings).toEqual([`You add the recipient in 'To': Jev didn't confirm '${EMAIL}' belongs there.`]);
+  it("asks the write contract's verifier about the sender when the program itself put it in To, and leaves To to the user when it refuses (W2)", async () => {
+    const asked: string[] = [];
+    setTestVerifier(async (req) => ({ model: "verify-test", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => (asked.push(String(q.instructions)), [id, { choice: String(q.instructions).includes("'To'") ? "other" : "exact", confidence: 0.9 }]))), inputTokens: 0, latencyMs: 0, costUsd: 0 }));
+    try {
+      const sc = scene({ scripts: [[{ fill: { window: "Re: Order", target: "To", value: EMAIL } }, MESSAGE]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: standInJev() });
+      const g = preview(await sc.request("draft a reply to Priya saying I'm in"));
+      expect(asked.filter((q) => q.includes(`"${EMAIL}"`))).toHaveLength(2);
+      expect(says(g)).toEqual(["Message: I'm in."]);
+      expect(g.warnings).toEqual([`You add the recipient in 'To': '${EMAIL}' isn't this field's value.`]);
+    } finally {
+      setTestVerifier(STAND_IN);
+    }
   });
 });
 
@@ -193,11 +200,18 @@ describe("nothing a program sends counts as derived", () => {
     expect(sc.helper.goals.propose(plan, sc.session, null).event).toBe("segment");
   });
 
-  it("a reply's To step the program wrote, whatever its ref, is still Jev's to confirm", async () => {
-    const sc = scene({ scripts: [], windows: [mailWindow(), replyWindow()], userWindow: "6161-2" });
-    const { plan, jev } = await meeting(sc, (inv) => inv, [{ fill: { window: "Re: Order", target: "To", value: EMAIL } }]);
-    const to = plan.segments.flatMap((s) => s.steps).find((x) => x.target.key === fieldKey(MAIL, "To"));
-    expect(to?.gate).toBe("jev");
-    expect(jev.asked.filter((q) => q.includes(EMAIL))).toHaveLength(2);
+  it("a reply's To step the program wrote, whatever its ref, is still checked by the write contract's verifier (W2)", async () => {
+    const asked: string[] = [];
+    setTestVerifier(async (req) => ({ model: "verify-test", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => (asked.push(String(q.instructions)), [id, { choice: "exact", confidence: 0.95 }]))), inputTokens: 0, latencyMs: 0, costUsd: 0 }));
+    try {
+      const sc = scene({ scripts: [], windows: [mailWindow(), replyWindow()], userWindow: "6161-2" });
+      const { plan } = await meeting(sc, (inv) => inv, [{ fill: { window: "Re: Order", target: "To", value: EMAIL } }]);
+      const to = plan.segments.flatMap((s) => s.steps).find((x) => x.target.key === fieldKey(MAIL, "To"));
+      expect(to?.gate).toBe("jev");
+      expect(to?.checked?.verdict.by).toBe("verifier");
+      expect(asked.filter((q) => q.includes(EMAIL))).toHaveLength(2);
+    } finally {
+      setTestVerifier(STAND_IN);
+    }
   });
 });

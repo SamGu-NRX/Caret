@@ -23,7 +23,7 @@ import { nodeText } from "../model.ts";
 import { PROTOCOL_VERSION, type GoalAccept, type GoalEdit, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
-import { isDerived, isFilled } from "./gates.ts";
+import { isDerived } from "./gates.ts";
 import { sourceHolds } from "../offers/fill-popup.ts";
 import { memoryWrites, parseMemoryRef } from "../fill/fill.ts";
 import { continuationScope, pageInputKeys } from "./page-planner.ts";
@@ -282,8 +282,8 @@ export class GoalRuns {
     if (misplacedRow !== undefined) throw new Error(`goal ${given.goalId}: step ${misplacedRow.ref} is not a hand-off row a page plan may offer`);
     // Only lowering's gates (G2, gates.ts) mark a write: a plan built any other way is a bug, never offered.
     // A "derived" step skipped Jev, so it must be the very object lowering marked (gates.ts isDerived), not a copy.
-    // A "fill" step (P2) skipped Jev because fill agreed on its very value for its very target: only lowering marks one.
-    const unchecked = given.segments.flatMap((s) => s.steps).find((s) => (s.kind === "write" || s.kind === "calendar") && (s.gate === null || (s.gate === "derived" && !isDerived(s)) || (s.gate === "fill" && !isFilled(s))));
+    // A "fill" step (P2) carries fill's own mint for its target, which the write contract check below requires (W2).
+    const unchecked = given.segments.flatMap((s) => s.steps).find((s) => (s.kind === "write" || s.kind === "calendar") && (s.gate === null || (s.gate === "derived" && !isDerived(s)) || (s.gate === "fill" && s.checked?.verdict.by !== "verifier" && s.checked?.verdict.by !== "exempt")));
     if (unchecked !== undefined) throw new Error(`goal ${given.goalId}: step ${unchecked.ref} writes '${unchecked.target.label}' without passing the value gates`);
     // W2: every write carries the write contract's mint for exactly what it writes, in exactly its target
     // (fill/contract.ts); checked here, on the very objects lowering built, before the run keeps its own copy.

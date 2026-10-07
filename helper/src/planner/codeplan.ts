@@ -14,7 +14,7 @@ import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { fieldPart, namePart, splitAddress, splitName } from "../fill/derive.ts";
 import { fieldKinds, isNameLike } from "../fill/kinds.ts";
 import { candidateProvenance, OWNER_CRITERIA, WHOSE_CRITERIA, WHOSE_CUTOFF } from "../fill/fill.ts";
-import type { Provenance } from "../fill/contract.ts";
+import type { CheckedValue, Provenance } from "../fill/contract.ts";
 import { SnippetLedger, WINDOW_CHARS } from "../privacy.ts";
 import type { AskJev } from "../fill/jev.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
@@ -24,7 +24,7 @@ import type { PlanningSnapshot } from "../codemode/types.ts";
 import type { WriterPort } from "../writer/port.ts";
 import { WRITER_MAX_OUTPUT_TOKENS } from "../writer/config.ts";
 import { instructionValues } from "./spans.ts";
-import { asksToFillForm, byRelevance, mintWrites, namesShortLabel, outrankedFields, PLAN_CUTOFF, relevance, writableFields, type Field, type PlanDraft, type PlannerMemory } from "./planner.ts";
+import { allRefused, asksToFillForm, byRelevance, mintWrites, namesShortLabel, outrankedFields, PLAN_CUTOFF, relevance, writableFields, type Field, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import type { JevRequest } from "../fill/jev.ts";
 import { PlannerError, validatePlan, type PlanContext } from "./validate.ts";
 import type { MemoryValue } from "./trace.ts";
@@ -209,42 +209,47 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   const confirmed = await confirmFields(instruction, unnamed, o.askJev, ledger);
   const kept = picked.filter((p) => p.field === undefined || !unnamed.includes(p.field) || confirmed.has(p.field.node.key)).map((p) => p.f);
   if (kept.length === 0) throw new PlannerError("nothingToDo", `the plan program filled only fields the instruction does not ask about (${unnamed.map((f) => f.name).join(", ")})`);
-  // Jev checks each write the writer chose: that the value is what the instruction asks to put in that field,
-  // both asks agreeing at PLAN_CUTOFF; and, for a field that takes a person's details, that the field and the
-  // value are the same person's (fill's owner veto). A write that fails either is dropped. Live, the writer put
-  // the user's own phone in Reference phone and an RSVP sender's email in the user's Email (asks-dev-3).
+  // Jev checks each write the writer chose, for a field that takes a person's details: that the field and the value
+  // are the same person's (fill's owner veto); a write that fails is dropped. Live, the writer put the user's own
+  // phone in Reference phone and an RSVP sender's email in the user's Email (asks-dev-3). Whether the value is exactly
+  // the field's is the write contract's verifier, below (W2: it replaced this check's yes/no value question).
   const dropped = await verifyWrites(instruction, kept.flatMap((f) => {
     const field = fields[Number(f.target.slice(1)) - 1];
     const value = values[Number(f.value.slice(1)) - 1];
     return field === undefined || value === undefined ? [] : [{ key: f.ref, field, value }];
   }), o.askJev, ledger);
   const unvetoed = kept.filter((f) => !dropped.has(f.ref));
-  if (unvetoed.length === 0) throw new PlannerError("unsure", "Jev did not confirm any value the plan program chose for its field");
+  if (unvetoed.length === 0) throw new PlannerError("unsure", "Jev said every value the plan program chose is another person's");
+  // W2: each value the program chose meets the write contract in its field, with where it was read (fill/contract.ts);
+  // a value it refuses is dropped, as an unconfirmed one was before W2, and a plan left with none is refused.
+  const pairOf = (f: (typeof unvetoed)[number]): { field: Field; value: Value } | null => {
+    const field = fields[Number(f.target.slice(1)) - 1];
+    const value = values[Number(f.value.slice(1)) - 1];
+    return field === undefined || value === undefined || !/^t\d+$/.test(f.target) || !/^v\d+$/.test(f.value) ? null : { field, value };
+  };
+  for (const f of unvetoed) if (pairOf(f) === null) throw new PlannerError("schema", `the plan program named ${f.target} and ${f.value}, which the snapshot did not list`);
+  const minted = await mintWrites(unvetoed.map((f) => {
+    const { field, value } = pairOf(f) as { field: Field; value: Value };
+    return { key: f.ref, w, node: field.node, name: field.name, text: value.text, provenance: value.provenance, owner: value.owner };
+  }), { askJev: o.askJev, ledger, instruction, now });
+  const checkedFills = unvetoed.filter((f) => minted.mints.has(f.ref));
+  if (checkedFills.length === 0) throw allRefused(minted.refused);
   const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: w.window.windowId } : {}) };
   const slots: Record<string, string> = {};
   const slotNames: Record<string, string> = {};
+  const mints = new Map<string, CheckedValue>();
   const seenTargets = new Set<string>();
-  const steps: Step[] = unvetoed.map((f, i) => {
-    const t = Number(f.target.slice(1)) - 1;
-    const v = Number(f.value.slice(1)) - 1;
-    const field = fields[t];
-    const value = values[v];
-    if (field === undefined || value === undefined || !/^t\d+$/.test(f.target) || !/^v\d+$/.test(f.value)) throw new PlannerError("schema", `the plan program named ${f.target} and ${f.value}, which the snapshot did not list`);
+  const steps: Step[] = checkedFills.map((f, i) => {
+    const { field, value } = pairOf(f) as { field: Field; value: Value };
     if (seenTargets.has(field.node.key)) throw new PlannerError("schema", `the plan program fills ${field.name} twice`);
     seenTargets.add(field.node.key);
     const slot = `v${i + 1}`;
     slots[slot] = value.text;
     slotNames[slot] = `the value for ${field.name}`;
+    mints.set(slot, minted.mints.get(f.ref) as CheckedValue);
     return { says: `${field.name} holds {{${slot}}}`, end: { kind: "valueEquals", window: sel, target: { key: field.node.key, describe: `the ${field.name} field` }, value: `{{${slot}}}` } };
   });
   const plan: Plan = { id: o.offerKey, title: instruction.replace(/\s+/g, " ").trim().slice(0, 100), slots: slotNames, steps };
-  // W2: each value the program chose meets the write contract in its field, with where it was read (fill/contract.ts);
-  // a refusal names the field and refuses the plan.
-  const mints = await mintWrites(unvetoed.map((f, i) => {
-    const field = fields[Number(f.target.slice(1)) - 1] as Field;
-    const value = values[Number(f.value.slice(1)) - 1] as Value;
-    return { slot: `v${i + 1}`, w, node: field.node, name: field.name, text: value.text, provenance: value.provenance, owner: value.owner };
-  }), { askJev: o.askJev, ledger, instruction, now });
   const ctx: PlanContext = { model, memory: memoryValues, instruction };
   const checked = validatePlan(plan, slots, ctx, mints);
   if (checked.window.window.windowId !== w.window.windowId) throw new PlannerError("unknownWindow", `'${w.window.title}' closed while Caret planned, and another window took its title`);
@@ -317,17 +322,25 @@ export interface WriteToVerify {
   key: string;
   field: { name: string; label: string };
   value: { display: string; window: unknown; owner: "user" | "other" | null };
+  /**
+   * Whether Jev is asked if the value belongs in the field (the `c` question). W2: a page write's exactness is the
+   * write contract's verifier (fill/contract.ts checkValues), so only a calendar event, which no page step writes,
+   * still asks it (goals/gates.ts jevGate); every page write asks only the whose and owner questions.
+   */
+  askValue?: boolean;
 }
 
 /**
- * The writes, by step ref, that Jev does not confirm: for a value from a window, asked twice with different
- * wordings, the two asks must agree at PLAN_CUTOFF that it is the value the field asks for. For a field that takes
+ * The writes, by step ref, that Jev does not confirm: for a write that asks its value (askValue; since W2 only a calendar
+ * event), asked twice with different wordings, the two asks must agree at PLAN_CUTOFF that it is the value the field
+ * asks for. For a field that takes
  * a person's details, a write is also dropped when both asks agree the field wants one person's details and
  * the value is another's (fill.ts WHOSE_CRITERIA and OWNER_CRITERIA, at WHOSE_CUTOFF); a value from memory is
  * the user's, and one written in the instruction is the user's own choice.
  */
 export async function verifyWrites(instruction: string, writes: readonly WriteToVerify[], askJev: AskJev, ledger: SnippetLedger): Promise<Set<string>> {
-  if (writes.length === 0) return new Set();
+  // W2: nothing to ask when no write asks its value and none takes a person's details.
+  if (writes.every((x) => x.askValue !== true && !personalField(x.field.label))) return new Set();
   const declared = ledger.declared();
   const req = (wording: 0 | 1): JevRequest => {
     const questions: JevRequest["questions"] = {};
@@ -335,7 +348,7 @@ export async function verifyWrites(instruction: string, writes: readonly WriteTo
       // Every value is checked, from memory and the instruction too (review: a writer put the user's Personal
       // email in Work email unchecked). The field is named by its name, which went through the ledger; its
       // descriptor can hold a placeholder that did not.
-      questions[`c${i + 1}`] = {
+      if (x.askValue === true) questions[`c${i + 1}`] = {
         type: "choice",
         instructions: wording === 0 ? `A form has the field '${x.field.name}'. Is this value the right one for it? ${x.value.display} The user asked: "${instruction}".` : `Value: ${x.value.display} Field: '${x.field.name}'. The user asked: "${instruction}". Does this value belong in this field?`,
         criteria: { ...VERIFY },
@@ -358,7 +371,7 @@ export async function verifyWrites(instruction: string, writes: readonly WriteTo
   };
   const out = new Set<string>();
   writes.forEach((x, i) => {
-    if (agreed(`c${i + 1}`, VERIFY, PLAN_CUTOFF) !== "yes") return void out.add(x.key);
+    if (x.askValue === true && agreed(`c${i + 1}`, VERIFY, PLAN_CUTOFF) !== "yes") return void out.add(x.key);
     if (!personalField(x.field.label)) return;
     const wants = agreed(`f${i + 1}`, WHOSE_CRITERIA, WHOSE_CUTOFF);
     const is = x.value.window === null ? x.value.owner : agreed(`v${i + 1}`, OWNER_CRITERIA, WHOSE_CUTOFF);

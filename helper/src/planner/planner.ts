@@ -240,19 +240,25 @@ async function planIn(
     return t1;
   };
   const byId = (xs: readonly { id: string; text: string }[]): Map<string, string> => new Map(xs.map((x) => [x.id, x.text]));
-  const writes: { field: Field; value: string }[] = [];
+  const agreedWrites: { field: Field; value: string }[] = [];
   /** W2: by field key, where its agreed value was read (the option of that text). */
   const read = new Map<string, Provenance>();
   for (const f of questioned) {
     const v = agreed(f.id, f.name, byId(fitting(f, values)), byId(fitting(f, second.values)), KEEP);
     if (v === null) continue;
-    writes.push({ field: f, value: v });
+    agreedWrites.push({ field: f, value: v });
     read.set(f.node.key, (values.find((x) => x.text === v) as Option).provenance);
   }
+  // W2: each value meets the write contract once, in its field, with where it was read (fill/contract.ts); a value it
+  // refuses is withheld, as an unsure one is.
+  const minted = await mintWrites(agreedWrites.map(({ field, value }) => ({ key: field.node.key, w, node: field.node, name: field.name, text: value, provenance: read.get(field.node.key) as Provenance, owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now() });
+  for (const r of minted.refused) withheld.push({ name: r.name, why: "lowConfidence" });
+  const writes = agreedWrites.filter((x) => minted.mints.has(x.field.node.key));
   const pressLabel = askedButtons.length === 0 ? null : agreed("press", "press", byId(askedButtons.map((b) => ({ id: b.id, text: b.key }))), byId(second.buttons.map((b) => ({ id: b.id, text: b.key }))), NONE);
   const press = pressLabel === null ? null : (askedButtons.find((b) => b.key === pressLabel) ?? null);
   if (press !== null) answers.press = [press.label, press.label];
   if (writes.length === 0 && press === null) {
+    if (minted.refused.length > 0 && agreedWrites.length === minted.refused.length) throw allRefused(minted.refused);
     if (withheld.length > 0) throw new PlannerError("unsure", `Jev was not sure enough about ${withheld.map((x) => `${x.name} (${x.why === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`);
     throw new PlannerError("nothingToDo", "Jev found nothing in your instruction to write or press here");
   }
@@ -273,9 +279,7 @@ async function planIn(
   }
   const plan: Plan = { id: o.offerKey, title: titleOf(instruction), slots: slotNames, steps };
 
-  // W2: each value meets the write contract once, in its field, with where it was read (fill/contract.ts); a refusal
-  // refuses the plan, as validatePlan's kind check did before W2.
-  const mints = await mintWrites(writes.map(({ field, value }, i) => ({ slot: `v${i + 1}`, w, node: field.node, name: field.name, text: value, provenance: read.get(field.node.key) as Provenance, owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now() });
+  const mints = new Map(writes.map(({ field }, i) => [`v${i + 1}`, minted.mints.get(field.node.key) as CheckedValue]));
   await o.beforeCheck?.();
   const ctx: PlanContext = { model, memory: memory.values(), instruction };
   const checked = validatePlan(plan, slots, ctx, mints);
@@ -296,11 +300,13 @@ async function planIn(
 }
 
 /**
- * W2: the write contract's mints for a drafted plan's writes, by slot (fill/contract.ts checkValues), each checked in its
- * field as fieldContract reads it, with where its value was read. Throws PlannerError("wrongKind") naming the first
- * value it refuses, as validatePlan's kind check did before W2.
+ * W2: the write contract's mints for a drafted plan's writes, by the caller's key (fill/contract.ts checkValues), each
+ * checked in its field as fieldContract reads it, with where its value was read. A value the contract refuses is
+ * returned in `refused`, so the caller drops that write, as verifyWrites dropped an unconfirmed one before W2. Throws
+ * PlannerError("notEditable") for a field Caret never types, and PlannerError("jevFailed") when the verifier cannot
+ * answer: nothing is written then.
  */
-export async function mintWrites(writes: readonly { slot: string; w: WindowState; node: Node; name: string; text: string; provenance: Provenance; owner: Owner }[], o: CheckOptions): Promise<Map<string, CheckedValue>> {
+export async function mintWrites(writes: readonly { key: string; w: WindowState; node: Node; name: string; text: string; provenance: Provenance; owner: Owner }[], o: CheckOptions): Promise<{ mints: Map<string, CheckedValue>; refused: { key: string; name: string; says: string; why: string }[] }> {
   const proposed: Proposed[] = [];
   for (const x of writes) {
     let field: FieldContract;
@@ -319,9 +325,18 @@ export async function mintWrites(writes: readonly { slot: string; w: WindowState
     if (e instanceof VerifierUnavailable) throw new PlannerError("jevFailed", `Caret couldn't check the plan's values: ${e.message}`);
     throw e;
   }
-  const first = r.refused[0];
-  if (first !== undefined) throw new PlannerError("wrongKind", `${writes[proposed.indexOf(first.proposed)]?.name ?? "a field"}: ${first.says}`);
-  return new Map(r.ok.map((c) => [writes[proposed.findIndex((p) => p.field === c.field && p.text === c.text)]?.slot as string, c]));
+  const keyOf = (p: Proposed): string => (writes[proposed.indexOf(p)] as (typeof writes)[number]).key;
+  const nameOf = (p: Proposed): string => (writes[proposed.indexOf(p)] as (typeof writes)[number]).name;
+  return {
+    mints: new Map(r.ok.map((c) => [writes[proposed.findIndex((p) => p.field === c.field && p.text === c.text)]?.key as string, c])),
+    refused: r.refused.map((x) => ({ key: keyOf(x.proposed), name: nameOf(x.proposed), says: x.says, why: x.why })),
+  };
+}
+
+/** The refusal of a plan whose every write the write contract refused: wrongKind when code refused one, else unsure. */
+export function allRefused(refused: readonly { name: string; says: string; why: string }[]): PlannerError {
+  const first = refused.find((x) => x.why === "wrongKind") ?? refused[0];
+  return new PlannerError(first?.why === "wrongKind" ? "wrongKind" : "unsure", `${first?.name ?? "a field"}: ${first?.says ?? "Caret's check refused the value"}`);
 }
 
 /**

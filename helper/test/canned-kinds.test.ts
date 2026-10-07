@@ -20,6 +20,8 @@ import { CannedGap, cannedReply, questionKind } from "../src/engines/decide/cann
 import { Snapshot } from "../src/protocol.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { PAGE_LOOP_HEADS, pageLoopCanned } from "../../fixtures/web-form/canned-jev.ts";
+import { setTestVerifier } from "../src/fill/contract.ts";
+import { STAND_IN } from "./setup/verifier.ts";
 
 beforeAll(() => setGeneratorClock(() => 0));
 afterAll(() => setGeneratorClock(null));
@@ -41,6 +43,9 @@ function canned(form: (typeof corpus.forms)[number], seen: JevRequest[]): AskJev
 }
 
 describe("page-loop-eval's canned engine", () => {
+  // W2: the write contract's verifier asks the canned engine here, not the suite's stand-in, so its rule is met.
+  beforeAll(() => setTestVerifier(null));
+  afterAll(() => setTestVerifier(STAND_IN));
   it("confirms code's reading of a whole-form Ask, so it fills instead of asking which fields to fill", async () => {
     for (const { form, desk } of desks()) {
       const seen: JevRequest[] = [];
@@ -71,13 +76,14 @@ describe("page-loop-eval's canned engine", () => {
           if (e instanceof CannedGap || !(e instanceof Error)) throw e;
           return null;
         });
-        const writes = (p?.fields ?? []).filter((f) => f.value !== null).map((f, i) => ({ key: `s${i}`, field: { name: f.descriptor, label: f.descriptor }, value: { display: `"${f.value as string}"`, window: f.source?.windowId ?? null, owner: null } }));
+        // W2: the value question goes only with a calendar event now (goals/gates.ts jevGate); asked here so its rule is met.
+        const writes = (p?.fields ?? []).filter((f) => f.value !== null).map((f, i) => ({ key: `s${i}`, field: { name: f.descriptor, label: f.descriptor }, value: { display: `"${f.value as string}"`, window: f.source?.windowId ?? null, owner: null }, askValue: true }));
         if (writes.length > 0) await verifyWrites(instruction, writes, ask, new SnippetLedger(desk.model.windows.values()));
         for (const r of seen) for (const id of [...Object.keys(r.questions), ...Object.keys(r.nouls ?? {})]) kinds.add(questionKind(r, id));
       }
     }
     // Every kind the page goal path asks was met here, so each rule above is exercised.
-    for (const k of ["ask.heads:scope", "ask.heads:why", "ask.heads:source", "ask.heads:whose", "ask.heads:reading", "ask.heads:field", "ask.confirm:all", "fill.whose:whose", "fill.whose:owner", "fill.values:value", "plan.verify:value", "plan.verify:whose"]) expect(kinds).toContain(k);
+    for (const k of ["ask.heads:scope", "ask.heads:why", "ask.heads:source", "ask.heads:whose", "ask.heads:reading", "ask.heads:field", "ask.confirm:all", "fill.whose:whose", "fill.whose:owner", "fill.values:value", "fill.verify:verdict", "plan.verify:value", "plan.verify:whose"]) expect(kinds).toContain(k);
   }, 300_000);
 });
 
