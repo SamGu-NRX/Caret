@@ -4,10 +4,11 @@
 // disappears at runtime, so the check that holds is `verify`, run on the body where each request is sent (the Jev
 // client, the writer port, the canned harness and the local decision engine): any string in the body that this
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
-import { assertNoSecrets, cut, flat, SnippetLedger } from "../privacy.ts";
+import { assertNoSecrets, cut, flat, SnippetLedger, type Snippet } from "../privacy.ts";
 import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted } from "../fill/redact.ts";
-import { sensitiveKind, valueKind } from "../memory/sensitive.ts";
+import { sensitiveKind } from "../memory/sensitive.ts";
+import { excludedValue } from "./exclude.ts";
 
 /** A window as redactWindow gave it (fill/redact.ts): the only window a Disclosure mints screen text from. */
 export type RedactedWindow = WindowState;
@@ -135,6 +136,26 @@ export class Disclosure extends SnippetLedger {
     return this.mints.get(text) ?? null;
   }
 
+  /**
+   * SC1 2a, at the ledger: a text holding a value in a format Caret never carries (privacy/exclude.ts) never fits, from a
+   * window, a plan or memory. The model withheld such values when windows were read in; this holds for any other path.
+   */
+  override take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
+    return !texts.some((t) => excludedValue(t) !== null) && super.take(w, kind, texts);
+  }
+
+  override cost(w: WindowState, texts: readonly (string | null | undefined)[]): number | null {
+    return texts.some((t) => excludedValue(t) !== null) ? null : super.cost(w, texts);
+  }
+
+  override plan(texts: readonly string[]): boolean {
+    return !texts.some((t) => excludedValue(t) !== null) && super.plan(texts);
+  }
+
+  override memory(texts: readonly string[]): boolean {
+    return !texts.some((t) => excludedValue(t) !== null) && super.memory(texts);
+  }
+
   /** The reasons a text this Disclosure minted carries; throws UnmintedText when it never minted it. */
   private reasons(text: string, where: string): Set<MintReason> {
     const r = this.mints.get(text);
@@ -186,7 +207,7 @@ export class Disclosure extends SnippetLedger {
    * a window would go over its budget.
    */
   memoryText(label: string | null, text: string): ModelText | null {
-    if (text === "" || sensitiveKind(label, text) !== null || valueKind(text) !== null) return null;
+    if (text === "" || sensitiveKind(label, text) !== null || excludedValue(text) !== null) return null;
     if (!this.memory([text])) return null;
     return this.record(text, ["memory"]);
   }

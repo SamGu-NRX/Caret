@@ -75,6 +75,7 @@ import {
   type RecordKind,
 } from "./parse.ts";
 import { refusal, sensitiveKind, valueKind } from "./sensitive.ts";
+import { WITHHELD, WITHHELD_SAYS } from "../privacy/exclude.ts";
 
 export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_TOTAL_BYTES = 2 * 1024 * 1024;
@@ -594,6 +595,8 @@ export function sensitiveLine(doc: DocId, text: string): string | null {
     const f = /^[-*+][ \t]+([A-Za-z][A-Za-z ']{0,30}?)[ \t]*:[ \t]*(.*)$/.exec(line);
     const s = (f === null ? null : sensitiveKind(f[1], f[2] ?? "")) ?? valueKind(line);
     if (s !== null) return `${p.file}:${i + 1}: ${refusal(s)}`;
+    // SC1 2a: a text read from the screen with a secret-format value withheld from it.
+    if (line.includes(WITHHELD)) return `${p.file}:${i + 1}: ${WITHHELD_SAYS} in memory`;
   }
   return null;
 }

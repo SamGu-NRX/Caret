@@ -186,7 +186,10 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
   const nodes: Node[] = [];
   let focusedKey: string | null = null;
   const view = s.view ?? null;
+  // SC1 2a: a frame at a site the user turned Caret off for never enters the model, whatever the engine sent.
+  const kept = new Set(s.frames.filter((f) => !session.offSites.has(f.origin)).map((f) => f.frameId));
   for (const f of s.frames) {
+    if (!kept.has(f.frameId)) continue;
     // H10: screen frames for the top frame's nodes only. A child frame's rects are in its own viewport, whose place in
     // the page this walk does not pin down; its controls have no frame, so the host draws no offer at them.
     const onScreen = view !== null && f.parentFrameId < 0 ? (r: readonly [number, number, number, number]) => ({ frame: screenRect(view, r) }) : () => ({});
@@ -194,9 +197,17 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
       const u = view !== null && f.parentFrameId < 0 ? union(members.map((m) => screenRect(view, m.rect))) : null;
       return u === null ? {} : { frame: u };
     };
-    nodes.push({ key: frameKey(f.frameId), parent: f.parentFrameId < 0 ? null : frameKey(f.parentFrameId), role: "AXWebArea", label: f.title || `${f.origin}${f.path}`, ...(view !== null && f.parentFrameId < 0 ? onScreen([0, 0, view.viewport[0], view.viewport[1]]) : {}) });
+    nodes.push({ key: frameKey(f.frameId), parent: f.parentFrameId < 0 || !kept.has(f.parentFrameId) ? null : frameKey(f.parentFrameId), role: "AXWebArea", label: f.title || `${f.origin}${f.path}`, ...(view !== null && f.parentFrameId < 0 ? onScreen([0, 0, view.viewport[0], view.viewport[1]]) : {}) });
     const groups = new Set<string>();
     for (const c of f.controls) {
+      if (c.excluded !== undefined) {
+        // SC1 2a: a control the walker marks arrives with no value; it reads as a secure field does through Accessibility,
+        // so nothing targets it, and the model keeps it marked (privacy/exclude.ts).
+        const focusedHere = s.focused !== null && s.focused.frameId === f.frameId && s.focused.id === c.id;
+        if (focusedHere) focusedKey = nodeKey(f.frameId, c);
+        nodes.push({ key: nodeKey(f.frameId, c), parent: frameKey(f.frameId), role: ROLE[c.kind], label: c.name, ...(VALUE_KINDS.has(c.kind) ? { editable: true as const } : {}), states: focusedHere ? ["focused", "secure"] : ["secure"], excluded: c.excluded, ...onScreen(c.rect) });
+        continue;
+      }
       let parent = frameKey(f.frameId);
       if (c.kind === "radio") {
         parent = radioGroupKey(f.frameId, c);

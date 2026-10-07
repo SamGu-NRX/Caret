@@ -322,6 +322,20 @@
                       "bday-month",
                       "bday-year"
                     ]
+                  },
+                  "excluded": {
+                    "type": "string",
+                    "enum": [
+                      "secure",
+                      "password",
+                      "hidden",
+                      "payment",
+                      "oneTimeCode",
+                      "cardNumber",
+                      "accountNumber",
+                      "governmentId",
+                      "apiKey"
+                    ]
                   }
                 },
                 "required": [

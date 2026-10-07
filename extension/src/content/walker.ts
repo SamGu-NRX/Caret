@@ -288,10 +288,11 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
   let truncated = false;
   for (const f of candidates()) {
     const why = exclusionOf(f.el, f.name);
-    if (why !== null) {
-      excluded[why] = (excluded[why] ?? 0) + 1;
-      continue;
-    }
+    if (why !== null) excluded[why] = (excluded[why] ?? 0) + 1;
+    // SC1 2a: a visible secret field is sent marked, without its value, so the helper knows it is there and never
+    // targets it; every other exclusion is dropped here, as before.
+    const marked = why === "password" || why === "payment" || why === "oneTimeCode" ? why : null;
+    if (why !== null && marked === null) continue;
     if (controls.length >= MAX_CONTROLS) {
       truncated = true;
       break;
@@ -303,6 +304,12 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     const base = `${scope === "" ? "" : `${scope}/`}${role}:${clean(f.name, 60).toLowerCase()}`;
     const ordinal = ordinals.get(base) ?? 0;
     ordinals.set(base, ordinal + 1);
+    if (marked !== null) {
+      const c: PageControl = { id: idOf(f.el), key: `${base}~${ordinal}`, strongKey: null, kind: f.kind, role, name: f.name, form, rect: rectOf(f.el), excluded: marked };
+      controls.push(c);
+      onKept(f.el, c);
+      continue;
+    }
     const ident = authorIdentifier({ name: f.el.getAttribute("name"), id: f.el.getAttribute("id"), automationId: f.el.getAttribute("data-automation-id") });
     const value = valueOf(f.el);
     const checked = checkedOf(f.el);

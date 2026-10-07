@@ -173,6 +173,11 @@ export interface RoutingOptions {
 }
 
 export interface HelperOptions {
+  /**
+   * SC1 2a: bundle identifier prefixes of apps the user switched off, read from the reader's deny list (main.ts); their
+   * windows never enter the model. The reader's default list when absent (privacy/read-policy.ts DEFAULT_APPS_OFF).
+   */
+  appsOff?: readonly string[];
   store: Store;
   /** Null disables Jev entirely: no fill proposals are made. */
   askJev: AskJev | null;
@@ -526,6 +531,7 @@ export class Helper {
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
+    if (opts.appsOff !== undefined) this.model.setAppsOff(opts.appsOff);
     this.now = opts.now ?? Date.now;
     this.offers = new HostOfferRegistry(this.now);
     this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) }, opts.offersPerHour ?? null);

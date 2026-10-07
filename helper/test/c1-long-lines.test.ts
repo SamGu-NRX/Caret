@@ -87,11 +87,15 @@ describe("what a value inside a line carries, and what it never offers", () => {
     expect(describeCandidate(landline as NonNullable<typeof landline>)).toContain("in the line 'Don't give out 555-0112, that's Mom and Dad's landline.'");
   });
 
-  it("offers nothing from a line that shows a card number or is labelled as a secret, however long", () => {
+  it("offers nothing from a line labelled as a secret, and never a card number, however long", () => {
     const cs = candidates(
       "Card on file 4111 1111 1111 1111, and the billing phone for it is 555-0199, which the bank texts each month.\nAPI key: sk-live-abcdefghijklmnopqrstu 555-0123 2026-01-01",
-    ).map((c) => c.text);
-    expect(cs.filter((t) => /555-01(99|23)|2026-01-01|4111/.test(t))).toEqual([]);
+    );
+    // SC1 2a: the card number is withheld when the note is read in, and its line stays: the phone beside it is offered,
+    // its line quoting the withheld number only as "[withheld]". The line a marker labels is still dropped (fill/redact.ts).
+    expect(cs.map((c) => c.text).filter((t) => /555-0123|2026-01-01|4111/.test(t))).toEqual([]);
+    expect(cs.map((c) => c.text)).toContain("555-0199");
+    expect(JSON.stringify(cs)).not.toMatch(/4111|sk-live/u);
   });
 
   it("never breaks a list into items", () => {

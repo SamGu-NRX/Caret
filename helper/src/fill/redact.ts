@@ -22,6 +22,7 @@ import type { WindowState } from "../model.ts";
 import type { Node, TypedValue } from "../protocol.ts";
 import { markerAcross, markerEnds, PEM_BEGIN, PEM_END, secretText } from "../memory/sensitive.ts";
 import { nodesLabelledBy } from "./descriptor.ts";
+import { withholdValues } from "../privacy/exclude.ts";
 
 export { secretText };
 
@@ -140,9 +141,12 @@ export function instructionView(text: string): { text: string; retained: string[
   return { text: shown, retained };
 }
 
-/** Model-facing instruction text; raw text remains local for refusal and provenance checks. */
+/**
+ * Model-facing instruction text; raw text remains local for refusal and provenance checks. A value in a format Caret
+ * never carries (privacy/exclude.ts) is withheld in the clauses kept, as it is in a window read in (SC1 2a).
+ */
 export function instructionForModel(text: string): string {
-  return instructionView(text).text;
+  return withholdValues(instructionView(text).text);
 }
 
 /**

@@ -11,6 +11,7 @@ import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKin
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
 import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, sentenceAround, WARNS } from "./line-values.ts";
 import { redactWindow } from "./redact.ts";
+import { WITHHELD } from "../privacy/exclude.ts";
 import { splitDate } from "./derive.ts";
 
 /**
@@ -336,7 +337,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * does not fit its window's budget closes the window.
    */
   const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string): void => {
-    if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId)) return;
+    // SC1 2a: a span holding a value the model withheld is never a candidate; its line may still be another's context.
+    if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId) || text.includes(WITHHELD)) return;
     const c = build(w, node, text, kind, context, quote, partOf);
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       // W2: a part of a labelled value (line-values.ts valueParts) is an extra beside the whole value: one that does not

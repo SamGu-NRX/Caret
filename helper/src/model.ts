@@ -2,6 +2,8 @@
 // and the change log of what differed between one walk of a window and the next.
 import type { AppRef, Node, Snapshot, TypedValue, WindowRef } from "./protocol.ts";
 import { PAGE_WINDOW_KIND } from "./engines/windows.ts";
+import { admitNode, admitTitle, admitValues, inherited } from "./privacy/exclude.ts";
+import { appOff, DEFAULT_APPS_OFF } from "./privacy/read-policy.ts";
 
 export interface WindowState {
   app: AppRef;
@@ -56,10 +58,23 @@ export class ScreenModel {
   frontmostPid: number | null = null;
   /** Every change of focused window, oldest first. */
   private readonly focusHistory: { windowId: string; at: number }[] = [];
+  /** Bundle identifier prefixes of apps the user switched off (privacy/read-policy.ts): their windows never enter the model. */
+  private appsOff: readonly string[] = DEFAULT_APPS_OFF;
+
+  /** Sets the apps whose windows never enter the model, and closes any of their windows it holds. */
+  setAppsOff(prefixes: readonly string[], at = Date.now()): void {
+    this.appsOff = [...prefixes];
+    for (const [id, w] of [...this.windows]) if (appOff(w.app.bundleId, this.appsOff)) this.close(id, at);
+  }
 
   /** Applies one snapshot and returns the changes it produced. */
   apply(snap: Snapshot): Change[] {
     const id = snap.window.windowId;
+    // SC1 2a: a window of an app the user switched off never enters the model, whichever reader sent it.
+    if (appOff(snap.app.bundleId, this.appsOff)) {
+      const c = this.close(id, snap.at);
+      return c === null ? [] : [c];
+    }
     const prior = this.windows.get(id);
     const out: Change[] = [];
     let nodes: Map<string, Node>;
@@ -97,6 +112,7 @@ export class ScreenModel {
     // as a value the window states.
     const dropped = underMenuOptions(nodes);
     for (const k of dropped) nodes.delete(k);
+    admitNodes(nodes, snap.nodes);
     if (prior !== undefined) out.push(...diffNodes(prior.nodes, nodes, snap, id));
 
     // A partial snapshot only knows focus inside its subtree; outside it, the earlier focus stands
@@ -109,13 +125,13 @@ export class ScreenModel {
     if (unreached !== null && focusedKey === null && prior !== undefined && prior.focusedKey !== null && unreached.has(prior.focusedKey)) focusedKey = prior.focusedKey;
     const state: WindowState = {
       app: snap.app,
-      window: snap.window,
+      window: admitTitle(snap.window),
       focused: snap.focused,
       nodes,
       // V4 review: a pop-up menu's option is a choice the window offers, not a fact it states, so a value read in one (a date
       // in "Deliver on Oct 17") is no window's value: kept, it was offered to other forms as a source and could mint as a
       // plain date. The reader keeps a pop-up's own menu items as its options (Compactor.swift popUpMenu).
-      values: values.filter((v) => !menuOption(nodes, v.nodeKey) && !dropped.has(v.nodeKey)),
+      values: admitValues(values.filter((v) => !menuOption(nodes, v.nodeKey) && !dropped.has(v.nodeKey)), nodes),
       focusedKey,
       updatedAt: snap.at,
       lastFocusedAt: snap.focused ? snap.at : (prior?.lastFocusedAt ?? 0),
@@ -227,7 +243,9 @@ export class ScreenModel {
       }
       const nodes = new Map(w.nodes);
       for (const n of add.nodes) nodes.set(n.key, n);
-      v.windows.set(id, { ...w, window: add.title === null ? w.window : { ...w.window, title: add.title }, nodes });
+      // The tab's text is read in as the model's own windows are (SC1 2a).
+      admitNodes(nodes, add.nodes);
+      v.windows.set(id, { ...w, window: add.title === null ? w.window : admitTitle({ ...w.window, title: add.title }), nodes, values: admitValues(w.values, nodes) });
     }
     v.focusedWindowId = this.focusedWindowId;
     v.frontmostPid = this.frontmostPid;
@@ -268,6 +286,26 @@ function mergeCutWalk(prior: Map<string, Node>, sent: readonly Node[]): Map<stri
   }
   for (; next < sent.length; next++) out.set((sent[next] as Node).key, sent[next] as Node);
   return out;
+}
+
+/**
+ * SC1 2a: the nodes a snapshot brought, as the model keeps them (privacy/exclude.ts admitNode): an excluded control
+ * without its value, every value in a secret format withheld. Twice when the first pass excluded a group, since a
+ * snapshot may list a child before its parent.
+ */
+function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[]): void {
+  let groupExcluded = false;
+  for (let pass = 0; pass < 2; pass++) {
+    for (const f of fresh) {
+      const n = nodes.get(f.key);
+      if (n === undefined) continue;
+      const a = admitNode(n, inherited(nodes, n));
+      if (a === n) continue;
+      nodes.set(f.key, a);
+      if (a.excluded !== undefined && a.editable !== true) groupExcluded = true;
+    }
+    if (!groupExcluded) return;
+  }
 }
 
 /** The keys beneath every pop-up button's option (menuOption), the options themselves not included. */

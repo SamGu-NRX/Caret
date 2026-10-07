@@ -43,6 +43,11 @@ export interface PageControl {
   accept?: string[];
   /** W2: the autocomplete attribute's field name, when it is one Caret reads (walker.ts autocompleteOf). */
   autocomplete?: string;
+  /**
+   * SC1 2a: a password, card or one-time-code field, sent with its kind, role, name, form and rect only (walker.ts
+   * markedControl), never a value, options or entry, so the helper knows it is there and never targets it.
+   */
+  excluded?: "password" | "payment" | "oneTimeCode";
 }
 
 export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "notSameElement" | "excluded" | "unsupported" | "error" | "siteOff";

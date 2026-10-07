@@ -4,6 +4,7 @@
 import { chat, type ChatRoute } from "./chat.ts";
 import { assertNoSecrets, type Snippet } from "../privacy.ts";
 import { verifyWriterInput, type Disclosure } from "../privacy/disclosure.ts";
+import { writerPolicy, type ProviderPolicy } from "../privacy/providers.ts";
 import { readKey } from "./env.ts";
 import { extractProgram, PLAN_SYSTEM, PlanInputSchema, planUserMessage } from "./plan-prompt.ts";
 import { GOAL_SYSTEM } from "./goal-prompt.ts";
@@ -50,14 +51,28 @@ export interface WriterPort {
 /** Plan section 5: a 10-second writer timeout, no automatic retry. */
 export const WRITER_TIMEOUT_MS = 10_000;
 
-export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fetchFn?: typeof fetch } = {}): WriterPort {
+/** SC1 T4: the writer's route keeps what it is sent, and this is no evaluation over fixture text. */
+export class WriterProviderRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WriterProviderRefused";
+  }
+}
+
+/**
+ * `evaluation`: the caller is an evaluation harness whose requests carry fixture text only, the one case a route whose
+ * provider keeps what it is sent may run (privacy/providers.ts). `policy` replaces writerPolicy, for tests.
+ */
+export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fetchFn?: typeof fetch; evaluation?: boolean; policy?: (route: ChatRoute) => ProviderPolicy } = {}): WriterPort {
   const key = opts.key ?? (() => readKey(route.keyName));
+  const retains = (opts.policy ?? writerPolicy)(route).retains;
   return {
     route,
     async write(req) {
       assertNoSecrets(req);
       // SC1 2b: every string in the input was minted for this request, before schema parsing, key access or transport.
       verifyWriterInput(req);
+      if (retains && opts.evaluation !== true) throw new WriterProviderRefused(`${route.provider}:${route.model} keeps what it is sent, so it writes only for evaluation harnesses over fixture text`);
       if (req.kind !== "plan" && req.kind !== "goal" && req.kind !== "intent") throw new Error(`writer kind ${req.kind} is not implemented yet`);
       if (req.disclosureId.length === 0) throw new Error("writer request has no disclosureId");
       if (req.kind === "intent") {

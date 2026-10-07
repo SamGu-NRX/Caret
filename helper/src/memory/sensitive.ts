@@ -22,7 +22,7 @@ export const SENSITIVE_SAYS: Record<SensitiveKind, string> = {
 };
 
 /** Label phrases, as consecutive words of words(). Checked in this order; the first match names the kind. */
-const LABEL_PHRASES: [SensitiveKind, string[][]][] = [
+export const LABEL_PHRASES: readonly (readonly [SensitiveKind, readonly (readonly string[])[]])[] = [
   ["oneTimeCode", [["otp"], ["one", "time"], ["verification", "code"], ["2fa"], ["mfa"], ["auth", "code"], ["authentication", "code"], ["login", "code"], ["sms", "code"], ["security", "code", "sent"]]],
   ["cardNumber", [["card", "number"], ["card", "no"], ["credit", "card"], ["debit", "card"], ["cvv"], ["cvc"], ["cvv2"], ["csc"], ["security", "code"], ["card", "verification"]]],
   ["password", [["password"], ["passwd"], ["passcode"], ["passphrase"], ["pin"], ["pin", "code"]]],
@@ -31,8 +31,8 @@ const LABEL_PHRASES: [SensitiveKind, string[][]][] = [
   ["apiKey", [["api", "key"], ["apikey"], ["api", "token"], ["access", "token"], ["access", "key"], ["secret"], ["private", "key"], ["token"], ["client", "secret"], ["bearer"]]],
 ];
 
-/** Value shapes that are refused whatever the label says. */
-const API_KEY_SHAPES: RegExp[] = [
+/** Value shapes that are refused whatever the label says (privacy/exclude.ts withholds them when a window is read in). */
+export const API_KEY_SHAPES: readonly RegExp[] = [
   /\b(?:sk|pk|rk)[-_](?:live|test|proj|ant)[-_][A-Za-z0-9_-]{12,}/,
   /\bsk-[A-Za-z0-9_-]{20,}/,
   /\bgh[pousr]_[A-Za-z0-9]{30,}/,
@@ -146,7 +146,7 @@ function endsWith(ws: readonly string[], p: readonly string[]): boolean {
   return p.every((w, j) => ws[at + j] === w);
 }
 
-function luhn(digits: string): boolean {
+export function luhn(digits: string): boolean {
   let sum = 0;
   let double = false;
   for (let i = digits.length - 1; i >= 0; i--) {
@@ -212,7 +212,7 @@ function scanMarker(text: string, atEnd: boolean): boolean {
   return false;
 }
 /** The marker phrases by their first word: a line is read once, each word looked up, not every phrase tried at it. */
-const BY_FIRST = new Map<string, string[][]>();
+const BY_FIRST = new Map<string, (readonly string[])[]>();
 for (const [, phrases] of LABEL_PHRASES) for (const p of phrases) BY_FIRST.set(p[0] as string, [...(BY_FIRST.get(p[0] as string) ?? []), p]);
 /** markerWord's and markerEnds's answers by text: the redacted view reads every line of a window it builds. Bounded. */
 const MARKER_MEMO = 8000;

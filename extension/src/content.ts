@@ -119,8 +119,11 @@ function walk(reg: Registry, entries: EntryTracker | null, caretText: boolean): 
       } catch {
         selection = null;
       }
-      // H13: the caret's rect with its text, for the host's inline text; neither on a site on the deny list.
-      focused = { id: c.id, selection, look: lookOf(active), text: caretText ? fieldText(active) : null, caret: caretText ? caretRect(active) : null };
+      // H13: the caret's rect with its text, for the host's inline text; neither on a site on the deny list. SC1 2a: a
+      // marked secret field says only that it has focus, never its text, selection, caret or whether it is empty.
+      focused = c.excluded !== undefined
+        ? { id: c.id, selection: null, text: null, caret: null }
+        : { id: c.id, selection, look: lookOf(active), text: caretText ? fieldText(active) : null, caret: caretText ? caretRect(active) : null };
     }
   }
   const docs = window.self === window.top ? docsKind(self.origin, location.pathname) : null;

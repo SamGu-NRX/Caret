@@ -19,6 +19,7 @@ import { words } from "../fill/kinds.ts";
 import { MemoryDocumentError, type MemoryDocumentStore } from "./documents.ts";
 import { encodeValue, MAX_LINE_CHARS, recordDigest, type MemoryRecord } from "./parse.ts";
 import { refusal, sensitiveKind, statedSecret } from "./sensitive.ts";
+import { WITHHELD, WITHHELD_SAYS } from "../privacy/exclude.ts";
 
 /** The window kind of a browser tab the page engine reads (fill.ts PAGE_WINDOW_KIND; repeated to keep this module free of fill's). */
 const PAGE = "page";
@@ -153,6 +154,8 @@ export function capture(w: WindowState, key: string, ctx: CaptureContext): Captu
   const question = questionOf(n);
   if (question === null) return no("noQuestion", "This field has no label, so Caret can't tell which question the answer is for.");
   if (text.trim() === "") return no("empty", "The field is empty, so there's nothing to save.");
+  // SC1 2a: the model withheld a value in a secret format from this text when it read the window in.
+  if (text.includes(WITHHELD)) return no("secret", `${WITHHELD_SAYS} in memory, and this answer had one.`);
   // A secret by its shape (a card number, a key), or one the text states ("my password is …"): review finding 6.
   const secret = sensitiveKind(question, text) ?? statedSecret(text);
   if (secret !== null) return no("secret", `${refusal(secret)}, and this answer has one.`);

@@ -31,6 +31,7 @@ import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { secretIn } from "../planner/trace.ts";
 import type { AskJev, JevRequest } from "./jev.ts";
 import { assertNoSecrets } from "../privacy.ts";
+import { WITHHELD } from "../privacy/exclude.ts";
 
 /** The page walk's text input kind (protocol.ts PageControlKind), projected into Node by toWindowSnapshot; null through Accessibility. */
 export type InputKind = "text" | "email" | "tel" | "url" | "number" | "search" | "date" | "time" | "datetime" | "month" | "week" | "textarea" | null;
@@ -439,6 +440,8 @@ export function shapeRefusal(p: Proposed): string | null {
   const v = p.text.trim();
   const secret = secretIn(v, "");
   if (secret !== null) return `Caret never types ${SENSITIVE_SAYS[secret]}; that is yours to enter`;
+  // SC1 2a: a text the model withheld a secret-format value from is never written, whatever else it holds.
+  if (v.includes(WITHHELD)) return "Caret never reads part of this value; that is yours to enter";
   // V3: a date or time input takes a value through the verifier only when code resolved it into the input's own format and
   // said the choice it made doing so (Provenance.says: an assumed year, an order a format hint gave); every other value
   // there is still an exemption's (resolverFormat) or refused.

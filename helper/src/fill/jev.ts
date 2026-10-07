@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import * as z from "zod";
 import { assertNoSecrets, type Snippet } from "../privacy.ts";
 import { verifySent, type Disclosure } from "../privacy/disclosure.ts";
+import { jevPolicy } from "../privacy/providers.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
 
@@ -300,10 +301,10 @@ export function expandWireBody(body: WireBody): WireBody {
 export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs = 10_000, spend: DailySpend = DailySpend.fromEnv(), settings: JevSettings = jevSettings(), fetchFn: typeof fetch = (input, init) => fetch(input, init), onUsage?: (usage: JevUsage) => void, evaluation?: { fixture: FixtureSources; env: NodeJS.ProcessEnv }): AskJev {
   const route = { ...settings };
   return async (req) => {
-    if (route.model === LAYA_FREE_MODEL) {
-      // Laya's boundless endpoint reports has_no_training:false and has_zdr:false (Oct 6, 2026).
-      // Real-screen text must never reach it, even with explicit model configuration or no replay cache.
-      if (evaluation === undefined) throw new JevGatewayPolicyError("Laya runs only with declared fixture sources in evaluation harnesses", route.model);
+    if (jevPolicy(route).retains) {
+      // SC1 T4: a provider that keeps or trains on what it is sent (Laya: privacy/providers.ts) never gets real-screen
+      // text, even with explicit model configuration or no replay cache: only an evaluation's declared fixture text.
+      if (evaluation === undefined) throw new JevGatewayPolicyError(`${route.model} keeps what it is sent, so it runs only with declared fixture sources in evaluation harnesses`, route.model);
       refuseShipped(process.env);
       refuseShipped(evaluation.env);
       checkFixture(req, evaluation.fixture);
