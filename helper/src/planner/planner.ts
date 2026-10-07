@@ -21,7 +21,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { candidateProvenance, FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
-import { checkValues, ContractError, fieldContract, type CheckedValue, type CheckOptions, type FieldContract, type Owner, type Proposed, type Provenance } from "../fill/contract.ts";
+import { checkValues, ContractError, fieldContract, VerifierUnavailable, type CheckedValue, type CheckOptions, type FieldContract, type Owner, type Proposed, type Provenance } from "../fill/contract.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts } from "../fill/kinds.ts";
@@ -312,7 +312,13 @@ export async function mintWrites(writes: readonly { slot: string; w: WindowState
     }
     proposed.push({ field, text: x.text, display: x.text, provenance: x.provenance, owner: x.owner });
   }
-  const r = await checkValues(proposed, o);
+  let r: Awaited<ReturnType<typeof checkValues>>;
+  try {
+    r = await checkValues(proposed, o);
+  } catch (e) {
+    if (e instanceof VerifierUnavailable) throw new PlannerError("jevFailed", `Caret couldn't check the plan's values: ${e.message}`);
+    throw e;
+  }
   const first = r.refused[0];
   if (first !== undefined) throw new PlannerError("wrongKind", `${writes[proposed.indexOf(first.proposed)]?.name ?? "a field"}: ${first.says}`);
   return new Map(r.ok.map((c) => [writes[proposed.findIndex((p) => p.field === c.field && p.text === c.text)]?.slot as string, c]));

@@ -14,6 +14,7 @@ type Question = JevRequest["questions"][string];
 const GRAMMAR: Partial<Record<JevPurpose, readonly (readonly [RegExp, string])[]>> = {
   "fill.whose": [[/^f\d+_whose$/u, "whose"], [/^[cv]\d+_owner$/u, "owner"]],
   "fill.values": [[/^f\d+$/u, "value"], [/^f\d+_whose$/u, "whose"], [/^[cv]\d+_owner$/u, "owner"], [/^f\d+_answer$/u, "answer"]],
+  "fill.verify": [[/^x\d+$/u, "verdict"]],
   "ask.heads": [[/^(?:scope|why|source|whose|section|reading)$/u, "$&"], [/^n_.+$/u, "field"]],
   "ask.confirm": [[/^all$/u, "all"], [/^f\d+$/u, "field"]],
   "intent.route": [[/^(?:route|why|scope|source|whose)$/u, "$&"], [/^lit\d+$/u, "literal"]],

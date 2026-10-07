@@ -27,7 +27,7 @@ import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived, markFilled } from "./gates.ts";
-import { checkValues, ContractError, exemptRefusal, mintExempt, requireChecked, type CheckedValue, type ExemptRule, type Proposed } from "../fill/contract.ts";
+import { checkValues, ContractError, exemptRefusal, mintExempt, requireChecked, VerifierUnavailable, type CheckedValue, type ExemptRule, type Proposed } from "../fill/contract.ts";
 import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
@@ -409,7 +409,13 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   const copies = steps.filter((x) => x.kind === "write" && x.checked === undefined && x.writes !== null && x.value !== null);
   if (copies.length > 0) {
     const proposed = copies.map((x) => proposedFor(x.target, x.value as ValueBinding, x.writes as string));
-    const result = await checkValues(proposed, { askJev: o.askJev, ledger: o.ledger, instruction, now });
+    let result: Awaited<ReturnType<typeof checkValues>>;
+    try {
+      result = await checkValues(proposed, { askJev: o.askJev, ledger: o.ledger, instruction, now });
+    } catch (e) {
+      if (e instanceof VerifierUnavailable) throw new GoalError("unchecked", "Caret couldn't check the plan's values just now", e.message);
+      throw e;
+    }
     const refusedSteps = new Set<GoalStep>();
     for (const r of result.refused) {
       const x = copies[proposed.indexOf(r.proposed)] as GoalStep;

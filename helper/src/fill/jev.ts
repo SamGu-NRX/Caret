@@ -131,7 +131,7 @@ export interface NoulQuestion {
  * for rather than answering it with silence.
  */
 export type JevPurpose =
-  | "fill.whose" | "fill.values" | "ask.heads" | "ask.confirm" | "intent.route" | "intent.fields" | "plan.verify" | "codeplan.asksAbout"
+  | "fill.whose" | "fill.values" | "fill.verify" | "ask.heads" | "ask.confirm" | "intent.route" | "intent.fields" | "plan.verify" | "codeplan.asksAbout"
   | "planner.window" | "planner.fields" | "savedFile.match" | "codemode.choice" | "draft.check" | "event.card" | "pattern.naming"
   | "executor.target" | "route.judge" | "route.task" | "route.pick" | "pending.change" | "pending.look" | "probe.latency";
 

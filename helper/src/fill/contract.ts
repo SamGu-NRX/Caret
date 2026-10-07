@@ -22,8 +22,8 @@ import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind } from "./kin
 import { takesOneValue, writeMisfit } from "./writable.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { secretIn } from "../planner/trace.ts";
-import type { AskJev } from "./jev.ts";
-import type { SnippetLedger } from "../privacy.ts";
+import type { AskJev, JevRequest } from "./jev.ts";
+import { SnippetLedger } from "../privacy.ts";
 
 /** The page walk's text input kind (protocol.ts PageControlKind), projected into Node by toWindowSnapshot; null through Accessibility. */
 export type InputKind = "text" | "email" | "tel" | "url" | "number" | "search" | "date" | "time" | "datetime" | "month" | "week" | "textarea" | null;
@@ -103,10 +103,33 @@ export type ExemptRule =
   | "derivedEvent"; // G3: a calendar event the inventory derived, eventAsAsked holds
 
 /**
- * How a value was judged. "code" (W2 migration step 2 only): the deterministic checks and W1's text-shape gate passed,
- * with no model asked; step 3 replaces it with the verifier's verdict.
+ * The verifier's categories (AC1 section 4). A yes/no "is this right for the field?" invites a yes to a note about the
+ * field (LV1: the instruction text won the value question at 0.77 and 0.96); offering the failure categories as options
+ * asks the model to classify instead of endorse. Only "exact" from both wordings mints.
  */
-export type Verdict = { by: "code" } | { by: "exempt"; rule: ExemptRule };
+export const VERDICTS = {
+  exact: "Exactly this field's value: all of it and nothing else.",
+  more: "More than this field asks for: another value, an amount, a date, a label, a remark or extra words beside the value.",
+  part: "Too little: the field wants a longer value, and this text is only a piece of it.",
+  note: "A note, reminder or instruction to the user about what to write, not a value.",
+  other: "Not this field's value: the value of another field, of a different person or thing than the field names, or unrelated.",
+} as const;
+export type VerdictChoice = keyof typeof VERDICTS;
+
+export interface VerifyAsk {
+  choice: VerdictChoice;
+  confidence: number;
+}
+
+/**
+ * Lowest confidence, the lower of two wordings, at which "exact" mints. 0.75 is FILL_CUTOFF's value, inherited because it
+ * is the only calibrated floor the helper has; no run has calibrated this question. The dev set
+ * (fixtures/verify/dev.json, scripts/verifier-eval.ts) is its first evidence.
+ */
+export const VERIFY_CUTOFF = 0.75;
+
+/** How a value was judged: both verifier wordings, or a named exemption. */
+export type Verdict = { by: "verifier"; asks: readonly [VerifyAsk, VerifyAsk]; confidence: number } | { by: "exempt"; rule: ExemptRule };
 
 declare const minted: unique symbol;
 /** Only checkValues and mintExempt create one. Identity is the proof: a structuredClone, JSON copy or look-alike is not checked (isChecked). */
@@ -118,24 +141,50 @@ export interface CheckedValue extends Proposed {
 
 export interface Refused {
   readonly proposed: Proposed;
-  /** "wrongKind" for a shape refusal. */
+  /** "wrongKind" for a shape refusal, "notExact" for the verifier's. */
   readonly why: FillWithheld;
   /** One sentence for the preview and the log. */
   readonly says: string;
+  readonly asks?: readonly [VerifyAsk, VerifyAsk];
+}
+
+/** What the verifier's requests cost, for the proposal's log and the scoreboard. Zero when nothing was asked. */
+export interface VerifyUse {
+  requests: number;
+  model: string | null;
+  latencyMs: number;
+  inputTokens: number;
+  costUsd: number;
 }
 
 export interface Checked {
   readonly ok: readonly CheckedValue[];
   readonly refused: readonly Refused[];
+  readonly jev: VerifyUse;
 }
 
 export interface CheckOptions {
+  /** Jev, for the verifier; null verifies nothing, so every value the shape checks pass is refused as unverified. */
   askJev: AskJev | null;
+  /** The ledger the caller's asks took screen text through: the verifier quotes only what it admits (privacy.ts). */
   ledger: SnippetLedger | null;
-  /** The user's instruction when an Ask or goal scoped the write: a value it labels as a secret is never typed (trace.ts secretIn). */
+  /** The user's instruction when an Ask or goal scoped the write: quoted in the request's state, and a value it labels as a secret is never typed (trace.ts secretIn). */
   instruction?: string;
   now: number;
+  /** An abort counts as the verifier being unavailable. */
   signal?: AbortSignal;
+  cutoff?: number;
+}
+
+/**
+ * Jev could not answer the verifier: an HTTP, network or cap error, an abort, or an answer missing a question's id.
+ * Callers withhold every proposed text write as "unverified" and never guess.
+ */
+export class VerifierUnavailable extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "VerifierUnavailable";
+  }
 }
 
 export class ContractError extends Error {
@@ -307,35 +356,238 @@ export function neverTypedRefusal(p: Proposed, instruction = ""): string | null 
   return secret === null ? null : `Caret never types ${SENSITIVE_SAYS[secret]}; that is yours to enter`;
 }
 
+/** Questions one verifier request asks at most: fill's MAX_FIELDS, so a request is no bigger than a fill's. */
+export const VERIFY_BATCH = 20;
+
+const OWNER_SAYS: Record<Exclude<Owner, null | "unclear">, string> = { user: "the user's", other: "someone else's", person: "the person the user named" };
+
+/** The source window's own words for a window provenance: its app and title, quoted only when the ledger admitted them. */
+function where(app: string, title: string, admitted: (t: string) => boolean): string {
+  const t = title.trim();
+  return t !== "" && admitted(t) ? `${app === "" ? "a window" : app} '${t}'` : app === "" ? "another window" : app;
+}
+
 /**
- * A stand-in for the verifier the guard adversary (scripts/guard-adversary.ts --verifier refuse|accept) installs while
- * W2's step 2 has no model call: "more" refuses every value that would otherwise be minted. Null in the product.
+ * Where a value was read, as one phrase (AC1 section 4). A window's line is quoted when the ledger admitted it, else its
+ * span with its label, else the span alone; a part names the value it was cut from when that was admitted.
  */
-let standIn: ((p: Proposed) => "exact" | "more") | null = null;
-export function setVerifierStandIn(f: ((p: Proposed) => "exact" | "more") | null): void {
-  standIn = f;
+export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean): string {
+  switch (pr.kind) {
+    case "window": {
+      const at = where(pr.app, pr.title, admitted);
+      const base =
+        pr.line !== null && admitted(pr.line) ? `the line "${pr.line}" in ${at}`
+        : pr.label !== null && admitted(pr.label) ? `"${pr.span}" labelled '${pr.label}' in ${at}`
+        : `"${pr.span}" in ${at}`;
+      return pr.partOf !== null && pr.partOf !== pr.line && admitted(pr.partOf) ? `${base}, which is part of "${pr.partOf}"` : base;
+    }
+    case "memory":
+      return pr.part === null ? `what the user told Caret as '${pr.label}'` : `the ${pr.part} part of what the user told Caret as '${pr.label}'`;
+    case "instruction":
+      return "the user's instruction";
+    case "answer":
+      return `the user's saved answer to '${pr.question}'`;
+    case "transfer":
+      return "a value the user copied there before";
+    case "derived": {
+      const how: Record<DeriveHow, string> = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", placeWithCountry: "the place with its country", optionFromPart: "the option for a part" };
+      return `${how[pr.how]} in ${provenanceSays(pr.base, admitted)}`;
+    }
+  }
+}
+
+/** The texts of a provenance a question may quote, for the ledger: its window's title, line, label, span and whole value. */
+function provenanceTexts(pr: Provenance): string[] {
+  switch (pr.kind) {
+    case "window":
+      return [pr.title, pr.line, pr.label, pr.span, pr.partOf].filter((t): t is string => t !== null && t.trim() !== "");
+    case "memory":
+      return [pr.label];
+    case "answer":
+      return [pr.question];
+    case "derived":
+      return [...provenanceTexts(pr.base), ...(pr.also === null ? [] : provenanceTexts(pr.also))];
+    default:
+      return [];
+  }
+}
+
+const PART_TAKES: Record<FillPart, string> = {
+  first: "only a person's first name",
+  middle: "only a person's middle name",
+  last: "only a person's last name",
+  full: "a person's name",
+  street: "only the street line of an address; the form has other fields for the rest",
+  unit: "only the apartment, suite or unit",
+  city: "only the city",
+  state: "only the state or province",
+  zip: "only the postal code",
+  country: "only the country",
+  month: "only the month of a date",
+  day: "only the day of a date",
+  year: "only the year of a date",
+};
+const INPUT_TAKES: Partial<Record<NonNullable<InputKind>, string>> = { email: "one email address", tel: "one phone number", url: "one web address", number: "a number" };
+
+/**
+ * What the field takes, in words, from what code read of it (FieldContract): the part of a name, an address or a date,
+ * the input's kind, a spelled date format, a shown currency. Empty when code read none of these. W2 dev-set evidence: the
+ * verifier called "455 Congress Ave, Austin, TX 78701" exact for an Address beside a City field when told only the label
+ * (evidence/screen/w2/verify-eval-1).
+ */
+export function takesSays(f: FieldContract): string {
+  const takes = [f.part === null ? null : PART_TAKES[f.part], f.inputKind === null ? null : (INPUT_TAKES[f.inputKind] ?? null), f.dateFormat === null ? null : `a date written as ${f.dateFormat}`, f.currencyShown ? "the number alone, since the field shows its currency" : null].filter((t): t is string => t !== null);
+  return takes.length === 0 ? "" : ` The field takes ${takes.join("; ")}.`;
+}
+
+const WORDINGS = [
+  (p: Proposed, from: string, owner: string): string =>
+    `Field: ${p.field.descriptor}${takesSays(p.field)} Caret proposes to type this into it, with nothing added or removed: "${p.text}". It was read from ${from}${owner}. What is the proposed text, for this field?`,
+  (p: Proposed, from: string, owner: string): string =>
+    `Proposed text for the field '${p.field.name}': "${p.text}". Read from ${from}${owner}. The field: ${p.field.descriptor}${takesSays(p.field)} If Caret typed exactly this text into the field, what would it have typed?`,
+] as const;
+
+/** Every string a request carries in its state and questions. */
+function sentStrings(v: unknown, out: string[] = []): string[] {
+  if (typeof v === "string") out.push(v);
+  else if (typeof v === "object" && v !== null) for (const x of Object.values(v)) sentStrings(x, out);
+  return out;
+}
+
+/** The refusal's sentence: the category both wordings agreed on, or that they disagreed. */
+function refusalSays(p: Proposed, asks: readonly [VerifyAsk, VerifyAsk], cutoff: number): string {
+  const [a, b] = asks;
+  const what = `'${clip(p.text)}'`;
+  if (a.choice !== b.choice) return `Caret's two checks disagreed about ${what}`;
+  switch (a.choice) {
+    case "exact":
+      return `Caret wasn't sure enough that ${what} is exactly what the field asks for (${Math.min(a.confidence, b.confidence).toFixed(2)} under ${cutoff})`;
+    case "more":
+      return `${what} holds more than the field asks for`;
+    case "part":
+      return `${what} is only part of what the field asks for`;
+    case "note":
+      return `${what} is a note to you, not a value`;
+    case "other":
+      return `${what} isn't this field's value`;
+  }
+}
+
+/**
+ * Tests only: a verifier that answers in Jev's place in every vitest process (test/setup/verifier.ts installs one that
+ * says "exact"), so the many tests written before W2 with stand-in Jevs that know only fill's questions keep testing
+ * what they test; test/contract.test.ts and the guard adversary (its own process) meet the real request path. Refused
+ * outside vitest, so the product can never skip the verifier through it.
+ */
+let testVerifier: AskJev | null = null;
+export function setTestVerifier(f: AskJev | null): void {
+  if (process.env.VITEST === undefined) throw new Error("setTestVerifier is for vitest only");
+  testVerifier = f;
+}
+
+/**
+ * The verifier alone (AC1 section 4), without the shape checks: for each proposed value, both wordings' verdicts, one
+ * request per wording per batch of VERIFY_BATCH, all in parallel. Quotes only text the ledger admits (ledger.plan),
+ * and declares only what each request sends. Throws VerifierUnavailable on any Jev failure, an abort, or a missing
+ * answer. scripts/verifier-eval.ts calls this on its labelled set.
+ */
+export async function verifyProposed(proposed: readonly Proposed[], o: CheckOptions): Promise<{ asks: (readonly [VerifyAsk, VerifyAsk] | null)[]; jev: VerifyUse }> {
+  const jev: VerifyUse = { requests: 0, model: null, latencyMs: 0, inputTokens: 0, costUsd: 0 };
+  if (proposed.length === 0) return { asks: [], jev };
+  if (o.askJev === null) throw new VerifierUnavailable("no Jev to verify values with");
+  const ask = testVerifier ?? o.askJev;
+  const ledger = o.ledger ?? new SnippetLedger([]);
+  // What the ledger admits: a text the request may quote. `plan` declares it, charging each window whose lines it
+  // holds; text already taken for the value asks costs nothing more.
+  const admittedCache = new Map<string, boolean>();
+  const admitted = (t: string): boolean => {
+    let ok = admittedCache.get(t);
+    if (ok === undefined) admittedCache.set(t, (ok = ledger.plan([t])));
+    return ok;
+  };
+  if (o.instruction !== undefined && o.instruction !== "" && !admitted(o.instruction)) throw new VerifierUnavailable("the instruction quotes more of an open window than the verifier may carry");
+  const questions = proposed.map((p) => {
+    // The field's descriptor and the text itself must go; a value whose own text the ledger refuses is not verified.
+    if (!admitted(p.field.descriptor) || !admitted(p.text) || !admitted(p.field.name)) return null;
+    for (const t of provenanceTexts(p.provenance)) admitted(t);
+    const from = provenanceSays(p.provenance, admitted);
+    const owner = p.owner === null || p.owner === "unclear" ? "" : `; the screen says it is ${OWNER_SAYS[p.owner]}`;
+    return [WORDINGS[0](p, from, owner), WORDINGS[1](p, from, owner)] as const;
+  });
+  const declared = ledger.declared();
+  const state: Record<string, unknown> = { task: "Caret checks that each value it is about to type is exactly what its field asks for.", ...(o.instruction === undefined || o.instruction === "" ? {} : { instruction: o.instruction }) };
+  const batches: number[][] = [];
+  const asked = proposed.flatMap((_, i) => (questions[i] === null ? [] : [i]));
+  for (let i = 0; i < asked.length; i += VERIFY_BATCH) batches.push(asked.slice(i, i + VERIFY_BATCH));
+  const request = (batch: readonly number[], wording: 0 | 1): JevRequest => {
+    // The second wording asks in reverse order, so neither order nor wording alone decides.
+    const order = wording === 0 ? batch : [...batch].reverse();
+    const qs: JevRequest["questions"] = Object.fromEntries(order.map((i) => [`x${i + 1}`, { type: "choice" as const, instructions: (questions[i] as readonly [string, string])[wording], criteria: { ...VERDICTS } }]));
+    const sent = sentStrings([state, qs]);
+    return { purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged };
+  };
+  const out: (readonly [VerifyAsk, VerifyAsk] | null)[] = proposed.map(() => null);
+  try {
+    await Promise.all(
+      batches.map(async (batch) => {
+        if (o.signal?.aborted === true) throw new VerifierUnavailable("the verifier was cancelled");
+        const [r0, r1] = await Promise.all([ask(request(batch, 0)), ask(request(batch, 1))]);
+        jev.requests += 2;
+        jev.model = r0.model;
+        jev.latencyMs = Math.max(jev.latencyMs, r0.latencyMs, r1.latencyMs);
+        jev.inputTokens += r0.inputTokens + r1.inputTokens;
+        jev.costUsd += r0.costUsd + r1.costUsd;
+        for (const i of batch) {
+          const [a, b] = [r0.answers[`x${i + 1}`], r1.answers[`x${i + 1}`]];
+          if (a === undefined || b === undefined || !(a.choice in VERDICTS) || !(b.choice in VERDICTS)) throw new VerifierUnavailable(`Jev gave no verdict for x${i + 1}`);
+          out[i] = [{ choice: a.choice as VerdictChoice, confidence: a.confidence }, { choice: b.choice as VerdictChoice, confidence: b.confidence }];
+        }
+      }),
+    );
+  } catch (e) {
+    if (e instanceof VerifierUnavailable) throw e;
+    throw new VerifierUnavailable(`the verifier failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`, e);
+  }
+  if (o.signal?.aborted === true) throw new VerifierUnavailable("the verifier was cancelled");
+  // Null for a value whose own text the ledger refused: no question was asked about it.
+  return { asks: out, jev };
+}
+
+/**
+ * Harness only (scripts/guard-adversary.ts --dump-proposed, which seeds the verifier's dev set): called with each value
+ * checkValues is asked about and why the code checks refuse it, before the verifier. Null in the product.
+ */
+let observer: ((p: Proposed, codeRefusal: string | null) => void) | null = null;
+export function setCheckObserver(f: ((p: Proposed, codeRefusal: string | null) => void) | null): void {
+  observer = f;
 }
 
 /**
  * The one gate for copied text. Runs the never-typed check with the instruction, shapeRefusal and W1's text-shape gate
- * on each value, then mints the survivors.
+ * on each value, then the verifier (verifyProposed) on the survivors, and mints a value only when both wordings answer
+ * "exact" at the cutoff or above. Throws VerifierUnavailable when the verifier cannot answer: the caller withholds every
+ * proposed text write and never guesses.
  */
 export async function checkValues(proposed: readonly Proposed[], o: CheckOptions): Promise<Checked> {
+  const cutoff = o.cutoff ?? VERIFY_CUTOFF;
   const ok: CheckedValue[] = [];
   const refused: Refused[] = [];
+  const survivors: Proposed[] = [];
   for (const p of proposed) {
     const why = neverTypedRefusal(p, o.instruction ?? "") ?? shapeRefusal(p) ?? textShapeRefusal(p);
-    if (why !== null) {
-      refused.push({ proposed: p, why: "wrongKind", says: why });
-      continue;
-    }
-    if (standIn !== null && standIn(p) !== "exact") {
-      refused.push({ proposed: p, why: "wrongKind", says: `'${clip(p.text)}' holds more than the field asks for` });
-      continue;
-    }
-    ok.push(mint(p, { by: "code" }, o.now));
+    observer?.(p, why);
+    if (why !== null) refused.push({ proposed: p, why: "wrongKind", says: why });
+    else survivors.push(p);
   }
-  return { ok, refused };
+  const v = await verifyProposed(survivors, o);
+  survivors.forEach((p, i) => {
+    const asks = v.asks[i] ?? null;
+    if (asks === null) return void refused.push({ proposed: p, why: "unverified", says: `Caret couldn't check '${clip(p.text)}' without sending more of its window than it may` });
+    const confidence = Math.min(asks[0].confidence, asks[1].confidence);
+    if (asks[0].choice === "exact" && asks[1].choice === "exact" && confidence >= cutoff) ok.push(mint(p, { by: "verifier", asks, confidence }, o.now));
+    else refused.push({ proposed: p, why: "notExact", says: refusalSays(p, asks, cutoff), asks });
+  });
+  return { ok, refused, jev: v.jev };
 }
 
 /**

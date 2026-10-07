@@ -53,6 +53,8 @@ import { loadRecording } from "./socket-reader.ts";
 import { largeScene } from "./large-scene.ts";
 import { CHAT, COMPOSER_CHAT, LONG_THREAD, MAIL_THREAD, MESSAGES_CHAT, NOTES, REF, SHORT_CHAT, agentThreads, chatWindow, messagesSources, notesWindow, shortChats } from "./desks.ts";
 import { skillStream } from "./skill-stream.ts";
+import { setTestVerifier } from "../src/fill/contract.ts";
+import { STAND_IN } from "./setup/verifier.ts";
 
 // The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and
 // change an answer these tests check (candidates.ts setGeneratorClock).
@@ -173,8 +175,8 @@ function measure(r: Recorded): WindowMeasure[] {
 }
 
 /** Every way the request breaks the line, as sentences naming windows and lengths, never the text. */
-/** Each fill producer's requests since B24: two stages (whose details, then values), each asked twice. */
-const STAGED = (producers: readonly string[]): string[] => producers.flatMap((p) => [p, p, p, p]);
+/** Each fill producer's requests since B24: two stages (whose details, then values), each asked twice; since W2 the verifier's two wordings after them. */
+const STAGED = (producers: readonly string[]): string[] => producers.flatMap((p) => [p, p, p, p, p, p]);
 
 function violations(r: Recorded, bystanders: ReadonlySet<string>, conversations: ReadonlySet<string> = CONVERSATIONS): string[] {
   const out: string[] = [];
@@ -230,6 +232,8 @@ const FILL_VALUES: Record<string, string> = {
 const fakeJev: AskJev = async (req) => {
   const q = req.questions;
   const answer = (choice: string) => ({ choice, confidence: 0.9 });
+  // W2: the write contract's verifier (fill/contract.ts), whose requests this file checks like any other's.
+  if (req.purpose === "fill.verify") return { model: "jev-test", answers: Object.fromEntries(Object.keys(q).map((id) => [id, answer("exact")])), inputTokens: 1, latencyMs: 1, costUsd: 0 };
   if (q.finished !== undefined) {
     const s = req.state as Record<string, string>;
     const shown = `${s.lines_that_changed ?? ""}\n${s.last_lines ?? ""}`;
@@ -330,6 +334,9 @@ async function run(name: string, body: (s: Session) => Promise<void>, keep = tru
 const capOff: Recorded[] = [];
 
 describe("the privacy line on every Jev request", () => {
+  // W2: the verifier's requests go through the recorder too, not the suite's stand-in (test/setup/verifier.ts).
+  beforeAll(() => setTestVerifier(null));
+  afterAll(() => setTestVerifier(STAND_IN));
   it("fill: a form beside a mail, a chat and private notes, then a first look", async () => {
     const rec = await run("fill desk", async (s) => {
       await s.replay([notesWindow(500), chatWindow(600), ...loadRecording("offers-fill.ndjson")], "fill on focus");

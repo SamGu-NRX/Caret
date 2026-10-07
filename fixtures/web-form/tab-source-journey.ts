@@ -103,7 +103,7 @@ const theUsers = (): CannedAnswer => ({ choice: "user", confidence: 0.95 });
 const canned: AskJev = (req: JevRequest): Promise<JevResult> =>
   cannedReply(req, {
     confidence: 0.9,
-    choice: { "fill.whose:whose": theUsers, "fill.whose:owner": theUsers, "fill.values:whose": theUsers, "fill.values:owner": theUsers, "fill.values:value": fillValue, "fill.values:answer": () => "none" },
+    choice: { "fill.whose:whose": theUsers, "fill.whose:owner": theUsers, "fill.values:whose": theUsers, "fill.values:owner": theUsers, "fill.values:value": fillValue, "fill.values:answer": () => "none", "fill.verify:verdict": () => "exact" },
     noul: {},
   });
 const ENGINE = engineName(args.engine ?? (args.jev === "live" ? "jev" : "canned"));

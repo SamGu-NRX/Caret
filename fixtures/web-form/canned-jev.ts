@@ -3,7 +3,7 @@
 // Ask's heads read the whole form from any source for the user and confirm code's reading of the scope (A1's `reading`;
 // before W1 it was answered "none", "fill no field", and every page goal asked which fields to fill); the field yes/no
 // heads say no; each fill question takes what `value` says (the answer key's value); whose and owner questions say the
-// user's; every yes/no check says no.
+// user's; every yes/no check says no; the write contract's verifier says exact.
 import { cannedReply, type CannedAnswer, type CannedRules } from "../../helper/src/engines/decide/canned.ts";
 import type { AskJev, JevRequest } from "../../helper/src/fill/jev.ts";
 
@@ -24,6 +24,8 @@ export function pageLoopRules(value: (q: JevRequest["questions"][string]) => Pro
       "fill.values:owner": user,
       "fill.values:value": value,
       "fill.values:answer": () => ({ choice: "none", confidence: 0.9 }),
+      // W2: the write contract's verifier (helper fill/contract.ts) calls every canned pick, the key's value, exact.
+      "fill.verify:verdict": () => ({ choice: "exact", confidence: 0.95 }),
       "plan.verify:value": no,
       "plan.verify:whose": user,
       "plan.verify:owner": user,

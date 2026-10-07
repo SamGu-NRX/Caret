@@ -188,7 +188,8 @@ const oracle: AskJev = async (req) => {
   const r = await cannedReply(req, {
     model: "oracle",
     confidence: 0.99,
-    choice: Object.fromEntries(kinds.map((k) => [k, (q: (typeof req.questions)[string], id: string) => answer(id, q)])),
+    // W2: the write contract's verifier calls every oracle pick, the key's value, exact.
+    choice: { ...Object.fromEntries(kinds.map((k) => [k, (q: (typeof req.questions)[string], id: string) => answer(id, q)])), "fill.verify:verdict": () => "exact" },
     noul: Object.fromEntries(["ask.heads:field", "intent.fields:field", "intent.fields:tie"].map((k) => [k, () => 0.01])),
   });
   return { ...r, nouls: r.nouls ?? {} };

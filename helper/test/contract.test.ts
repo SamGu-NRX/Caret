@@ -1,13 +1,15 @@
 // W2: the write contract (src/fill/contract.ts), each part with one correct answer tested alone: the deterministic
 // shape checks, the mint's identity, the compilers' refusals of a missing or mismatched mint. All text is synthetic.
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { checkValues, ContractError, fieldContract, isChecked, makeFieldContract, mintExempt, requireChecked, shapeRefusal, sourceLabel, type FieldContract, type Proposed, type Provenance } from "../src/fill/contract.ts";
+import { checkValues, ContractError, fieldContract, isChecked, makeFieldContract, mintExempt, provenanceSays, requireChecked, setTestVerifier, shapeRefusal, sourceLabel, VERDICTS, VerifierUnavailable, VERIFY_BATCH, type FieldContract, type Proposed, type Provenance } from "../src/fill/contract.ts";
+import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { fieldKinds } from "../src/fill/kinds.ts";
 import { fieldPart } from "../src/fill/derive.ts";
 import { PlannerError, validatePlan } from "../src/planner/validate.ts";
 import type { Node } from "../src/protocol.ts";
 import { field, snap, text } from "./builders.ts";
+import { exactJev } from "./mint.ts";
 
 const WIN = "form";
 const desk = (nodes: Node[]): ScreenModel => {
@@ -20,7 +22,7 @@ const fc = (label: string, o: { inputKind?: Node["inputKind"]; maxLength?: numbe
   makeFieldContract({ windowId: WIN, node: { key: o.key ?? `k:${label}`, parent: null, role: "AXTextField", label, ...(o.inputKind === undefined ? {} : { inputKind: o.inputKind }), ...(o.maxLength === undefined ? {} : { maxLength: o.maxLength }) }, descriptor: label, name: label, labelWords: [label], control: "text", kinds: fieldKinds([label]), part: fieldPart(label) });
 const win = (span: string, label: string | null = null, partOf: string | null = null): Provenance => ({ kind: "window", windowId: "note", nodeKey: "n", app: "TextEdit", title: "notes.txt", span, label, line: null, partOf });
 const prop = (field: FieldContract, text: string, provenance: Provenance = win(text)): Proposed => ({ field, text, display: text, provenance, owner: null });
-const opts = { askJev: null, ledger: null, now: 1 };
+const opts = { askJev: exactJev, ledger: null, now: 1 };
 
 describe("shapeRefusal: the input's own kind", () => {
   it.each([
@@ -69,7 +71,7 @@ describe("checkValues and the mint", () => {
     const first = fc("First name");
     const r = await checkValues([prop(first, "Mary Ann", win("Mary Ann", "First name")), prop(first, "Mary Ann"), prop(fc("Phone"), "dana@lumen.example")], opts);
     expect(r.ok.map((c) => c.text)).toEqual(["Mary Ann"]);
-    expect(r.ok[0]?.verdict).toEqual({ by: "code" });
+    expect(r.ok[0]?.verdict).toMatchObject({ by: "verifier", confidence: 0.95 });
     expect(r.refused.map((x) => [x.proposed.text, x.why])).toEqual([["Mary Ann", "wrongKind"], ["dana@lumen.example", "wrongKind"]]);
   });
 
@@ -151,6 +153,84 @@ describe("validatePlan takes the mints and refuses without one", () => {
       throw new Error("passed");
     } catch (e) {
       expect(e instanceof PlannerError ? e.code : String(e)).toBe("unknownTarget");
+    }
+  });
+});
+
+describe("the verifier (AC1 section 4)", () => {
+  beforeAll(() => setTestVerifier(null));
+  afterAll(() => setTestVerifier(exactJev));
+  /** A verifier that answers each wording by rule, and records its requests. */
+  const verifier = (rule: (wording: 0 | 1, text: string) => { choice: string; confidence: number } | undefined) => {
+    const requests: JevRequest[] = [];
+    const ask: AskJev = async (req) => {
+      requests.push(req);
+      const wording = String(Object.values(req.questions)[0]?.instructions ?? "").startsWith("Field:") ? 0 : 1;
+      const answers = Object.fromEntries(Object.entries(req.questions).flatMap(([id, q]) => {
+        const text = /"([^"]*)"/u.exec(String(q.instructions))?.[1] ?? "";
+        const a = rule(wording, text);
+        return a === undefined ? [] : [[id, a]];
+      }));
+      return { model: "verify-test", answers, inputTokens: 100, latencyMs: wording === 0 ? 120 : 90, costUsd: 0.00001 };
+    };
+    return { ask, requests };
+  };
+  const job = fc("Job title");
+
+  it("mints only when both wordings answer exact at the cutoff, and says why otherwise", async () => {
+    const v = verifier((w, t) => (t === "lab technician" ? { choice: "exact", confidence: 0.9 } : t === "lab tech" ? { choice: "exact", confidence: w === 0 ? 0.9 : 0.6 } : t === "Lumen Labs" ? { choice: w === 0 ? "exact" : "other", confidence: 0.9 } : { choice: "more", confidence: 0.95 }));
+    const r = await checkValues([prop(job, "lab technician"), prop(job, "lab tech"), prop(job, "Lumen Labs"), prop(job, "Lab technician II")], { ...opts, askJev: v.ask });
+    expect(r.ok.map((c) => c.text)).toEqual(["lab technician"]);
+    expect(r.refused.map((x) => [x.proposed.text, x.why, x.says])).toEqual([
+      ["lab tech", "notExact", "Caret wasn't sure enough that 'lab tech' is exactly what the field asks for (0.60 under 0.75)"],
+      ["Lumen Labs", "notExact", "Caret's two checks disagreed about 'Lumen Labs'"],
+      ["Lab technician II", "notExact", "'Lab technician II' holds more than the field asks for"],
+    ]);
+    // Two requests, one per wording, in parallel; the cost and the slower one's latency are counted.
+    expect(v.requests.map((q) => q.purpose)).toEqual(["fill.verify", "fill.verify"]);
+    expect(r.jev).toEqual({ requests: 2, model: "verify-test", latencyMs: 120, inputTokens: 200, costUsd: 0.00002 });
+  });
+
+  it("asks nothing about a value the shape checks refuse", async () => {
+    const v = verifier(() => ({ choice: "exact", confidence: 0.99 }));
+    const r = await checkValues([prop(fc("Phone"), "dana@lumen.example")], { ...opts, askJev: v.ask });
+    expect(v.requests).toEqual([]);
+    expect(r.refused[0]?.why).toBe("wrongKind");
+  });
+
+  it("is unavailable, never a write, on a Jev failure, a missing answer, an abort or no Jev", async () => {
+    const failing: AskJev = async () => {
+      throw new Error("Jev HTTP 402: no credits");
+    };
+    await expect(checkValues([prop(job, "lab technician")], { ...opts, askJev: failing })).rejects.toBeInstanceOf(VerifierUnavailable);
+    await expect(checkValues([prop(job, "lab technician")], { ...opts, askJev: verifier((w) => (w === 0 ? { choice: "exact", confidence: 0.9 } : undefined)).ask })).rejects.toBeInstanceOf(VerifierUnavailable);
+    const aborted = AbortSignal.abort();
+    await expect(checkValues([prop(job, "lab technician")], { ...opts, askJev: verifier(() => ({ choice: "exact", confidence: 0.9 })).ask, signal: aborted })).rejects.toBeInstanceOf(VerifierUnavailable);
+    await expect(checkValues([prop(job, "lab technician")], { ...opts, askJev: null })).rejects.toBeInstanceOf(VerifierUnavailable);
+  });
+
+  it("asks at most VERIFY_BATCH values per request, both wordings per batch", async () => {
+    const v = verifier(() => ({ choice: "exact", confidence: 0.9 }));
+    const many = Array.from({ length: VERIFY_BATCH + 3 }, (_, i) => prop(fc(`Field ${i}`), `value ${i}`));
+    const r = await checkValues(many, { ...opts, askJev: v.ask });
+    expect(r.ok).toHaveLength(VERIFY_BATCH + 3);
+    expect(v.requests.map((q) => Object.keys(q.questions).length).sort((a, b) => a - b)).toEqual([3, 3, VERIFY_BATCH, VERIFY_BATCH]);
+  });
+
+  it("quotes the line, the label or the span by what the ledger admits, and declares only what it sends", async () => {
+    const pr = win("lab technician", "Work", "Lumen Labs, lab technician (for my sister)");
+    const line: Provenance = { ...pr, line: "Work: Lumen Labs, lab technician (for my sister)" } as Provenance;
+    expect(provenanceSays(line, () => true)).toBe(`the line "Work: Lumen Labs, lab technician (for my sister)" in TextEdit 'notes.txt', which is part of "Lumen Labs, lab technician (for my sister)"`);
+    expect(provenanceSays(line, (t) => !t.startsWith("Work:"))).toBe(`"lab technician" labelled 'Work' in TextEdit 'notes.txt', which is part of "Lumen Labs, lab technician (for my sister)"`);
+    expect(provenanceSays(line, (t) => t === "lab technician")).toBe(`"lab technician" in TextEdit`);
+    expect(provenanceSays({ kind: "derived", how: "namePart", base: { kind: "memory", id: "a", label: "Name", part: null, whose: "user" }, also: null }, () => true)).toBe("a part of the name in what the user told Caret as 'Name'");
+    const v = verifier(() => ({ choice: "exact", confidence: 0.9 }));
+    await checkValues([prop(job, "lab technician", line)], { ...opts, askJev: v.ask, instruction: "fill in my job" });
+    for (const q of v.requests) {
+      expect(q.state).toMatchObject({ instruction: "fill in my job" });
+      expect(Object.values(q.questions)[0]?.criteria).toEqual(VERDICTS);
+      const sent = JSON.stringify([q.state, q.questions]);
+      for (const sn of q.snippets) expect(sent.includes(sn.text)).toBe(true);
     }
   });
 });

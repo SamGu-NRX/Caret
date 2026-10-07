@@ -13,7 +13,17 @@ import type { TargetBinding } from "../src/goals/plan.ts";
 import { bindMint } from "../src/fill/fill.ts";
 import type { FillProposal } from "../src/protocol.ts";
 import { traceValue } from "../src/planner/trace.ts";
+import type { AskJev } from "../src/fill/jev.ts";
 import { PlannerError, validatePlan, type CheckedPlan, type PlanContext } from "../src/planner/validate.ts";
+
+/**
+ * A stand-in verifier that answers "exact" at 0.95 to every value check (fill/contract.ts), so a test of what comes after
+ * the contract sees the shape checks alone. Any other question is not its to answer.
+ */
+export const exactJev: AskJev = async (req) => {
+  if (req.purpose !== "fill.verify") throw new Error(`exactJev answers only the verifier, not ${req.purpose ?? "a request with no purpose"}`);
+  return { model: "verify-stand-in", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "exact", confidence: 0.95 }])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
+};
 
 export async function validateMinted(raw: unknown, slots: Record<string, string>, ctx: PlanContext): Promise<CheckedPlan> {
   const parsed = Plan.safeParse(raw);
@@ -44,7 +54,7 @@ export async function validateMinted(raw: unknown, slots: Record<string, string>
     }
     const t = traceValue(text, ctx.model, ctx.memory, ctx.instruction);
     const provenance: Provenance = t?.from === "window" ? { kind: "window", windowId: t.windowId, nodeKey: t.nodeKey ?? "", app: "", title: "", span: text, label: null, line: null, partOf: null } : t?.from === "memory" ? { kind: "memory", id: t.id, label: "", part: null, whose: "user" } : { kind: "instruction", span: text };
-    const r = await checkValues([{ field, text, display: text, provenance, owner: null }], { askJev: null, ledger: null, instruction: ctx.instruction, now: 0 });
+    const r = await checkValues([{ field, text, display: text, provenance, owner: null }], { askJev: exactJev, ledger: null, instruction: ctx.instruction, now: 0 });
     const ok = r.ok[0];
     if (ok !== undefined) mints.set(slot, ok);
     else refused.set(i, r.refused[0]?.says ?? "refused");
@@ -90,7 +100,7 @@ export async function minted(p: FillProposal): Promise<FillProposal> {
     if (f.answer !== undefined) bindMint(f, mintExempt(proposed, "savedAnswerShown", 0));
     else if (control !== "text" && control !== "combobox") bindMint(f, mintExempt(proposed, control === "checkbox" ? "boxFromLabelledLine" : control === "date" || control === "time" ? "resolverFormat" : "optionLabel", 0));
     else {
-      const r = await checkValues([proposed], { askJev: null, ledger: null, now: 0 });
+      const r = await checkValues([proposed], { askJev: exactJev, ledger: null, now: 0 });
       const c = r.ok[0];
       if (c === undefined) throw new Error(`the write contract refused the test's value '${text}' for ${f.key}: ${r.refused[0]?.says}`);
       bindMint(f, c);

@@ -19,7 +19,7 @@ import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNameP
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { checkValues, makeFieldContract, mintExempt, requireChecked, type CheckedValue, type DeriveHow, type ExemptRule, type FieldContract, type Proposed, type Provenance } from "./contract.ts";
+import { checkValues, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Proposed, type Provenance } from "./contract.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -1600,8 +1600,19 @@ export async function proposeFill(
     if (f.control !== "text" && f.control !== "combobox") continue;
     proposed.push({ i, p: { field: contracts[i] as FieldContract, text, display: text, provenance: provenanceOf(p, f.part, text), owner: null } });
   }
+  let verify: VerifyUse | null = null;
+  let verifierDown: string | null = null;
   if (proposed.length > 0) {
-    const checked = await checkValues(proposed.map((x) => x.p), { askJev, ledger, now, ...(scope === undefined ? {} : { instruction: scope.instruction }) });
+    let checked: Checked;
+    try {
+      checked = await checkValues(proposed.map((x) => x.p), { askJev, ledger, now, ...(scope === undefined ? {} : { instruction: scope.instruction }) });
+    } catch (e) {
+      if (!(e instanceof VerifierUnavailable)) throw e;
+      // AC1 section 4: with no verifier, every proposed text write is withheld as unverified; exempt controls stand.
+      verifierDown = e.message;
+      checked = { ok: [], refused: proposed.map((x) => ({ proposed: x.p, why: "unverified" as const, says: "Caret couldn't check this value just now" })), jev: { requests: 0, model: null, latencyMs: 0, inputTokens: 0, costUsd: 0 } };
+    }
+    verify = checked.jev;
     for (const r of checked.refused) {
       const x = proposed.find((y) => y.p === r.proposed) as { i: number; p: Proposed };
       const o = out[x.i] as FillField;
@@ -1637,11 +1648,12 @@ export async function proposeFill(
       r1 === null || r2 === null
         ? { model: NOT_ASKED, latencyMs: 0, inputTokens: 0, costUsd: 0 }
         : {
-            model: r1.model,
-            // The stages run one after the other.
-            latencyMs: Math.max(r1.latencyMs, r2.latencyMs) + (w1 === null || w2 === null ? 0 : Math.max(w1.latencyMs, w2.latencyMs)),
-            inputTokens: r1.inputTokens + r2.inputTokens + (w1?.inputTokens ?? 0) + (w2?.inputTokens ?? 0),
-            costUsd: r1.costUsd + r2.costUsd + (w1?.costUsd ?? 0) + (w2?.costUsd ?? 0),
+            // W2: a verifier that could not answer is named here, as AC1 asks; the fields say "unverified".
+            model: verifierDown === null ? r1.model : `${r1.model} (verifier unavailable: ${verifierDown.slice(0, 120)})`,
+            // The stages run one after the other: whose, values, then the verifier (W2).
+            latencyMs: Math.max(r1.latencyMs, r2.latencyMs) + (w1 === null || w2 === null ? 0 : Math.max(w1.latencyMs, w2.latencyMs)) + (verify?.latencyMs ?? 0),
+            inputTokens: r1.inputTokens + r2.inputTokens + (w1?.inputTokens ?? 0) + (w2?.inputTokens ?? 0) + (verify?.inputTokens ?? 0),
+            costUsd: r1.costUsd + r2.costUsd + (w1?.costUsd ?? 0) + (w2?.costUsd ?? 0) + (verify?.costUsd ?? 0),
           },
     cutoff,
   };

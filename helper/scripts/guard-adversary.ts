@@ -50,7 +50,7 @@ import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { cannedReply, type CannedAnswer, type CannedRules } from "../src/engines/decide/canned.ts";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
-import { isChecked, setVerifierStandIn, type CheckedValue } from "../src/fill/contract.ts";
+import { isChecked, setCheckObserver, type CheckedValue, type Proposed } from "../src/fill/contract.ts";
 import { aboutKind, type AboutValue } from "../src/fill/about.ts";
 import { words } from "../src/fill/kinds.ts";
 import { writtenFields } from "../src/offers/fill-popup.ts";
@@ -69,6 +69,7 @@ const a = parseArgs({
     out: { type: "string" },
     sets: { type: "string", default: "corpus,tasks-blind,tasks-labelled,w4,b24,b25,b26,b31,routine" },
     verifier: { type: "string", default: "accept" },
+    "dump-proposed": { type: "string" },
     "corpus-pages": { type: "string", default: join(EVIDENCE, "screen", "d2-04", "corpus-pages", "real") },
     "tasks-pages": { type: "string", default: join(EVIDENCE, "screen", "f1", "walk", "real") },
     "w4-dir": { type: "string", default: join(EVIDENCE, "browser", "w4", "real") },
@@ -81,8 +82,7 @@ const OUT = resolve(a.values.out);
 const SETS = new Set(a.values.sets.split(",").map((s) => s.trim()));
 if (a.values.verifier !== "accept" && a.values.verifier !== "refuse") throw new Error(`--verifier is accept or refuse, not ${a.values.verifier}`);
 const VERIFIER: "accept" | "refuse" = a.values.verifier;
-// W2 step 2: the write contract has no model call yet, so its stand-in decides in Jev's place (fill/contract.ts).
-setVerifierStandIn(() => (VERIFIER === "accept" ? "exact" : "more"));
+
 // The generator's time budget reads a fixed clock, so a loaded machine cannot stop it partway and change what is offered.
 setGeneratorClock(() => 0);
 
@@ -339,6 +339,8 @@ function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { 
       "fill.values:owner": user,
       "fill.values:value": value,
       "fill.values:answer": () => "none",
+      // W2: the write contract's verifier (fill/contract.ts): "exact" in accept mode, "more" in refuse mode.
+      "fill.verify:verdict": () => (VERIFIER === "accept" ? "exact" : "more"),
       "plan.verify:value": no,
       "plan.verify:whose": user,
       "plan.verify:owner": user,
@@ -373,6 +375,26 @@ interface Run {
   refusal: string | null;
   failure: string | null;
 }
+/**
+ * --dump-proposed: every value the write contract was asked about during a canned run or an attack of class (a) or (b),
+ * with the attack's class and the field's key value, for the verifier's dev set (fixtures/verify/dev.json). One line each.
+ */
+let observing: { set: string; page: string; picks: Map<string, { cls: "canned" | "a" | "b"; text: string; expected: string }> } | null = null;
+const dumped: string[] = [];
+const dumpSeen = new Set<string>();
+if (a.values["dump-proposed"] !== undefined) {
+  setCheckObserver((p: Proposed, codeRefusal: string | null) => {
+    const o = observing;
+    const pick = o?.picks.get(p.field.key);
+    if (o === null || pick === undefined || p.text !== pick.text) return;
+    const line = JSON.stringify({ cls: pick.cls, set: o.set, page: o.page, expected: pick.expected, field: { key: p.field.key, descriptor: p.field.descriptor, name: p.field.name, labelWords: p.field.labelWords, control: p.field.control, part: p.field.part, inputKind: p.field.inputKind, maxLength: p.field.maxLength }, text: p.text, provenance: p.provenance, owner: p.owner, codeRefusal });
+    const id = JSON.stringify([pick.cls, p.field.descriptor, p.text, p.provenance]);
+    if (dumpSeen.has(id)) return;
+    dumpSeen.add(id);
+    dumped.push(line);
+  });
+}
+
 /** How a written value was checked: its mint's verdict, or "unchecked" when it carries no mint (fill/contract.ts isChecked). */
 function viaOf(c: CheckedValue | undefined): string {
   if (!isChecked(c)) return "unchecked";
@@ -538,7 +560,9 @@ async function attack(d: Desk): Promise<void> {
       const t = [...opts.keys()].find((x) => good.includes(norm(x)));
       if (t !== undefined) keyPicks.set(key, t);
     }
+    observing = { set: d.set, page: d.page, picks: new Map([...keyPicks].map(([k, t]) => [k, { cls: "canned" as const, text: t, expected: byKey.get(k)?.expected ?? "" }])) };
     const cr = await run(d, part, how, keyPicks, { traces: [], requests: [] });
+    observing = null;
     if (how === "goal") {
       const left = d.fields.filter((f) => cr.withheld.has(f.key)).map((f) => `${f.label.slice(0, 40)}: ${(cr.withheld.get(f.key) ?? "").slice(0, 80)}`);
       goalRuns.push(`${d.set}/${d.page}: canned goal wrote ${cr.written.size} of ${keyPicks.size} key values offered${cr.refusal === null ? "" : `; refused ${cr.refusal}`}${cr.failure === null ? "" : `; failed ${cr.failure}`}${left.length === 0 ? "" : `; left: ${left.join(" | ")}`}`);
@@ -576,7 +600,9 @@ async function attack(d: Desk): Promise<void> {
           continue;
         }
         if (attempts.some((x) => x.set === d.set && x.page === d.page && x.field === kf.label && x.value === text && x.cls === cls && x.outcome === "written")) continue;
+        observing = { set: d.set, page: d.page, picks: new Map([[key, { cls, text, expected: kf.expected }]]) };
         const res = await run(d, part, how, new Map([[key, text]]), { traces: [], requests: [] });
+        observing = null;
         const outcome = outcomeOf(res, key, good);
         record({ set: d.set, page: d.page, field: kf.label, cls, value: text, expected: kf.expected, outcome, via: outcome === "written" ? (res.via.get(key) ?? null) : null, why: res.withheld.get(key) ?? null, how, refusal: res.refusal ?? (res.failure === null ? null : `failure: ${res.failure}`) });
       }
@@ -665,6 +691,7 @@ for (const [name, gen] of generators) {
 if (SETS.has("routine")) routine = await routineSet();
 
 mkdirSync(OUT, { recursive: true });
+if (a.values["dump-proposed"] !== undefined) writeFileSync(resolve(a.values["dump-proposed"]), dumped.length === 0 ? "" : `${dumped.join("\n")}\n`);
 const CLASSES: Cls[] = ["a", "b", "c"];
 const HOWS = ["fill", "goal", "ask"] as const;
 const exempt = (x: { via: string | null }): boolean => x.via?.startsWith("exempt:") === true;
