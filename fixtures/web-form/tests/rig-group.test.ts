@@ -32,8 +32,12 @@ beforeEach(() => {
   // Stands in for Chrome: says it started, and what arrives on the DevTools request pipe (fd 3) goes back on fd 4.
   script("fake-chrome", `#!/bin/sh\ntouch "$(dirname "$0")/started"\nIFS= read -r line <&3\necho "echo:$line" >&4\nwhile :; do sleep 1; done\n`);
   script("register", `#!/bin/sh\nd=$(dirname "$0")\nif [ -e "$d/started" ]; then echo "$1 $2 AFTER-START" >> "$d/register.log"; else echo "$1 $2 before-start" >> "$d/register.log"; fi\n`);
-  // pgrep, except that once "reused" exists it reports a member for any group: the id now names another group.
-  script("pgrep", `#!/bin/sh\n[ -e "$(dirname "$0")/reused" ] && { echo 99999; exit 0; }\nexec /usr/bin/pgrep "$@"\n`);
+  // pgrep, except that once "reused" exists it reports a member for any group: the id now names another group. The
+  // member is the pid written in "reused", or 99999 when it is empty.
+  script("pgrep", `#!/bin/sh\nr="$(dirname "$0")/reused"\n[ -e "$r" ] && { if [ -s "$r" ]; then cat "$r"; else echo 99999; fi; exit 0; }\nexec /usr/bin/pgrep "$@"\n`);
+  // Stands in for a Chrome that exits by itself and leaves two processes in its group: a helper that inherited its
+  // environment, and one started without the launch's marker.
+  script("fake-chrome-exits", `#!/bin/sh\nd=$(dirname "$0")\nsleep 600 &\necho $! > "$d/helper.pid"\nenv -u CARET_RIG_CHROME_OWNER sleep 600 &\necho $! > "$d/foreign.pid"\ntouch "$d/started"\nexit 0\n`);
 });
 
 afterEach(() => {
@@ -79,4 +83,53 @@ test("a group seen empty is never signalled again, even when its id lists member
     { PATH: `${dir}:${process.env.PATH ?? ""}` },
   );
   assert.deepEqual(out.signalled, []);
+});
+
+test("a stranger's group that reuses Chrome's id after it emptied unseen is never signalled", () => {
+  const out = inChild(
+    `const fs = await import("node:fs");
+    const { spawn } = await import("node:child_process");
+    const proc = rig.spawnChrome(dir + "/fake-chrome", [], process.env, ["ignore", "ignore", "ignore", "pipe", "pipe"]);
+    const stop = rig.groupStop(proc);
+    for (let i = 0; i < 100 && !fs.existsSync(dir + "/started"); i++) await sleep(50);
+    // Chrome's whole group goes away without the rig seeing it, and node reaps the leader.
+    process.kill(-proc.pid, "SIGKILL");
+    if (proc.exitCode === null && proc.signalCode === null) await new Promise((r) => proc.once("exit", r));
+    // Another process now leads a group under the same id (the pgrep stand-in lists it), in a session of its own.
+    const stranger = spawn("/bin/sleep", ["30"], { detached: true, stdio: "ignore" });
+    fs.writeFileSync(dir + "/reused", String(stranger.pid));
+    const kill = process.kill.bind(process);
+    const signalled = [];
+    process.kill = (pid, sig) => (sig !== 0 && signalled.push([pid, sig ?? "SIGTERM"]), kill(pid, sig));
+    await stop();
+    process.kill = kill;
+    let alive = true;
+    try { kill(stranger.pid, 0); } catch { alive = false; }
+    kill(stranger.pid, "SIGKILL");  // this test's own process, by exact pid
+    return { signalled, alive };`,
+    { PATH: `${dir}:${process.env.PATH ?? ""}` },
+  );
+  assert.deepEqual(out.signalled, []);
+  assert.equal(out.alive, true);
+});
+
+test("after Chrome exits, its helpers are still stopped by the launch's marker, and a member without it is only reported", () => {
+  const out = inChild(
+    `const fs = await import("node:fs");
+    const said = [];
+    rig.setSay((s) => said.push(s));
+    const proc = rig.spawnChrome(dir + "/fake-chrome-exits", [], process.env, ["ignore", "ignore", "ignore", "pipe", "pipe"]);
+    if (proc.exitCode === null && proc.signalCode === null) await new Promise((r) => proc.once("exit", r));
+    const helper = Number(fs.readFileSync(dir + "/helper.pid", "utf8"));
+    const foreign = Number(fs.readFileSync(dir + "/foreign.pid", "utf8"));
+    await rig.groupStop(proc)();
+    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const result = { helperAlive: alive(helper), foreignAlive: alive(foreign), foreign, said };
+    process.kill(foreign, "SIGKILL");  // this test's own process, by exact pid
+    return result;`,
+    {},
+  );
+  assert.equal(out.helperAlive, false);
+  assert.equal(out.foreignAlive, true);
+  assert.ok((out.said as string[]).some((s) => s.includes(String(out.foreign)) && s.includes("not signalled")), JSON.stringify(out.said));
 });

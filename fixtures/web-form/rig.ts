@@ -5,6 +5,7 @@
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +54,24 @@ function groupMembers(pgid: number): number[] | null {
     return execFileSync("pgrep", ["-g", String(pgid)], { encoding: "utf8" }).split("\n").filter((x) => x !== "").map(Number);
   } catch (e) {
     return (e as { status?: number }).status === 1 ? [] : null;
+  }
+}
+
+/**
+ * Every process of one Chrome launch carries this variable, set to the launch's random nonce: Chrome's helpers inherit
+ * its environment. Once node has reaped Chrome, its group id can name someone else's group (the id is free again
+ * when the group empties), so groupStop then signals only members whose environment shows the nonce.
+ */
+const OWNER_VAR = "CARET_RIG_CHROME_OWNER";
+const owners = new WeakMap<ChildProcess, string>();
+
+/** Whether `pid`'s environment holds this launch's marker; false when it is gone or `ps` cannot read it. */
+function carriesOwner(pid: number, nonce: string): boolean {
+  try {
+    const shown = execFileSync("ps", ["-wwE", "-o", "command=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return new RegExp(`(^|\\s)${OWNER_VAR}=${nonce}(\\s|$)`).test(shown);
+  } catch {
+    return false;
   }
 }
 
@@ -266,10 +285,13 @@ export function launch(exe: string, profile: string, urls: string[], env: NodeJS
  */
 export function spawnChrome(exe: string, flags: string[], env: NodeJS.ProcessEnv, stdio: ("ignore" | "pipe")[]): ChildProcess {
   const go = stdio.length;
+  const nonce = randomBytes(16).toString("hex");
+  const marked = { ...env, [OWNER_VAR]: nonce };
   const proc = REGISTER === undefined
-    ? spawn(exe, flags, { env, detached: true, stdio })
-    : spawn("/bin/sh", ["-c", `IFS= read -r _ <&${go} || exit 97; exec ${go}<&-; exec "$@"`, "chrome-held", exe, ...flags], { env, detached: true, stdio: [...stdio, "pipe"] });
+    ? spawn(exe, flags, { env: marked, detached: true, stdio })
+    : spawn("/bin/sh", ["-c", `IFS= read -r _ <&${go} || exit 97; exec ${go}<&-; exec "$@"`, "chrome-held", exe, ...flags], { env: marked, detached: true, stdio: [...stdio, "pipe"] });
   if (proc.pid === undefined) throw new Error("Chrome for Testing did not start");
+  owners.set(proc, nonce);
   if (REGISTER !== undefined) {
     try {
       register("group", String(proc.pid));
@@ -285,43 +307,63 @@ export function spawnChrome(exe: string, flags: string[], env: NodeJS.ProcessEnv
 /**
  * Stops the process group `proc` leads: SIGTERM, up to 5 s for the whole group to empty (Chrome's helpers can outlive
  * it), then SIGKILL and a report of any survivor. An unreadable group listing counts as not empty.
- * The group's id is the leader's pid, which the system does not reuse while the group has a member. So once the group
- * is seen empty, or the leader has been reaped and its pid is another process's, the id may name someone else's group:
- * `gone` latches and nothing is signalled after it (I4 review: accept.ts stops a browser, and cleanup stops it again).
+ * Ownership is proved, not read off the group id. While node has not reaped Chrome, its pid and so the group id are
+ * still Chrome's: the whole group is signalled, and the check and the signal run with no event-loop turn between them,
+ * so the reap cannot slip in. Once Chrome is reaped and its group has emptied, the id is free, and another process can
+ * lead a group under it, start helpers and exit (I4 re-review). So after the reap only members whose environment
+ * shows this launch's marker are signalled, each by its own pid; any other member is reported, never signalled.
+ * Once nothing of the launch's is left, `gone` latches and nothing is signalled again (I4 review: accept.ts stops a
+ * browser, and cleanup stops it again).
  */
 export function groupStop(proc: ChildProcess): () => Promise<void> {
   const pid = proc.pid;
   if (pid === undefined) throw new Error("no process group to stop: the process did not start");
+  const nonce = owners.get(proc);
   let gone = false;
-  const pidTaken = (): boolean => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (e) {
-      return (e as NodeJS.ErrnoException).code === "EPERM";
-    }
+  const reaped = (): boolean => proc.exitCode !== null || proc.signalCode !== null;
+  /** Members of the group shown to be this launch's: all of them while Chrome is unreaped; null when unlistable. */
+  const ours = (): number[] | null => {
+    const members = groupMembers(pid);
+    if (members === null || !reaped()) return members;
+    return nonce === undefined ? [] : members.filter((m) => carriesOwner(m, nonce));
   };
   const empty = (): boolean => {
-    const reaped = proc.exitCode !== null || proc.signalCode !== null;
-    if (!gone && ((reaped && pidTaken()) || groupMembers(pid)?.length === 0)) gone = true;
+    if (!gone && ours()?.length === 0) gone = true;
     return gone;
   };
+  const signal = (sig: NodeJS.Signals): void => {
+    if (gone) return;
+    if (!reaped()) {
+      try {
+        process.kill(-pid, sig);
+      } catch {
+        /* the group emptied meanwhile, or only zombies remain */
+      }
+      return;
+    }
+    for (const member of ours() ?? []) {
+      try {
+        process.kill(member, sig);
+      } catch {
+        /* exited since the listing */
+      }
+    }
+  };
+  const others = (): void => {
+    if (!reaped()) return;
+    const members = groupMembers(pid) ?? [];
+    const foreign = nonce === undefined ? members : members.filter((m) => !carriesOwner(m, nonce));
+    if (foreign.length > 0) say(`Chrome's process group id ${pid} also lists ${JSON.stringify(foreign)} without this launch's marker; not signalled`);
+  };
   return async () => {
-    if (empty()) return;
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
-      /* the group emptied meanwhile, or only zombies remain */
-    }
+    if (empty()) return others();
+    signal("SIGTERM");
     for (let i = 0; i < 50 && !empty(); i++) await sleep(100);
-    if (empty()) return;
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      /* already gone */
-    }
+    if (empty()) return others();
+    signal("SIGKILL");
     for (let i = 0; i < 50 && !empty(); i++) await sleep(100);
-    if (!empty()) say(`Chrome's process group ${pid} still has members ${JSON.stringify(groupMembers(pid))} after SIGKILL`);
+    if (!empty()) say(`Chrome's process group ${pid} still has members ${JSON.stringify(ours())} after SIGKILL`);
+    others();
   };
 }
 
