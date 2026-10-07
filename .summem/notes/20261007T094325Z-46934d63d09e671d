@@ -1,0 +1,1 @@
+Recalibrate SCOPE_CUTOFF after changing the scope ask's wording: scripts/ask-scope-eval.ts scores Jev's answers against scripts/ask-scope-labels.json; --answers rescores a saved run for free.
