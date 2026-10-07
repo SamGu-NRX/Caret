@@ -297,7 +297,8 @@ function referenceDate(ctx: ResolveContext): Temporal.PlainDate | string {
  * ("en-US-u-ca-gregory" is en-US). A tag with no region, or a region where both orders are common (Canada),
  * is unknown and asks.
  */
-function dateOrder(locale: string | undefined): "dmy" | "mdy" | null {
+/** The order a locale writes a numeric date's month and day in, or null when it is unknown or mixed (V3: fill reads numeric dates by it too). */
+export function dateOrder(locale: string | undefined): "dmy" | "mdy" | null {
   if (locale === undefined) return null;
   const key = languageRegion(locale);
   if (key === null) return null;

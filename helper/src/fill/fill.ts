@@ -19,12 +19,14 @@ import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNameP
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { autocompletePart, checkValues, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
+import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type Reading } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
+import { dateOrder } from "../values/date-time.ts";
+import { sentenceAround } from "./line-values.ts";
 import type { SavedAnswer } from "../memory/answers.ts";
 import { ANSWER_NONE, ANSWER_SAYS, ANSWER_WORDINGS, answerQuestionId, describeSaved, answerExcerpt, questionExcerpt, fillAnswer, guardAnswer, isAnswerField, MAX_ANSWERS_ASKED, pageText, type PageContext } from "./answers.ts";
 
@@ -1029,13 +1031,19 @@ export async function proposeFill(
           if (!candidateKinds(model, c).has("date")) continue;
           // V3 (B24 ask-04): a numeric date's month and day only when its order is settled (derive.ts dateParts), by a
           // format its own label states among other evidence; a month menu is offered its option for that month.
-          const order = dateOrderHint(c.context);
+          // A format the source states and its locale both count; when they disagree the date gives no part (review
+          // round 3), as a whole-date input reads nothing then.
+          const stated = dateOrderHint(c.context);
+          const locale = dateOrder(resolveCtx.sourceLocale);
+          const byLocale: DateOrder | null = locale === null ? null : locale === "mdy" ? "md" : "dm";
+          if (stated !== null && byLocale !== null && stated !== byLocale) continue;
+          const order = stated ?? byLocale;
           const v = datePartOf(part as "month" | "day" | "year", c.text, order);
           const options = f.form?.options ?? null;
           const shown = v !== null && part === "month" && f.control === "select" && options !== null && /^\d{1,2}$/u.test(v) ? monthOption(options, Number(v)) : v;
           // V3 review: an order the source's format hint settled, where the numbers alone did not, is code's choice.
           const hinted = part !== "year" && order !== null && datePartOf(part as "month" | "day", c.text, null) === null;
-          if (shown !== null) add(shown, `"${shown}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c }, null, hinted ? { says: `Caret read the date ${order === "md" ? "month first" : "day first"}, as the format beside it in the source says`, also: null } : undefined);
+          if (shown !== null) add(shown, `"${shown}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c }, null, hinted ? { says: `Caret read the date ${order === "md" ? "month first" : "day first"}, as ${stated !== null ? "the format beside it in the source says" : `the source's locale, ${resolveCtx.sourceLocale}, writes dates`}`, also: null } : undefined);
         }
         for (const a of memoryWhole) {
           if (!fieldAsksForPart(a, f.name, part as "month" | "day" | "year", w.window.title)) continue;
@@ -1071,7 +1079,7 @@ export async function proposeFill(
     const refYearNow = new Date(now).getUTCFullYear();
     const readFor = (f: Field, text: string, ctx: ResolveContext, order: DateOrder | null): Reading | null => {
       const format = f.form?.format ?? "date";
-      if (f.control === "time") return readClock(text, ctx);
+      if (f.control === "time") return readClock(text, ctx, order);
       return format === "month" ? readMonth(text, refYearNow) : format === "datetime" ? readDateTime(text, ctx, order) : readDate(text, ctx, order);
     };
     for (const f of fields) {
@@ -1083,13 +1091,17 @@ export async function proposeFill(
       };
       for (const c of candidates) {
         const kinds = candidateKinds(model, c);
-        if ((!kinds.has("date") && !kinds.has("time")) || readFor(f, c.text, resolveCtx, null) !== null) continue;
+        if (!kinds.has("date") && !kinds.has("time")) continue;
+        // A reading that rests on a format the source states is offered whenever there is one, even when the locale
+        // reads the span too (review round 3): a raw pick never takes the format's word for the order.
+        const raw = readFor(f, c.text, resolveCtx, null);
         const order = dateOrderHint(c.context);
-        const hinted = order === null || f.control === "time" ? null : readFor(f, c.text, resolveCtx, order);
-        if (hinted !== null) {
+        const hinted = order === null ? null : readFor(f, c.text, resolveCtx, order);
+        if (hinted !== null && hinted.assumptions.some((a) => a.includes("format")) && (raw === null || raw.value === hinted.value)) {
           offer(hinted.value, c, { says: `Caret assumed: ${hinted.assumptions.join("; ")}`, also: null });
           continue;
         }
+        if (raw !== null) continue;
         const sw = model.windows.get(c.source.windowId);
         const sent = sw === undefined ? null : sentLineFor([...sw.nodes.values()].map((n) => ({ key: n.key, text: nodeText(n) })), c.source.nodeKey, c.text);
         const dated = sent === null ? null : datedBySent(c.text, sent, resolveCtx);
@@ -1579,15 +1591,25 @@ export async function proposeFill(
         const byPiece = whole ?? (piece === null ? null : matchOption(options, piece));
         const byDate = byPiece === null && (f.part === "month" || f.part === "year") ? dateOption(f.part, options, text, refYear, p.from === "derived" && p.base.from === "memory") : null;
         const exact = byPiece ?? byDate ?? (placed === null ? null : matchOption(options, placed));
+        // V3 review: an option the pick only names among other words is code's mapping, never the pick itself.
+        const o = exact ?? optionInText(options, text);
+        if (o === null) return { why: "ambiguous" };
+        // V3 review: before any option is taken, exact or not, a pick or the line or label it sits in that negates, excludes,
+        // conditions or offers an alternative names none ("Days I cannot attend: Saturday"); a word that is the option's
+        // own ("no" for "No") is an answer, not a negation.
+        // The clause is the sentence of the line that holds the span (line-values.ts sentenceAround), so a negation in the
+        // next sentence ("graduated May 2021. (Not Northfield College …)") does not veto it.
+        const c = windowOf(p);
+        const at = c?.line == null ? -1 : c.line.indexOf(c.text);
+        const sentence = c?.line == null ? null : at < 0 ? c.line : sentenceAround(c.line, at, c.text);
+        // Up to the first sentence end after the span: sentenceAround keeps a bracketed remark after the period, which is
+        // about the next thing said, not the value.
+        const from = sentence === null || c === null ? -1 : sentence.indexOf(c.text);
+        const clause = sentence === null || c === null || from < 0 ? sentence : sentence.slice(0, from + c.text.length) + (/^[^.;!?]*[.;!?]?/u.exec(sentence.slice(from + c.text.length))?.[0] ?? "");
+        if ([text, c?.context ?? null, clause].some((t) => t !== null && leavesChoiceOpen(t, o))) return { why: "ambiguous" };
         // V3 review: a year menu's or a month menu's option read through a two-digit year's century ("Aug '30") is a choice.
         const century = byPiece === null && byDate !== null ? stated(readMonth(text, refYear)) : undefined;
         if (exact !== null) return { value: exact, display: exact, writes: page && !press, ...(century === undefined ? {} : { chose: century }) };
-        // V3 review: an option the pick only names among other words is code's mapping, never the pick itself. A pick or a
-        // line around it that negates, excludes, conditions or offers an alternative names none ("Days I cannot attend:
-        // Saturday mornings"); any other mapping goes to the verifier with the mapping said.
-        const o = optionInText(options, text);
-        const c = windowOf(p);
-        if (o === null || [text, c?.context ?? null, c?.line ?? null].some((t) => t !== null && leavesChoiceOpen(t))) return { why: "ambiguous" };
         return { value: o, display: o, writes: false, chose: { says: `Caret took "${text}" to name the option '${o}'`, also: null } };
       }
       case "checkbox": {
@@ -1619,8 +1641,10 @@ export async function proposeFill(
         // only that format settles is its derived candidate's, not a raw pick's.
         const order = dateOrderHint(windowOf(p)?.context ?? null);
         const readAs = (o: DateOrder | null): Reading | null => (format === "month" ? readMonth(text, refYear) : format === "datetime" ? readDateTime(text, resolveCtx, o) : readDate(text, resolveCtx, o));
-        const r = readAs(order);
-        if (r === null || (order !== null && readAs(null) === null)) return { why: "ambiguous" };
+        // The stated format only vetoes here: the raw pick is read without it, and any disagreement withholds.
+        const r = readAs(null);
+        const h = order === null ? r : readAs(order);
+        if (r === null || h === null || h.value !== r.value) return { why: "ambiguous" };
         const chose = stated(r);
         return { value: r.value, display: r.display, writes: page && (format === "date" || format === "month" || format === "datetime"), ...(chose === undefined ? {} : { chose }) };
       }
@@ -1836,7 +1860,14 @@ export async function proposeFill(
     const text = o.value ?? o.handoff?.value ?? "";
     const pick = picksOf.get(i);
     const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : provenanceOf(model, pick.p, f.part, text, judgedText, f.control);
-    fieldMints.set(o, mintExempt({ field: contracts[i] as FieldContract, text, display: o.handoff?.display ?? text, provenance, owner: pick === undefined ? null : ownerOf(pick.p) }, exempt, now, scope?.instruction ?? ""));
+    // V3 review: a contract failure for one value withholds that value, said loudly; it never aborts the fill.
+    try {
+      fieldMints.set(o, mintExempt({ field: contracts[i] as FieldContract, text, display: o.handoff?.display ?? text, provenance, owner: pick === undefined ? null : ownerOf(pick.p) }, exempt, now, scope?.instruction ?? ""));
+    } catch (e) {
+      if (!(e instanceof ContractError)) throw e;
+      console.error(`caret fill: the write contract refused field ${o.key} (${e.code}): ${e.message}`);
+      out[i] = { ...o, choice: NONE, value: null, source: null, memory: null, handoff: null, withheld: e.code === "chosen" ? "unverified" : "wrongKind" };
+    }
   }
 
   return {

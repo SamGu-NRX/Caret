@@ -165,8 +165,9 @@ const WEEKDAYS: readonly (readonly string[])[] = [
   ["sunday", "sun"],
 ];
 /** V3 review: whether a text negates, excludes, conditions or offers an alternative, so it picks no option ("except", "not", "only if", "or"). */
-export function leavesChoiceOpen(text: string): boolean {
-  return negates("", text) || tokens(text).some((w) => NOT_A_CHOICE.has(w) || OPEN_CHOICE.has(w));
+export function leavesChoiceOpen(text: string, option = ""): boolean {
+  // A word that is the option's own ("no" for the option "No", "any" for "Any time") answers; it does not negate it.
+  return negates(option, text) || tokens(text).some((w) => (NOT_A_CHOICE.has(w) || OPEN_CHOICE.has(w)) && !tokens(option).includes(w));
 }
 
 /** Words that leave a choice open beside NOT_A_CHOICE's: an alternative or a restriction ("only if"). */

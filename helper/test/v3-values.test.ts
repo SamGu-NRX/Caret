@@ -563,12 +563,80 @@ describe("review round 2: every assumption is a choice", () => {
     expect(provenanceStale(m, mint.provenance)).not.toBeNull();
   });
 
-  it("refuses an exemption for a date that only reads with an assumption, stated or not", () => {
+  it("refuses an exemption for a date whose reading states an assumption, and takes a plain one (the list is the only test)", () => {
     const contract = makeFieldContract({ windowId: "w", node: { key: "d", parent: null, role: "AXDateField" }, descriptor: "Date field. Label: 'Date'.", name: "Date", labelWords: ["Date"], control: "date", kinds: new Set(["date"]), part: null });
     const window = (span: string): Provenance => ({ kind: "window", windowId: "src", nodeKey: "n", app: "TextEdit", title: "t", span, label: null, line: null, partOf: null, context: null, lines: [], sentences: [] });
-    const p = (span: string, text: string) => ({ field: contract, text, display: text, provenance: window(span), owner: null });
-    expect(() => mintExempt(p("October 17", "2026-10-17"), "resolverFormat", 1)).toThrow(expect.objectContaining({ code: "chosen" }));
-    expect(() => mintExempt(p("04/12/1990", "1990-04-12"), "resolverFormat", 1)).toThrow(expect.objectContaining({ code: "chosen" }));
-    expect(mintExempt(p("October 17, 2026", "2026-10-17"), "resolverFormat", 1).verdict).toEqual({ by: "exempt", rule: "resolverFormat" });
+    const p = (provenance: Provenance, text: string) => ({ field: contract, text, display: text, provenance, owner: null });
+    const said: Provenance = { kind: "derived", how: "resolved", base: window("October 17"), also: null, says: "Caret assumed: year 2026" };
+    expect(() => mintExempt(p(said, "2026-10-17"), "resolverFormat", 1)).toThrow(expect.objectContaining({ code: "chosen" }));
+    expect(mintExempt(p(window("October 17, 2026 at 8:45am MT"), "2026-10-17T08:45"), "resolverFormat", 1).verdict).toEqual({ by: "exempt", rule: "resolverFormat" });
+  });
+});
+
+// ---- review round 3 (re-review of d6bdd0e): each finding's input, as a test that failed on that head --------------
+
+describe("review round 3", () => {
+  const ORIGIN = "http://127.0.0.1:4310";
+  const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+  const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+  const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], value: "", ...extra });
+  const opts = (labels: string[]) => ({ options: [{ value: "", label: "Select...", selected: true }, ...labels.map((l) => ({ value: l.toLowerCase(), label: l, selected: false }))] });
+  const desk3 = (lines: string[], typed: string[], controls: PageControl[]): ScreenModel => {
+    const m = new ScreenModel();
+    m.apply(snap(lines.map((l, i): Node => ({ key: `n/${i}`, parent: null, role: "AXStaticText", value: l })), { at: 900, windowId: "src", title: "Source", app: { pid: 7002, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true, values: typed.map((t) => value("date", t, `n/${lines.findIndex((l) => l.includes(t))}`)) }));
+    m.apply(toWindowSnapshot({ type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Form", frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: ORIGIN, path: "/f", navGen: 1, title: "Form", headings: [], iframes: [], excluded: {}, truncated: false, controls: [control("e1", "text", "Notes"), ...controls] }], missing: [], focused: { frameId: 0, id: "e1", selection: [0, 0] } }, session, 1));
+    return m;
+  };
+  const run3 = async (m: ScreenModel, picks: Record<string, string>, resolve: ResolveContext = DENVER) => {
+    const { jev, offered } = recording((ins) => Object.entries(picks).find(([k]) => ins.includes(`'${k}'`))?.[1] ?? null);
+    const p = await proposeFill(m, jev, "page:eng1:7", "f0/form[a]/text:notes~0", Date.UTC(2026, 9, 20, 18), { resolve });
+    return { at: (name: string) => p.fields.find((f) => f.descriptor.includes(`'${name}'`)) as (typeof p.fields)[number], offered };
+  };
+
+  it("1-2: a plain zoned date and time, and a locale-read date, make a fill, not an exception", async () => {
+    const zoned = await run3(desk3(["Appointment: October 17, 2026 at 8:45am MT"], ["October 17, 2026 at 8:45am MT"], [control("e2", "datetime", "Appointment")]), { Appointment: "October 17, 2026 at 8:45am MT" });
+    expect(zoned.at("Appointment").handoff?.value).toBe("2026-10-17T08:45");
+    const local = await run3(desk3(["Born: 04/22/1990"], ["04/22/1990"], [control("e2", "date", "Date of birth")]), { "Date of birth": "04/22/1990" }, { ...DENVER, sourceLocale: "en-US" });
+    expect(local.at("Date of birth").handoff?.value).toBe("1990-04-22");
+  });
+
+  it("3: reads non-ISO hyphens, a trailing dot and a part over 12, and a date and time with seconds reaches the verifier", async () => {
+    expect([readDate("04-22-1990", DENVER)?.value, readDate("22.04.1990.", DENVER)?.value, readDate("04/22/1990", DENVER)?.value]).toEqual(["1990-04-22", "1990-04-22", "1990-04-22"]);
+    expect(readDate("04-22-1990", DENVER)?.assumptions).toEqual([]);
+    const sec = await run3(desk3(["Appointment: 04/12/1990 at 08:45:30"], ["04/12/1990 at 08:45:30"], [control("e2", "datetime", "Appointment")]), { Appointment: "04/12/1990 at 08:45:30" }, { ...DENVER, sourceLocale: "en-US" });
+    expect([sec.at("Appointment").handoff?.value, mintOf(sec.at("Appointment"))?.verdict.by]).toEqual(["1990-04-12T08:45:30", "verifier"]);
+  });
+
+  it("4: an exact option is vetoed by a negating line as any mapping is; a plain 'no' still answers", async () => {
+    const no = await run3(desk3(["Days I cannot attend: Saturday"], [], [control("e2", "select", "Section", opts(["Saturday", "Sunday"]))]), { Section: "Saturday" });
+    expect(no.at("Section").handoff).toBeNull();
+    const pets = await run3(desk3(["Pets: no"], [], [control("e2", "select", "Do you have pets?", opts(["Yes", "No"]))]), { "Do you have pets?": "no" });
+    expect(pets.at("Do you have pets?").handoff?.value).toBe("No");
+  });
+
+  it("5: a stated format's reading is its own candidate even when the locale reads the span too", async () => {
+    const r = await run3(desk3(["DOB (MM/DD/YYYY): 04/12/1990"], ["04/12/1990"], [control("e2", "date", "Date of birth")]), { "Date of birth": "1990-04-12" }, { ...DENVER, sourceLocale: "en-US" });
+    expect(r.offered.some((o) => o.startsWith('Date of birth <- "1990-04-12"') && o.includes("format"))).toBe(true);
+  });
+
+  it("5: split fields refuse a stated format the locale contradicts", async () => {
+    const m = new ScreenModel();
+    const form: Node[] = [
+      web,
+      { key: F("first"), parent: web.key, role: "AXTextField", label: "First name", editable: true, frame: [100, 20, 200, 24] },
+      { key: F("dob"), parent: web.key, role: "AXGroup", subrole: "AXFieldset", label: "Date of birth" },
+      ...menu("dobm", "Month", MONTHS, F("dob"), 60),
+      { key: F("dobd"), parent: F("dob"), role: "AXTextField", label: "Day", editable: true, frame: [100, 100, 80, 24] },
+    ];
+    m.apply(snap([field("te/note", "DOB (DD/MM/YYYY): 04/12/1990", { role: "AXTextArea" })], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true }));
+    m.apply(snap(form, { at: 2000, windowId: "5150-7", title: "Guest information", app: { pid: 5150, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true }));
+    const p = await proposeFill(m, jevPickingText((_id, ins) => (ins.includes("'Month'") ? "December" : ins.includes("'Day'") ? "04" : null)), "5150-7", F("first"), 3000, { resolve: { ...DENVER, sourceLocale: "en-US" } });
+    expect(p.fields.filter((f) => f.key === F("dobm") || f.key === F("dobd")).map((f) => f.value ?? f.handoff?.value ?? null)).toEqual([null, null]);
+  });
+
+  it("5: a time control gets the stated-format reading as its own candidate", async () => {
+    const r = await run3(desk3(["Appointment (MM/DD/YYYY): 04/12/1990 at 8:45am"], ["04/12/1990 at 8:45am"], [control("e2", "time", "Appointment time")]), { "Appointment time": "08:45" });
+    expect(r.offered.some((o) => o.startsWith('Appointment time <- "08:45"') && o.includes("format"))).toBe(true);
+    expect(r.at("Appointment time").handoff?.value).toBe("08:45");
   });
 });

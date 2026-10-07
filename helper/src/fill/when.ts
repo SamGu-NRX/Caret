@@ -5,7 +5,7 @@
 // inside prose ("Deliver around 7:45 pm"), kept only for a value handed to the user, who sees it before setting it.
 import { Temporal } from "@js-temporal/polyfill";
 import { ValueResolver, type ResolveContext } from "../values/resolve.ts";
-import { sayDate, sayMoment } from "../values/date-time.ts";
+import { dateOrder, sayDate, sayMoment } from "../values/date-time.ts";
 import { monthYear, type DateOrder } from "./derive.ts";
 
 const resolver = new ValueResolver();
@@ -22,6 +22,38 @@ export interface Reading {
   assumptions: readonly string[];
 }
 
+const NUMERIC = /^(\d{1,2})([/.-])(\d{1,2})\2((?:1[89]|2\d)\d{2})\.?$/u;
+
+/**
+ * V3: a span that is one numeric date with a four-digit year, in any of the separators people write ("04/22/1990",
+ * "04-22-1990", "22.04.1990."), read as the brief's evidence allows: the numbers settle the order (one over 12, or both
+ * the same) with no assumption; else a format the source states (`order`) or its locale gives it, said as an assumption.
+ * A stated format and a locale that disagree, or either one the numbers contradict, read nothing. Undefined when the
+ * span is not such a date (the resolver reads it).
+ */
+function numericReading(text: string, ctx: ResolveContext, order: DateOrder | null): Reading | null | undefined {
+  const m = NUMERIC.exec(text.trim());
+  if (m === null) return undefined;
+  const [a, b, year] = [Number(m[1]), Number(m[3]), Number(m[4])];
+  const intrinsic: DateOrder | null = a > 12 ? "dm" : b > 12 ? "md" : a === b ? "md" : null;
+  const locale = dateOrder(ctx.sourceLocale);
+  const byLocale: DateOrder | null = locale === null ? null : locale === "mdy" ? "md" : "dm";
+  if (order !== null && byLocale !== null && order !== byLocale) return null;
+  if (intrinsic !== null && a !== b && ((order !== null && order !== intrinsic) || (byLocale !== null && byLocale !== intrinsic))) return null;
+  const settled = intrinsic ?? order ?? byLocale;
+  if (settled === null) return null;
+  const [month, day] = settled === "md" ? [a, b] : [b, a];
+  let date: Temporal.PlainDate;
+  try {
+    date = Temporal.PlainDate.from({ year, month, day }, { overflow: "reject" });
+  } catch {
+    return null;
+  }
+  const first = settled === "md" ? "month first" : "day first";
+  const assumptions = intrinsic !== null ? [] : [order !== null ? `${first}: the format the source states beside "${text.trim()}"` : `${first}: the source's locale, ${ctx.sourceLocale}`];
+  return { value: date.toString(), display: sayDate(date), assumptions };
+}
+
 /** The resolver context with a format the source states beside a numeric date (derive.ts dateOrderHint). */
 function withOrder(ctx: ResolveContext, order: DateOrder | null): ResolveContext {
   return order === null ? ctx : { ...ctx, sourceDateOrder: order === "md" ? "mdy" : "dmy" };
@@ -33,6 +65,8 @@ function withOrder(ctx: ResolveContext, order: DateOrder | null): ResolveContext
  * (values/date-time.ts, V3 review B9: dotted dates were read day first by convention).
  */
 export function readDate(text: string, ctx0: ResolveContext, order: DateOrder | null = null): Reading | null {
+  const numeric = numericReading(text, ctx0, order);
+  if (numeric !== undefined) return numeric;
   const ctx = withOrder(ctx0, order);
   const d = resolver.date(text, ctx);
   if (d.kind === "resolved") return { value: d.value, display: d.display, assumptions: d.assumptions };
@@ -171,7 +205,8 @@ export function clockTime(text: string): { value: string; display: string } | nu
 }
 
 /** The one time of day a span names, as HH:MM (HH:MM:SS with seconds), read by the resolver; null when it asks or cannot read it, or the span or its source is in another zone. */
-export function readClock(text: string, ctx: ResolveContext): Reading | null {
+export function readClock(text: string, ctx0: ResolveContext, order: DateOrder | null = null): Reading | null {
+  const ctx = withOrder(ctx0, order);
   // A span that names its day gives its time only once that day is known: Daylight Saving can skip or repeat the time on
   // that day (D2-04). So a date with a time is not split here, as readDate splits it (V3); its day is placed through
   // datedBySent.
@@ -191,13 +226,3 @@ export function readDateTime(text: string, ctx0: ResolveContext, order: DateOrde
   return { value: m.value.local, display: sayMoment(m.value), assumptions: m.assumptions };
 }
 
-/**
- * V3 review (contract.ts mintExempt): whether `written` is what `span` says, read with no assumption at all (no reference
- * instant, no locale, no stated order, no century window): the only reading a date or time input's exemption
- * (resolverFormat) may write.
- */
-export function readsPlainly(span: string, written: string): boolean {
-  const ctx: ResolveContext = { locale: "en-US", timeZone: "UTC", referenceInstant: null };
-  const r = /^\d{4}-\d{2}-\d{2}$/u.test(written) ? readDate(span, ctx) : /^\d{2}:\d{2}(?::\d{2})?$/u.test(written) ? readClock(span, ctx) : /^\d{4}-\d{2}-\d{2}T/u.test(written) ? readDateTime(span, ctx) : /^\d{4}-\d{2}$/u.test(written) ? readMonth(span) : null;
-  return r !== null && r.assumptions.length === 0 && r.value === written;
-}
