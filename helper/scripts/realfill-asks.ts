@@ -95,12 +95,12 @@ let writerSpent = 0;
 const fixtureIds = new Set<string>();
 /**
  * A1: `--engine canned` is an oracle, for when no model can run the Ask path (Laya's free tier takes at most 512 input
- * tokens, and Jev had no credits). It always chooses code's scope reading, leaves its own scope head unclear (a
- * must-refuse ask's head refuses or plans by the ask's reason), says no to every field yes/no, confirms exactly the
- * expected fields, and answers each value question with the ask's expected value for that field, else the value
- * corpus.json expects for a whole-form fill. So any field outside the ask's expected fields that
- * the Ask still puts in scope gets a value and scores wrong: it measures whether code's reading writes a field the user
- * did not mean when the model always agrees, not how a real model scores.
+ * tokens, and Jev had no credits). A3: its route head fills (a must-refuse ask's head refuses or plans by the ask's
+ * reason), its scope ask answers "asks" for exactly the expected fields and "not" for the rest, it confirms exactly the
+ * expected fields, and it answers each value question with the ask's expected value for that field, else the value
+ * corpus.json expects for a whole-form fill. So any field outside the ask's expected fields that the Ask still puts in
+ * scope gets a value and scores wrong: it measures what code does with a perfect scope answer, not how a real model
+ * scores.
  */
 const oracle: AskJev = async (req) => {
   const ask = asks.find((x) => x.id === current.replace(/\+pick$/u, ""));
@@ -135,7 +135,7 @@ const oracle: AskJev = async (req) => {
   const wholeForm = new Set((form?.fields ?? []).map((f) => f.expected));
   const theirs = new Set(Object.entries(want).filter(([l, v]) => form?.fields.find((f) => normLabel(f.label) === normLabel(l))?.expected !== v).map(([, v]) => v));
   const wanted = (label: string): boolean => Object.keys(want).some((l) => normLabel(l) === normLabel(label) && want[l] !== "none");
-  const labelIn = (ins: string): string | null => /(?:Label|field): '([^']+)'|the field '([^']+)'|fill or change '([^']+)'/u.exec(ins)?.slice(1).find((x) => x !== undefined) ?? null;
+  const labelIn = (ins: string): string | null => /(?:Label|field): '([^']+)'|[Tt]he field '([^']+)'|fill or change '([^']+)'/u.exec(ins)?.slice(1).find((x) => x !== undefined) ?? null;
   const answers: Record<string, { choice: string; confidence: number }> = {};
   for (const [id, q] of Object.entries(req.questions)) {
     const keys = Object.keys(q.criteria);
@@ -143,11 +143,9 @@ const oracle: AskJev = async (req) => {
     const pick = (k: string): void => {
       answers[id] = { choice: keys.includes(k) ? k : (keys.at(-1) ?? "none"), confidence: 0.99 };
     };
-    if (id === "reading") pick("code");
-    // The scope head never settles a fill: an ask code has no reading of ends asked, as from a model that cannot tell.
-    // A must-refuse ask's head refuses with its reason, or plans a press, as a model that recognises refusals would; A1
-    // changed nothing on that path.
-    else if (id === "scope") pick(ask?.reason === "submit" || ask?.reason === "send" ? "plan" : ask?.expected === "refuse" && ask.reason !== undefined ? "refuse" : "unclear");
+    // A must-refuse ask's head refuses with its reason, or plans a press, as a model that recognises refusals would.
+    if (id === "route") pick(ask?.reason === "submit" || ask?.reason === "send" ? "plan" : ask?.expected === "refuse" && ask.reason !== undefined ? "refuse" : "fill");
+    else if (id.startsWith("s_") && "asks" in q.criteria) pick(wanted(labelIn(ins) ?? "") ? "asks" : "not");
     else if (id === "why") pick(ask?.reason === "payment" ? "payment" : ask?.reason === "neverTyped" ? "neverTyped" : ask?.reason === "noSuchField" ? "noSuchField" : "nothingToFill");
     else if (id === "source") pick("any");
     else if (id === "whose") pick("user");
@@ -157,7 +155,6 @@ const oracle: AskJev = async (req) => {
       const v = label === null ? null : valueOf(label);
       pick((v !== null && theirs.has(v)) || /\b(?:landlord|reference|emergency|guest|referr|relationship|recipient)/iu.test(label ?? "") ? "other" : "user");
     }
-    else if (id === "section") pick("none");
     else if (id.endsWith("_owner")) {
       const text = /"([^"]*)"/u.exec(ins)?.[1] ?? "";
       // A value the ask expects for someone else's field is that person's; any other whole-form value is the user's.
@@ -175,7 +172,6 @@ const oracle: AskJev = async (req) => {
       pick(hit?.[0] ?? press?.[0] ?? "none");
     }
   }
-  // The field yes/no heads say no: only code's reading, confirmed, ever settles fields.
   const nouls = Object.fromEntries(Object.keys(req.nouls ?? {}).map((id) => [id, 0.01]));
   return { model: "oracle", answers, nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
 };

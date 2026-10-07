@@ -103,9 +103,9 @@ const USER_TOO = /\b(?:me|myself|i)\s+(?:and|&|\+)\s+\S|\S\s+(?:and|&|\+)\s+(?:m
 
 /**
  * Whose details the instruction asks for, by code. `others` are the people on screen and in memory (peopleOnScreen).
- * `someoneElses` is whether code's scope reading read a kind as someone else's ("his number", "her email").
+ * One person per Ask: two names, two relations or two people in its sources ask which one, never fill for both.
  */
-export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate[], memory: readonly MemoryValue[], someoneElses: boolean): WhoseReading {
+export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate[], memory: readonly MemoryValue[]): WhoseReading {
   const instruction = snap.instruction;
   // A name right before a form noun names the form, not a person: "the Northgate application" (A1 held-out B25). Any other
   // place keeps it a person, a word of the form's title or not ("the RSVP for Jun or Bea"; A1 fix-check).
@@ -126,8 +126,8 @@ export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate
   if (relations.length > 1) return { kind: "ask", candidates: relations.map((p) => p.span), why: "the instruction names more than one relation" };
   // No one named: a pronoun for someone's details is the one other person in the instruction's sources.
   const fw = fieldWords(instruction);
-  if (!someoneElses && !PRONOUN_DETAILS.test(fw) && !PRONOUN.test(fw)) return { kind: "user", why: "no one else is named" };
-  if (!someoneElses && !PRONOUN_DETAILS.test(fw)) return { kind: "unread", why: "a pronoun that may not be about details" };
+  if (!PRONOUN_DETAILS.test(fw) && !PRONOUN.test(fw)) return { kind: "user", why: "no one else is named" };
+  if (!PRONOUN_DETAILS.test(fw)) return { kind: "unread", why: "a pronoun that may not be about details" };
   if (restrictsSources(instruction)) return { kind: "ask", candidates: [], why: "the instruction keeps Caret to its own words" };
   const sourceIds = new Set(snap.named.map((n) => n.windowId));
   const inSources = sourceIds.size === 0 ? others : others.filter((p) => p.windowIds.some((id) => sourceIds.has(id)));

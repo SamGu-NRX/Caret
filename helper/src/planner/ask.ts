@@ -219,6 +219,7 @@ function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot, fi
   return {
     ...intent,
     fields: intent.fields.filter(kept).map(field),
+    ...(intent.options === undefined ? {} : { options: intent.options.filter(kept).map(field) }),
     sources: intent.sources.map(source),
     whose: whose(intent.whose),
     section: section === undefined ? intent.section : (snap.sections.find((x) => x.name === section)?.ref ?? changed(`the section ${intent.section} is gone`)),
@@ -226,7 +227,7 @@ function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot, fi
   };
 }
 
-/** An intent whose scope is no longer code's agreed reading, once planAsk rewrites it. */
+/** An intent whose scope is no longer the fields Jev chose, once planAsk rewrites it. */
 function withoutAgreement(intent: AskIntent): AskIntent {
   const { agreed: _, ...rest } = intent;
   return rest;
@@ -348,7 +349,9 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   /** The question for an unclear part, when it is not one the user already picked and code can list its candidates. */
   const question = (e: Unclear): AskQuestionDraft | string => {
     if (fixed[e.part] !== undefined) return `the user already picked the ${e.part}`;
-    const r = choicesFor(e.part, snap, model, scopeFields(intent, snap), now);
+    // A3: an intent from Jev's scope ask offers exactly the fields Jev left unclear or chose, never fields code picked.
+    const offered = intent.options === undefined ? null : intent.options.map((r) => snap.fields.find((f) => f.ref === r) ?? changed(`the field ${r} is gone`));
+    const r = choicesFor(e.part, snap, model, scopeFields(intent, snap), now, offered);
     if (r.choices === null) return r.why;
     return {
       ...r.choices,
@@ -408,7 +411,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // plain "all", it stood without any confirmation when no field word named a field ("fill only the first box"; B26's
   // second review).
   const empties = snap.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
-  // A1: a scope the model agreed is code's reading (scope-reading.ts) needs no further confirmation, here or below.
+  // A3: fields Jev chose in both wordings of its scope ask (intent-heads.ts) need no further confirmation, here or below.
   const agreed = intent.agreed === true && fixed.fields === undefined;
   const listsAll = oneAnswer && !agreed && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
   let checked: ReturnType<typeof checkIntent>;
