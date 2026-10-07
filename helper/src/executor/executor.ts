@@ -307,6 +307,9 @@ class StepStop extends Error {
 /** Thrown at a step boundary when the task has a pending interrupt. */
 class Interrupted extends Error {}
 
+/** A reader call threw or a write answered axError; the write may have landed without confirmation. */
+class UnconfirmedAct extends Error {}
+
 /** The reader focused a web field for a focus-first write and focus was then elsewhere; it wrote nothing (verbResult focusMoved). */
 class FocusMoved extends Error {}
 
@@ -655,8 +658,8 @@ export class Executor {
   }
 
   /** The stopped phase of a revoked task: who caused it, and why in the detail. */
-  private stoppedBy(task: Task, r: Revocation): string {
-    const detail = `stopped ${this.boundary(task)}: ${r.why}`;
+  private stoppedBy(task: Task, r: Revocation, recovery = ""): string {
+    const detail = `stopped ${this.boundary(task)}: ${r.why}${recovery}`;
     this.stopped(task, this.stepAt(task), detail, r.by === "you" ? "you" : r.by === "screen" ? "screen" : "caret", r.by === "you" ? "you" : r.by === "screen" ? "changed" : "error");
     return detail;
   }
@@ -831,17 +834,18 @@ export class Executor {
       if (e instanceof Interrupted && it !== null) {
         task.interrupt = null;
         const at = this.stepAt(task);
+        const recovery = e.message === "" ? "" : `; ${e.message}`;
         if (it.kind === "stop") {
           task.finished = "stopped";
           let detail: string;
           if (it.revoked === undefined) {
-            detail = `stopped by you ${this.boundary(task)}`;
+            detail = `stopped by you ${this.boundary(task)}${recovery}`;
             this.stopped(task, at, detail, "you", "you");
-          } else detail = this.stoppedBy(task, it.revoked);
+          } else detail = this.stoppedBy(task, it.revoked, recovery);
           this.reportUses(task, "stopped");
           return this.result(task, "stopped", at, detail);
         }
-        const detail = this.pauseDetail(task, it);
+        const detail = this.pauseDetail(task, it) + recovery;
         task.finished = "paused";
         this.progress(task, "paused", at, detail, "you");
         return this.result(task, "paused", at, detail);
@@ -956,8 +960,17 @@ export class Executor {
       if (attribute === "value" && task.guard !== null && nowNode === undefined) throw StepStop.stop("changed", `the field for '${step.says}' is gone, so Caret did not write it`);
       const stale = attribute === "value" ? (task.guard?.(i, value, { windowId: nowW.window.windowId, node: nowNode ?? node, window: nowW }) ?? null) : null;
       if (stale !== null) throw StepStop.stop("changed", `${stale}, so Caret did not write it`);
+      let answered = false;
       try {
-        return await this.act(task, v, w.window.windowId);
+        const changes = await this.act(task, v, w.window.windowId);
+        answered = true;
+        // A successful answer without read-back is not proof that the field took the write. Read before
+        // judging it or trying another means; a stop revokes writes, not this read-only recovery check.
+        const readBack = changes.some((c) => c.key === node.key && (c.kind === "value" || c.kind === "added"));
+        if (attribute === "value" && (!readBack || !this.window(w.window.windowId).nodes.has(node.key))) {
+          return [...changes, ...(await this.walk(this.window(w.window.windowId)))];
+        }
+        return changes;
       } catch (e) {
         // A page handler moved focus off the field once the reader focused it, so it wrote nothing (S1 audit #14).
         if (e instanceof FocusMoved) {
@@ -974,15 +987,14 @@ export class Executor {
           this.deps.warn?.(`executor: task ${task.id} step ${i}: the page changed after the press: ${e.message}`);
           throw StepStop.stop("changed", `The page changed after Caret pressed '${value}', so Caret stopped.`);
         }
-        // An axError may come after the value was set (a timeout while the reader settles and re-walks; a page pick or
-        // write that went in before a revoke stopped its later stages, W3), so the write is recorded before any verify,
-        // unconfirmed: undo restores it only if the field holds `value`, and counts it as never landed if the field
-        // still holds `before`.
-        if (attribute === "value" && e instanceof StepStop && e.message.includes("axError")) {
-          this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true });
-          // A pause, stop or take-over that came in while it was on its way: the write stays in the ledger for undo,
-          // and the run ends as the user asked, not as a reader failure (as the loop's end does, B19 review).
-          if (task.interrupt !== null) throw new Interrupted();
+        // A fault or lost read-back can follow a landed write. Save before the recovery read, so even a
+        // second failure keeps undo. S1 recognizes only original, intended, or a proper intended prefix.
+        if (attribute === "value" && (answered || e instanceof UnconfirmedAct)) {
+          const entry: Extract<LedgerEntry, { kind: "write" }> = { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true };
+          this.addLedger(task, entry);
+          const detail = await this.readUnconfirmed(task, entry);
+          if (task.interrupt !== null) throw new Interrupted(detail ?? "");
+          throw StepStop.stop("reader", `${e instanceof Error ? e.message : String(e)}${detail === null ? "" : `; ${detail}`}`);
         }
         throw e;
       }
@@ -994,8 +1006,6 @@ export class Executor {
       if (e instanceof Restored) return this.leaveRestored(task, i, w, node, before, step, e);
       throw e;
     }
-    // A field the walk lost right after the write (B15's WebKit window) is read once more before it is judged.
-    if (attribute === "value" && this.window(w.window.windowId).nodes.get(node.key) === undefined) seen = [...seen, ...(await this.walk(this.window(w.window.windowId)))];
     // B15, B20: a web view whose window is not key answers a value write with ok and changes nothing. It takes
     // the value once the field has focus (focusValue, 3 of 3 in B20's candidate table); insert (focus, select
     // all, replace) is the last means. Each runs only when the one before changed nothing, and the comparison
@@ -1013,9 +1023,6 @@ export class Executor {
         if (e instanceof Restored) throw StepStop.stop("reader", e.message);
         throw e;
       }
-      // A WebKit window that is not key can leave the field out of the walk right after a write (B15: the
-      // field read as gone); one more read tells a field that is back from one that really went.
-      if (this.window(w.window.windowId).nodes.get(node.key) === undefined) seen = [...seen, ...(await this.walk(this.window(w.window.windowId)))];
       // A write that landed is judged and goes in the ledger below before any pause is honoured, so undo has it.
       if (!this.dropped(w.window.windowId, node.key, before, seen)) break;
       // A pause, stop or take-over that came in meanwhile is the user's word on the run, not a hand-off.
@@ -1041,16 +1048,25 @@ export class Executor {
       // The reader wrote, so the write goes in the ledger before it is judged. Its `after` is the value Caret meant to
       // write, never this read (B29 lead decision): a keystroke the user typed right as Caret wrote can reach the field
       // before the read-back and the task's input watch later, so a read that differs may hold the user's typing, and
-      // an app's reformatting looks the same. Such an entry is marked, and undo refuses it rather than restore over
-      // text it cannot tell is its own. Before B29 a reader write kept the read as `after`, and undo erased the keystroke.
-      if (now !== undefined && (now.value ?? "") !== before) {
-        const ours = sameValue(node, now.value ?? "", value);
-        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, ...(ours ? {} : { mayIncludeInput: true }) });
-      }
-      // A field the walk lost and then found again (B15's WebKit window) comes back as an added node holding the value.
+      // an app's reformatting looks the same. Undo refuses unrecognized text rather than restore over the user's
+      // typing. S1 permits recovery of a proper intended prefix for an unconfirmed whole-field replacement.
+      // Before B29 a reader write kept the read as `after`, and undo erased the keystroke.
+      // An earlier exact read-back remains evidence that the full write landed, even if the user
+      // shortened it before the answer arrived. That later prefix is not an interrupted Caret write.
       const recorded = seen.some((c) => (c.kind === "value" || (c.kind === "added" && seen.some((r) => r.kind === "removed" && r.key === node.key))) && c.key === node.key && c.after === value);
+      if (now === undefined) {
+        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true });
+      } else if ((now.value ?? "") !== before) {
+        const held = now.value ?? "";
+        const ours = sameValue(node, held, value);
+        // Successful numeric read-back keeps its existing equivalence rule, not S1's faulted-prefix rule.
+        const partial = !recorded && !ours && partialReplacement(before, value, held);
+        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, ...(partial ? { unconfirmed: true, partialWrite: true } : ours ? {} : { mayIncludeInput: true }) });
+      }
       if (now === undefined || (now.value ?? "") !== value || !recorded) {
-        throw StepStop.stop("mismatch", `mismatch: expected ${prediction}; the field now holds '${clip(now?.value ?? "(gone)")}'`);
+        const detail = `mismatch: expected ${prediction}; ${now === undefined ? `the field is gone; before the write it held ${JSON.stringify(before)}` : fieldContents(before, now.value ?? "")}`;
+        if (task.interrupt !== null) throw new Interrupted(detail);
+        throw StepStop.stop("mismatch", detail);
       }
       this.expectedFor(task, w.window.windowId).set(node.key, value);
     } else if (after.focusedKey !== node.key) {
@@ -1263,7 +1279,12 @@ export class Executor {
       for (const c of cs) if (c.windowId === windowId) seen.push(c);
     });
     try {
-      const r = await this.deps.reader.run(verb);
+      let r: VerbResult;
+      try {
+        r = await this.deps.reader.run(verb);
+      } catch (e) {
+        throw new UnconfirmedAct(e instanceof Error ? e.message : String(e));
+      }
       // The page left or submitted after a press: nothing more runs, whatever else came in meanwhile (B28).
       if (r.pageChanged !== undefined) throw new PageChanged(`${r.pageChanged.join(", ")}${r.detail === null ? "" : ` (${r.detail})`}`);
       // A pause, stop or take-over came in while the verb was on its way (a stop or take-over also revoked
@@ -1272,6 +1293,10 @@ export class Executor {
       if (r.outcome !== "ok" && r.outcome !== "axError" && task.interrupt !== null) throw new Interrupted();
       if (r.outcome === "focusMoved") throw new FocusMoved(r.detail ?? "focus moved");
       if (r.outcome === "changed" && r.restored === true) throw new Restored(`the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`, r.detail, [...seen]);
+      // Use the outcome, not text inside the detail: a refused field may itself contain "axError".
+      if (r.outcome === "axError" && verb.kind === "write" && verb.attribute !== "focused") {
+        throw new UnconfirmedAct(`the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
+      }
       if (r.outcome !== "ok") throw StepStop.stop("reader", `the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
     } finally {
       off();
@@ -1573,6 +1598,27 @@ export class Executor {
 
   // MARK: - undo
 
+  /** Read a faulted whole-field write before acknowledging stop, without issuing or renewing a grant. */
+  private async readUnconfirmed(task: Task, e: Extract<LedgerEntry, { kind: "write" }>): Promise<string | null> {
+    try {
+      this.checkSession(task);
+      await this.walk(this.window(e.windowId));
+      this.checkSession(task);
+    } catch (error) {
+      return `Caret could not read the field after writing it; before the write it held ${JSON.stringify(e.before)}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
+    if (field === undefined) return `the field is gone; before the write it held ${JSON.stringify(e.before)}`;
+    const held = field.value ?? "";
+    if (held === e.before || held === e.after) return null;
+    if (partialReplacement(e.before, e.after, held)) {
+      e.partialWrite = true;
+      this.journalSave(task, null);
+      return null;
+    }
+    return `${fieldContents(e.before, held)}; Caret left it as it is`;
+  }
+
   private async undoWrite(task: Task, e: Extract<LedgerEntry, { kind: "write" }>, settled: Set<LedgerEntry>): Promise<string | null | typeof UNTOUCHED> {
     /** A refusal that will not pass with time: the entry is settled. */
     const final = (reason: string): string => {
@@ -1591,16 +1637,22 @@ export class Executor {
     // A write the crash cut off whose field, read just now, still holds what it held before: it never landed. A field
     // that is gone says nothing either way (a Yes/No press whose page then left, B28 review), so it is not counted.
     const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
+    if (e.unconfirmed === true && field === undefined) return final(`the field is gone; before the write it held ${JSON.stringify(e.before)}`);
     if (e.unconfirmed === true && field !== undefined && (field.value ?? "") === e.before) return UNTOUCHED;
-    // B29: undo restores only a field that holds what Caret wrote, decided here from the read just made, so no restore
-    // is sent over text that may be the user's. The reader rechecks the field against that read right before it writes.
-    if (e.mayIncludeInput === true) return final("the field changed while Caret wrote it and may hold your typing, so Caret left it as it is");
-    if (field !== undefined && !sameValue(field, field.value ?? "", e.after)) {
-      return final(
-        e.unconfirmed === true
-          ? "the field does not hold what Caret was writing, so Caret left it as it is"
-          : "the field changed after Caret wrote it, so Caret left it as it is",
-      );
+    // Judge the read just made, not the earlier partialWrite flag: the user may have edited since then.
+    // The reader rechecks this exact held value and the recorded element right before restoring it.
+    const contents = field === undefined ? "the field is gone" : fieldContents(e.before, field.value ?? "");
+    if (e.mayIncludeInput === true) return final(`the field changed while Caret wrote it and may hold your typing, so Caret left it as it is; ${contents}`);
+    const partial = e.unconfirmed === true && field !== undefined && partialReplacement(e.before, e.after, field.value ?? "");
+    if (partial) {
+      e.partialWrite = true;
+      this.journalSave(task, null);
+    }
+    // Prefix recovery applies only to unconfirmed writes, never to a verified value the user later shortened.
+    if (field !== undefined && !partial && !(e.unconfirmed === true ? (field.value ?? "") === e.after : sameValue(field, field.value ?? "", e.after))) {
+      return final(e.unconfirmed === true
+        ? `the field does not hold what Caret was writing, so Caret left it as it is; ${contents}`
+        : "the field changed after Caret wrote it, so Caret left it as it is");
     }
     // A field the walk lost (B15's WebKit window) is left to the reader's own check against what Caret wrote.
     const held = field === undefined ? e.after : (field.value ?? "");
@@ -1632,6 +1684,19 @@ export class Executor {
       off();
     }
     if (r.outcome !== "ok") {
+      // A last-moment value refusal means the earlier undo read is stale. Read only for the diagnostic,
+      // never retry the restore over the new text (S1).
+      if (r.outcome === "changed" && e.unconfirmed === true) {
+        try {
+          this.checkSession(task);
+          await this.walk(w);
+          this.checkSession(task);
+        } catch (error) {
+          return final(`${undoRefused(e, r)}; cannot read the field now; before the write it held ${JSON.stringify(e.before)}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        const current = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
+        return final(`${undoRefused(e, r)}; ${current === undefined ? `the field is gone; before the write it held ${JSON.stringify(e.before)}` : fieldContents(e.before, current.value ?? "")}`);
+      }
       // The reader not answering, or refusing for want of a grant, may pass; a field changed or replaced will not.
       const passing = r.outcome === "axError" || r.outcome === "notAllowed" || r.outcome === "noWindow";
       return passing ? undoRefused(e, r) : final(undoRefused(e, r));
@@ -1828,6 +1893,16 @@ export function canonicalDecimal(s: string): string | null {
   digits = digits.slice(0, digits.length - trailing);
   exp += trailing;
   return `${m[1] === "-" ? "-" : ""}${digits}e${exp}`;
+}
+
+/** S1's whole-field replacement rule. An unchanged original takes precedence, even if it is a prefix. */
+function partialReplacement(before: string, intended: string, held: string): boolean {
+  return held !== before && held.length > 0 && held.length < intended.length && intended.startsWith(held);
+}
+
+/** JSON quoting preserves the full values and makes empty text, newlines and quotes distinguishable. */
+function fieldContents(before: string, held: string): string {
+  return `the field now holds ${JSON.stringify(held)}; before the write it held ${JSON.stringify(before)}`;
 }
 
 /** Why the reader refused a restore, in words for the activity row. */
