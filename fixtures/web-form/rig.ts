@@ -317,7 +317,11 @@ export function spawnChrome(exe: string, flags: string[], env: NodeJS.ProcessEnv
       process.kill(-proc.pid, "SIGKILL");
       throw new Error(`Chrome's process group was not registered, so it was never started: ${e instanceof Error ? e.message : String(e)}`);
     }
-    (proc.stdio[go] as Writable).end("G\n");
+    // The held shell can be gone before this line arrives (killed, or its group stopped); the write then fails with
+    // EPIPE on the pipe, which must not escape as an uncaught exception (B1 report: harden like the sink's sockets).
+    const release = proc.stdio[go] as Writable;
+    release.on("error", (e) => say(`Chrome's release line was not delivered (${e.message}): the held shell is gone, so Chrome never started`));
+    release.end("G\n");
   }
   return proc;
 }

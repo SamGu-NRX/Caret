@@ -10,7 +10,7 @@
 //   - harness presses: the harness asks for a press in-process (issueHarnessPress), the server hands it to the page's
 //     probe, and the probe tags the click with the issued id. No HTTP route creates an id, so a press tagged with an id
 //     this oracle never issued, or one already used, is a stray press like any other.
-import { createServer, type Server } from "node:http";
+import { createServer, type RequestListener, type Server } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 
 /** One field as probe.js read it. `value` is "" when empty; checkboxes read "true" or "false". */
@@ -284,20 +284,30 @@ function isBrowserService(target: string): boolean {
  */
 export class NetworkSink {
   private server: Server | null = null;
+  /** CONNECT sockets the sink took over: node's HTTP connection tracking no longer covers them. */
+  private readonly sockets = new Set<Socket>();
   port = 0;
 
   private readonly oracle: Oracle;
+  private readonly makeServer: (listener: RequestListener) => Server;
 
-  constructor(oracle: Oracle) {
+  /** `makeServer`: tests inject a fake server; the eval uses node:http's. */
+  constructor(oracle: Oracle, makeServer: (listener: RequestListener) => Server = createServer) {
     this.oracle = oracle;
+    this.makeServer = makeServer;
   }
 
   async start(): Promise<void> {
-    const s = createServer((req, res) => {
+    const s = this.makeServer((req, res) => {
       this.oracle.recordOffsite({ method: req.method ?? "?", target: req.url ?? "?" });
       res.writeHead(403, { connection: "close" }).end();
     });
     s.on("connect", (req, socket: Socket) => {
+      this.sockets.add(socket);
+      socket.once("close", () => this.sockets.delete(socket));
+      // Chrome can reset a refused CONNECT before it closes (B1: ECONNRESET killed tasks-labelled); the sink still owns
+      // the socket, so a transport error ends it here instead of escaping as an uncaught exception.
+      socket.on("error", () => socket.destroy());
       this.oracle.recordOffsite({ method: "CONNECT", target: req.url ?? "?" });
       socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
     });
@@ -317,6 +327,9 @@ export class NetworkSink {
   async stop(): Promise<void> {
     const s = this.server;
     if (s === null) return;
+    // CONNECT sockets are detached from the HTTP connection cleanup closeAllConnections does.
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
     s.closeAllConnections();
     await new Promise<void>((r) => s.close(() => r()));
     this.server = null;
