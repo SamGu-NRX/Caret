@@ -17,6 +17,7 @@ import { ContractError, fieldContract, requireChecked, type FieldContract } from
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { isAnswerField } from "../fill/answers.ts";
+import { alternateReason } from "../fill/alternate.ts";
 import { asksCountry, fieldPart } from "../fill/derive.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import type { EventClock } from "../offers/event-time.ts";
@@ -378,7 +379,10 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       if (n === undefined) continue;
       // H13: a field that takes a written answer is the user's by design, whatever Jev made of it: "wasn't sure" would say
       // Caret tried to write it. A saved answer matched to it but held back (`answer`) keeps that reason instead.
-      if (f.withheld !== null && f.answer === undefined && isAnswerField(n)) leave(n, "Caret doesn't write answers", undefined, "is yours to write");
+      const repeated = alternateReason(f);
+      // The veto already names both fields in a complete sentence. lowerGoal adds the final period.
+      if (repeated !== null) left.push({ windowId: o.windowId, key: n.key, label: fieldName(w, n), why: "dropped", says: repeated.replace(/\.$/u, "") });
+      else if (f.withheld !== null && f.answer === undefined && isAnswerField(n)) leave(n, "Caret doesn't write answers", undefined, "is yours to write");
       else if (f.withheld !== null) leave(n, WITHHELD_SAYS[f.withheld] ?? "Caret wasn't sure what goes there");
       else if (f.handoff !== null) leave(n, `Caret leaves setting it to you ('${clip(f.handoff.display)}' fits it)`, f.handoff.source === null ? undefined : { windowId: f.handoff.source.windowId, text: clip(f.handoff.display) });
     }

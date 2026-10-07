@@ -1897,6 +1897,9 @@ export async function proposeFill(
   // Identity ownership and an exact verifier answer did not catch it. A secondary field must differ
   // from its primary and the user's own value; remove the pick before checkValues can approve it.
   // Inspect filled and unasked inputs too: formFields deliberately omits already populated fields.
+  // This uses Caret's existing window-level form boundary: page-link.ts does not retain HTML form IDs.
+  // A primary in another form can only withhold an extra alternate, never admit a write. Preserving
+  // those IDs is deferred by the lead; do not infer a narrower boundary from field groups or labels.
   const primaryFields = [...w.nodes.values()].flatMap((node) => {
     if (node.editable !== true || !FILLABLE_ROLES.has(node.role) || node.states?.includes("secure")) return [];
     const d = describeField(w, node);
