@@ -42,6 +42,20 @@ class _RUsageInfoV0(ctypes.Structure):
         "wired_size", "resident_size", "phys_footprint", "proc_start_abstime", "proc_exit_abstime")]
 
 
+class _RUsageInfoV4(ctypes.Structure):
+    # struct rusage_info_v4 from <sys/resource.h>; checked on this Mac: lifetime_max_phys_footprint stays at a child's
+    # 307 MB peak after its footprint falls to 7 MB.
+    _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(name, ctypes.c_uint64) for name in (
+        "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins", "wired_size", "resident_size",
+        "phys_footprint", "proc_start_abstime", "proc_exit_abstime", "child_user_time", "child_system_time",
+        "child_pkg_idle_wkups", "child_interrupt_wkups", "child_pageins", "child_elapsed_abstime",
+        "diskio_bytesread", "diskio_byteswritten", "cpu_time_qos_default", "cpu_time_qos_maintenance",
+        "cpu_time_qos_background", "cpu_time_qos_utility", "cpu_time_qos_legacy", "cpu_time_qos_user_initiated",
+        "cpu_time_qos_user_interactive", "billed_system_time", "serviced_system_time", "logical_writes",
+        "lifetime_max_phys_footprint", "instructions", "cycles", "billed_energy", "serviced_energy",
+        "interval_max_phys_footprint", "runnable_time")]
+
+
 def _errno_error(what):
     err = ctypes.get_errno() or errno.EIO
     return OSError(err, "{}: {}".format(what, os.strerror(err)))
@@ -54,6 +68,7 @@ class DarwinProbes:
     PROC_PGRP_ONLY = 2
     PROC_PPID_ONLY = 6
     RUSAGE_INFO_V0 = 0
+    RUSAGE_INFO_V4 = 4
     CTL_KERN, KERN_ARGMAX, KERN_PROCARGS2 = 1, 8, 49
 
     def __init__(self):
@@ -163,6 +178,25 @@ class DarwinProbes:
         if info.proc_exit_abstime:
             return None
         return info.resident_size, info.proc_start_abstime
+
+    def footprint(self, pid):
+        """(physical footprint, its lifetime maximum) in bytes of a live process; None once it has exited.
+
+        The footprint is the memory macOS charges the process (what the memory-pressure system and Activity Monitor
+        count), including GPU buffers MLX allocates through Metal, which the resident size can miss. The lifetime
+        maximum catches a peak between two samples. A permission error raises PermissionError."""
+        info = _RUsageInfoV4()
+        ctypes.set_errno(0)
+        if self._rusage(pid, self.RUSAGE_INFO_V4, ctypes.byref(info)) != 0:
+            err = ctypes.get_errno()
+            if err == errno.ESRCH:
+                return None
+            if err == errno.EPERM:
+                raise PermissionError(err, "proc_pid_rusage({}): {}".format(pid, os.strerror(err)))
+            raise _errno_error("proc_pid_rusage({})".format(pid))
+        if info.proc_exit_abstime:
+            return None
+        return info.phys_footprint, info.lifetime_max_phys_footprint
 
     def procargs(self, pid):
         """(argv, environment strings) of a process this user may read, else None."""

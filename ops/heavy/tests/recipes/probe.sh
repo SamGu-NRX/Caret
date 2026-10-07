@@ -6,6 +6,7 @@
 #   no-result | foreign-result | stale-evidence   exit 0 with evidence the adapter must reject (66)
 #   spawn SECONDS                start tracked processes (below), write OUT/ready, sleep SECONDS, then ok
 #   leftover                     start tracked processes, then ok and exit 0 with them still running
+#   alloc MB [SECONDS]           a child touches MB of anonymous memory, writes OUT/ready, holds it SECONDS (2), then ok
 #   slow-cleanup SECONDS         on TERM, take SECONDS to clean up, write OUT/cleanup-done, exit 143
 #   env-dump                     write this recipe's environment to OUT/env.txt, then ok
 #   cat-input NAME               copy the sealed input NAME to OUT/seen.txt, then ok
@@ -138,6 +139,14 @@ fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' "${RIG_HEAVY_LOCK_FD:-none}" "$A
     trap 'kill -TERM "$rig" 2>/dev/null' TERM
     touch "$OUT/ready"
     wait "$rig"; while kill -0 "$rig" 2>/dev/null; do wait "$rig"; done
+    evidence set 0; check page-loop set --exit 0; finish ;;
+  alloc)
+    py -c 'import mmap, os, sys, time
+m = mmap.mmap(-1, int(sys.argv[1]) * 1024 * 1024)
+for i in range(0, len(m), 4096):
+    m[i] = 1
+open(os.path.join(os.environ["CARET_HEAVY_OUT"], "ready"), "w").close()
+time.sleep(float(sys.argv[2]))' "$ARG" "${3:-2}"
     evidence set 0; check page-loop set --exit 0; finish ;;
   *) echo "probe: unknown mode $MODE" >&2; exit 64 ;;
 esac

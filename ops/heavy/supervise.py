@@ -58,6 +58,11 @@ import results
 EXIT_REFUSED, EXIT_EVIDENCE, EXIT_NOT_ADMITTED = 65, 66, 75
 EXIT_TIMEOUT, EXIT_ERROR, EXIT_CANCELLED = 124, 125, 143
 POLL = 0.25
+# The profile's memory cap (mem_cap_gib): exceeding it stops the job with this code, after this short grace (a job
+# still growing must not get the profile's full grace), and the footprint series is written this often.
+EXIT_MEMORY_CAP = 76
+MEMORY_CAP_GRACE_S = 2.0
+MEMORY_SERIES_EVERY = 5.0
 FULL_SCAN_EVERY = 1.0
 KILL_EVERY = 1.0
 CUSTODY_PING_S = 5.0
@@ -753,8 +758,11 @@ class Supervisor:
             if leader_done and owned == {} and labels == []:
                 return stop
             owned = owned or {}
+            memory_stop = self._sample_memory(owned, start)
             if stop is None:
-                if self.cancel.is_set():
+                if memory_stop is not None:
+                    stop = memory_stop
+                elif self.cancel.is_set():
                     stop = ("cancel", self.cancel_code, self.cancel_reason)
                 elif now - start >= self.profile["exec_s"]:
                     stop = ("timeout", EXIT_TIMEOUT, "execution limit of {:.0f} s reached".format(self.profile["exec_s"]))
@@ -767,8 +775,51 @@ class Supervisor:
             time.sleep(POLL)
 
     def _finish_stop(self, stop, owned):
-        self._stop_all(stop[2], owned)
+        self._stop_all(stop[2], owned, grace=MEMORY_CAP_GRACE_S if stop[0] == "memory" else None)
         return stop
+
+    def _sample_memory(self, owned, start):
+        """Adds one sample of the owned processes' summed physical footprint to outcome.json's "memory", and returns
+        a stop when the profile's cap is exceeded, or when a cap is set and some owned process cannot be read."""
+        mem = self.record.setdefault("memory", {
+            "cap_gib": self.profile.get("mem_cap_gib") or None,
+            "metric": "physical footprint (proc_pid_rusage), summed over the job's owned processes",
+            "peak_total_bytes": 0, "peak_at_s": None, "process_lifetime_max_bytes": {}, "samples": 0,
+            "unreadable_pids": []})
+        total, unreadable = 0, []
+        for pid in owned:
+            try:
+                got = self.probes.footprint(pid)
+            except (PermissionError, OSError):
+                unreadable.append(pid)
+                continue
+            if got is None:
+                continue
+            total += got[0]
+            key = str(pid)
+            mem["process_lifetime_max_bytes"][key] = max(got[1], mem["process_lifetime_max_bytes"].get(key, 0))
+        now = time.monotonic() - start
+        mem["samples"] += 1
+        if total > mem["peak_total_bytes"]:
+            mem["peak_total_bytes"], mem["peak_at_s"] = total, round(now, 2)
+        mem["unreadable_pids"] = sorted(set(mem["unreadable_pids"]) | set(unreadable))
+        if now - getattr(self, "memory_written", -MEMORY_SERIES_EVERY) >= MEMORY_SERIES_EVERY:
+            self.memory_written = now
+            try:
+                with open(os.path.join(self.run_root, "memory.ndjson"), "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"t": round(now, 1), "total_bytes": total, "processes": len(owned)}) + "\n")
+            except OSError:
+                pass
+        cap = mem["cap_gib"]
+        if not cap:
+            return None
+        if total > cap * (1 << 30):
+            return ("memory", EXIT_MEMORY_CAP, "memory cap of {} GiB exceeded: {:.2f} GiB across {} processes".format(
+                cap, total / (1 << 30), len(owned)))
+        if unreadable:
+            return ("memory", EXIT_MEMORY_CAP, "memory cap of {} GiB cannot be enforced: the footprint of pids {} "
+                    "cannot be read".format(cap, sorted(unreadable)))
+        return None
 
     def _is_rig_run(self, pid):
         argv = self.tracker.argv_seen.get(pid) or []
@@ -783,7 +834,7 @@ class Supervisor:
             time.sleep(POLL)
         return False
 
-    def _stop_all(self, why, owned=None):
+    def _stop_all(self, why, owned=None, grace=None):
         """SIGTERM and bootout, the grace, then SIGKILL every second until nothing owned is left, or until a further
         minute has passed: what is left then is the quarantine's (see _conclude), which keeps everything held.
 
@@ -796,7 +847,7 @@ class Supervisor:
                 owned = self.tracker.owned(full=True)
             except OSError:
                 owned = {}
-        grace = self.profile["term_grace_s"]
+        grace = self.profile["term_grace_s"] if grace is None else grace
         rig = [p for p in owned if self._is_rig_run(p)]
         if rig:
             sent = self.tracker.signal_all(signal.SIGTERM, rig)
@@ -828,10 +879,10 @@ class Supervisor:
             if not owned and not labels and not leaders_alive:
                 self.log("nothing owned is left")
                 return
-            if time.monotonic() - term_at >= self.profile["term_grace_s"] + QUARANTINE_AFTER_S:
+            if time.monotonic() - term_at >= grace + QUARANTINE_AFTER_S:
                 self.log("still present, or unknown, after SIGKILL", pids=sorted(owned), launchd=labels)
                 return
-            if time.monotonic() - term_at >= self.profile["term_grace_s"]:
+            if time.monotonic() - term_at >= grace:
                 sent = self.tracker.signal_all(signal.SIGKILL, owned)
                 try:
                     labels = self.tracker.bootout_all()

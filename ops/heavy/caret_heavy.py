@@ -90,6 +90,9 @@ class Profile:
     term_grace_s: float    # SIGTERM to SIGKILL for the recipe's processes on cancellation or timeout
     evidence: str
     wait_flock: tuple = ()
+    # 0: no cap. Otherwise the supervisor stops the job (exit 76) once the summed physical footprint of its processes
+    # goes over this many GiB. Every job's peak is recorded either way (outcome.json "memory").
+    mem_cap_gib: float = 0.0
 
     @property
     def queue_timeout_s(self):
@@ -304,6 +307,28 @@ LAYA_SRC = os.path.join(HOME, ".caret-run/models/laya/src")
 LAYA_DATA = os.path.join(HOME, ".caret-run/evidence/screen/ly1")
 
 
+def _laya_options(parser):
+    # Required, with no default: Laya's peak has never been measured, and the 17:31Z near-miss on 2026-10-07 (0.40 GiB
+    # free, swap 22.19 of 22.28 GB) stopped its first run. Whoever commissions it chooses the cap.
+    parser.add_argument("--mem-cap-gib", type=float, required=True,
+                        help="stop the run once its processes' physical footprint exceeds this many GiB (exit 76)")
+
+
+MAX_MEM_CAP_GIB = 64
+
+
+def capped_profile(recipe, profile, mem_cap_gib):
+    """The profile to plan with: *profile* or the recipe's, with mem_cap_gib when given. Laya needs one."""
+    profile = profile or PROFILES[recipe.profile]
+    if mem_cap_gib is not None:
+        if not 0 < mem_cap_gib <= MAX_MEM_CAP_GIB:
+            raise manifest.ManifestError("--mem-cap-gib must be above 0 and at most {}".format(MAX_MEM_CAP_GIB))
+        profile = dataclasses.replace(profile, mem_cap_gib=float(mem_cap_gib))
+    if recipe.name == "laya" and not profile.mem_cap_gib > 0:
+        raise manifest.ManifestError("laya needs --mem-cap-gib: its peak memory is unmeasured")
+    return profile
+
+
 def _laya_plan(args, worktree, rev, paths):
     inputs = [spec("python", "file", os.path.join(LAYA_PYTHON, "bin/python3.12"), "laya-python/bin/python3.12"),
               spec("python-stdlib", "tree", os.path.join(LAYA_PYTHON, "lib/python3.12"), "laya-python/lib/python3.12"),
@@ -326,7 +351,7 @@ RECIPES = {
     "r2-prepare": Recipe("r2-prepare", "caret-swift", "recipes/r2/prepare.sh", False,
                          _r2_prepare_options, _r2_prepare_plan),
     "r2-vm": Recipe("r2-vm", "caret-vm", "recipes/r2/vm.sh", True, _r2_vm_options, _r2_vm_plan),
-    "laya": Recipe("laya", "caret-laya", "recipes/laya.sh", False, lambda parser: None, _laya_plan),
+    "laya": Recipe("laya", "caret-laya", "recipes/laya.sh", False, _laya_options, _laya_plan),
 }
 
 
@@ -525,6 +550,7 @@ def enqueue(recipe_name, job_id, worktree, rev, recipe_args, paths, env_file=Non
             profile=None, lease_renew_s=300, lease_ttl_min=15, python=PYTHON, test=None):
     """Snapshot, record and enqueue one job. Returns (plan path, digest, queue stdout)."""
     recipe = RECIPES[recipe_name] if isinstance(recipe_name, str) else recipe_name
+    profile = capped_profile(recipe, profile, getattr(recipe_args, "mem_cap_gib", None))
     if not ID_PATTERN.match(job_id):
         raise manifest.ManifestError("job ID must match {}".format(ID_PATTERN.pattern))
     if not SHA_PATTERN.match(rev):
