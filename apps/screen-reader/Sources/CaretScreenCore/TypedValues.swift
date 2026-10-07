@@ -125,8 +125,11 @@ public final class TypedValueDetector: @unchecked Sendable {
     /// Typed values for compacted nodes: an editable node's value, or another node's label and value.
     public func values(for nodes: [Node]) -> [TypedValue] {
         var out: [TypedValue] = []
+        // V4: a pop-up button's option (Roles.popUpMenu) offers a choice; it states no value of the window.
+        let roleOf = Dictionary(nodes.map { ($0.key, $0.role) }, uniquingKeysWith: { first, _ in first })
         for n in nodes {
             if n.states.contains(.secure) { continue }
+            if n.role == "AXMenuItem", let p = n.parent, roleOf[p] == "AXPopUpButton" { continue }
             let texts = n.editable ? [n.value] : [n.label, n.value]
             var seen = Set<DetectedValue>()
             for case let t? in texts {

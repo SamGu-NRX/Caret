@@ -666,7 +666,7 @@ function scopedInputs(w: WindowState, keys: readonly string[]): FormInput[] {
 }
 
 /** V3: a choice code made in deriving a value, and the extra source it read for it (a message's send line), for the verifier. */
-type Chosen = { says: string; also: Provenance | null; via?: "sentLine" };
+type Chosen = { says: string; also: Provenance | null; via?: "sentLine"; /** V4 review: how the value was derived, when the field's part would misstate it. */ how?: DeriveHow };
 /** V4: how a value names a menu's option, as the verifier is told it (controls.ts optionLink). */
 const OPTION_LINK_SAYS: Record<OptionLink, string> = {
   inText: "the option's words are in it",
@@ -1168,20 +1168,28 @@ export async function proposeFill(
   // label: options are candidates, never mints. A derived value that already carries a choice is not linked again, so a
   // pick states at most one choice. A value the instruction spells out for the menu is linked too ("Texas" in "put Texas for
   // state"). Radio groups keep their visible buttons and controlValue's reading of a pick.
+  // V4 review: an option found among other words of a longer text ("inText") is linked only when the text is tied to this
+  // menu: a line labelled with a word of its label or section ("Reference: …, my manager at Ridgeline" for "Reference
+  // relationship"), a memory entry labelled so, or a part or literal derived for this field. Untied, "a friend referred
+  // me" offered Relationship "Friend" and a move-in date's "March" offered Graduation date month (guard adversary). A text
+  // that is the option in other words (sameWords, inOption) names it by itself; a state's postal code is read only for a
+  // menu that asks for a state (fill part "state").
   if (derive) {
     for (const f of fields) {
       const options = f.form?.options ?? null;
       if (f.control !== "select" || options === null) continue;
+      const asked = f.texts.slice(0, 3);
       const list = derived.get(f.id) ?? [];
-      const link = (text: string, describe: string, base: Derived["base"], also: Candidate | null): void => {
-        const l = optionLink(options, text);
-        if (l === null || candidates.some((c) => c.text === l.option) || list.some((x) => x.text === l.option)) return;
-        const chose: Chosen = { says: `Caret took "${text}" to name the option '${l.option}' (${OPTION_LINK_SAYS[l.how]})`, also: null };
+      const link = (text: string, describe: string, base: Derived["base"], also: Candidate | null, tied: boolean): void => {
+        const l = optionLink(options, text, f.part === "state");
+        if (l === null || (l.how === "inText" && !tied) || candidates.some((c) => c.text === l.option) || list.some((x) => x.text === l.option)) return;
+        const chose: Chosen = { says: `Caret took "${text}" to name the option '${l.option}' (${OPTION_LINK_SAYS[l.how]})`, also: null, how: "optionNamed" };
         list.push({ key: `${f.id}:${list.length}`, text: l.option, describe: `"${l.option}" (the option ${describe} names)`, base, also, chose });
       };
-      for (const d of [...list]) if (d.chose === undefined) link(d.text, d.describe, d.base, d.also);
-      for (const c of candidates) link(c.text, describeCandidate(c), { from: "window", c }, null);
-      for (const a of f.about) link(a.value, describeAbout(a), { from: "memory", a }, null);
+      // A derived value with no choice of its own is this field's part, or its literal: tied to it.
+      for (const d of [...list]) if (d.chose === undefined) link(d.text, d.describe, d.base, d.also, true);
+      for (const c of candidates) link(c.text, describeCandidate(c), { from: "window", c }, null, c.context !== null && namesField(c.context, asked));
+      for (const a of f.about) link(a.value, describeAbout(a), { from: "memory", a }, null, namesField(a.label, asked));
       if (list.length > 0) derived.set(f.id, list);
     }
   }
@@ -1592,6 +1600,8 @@ export async function proposeFill(
    * either Portfolio or GitHub.
    */
   const oneOfSeveral = (f: Field, p: Pick): boolean => {
+    // V4 review: a menu's option code linked from a window value meets the rule as that value would.
+    if (p.from === "derived" && f.control === "select" && p.base.from === "window") return oneOfSeveral(f, p.base);
     // A value the user's instruction spells out for this field is their choice among them (B27 review).
     if (p.from !== "window" || p.c.labelled !== true || p.c.context === null || literalOf(f) === p.c.text) return false;
     const kind = textKind(p.c.text);
@@ -2038,7 +2048,7 @@ function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, writte
     // V3: the value as derived, with the choice code made said, and the extra source it read (a send line) as `also`.
     const own = provenanceOf(model, p, part, written, judged, control);
     const d: Extract<Provenance, { kind: "derived" }> = own.kind === "derived" ? own : { kind: "derived", how: control === "date" || control === "time" ? controlHow(control, written, pickSpan(p)) : "optionFromPart", base: own, also: null };
-    return { ...d, also: chose.also ?? d.also, says: chose.says, ...(chose.via === undefined ? {} : { via: chose.via }) };
+    return { ...d, ...(chose.how === undefined ? {} : { how: chose.how }), also: chose.also ?? d.also, says: chose.says, ...(chose.via === undefined ? {} : { via: chose.via }) };
   }
   const cand = (c: Candidate): Provenance => candidateProvenance(model, c, judged(c) ?? "");
   const base = (b: Exclude<Pick, { from: "derived" }>): Provenance =>

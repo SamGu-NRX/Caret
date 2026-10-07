@@ -8,7 +8,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { Snapshot } from "../src/protocol.ts";
+import { Snapshot, type Node, type TypedValue } from "../src/protocol.ts";
+import { ScreenModel } from "../src/model.ts";
 import { formControls, optionLink } from "../src/fill/controls.ts";
 import { mintOf, proposeFill, type FillScope } from "../src/fill/fill.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
@@ -18,7 +19,7 @@ import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { saysOptionsUnseen } from "../src/planner/says.ts";
 import { buildDesk, loadCorpus, normLabel, pageForm, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { STAND_IN } from "./setup/verifier.ts";
-import { jevPickingText } from "./builders.ts";
+import { field, jevPickingText, snap } from "./builders.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = loadCorpus(join(here, "../../fixtures/realfill"));
@@ -66,15 +67,15 @@ describe("optionLink: the one option a source text names without being it", () =
   const ROLES = ["Manager", "Colleague", "Direct report", "Professor", "Other"];
   const COURSES = ["CIS 120 - Computer Literacy", "CIS 140 - Intro to Web Development", "CIS 155 - Python Programming I", "ACC 101 - Bookkeeping Basics"];
   it("links by the option's words in the text, the same words, the text's words in the option, or a state's postal code", () => {
-    const table: [readonly string[], string, ReturnType<typeof optionLink>][] = [
-      [ROLES, "Dr. Simone Achebe, my manager at Ridgeline", { option: "Manager", how: "inText" }],
-      [COURSES, "Intro to Web Development (CIS 140)", { option: "CIS 140 - Intro to Web Development", how: "sameWords" }],
-      [COURSES, "Intro to Web Development", { option: "CIS 140 - Intro to Web Development", how: "inOption" }],
-      [STATES, "Texas", { option: "TX", how: "stateCode" }],
-      [["Alabama", "California", "North Carolina"], "CA", { option: "California", how: "stateCode" }],
-      [["Ascent", "Outback", "WRX"], "60k service for your Outback", { option: "Outback", how: "inText" }],
+    const table: [readonly string[], string, boolean, ReturnType<typeof optionLink>][] = [
+      [ROLES, "Dr. Simone Achebe, my manager at Ridgeline", false, { option: "Manager", how: "inText" }],
+      [COURSES, "Intro to Web Development (CIS 140)", false, { option: "CIS 140 - Intro to Web Development", how: "sameWords" }],
+      [COURSES, "Intro to Web Development", false, { option: "CIS 140 - Intro to Web Development", how: "inOption" }],
+      [STATES, "Texas", true, { option: "TX", how: "stateCode" }],
+      [["Alabama", "California", "North Carolina"], "CA", true, { option: "California", how: "stateCode" }],
+      [["Ascent", "Outback", "WRX"], "60k service for your Outback", false, { option: "Outback", how: "inText" }],
     ];
-    expect(table.map(([o, t]) => [o, t, optionLink(o, t)])).toEqual(table);
+    expect(table.map(([o, t, us]) => [o, t, us, optionLink(o, t, us)])).toEqual(table);
   });
 
   it("links nothing for an equal option, two options, a negation or alternative, a prompt or fallback, a bare number, or a word that only looks like a code", () => {
@@ -98,8 +99,14 @@ describe("optionLink: the one option a source text names without being it", () =
       [["Alabama", "California"], "ca"],
       // One word inside an option says too little.
       [["Spouse or partner", "Parent", "Child"], "spouse"],
+      // V4 review: the same numbers in another order are another date.
+      [["2026-01-02", "2026-03-04"], "2026-02-01"],
     ];
-    expect(table.map(([o, t]) => [t, optionLink(o, t)])).toEqual(table.map(([, t]) => [t, null]));
+    expect(table.map(([o, t]) => [t, optionLink(o, t, true)])).toEqual(table.map(([, t]) => [t, null]));
+  });
+
+  it("reads a state's postal code only for a menu that asks for a US state (V4 review: a country menu's GA is Gabon)", () => {
+    expect([optionLink(["US", "GE", "GA"], "Georgia"), optionLink(["US", "GE", "GA"], "Georgia", true)]).toEqual([null, { option: "GA", how: "stateCode" }]);
   });
 });
 
@@ -144,6 +151,8 @@ describe("a menu's option named by a source, through fill (G3's examples)", () =
     expect(state?.handoff?.value).toBe("TX");
     const m = mintOf(state as NonNullable<typeof state>);
     expect(m?.verdict.by).toBe("verifier");
+    // V4 review: said as the option code named, not as "a part of the address", to the verifier.
+    expect(m?.provenance).toMatchObject({ kind: "derived", how: "optionNamed", base: { kind: "window" } });
     expect((m?.provenance as { says?: string }).says).toBe(`Caret took "Texas" to name the option 'TX' (a US state's name and its postal code)`);
   });
 
@@ -178,6 +187,51 @@ describe("a menu's option named by a source, through fill (G3's examples)", () =
     const state = at("State");
     expect([state?.handoff, state?.withheld]).toEqual([null, "notExact"]);
     expect(mintOf(state as NonNullable<typeof state>)).toBeUndefined();
+  });
+});
+
+describe("V4 review: what a linked option must not do", () => {
+  const F = (k: string): string => `com.google.Chrome/standard/${k}`;
+  const web: Node = { key: F("webarea"), parent: null, role: "AXWebArea", label: "Form" };
+  const menu = (key: string, label: string, options: string[], y: number): Node[] => [
+    { key: F(key), parent: web.key, role: "AXPopUpButton", label, editable: true, frame: [100, y, 200, 24] },
+    ...options.map((o, i): Node => ({ key: F(`${key}/item${i}`), parent: F(key), role: "AXMenuItem", label: o })),
+  ];
+  const desk = (note: string[], form: Node[], values: TypedValue[] = []): ScreenModel => {
+    const m = new ScreenModel();
+    m.apply(snap([field("te/note", note.join("\n"), { role: "AXTextArea" })], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true }));
+    m.apply(snap(form, { at: 2000, windowId: "5150-7", title: "Intake", app: { pid: 5150, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, values }));
+    return m;
+  };
+  const first: Node = { key: F("first"), parent: web.key, role: "AXTextField", label: "First name", editable: true, frame: [100, 20, 200, 24] };
+  const offeredFor = async (m: ScreenModel, label: string, want: string) => {
+    const offered: string[] = [];
+    const pick = jevPickingText((_id, ins) => (ins.includes(`Label: '${label}'`) ? want : null));
+    const p = await proposeFill(m, async (req) => {
+      for (const q of Object.values(req.questions)) if (String(q.instructions).includes(`Label: '${label}'`)) for (const d of Object.values(q.criteria)) if (typeof d === "string") offered.push(d);
+      return pick(req);
+    }, "5150-7", F("first"), 3000);
+    return { offered, field: p.fields.find((f) => f.key.endsWith(`/${label.toLowerCase().replace(/\W+/gu, "")}`) || f.descriptor.includes(`'${label}'`)) };
+  };
+
+  it("never treats a pop-up's option as a value the window states", () => {
+    const form = [web, first, ...menu("when", "Delivery", ["Oct 17, 2026", "Oct 18, 2026"], 60)];
+    const m = desk([], form, [{ kind: "date", text: "Oct 17, 2026", nodeKey: F("when/item0") }, { kind: "date", text: "Oct 18, 2026", nodeKey: F("when/item1") }]);
+    expect(m.windows.get("5150-7")?.values).toEqual([]);
+  });
+
+  it("offers no option for a word in an untied line ('a friend referred me' for Relationship)", async () => {
+    const m = desk(["A friend referred me to the clinic last spring."], [web, first, ...menu("rel", "Relationship", ["Spouse or partner", "Parent", "Friend", "Other"], 60)]);
+    const { offered, field: rel } = await offeredFor(m, "Relationship", "Friend");
+    expect(offered.filter((d) => d.startsWith('"Friend"'))).toEqual([]);
+    expect(rel?.handoff ?? null).toBeNull();
+  });
+
+  it("withholds a linked option of one of several labelled emails whose label names another purpose", async () => {
+    const note = ["Personal email: jordan.reyes@example.org", "Work email: j.reyes@brightline.example.com"];
+    const m = desk(note, [web, first, ...menu("we", "Work email", ["jordan.reyes@example.org (on file)", "j.reyes@brightline.example.com (on file)"], 60)]);
+    const { field: we } = await offeredFor(m, "Work email", "jordan.reyes@example.org (on file)");
+    expect([we?.handoff ?? null, we?.withheld]).toEqual([null, "ambiguous"]);
   });
 });
 

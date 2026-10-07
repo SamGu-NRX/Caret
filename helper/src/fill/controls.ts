@@ -179,16 +179,17 @@ export type OptionLink = "inText" | "sameWords" | "inOption" | "stateCode";
  *   the hand-off's rule (optionInText). Not a number option: a bare number inside other words counts something else as
  *   easily ("2 semesters" for "Number of occupants");
  * - "sameWords": the same words in another order or punctuation ("Intro to Web Development (CIS 140)" for "CIS 140 -
- *   Intro to Web Development");
+ *   Intro to Web Development"), its numbers in the same order: "2026-02-01" is not "2026-01-02" (V4 review);
  * - "inOption": all of a text of two or more words, in order, inside the option ("Intro to Web Development");
- * - "stateCode": a US state by its name where the menu lists postal codes, or the reverse ("Texas" for "TX"). A code is
- *   read only as written, in capitals, so "in" and "or" are words.
+ * - "stateCode": a US state by its name where the menu lists postal codes, or the reverse ("Texas" for "TX"), only for a
+ *   menu the caller knows asks for a US state (`usState`): a country menu's "GA" is Gabon (V4 review). A code is read only
+ *   as written, in capitals, so "in" and "or" are words.
  * Null when an option equals the text (the text is that option: matchOption), when the text names no option or two or
  * more (by one rule or across rules), when it negates, excludes or leaves the choice open (leavesChoiceOpen), and for a
  * prompt ("Select...") or a fallback ("Other"). A link is code's reading of the text, so a value picked through one goes
  * to the verifier with the link said, never minted as the option's own label (fill.ts).
  */
-export function optionLink(options: readonly string[], text: string): { option: string; how: OptionLink } | null {
+export function optionLink(options: readonly string[], text: string, usState = false): { option: string; how: OptionLink } | null {
   const real = options.filter((o) => !PROMPT.test(o.trim()) && !FALLBACK.test(o.trim()));
   const said = wordsOf(text);
   if (said.length === 0 || real.length === 0 || matchOption(options, text) !== null) return null;
@@ -206,11 +207,12 @@ export function optionLink(options: readonly string[], text: string): { option: 
     if (/^[A-Z]{1,3}$/u.test(o.trim())) return asWritten.has(o.trim());
     return w.length > 0 && !(w.length === 1 && /^\d+$/u.test(w[0] as string)) && line.includes(` ${w.join(" ")} `);
   });
-  const sorted = (ws: readonly string[]): string => [...ws].sort().join(" ");
-  const sameWords = real.filter((o) => sorted(wordsOf(o)) === sorted(said));
+  // Words in any order, numbers in theirs.
+  const shape = (ws: readonly string[]): string => `${ws.filter((w) => !/^\d+$/u.test(w)).sort().join(" ")}|${ws.filter((w) => /^\d+$/u.test(w)).join(" ")}`;
+  const sameWords = real.filter((o) => shape(wordsOf(o)) === shape(said));
   const inOption = said.length < 2 ? [] : real.filter((o) => ` ${wordsOf(o).join(" ")} `.includes(line));
-  const asName = US_STATE_CODES.get(norm(text).replace(/\.$/u, ""));
-  const asCode = /^[A-Z]{2}$/u.test(text.trim()) ? US_STATE_NAMES.get(text.trim()) : undefined;
+  const asName = usState ? US_STATE_CODES.get(norm(text).replace(/\.$/u, "")) : undefined;
+  const asCode = usState && /^[A-Z]{2}$/u.test(text.trim()) ? US_STATE_NAMES.get(text.trim()) : undefined;
   const stateCode = asName !== undefined ? real.filter((o) => o.trim() === asName) : asCode !== undefined ? real.filter((o) => norm(o) === asCode) : [];
   const one = note(inText, "inText") && note(sameWords, "sameWords") && note(inOption, "inOption") && note(stateCode, "stateCode");
   if (!one || found.size !== 1) return null;
