@@ -49,6 +49,40 @@ describe("a whole-form goal carries across the user's Next (P3)", () => {
     expect(r.asked.slice(before).some((q) => q.purpose === "ask.scope")).toBe(false);
   });
 
+  // I2 (final review reproduction): the page navigates to another origin during the goal's final walk. The goal must not
+  // arm a carry that pairs the old document with the new origin, which the next snapshot would carry and settle.
+  it("arms no carry when the page navigated to another origin during the goal's final walk", async () => {
+    const r = await rig();
+    const s = (await r.ask("fill out this form from my note")) as Segment;
+    const page = r.page as unknown as { snapshot: (id: string) => unknown };
+    const walked = page.snapshot.bind(r.page);
+    let moved = false;
+    page.snapshot = (id: string) => {
+      // The goal's final walk: the second walk after the segment's last write (the first is that write's own read-back).
+      const verbs = r.page.verbs.map((v) => v.kind);
+      const writes = s.steps.filter((x) => x.kind === "write").length;
+      let seen = 0;
+      const last = verbs.findIndex((k) => k !== "pageWalk" && ++seen === writes);
+      const wrote = last >= 0 && verbs.slice(last + 1).filter((k) => k === "pageWalk").length >= 2;
+      if (wrote && !moved) {
+        moved = true;
+        r.page.origin = "https://elsewhere.example";
+        r.page.goTo(page2, "Somewhere else", "/landing");
+      }
+      return walked(id);
+    };
+    const before = r.asked.length;
+    await r.accept(s);
+    await settle(r);
+    expect(moved).toBe(true);
+    // Another snapshot of the new page, as the reader sends: nothing may carry to it now.
+    expect((await r.host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");
+    await settle(r);
+    expect(segments(r).some((x) => x.reason === "nextPage")).toBe(false);
+    expect(r.asked.slice(before).some((q) => q.purpose === "ask.scope")).toBe(false);
+    expect(goalMessages(r).some((m) => m.event === "stopped" && /page changed/u.test((m as Stopped).says))).toBe(true);
+  });
+
   it("does not carry a reload of a page whose goal offered no hand-off, and settles nothing", async () => {
     // A form with no forward control: its goal ends with "The rest is yours", not "You press …", so nothing waits on it.
     const r = await rig({ controls: () => mixedControls().filter((x) => x.kind !== "button") });

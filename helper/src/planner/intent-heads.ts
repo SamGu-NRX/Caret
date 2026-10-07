@@ -302,9 +302,12 @@ function readHeadsIntent(snap: IntentSnapshot, heads: JevResult, scope: readonly
   const chosen = verdicts.filter((x) => x.v === "asks").map((x) => x.f);
   const unclear = verdicts.filter((x) => x.v === "unclear").map((x) => x.f);
   let offered: IntentField[] = [];
+  // A field either wording answered "asks" without the pair settling it (below the cutoff, or in one wording only): the
+  // user may pick it, so it is offered whenever the fields are asked about; only a pick puts it in the scope.
+  const pickable = scope === null ? [] : snap.fields.filter((f) => !chosen.includes(f) && scope.some((r) => r.answers[scopeId(f.ref)]?.choice === "asks"));
   if (unclear.length > 0) {
     open.push("fields");
-    offered = inOrder(snap, [...chosen, ...unclear]);
+    offered = inOrder(snap, [...chosen, ...unclear, ...pickable]);
   } else if (chosen.length === 0) {
     // Nothing settled: offer any field either wording said the request asks for, below the cutoff or not agreed.
     offered = scope === null ? [] : snap.fields.filter((f) => scope.some((r) => r.answers[scopeId(f.ref)]?.choice === "asks"));

@@ -343,3 +343,27 @@ describe("final rulings", () => {
     expect(origin.origin.kind === "ask" && [...origin.origin.scope.picked]).toEqual(["sf/email"]);
   });
 });
+
+describe("follow-up: a below-cutoff field is offered beside an unclear one", () => {
+  it("offers Email (\"asks\" at 0.3) beside Name (\"unclear\"), and a pick of Email puts it in the scope", async () => {
+    const ask: AskJev = async (req) => {
+      const r = await jev("some", [])(req);
+      if (req.purpose === "ask.scope")
+        for (const [id, q] of Object.entries(req.questions)) {
+          const ins = String(q.instructions);
+          if (/field 'Name'/u.test(ins)) r.answers[id] = { choice: "unclear", confidence: 0.95 };
+          if (/field 'Email'/u.test(ins)) r.answers[id] = { choice: "asks", confidence: 0.3 };
+        }
+      return r;
+    };
+    const e = await planAsk("my details", desk(), { values: () => MEMORY }, ABOUT, { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "nu", windowId: WIN, now: 2000 }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(AskAsks);
+    const q = (e as AskAsks).question;
+    expect(q.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Name", "Email"]);
+    const email = q.options.find((c) => c.option.kind === "field" && c.option.label === "Email");
+    const d = await planAsk("my details", desk(), { values: () => MEMORY }, ABOUT, { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "nu", windowId: WIN, now: 3000, resume: { ...q.resume, fixed: { ...q.resume.fixed, ...(email?.fixes ?? {}) } } });
+    const c = (d as { checked: { origin: Origin; writes: { node: { key: string } }[] } }).checked;
+    expect(c.writes.map((w) => w.node.key)).toEqual(["sf/email"]);
+    expect(c.origin.kind === "ask" && [...c.origin.scope.picked]).toEqual(["sf/email"]);
+  });
+});

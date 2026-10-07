@@ -805,8 +805,16 @@ export class GoalRuns {
     // I2 ruling: a carry is the goal's own state, not an event: the goal offered its "You press Next" hand-off (a forward
     // control of the form it filled) and waits on it, on a page whose origin it knows.
     const handedOff = run.plan.segments.at(-1)?.steps.some((x) => x.kind === "handoff" && x.row === true && readsForward(x.target.label)) === true;
+    if (!handedOff) return;
+    // I2 ruling: armed only while the page still shows the document the goal planned on. A page that navigated during
+    // the goal's final walk (another origin included) is not one the hand-off waits on: the goal stops, says the page
+    // changed, and arms nothing, so no scope is settled there.
+    if (this.deps.pageDocument?.(page.windowId) !== doc) {
+      this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "stopped", segment: null, step: null, reason: "reload", says: "The page changed before Caret could wait on its Next, so Caret stopped here. Ask again for this page.", freshPlan: null });
+      return;
+    }
     const origin = this.deps.pageOrigin?.(page.windowId) ?? null;
-    if (!handedOff || origin === null) return;
+    if (origin === null) return;
     const qualify = (windowId: string | null, key: string): string => (windowId === page.windowId && !key.startsWith("doc(") ? `doc(${doc}):${key}` : key);
     const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")].map((r) => ({ ...r, target: { ...r.target, key: qualify(r.target.windowId, r.target.key) } }));
     const owed = left.map((l): LeftItem => ({ ...l, key: qualify(l.windowId, l.key), why: "dropped", says: l.key.startsWith("doc(") ? l.says : `On an earlier page, ${l.says.charAt(0).toLowerCase()}${l.says.slice(1)}` }));
