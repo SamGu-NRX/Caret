@@ -66,7 +66,7 @@ import { intentSnapshot } from "../../helper/src/planner/intent.ts";
 import { headsIntentMaker } from "../../helper/src/planner/intent-heads.ts";
 import { jevGate } from "../../helper/src/goals/gates.ts";
 import { readyOnLoad } from "../../helper/src/offers/ready-on-load.ts";
-import { SnippetLedger } from "../../helper/src/privacy.ts";
+import { Disclosure } from "../../helper/src/privacy/disclosure.ts";
 import { loadAsks, loadCorpus, normLabel, type CorpusForm } from "../../helper/scripts/realfill-corpus.ts";
 import { CFT_BUILD, Cdp, HOST_NAME, LAUNCHD_PREFIX, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
 import { NetworkSink, type Oracle, type Scored } from "./oracle.ts";
@@ -774,7 +774,7 @@ async function main(): Promise<number> {
     const plan = helper.goals.planOf(reply.goalId);
     const gated = (plan?.segments ?? []).flatMap((s) => s.steps).filter((x) => x.gate === "fill" && x.value !== null);
     const v0 = calls.length;
-    const dropped = gated.length === 0 ? new Map<string, string>() : await jevGate(plan?.instruction ?? "", gated.map((x) => ({ ref: x.ref, target: x.target, written: x.writes ?? x.value?.text ?? "", value: x.value as NonNullable<typeof x.value> })), askJev, new SnippetLedger(helper.model.windows.values()));
+    const dropped = gated.length === 0 ? new Map<string, string>() : await jevGate(plan?.instruction ?? "", gated.map((x) => ({ ref: x.ref, target: x.target, written: x.writes ?? x.value?.text ?? "", value: x.value as NonNullable<typeof x.value> })), askJev, new Disclosure(helper.model.windows.values()));
     const disagreements = gated.flatMap((x) => {
       const verdict = dropped.has(x.ref) ? ("dropped" as const) : ("kept" as const);
       const node = w.nodes.get(x.target.key);
