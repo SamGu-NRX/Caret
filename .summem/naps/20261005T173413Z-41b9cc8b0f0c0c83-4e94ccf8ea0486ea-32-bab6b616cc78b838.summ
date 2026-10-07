@@ -1,1 +1,0 @@
-G2-P4: never widen restates(); say 'at 3pm'; no default chat route; page plans set WindowSel.page; host page focus only from pageField; recheckFields drops failing fields only; page-link patches writes; window-left skips the browser; tab-left text via TabSource.viewFor.
