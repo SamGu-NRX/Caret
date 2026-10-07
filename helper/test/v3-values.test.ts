@@ -5,8 +5,11 @@
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { mintOf, proposeFill, type FillScope } from "../src/fill/fill.ts";
+import { provenanceStale, setTestVerifier } from "../src/fill/contract.ts";
+import { STAND_IN } from "./setup/verifier.ts";
 import { dateOrderHint, datePart, dateParts, partFits } from "../src/fill/derive.ts";
-import { readClock, readDate, sentInstant, splitMoment } from "../src/fill/when.ts";
+import { datedBySent, readClock, readDate, sentLineFor, splitMoment } from "../src/fill/when.ts";
+import type { ResolveContext } from "../src/values/resolve.ts";
 import { optionNamedBy } from "../src/fill/controls.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import type { Node } from "../src/protocol.ts";
@@ -15,7 +18,7 @@ import { EngineSession } from "../src/engines/session.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot } from "../src/protocol.ts";
 import { field, jevPickingText, snap, value } from "./builders.ts";
 
-const DENVER = { locale: "en-US", timeZone: "America/Denver", referenceInstant: null };
+const DENVER: ResolveContext = { locale: "en-US", timeZone: "America/Denver", referenceInstant: null };
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 describe("a date's parts", () => {
@@ -83,12 +86,18 @@ describe("a date with a time", () => {
     expect(readDate("Friday, October 17 at 8:45am", sent)).toBeNull();
   });
 
-  it("reads when a message was sent from its one header line, in the user's zone", () => {
+  it("finds the send line of the one message a span sits in, and assumes a year from it only when a day either side agrees", () => {
+    const nodes = (lines: string[]) => lines.map((text, i) => ({ key: `n${i}`, text }));
     const mail = ["From: Chris Delgado <cdelgado@example.com>", "To: Jamie Torres", "Date: Thu, Oct 15, 2026, 10:22 AM", "I have Saturday, October 17 at 8:45am open."];
-    expect(sentInstant(mail, DENVER)).toBe("2026-10-15T16:22:00Z");
-    expect(sentInstant(mail.filter((l) => !l.startsWith("From:")), DENVER)).toBeNull();
-    expect(sentInstant([...mail, "Date: Fri, Oct 16, 2026, 9:00 AM"], DENVER)).toBeNull();
-    expect(sentInstant(["From: Chris", "Date: Thu, Oct 15"], DENVER)).toBeNull();
+    const span = "Saturday, October 17 at 8:45am";
+    const sent = sentLineFor(nodes(mail), "n3", span);
+    expect(sent).toMatchObject({ nodeKey: "n2", day: "2026-10-15" });
+    expect(sentLineFor(nodes(mail.filter((l) => !l.startsWith("From:"))), "n2", span)).toBeNull();
+    expect(sentLineFor(nodes([...mail.slice(0, 3), "On Oct 1, Chris wrote:", mail[3] as string]), "n4", span)).toBeNull();
+    expect(sentLineFor(nodes([...mail, "Date: Fri, Oct 16, 2026, 9:00 AM"]), "n3", span)).toBeNull();
+    expect(datedBySent(span, sent!, DENVER)).toMatchObject({ value: "2026-10-17", says: expect.stringContaining("the year 2026 is assumed") });
+    expect(datedBySent("tomorrow at 9am", sent!, DENVER)).toBeNull();
+    expect(datedBySent("October 17, 2027", sent!, DENVER)).toBeNull();
   });
 });
 
@@ -99,7 +108,7 @@ describe("an option named by a word", () => {
       [SECTIONS, "sign me up for the saturday section", { option: "Sat 9:00 AM-12:30 PM", word: "saturday" }],
       [SECTIONS, "Saturday mornings - weeknights I'm at work", { option: "Sat 9:00 AM-12:30 PM", word: "Saturday" }],
       [["Saturday 9–11am", "Sunday 1–3pm"], "saturday", { option: "Saturday 9–11am", word: "saturday" }],
-      [SECTIONS, "tuesday or saturday works", "several"],
+      [SECTIONS, "tuesday or saturday works", null],
       [["Saturday 9–11am", "Saturday 1–3pm", "Sunday 1–3pm"], "saturday", "several"],
       // A lowercase "sat" is the verb, an all-caps "SAT" the test; a word in every option says nothing.
       [SECTIONS, "I sat the placement test", null],
@@ -213,10 +222,13 @@ describe("a slot offered as a date with a time (B24 ask-19)", () => {
     return { date: at("date:preferred date"), time: at("time:preferred time") };
   };
 
-  it("writes the date, its year from when the message was sent, and the time, each minted as a derived part", async () => {
+  it("writes the date, its year from when the message was sent, and the time, each checked by the verifier with that choice said", async () => {
     const { date, time } = await run(MAIL);
     expect([date.handoff?.value, date.handoff?.writes, time.handoff?.value, time.handoff?.writes]).toEqual(["2026-10-17", true, "08:45", true]);
-    for (const f of [date, time]) expect(mintOf(f)).toMatchObject({ verdict: { by: "exempt", rule: "resolverFormat" }, provenance: { kind: "derived", how: "datePart", base: { kind: "window", span: "Saturday, October 17 at 8:45am" } } });
+    for (const f of [date, time]) {
+      expect(mintOf(f)).toMatchObject({ verdict: { by: "verifier" }, provenance: { kind: "derived", how: "datePart", base: { kind: "window", span: "Saturday, October 17 at 8:45am" }, also: { kind: "window", span: "Thu, Oct 15, 2026, 10:22 AM" } } });
+      expect((mintOf(f)?.provenance as { says?: string }).says).toContain("the year 2026 is assumed");
+    }
   });
 
   it("withholds the date when nothing on screen says the year, and a time with no am or pm", async () => {
@@ -242,12 +254,12 @@ describe("a section named by a word (B24 ask-17)", () => {
     return { field: p.fields.find((f) => f.key === F("sec")), offered: offered.filter((o) => o.startsWith("Section <- ")) };
   };
 
-  it("offers the Saturday section the request names, and hands off the one a line Jev picks names", async () => {
+  it("offers the Saturday section the request names, and never maps a line Jev picks to an option (review A4)", async () => {
     const asked = await section(["Lakeside CC signup", "Class: Intro to Web Development"], "sign me up for the saturday section");
     expect(asked.field?.handoff?.value).toBe("Sat 9:00 AM-12:30 PM");
     expect(asked.offered.some((o) => o.includes("the word 'saturday' in the user's instruction"))).toBe(true);
     const noted = await section(["Lakeside CC signup", "Saturday mornings - weeknights I'm at work"], null, "Saturday mornings - weeknights I'm at work");
-    expect([noted.field?.handoff?.value, noted.field?.handoff?.writes ?? false]).toEqual(["Sat 9:00 AM-12:30 PM", false]);
+    expect(noted.field?.handoff ?? null).toBeNull();
     // No line is searched for such words: the option is offered from the request alone.
     expect(noted.offered.filter((o) => o.includes("the option the word"))).toEqual([]);
   });
@@ -267,5 +279,153 @@ describe("a section named by a word (B24 ask-17)", () => {
     const two = await section(["Lakeside CC signup", "Class: Intro to Web Development"], "put me in the tuesday or saturday section");
     expect(two.field?.handoff ?? null).toBeNull();
     expect(two.offered.filter((o) => o.includes("the option the word"))).toEqual([]);
+  });
+});
+
+// ---- review round 1 (theo-sol-auditor on 1052cc3): each finding's input, as a test that failed on that head ----------
+
+describe("review round 1: code that chose a value", () => {
+  const SECTIONS = ["Mon/Wed 6:00-8:30 PM", "Tue/Thu 9:00-11:30 AM", "Sat 9:00 AM-12:30 PM"];
+  const sectionForm = (): Node[] => [
+    web,
+    { key: F("name"), parent: web.key, role: "AXTextField", label: "Full name", editable: true, frame: [100, 20, 200, 24] },
+    { key: F("sec"), parent: web.key, role: "AXGroup", subrole: "AXFieldset", label: "Section" },
+    ...SECTIONS.map((o, i): Node => ({ key: F(`sec/r${i}`), parent: F("sec"), role: "AXRadioButton", label: o, frame: [100, 60 + 30 * i, 200, 20] })),
+  ];
+  const sectionScope = (instruction: string): FillScope => ({ fields: [F("sec")], windows: null, memory: false, instruction, person: null, literals: new Map() });
+  const sectionOf = async (note: string[], instruction: string, picks = "Sat 9:00 AM-12:30 PM") => {
+    const p = await proposeFill(desk(note, sectionForm()), jevPickingText((_id, ins) => (ins.includes("'Section'") ? picks : null)), "5150-7", F("name"), 3000, { scope: sectionScope(instruction) });
+    return p.fields.find((f) => f.key === F("sec"));
+  };
+
+  it("A1: offers no option an excluded or conditional word names", async () => {
+    for (const ins of ["Choose any section except Saturday", "Choose Saturday section only if it is online", "sign me up for the saturday section unless it is full"]) {
+      expect([ins, (await sectionOf(["Class: Web development"], ins))?.handoff ?? null]).toEqual([ins, null]);
+    }
+  });
+
+  it("A2: a weekday a compound label also holds competes with the one that opens a label", async () => {
+    expect(optionNamedBy(SECTIONS, "Thursday or Saturday works for the section")).toBeNull();
+    expect(optionNamedBy(["Sat 9:00 AM-12:30 PM", "Thu/Sat 6:00-8:00 PM"], "the saturday one")).toBe("several");
+    expect((await sectionOf(["Class: Web development"], "Thursday or Saturday works for the section"))?.handoff ?? null).toBeNull();
+  });
+
+  it("A3: a request names a field only by a word that means that field, not 'this' or 'application'", async () => {
+    const hear: Node[] = [
+      web,
+      { key: F("name"), parent: web.key, role: "AXTextField", label: "Full name", editable: true, frame: [100, 20, 200, 24] },
+      ...menu("hear", "How did you hear about this role?", ["Job board", "Employee referral"], web.key, 60),
+    ];
+    const { jev, offered } = recording((ins) => (ins.includes("hear about") ? "Job board" : null));
+    const p = await proposeFill(desk(["Applicant: Riley Okafor"], hear, "Notes.txt"), jev, "5150-7", F("name"), 3000, { scope: { ...sectionScope("fill out this job application"), fields: [F("name"), F("hear")] } });
+    expect(p.fields.find((f) => f.key === F("hear"))?.handoff ?? null).toBeNull();
+    expect(offered.filter((o) => o.includes("the option"))).toEqual([]);
+  });
+
+  it("A4: a line Jev picks is never turned into an option by a word of it", async () => {
+    expect((await sectionOf(["Days I cannot attend: Saturday mornings"], "fill the section", "Saturday mornings"))?.handoff ?? null).toBeNull();
+  });
+
+  it("A5: a format hint that is negated, or names both orders, orders nothing", () => {
+    expect(dateOrderHint("DOB (DD/MM/YYYY, not MM/DD/YYYY)")).toBeNull();
+    expect(dateOrderHint("DOB (DD/MM/YYYY or MM/DD/YYYY)")).toBeNull();
+    expect(dateOrderHint("DOB (DD/MM/YYYY)")).toBe("dm");
+  });
+
+  it("B9: a dotted or slashed date is read whole only in the order evidence gives", () => {
+    expect(readDate("04.12.1990", DENVER)).toBeNull();
+    expect(readDate("04/12/1990", { ...DENVER, sourceLocale: "en-US" })).toBeNull();
+    expect(readDate("04.12.1990", DENVER, "md")?.value).toBe("1990-04-12");
+    expect(readDate("22.04.1990", DENVER)?.value).toBe("1990-04-22");
+    expect(readDate("04.22.1990", DENVER, "dm")).toBeNull();
+  });
+
+  it("a month menu's option settled by a format hint goes to the verifier, which reads how it was chosen", async () => {
+    const asked: string[] = [];
+    setTestVerifier(async (req) => {
+      for (const q of Object.values(req.questions)) asked.push(String(q.instructions));
+      return STAND_IN(req);
+    });
+    try {
+      const form: Node[] = [
+        web,
+        { key: F("first"), parent: web.key, role: "AXTextField", label: "First name", editable: true, frame: [100, 20, 200, 24] },
+        { key: F("dob"), parent: web.key, role: "AXGroup", subrole: "AXFieldset", label: "Date of birth" },
+        ...menu("dobm", "Month", MONTHS, F("dob"), 60),
+      ];
+      const p = await proposeFill(desk(["DOB (MM/DD/YYYY): 04/12/1990"], form), jevPickingText((_id, ins) => (ins.includes("'Month'") ? "April" : null)), "5150-7", F("first"), 3000);
+      const month = p.fields.find((f) => f.key === F("dobm")) as (typeof p.fields)[number];
+      expect(month.handoff?.value).toBe("April");
+      expect(asked.some((q) => q.includes("April") && /month first/u.test(q))).toBe(true);
+    } finally {
+      setTestVerifier(STAND_IN);
+    }
+  });
+});
+
+describe("review round 1: a year read from when a message was sent", () => {
+  const ORIGIN = "http://127.0.0.1:4310";
+  const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+  const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+  const control = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `form[svc]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#svc", rect: [0, 0, 100, 20], value: "" });
+  const WIN = "page:eng1:7";
+  /** A mail as separate header and body nodes; the reader types `span` in the body as a date. */
+  const scene = (header: string[], body: string[], span: string, label = "Preferred date"): ScreenModel => {
+    const m = new ScreenModel();
+    const nodes: Node[] = [
+      ...header.map((h, i): Node => ({ key: `mail/h${i}`, parent: null, role: "AXStaticText", value: h })),
+      field("mail/body", body.join("\n"), { role: "AXTextArea" }),
+    ];
+    m.apply(snap(nodes, { at: 900, windowId: "mail", title: "Appointment", app: { pid: 7002, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true, values: [value("date", span, "mail/body")] }));
+    m.apply(toWindowSnapshot({ type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Book", frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: ORIGIN, path: "/b", navGen: 1, title: "Book", headings: [], iframes: [], excluded: {}, truncated: false, controls: [control("e1", "text", "Mileage"), control("e2", "date", label)] }], missing: [], focused: { frameId: 0, id: "e1", selection: [0, 0] } }, session, 1));
+    return m;
+  };
+  const dateOf = async (m: ScreenModel, span: string, field = "Preferred date", resolve = DENVER) => {
+    const p = await proposeFill(m, jevPickingText((_id, ins) => (ins.includes(`'${field}'`) ? span : null)), WIN, "f0/form[svc]/text:mileage~0", Date.UTC(2026, 9, 18, 18), { resolve });
+    return p.fields.find((f) => f.key.includes(`date:${field.toLowerCase()}`)) as (typeof p.fields)[number];
+  };
+  const SPAN = "October 17 at 8:45am";
+
+  it("A6: the send line is part of the value's provenance, so a changed send line stops the write", async () => {
+    const m = scene(["From: Chris", "Sent: October 15, 2026, 10:22 AM"], [`Appointment: ${SPAN}`], SPAN);
+    const f = await dateOf(m, SPAN);
+    expect(f.handoff?.value).toBe("2026-10-17");
+    const mint = mintOf(f);
+    expect(mint?.verdict.by).toBe("verifier");
+    expect(provenanceStale(m, mint!.provenance)).toBeNull();
+    m.apply(snap([{ key: "mail/h0", parent: null, role: "AXStaticText", value: "From: Chris" }, { key: "mail/h1", parent: null, role: "AXStaticText", value: "Sent: October 15, 2027, 10:22 AM" }, field("mail/body", `Appointment: ${SPAN}`, { role: "AXTextArea" })], { at: 1100, windowId: "mail", title: "Appointment", app: { pid: 7002, bundleId: "com.apple.TextEdit", name: "TextEdit" }, values: [value("date", SPAN, "mail/body")] }));
+    expect(provenanceStale(m, mint!.provenance)).not.toBeNull();
+  });
+
+  it("A7: no year from a send line the span cannot be shown to sit under", async () => {
+    const m = scene(["From: Chris", "Sent: October 15, 2026, 10:22 AM"], ["Original message from 2025", `Appointment: ${SPAN}`], SPAN);
+    expect((await dateOf(m, SPAN)).handoff).toBeNull();
+  });
+
+  it("A8: no year when the source's zone could move the send day across it", async () => {
+    const span = "December 31 at 11:45pm";
+    const m = scene(["From: Chris", "Sent: December 31, 2026, 11:30 PM"], [`Appointment: ${span}`], span);
+    expect((await dateOf(m, span, "Preferred date", { ...DENVER, sourceTimeZone: "Asia/Tokyo" })).handoff).toBeNull();
+    expect((await dateOf(scene(["From: Chris", "Sent: October 15, 2026, 10:22 AM"], [`Appointment: ${SPAN}`], SPAN), SPAN, "Preferred date", { ...DENVER, sourceTimeZone: null })).handoff).toBeNull();
+  });
+
+  it("B10: the verifier is told the year was assumed, and its refusal withholds the date", async () => {
+    const asked: string[] = [];
+    setTestVerifier(async (req) => {
+      for (const q of Object.values(req.questions)) asked.push(String(q.instructions));
+      return { model: "verify-other", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "other", confidence: 0.95 }])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
+    });
+    try {
+      // Sent three days after October 17, so a day's doubt about the zone gives the same assumed year, 2027.
+      const m = scene(["From: Chris", "Sent: October 20, 2026, 10:22 AM"], [`Service completed: ${SPAN}`], SPAN, "Last service date");
+      const f = await dateOf(m, SPAN, "Last service date");
+      expect([f.handoff, f.withheld]).toEqual([null, "notExact"]);
+      expect(asked.some((q) => q.includes("2027") && /year/u.test(q) && /sent/u.test(q))).toBe(true);
+      // The reviewer's own input, sent the day after: a day's doubt about the zone gives 2026 or 2027, so no year at all.
+      const next = await dateOf(scene(["From: Chris", "Sent: October 18, 2026, 10:22 AM"], [`Service completed: ${SPAN}`], SPAN, "Last service date"), SPAN, "Last service date");
+      expect([next.handoff, next.withheld]).toEqual([null, "ambiguous"]);
+    } finally {
+      setTestVerifier(STAND_IN);
+    }
   });
 });

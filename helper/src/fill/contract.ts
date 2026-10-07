@@ -134,7 +134,17 @@ export type Provenance =
   | { kind: "memory"; id: string; label: string; part: FillMemory["part"] | null; whose: "user" | "other" | null }
   | { kind: "instruction"; span: string }
   | { kind: "answer"; id: string; question: string }
-  | { kind: "derived"; how: DeriveHow; base: Provenance; also: Provenance | null }
+  | {
+      kind: "derived";
+      how: DeriveHow;
+      base: Provenance;
+      also: Provenance | null;
+      /**
+       * V3: a choice code made in deriving the value, said plainly for the verifier ("the year 2026 is assumed: …", "read
+       * month first, as …"). Such a value is never minted under an exemption: the verifier judges it with this sentence.
+       */
+      says?: string;
+    }
   | { kind: "transfer"; srcWindowId: string; srcKey: string; rounds: number; reshaped: "memory" | null; /** The source element's whole value when read. */ value?: string };
 
 /** G2's slot. The contract never computes it; it only reads it into the verifier's description. */
@@ -370,11 +380,23 @@ function inputKindRefusal(kind: InputKind, v: string): string | null {
  * number field), the part of a name or an address the field takes (derive.ts partFits), and maxlength. Nothing here
  * reads commas, "at", capitals or verbs: those are W1's text-shape families (textShapeRefusal).
  */
+/** V3: the value a date-like input holds, in its own format (controls.ts DateFormat), as the resolver writes it. */
+const WIRE_FORMAT: Partial<Record<NonNullable<InputKind>, RegExp>> = {
+  date: /^\d{4}-\d{2}-\d{2}$/u,
+  time: /^\d{2}:\d{2}(?::\d{2})?$/u,
+  datetime: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/u,
+  month: /^\d{4}-\d{2}$/u,
+};
+
 export function shapeRefusal(p: Proposed): string | null {
   const v = p.text.trim();
   const secret = secretIn(v, "");
   if (secret !== null) return `Caret never types ${SENSITIVE_SAYS[secret]}; that is yours to enter`;
-  const input = inputKindRefusal(p.field.inputKind, v) ?? (p.field.autocomplete === null ? null : inputKindRefusal(AUTOCOMPLETE_INPUT[p.field.autocomplete] ?? null, v));
+  // V3: a date or time input takes a value through the verifier only when code resolved it into the input's own format and
+  // said the choice it made doing so (Provenance.says: an assumed year, an order a format hint gave); every other value
+  // there is still an exemption's (resolverFormat) or refused.
+  const chosen = p.provenance.kind === "derived" && p.provenance.says !== undefined && p.field.inputKind !== null && WIRE_FORMAT[p.field.inputKind]?.test(v) === true;
+  const input = chosen ? null : (inputKindRefusal(p.field.inputKind, v) ?? (p.field.autocomplete === null ? null : inputKindRefusal(AUTOCOMPLETE_INPUT[p.field.autocomplete] ?? null, v)));
   if (input !== null) return input;
   const kind = misfit(v, p.field.labelWords);
   if (kind !== null) return kind;
@@ -469,7 +491,8 @@ export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean)
       return "a value the user copied there before";
     case "derived": {
       const how: Record<DeriveHow, string> = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", placeWithCountry: "the place with its country", optionFromPart: "the option for a part" };
-      return `${how[pr.how]} in ${provenanceSays(pr.base, admitted)}`;
+      const plain = `${how[pr.how]} in ${provenanceSays(pr.base, admitted)}`;
+      return pr.says === undefined ? plain : `${plain}${pr.also === null ? "" : `, and ${provenanceSays(pr.also, admitted)}`}; ${pr.says}`;
     }
   }
 }

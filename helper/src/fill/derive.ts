@@ -192,9 +192,21 @@ export type DateOrder = "md" | "dm";
  */
 export function dateOrderHint(text: string | null): DateOrder | null {
   if (text === null) return null;
-  if (/\bm{1,2}\s*[/.-]\s*d{1,2}\s*[/.-]\s*y{2,4}\b/iu.test(text)) return "md";
-  if (/\bd{1,2}\s*[/.-]\s*m{1,2}\s*[/.-]\s*y{2,4}\b/iu.test(text)) return "dm";
-  return null;
+  const md = /\bm{1,2}\s*[/.-]\s*d{1,2}\s*[/.-]\s*y{2,4}\b/iu.test(text);
+  const dm = /\bd{1,2}\s*[/.-]\s*m{1,2}\s*[/.-]\s*y{2,4}\b/iu.test(text);
+  // V3 review A5: a hint that names both orders, or sits beside a negation, alternative or condition ("DD/MM/YYYY, not
+  // MM/DD/YYYY", "… or …"), says nothing about which one this date uses.
+  if (md === dm || /\b(?:not|never|no|or|unless|except|if|maybe|either)\b/iu.test(text)) return null;
+  return md ? "md" : "dm";
+}
+
+/**
+ * V3: whether a span is a date written only in numbers ("04/12/1990", "4.12.", "04-12-90"), whose month and day order the
+ * resolver would otherwise take from a locale or a convention. readDate gives such a date only in the order dateParts
+ * settles from evidence (V3 review B9: the resolver read every dotted date day-first).
+ */
+export function numericDate(text: string): boolean {
+  return /^\d{1,2}[/.-]\d{1,2}(?:[/.-](?:\d{2}|\d{4}))?\.?$/u.test(text.trim());
 }
 
 const NUMERIC_DATE = /^(\d{1,2})([/.-])(\d{1,2})\2((?:1[89]|2\d)\d{2})$/u;

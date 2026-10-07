@@ -6,12 +6,23 @@
 import { Temporal } from "@js-temporal/polyfill";
 import { ValueResolver, type ResolveContext } from "../values/resolve.ts";
 import { sayDate, sayMoment } from "../values/date-time.ts";
-import { monthYear } from "./derive.ts";
+import { dateParts, monthYear, numericDate, type DateOrder } from "./derive.ts";
 
 const resolver = new ValueResolver();
 
-/** The one civil date a span names, as YYYY-MM-DD with how the host says it; null when it names none or several. */
-export function readDate(text: string, ctx: ResolveContext): { value: string; display: string } | null {
+/**
+ * The one civil date a span names, as YYYY-MM-DD with how the host says it; null when it names none or several. V3 review
+ * B9: a date written only in numbers is read in the order `order` (derive.ts dateOrderHint) or its own numbers settle
+ * (derive.ts dateParts), never in a locale's or a convention's: the resolver read every dotted date day-first.
+ */
+export function readDate(text: string, ctx: ResolveContext, order: DateOrder | null = null): { value: string; display: string } | null {
+  const numeric = numericDate(splitMoment(text)?.date ?? text) ? (splitMoment(text)?.date ?? text).trim().replace(/\.$/u, "") : null;
+  if (numeric !== null) {
+    const p = dateParts(numeric, order);
+    if (p === null || p.month === null || p.day === null) return null;
+    const day = Temporal.PlainDate.from({ year: Number(p.year), month: Number(p.month), day: Number(p.day) });
+    return { value: day.toString(), display: sayDate(day) };
+  }
   const d = resolver.date(text, ctx);
   if (d.kind === "resolved") return { value: d.value, display: d.display };
   if (d.kind === "ask") return null;
@@ -47,20 +58,39 @@ export function splitMoment(text: string): { date: string; time: string } | null
 const SENT_LINE = /^\s*(?:date|sent):\s*(.+?)\s*$/iu;
 /** A line that heads a message with its sender. */
 const FROM_LINE = /^\s*from:\s*\S/iu;
+/** A line that starts an earlier message quoted inside this one. */
+const QUOTED = /wrote:\s*$|original message|forwarded message|^\s*>|^\s*-{2,}/iu;
+
+/** The send line of the message a span sits in (sentLineFor), as read before the asks. */
+export interface SentLine {
+  /** The node that shows it, and that node's whole text then. */
+  nodeKey: string;
+  text: string;
+  /** What follows "Date:" or "Sent:". */
+  value: string;
+  /** The day it names, YYYY-MM-DD, as written (no zone is read). */
+  day: string;
+}
 
 /**
- * V3 (B24 ask-19): when the message a window shows was sent, as an instant, for reading a date that gives no year
- * ("Saturday, October 17") against it. Only a window that reads as one message: a "From:" line and exactly one
- * "Date:" or "Sent:" line, whose text names a whole date with its year and a time. A mail app shows that time in the
- * user's own zone, so it is read in `ctx.timeZone`. Null otherwise: a thread with several dates, a note's "Date:" line
- * with no sender, a header with no year.
+ * V3 review A7: the send line of the one message that holds `span` (in node `spanKey`), from a window's nodes in reading
+ * order. Shown only when the window reads as one message: exactly one "From:" line and one "Date:" or "Sent:" line, that
+ * line above the span, nothing between them that starts a quoted or forwarded message ("Original message", "… wrote:",
+ * "> …"), and a whole date with its year in it. Null otherwise.
  */
-export function sentInstant(lines: readonly string[], ctx: ResolveContext): string | null {
-  if (!lines.some((l) => FROM_LINE.test(l))) return null;
-  const sent = lines.map((l) => SENT_LINE.exec(l)?.[1]).filter((x): x is string => x !== undefined);
-  if (sent.length !== 1 || !/(?<!\d)(?:1[89]|2\d)\d{2}(?!\d)/u.test(sent[0] as string)) return null;
-  const m = resolver.moment(sent[0] as string, { ...ctx, referenceInstant: null, sourceTimeZone: ctx.timeZone });
-  return m.kind === "resolved" ? m.value.instant : null;
+export function sentLineFor(nodes: readonly { key: string; text: string }[], spanKey: string, span: string): SentLine | null {
+  const lines = nodes.flatMap((n) => n.text.split(/\r?\n/u).map((line) => ({ key: n.key, text: n.text, line })));
+  if (lines.filter((l) => FROM_LINE.test(l.line)).length !== 1) return null;
+  const sent = lines.flatMap((l, i) => {
+    const v = SENT_LINE.exec(l.line)?.[1];
+    return v === undefined ? [] : [{ ...l, i, value: v }];
+  });
+  if (sent.length !== 1) return null;
+  const s = sent[0]!;
+  const at = lines.findIndex((l) => l.key === spanKey && l.line.includes(span));
+  if (at <= s.i || lines.slice(s.i + 1, at + 1).some((l) => QUOTED.test(l.line))) return null;
+  const d = resolver.date(splitMoment(s.value)?.date ?? s.value, { locale: "en-US", timeZone: "UTC", referenceInstant: null });
+  return d.kind === "resolved" ? { nodeKey: s.key, text: s.text, value: s.value, day: d.value } : null;
 }
 
 /** A span that names its month and its day of the month, by name or number, and nothing relative ("tomorrow", "next Friday"). */
@@ -68,15 +98,28 @@ const MONTH_AND_DAY = /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z
 const RELATIVE = /\b(?:today|tonight|tomorrow|yesterday|next|this|last|coming|ago|week|weekend)\b/iu;
 
 /**
- * V3: the context to read a picked span's date in. When the caller knows no reference instant, and the span names its
- * month and day but no year ("Saturday, October 17"), the message it came from gives one (sentInstant): the resolver
- * then takes the first such day on or after the send and checks the weekday against it. A span with a relative word
- * gets none, so a "Date:" line never decides what "tomorrow" means.
+ * V3 (B24 ask-19): the date a span that names a month and day but no year ("Saturday, October 17 at 8:45am") names, with
+ * its year assumed from when its message was sent (sentLineFor): the first such day on or after the send day, the
+ * resolver's rule, which also checks a weekday against it. This is code's choice, so the caller sends the value to the
+ * verifier with `says`, never mints it as a plain conversion. Null when the caller knows a reference already, the source's
+ * zone is unknown (review A8: `sourceTimeZone` null), the span is relative or has a year, or a send day one day either
+ * side gives another date: the zone the send line was shown in is not known, and it can move the send day by one (review
+ * A8: a Tokyo send at 11:30 PM on December 31 read as Denver's gave the next year).
  */
-export function readingContext(span: string, ctx: ResolveContext, sourceLines: () => readonly string[]): ResolveContext {
-  if (ctx.referenceInstant !== null || !MONTH_AND_DAY.test(span) || RELATIVE.test(span)) return ctx;
-  const sent = sentInstant(sourceLines(), ctx);
-  return sent === null ? ctx : { ...ctx, referenceInstant: sent };
+export function datedBySent(text: string, sent: SentLine, ctx: ResolveContext): { value: string; display: string; ctx: ResolveContext; says: string } | null {
+  if (ctx.referenceInstant !== null || ctx.sourceTimeZone === null) return null;
+  const date = splitMoment(text)?.date ?? text;
+  if (!MONTH_AND_DAY.test(date) || RELATIVE.test(text) || /(?<!\d)\d{4}(?!\d)/u.test(date)) return null;
+  const zone = ctx.sourceTimeZone ?? ctx.timeZone;
+  const sentDay = Temporal.PlainDate.from(sent.day);
+  const read = [-1, 0, 1].map((k) => {
+    const c: ResolveContext = { ...ctx, referenceInstant: sentDay.add({ days: k }).toZonedDateTime({ timeZone: zone, plainTime: "12:00" }).toInstant().toString() };
+    const r = resolver.date(date, c);
+    return r.kind === "resolved" ? { c, value: r.value, display: r.display } : null;
+  });
+  if (read.some((r) => r === null) || new Set(read.map((r) => r?.value)).size !== 1) return null;
+  const r = read[1]!;
+  return { value: r.value, display: r.display, ctx: r.c, says: `the year ${r.value.slice(0, 4)} is assumed: Caret took the first ${sayDate(Temporal.PlainDate.from(r.value)).replace(/, \d{4}$/u, "")} on or after ${sent.day}, the day the message was sent` };
 }
 
 const MONTH_SAYS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -116,7 +159,7 @@ export function clockTime(text: string): { value: string; display: string } | nu
 export function readClock(text: string, ctx: ResolveContext): { value: string; display: string } | null {
   // A span that names its day gives its time only once that day is known: Daylight Saving can skip or repeat the time on
   // that day (D2-04). So a date with a time is not split here, as readDate splits it (V3); its day is placed through
-  // readingContext.
+  // datedBySent.
   const t = resolver.clock(text, ctx);
   return t.kind === "resolved" ? { value: t.value, display: t.display } : null;
 }
