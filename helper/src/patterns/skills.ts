@@ -28,7 +28,7 @@ import { fallbackName, list, nameRoutine, safeFacts, type NameResult, type Routi
 import type { BundleClose, RoutineCell } from "./routines.ts";
 
 /** What naming reads from a predicted or offered cell: where it writes, and where and what it copies from. */
-export type FactCell = Pick<RoutineCell, "dstWindowId" | "dstLabel" | "srcWindowId" | "srcKey" | "value">;
+export type FactCell = Pick<RoutineCell, "dstWindowId" | "dstKey" | "dstLabel" | "srcWindowId" | "srcKey" | "value">;
 
 /**
  * Clean runs in a row before Caret offers to run a skill without a Tab. Assumed, not measured: the plan's
@@ -179,7 +179,8 @@ export class Skills {
       routineId: r.id,
       dstApp: r.steps[0]?.dstApp ?? dstWindow?.app.name ?? "",
       dstWindow,
-      dstLabels: cells.map((c) => c.dstLabel ?? "").filter((l) => l.trim() !== ""),
+      // Cached cell labels are raw history. Only the destination key admitted by its current view may name a routine.
+      dstLabels: cells.map((c) => viewOf(model, c.dstWindowId)?.nodes.get(c.dstKey)?.label ?? "").filter((l) => l.trim() !== ""),
       srcApps: [...new Set(r.steps.map((s) => s.srcApp))],
       srcLabels,
       count: r.count,

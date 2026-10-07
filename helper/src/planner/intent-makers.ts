@@ -1,4 +1,4 @@
-import { instructionForModel } from "../memory/sensitive.ts";
+import { instructionForModel } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Two ways to make an Ask's intent (B25, planner/intent.ts), measured against each other on B24's twenty asks
 // (scripts/realfill-asks.ts --maker; the pick and its numbers are in writer/config.ts ASK_MAKER):

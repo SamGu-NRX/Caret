@@ -138,18 +138,18 @@ export function nearestLabel(w: WindowState, target: Node, labelOnly = false): {
  * texts are few, so this looks only at the nodes each one could be nearest to (to its right on its row, or below it):
  * about one pass over the window, not one lookup per field (G2 round 4: one per field cost about 30 ms on 2,000).
  */
-export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean): Set<string> {
+export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean, markedKeys: ReadonlySet<string> = new Set()): Set<string> {
   const out = new Set<string>();
   const all = allTexts(w);
   // A one-line text that names a secret is a label: it goes, and so does each node it is nearest to. A text of several
   // lines is a document, whose own lines the redacted view drops one by one, and which labels nothing (G2 round 6: a
   // document lost its name and phone, and then took "Robin Vale" beside it).
   const oneLine = all.filter((e) => !e.document);
-  const labels = oneLine.filter((e) => marked(e.t));
+  const labels = oneLine.filter((e) => markedKeys.has(e.key) || marked(e.t));
   if (labels.length === 0) return out;
   const isDocument = new Set(all.filter((e) => e.document).map((e) => e.key));
   for (const e of labels) out.add(e.key);
-  const isMarkedLabel = (key: string, t: string): boolean => !isDocument.has(key) && marked(t);
+  const isMarkedLabel = (key: string, t: string): boolean => !isDocument.has(key) && (markedKeys.has(key) || marked(t));
   for (const n of w.nodes.values()) {
     const f = n.frame;
     // A document is checked too: a one-line label naming a secret beside it takes it whole.

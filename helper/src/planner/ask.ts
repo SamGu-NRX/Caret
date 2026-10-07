@@ -1,4 +1,5 @@
-import { instructionForModel, mentionedKind } from "../memory/sensitive.ts";
+import { instructionForModel, instructionView } from "../fill/redact.ts";
+import { mentionedKind } from "../memory/sensitive.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Ask (B25): an instruction becomes an intent (intent.ts), code checks it, and the route decides what runs.
 //   - fill: the fill engine (fill/fill.ts proposeFill) restricted to the intent's fields, sources, person and
@@ -345,8 +346,8 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // PV1: refuse a wholly forbidden instruction locally, before even window selection can build a request.
   // A mixed instruction keeps its original local checks; each outbound builder projects the safe clauses instead.
   const kind = mentionedKind(instruction);
-  const safe = instructionForModel(instruction).replace(/\[a field Caret leaves to you\]|\b(?:and|then)\b/giu, "").trim();
-  if (kind !== null && safe === "") throw new AskRefused(new SaidError("notEditable", saysNeverTyped(kind.kind, kind.ssn), "the instruction only asks for a kind Caret never types"), null, null);
+  const safeAction = instructionView(instruction).retained.some((span) => /[\p{L}\p{N}]/u.test(span.replace(/\b(?:and|then)\b/giu, "")));
+  if (kind !== null && !safeAction) throw new AskRefused(new SaidError("notEditable", saysNeverTyped(kind.kind, kind.ssn), "the instruction only asks for a kind Caret never types"), null, null);
   const now = o.now ?? Date.now();
   const jev = { calls: 0, costUsd: 0, latencyMs: 0 };
   const askJev: AskJev = async (req) => {

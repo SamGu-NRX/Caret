@@ -1,4 +1,4 @@
-import { instructionForModel } from "../memory/sensitive.ts";
+import { instructionForModel } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // A goal from the user's words to a plan code will offer (D2-06): the inventory of the windows it may act in, one
 // writer program, the sandbox (steps may target any window the program read), and lowering. Nothing acts here.

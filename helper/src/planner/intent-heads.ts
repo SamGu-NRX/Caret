@@ -1,4 +1,4 @@
-import { instructionForModel } from "../memory/sensitive.ts";
+import { instructionForModel } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Ask's intent from Jev (P1, A3). Three requests, sent together:
 //   - the heads, one request: route (fill, plan or refuse), why when it refuses, source and whose;

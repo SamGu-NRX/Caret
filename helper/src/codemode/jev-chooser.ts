@@ -1,4 +1,4 @@
-import { instructionForModel } from "../memory/sensitive.ts";
+import { instructionForModel } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // choose() inside a plan program, answered by Jev through the existing client (fill/jev.ts). The question
 // and option labels are the host's, from the frozen snapshot; the program only picks which group to ask

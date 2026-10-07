@@ -9,7 +9,7 @@ import { buildInventory } from "../src/goals/inventory.ts";
 import { macClock } from "../src/offers/event-time.ts";
 import { SnippetLedger } from "../src/privacy.ts";
 import { headsRequest, scopeRequest } from "../src/planner/intent-heads.ts";
-import { instructionForModel } from "../src/memory/sensitive.ts";
+import { instructionForModel } from "../src/fill/redact.ts";
 import { localTargets } from "../src/planner/targets.ts";
 import { planAsk } from "../src/planner/ask.ts";
 import { askAttend } from "../src/offers/event-card.ts";
@@ -28,6 +28,70 @@ const modelOf = (nodes: ReturnType<typeof node>[]) => {
 };
 
 describe("PV1 outbound redaction", () => {
+  it.each([
+    'My password is:\nviolet-orchard-seven\nand put "R-42" in Reference',
+    'My password is:\nviolet and orchard\nand put "R-42" in Reference',
+    'My password is violet and orchard and put "R-42" in Reference',
+    'My password is:\n\n\nviolet-orchard-seven\nand put "R-42" in Reference',
+    'API\nkey:\n\nviolet-orchard-seven\nand put "R-42" in Reference',
+    'put "violet and orchard" in Password and put "R-42" in Reference',
+  ])("does not disclose a removed instruction value: %s", (instruction) => {
+    const model = modelOf([field("ref", "", { label: "Reference" })]);
+    const snapshot = intentSnapshot(instruction, model, model.windows.get("form")!, []);
+    const input = intentInput(snapshot);
+    const head = headsRequest(snapshot);
+    const literal = instruction.includes("violet and orchard") ? "violet and orchard" : "violet-orchard-seven";
+    expect(JSON.stringify(input)).not.toContain(literal);
+    expect(JSON.stringify(input)).not.toContain("orchard");
+    expect(JSON.stringify(input)).not.toContain("violet");
+    expect(JSON.stringify(head)).not.toContain("orchard");
+    expect(JSON.stringify(head)).not.toContain(literal);
+    expect(snapshot.literals).toContain("R-42");
+    expect(() => assertNoSecrets({ input })).not.toThrow();
+    expect(() => assertNoSecrets(head)).not.toThrow();
+  });
+
+  it.each([
+    node("container", "AXHeading", { label: "Password" }),
+    node("container", "AXGroup", { value: "Password:" }),
+  ])("excludes descendants of a wholly removed text node: $role", (container) => {
+    // Child-first order also must not let a removed ancestor's content through.
+    const model = modelOf([node("child", "AXStaticText", { parent: "container", value: "violet-orchard-seven" }), container]);
+    const kept = redactWindow(model.windows.get("form")!);
+    expect(kept.nodes.has("container")).toBe(false);
+    expect(kept.nodes.has("child")).toBe(false);
+  });
+
+  it("joins marker text on adjacent reading-order nodes", () => {
+    const model = modelOf([
+      node("head", "AXStaticText", { value: "API", frame: [0, 0, 100, 20] }),
+      node("tail", "AXStaticText", { value: "key: violet-orchard-seven", frame: [0, 25, 200, 20] }),
+      field("ref", "", { label: "Reference", frame: [0, 100, 200, 20] }),
+    ]);
+    const kept = redactWindow(model.windows.get("form")!);
+    expect(kept.nodes.has("head")).toBe(false);
+    expect(kept.nodes.has("tail")).toBe(false);
+    expect(kept.nodes.has("ref")).toBe(true);
+  });
+
+  it("does not join Card to a different labelled record", () => {
+    const model = modelOf([
+      node("head", "AXStaticText", { value: "Card", frame: [0, 0, 100, 20] }),
+      node("tail", "AXStaticText", { value: "Number of attendees: 4", frame: [0, 25, 200, 20] }),
+    ]);
+    const kept = redactWindow(model.windows.get("form")!);
+    expect(kept.nodes.size).toBe(2);
+  });
+
+  it("does not treat leftover punctuation as an actionable safe instruction", async () => {
+    let calls = 0;
+    const forbidden = async (): Promise<never> => { calls++; throw new Error("must not call a model"); };
+    await expect(planAsk("put my social security number in;", modelOf([field("ref", "", { label: "Reference" })]), { values: () => [] }, [], {
+      askJev: forbidden, maker: { name: "heads", make: forbidden }, writer: null, offerKey: "fixture",
+    })).rejects.toThrow("Caret doesn't type Social Security numbers. Type it yourself.");
+    expect(calls).toBe(0);
+  });
+
   it("does not read a marked sender into the intent writer's input", () => {
     const model = modelOf([field("email", "", { label: "Email" })]);
     model.apply(snap([node("from", "AXStaticText", { value: "From: Robin Vale; password: violet-orchard-seven" })], { at: 900, windowId: "mail", title: "A meeting", app: { pid: 6160, bundleId: "dev.caret.mail", name: "Mail" } }));

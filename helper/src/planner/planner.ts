@@ -1,4 +1,4 @@
-import { instructionForModel } from "../memory/sensitive.ts";
+import { instructionForModel, instructionView } from "../fill/redact.ts";
 import { viewOf } from "../fill/candidates.ts";
 import { redactWindow } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
@@ -529,18 +529,19 @@ export function requestedWindow(model: ScreenModel, req: { windowId?: string | u
 /** Values to choose from: the instruction's spans, then memory, then the other windows' candidates; each text once. */
 function valueOptions(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number): Option[] {
   const out: Option[] = [];
+  const retainedValues = new Set(instructionView(instruction).retained.flatMap(instructionValues));
   const seen = new Set<string>();
   const add = (text: string, describe: string, provenance: Provenance, max = MAX_PLAN_VALUES): void => {
     if (out.length >= max || seen.has(text)) return;
     seen.add(text);
     // Local binding retains withheld values for refusal; a model sees only the neutral reference.
-    const safe = provenance.kind === "instruction" && !instructionForModel(instruction).includes(text)
+    const safe = provenance.kind === "instruction" && !retainedValues.has(text)
       ? "[a field Caret leaves to you]" : instructionForModel(describe);
     out.push({ id: `v${out.length + 1}`, text, describe: safe, provenance });
   };
   const entry = (m: MemoryValue): Provenance => ({ kind: "memory", id: m.id, label: m.label, part: null, whose: m.whose ?? null });
   const spans = instructionValues(instruction);
-  if (ledger.plan(spans.map((s) => instructionForModel(instruction).includes(s) ? instructionForModel(s) : "[a field Caret leaves to you]"))) for (const s of spans) add(s, `"${s}" (written in the instruction)`, { kind: "instruction", span: s });
+  if (ledger.plan(spans.map((s) => retainedValues.has(s) ? instructionForModel(s) : "[a field Caret leaves to you]"))) for (const s of spans) add(s, `"${s}" (written in the instruction)`, { kind: "instruction", span: s });
   for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`, entry(m));
   // A remembered name's first and last parts, split by code (fill/derive.ts, B24), for First and Last name
   // fields: "fill my name and email" on a form with split name fields found no value for either (Q1 bug 11).

@@ -1,0 +1,1 @@
+A secret opener consumes the whole next physical line, including conjunctions in its value. Instruction clauses must respect quotes, and model literals must come from separate retained spans.

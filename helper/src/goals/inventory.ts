@@ -1,4 +1,4 @@
-import { instructionForModel } from "../memory/sensitive.ts";
+import { instructionForModel } from "../fill/redact.ts";
 import { redactWindow } from "../fill/redact.ts";
 // The frozen snapshots a goal program reads, and the bindings behind their refs (D2-06). Built from the screen model
 // at one moment: each window the goal may act in lists its empty fields, the page controls code can set and its

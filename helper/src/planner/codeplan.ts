@@ -1,4 +1,4 @@
-import { instructionForModel } from "../memory/sensitive.ts";
+import { instructionForModel, instructionView } from "../fill/redact.ts";
 import { viewOf } from "../fill/candidates.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Ask with natural phrasing (Q1 bugs 3 and 4). When the deterministic planner cannot ground an instruction
@@ -97,10 +97,11 @@ export interface Value {
  */
 export function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number, formRoom: number): Value[] {
   const out: Value[] = [];
+  const retainedValues = new Set(instructionView(instruction).retained.flatMap(instructionValues));
   const used = new Map<WindowState | null, number>();
   const add = (text: string, display: string, win: WindowState | null, owner: Value["owner"], provenance: Provenance, key: string | null = null, memoryRef: string | null = null): void => {
     // Preserve the local value ref for refusal, but disclose no span removed with a forbidden clause.
-    const safe = provenance.kind === "instruction" && !instructionForModel(instruction).includes(text)
+    const safe = provenance.kind === "instruction" && !retainedValues.has(text)
       ? "[a field Caret leaves to you]" : instructionForModel(display);
     const d = safe.length <= 400 ? safe : `${safe.slice(0, 399)}…`;
     const room = win === null ? formRoom : WINDOW_CHARS - win.window.title.length;
@@ -110,7 +111,7 @@ export function valueList(instruction: string, model: ScreenModel, w: WindowStat
     out.push({ text, display: d, window: win, owner, key, memory: memoryRef, provenance });
   };
   const spans = instructionValues(instruction);
-  if (ledger.plan(spans.map((s) => instructionForModel(instruction).includes(s) ? instructionForModel(s) : "[a field Caret leaves to you]"))) for (const s of spans) add(s, `"${s}" (written in the instruction)`, null, null, { kind: "instruction", span: s });
+  if (ledger.plan(spans.map((s) => retainedValues.has(s) ? instructionForModel(s) : "[a field Caret leaves to you]"))) for (const s of spans) add(s, `"${s}" (written in the instruction)`, null, null, { kind: "instruction", span: s });
   for (const m of memory) {
     if (!ledger.plan([m.text, m.label])) continue;
     // Memory holds people as well as the user (helper.ts plannerMemory): whose an entry is comes from the entry.

@@ -1,4 +1,4 @@
-import { instructionForModel } from "../memory/sensitive.ts";
+import { instructionForModel } from "../fill/redact.ts";
 // A draft from the local model (L1 lead decision 6): words for one message or description field, under a grammar that
 // allows only plain sentences. Code still decides whether a draft may be offered: goals/drafts.ts checks its facts and
 // Jev its claims, unchanged. Measured on B30's cases and D2-06's scenes (scripts/goal-drafts-eval.ts,

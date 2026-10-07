@@ -1,4 +1,4 @@
-import { instructionForModel } from "../memory/sensitive.ts";
+import { instructionForModel } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Text a goal plan writes in Caret's own words (B30): a short reply, message or description. The writer composes it;
 // code decides whether it may be offered. A draft must add no fact: every number, date, time, money amount, email

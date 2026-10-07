@@ -17,7 +17,7 @@ import { PRESS_ENDS_MS } from "../src/patterns/routines.ts";
 import { dontOfferMatch } from "../src/patterns/memory.ts";
 import type { TaskResult } from "../src/executor/executor.ts";
 import { Desk, buttonKey, cellKey, type GridWindow, type ListWindow } from "./scene.ts";
-import { FIXTURE_APP, MAIL_APP, snap } from "./builders.ts";
+import { FIXTURE_APP, MAIL_APP, field, node, snap } from "./builders.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -205,6 +205,26 @@ describe("the skill messages", () => {
 // MARK: - in the helper
 
 describe("skills in the helper", () => {
+  it("PV1 review: naming omits destination labels from nodes removed by redaction", async () => {
+    helper.model.apply(snap([
+      node("private", "AXGroup", { label: "Password" }),
+      field("hidden", "", { label: "Archive", parent: "private" }),
+      field("safe", "", { label: "Reference" }),
+      node("source", "AXStaticText", { value: "R-42" }),
+    ], { at: 1, windowId: "naming", title: "Details" }));
+    const routine = { id: "r", sig: "fixture", steps: [], count: 3, hits: 3, misses: 0, paused: false, name: null, nameBy: null, namingAsked: false, keep: null, finish: null, skillPaused: false };
+    const cells = [
+      { dstWindowId: "naming", dstKey: "hidden", dstLabel: "Archive", srcWindowId: "naming", srcKey: "source", value: "R-42" },
+      { dstWindowId: "naming", dstKey: "safe", dstLabel: "Old cached label", srcWindowId: "naming", srcKey: "source", value: "R-42" },
+    ];
+    const facts = helper.patterns.skills.facts(routine, cells);
+    expect(facts.dstLabels).toEqual(["Reference"]);
+    const result = await nameRoutine(facts, namer, () => helper.model.windows.values(), () => 0);
+    expect(result.asks).toBeGreaterThan(0);
+    expect(JSON.stringify(result.requests)).not.toContain("Archive");
+    expect(JSON.stringify(result.requests)).not.toContain("Old cached label");
+  });
+
   const HOST = "test-host";
   let dir: string;
   let store: Store;

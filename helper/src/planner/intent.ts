@@ -1,4 +1,4 @@
-import { redactWindow } from "../fill/redact.ts";
+import { instructionForModel, instructionView, redactWindow } from "../fill/redact.ts";
 // Ask as a scoped fill (B25 lead decision 1). An instruction becomes a small intent, and every part of it is a
 // choice from what code listed or an exact span of the instruction:
 //   - the route: fill, plan, ask or refuse;
@@ -19,7 +19,7 @@ import { headingsBefore } from "../fill/ask-scope.ts";
 import { inWebArea, type Control } from "../fill/controls.ts";
 import { localTargets } from "./targets.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
-import { instructionForModel, mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
+import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
 import { SnippetLedger } from "../privacy.ts";
 import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
@@ -244,8 +244,8 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   // People the instruction names: capitalized names and relations, and words that are a mail sender's name however typed.
   // Extract model-visible spans only from retained clauses. An unmarked value or name in a
   // forbidden clause must not reappear beside the neutralized instruction. Keep the original locally.
-  const spanInstruction = instructionForModel(instruction).replace(/\[a field Caret leaves to you\]/gu, "");
-  const persons = [...new Set([...personSpans(spanInstruction), ...senderNames(spanInstruction, model, w)])];
+  const retained = instructionView(instruction).retained;
+  const persons = [...new Set(retained.flatMap((span) => [...personSpans(span), ...senderNames(span, model, w)]))];
   const sources = namedSources(instruction, model, w, persons);
   return {
     instruction,
@@ -259,7 +259,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     persons: persons.map((span, i) => ({ ref: `p${i + 1}`, span })),
     others: peopleOnScreen(model, w, memory),
     memoryValues: memory,
-    literals: instructionValues(spanInstruction),
+    literals: [...new Set(retained.flatMap(instructionValues))],
     named: sources.named,
     excluded: sources.excluded,
     missing: sources.missing,

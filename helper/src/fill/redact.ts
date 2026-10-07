@@ -38,8 +38,7 @@ function opensValue(line: string): boolean {
  * opener above it takes it: an opener ("Password:", "my private key", "PIN is") takes the next line that is not blank,
  * the blank ones between with it, and a line it takes opens in turn ("Password:" then "PIN:" then "violet-orchard-seven").
  */
-function keptText(text: string): { kept: string; dropped: Set<number> } {
-  const lines = text.split(/\r?\n/u);
+function droppedLines(lines: readonly string[], continues: readonly boolean[] = [], physicalLines: readonly number[] = []): Set<number> {
   const secret = lines.map((l) => secretText(l));
   for (let i = 1; i < lines.length; i++) {
     if (!secret[i - 1] && !secret[i] && markerAcross(lines[i - 1] as string, lines[i] as string)) secret[i - 1] = secret[i] = true;
@@ -55,7 +54,7 @@ function keptText(text: string): { kept: string; dropped: Set<number> } {
     }
     i = j;
   }
-  if (!secret.some((x) => x)) return { kept: text, dropped: new Set() };
+  if (!secret.some((x) => x)) return new Set();
   const dropped = new Set<number>();
   for (let i = 0; i < lines.length; i++) {
     if (!secret[i]) continue;
@@ -63,18 +62,87 @@ function keptText(text: string): { kept: string; dropped: Set<number> } {
     // The opener reads the line as a whole, a marker that ran across from the line above included.
     let open = opensValue(lines[i] as string) || (i > 0 && secret[i - 1] === true && !PEM_END.test(lines[i] as string) && opensValue(`${lines[i - 1]} ${lines[i]}`));
     let j = i;
-    while (open && j + 1 < lines.length) {
+    while (open && j + 1 < lines.length && continues[j] !== false) {
       j++;
       dropped.add(j);
-      if ((lines[j] as string).trim() === "") continue;
-      open = opensValue(lines[j] as string);
+      let taken = lines[j] as string;
+      // An opener consumes the whole following physical line, including any clause separators in its value.
+      while (physicalLines[j] !== undefined && j + 1 < lines.length && physicalLines[j + 1] === physicalLines[j]) {
+        j++;
+        dropped.add(j);
+        taken += ` ${lines[j]}`;
+      }
+      if (taken.trim() === "") continue;
+      open = opensValue(taken);
     }
     i = Math.max(i, j);
   }
+  return dropped;
+}
+
+function keptText(text: string): { kept: string; dropped: Set<number> } {
+  const dropped = droppedLines(text.split(/\r?\n/u));
+  if (dropped.size === 0) return { kept: text, dropped };
   const parts = text.split(/(\r?\n)/u);
   const out: string[] = [];
   for (let k = 0; k < parts.length; k += 2) if (!dropped.has(k / 2)) out.push(parts[k] as string, parts[k + 1] ?? "");
   return { kept: out.join("").replace(/\r?\n$/u, ""), dropped };
+}
+
+const WITHHELD_INSTRUCTION = "[a field Caret leaves to you]";
+
+/** Instruction clauses are line units for the same drop rule as window text. Quoted values stay whole.
+ * Retained spans remain separate so extraction cannot join text across a removed clause into a new literal.
+ */
+export function instructionView(text: string): { text: string; retained: string[] } {
+  const units: { text: string; separator: string; line: number }[] = [];
+  let start = 0;
+  let line = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (quote !== null) {
+      if (c === "\\") { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "“" || c === "‘" || (c === "'" && (i === 0 || /[\s(=:]/u.test(text[i - 1]!)))) {
+      quote = c === "“" ? "”" : c === "‘" ? "’" : c;
+      continue;
+    }
+    // Match the planner's assignment-clause heads, not every "and" inside an unquoted value.
+    const separator = /^(?:\r?\n|;|\s+(?:and|then)\s+(?=(?:the|my|our|set|put|write|enter|type|change|make|fill|add|use|copy|paste|insert|attach|upload|send|submit|press|click|open)\b))/iu.exec(text.slice(i))?.[0];
+    if (separator === undefined) continue;
+    units.push({ text: text.slice(start, i), separator, line });
+    if (/\r?\n/u.test(separator)) line++;
+    i += separator.length - 1;
+    start = i + 1;
+  }
+  units.push({ text: text.slice(start), separator: "", line });
+  // A real line break lets an opener take its next value. An explicit new clause does not.
+  const dropped = droppedLines(units.map((u) => u.text), units.map((u) => /\r?\n/u.test(u.separator)), units.map((u) => u.line));
+  if (dropped.size === 0) return { text, retained: [text] };
+  const retained: string[] = [];
+  let span = "";
+  for (const [i, unit] of units.entries()) {
+    if (dropped.has(i)) continue;
+    span += unit.text;
+    if (!dropped.has(i + 1)) span += unit.separator;
+    else { retained.push(span); span = ""; }
+  }
+  if (span !== "") retained.push(span);
+  let shown = "";
+  for (const [i, unit] of units.entries()) {
+    if (!dropped.has(i)) shown += unit.text;
+    else if (i === 0 || !dropped.has(i - 1)) shown += WITHHELD_INSTRUCTION;
+    if (!dropped.has(i) || !dropped.has(i + 1)) shown += unit.separator;
+  }
+  return { text: shown, retained };
+}
+
+/** Model-facing instruction text; raw text remains local for refusal and provenance checks. */
+export function instructionForModel(text: string): string {
+  return instructionView(text).text;
 }
 
 /**
@@ -126,9 +194,34 @@ export function redactWindow(w: WindowState): WindowState {
   return view;
 }
 
+/** Marker halves can be separate AX text nodes. Join only consecutive document text with adjacent positions. */
+function splitTextNodes(w: WindowState): Set<string> {
+  const out = new Set<string>();
+  let previous: Node | undefined;
+  for (const n of w.nodes.values()) {
+    if (!TEXT_ROLES.has(n.role) || (n.value ?? n.label ?? "").trim() === "") continue;
+    if (previous !== undefined) {
+      const a = previous.frame;
+      const b = n.frame;
+      const nearby = a === undefined || b === undefined || (
+        // Use nearestLabel's existing 260/48-pixel neighborhood, not a new distance heuristic.
+        // A following text on the same row, or on the next row in the same column.
+        (Math.abs(a[1] + a[3] / 2 - (b[1] + b[3] / 2)) <= Math.max(a[3], b[3]) / 2 && b[0] >= a[0] && b[0] - (a[0] + a[2]) <= 260) ||
+        (b[1] >= a[1] + a[3] && b[1] - (a[1] + a[3]) <= 48 && a[0] <= b[0] + b[2] && b[0] <= a[0] + a[2])
+      );
+      const first = (previous.value ?? previous.label ?? "").split(/\r?\n/u).at(-1)!;
+      const second = (n.value ?? n.label ?? "").split(/\r?\n/u)[0]!;
+      if (nearby && markerAcross(first, second)) { out.add(previous.key); out.add(n.key); }
+    }
+    previous = n;
+  }
+  return out;
+}
+
 function build(w: WindowState): WindowState {
   if (secretText(w.window.title)) return { ...w, window: { ...w.window, title: "" }, nodes: new Map(), values: [] };
-  const dropped = nodesLabelledBy(w, secretText);
+  const split = splitTextNodes(w);
+  const dropped = nodesLabelledBy(w, secretText, split);
   const nodes = new Map<string, Node>();
   /** Each kept node's texts, with the lines each lost, which no typed value of it may stand on. */
   const lost = new Map<string, { text: string; dropped: Set<number> }[]>();
@@ -143,7 +236,7 @@ function build(w: WindowState): WindowState {
     // AX can split a marker between its own attributes, such as label "API" and value "key: ...".
     const attrs = [n.label, n.placeholder, n.value].filter((t): t is string => t !== undefined && t.trim() !== "");
     const splitMarker = attrs.some((a, i) => attrs.some((b, j) => i !== j && markerAcross(a, b)));
-    if ((n.parent !== null && gone.has(n.parent)) || dropped.has(n.key) || splitMarker || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) {
+    if ((n.parent !== null && gone.has(n.parent)) || dropped.has(n.key) || split.has(n.key) || splitMarker || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) {
       gone.add(n.key);
       continue;
     }
@@ -155,7 +248,10 @@ function build(w: WindowState): WindowState {
     const texts = [...(v === undefined || n.value === undefined ? [] : [{ text: n.value, dropped: v.dropped }]), ...(l === undefined || n.label === undefined ? [] : [{ text: n.label, dropped: l.dropped }])];
     if (texts.some((x) => x.dropped.size > 0)) lost.set(n.key, texts);
     const had = (n.value ?? "") !== "" || (n.label ?? "") !== "";
-    if (had && (value ?? "") === "" && (label ?? "") === "" && n.editable !== true) continue;
+    if (had && (value ?? "") === "" && (label ?? "") === "" && n.editable !== true) {
+      gone.add(n.key);
+      continue;
+    }
     if (value === n.value && label === n.label) nodes.set(n.key, n);
     else {
       const m: Node = { ...n };
@@ -166,6 +262,21 @@ function build(w: WindowState): WindowState {
       nodes.set(n.key, m);
     }
   }
+  // AX snapshots need not list parents before children. Close the removed set over the original tree.
+  const children = new Map<string, string[]>();
+  for (const n of w.nodes.values()) {
+    if (n.parent === null) continue;
+    const keys = children.get(n.parent) ?? [];
+    keys.push(n.key);
+    children.set(n.parent, keys);
+  }
+  const queue = [...gone];
+  for (let i = 0; i < queue.length; i++) for (const key of children.get(queue[i]!) ?? []) {
+    if (gone.has(key)) continue;
+    gone.add(key);
+    queue.push(key);
+  }
+  for (const key of gone) nodes.delete(key);
   // The reader's typed values, less those of a dropped node, and those standing on a dropped line: a value over several
   // lines goes when any line it covers went ("4410 Speedway\napt 2, Austin" under a dropped "Password:" opener), judged
   // by the lines where it stands, never by a dropped line's text (G2 round 6: a dropped "Austin" took an address).

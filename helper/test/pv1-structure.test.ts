@@ -80,7 +80,7 @@ const boundaries: Record<string, RegExp[]> = {
   "tasks/pending.ts": [/function buildPendingRequest[\s\S]*?w = redactWindow\(w\)/u, /function buildLookRequest[\s\S]*?w = redactWindow\(w\)/u],
   "routing/judge.ts": [/viewOf\(model,/u, /windows.values\(\)\].map\(redactWindow\)/u, /const view = redactWindow\(q.window\)/u, /shown.some\(\(s\) => flat\(s\).includes\(flat\(t\)\)\)/u],
   "offers/event-card.ts": [/windows.values\(\)\].map\(redactWindow\)/u, /function askAttend[\s\S]*?w = redactWindow\(w\)/u, /nodeText\(n\).includes\(sentence\)/u],
-  "patterns/skills.ts": [/viewOf\(model, cells\[0\]\?\.dstWindowId/u, /viewOf\(model, c.srcWindowId\)/u],
+  "patterns/skills.ts": [/viewOf\(model, cells\[0\]\?\.dstWindowId/u, /viewOf\(model, c.srcWindowId\)/u, /viewOf\(model, c.dstWindowId\)\?\.nodes.get\(c.dstKey\)\?\.label/u],
   "writer/port.ts": [/async write\(req\) \{\s*assertNoSecrets\(req\)/u],
   "writer/local-port.ts": [/assertNoSecrets\(\{ input: ask.prompt \}\)/u],
   "writer/local-draft.ts": [/assertNoSecrets\(\{ input: ask.prompt \}\)/u],

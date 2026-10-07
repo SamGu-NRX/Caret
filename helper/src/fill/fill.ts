@@ -1,4 +1,4 @@
-import { instructionForModel } from "../memory/sensitive.ts";
+import { instructionForModel } from "../fill/redact.ts";
 import { redactWindow } from "./redact.ts";
 // Grounded fill: one Jev request per form, one Choice question per empty field, each offering
 // the same candidate spans plus "none" (deep plan section 5, "Fill"). Jev picks a candidate id;
