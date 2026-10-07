@@ -10,7 +10,7 @@ import { cachedAsk, CacheRefused } from "../src/engines/decide/cache.ts";
 import { JevCapError } from "../src/engines/decide/daily-cap.ts";
 import { fileFailures, holdReason, slowAsk, type PassEnd, type SlowClock, type SlowEvent, type SlowOptions } from "../src/engines/decide/slow.ts";
 import { JevGatewayPolicyError, JevHttpError, JevNetworkError, type AskJev, type JevRequest, type JevResult } from "../src/fill/jev.ts";
-import { backoffMs, LEASE_GAP_MS, newStatus, Runner, type EvalSet, type Held, type PassHandle, type RunnerDeps, type RunnerStatus } from "../scripts/slow-eval-core.ts";
+import { backoffMs, LEASE_GAP_MS, MAX_SETTLE, newStatus, Runner, type EvalSet, type Held, type PassHandle, type RunnerDeps, type RunnerStatus } from "../scripts/slow-eval-core.ts";
 import { scoreAsks, scorePages, scoreWizardMd } from "../scripts/slow-eval-score.ts";
 
 let dir: string;
@@ -240,7 +240,7 @@ const set = (id: string, browser: boolean): EvalSet => ({ id, title: id, kind: b
 const ok = (n: number): SlowEvent[] => Array.from({ length: n }, (_, i) => ({ t: "sent" as const, at: i, key: `k${i}`, paceWaitMs: 3000, latencyMs: 400 }));
 const ended = (reason: PassEnd, okBefore = 0): SlowEvent[] => [...ok(okBefore), { t: "end", at: 0, reason, detail: reason }];
 
-function harness(sets: EvalSet[], plans: Record<string, PassPlan[]>, opts: { status?: RunnerStatus; lockBusy?: boolean; stopAfterPolls?: { n: number; reason: "hold" | "disk" } } = {}): Harness {
+function harness(sets: EvalSet[], plans: Record<string, PassPlan[]>, opts: { status?: RunnerStatus; lockBusy?: boolean; stopAfterPolls?: { n: number; reason: "hold" | "disk" }; settlePasses?: number } = {}): Harness {
   const clock = fakeClock();
   const log: string[] = [];
   const passes: string[] = [];
@@ -252,6 +252,7 @@ function harness(sets: EvalSet[], plans: Record<string, PassPlan[]>, opts: { sta
   const events = new Map<string, SlowEvent[]>();
   const reported = new Map<string, boolean>();
   const deps: RunnerDeps = {
+    settlePasses: opts.settlePasses ?? MAX_SETTLE,
     clock: {
       now: clock.now,
       sleep: async (ms) => {
@@ -323,6 +324,14 @@ describe("runner: backoff and settling", () => {
     expect(h.passes).toEqual(["b24#1", "b24#2", "b24#3", "b24#4", "b24#5"]);
     expect(h.status.sets.b24).toMatchObject({ state: "done", scoredPass: 5, settled: true, backoffMs: 120_000 });
     expect(h.finished).toEqual(["b24:done:5"]);
+  });
+
+  it("scores a paid live engine's one pass, unsettled, with no pass run again to settle it", async () => {
+    // Live Jev answers a repeated request anew, so a set never settles; LV1's tasks-blind ran 5 passes (about 3x the cost).
+    const h = harness([set("tasks", true)], { tasks: [{ events: ok(60), reported: true }, { events: [], reported: true }] }, { settlePasses: 0 });
+    expect(await h.runner.run()).toBe("done");
+    expect(h.passes).toEqual(["tasks#1"]);
+    expect(h.status.sets.tasks).toMatchObject({ state: "done", scoredPass: 1, settled: false });
   });
 
   it("releases the heavy lease for every wait and takes the next one 60 s after the last", async () => {

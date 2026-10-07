@@ -16,7 +16,7 @@
 //   STOPPED              written on a stop a person must clear (cost, auth, billing, the cap, a refused answer);
 //                        slow-eval.sh will not start while it exists
 // Fixture text only: every set runs on fixture pages, notes and memory, and GW1's guard refuses anything else.
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { engineName } from "../src/engines/decide/port.ts";
 import { DEFAULT_PACE_MS, DISK_FLOOR_GIB, HOLD_FILE, REAL_CLOCK, runStop, type SlowEvent } from "../src/engines/decide/slow.ts";
-import { newStatus, passCounts, Runner, type EvalSet, type Held, type PassHandle, type RunnerStatus, type SetStatus } from "./slow-eval-core.ts";
+import { MAX_SETTLE, newStatus, passCounts, Runner, type EvalSet, type Held, type PassHandle, type RunnerStatus, type SetStatus } from "./slow-eval-core.ts";
 import { cell, eligibleByPage, percentile, reportFile, scoreDir, type SetScore } from "./slow-eval-score.ts";
 
 const HELPER = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -50,6 +50,16 @@ const { values: args } = parseArgs({
 const ENGINE = engineName(args.engine as string);
 if (ENGINE === "canned") throw new Error("--engine canned needs no slow runner: its answers come from the key");
 const PAID = ENGINE !== LAYA;
+/** The worktree the runner runs and its HEAD, read once at start, for results.md (it said "v2/evals (e7dd882 + R1's runner)" whatever ran). */
+const CODE = (() => {
+  const git = (...a: string[]): string => execFileSync("git", ["-C", ROOT, ...a], { encoding: "utf8" }).trim();
+  try {
+    const dirty = git("status", "--short", "--untracked-files=no") === "" ? "" : " with uncommitted changes";
+    return `${ROOT.replace(homedir(), "~")} at ${git("rev-parse", "--short", "HEAD")} (${git("rev-parse", "--abbrev-ref", "HEAD")})${dirty}`;
+  } catch (e) {
+    return `${ROOT.replace(homedir(), "~")} (git unreadable: ${e instanceof Error ? e.message.slice(0, 80) : String(e)})`;
+  }
+})();
 if (PAID && args["spend-limit"] === undefined) throw new Error(`--engine ${ENGINE} costs money: give --spend-limit USD, the most each eval run may spend`);
 /** Each eval's own spend limit, for a paid engine. */
 const SPEND = PAID ? ["--spend-limit", args["spend-limit"] as string] : [];
@@ -91,7 +101,9 @@ const page = (id: string, title: string, kind: "tasks" | "corpus" | "fill" | "wi
   refs,
   drop,
 });
-const j1 = (name: string): [string, string] => ["J1 canned at 242b146 (same fill code)", join(EVIDENCE, "j1", "runs", name)];
+// The label names the run's own evidence folder; it said "J1 canned at 242b146 (same fill code)", which was true of no
+// run after J1's branch (STATE 01:51Z correction).
+const j1 = (name: string): [string, string] => [`J1 canned run ${name} (evidence/screen/j1/runs)`, join(EVIDENCE, "j1", "runs", name)];
 const c2 = (name: string): [string, string] => [`C2 canned ${name} (v2/screen 1e52e70)`, join(EVIDENCE, "c2", name)];
 
 // Ask sets first: no browser, no lease, and minutes each, so the first numbers come early.
@@ -268,7 +280,7 @@ function writeResults(status: RunnerStatus): void {
   const md = [
     `# Slow evals on ${ENGINE} (R1)`,
     "",
-    `Engine ${ENGINE}${PAID ? `, at most $${args["spend-limit"]} per eval run` : " (free, provider boundless)"}, J1's replay cache in ${CACHE.replace(homedir(), "~")}, at most one request per ${PACE_MS / 1000} s. Code: v2/evals (e7dd882 + R1's runner). Updated ${new Date().toISOString()}; runner ${status.state}${status.stopReason === undefined ? "" : ` (${status.stopReason})`}, ${status.phase}.`,
+    `Engine ${ENGINE}${PAID ? `, at most $${args["spend-limit"]} per eval run` : " (free, provider boundless)"}, J1's replay cache in ${CACHE.replace(homedir(), "~")}, at most one request per ${PACE_MS / 1000} s. Code: ${CODE}. Updated ${new Date().toISOString()}; runner ${status.state}${status.stopReason === undefined ? "" : ` (${status.stopReason})`}, ${status.phase}.`,
     "",
     "A Laya row is the set's last pass, whose every answer replayed from the cache (UNSETTLED when it still sent requests). Fields: right / eligible, wrong, left = eligible fields Caret left alone. Asks: right of 20, wrong includes an Ask continued after a pick. Requests are those sent to Laya over all passes; wait = pacing + backoff; latency is Laya's time to the response headers. References are scored by the same code (helper/scripts/slow-eval-score.ts). Canned runs answer from the key, so they measure the loop, not a model: J1's ran this branch's fill code, C2's and F2's later v2/screen code.",
     "",
@@ -303,6 +315,7 @@ const status = newStatus(process.pid, Date.now(), SETS, old);
 const where = { holdFile: HOLD_FILE, diskPath: homedir(), floorGiB: DISK_FLOOR_GIB };
 const runner = new Runner(SETS, {
   clock: REAL_CLOCK,
+  settlePasses: PAID ? 0 : MAX_SETTLE,
   stopCheck: () => runStop(where, Date.now()),
   lease: () => holder([WITH_HEAVY, ...LEASE_EST, ...HOLD_CMD], "heavy lease"),
   tryLock: async () => withOwner(await holder(lockArgv(false), "Laya lock (try)")),
