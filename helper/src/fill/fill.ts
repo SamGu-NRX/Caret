@@ -20,7 +20,7 @@ import { assertNoSecrets, SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
-import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl } from "./controls.ts";
+import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
 import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
@@ -670,7 +670,14 @@ function scopedInputs(w: WindowState, keys: readonly string[]): FormInput[] {
 }
 
 /** V3: a choice code made in deriving a value, and the extra source it read for it (a message's send line), for the verifier. */
-type Chosen = { says: string; also: Provenance | null; via?: "sentLine" };
+type Chosen = { says: string; also: Provenance | null; via?: "sentLine"; /** V4 review: how the value was derived, when the field's part would misstate it. */ how?: DeriveHow };
+/** V4: how a value names a menu's option, as the verifier is told it (controls.ts optionLink). */
+const OPTION_LINK_SAYS: Record<OptionLink, string> = {
+  inText: "the option's words are in it",
+  sameWords: "it has the same words as the option",
+  inOption: "its words are in the option",
+  stateCode: "a US state's name and its postal code",
+};
 
 /** V3 review: a reading's assumptions as a stated choice, or undefined for a plain reading (when.ts Reading). */
 function stated(r: Reading | null): Chosen | undefined {
@@ -1173,6 +1180,40 @@ export async function proposeFill(
     if (lit === undefined || candidates.some((c) => c.text === lit)) continue;
     derived.set(f.id, [{ key: `${f.id}:said`, text: lit, describe: `"${lit}" (written in the user's instruction for this field)`, base: { from: "instruction", text: lit }, also: null }, ...(derived.get(f.id) ?? [])]);
   }
+  // V4 (G3: 30 of 35 Ask fields with no candidate were menus): a menu's option that a value on offer names without being
+  // it (controls.ts optionLink: "Manager" in "my manager at Ridgeline", "TX" for "Texas") is offered as that option's own
+  // label, in that field's question only, so Jev picks among the options its sources name. An option equal to a value
+  // needs no link: that value is the option, and its pick is minted under optionLabel. Which option a value names is
+  // code's reading, so a linked pick goes to the verifier with the reading said (`chose`), never minted as the option's
+  // label: options are candidates, never mints. A derived value that already carries a choice is not linked again, so a
+  // pick states at most one choice. A value the instruction spells out for the menu is linked too ("Texas" in "put Texas for
+  // state"). Radio groups keep their visible buttons and controlValue's reading of a pick.
+  // V4 review: an option found among other words of a longer text ("inText") is linked only when the text is tied to this
+  // menu: a line labelled with a word of its label or section that says what it is for (controls.ts labelTies: "Reference:
+  // …, my manager at Ridgeline" for "Reference relationship", never "date" alone), a memory entry labelled so, or a part or
+  // literal derived for this field. Untied, "a friend referred
+  // me" offered Relationship "Friend" and a move-in date's "March" offered Graduation date month (guard adversary). A text
+  // that is the option in other words (sameWords, inOption) names it by itself; a state's postal code is read only for a
+  // menu that asks for a state (fill part "state").
+  if (derive) {
+    for (const f of fields) {
+      const options = f.form?.options ?? null;
+      if (f.control !== "select" || options === null) continue;
+      const asked = f.texts.slice(0, 3);
+      const list = derived.get(f.id) ?? [];
+      const link = (text: string, describe: string, base: Derived["base"], also: Candidate | null, tied: boolean): void => {
+        const l = optionLink(options, text, f.part === "state");
+        if (l === null || (l.how === "inText" && !tied) || candidates.some((c) => c.text === l.option) || list.some((x) => x.text === l.option)) return;
+        const chose: Chosen = { says: `Caret took "${text}" to name the option '${l.option}' (${OPTION_LINK_SAYS[l.how]})`, also: null, how: "optionNamed" };
+        list.push({ key: `${f.id}:${list.length}`, text: l.option, describe: `"${l.option}" (the option ${describe} names)`, base, also, chose });
+      };
+      // A derived value with no choice of its own is this field's part, or its literal: tied to it.
+      for (const d of [...list]) if (d.chose === undefined) link(d.text, d.describe, d.base, d.also, true);
+      for (const c of candidates) link(c.text, describeCandidate(c), { from: "window", c }, null, c.context !== null && labelTies(c.context, asked));
+      for (const a of f.about) link(a.value, describeAbout(a), { from: "memory", a }, null, labelTies(a.label, asked));
+      if (list.length > 0) derived.set(f.id, list);
+    }
+  }
   if (candidates.length === 0 && cut.length === 0 && answersFor.size === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0)) throw new FillError("nothingToCopy", `no candidate values in any window other than ${windowId}`);
 
   // A field whose label names no kind (kinds.ts) could want a value of any kind or plain text. It is not
@@ -1580,6 +1621,9 @@ export async function proposeFill(
    * either Portfolio or GitHub.
    */
   const oneOfSeveral = (f: Field, p: Pick): boolean => {
+    // V4 review: a menu's option code linked from a window value (optionLink) meets the rule as that value would. Only a link:
+    // a date's or an address's part is judged as before (re-review: a birthday's month would meet the phone rule).
+    if (p.from === "derived" && p.chose?.how === "optionNamed" && p.base.from === "window") return oneOfSeveral(f, p.base);
     // A value the user's instruction spells out for this field is their choice among them (B27 review).
     if (p.from !== "window" || p.c.labelled !== true || p.c.context === null || literalOf(f) === p.c.text) return false;
     const kind = textKind(p.c.text);
@@ -1654,7 +1698,10 @@ export async function proposeFill(
         if ([text, c?.context ?? null, clause].some((t) => t !== null && leavesChoiceOpen(t, o))) return { why: "ambiguous" };
         // V3 review: a year menu's or a month menu's option read through a two-digit year's century ("Aug '30") is a choice.
         const century = byPiece === null && byDate !== null ? stated(readMonth(text, refYear)) : undefined;
-        if (exact !== null) return { value: exact, display: exact, writes: page && !press, ...(century === undefined ? {} : { chose: century }) };
+        // V4 re-review: only an option written exactly as the pick is the pick (optionLabel). One matchOption found by case,
+        // spacing or NFKC ("…/profile" for "…/Profile") is code's reading, said to the verifier.
+        const respelled = whole !== null && whole.trim() !== text.trim() ? { says: `Caret took "${text}" to be the option '${whole}', written differently`, also: null, how: "optionNamed" as const } : undefined;
+        if (exact !== null) return { value: exact, display: exact, writes: page && !press, ...(century === undefined ? (respelled === undefined ? {} : { chose: respelled }) : { chose: century }) };
         return { value: o, display: o, writes: false, chose: { says: `Caret took "${text}" to name the option '${o}'`, also: null } };
       }
       case "checkbox": {
@@ -2026,7 +2073,7 @@ function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, writte
     // V3: the value as derived, with the choice code made said, and the extra source it read (a send line) as `also`.
     const own = provenanceOf(model, p, part, written, judged, control);
     const d: Extract<Provenance, { kind: "derived" }> = own.kind === "derived" ? own : { kind: "derived", how: control === "date" || control === "time" ? controlHow(control, written, pickSpan(p)) : "optionFromPart", base: own, also: null };
-    return { ...d, also: chose.also ?? d.also, says: chose.says, ...(chose.via === undefined ? {} : { via: chose.via }) };
+    return { ...d, ...(chose.how === undefined ? {} : { how: chose.how }), also: chose.also ?? d.also, says: chose.says, ...(chose.via === undefined ? {} : { via: chose.via }) };
   }
   const cand = (c: Candidate): Provenance => candidateProvenance(model, c, judged(c) ?? "");
   const base = (b: Exclude<Pick, { from: "derived" }>): Provenance =>

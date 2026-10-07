@@ -44,10 +44,18 @@ public enum Roles {
         "AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXLayoutItem", "AXUnknown", "AXRow", "AXCell",
         "AXColumn", "AXList", "AXTable", "AXOutline", "AXTabGroup", "AXToolbar", "AXGenericElement", "AXSection",
     ]
-    /// Dropped with everything under them: chrome that carries no content.
+    /// Dropped with everything under them: chrome that carries no content. An AXMenu is kept only as a pop-up
+    /// button's own (popUpMenu).
     public static let skipped: Set<String> = [
         "AXScrollBar", "AXMenuBar", "AXMenu", "AXGrowArea", "AXSplitter", "AXValueIndicator", "AXRuler", "AXRulerMarker",
     ]
+    /// V4: whether a node is a pop-up button's own menu, whose items are that button's options. An app that keeps a
+    /// closed pop-up's items in its tree shows them here without the menu being opened; the reader never opens one.
+    /// Chrome shows only a closed menu's selected item (evidence/screen/b24/capture-2 probe), which the helper reads as
+    /// no option list. Every other menu (a context menu, a menu bar's) stays dropped.
+    public static func popUpMenu(_ role: String, parentRole: String?) -> Bool {
+        role == "AXMenu" && parentRole == "AXPopUpButton"
+    }
     /// Kept even when unnamed, because they can be acted on.
     public static let actionable: Set<String> = [
         "AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton", "AXSlider", "AXLink", "AXTab",
@@ -108,7 +116,7 @@ public struct Compactor {
     /// Compacts the children of a window element.
     public func compact(windowChildren: [RawNode]) -> CompactResult {
         var state = State()
-        for c in windowChildren { visit(c, chain: [], parent: nil, state: &state) }
+        for c in windowChildren { visit(c, chain: [], parent: nil, parentRole: nil, state: &state) }
         return state.result()
     }
 
@@ -168,10 +176,22 @@ public struct Compactor {
                     value: value, editable: editable, states: states)
     }
 
-    private func visit(_ n: RawNode, chain: [String], parent: String?, state: inout State) {
+    private func visit(_ n: RawNode, chain: [String], parent: String?, parentRole: String?, state: inout State) {
+        if Roles.popUpMenu(n.role, parentRole: parentRole) {
+            // V4: the menu itself is collapsed; its items attach to the pop-up button, as the helper reads options
+            // (fill/controls.ts formControls: AXMenuItem children of an AXPopUpButton). Each item is kept as a leaf: its
+            // title is the option, and text inside it would read as a value the window states (V4 re-review). A submenu
+            // goes with it.
+            for c in n.children where c.role == "AXMenuItem" {
+                var item = c
+                item.children = []
+                visit(item, chain: chain, parent: parent, parentRole: n.role, state: &state)
+            }
+            return
+        }
         if Roles.skipped.contains(n.role) { return }
         guard let info = describe(n) else {
-            for c in n.children { visit(c, chain: chain, parent: parent, state: &state) }
+            for c in n.children { visit(c, chain: chain, parent: parent, parentRole: n.role, state: &state) }
             return
         }
         let seg = "\(ElementKey.shortRole(n.role)):\(info.normalizedLabel)"
@@ -195,7 +215,7 @@ public struct Compactor {
         if n.focused { state.focusedKey = key }
         let before = state.nodes.count
         if !n.secure {
-            for c in n.children { visit(c, chain: childChain, parent: key, state: &state) }
+            for c in n.children { visit(c, chain: childChain, parent: key, parentRole: n.role, state: &state) }
         }
         let leaf = state.nodes.count == before
         if let h = n.handle {

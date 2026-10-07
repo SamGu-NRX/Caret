@@ -1,0 +1,491 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "cfca6c7e-ceba-4a46-8f71-981bde92ace9",
+ "at": 1791185601289,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "Schedule Service | Summit Subaru",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "59EB07DE51E0CB95F2F9D2D91C5F7DE8",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/car-service-booking.html",
+   "navGen": 14,
+   "title": "Schedule Service | Summit Subaru",
+   "headings": [
+    "Summit Subaru Service",
+    "Your vehicle",
+    "Services and time",
+    "Contact information"
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/combobox:year *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=year\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Year *",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select year",
+       "selected": true
+      },
+      {
+       "value": "2026",
+       "label": "2026",
+       "selected": false
+      },
+      {
+       "value": "2025",
+       "label": "2025",
+       "selected": false
+      },
+      {
+       "value": "2024",
+       "label": "2024",
+       "selected": false
+      },
+      {
+       "value": "2023",
+       "label": "2023",
+       "selected": false
+      },
+      {
+       "value": "2022",
+       "label": "2022",
+       "selected": false
+      },
+      {
+       "value": "2021",
+       "label": "2021",
+       "selected": false
+      },
+      {
+       "value": "2020",
+       "label": "2020",
+       "selected": false
+      },
+      {
+       "value": "2019",
+       "label": "2019",
+       "selected": false
+      },
+      {
+       "value": "2018",
+       "label": "2018",
+       "selected": false
+      },
+      {
+       "value": "2017",
+       "label": "2017",
+       "selected": false
+      },
+      {
+       "value": "2016",
+       "label": "2016",
+       "selected": false
+      },
+      {
+       "value": "2015",
+       "label": "2015",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      300,
+      185,
+      333,
+      39
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/combobox:model *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=model\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Model *",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select model",
+       "selected": true
+      },
+      {
+       "value": "Ascent",
+       "label": "Ascent",
+       "selected": false
+      },
+      {
+       "value": "Crosstrek",
+       "label": "Crosstrek",
+       "selected": false
+      },
+      {
+       "value": "Forester",
+       "label": "Forester",
+       "selected": false
+      },
+      {
+       "value": "Impreza",
+       "label": "Impreza",
+       "selected": false
+      },
+      {
+       "value": "Legacy",
+       "label": "Legacy",
+       "selected": false
+      },
+      {
+       "value": "Outback",
+       "label": "Outback",
+       "selected": false
+      },
+      {
+       "value": "WRX",
+       "label": "WRX",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      647,
+      185,
+      333,
+      39
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:current mileage *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=miles\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Current mileage *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      300,
+      255,
+      333,
+      37
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/textbox:vin (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=vin\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "VIN (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      647,
+      255,
+      333,
+      37
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/checkbox:oil and filter change~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=svc\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Oil and filter change",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      319,
+      408,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/checkbox:tire rotation~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=svc\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Tire rotation",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      319,
+      434,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/checkbox:brake inspection~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=svc\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Brake inspection",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      319,
+      460,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/checkbox:cabin air filter replacement~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=svc\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Cabin air filter replacement",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      319,
+      486,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/checkbox:wheel alignment~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=svc\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Wheel alignment",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      319,
+      512,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/textbox:preferred date *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=date\",\"date\"]",
+     "kind": "date",
+     "role": "textbox",
+     "name": "Preferred date *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      300,
+      587,
+      333,
+      40
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form@0/textbox:preferred time *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=time\",\"time\"]",
+     "kind": "time",
+     "role": "textbox",
+     "name": "Preferred time *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      647,
+      587,
+      333,
+      41.8
+     ]
+    },
+    {
+     "id": "e12",
+     "key": "form@0/radio:i'll wait at the dealership~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=trans\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "I'll wait at the dealership",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      320,
+      677.8,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e12",
+      "name": "While we service your vehicle"
+     }
+    },
+    {
+     "id": "e13",
+     "key": "form@0/radio:shuttle ride~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=trans\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Shuttle ride",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      320,
+      703.8,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e12",
+      "name": "While we service your vehicle"
+     }
+    },
+    {
+     "id": "e14",
+     "key": "form@0/radio:drop off and pick up later~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=trans\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Drop off and pick up later",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      320,
+      729.8,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e12",
+      "name": "While we service your vehicle"
+     }
+    },
+    {
+     "id": "e15",
+     "key": "form@0/textbox:full name *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=name\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Full name *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      300,
+      859.8,
+      680,
+      37
+     ]
+    },
+    {
+     "id": "e16",
+     "key": "form@0/textbox:email *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=email\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      300,
+      927.8,
+      333,
+      37
+     ]
+    },
+    {
+     "id": "e17",
+     "key": "form@0/textbox:mobile phone *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=mobile\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Mobile phone *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      647,
+      927.8,
+      333,
+      37
+     ]
+    },
+    {
+     "id": "e18",
+     "key": "form@0/textbox:comments for your service advisor~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=comments\",\"textarea\"]",
+     "kind": "textarea",
+     "role": "textbox",
+     "name": "Comments for your service advisor",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      300,
+      995.8,
+      680,
+      74
+     ]
+    },
+    {
+     "id": "e19",
+     "key": "form@0/checkbox:text me when my vehicle is ready~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ready\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Text me when my vehicle is ready",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      304,
+      1086.8,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e20",
+     "key": "form@0/checkbox:send me service specials and coupons~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=specials\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Send me service specials and coupons",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      304,
+      1115.8,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e21",
+     "key": "form@0/button:request appointment~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Request appointment",
+     "form": "form@0",
+     "rect": [
+      300,
+      1163.8,
+      213.3,
+      43
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {},
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

@@ -1,0 +1,404 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "a36389f5-ea82-49c4-a1cf-9706255f0f56",
+ "at": 1791185579653,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "Continuing Education Enrollment | Lakeside Community College",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "BA4D1577BA40F4E942CD410B6FB95BA3",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/course-enrollment.html",
+   "navGen": 12,
+   "title": "Continuing Education Enrollment | Lakeside Community College",
+   "headings": [
+    "Course Enrollment Form",
+    "Student information",
+    "Course selection",
+    "Background"
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/textbox:first name *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=fn\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "First name *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      555.2,
+      210.8,
+      440.3,
+      28
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/textbox:middle name~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=mn\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Middle name",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      555.2,
+      250.8,
+      440.3,
+      28
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:last name *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ln\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Last name *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      555.2,
+      290.8,
+      440.3,
+      28
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/textbox:preferred name (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=pn\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Preferred name (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      555.2,
+      330.8,
+      440.3,
+      28
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/textbox:date of birth *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=dob\",\"date\"]",
+     "kind": "date",
+     "role": "textbox",
+     "name": "Date of birth *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      555.2,
+      370.8,
+      440.3,
+      30
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/textbox:email *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=em\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      555.2,
+      412.8,
+      440.3,
+      28
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/textbox:phone *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ph\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Phone *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      555.2,
+      452.8,
+      440.3,
+      28
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/textbox:student id (returning students)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=sid\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Student ID (returning students)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      555.2,
+      492.8,
+      440.3,
+      28
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/combobox:course *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=course\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Course *",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select a course",
+       "selected": true
+      },
+      {
+       "value": "CIS 120 - Computer Literacy",
+       "label": "CIS 120 - Computer Literacy",
+       "selected": false
+      },
+      {
+       "value": "CIS 140 - Intro to Web Development",
+       "label": "CIS 140 - Intro to Web Development",
+       "selected": false
+      },
+      {
+       "value": "CIS 155 - Python Programming I",
+       "label": "CIS 155 - Python Programming I",
+       "selected": false
+      },
+      {
+       "value": "ACC 101 - Bookkeeping Basics",
+       "label": "ACC 101 - Bookkeeping Basics",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      555.2,
+      599.3,
+      428.3,
+      30
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/combobox:term *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=term\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Term *",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select term",
+       "selected": true
+      },
+      {
+       "value": "Winter 2027",
+       "label": "Winter 2027",
+       "selected": false
+      },
+      {
+       "value": "Spring 2027",
+       "label": "Spring 2027",
+       "selected": false
+      },
+      {
+       "value": "Summer 2027",
+       "label": "Summer 2027",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      555.2,
+      641.3,
+      428.3,
+      30
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form@0/radio:mon/wed 6:00-8:30 pm~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=sec\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Mon/Wed 6:00-8:30 PM",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      560.2,
+      707.3,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e11",
+      "name": "Section *"
+     }
+    },
+    {
+     "id": "e12",
+     "key": "form@0/radio:tue/thu 9:00-11:30 am~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=sec\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Tue/Thu 9:00-11:30 AM",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      560.2,
+      730.3,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e11",
+      "name": "Section *"
+     }
+    },
+    {
+     "id": "e13",
+     "key": "form@0/radio:sat 9:00 am-12:30 pm~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=sec\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Sat 9:00 AM-12:30 PM",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      560.2,
+      753.3,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e11",
+      "name": "Section *"
+     }
+    },
+    {
+     "id": "e14",
+     "key": "form@0/combobox:highest level of education completed *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=edu\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Highest level of education completed *",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select...",
+       "selected": true
+      },
+      {
+       "value": "Less than high school",
+       "label": "Less than high school",
+       "selected": false
+      },
+      {
+       "value": "High school diploma or GED",
+       "label": "High school diploma or GED",
+       "selected": false
+      },
+      {
+       "value": "Some college, no degree",
+       "label": "Some college, no degree",
+       "selected": false
+      },
+      {
+       "value": "Associate degree",
+       "label": "Associate degree",
+       "selected": false
+      },
+      {
+       "value": "Bachelor's degree",
+       "label": "Bachelor's degree",
+       "selected": false
+      },
+      {
+       "value": "Graduate degree",
+       "label": "Graduate degree",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      555.2,
+      851.7,
+      428.3,
+      30
+     ]
+    },
+    {
+     "id": "e15",
+     "key": "form@0/checkbox:this is my first class at lakeside~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=first\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "This is my first class at Lakeside",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      274,
+      902.7,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e16",
+     "key": "form@0/checkbox:email me the lakeside continuing ed newsletter~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=news\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Email me the Lakeside Continuing Ed newsletter",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      274,
+      929.7,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e17",
+     "key": "form@0/button:submit enrollment~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Submit enrollment",
+     "form": "form@0",
+     "rect": [
+      551.2,
+      973.7,
+      152.8,
+      36
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {},
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

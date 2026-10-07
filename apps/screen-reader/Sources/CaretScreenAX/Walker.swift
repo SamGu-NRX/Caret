@@ -51,12 +51,12 @@ public final class Walker {
         AXUIElementSetMessagingTimeout(window, AX.elementTimeout)
         guard let kids = AX.elements(window, kAXChildrenAttribute) else { return [] }
         if kids.count > limits.maxChildren { clipped = true }
-        return kids.prefix(limits.maxChildren).compactMap { read($0, depth: 1) }
+        return kids.prefix(limits.maxChildren).compactMap { read($0, depth: 1, parentRole: nil) }
     }
 
-    public func readSubtree(_ e: AXUIElement) -> RawNode? { read(e, depth: 1) }
+    public func readSubtree(_ e: AXUIElement) -> RawNode? { read(e, depth: 1, parentRole: nil) }
 
-    private func read(_ e: AXUIElement, depth: Int) -> RawNode? {
+    private func read(_ e: AXUIElement, depth: Int, parentRole: String?) -> RawNode? {
         if visited >= limits.maxVisited || CFAbsoluteTimeGetCurrent() - start > limits.deadline {
             truncated = true
             return nil
@@ -87,7 +87,8 @@ public final class Walker {
         node.handle = elements.count
         elements.append(e)
 
-        if secure || Roles.skipped.contains(role) { return node }
+        // V4: a pop-up button's own menu is read for its items, the button's options (Roles.popUpMenu); other menus are not.
+        if secure || (Roles.skipped.contains(role) && !Roles.popUpMenu(role, parentRole: parentRole)) { return node }
         if depth >= limits.maxDepth {
             if let k = a[9] as? [AXUIElement], !k.isEmpty { clipped = true }
             return node
@@ -100,7 +101,7 @@ public final class Walker {
         }
         if kids.count > limits.maxChildren { clipped = true }
         for k in kids.prefix(limits.maxChildren) {
-            if let c = read(k, depth: depth + 1) { node.children.append(c) }
+            if let c = read(k, depth: depth + 1, parentRole: role) { node.children.append(c) }
             if truncated { break }
         }
         return node

@@ -86,7 +86,8 @@ const asks = (id: string, title: string, file: string, jev: string): SetDef => (
   browser: false,
   timeoutMs: 180 * MIN,
   cwd: HELPER,
-  argv: (out) => ["scripts/realfill-asks.ts", "--out", out, "--asks-file", file, "--maker", "heads", "--engine", ENGINE, "--log-jev", join(out, "jev.ndjson"), ...SPEND],
+  // I4: realfill-asks now defaults to the page window; these sets stay on the reader's so they compare with P1's runs.
+  argv: (out) => ["scripts/realfill-asks.ts", "--out", out, "--asks-file", file, "--maker", "heads", "--engine", ENGINE, "--form-window", "reader", "--log-jev", join(out, "jev.ndjson"), ...SPEND],
   refs: { jev: [[`P1 ${jev}`, join(EVIDENCE, "p1", jev)]] },
 });
 const page = (id: string, title: string, kind: "tasks" | "corpus" | "fill" | "wizard", extra: string[], refs: SetDef["refs"], drop = false): SetDef => ({

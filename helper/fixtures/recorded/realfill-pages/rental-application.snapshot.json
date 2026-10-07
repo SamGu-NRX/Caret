@@ -1,0 +1,773 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "ee6e880b-ad62-4428-b1b7-4f21ccc428c4",
+ "at": 1791185514421,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "Rental Application | Cedar Court Apartments",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "FB66A274406E287F6F88BB0B277E843B",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/rental-application.html",
+   "navGen": 6,
+   "title": "Rental Application | Cedar Court Apartments",
+   "headings": [
+    "Rental Application",
+    "Applicant",
+    "Current residence",
+    "Current landlord",
+    "Move details",
+    "Employment and income",
+    "Agreements"
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/textbox:first name *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=first\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "First name *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      181.1,
+      250.7,
+      35
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/textbox:middle name~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=middle\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Middle name",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      507.2,
+      181.1,
+      250.7,
+      35
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:last name *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=last\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Last name *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      771.8,
+      181.1,
+      250.7,
+      35
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/textbox:date of birth *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=dob\",\"date\"]",
+     "kind": "date",
+     "role": "textbox",
+     "name": "Date of birth *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      247.1,
+      383,
+      38
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/textbox:social security number *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=ssn\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Social Security number *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      639.5,
+      247.1,
+      383,
+      35
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/textbox:email address *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=email\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email address *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      316.1,
+      383,
+      35
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/textbox:mobile phone *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=mobile\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Mobile phone *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      639.5,
+      316.1,
+      383,
+      35
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/textbox:street address *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=street\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Street address *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      451.2,
+      574.5,
+      35
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/textbox:apt / unit (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=unit\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Apt / Unit (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      831,
+      451.2,
+      191.5,
+      35
+     ]
+    },
+    {
+     "id": "e10",
+     "key": "form@0/textbox:city *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=city\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "City *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      517.2,
+      376,
+      35
+     ]
+    },
+    {
+     "id": "e11",
+     "key": "form@0/combobox:state *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=state\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "State *",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select",
+       "selected": true
+      },
+      {
+       "value": "AL",
+       "label": "AL",
+       "selected": false
+      },
+      {
+       "value": "AK",
+       "label": "AK",
+       "selected": false
+      },
+      {
+       "value": "AZ",
+       "label": "AZ",
+       "selected": false
+      },
+      {
+       "value": "AR",
+       "label": "AR",
+       "selected": false
+      },
+      {
+       "value": "CA",
+       "label": "CA",
+       "selected": false
+      },
+      {
+       "value": "CO",
+       "label": "CO",
+       "selected": false
+      },
+      {
+       "value": "CT",
+       "label": "CT",
+       "selected": false
+      },
+      {
+       "value": "DE",
+       "label": "DE",
+       "selected": false
+      },
+      {
+       "value": "DC",
+       "label": "DC",
+       "selected": false
+      },
+      {
+       "value": "FL",
+       "label": "FL",
+       "selected": false
+      },
+      {
+       "value": "GA",
+       "label": "GA",
+       "selected": false
+      },
+      {
+       "value": "HI",
+       "label": "HI",
+       "selected": false
+      },
+      {
+       "value": "ID",
+       "label": "ID",
+       "selected": false
+      },
+      {
+       "value": "IL",
+       "label": "IL",
+       "selected": false
+      },
+      {
+       "value": "IN",
+       "label": "IN",
+       "selected": false
+      },
+      {
+       "value": "IA",
+       "label": "IA",
+       "selected": false
+      },
+      {
+       "value": "KS",
+       "label": "KS",
+       "selected": false
+      },
+      {
+       "value": "KY",
+       "label": "KY",
+       "selected": false
+      },
+      {
+       "value": "LA",
+       "label": "LA",
+       "selected": false
+      },
+      {
+       "value": "ME",
+       "label": "ME",
+       "selected": false
+      },
+      {
+       "value": "MD",
+       "label": "MD",
+       "selected": false
+      },
+      {
+       "value": "MA",
+       "label": "MA",
+       "selected": false
+      },
+      {
+       "value": "MI",
+       "label": "MI",
+       "selected": false
+      },
+      {
+       "value": "MN",
+       "label": "MN",
+       "selected": false
+      },
+      {
+       "value": "MS",
+       "label": "MS",
+       "selected": false
+      },
+      {
+       "value": "MO",
+       "label": "MO",
+       "selected": false
+      },
+      {
+       "value": "MT",
+       "label": "MT",
+       "selected": false
+      },
+      {
+       "value": "NE",
+       "label": "NE",
+       "selected": false
+      },
+      {
+       "value": "NV",
+       "label": "NV",
+       "selected": false
+      },
+      {
+       "value": "NH",
+       "label": "NH",
+       "selected": false
+      },
+      {
+       "value": "NJ",
+       "label": "NJ",
+       "selected": false
+      },
+      {
+       "value": "NM",
+       "label": "NM",
+       "selected": false
+      },
+      {
+       "value": "NY",
+       "label": "NY",
+       "selected": false
+      },
+      {
+       "value": "NC",
+       "label": "NC",
+       "selected": false
+      },
+      {
+       "value": "ND",
+       "label": "ND",
+       "selected": false
+      },
+      {
+       "value": "OH",
+       "label": "OH",
+       "selected": false
+      },
+      {
+       "value": "OK",
+       "label": "OK",
+       "selected": false
+      },
+      {
+       "value": "OR",
+       "label": "OR",
+       "selected": false
+      },
+      {
+       "value": "PA",
+       "label": "PA",
+       "selected": false
+      },
+      {
+       "value": "RI",
+       "label": "RI",
+       "selected": false
+      },
+      {
+       "value": "SC",
+       "label": "SC",
+       "selected": false
+      },
+      {
+       "value": "SD",
+       "label": "SD",
+       "selected": false
+      },
+      {
+       "value": "TN",
+       "label": "TN",
+       "selected": false
+      },
+      {
+       "value": "TX",
+       "label": "TX",
+       "selected": false
+      },
+      {
+       "value": "UT",
+       "label": "UT",
+       "selected": false
+      },
+      {
+       "value": "VT",
+       "label": "VT",
+       "selected": false
+      },
+      {
+       "value": "VA",
+       "label": "VA",
+       "selected": false
+      },
+      {
+       "value": "WA",
+       "label": "WA",
+       "selected": false
+      },
+      {
+       "value": "WV",
+       "label": "WV",
+       "selected": false
+      },
+      {
+       "value": "WI",
+       "label": "WI",
+       "selected": false
+      },
+      {
+       "value": "WY",
+       "label": "WY",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      632.5,
+      517.2,
+      188,
+      37
+     ]
+    },
+    {
+     "id": "e12",
+     "key": "form@0/textbox:zip code *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=zip\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "ZIP code *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      834.5,
+      517.2,
+      188,
+      35
+     ]
+    },
+    {
+     "id": "e13",
+     "key": "form@0/textbox:moved in (mm/yyyy) *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=since\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Moved in (MM/YYYY) *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      585.2,
+      383,
+      35
+     ]
+    },
+    {
+     "id": "e14",
+     "key": "form@0/textbox:monthly rent ($) *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=rent\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Monthly rent ($) *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      639.5,
+      585.2,
+      383,
+      35
+     ]
+    },
+    {
+     "id": "e15",
+     "key": "form@0/textbox:reason for moving (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=reason\",\"textarea\"]",
+     "kind": "textarea",
+     "role": "textbox",
+     "name": "Reason for moving (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      651.2,
+      780,
+      54
+     ]
+    },
+    {
+     "id": "e16",
+     "key": "form@0/textbox:landlord or property manager name *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=llname\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Landlord or property manager name *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      823.3,
+      383,
+      35
+     ]
+    },
+    {
+     "id": "e17",
+     "key": "form@0/textbox:landlord phone *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=llphone\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Landlord phone *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      639.5,
+      823.3,
+      383,
+      35
+     ]
+    },
+    {
+     "id": "e18",
+     "key": "form@0/textbox:desired move-in date *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=movein\",\"date\"]",
+     "kind": "date",
+     "role": "textbox",
+     "name": "Desired move-in date *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      958.4,
+      383,
+      38
+     ]
+    },
+    {
+     "id": "e19",
+     "key": "form@0/combobox:number of occupants (including you) *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=occ\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Number of occupants (including you) *",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Select",
+       "selected": true
+      },
+      {
+       "value": "1",
+       "label": "1",
+       "selected": false
+      },
+      {
+       "value": "2",
+       "label": "2",
+       "selected": false
+      },
+      {
+       "value": "3",
+       "label": "3",
+       "selected": false
+      },
+      {
+       "value": "4",
+       "label": "4",
+       "selected": false
+      },
+      {
+       "value": "5 or more",
+       "label": "5 or more",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      639.5,
+      958.4,
+      383,
+      37
+     ]
+    },
+    {
+     "id": "e20",
+     "key": "form@0/radio:yes~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=pets\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "Yes",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      247.5,
+      1042.4,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e20",
+      "name": "Do you have pets? *"
+     }
+    },
+    {
+     "id": "e21",
+     "key": "form@0/radio:no~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"name=pets\",\"radio\"]",
+     "kind": "radio",
+     "role": "radio",
+     "name": "No",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      315,
+      1042.4,
+      13,
+      13
+     ],
+     "group": {
+      "id": "e20",
+      "name": "Do you have pets? *"
+     }
+    },
+    {
+     "id": "e22",
+     "key": "form@0/textbox:current employer *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=employer\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Current employer *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      1162.5,
+      383,
+      35
+     ]
+    },
+    {
+     "id": "e23",
+     "key": "form@0/textbox:job title~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=title\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Job title",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      639.5,
+      1162.5,
+      383,
+      35
+     ]
+    },
+    {
+     "id": "e24",
+     "key": "form@0/textbox:gross monthly income ($) *~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=income\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Gross monthly income ($) *",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      1228.5,
+      383,
+      35
+     ]
+    },
+    {
+     "id": "e25",
+     "key": "form@0/textbox:vehicle make and model (optional)~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=vehicle\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Vehicle make and model (optional)",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      639.5,
+      1228.5,
+      383,
+      35
+     ]
+    },
+    {
+     "id": "e26",
+     "key": "form@0/checkbox:email me about available units and resident events.~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=news\",\"checkbox\"]",
+     "kind": "checkbox",
+     "role": "checkbox",
+     "name": "Email me about available units and resident events.",
+     "checked": false,
+     "form": "form@0",
+     "rect": [
+      246.5,
+      1355.7,
+      13,
+      13
+     ]
+    },
+    {
+     "id": "e27",
+     "key": "form@0/button:submit application~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Submit application",
+     "form": "form@0",
+     "rect": [
+      242.5,
+      1398.7,
+      182.8,
+      42
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {
+    "selfIdentification": 1
+   },
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

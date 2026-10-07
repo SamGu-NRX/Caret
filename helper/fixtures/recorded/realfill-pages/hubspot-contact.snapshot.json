@@ -1,0 +1,219 @@
+{
+ "type": "pageSnapshot",
+ "v": 1,
+ "id": "8a434e9e-4478-461d-9612-34c89922d866",
+ "at": 1791185503588,
+ "tabId": 2065936305,
+ "browserWindowId": 2065936304,
+ "active": true,
+ "inFocusedWindow": true,
+ "title": "Contact Sales | HubSpot's Software (local replica)",
+ "frames": [
+  {
+   "frameId": 0,
+   "parentFrameId": -1,
+   "documentId": "E83CFC2C2F3915DFE12E749405244DDE",
+   "origin": "http://127.0.0.1:47331",
+   "path": "/forms/hubspot-contact.html",
+   "navGen": 5,
+   "title": "Contact Sales | HubSpot's Software (local replica)",
+   "headings": [
+    "Talk to sales"
+   ],
+   "controls": [
+    {
+     "id": "e1",
+     "key": "form@0/textbox:first name*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=firstname\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "First Name*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      320,
+      116.4,
+      312,
+      39
+     ]
+    },
+    {
+     "id": "e2",
+     "key": "form@0/textbox:last name*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=lastname\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Last Name*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      648,
+      116.4,
+      312,
+      39
+     ]
+    },
+    {
+     "id": "e3",
+     "key": "form@0/textbox:email*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=email\",\"email\"]",
+     "kind": "email",
+     "role": "textbox",
+     "name": "Email*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      320,
+      189.4,
+      312,
+      39
+     ]
+    },
+    {
+     "id": "e4",
+     "key": "form@0/textbox:phone number*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=phone\",\"tel\"]",
+     "kind": "tel",
+     "role": "textbox",
+     "name": "Phone number*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      648,
+      189.4,
+      312,
+      39
+     ]
+    },
+    {
+     "id": "e5",
+     "key": "form@0/textbox:company name*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=company\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Company name*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      320,
+      262.4,
+      640,
+      39
+     ]
+    },
+    {
+     "id": "e6",
+     "key": "form@0/textbox:website url*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=website\",\"text\"]",
+     "kind": "text",
+     "role": "textbox",
+     "name": "Website URL*",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      320,
+      335.4,
+      640,
+      39
+     ]
+    },
+    {
+     "id": "e7",
+     "key": "form@0/combobox:company size*~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=size\",\"select\"]",
+     "kind": "select",
+     "role": "combobox",
+     "name": "Company size*",
+     "value": "",
+     "options": [
+      {
+       "value": "",
+       "label": "Please Select",
+       "selected": true
+      },
+      {
+       "value": "1 employee",
+       "label": "1 employee",
+       "selected": false
+      },
+      {
+       "value": "2 to 9 employees",
+       "label": "2 to 9 employees",
+       "selected": false
+      },
+      {
+       "value": "10 to 24 employees",
+       "label": "10 to 24 employees",
+       "selected": false
+      },
+      {
+       "value": "25 to 49 employees",
+       "label": "25 to 49 employees",
+       "selected": false
+      },
+      {
+       "value": "50 to 99 employees",
+       "label": "50 to 99 employees",
+       "selected": false
+      },
+      {
+       "value": "100 to 199 employees",
+       "label": "100 to 199 employees",
+       "selected": false
+      },
+      {
+       "value": "200 or more employees",
+       "label": "200 or more employees",
+       "selected": false
+      }
+     ],
+     "form": "form@0",
+     "rect": [
+      320,
+      408.4,
+      640,
+      41
+     ]
+    },
+    {
+     "id": "e8",
+     "key": "form@0/textbox:how can we help?~0",
+     "strongKey": "[\"http://127.0.0.1:47331\",\"form@0\",\"id=help\",\"textarea\"]",
+     "kind": "textarea",
+     "role": "textbox",
+     "name": "How can we help?",
+     "value": "",
+     "form": "form@0",
+     "rect": [
+      320,
+      483.4,
+      640,
+      76
+     ]
+    },
+    {
+     "id": "e9",
+     "key": "form@0/button:submit~0",
+     "strongKey": null,
+     "kind": "button",
+     "role": "button",
+     "name": "Submit",
+     "form": "form@0",
+     "rect": [
+      320,
+      603.4,
+      97.8,
+      42
+     ]
+    }
+   ],
+   "iframes": [],
+   "excluded": {
+    "selfIdentification": 1
+   },
+   "truncated": false
+  }
+ ],
+ "missing": [],
+ "focused": null
+}

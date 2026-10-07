@@ -5,7 +5,7 @@
 //
 //   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker heads|jev|writer]
 //        [--spend-limit USD] [--gap S] [--writer-model provider:model] [--plan-writer provider:model]
-//        [--engine jev|llama|gemini] [--log-requests FILE] [--replay JEV_LOG]
+//        [--engine jev|llama|gemini] [--log-requests FILE] [--replay JEV_LOG] [--form-window page|reader]
 // J1: --engine names the decision engine in Jev's place (engines/decide/harness.ts; llama's server and calibration come
 // from CARET_LLAMA_* and CARET_ENGINE_CALIBRATION), behind the record-and-replay cache (CARET_JEV_CACHE, replay-or-record
 // by default), so a rerun of unchanged asks costs nothing. Every window and memory entry here comes from fixture files.
@@ -47,7 +47,7 @@ import { devWriterRoute } from "../src/writer/routes.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
 import { Snapshot } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
-import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
+import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, pageForm, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: a } = parseArgs({
@@ -76,9 +76,19 @@ const { values: a } = parseArgs({
     "log-requests": { type: "string" },
     /** A2: an earlier run's --log-jev file, whose answers are replayed for the same questions (see `recorded`). */
     replay: { type: "string" },
+    /**
+     * V4: which window the form is. "reader": the reader's recorded Accessibility window, as when no page engine covers
+     * Chrome, where no menu shows its options. "page": the page engine's walk of it (realfill-corpus.ts pageForm), the
+     * window an Ask plans on when a page engine covers the browser, with every native menu's options.
+     * I4 (lead ruling, 2026-10-07): page is the default because the product plans browser Asks on the page walk
+     * (helper.ts plans on the page window whenever a page engine covers it), so the reader's desk measured a window no
+     * browser Ask uses. Pass "reader" to compare with runs before V4, which all used the reader's window.
+     */
+    "form-window": { type: "string", default: "page" },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
+if (a["form-window"] !== "reader" && a["form-window"] !== "page") throw new Error("--form-window is reader or page");
 if (a.maker !== "writer" && a.maker !== "jev" && a.maker !== "heads") throw new Error("--maker is heads, jev or writer");
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
@@ -329,7 +339,7 @@ const rows: Row[] = [];
 for (const [i, ask] of asks.entries()) {
   const form = corpus.forms.find((f) => f.id === ask.form);
   if (form === undefined) throw new Error(`no form ${ask.form}`);
-  const desk = buildDesk(corpus, snaps, form);
+  const desk = buildDesk(corpus, snaps, form, a["form-window"] === "page" ? pageForm(form) : undefined);
   for (const id of desk.model.windows.keys()) fixtureIds.add(id);
   const memory = { values: () => desk.memory };
   const r = rng(Number(a.seed) * 1000 + i);
@@ -503,7 +513,7 @@ const rightAsks = rows.filter((r) => r.ask.ask !== undefined && r.verdict === "a
 const firstRequests = rows.map((r) => r.requests);
 const kinds = [...new Set(rows.flatMap((r) => (r.ask.kind === undefined ? [] : [r.ask.kind])))];
 const md = [
-  `# Ask scoreboard (B26): ${a["asks-file"]}, maker ${a.maker}`,
+  `# Ask scoreboard (B26): ${a["asks-file"]}, maker ${a.maker}, form window ${a["form-window"]}`,
   "",
   `Maker ${a.maker}${route !== null && a.maker === "writer" ? ` (${route.model} on ${route.provider})` : a.maker !== "writer" ? ` (Jev ${jevModels.size === 0 ? "unanswered" : [...jevModels].join(", ")})` : ""}; plan route's writer ${planRoute === null ? "off" : `${planRoute.provider} ${planRoute.model}`}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
   `Maker tokens per intent (input + output, ${a.maker === "writer" ? "the writer's" : "Jev input only"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
@@ -535,5 +545,5 @@ function ok2(p: Proposed): boolean {
   return p.expected === p.value;
 }
 writeFileSync(join(OUT, "realfill-asks.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "realfill-asks.json"), JSON.stringify({ engine: decide.says, requestMs, maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, null, 1) + "\n");
+writeFileSync(join(OUT, "realfill-asks.json"), JSON.stringify({ engine: decide.says, formWindow: a["form-window"], requestMs, maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, null, 1) + "\n");
 process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}; asked back ${back.length}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}${a.replay === undefined ? "" : `; replayed ${replay.hits}, missed ${replay.misses}`}\n`);

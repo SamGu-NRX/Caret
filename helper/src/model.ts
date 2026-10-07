@@ -93,6 +93,10 @@ export class ScreenModel {
       values = prior.values.filter((v) => !removed.has(v.nodeKey)).concat(snap.values);
     }
 
+    // V4 re-review: nothing beneath a pop-up's option is kept: the option's label says it, and a text inside one would read
+    // as a value the window states.
+    const dropped = underMenuOptions(nodes);
+    for (const k of dropped) nodes.delete(k);
     if (prior !== undefined) out.push(...diffNodes(prior.nodes, nodes, snap, id));
 
     // A partial snapshot only knows focus inside its subtree; outside it, the earlier focus stands
@@ -108,7 +112,10 @@ export class ScreenModel {
       window: snap.window,
       focused: snap.focused,
       nodes,
-      values,
+      // V4 review: a pop-up menu's option is a choice the window offers, not a fact it states, so a value read in one (a date
+      // in "Deliver on Oct 17") is no window's value: kept, it was offered to other forms as a source and could mint as a
+      // plain date. The reader keeps a pop-up's own menu items as its options (Compactor.swift popUpMenu).
+      values: values.filter((v) => !menuOption(nodes, v.nodeKey) && !dropped.has(v.nodeKey)),
       focusedKey,
       updatedAt: snap.at,
       lastFocusedAt: snap.focused ? snap.at : (prior?.lastFocusedAt ?? 0),
@@ -261,6 +268,29 @@ function mergeCutWalk(prior: Map<string, Node>, sent: readonly Node[]): Map<stri
   }
   for (; next < sent.length; next++) out.set((sent[next] as Node).key, sent[next] as Node);
   return out;
+}
+
+/** The keys beneath every pop-up button's option (menuOption), the options themselves not included. */
+function underMenuOptions(nodes: ReadonlyMap<string, Node>): Set<string> {
+  const options = new Set([...nodes.values()].filter((n) => menuOption(nodes, n.key)).map((n) => n.key));
+  const out = new Set<string>();
+  if (options.size === 0) return out;
+  for (const n of nodes.values()) {
+    for (let p = n.parent; p !== null; p = nodes.get(p)?.parent ?? null) {
+      if (options.has(p)) {
+        out.add(n.key);
+        break;
+      }
+      if (!nodes.has(p)) break;
+    }
+  }
+  return out;
+}
+
+/** Whether a node is a pop-up button's option: an AXMenuItem whose parent is an AXPopUpButton. */
+export function menuOption(nodes: ReadonlyMap<string, Node>, key: string): boolean {
+  const n = nodes.get(key);
+  return n !== undefined && n.role === "AXMenuItem" && n.parent !== null && nodes.get(n.parent)?.role === "AXPopUpButton";
 }
 
 function subtreeKeys(nodes: Map<string, Node>, root: string): Set<string> {

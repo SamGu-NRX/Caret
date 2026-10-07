@@ -100,7 +100,8 @@ export function autocompletePart(token: AutocompleteToken | null | undefined): F
  * V3: "timePart" is the time of a span that names a date and a time; "resolved" is a whole date, time or date and time
  * written in its input's own format (when.ts), no part taken.
  */
-export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart";
+/** V4: "optionNamed" is a menu option code found a value to name (controls.ts optionLink), said as such to the verifier. */
+export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart" | "optionNamed";
 
 /** Where a value came from, carried unchanged from the moment it was read to the step that writes it. */
 export type Provenance =
@@ -539,7 +540,7 @@ export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean)
     case "transfer":
       return "a value the user copied there before";
     case "derived": {
-      const how: Record<DeriveHow, string> = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part" };
+      const how: Record<DeriveHow, string> = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part", optionNamed: "the menu option named" };
       const plain = `${how[pr.how]} in ${provenanceSays(pr.base, admitted)}`;
       return pr.says === undefined ? plain : `${plain}${pr.also === null ? "" : `, and ${provenanceSays(pr.also, admitted)}`}; ${pr.says}`;
     }

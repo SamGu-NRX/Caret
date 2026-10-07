@@ -1,1 +1,0 @@
-fill dates: any resolver assumption (year from a reference, order from a format/locale, century) sends the value to the verifier with Provenance.says; send-line years and stated-format orders are offered as their own candidates; a raw span never takes them.
