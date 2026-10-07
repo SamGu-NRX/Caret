@@ -324,7 +324,10 @@ class Supervisor:
             locks["heavy"] = self.heavy_fd
         self.custody = recovery.Custody(self.plan, self.plan_path, self.plan_digest, self.attempt, self.token,
                                         self.probes, self.log)
-        self.record["recovery"] = {"label": self.custody.label, "attempt": self.attempt}
+        self.record["recovery"] = {"label": self.custody.label, "attempt": self.attempt,
+                                   "socket": self.custody.sock_path}
+        self._write_json("supervisor.json", {k: self.record[k] for k in (
+            "job_id", "supervisor_pid", "mark", "launchd_prefix", "started_utc", "recovery")})
         self.custody.start(locks)
         self.log("the recovery owner {} holds copies of {}".format(self.custody.label, sorted(locks)))
         recovery.test_point(self.plan, "supervisor:after-adopt")

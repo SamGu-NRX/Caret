@@ -353,17 +353,25 @@ def lease_state(lr_lease, lease_id, env=None, timeout=60):
         return UNKNOWN, "lr-lease status exited {}: {}".format(done.returncode, done.stdout.strip()[:200])
     if not done.stdout.startswith("Readings ") or "\nLeases: " not in done.stdout:
         return UNKNOWN, "lr-lease status output is not the expected report"
+    lines = done.stdout.splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line.startswith("Leases: "))
+        count = int(lines[start][len("Leases: "):])
+    except (StopIteration, ValueError):
+        return UNKNOWN, "lr-lease status has no lease count"
+    # Exactly that many lines follow, each one lease object (lr-lease-cli.mjs status).
     found = None
-    for line in done.stdout.splitlines():
-        if line.startswith("{"):
-            try:
-                record = json.loads(line)
-            except ValueError:
-                return UNKNOWN, "lr-lease status printed a malformed lease line"
-            if not isinstance(record, dict) or "id" not in record:
-                return UNKNOWN, "lr-lease status printed a lease without an id"
-            if record["id"] == lease_id:
-                found = record
+    for line in lines[start + 1:start + 1 + count]:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            return UNKNOWN, "lr-lease status printed a malformed lease line"
+        if not isinstance(record, dict) or "id" not in record:
+            return UNKNOWN, "lr-lease status printed a lease line that is not a lease"
+        if record["id"] == lease_id:
+            found = record
+    if len(lines) < start + 1 + count:
+        return UNKNOWN, "lr-lease status listed fewer leases than its count"
     if found is None:
         return ABSENT, "no lease {}".format(lease_id)
     return PRESENT, "lease {} is {}".format(lease_id, found.get("state", "active"))

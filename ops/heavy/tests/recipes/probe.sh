@@ -9,6 +9,9 @@
 #   slow-cleanup SECONDS         on TERM, take SECONDS to clean up, write OUT/cleanup-done, exit 143
 #   env-dump                     write this recipe's environment to OUT/env.txt, then ok
 #   cat-input NAME               copy the sealed input NAME to OUT/seen.txt, then ok
+#   stubborn                     leave a child that closes every inherited descriptor and ignores SIGTERM, then ok
+#   launchd-up                   register and start a launchd job with the job's prefix, write OUT/ready, sleep
+#   register-bad                 try to register a label outside the job's prefix (OUT/register-bad.txt), then ok
 #   lock-proof                   run rig-run's proof that RIG_HEAVY_LOCK_FD holds heavy.lock (HEAVY_LOCK_PATH),
 #                                write the answer to OUT/lock-proof.txt, then ok
 #   rig RIG-RUN ARGS...          run RIG-RUN (tests/fake-rig-run.sh, or the real rig-run) with ARGS, forwarding TERM,
@@ -71,6 +74,29 @@ case "$MODE" in
     touch "$OUT/ready"; sleep 600 & wait $! ;;
   env-dump) env > "$OUT/env.txt"; evidence set 0; check page-loop set --exit 0; finish ;;
   cat-input) cp "$CARET_HEAVY_INPUTS/$ARG" "$OUT/seen.txt"; evidence set 0; check page-loop set --exit 0; finish ;;
+  stubborn)
+    py -c 'import os, signal, time
+os.closerange(3, 1024)  # holds no lock: only the supervisor and the recovery owner keep exclusion
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+open(os.environ["CARET_HEAVY_OUT"] + "/stubborn.pid", "w").write(str(os.getpid()))
+time.sleep(600)' &
+    for _ in $(seq 1 50); do [ -s "$OUT/stubborn.pid" ] && break; sleep 0.1; done
+    evidence set 0; check page-loop set --exit 0; finish ;;
+  launchd-up)
+    label="${CARET_HEAVY_LAUNCHD_PREFIX}svc"
+    cat > "$OUT/$label.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>$label</string>
+<key>ProgramArguments</key><array><string>/bin/sleep</string><string>600</string></array>
+<key>RunAtLoad</key><true/></dict></plist>
+PLIST
+    $CARET_HEAVY_REGISTER launchd "$label" || exit 64
+    launchctl bootstrap "gui/$(id -u)" "$OUT/$label.plist"
+    echo "$label" > "$OUT/ready"
+    sleep 600 & wait $! ;;
+  register-bad)
+    $CARET_HEAVY_REGISTER launchd "com.example.not-this-job" 2> "$OUT/register-bad.txt"; echo "exit $?" >> "$OUT/register-bad.txt"
+    evidence set 0; check page-loop set --exit 0; finish ;;
   lock-proof)
     # The same check rig-run's take_heavy_lock makes before using an inherited descriptor.
     py -c 'import fcntl, os, sys

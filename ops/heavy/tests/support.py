@@ -60,6 +60,8 @@ class World(unittest.TestCase):
     """Per-test temporary world. Subclasses call self.enqueue(...) and self.run_queue(...)."""
 
     maxDiff = None
+    # Where the world's lr-lease comes from: the live files by default; the vendored copy for cleanup-required leases.
+    LEASE_SOURCE = os.path.join(REAL_LONG_RUN, "bin")
 
     def setUp(self):
         probes = procs.DarwinProbes()
@@ -71,7 +73,13 @@ class World(unittest.TestCase):
         bin_dir = os.path.join(self.home, ".long-run/bin")
         os.makedirs(bin_dir)
         for name in ("lr-lease", "lr-reap", "lr-lease-cli.mjs", "lr-lease-core.mjs"):
-            shutil.copy2(os.path.join(REAL_LONG_RUN, "bin", name), bin_dir)
+            shutil.copy2(os.path.join(self.LEASE_SOURCE, name), bin_dir)
+        # lr-lease, except that `status` fails while <home>/.long-run/flaky-status exists (design test 6).
+        with open(os.path.join(bin_dir, "lr-lease-flaky"), "w") as fh:
+            fh.write('#!/bin/sh\nd=$(dirname "$0")\n'
+                     'if [ "$1" = status ] && [ -e "$d/../flaky-status" ]; then echo "flaky: unavailable"; exit 1; fi\n'
+                     'exec "$d/lr-lease" "$@"\n')
+        os.chmod(os.path.join(bin_dir, "lr-lease-flaky"), 0o755)
         with open(os.path.join(REAL_LONG_RUN, "lease-policy.json")) as fh:
             policy = json.load(fh)
         for rule in policy["kinds"].values():

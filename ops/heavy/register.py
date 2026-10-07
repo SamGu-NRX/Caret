@@ -11,7 +11,8 @@ import os
 import socket
 import sys
 
-import recovery
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # run with -I: the script's directory is not on sys.path
+import recovery  # noqa: E402
 
 
 def main(argv):
@@ -34,5 +35,4 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     sys.exit(main(sys.argv[1:]))
