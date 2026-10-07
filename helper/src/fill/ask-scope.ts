@@ -147,7 +147,7 @@ export interface ScopedWrite {
 export function scopeRefusal(x: ScopedWrite, scope: AskScope | undefined, documentOf: DocumentReader | null = null): string | null {
   if (scope === undefined) return null;
   const f = x.field;
-  if (f.windowId !== scope.windowId || !scope.fields.has(f.key)) return `the Ask did not ask Caret to fill '${f.name}'`;
+  if (f.windowId !== scope.windowId || !scope.fields.has(f.key)) return `your request didn't ask Caret to fill '${f.name}'`;
   const doc = documentOf === null ? null : documentOf(f.windowId);
   if (documentOf === null ? scope.document !== null : doc !== scope.document) return `the page is no longer the one Caret asked about '${f.name}' on`;
   if (f.fingerprint === null) return `Caret has no record of how '${f.name}' read, so it can't tell the field is the one the Ask was about`;

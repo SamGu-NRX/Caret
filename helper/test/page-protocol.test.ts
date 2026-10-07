@@ -123,6 +123,14 @@ describe("page results and snapshots", () => {
     expect(PageSnapshot.safeParse({ ...snap, frames: [{ ...f, excluded: { password: 0 } }] }).success).toBe(false);
     expect(PageSnapshot.safeParse({ ...snap, frames: [{ ...f, excluded: { ssn: 1 } }] }).success).toBe(false);
   });
+  it("carries a control's autocomplete field name, and only one Caret reads (W2, H1)", () => {
+    const snap = lines[6] as { frames: { controls: Record<string, unknown>[] }[] };
+    const f = snap.frames[0] as { controls: Record<string, unknown>[] };
+    expect(f.controls.map((c) => c.autocomplete)).toEqual(["given-name", undefined, undefined, undefined, undefined]);
+    const withToken = (token: string) => ({ ...snap, frames: [{ ...f, controls: [{ ...f.controls[0], autocomplete: token }] }, ...snap.frames.slice(1)] });
+    expect(PageSnapshot.safeParse(withToken("postal-code")).success).toBe(true);
+    expect(PageSnapshot.safeParse(withToken("cc-number")).success).toBe(false);
+  });
   it("refuses a snapshot with no frame", () => {
     expect(PageSnapshot.safeParse({ ...lines[6], frames: [] }).success).toBe(false);
   });

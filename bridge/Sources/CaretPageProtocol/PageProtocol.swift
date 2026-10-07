@@ -54,6 +54,9 @@ public struct PageControl: Codable, Equatable, Sendable {
     public var required: Bool?, disabled: Bool?, invalid: Bool?, shadow: String?
     /// W4: the question a radio or a press-group option answers, and its group's id; a press-group option's aria-pressed.
     public var group: PageGroup?, pressed: Bool?
+    /// W2: the autocomplete attribute's field name, one of the helper's AutocompleteToken (extension walker.ts
+    /// autocompleteOf). The relay passes it through as bytes; the helper's zod schema is what checks the token.
+    public var autocomplete: String?
 }
 
 public struct PageGroup: Codable, Equatable, Sendable { public var id: String, name: String }

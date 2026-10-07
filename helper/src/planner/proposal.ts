@@ -31,6 +31,14 @@ export function runLabel(d: PlanDraft): string {
   return n === 0 ? "Got it" : n === 1 ? "Fill 1 field" : `Fill ${n} fields`;
 }
 
+/**
+ * H1: the labels of the facts blocks that name fields the plan leaves to the user: those Caret never types (B25), and
+ * those Jev wasn't sure the request asks for (I3). The host's Ask card lists a block whose first row carries one of
+ * these as the user's steps (AskCaret.swift AskCopy.leftLabels), so they are part of the wire.
+ */
+export const YOU_TYPE_LABEL = "You type";
+export const LEFT_TO_YOU_LABEL = "Left to you";
+
 export function planSpec(d: PlanDraft): PopupSpecT {
   const w = d.checked.window;
   const windowId = w.window.windowId;
@@ -84,13 +92,13 @@ export function planSpec(d: PlanDraft): PopupSpecT {
   }
   // The fields Caret never types (B25).
   if ((d.leftToYou ?? null) !== null) {
-    blocks.push({ type: "facts", rows: [{ label: "You type", value: { text: d.leftToYou as string, ref: { rule: "plan", derived: [{ node: windowId }] } } }] });
+    blocks.push({ type: "facts", rows: [{ label: YOU_TYPE_LABEL, value: { text: d.leftToYou as string, ref: { rule: "plan", derived: [{ node: windowId }] } } }] });
   }
   // I3: the fields Jev wasn't sure the request asks for, each the user's with its sentence, as fill's "You set" rows are.
   const unsure = d.unsure ?? [];
   if (unsure.length > 0) {
     const shown = unsure.slice(0, MAX_FILL_ROWS);
-    const rows = shown.map((u, i) => ({ label: i === 0 ? "Left to you" : "", value: { text: saysUnsureField(u.name), ref: { rule: "fieldLabel", derived: [node(windowId, u.key)] } }, secondary: true as const }));
+    const rows = shown.map((u, i) => ({ label: i === 0 ? LEFT_TO_YOU_LABEL : "", value: { text: saysUnsureField(u.name), ref: { rule: "fieldLabel", derived: [node(windowId, u.key)] } }, secondary: true as const }));
     const more = unsure.length - shown.length;
     if (more > 0) rows.push({ label: "", value: { text: `and ${more} more`, ref: { rule: "count", derived: unsure.slice(MAX_FILL_ROWS).map((u) => node(windowId, u.key)) } }, secondary: true });
     blocks.push({ type: "facts", rows });

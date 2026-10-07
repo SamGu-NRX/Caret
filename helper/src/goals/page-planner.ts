@@ -244,8 +244,9 @@ const WITHHELD_SAYS: Record<string, string> = {
   // W2 (fill/contract.ts).
   notExact: "the value Caret found isn't exactly what the field asks for",
   unverified: "Caret couldn't check this value just now",
-  // I2 (fill/ask-scope.ts): past the Ask's settled fields, or changed since the Ask.
-  outOfScope: "the Ask did not ask Caret to fill it",
+  // I2 (fill/ask-scope.ts): past the Ask's settled fields, or changed since the Ask. H1: "your request", as I3's
+  // UNSURE_FIELD says it, since the panel row read "the Ask did not ask" before.
+  outOfScope: "your request didn't ask Caret to fill it",
 };
 
 /**

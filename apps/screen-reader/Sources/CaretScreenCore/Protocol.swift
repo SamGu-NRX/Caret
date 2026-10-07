@@ -89,6 +89,22 @@ public enum NodeState: String, Codable, Hashable, Sendable, CaseIterable {
     case focused, selected, disabled, expanded, checked, secure
 }
 
+/// W2: a page text input's kind as the page walk read it (protocol.ts Node.inputKind), which the write contract checks
+/// a value's shape against.
+public enum NodeInputKind: String, Codable, Hashable, Sendable, CaseIterable {
+    case text, email, tel, url, number, search, date, time, datetime, month, week, textarea
+}
+
+/// W2: the autocomplete field names a page control may carry (protocol.ts AutocompleteToken; extension walker.ts
+/// AUTOCOMPLETE_TOKENS), one value's meaning each.
+public enum AutocompleteToken: String, Codable, Hashable, Sendable, CaseIterable {
+    case name, givenName = "given-name", additionalName = "additional-name", familyName = "family-name", nickname
+    case organization, organizationTitle = "organization-title"
+    case streetAddress = "street-address", addressLine1 = "address-line1", addressLine2 = "address-line2"
+    case addressLevel1 = "address-level1", addressLevel2 = "address-level2", country, countryName = "country-name", postalCode = "postal-code"
+    case email, tel, telNational = "tel-national", url, bday, bdayDay = "bday-day", bdayMonth = "bday-month", bdayYear = "bday-year"
+}
+
 public struct Node: Codable, Equatable, Hashable, Sendable {
     public var key: String
     public var parent: String?
@@ -100,16 +116,20 @@ public struct Node: Codable, Equatable, Hashable, Sendable {
     public var frame: Frame?
     public var editable: Bool
     public var states: [NodeState]
+    /// W2, page text inputs only: set by the helper's page link, never by this reader, whose nodes are native.
+    public var inputKind: NodeInputKind?
+    /// W2, page controls only: the autocomplete field name the page gives it; never set by this reader.
+    public var autocomplete: AutocompleteToken?
 
     public init(key: String, parent: String?, role: String, subrole: String? = nil, label: String? = nil,
                 value: String? = nil, placeholder: String? = nil, frame: Frame? = nil,
-                editable: Bool = false, states: [NodeState] = []) {
+                editable: Bool = false, states: [NodeState] = [], inputKind: NodeInputKind? = nil, autocomplete: AutocompleteToken? = nil) {
         self.key = key; self.parent = parent; self.role = role; self.subrole = subrole
         self.label = label; self.value = value; self.placeholder = placeholder; self.frame = frame
-        self.editable = editable; self.states = states
+        self.editable = editable; self.states = states; self.inputKind = inputKind; self.autocomplete = autocomplete
     }
 
-    enum CodingKeys: String, CodingKey { case key, parent, role, subrole, label, value, placeholder, frame, editable, states }
+    enum CodingKeys: String, CodingKey { case key, parent, role, subrole, label, value, placeholder, frame, editable, states, inputKind, autocomplete }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         key = try c.decode(String.self, forKey: .key)
@@ -124,6 +144,8 @@ public struct Node: Codable, Equatable, Hashable, Sendable {
         if e == false { throw ProtocolError("editable is either true or absent") }
         editable = e ?? false
         states = try c.decodeOptional([NodeState].self, forKey: .states) ?? []
+        inputKind = try c.decodeOptional(NodeInputKind.self, forKey: .inputKind)
+        autocomplete = try c.decodeOptional(AutocompleteToken.self, forKey: .autocomplete)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -137,6 +159,8 @@ public struct Node: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(frame, forKey: .frame)
         if editable { try c.encode(true, forKey: .editable) }
         if !states.isEmpty { try c.encode(states, forKey: .states) }
+        try c.encodeIfPresent(inputKind, forKey: .inputKind)
+        try c.encodeIfPresent(autocomplete, forKey: .autocomplete)
     }
 }
 
@@ -558,6 +582,53 @@ public struct FillAnswer: Codable, Equatable, Sendable {
     }
 }
 
+/// G2, I1: what a proposed value's reading rests on besides its source (protocol.ts FillField.basis). Only `identity` is on
+/// the wire: the value (or the part split from it) is exactly the user's own email, phone or full name in memory entry
+/// `memoryId`, which made it the user's without asking Jev. Editing or forgetting that entry withdraws the value.
+public struct FillBasis: Codable, Equatable, Sendable {
+    public struct Identity: Codable, Equatable, Sendable {
+        public enum Kind: String, Codable, Sendable { case email, phone, name }
+        public enum Part: String, Codable, Sendable { case first, middle, last }
+        public var memoryId: String
+        public var kind: Kind
+        /// The identity as fill compared it (fill/whose.ts identityKey).
+        public var key: String
+        public var part: Part?
+
+        public init(memoryId: String, kind: Kind, key: String, part: Part? = nil) {
+            self.memoryId = memoryId; self.kind = kind; self.key = key; self.part = part
+        }
+
+        enum CodingKeys: String, CodingKey { case memoryId, kind, key, part }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            memoryId = try c.decode(String.self, forKey: .memoryId)
+            kind = try c.decode(Kind.self, forKey: .kind)
+            key = try c.decode(String.self, forKey: .key)
+            part = try c.decodeOptional(Part.self, forKey: .part)
+            if memoryId.isEmpty || key.isEmpty { throw ProtocolError("basis.identity names its memory entry and key") }
+        }
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(memoryId, forKey: .memoryId); try c.encode(kind, forKey: .kind); try c.encode(key, forKey: .key)
+            try c.encodeIfPresent(part, forKey: .part)
+        }
+    }
+
+    public var identity: Identity?
+    public init(identity: Identity?) { self.identity = identity }
+
+    enum CodingKeys: String, CodingKey { case identity }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        identity = try c.decodeOptional(Identity.self, forKey: .identity)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(identity, forKey: .identity)
+    }
+}
+
 public struct FillField: Codable, Equatable, Sendable {
     public var key: String
     /// Text when absent: a helper before B24 proposed text fields only.
@@ -580,7 +651,9 @@ public struct FillField: Codable, Equatable, Sendable {
     public var asks: [FillAsk]
     /// S1: the saved answer the field matched, sent only to a host that shows answers whole. Absent otherwise.
     public var answer: FillAnswer?
-    enum CodingKeys: String, CodingKey { case key, control, handoff, frame, descriptor, choice, confidence, value, source, memory, withheld, asks, answer }
+    /// G2: what the value rests on besides its source; absent from a helper before G2.
+    public var basis: FillBasis?
+    enum CodingKeys: String, CodingKey { case key, control, handoff, frame, descriptor, choice, confidence, value, source, memory, withheld, asks, answer, basis }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         key = try c.decode(String.self, forKey: .key); frame = try c.decodeNullable(Frame.self, forKey: .frame)
@@ -593,6 +666,7 @@ public struct FillField: Codable, Equatable, Sendable {
         withheld = try c.decodeNullable(FillWithheld.self, forKey: .withheld)
         asks = try c.decode([FillAsk].self, forKey: .asks)
         answer = try c.decodeIfPresent(FillAnswer.self, forKey: .answer)
+        basis = try c.decodeOptional(FillBasis.self, forKey: .basis)
         if asks.count != 2 && asks.count != 0 { throw ProtocolError("asks must hold two entries or none, got \(asks.count)") }
         // protocol.ts FillField's refine: an offered answer is a text field's value from that answer's memory
         // entry, and a withheld one gives no value.
@@ -613,6 +687,7 @@ public struct FillField: Codable, Equatable, Sendable {
         try c.encode(value, forKey: .value); try c.encode(source, forKey: .source); try c.encode(memory, forKey: .memory)
         try c.encode(withheld, forKey: .withheld); try c.encode(asks, forKey: .asks)
         try c.encodeIfPresent(answer, forKey: .answer)
+        try c.encodeIfPresent(basis, forKey: .basis)
     }
 }
 

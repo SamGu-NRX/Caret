@@ -188,7 +188,7 @@ describe("goalEdit under an Ask's scope (I2)", () => {
     const { sc, first } = await askPreviewed("6161-1");
     expect(first.steps.some((s) => s.says.startsWith("To:"))).toBe(false);
     expect(first.steps.some((s) => s.kind === "write" && "drafted" in s)).toBe(true);
-    expect(JSON.stringify(first)).toContain("the Ask did not ask Caret to fill");
+    expect(JSON.stringify(first)).toContain("your request didn't ask Caret to fill");
     expect(sc.desk.writes).toEqual([]);
   });
 

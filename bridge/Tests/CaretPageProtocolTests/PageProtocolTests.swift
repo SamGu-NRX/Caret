@@ -146,6 +146,8 @@ private func goldenLines() throws -> [Data] {
         guard case let .pageSnapshot(s) = try JSONDecoder().decode(PageMessage.self, from: try goldenLines()[6]) else { Issue.record("line 7 is not a snapshot"); return }
         #expect(s.frames.map(\.frameId) == [0, 3])
         #expect(s.frames[0].controls.first { $0.shadow == "closed" }?.name == "Badge code")
+        // W2: the page's own autocomplete field name rides on the control; a control with none has no key.
+        #expect(s.frames[0].controls.map(\.autocomplete) == ["given-name", nil, nil, nil, nil])
         #expect(s.frames[0].excluded == ["password": 1, "hidden": 2])
         #expect(s.focused == PageFocus(frameId: 0, id: "e1", selection: [0, 0]))
     }
