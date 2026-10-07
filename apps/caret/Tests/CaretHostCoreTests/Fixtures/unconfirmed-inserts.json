@@ -1,0 +1,26 @@
+{
+  "about": "S1's ruling for an unconfirmed insert, as one table for the host (UnconfirmedInsertTests) and the extension (test/partial-insert.test.ts). `before[start..<end]` is replaced by `replacement`; `held` is what a read found afterwards. Offsets are UTF-16 code units. `inserted` is given for a partial state only.",
+  "cases": [
+    { "name": "caret insert, nothing landed", "before": "Dear Sam,", "start": 9, "end": 9, "replacement": " thanks", "held": "Dear Sam,", "state": "original" },
+    { "name": "caret insert, all of it", "before": "Dear Sam,", "start": 9, "end": 9, "replacement": " thanks", "held": "Dear Sam, thanks", "state": "whole" },
+    { "name": "caret insert, two characters", "before": "Dear Sam,", "start": 9, "end": 9, "replacement": " thanks", "held": "Dear Sam, t", "state": "partial", "inserted": 2 },
+    { "name": "caret insert, all but one", "before": "Dear Sam,", "start": 9, "end": 9, "replacement": " thanks", "held": "Dear Sam, thank", "state": "partial", "inserted": 6 },
+    { "name": "mid-text insert, partial", "before": "Hi  there", "start": 3, "end": 3, "replacement": "Dana", "held": "Hi Da there", "state": "partial", "inserted": 2 },
+    { "name": "empty field, first character", "before": "", "start": 0, "end": 0, "replacement": "Dana", "held": "D", "state": "partial", "inserted": 1 },
+    { "name": "selection replaced, partial", "before": "Hello world", "start": 6, "end": 11, "replacement": "there", "held": "Hello th", "state": "partial", "inserted": 2 },
+    { "name": "selection replaced, whole", "before": "Hello world", "start": 6, "end": 11, "replacement": "there", "held": "Hello there", "state": "whole" },
+    { "name": "selection deleted, nothing typed", "before": "Hello world", "start": 6, "end": 11, "replacement": "there", "held": "Hello ", "state": "unrecognized" },
+    { "name": "selection kept, prefix typed after it", "before": "Hello world", "start": 6, "end": 11, "replacement": "there", "held": "Hello worldth", "state": "unrecognized" },
+    { "name": "replaced text begins the intended text: the original wins", "before": "ab", "start": 0, "end": 2, "replacement": "abc", "held": "ab", "state": "original" },
+    { "name": "user typed before the insert", "before": "Dear Sam,", "start": 9, "end": 9, "replacement": " thanks", "held": "Dear Sam!, th", "state": "unrecognized" },
+    { "name": "user typed after Caret's prefix", "before": "Dear Sam,", "start": 9, "end": 9, "replacement": " thanks", "held": "Dear Sam, thx", "state": "unrecognized" },
+    { "name": "user typed in the text after the caret", "before": "Hi  there", "start": 3, "end": 3, "replacement": "Dana", "held": "Hi Da theres", "state": "unrecognized" },
+    { "name": "user deleted a character of the original", "before": "Dear Sam,", "start": 9, "end": 9, "replacement": " thanks", "held": "Dear Sam th", "state": "unrecognized" },
+    { "name": "field emptied", "before": "Dear Sam,", "start": 9, "end": 9, "replacement": " thanks", "held": "", "state": "unrecognized" },
+    { "name": "app reformatted the text", "before": "", "start": 0, "end": 0, "replacement": "dana", "held": "Dana", "state": "unrecognized" },
+    { "name": "more than the intended text", "before": "", "start": 0, "end": 0, "replacement": "Dana", "held": "Danaa", "state": "unrecognized" },
+    { "name": "intended text twice (a doubled paste)", "before": "x", "start": 1, "end": 1, "replacement": "ab", "held": "xabab", "state": "unrecognized" },
+    { "name": "astral characters, one whole pair in", "before": "ok ", "start": 3, "end": 3, "replacement": "😀😀", "held": "ok 😀", "state": "partial", "inserted": 2 },
+    { "name": "repeated letters: prefix is unambiguous at the recorded range", "before": "aa", "start": 1, "end": 1, "replacement": "aaa", "held": "aaa", "state": "partial", "inserted": 1 }
+  ]
+}

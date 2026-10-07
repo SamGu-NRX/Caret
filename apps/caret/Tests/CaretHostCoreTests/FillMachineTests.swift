@@ -223,6 +223,82 @@ final class FillMachineTests: XCTestCase {
         XCTAssertEqual(rig.machine.status.lastSkip, "suppressed")
     }
 
+    // MARK: - S2: a fill Caret could not confirm
+
+    /// Typing the value was stopped partway: the field holds only Caret's first characters. The
+    /// toast says so and owns ⌘Z, whose grant is the partial one and takes them out.
+    func testAPartialFillShowsAnErrorToastWhoseUndoTakesItOut() {
+        let rig = shown()
+        rig.press(Fx.tab())
+        rig.insertedUnconfirmed(held: "dana.w")
+        XCTAssertEqual(rig.takeLog(), ["working", "toast error Only part of the value went in. ⌘Z", "toast slot"])
+        XCTAssertEqual(rig.sent.map(\.outcome), [.failed])
+        XCTAssertEqual(rig.sent.first?.reason, "revoked")
+        guard case .undo(let grant) = rig.arbiter.handleKeyDown(Fx.cmdZ(), now: rig.clock.now) else { return XCTFail("⌘Z did not take the grant") }
+        XCTAssertTrue(grant.partialWrite)
+        XCTAssertTrue(grant.unconfirmed)
+        XCTAssertEqual(grant.priorValue, "")
+        rig.machine.undoStarted(grant)
+        rig.machine.undoFinished(FillUndo(grant: grant, ok: true, error: nil, partial: true))
+        XCTAssertEqual(rig.takeLog(), ["toast undone Took out the part that went in"])
+        XCTAssertEqual(rig.sent.map(\.outcome), [.failed, .undone])
+    }
+
+    /// The write was never confirmed, but a read found the whole value: ⌘Z is offered, with
+    /// ordinary undo.
+    func testAnUnconfirmedFillThatLandedWholeOffersUndo() {
+        let rig = shown()
+        rig.press(Fx.tab())
+        rig.insertedUnconfirmed(held: FillFx.email, reason: "writeMismatch")
+        XCTAssertEqual(rig.takeLog(), ["working", "toast error Caret couldn't confirm the fill, but the field holds it. ⌘Z", "toast slot"])
+        guard case .undo(let grant) = rig.arbiter.handleKeyDown(Fx.cmdZ(), now: rig.clock.now) else { return XCTFail("⌘Z did not take the grant") }
+        XCTAssertFalse(grant.unconfirmed)
+        XCTAssertFalse(grant.partialWrite)
+    }
+
+    /// The field holds something Caret does not recognize: no ⌘Z, and the toast says exactly what
+    /// the field holds and held, in S1's words.
+    func testAnUnconfirmedFillTheUserTypedIntoIsLeftAndDescribed() {
+        let rig = shown()
+        rig.press(Fx.tab())
+        rig.insertedUnconfirmed(held: "dana.wX")
+        XCTAssertEqual(rig.takeLog(), ["working", #"toast error The field now holds "dana.wX"; before the write it held ""; Caret left it as it is."#])
+        XCTAssertNil(rig.arbiter.snapshot().toast, "nothing of the field is Caret's to undo")
+    }
+
+    func testAnUnconfirmedFillThatLeftTheFieldAsItWasSaysWhy() {
+        let rig = shown()
+        rig.press(Fx.tab())
+        rig.insertedUnconfirmed(held: "")
+        XCTAssertEqual(rig.takeLog(), ["working", "toast error Caret stopped before filling, so nothing was filled."])
+        XCTAssertNil(rig.arbiter.snapshot().toast)
+    }
+
+    func testAnUnreadableFieldAfterAnUnconfirmedFillSaysWhatItHeld() {
+        let rig = shown()
+        rig.press(Fx.tab())
+        rig.insertedUnconfirmed(held: nil)
+        XCTAssertEqual(rig.takeLog(), ["working", #"toast error Caret could not read the field after writing it; before the write it held ""."#])
+        XCTAssertNil(rig.arbiter.snapshot().toast)
+    }
+
+    /// ⌘Z on a partial fill whose field changed since: nothing is written, and the toast says
+    /// what the field holds; one already back to empty says that instead.
+    func testAnUndoOfAPartialFillThatFindsAnotherStateSaysSo() {
+        let rig = shown()
+        rig.press(Fx.tab())
+        rig.insertedUnconfirmed(held: "dana.w")
+        _ = rig.takeLog()
+        guard case .undo(let grant) = rig.arbiter.handleKeyDown(Fx.cmdZ(), now: rig.clock.now) else { return XCTFail("⌘Z did not take the grant") }
+        rig.machine.undoStarted(grant)
+        let says = "\(UnconfirmedInsert.contents(before: "", held: "dana.wX")); Caret left it as it is"
+        rig.machine.undoFinished(FillUndo(grant: grant, ok: false, error: "fieldChanged", says: says))
+        XCTAssertEqual(rig.takeLog(), [#"toast error The field now holds "dana.wX"; before the write it held ""; Caret left it as it is."#])
+        rig.machine.undoFinished(FillUndo(grant: grant, ok: false, error: "nothingWritten"))
+        XCTAssertEqual(rig.takeLog(), ["toast error The field already reads as it did before the fill."])
+        XCTAssertEqual(rig.sent.map(\.outcome), [.failed, .undoFailed, .undoFailed])
+    }
+
     func testTypingAfterTheFillDismissesTheToastAndHandsBackCommandZ() {
         let rig = toastUp()
         rig.press(Fx.type("a"))

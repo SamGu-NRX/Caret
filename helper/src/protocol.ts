@@ -3091,8 +3091,8 @@ export const PageResult = z
     text: PageTabText.optional(),
     /**
      * pageInsertText only, with outcome failed (H13 review): `unchanged`, the field reads as it did just before the
-     * insert; `unverified`, it changed, but not exactly to its text with the insert at the caret and the caret after it.
-     * The page leaves either as it is; nothing is undone.
+     * insert, including after the extension took out a partial insert's characters (S2; the detail says so);
+     * `unverified`, it changed otherwise, and the page leaves it as it is.
      */
     insert: z.enum(["unchanged", "unverified"]).optional(),
   })

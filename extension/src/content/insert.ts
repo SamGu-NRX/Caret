@@ -14,9 +14,12 @@
 // Afterwards the whole field is read again, uncapped, against a snapshot taken just before the insert (H13 review): the
 // text before the caret must be the snapshot's plus the insert, the text after it unchanged, and the caret collapsed
 // right after the insert. The snapshot stays in this function: it is never sent or logged. A field that reads as the
-// snapshot did is `unchanged`; any other result is `unverified`, and is left as the page made it, never undone.
+// snapshot did is `unchanged`. Any other result is judged by S1's ruling (partial-insert.ts, S2): a field holding only
+// a prefix of the insert at the caret has those characters taken out again, under the act's grant, and reads as the
+// snapshot did (`unchanged`); every other field is `unverified`, and is left as the page made it, never undone.
 import type { ActAnswer } from "../shared/messages.ts";
 import { BEFORE_MAX, fieldText, serialize } from "./field-text.ts";
+import { type InsertedField, recoverInsert } from "./partial-insert.ts";
 import { deepActiveElement } from "./walker.ts";
 import { settle } from "./dom.ts";
 
@@ -170,5 +173,56 @@ export async function insertAtCaret(
   if (wholeText(el) === `${was.before}${was.after}`) {
     return { outcome: "failed", detail: went ? "the field reads as it did before the insert" : "the page did not take the insert", insert: "unchanged" };
   }
-  return { outcome: "failed", detail: "the field changed, but not to its text with the insert at the caret and the caret after it", insert: "unverified" };
+  const at = was.before.length;
+  return recoverInsert(domField(el), { before: shown(el, `${was.before}${was.after}`), start: at, end: at, text: shown(el, verb.text) }, gate);
+}
+
+/**
+ * The field as partial-insert.ts reads and edits it, in shown() text, whose offsets are the serialized text's (a no-break
+ * space for a space is one unit for one). A text control selects by offsets. An editor's text has no offsets to select
+ * by, so it selects only from a caret collapsed exactly at the end offset, extending the selection backward a character
+ * at a time; recovery then checks that the selection holds exactly Caret's characters before it deletes them.
+ */
+function domField(el: Element): InsertedField {
+  const control = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
+  return {
+    read: () => {
+      const t = wholeText(el);
+      return t === null ? null : shown(el, t);
+    },
+    blocked: () => (composing ? "an input method is composing text in the field" : hasFocus(el) ? null : "the field no longer has focus"),
+    select: (start, end) => {
+      if (control !== null) {
+        try {
+          control.setSelectionRange(start, end);
+        } catch {
+          return false;
+        }
+        return control.selectionStart === start && control.selectionEnd === end;
+      }
+      const sel = selectionOf(el);
+      const c = caretState(el);
+      if (sel === null || c === null || c.before.length !== end) return false;
+      for (let i = 0; i < end - start && (selectedText(el)?.length ?? 0) < end - start; i++) sel.modify("extend", "backward", "character");
+      return (selectedText(el)?.length ?? -1) === end - start;
+    },
+    selected: () => selectedText(el),
+    deleteSelection: () => void document.execCommand("delete", false),
+    settle,
+  };
+}
+
+/** The text of `el`'s selection, as compared; null when it is not inside the field. */
+function selectedText(el: Element): string | null {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const s = el.selectionStart;
+    const e = el.selectionEnd;
+    return s === null || e === null ? null : el.value.slice(s, e);
+  }
+  const host = editingHost(el);
+  const sel = selectionOf(el);
+  if (host === null || sel === null || sel.rangeCount !== 1) return null;
+  const r = sel.getRangeAt(0);
+  if (!host.contains(r.startContainer) || !host.contains(r.endContainer)) return null;
+  return shown(el, serialize(r));
 }

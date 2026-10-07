@@ -21,6 +21,14 @@ public struct UndoGrant: Equatable, Sendable {
     /// The UTF-16 span the write inserted, as offsets into `writtenValue`.
     public var insertedStart: Int
     public var insertedLength: Int
+    /// The text of `priorValue` the write replaced, at `insertedStart`: empty for an insert at the
+    /// caret, the selection's text for one that replaced a selection. ⌘Z puts it back.
+    public var replacedText: String = ""
+    /// Caret could not confirm the write (S2): ⌘Z reads the field and applies S1's ruling to it
+    /// (`UnconfirmedInsert`) instead of requiring `writtenValue` exactly.
+    public var unconfirmed = false
+    /// A read after the write found only a proper prefix of the inserted text (S1's partial write).
+    public var partialWrite = false
     public var origin: FillOrigin?
     /// Set when the helper's executor made the writes (a fill pop-up's run). ⌘Z then asks the
     /// helper to undo that task (`taskControl undo`), which restores what its ledger recorded; the
@@ -80,6 +88,38 @@ public struct UndoGrant: Equatable, Sendable {
     public func isExpired(at now: Date) -> Bool {
         now.timeIntervalSince(createdAt) > lifetimeSeconds
     }
+
+    /// The grant for an insert, made before anything is written (S2) and armed with the field as
+    /// the guard approved it: its value, and the range and text of the edit. `UnconfirmedInsert.grant`
+    /// decides after the write whether it is kept.
+    public static func armed(
+        target: TargetIdentity, priorValue: String, edit: InsertionGuard.ApprovedEdit, origin: FillOrigin?, writeID: UInt64
+    ) -> UndoGrant {
+        var written = target
+        written.elementRevision = UTF16Text.digest(edit.resultingValue)
+        var grant = UndoGrant(
+            target: written, priorValue: priorValue, writtenValue: edit.resultingValue, insertedStart: edit.replaceStart,
+            insertedLength: UTF16Text.length(edit.replacement), origin: origin, writeID: writeID
+        )
+        // The guard approved the range against `priorValue`, so the slice exists.
+        grant.replacedText = UTF16Text.slice(priorValue, start: edit.replaceStart, end: edit.replaceEnd) ?? ""
+        return grant
+    }
+
+    /// The insert this grant records, when its fields agree: `writtenValue` is `priorValue` with
+    /// `replacedText` at `insertedStart` replaced by the inserted text.
+    var intent: UnconfirmedInsert.Intent? {
+        let end = insertedStart + UTF16Text.length(replacedText)
+        let insertedEnd = insertedStart + insertedLength
+        guard insertedLength >= 0,
+              let head = UTF16Text.slice(priorValue, start: 0, end: insertedStart),
+              UTF16Text.slice(priorValue, start: insertedStart, end: end) == replacedText,
+              let tail = UTF16Text.slice(priorValue, start: end, end: UTF16Text.length(priorValue)),
+              let inserted = UTF16Text.slice(writtenValue, start: insertedStart, end: insertedEnd),
+              head + inserted + tail == writtenValue
+        else { return nil }
+        return UnconfirmedInsert.Intent(before: priorValue, start: insertedStart, end: end, replacement: inserted)
+    }
 }
 
 /// Decides whether an undo may run against the live field. Like `InsertionGuard`, it decides and
@@ -93,6 +133,8 @@ public enum UndoGuard {
         /// The recorded span does not describe the written value (a bug, not a user action).
         case spanInvalid
         case secureField
+        /// An unconfirmed write's field reads as it did before it: nothing landed, nothing to undo.
+        case nothingWritten
 
         public var code: String {
             switch self {
@@ -100,15 +142,21 @@ public enum UndoGuard {
             case .fieldChanged: return "fieldChanged"
             case .spanInvalid: return "spanInvalid"
             case .secureField: return "secureField"
+            case .nothingWritten: return "nothingWritten"
             }
         }
     }
 
-    /// Remove `start..<start+length` from the live value; the result must be `expectedValue`.
+    /// Replace `start..<start+length` of the live value with `restore`; the result must be
+    /// `expectedValue`.
     public struct Revert: Equatable, Sendable {
         public var start: Int
         public var length: Int
         public var expectedValue: String
+        /// The text the write replaced: empty for an insert at the caret.
+        public var restore: String = ""
+        /// Only a prefix of the write's text is taken out (S1's partial write).
+        public var partialWrite = false
     }
 
     public static func approve(_ grant: UndoGrant, live: InsertionGuard.LiveField) -> Result<Revert, Rejection> {
@@ -118,6 +166,24 @@ public enum UndoGuard {
         expected.elementRevision = ""
         actual.elementRevision = ""
         guard expected == actual else { return .failure(.targetMoved) }
+        // S2: an unconfirmed write is judged by the read just made, not by the earlier one, since
+        // keys posted before a stop can land after it and the user can edit since. Only S1's three
+        // recognized states are reverted; the field is otherwise left as it is.
+        if grant.unconfirmed {
+            guard let intent = grant.intent else { return .failure(.spanInvalid) }
+            switch UnconfirmedInsert.classify(intent, held: live.value) {
+            case .original:
+                return .failure(.nothingWritten)
+            case .whole:
+                return .success(Revert(start: intent.start, length: grant.insertedLength, expectedValue: grant.priorValue, restore: grant.replacedText))
+            case .partial(let inserted):
+                return .success(Revert(
+                    start: intent.start, length: inserted, expectedValue: grant.priorValue, restore: grant.replacedText, partialWrite: true
+                ))
+            case .unrecognized:
+                return .failure(.fieldChanged)
+            }
+        }
         guard live.target.elementRevision == UTF16Text.digest(grant.writtenValue), live.value == grant.writtenValue else {
             return .failure(.fieldChanged)
         }
@@ -126,8 +192,8 @@ public enum UndoGuard {
         guard grant.insertedStart >= 0, grant.insertedLength >= 0, end <= total,
               let prefix = UTF16Text.slice(live.value, start: 0, end: grant.insertedStart),
               let suffix = UTF16Text.slice(live.value, start: end, end: total),
-              prefix + suffix == grant.priorValue
+              prefix + grant.replacedText + suffix == grant.priorValue
         else { return .failure(.spanInvalid) }
-        return .success(Revert(start: grant.insertedStart, length: grant.insertedLength, expectedValue: grant.priorValue))
+        return .success(Revert(start: grant.insertedStart, length: grant.insertedLength, expectedValue: grant.priorValue, restore: grant.replacedText))
     }
 }

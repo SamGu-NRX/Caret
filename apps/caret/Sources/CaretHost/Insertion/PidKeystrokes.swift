@@ -25,6 +25,8 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
     private(set) var refusedPosts = 0
     /// ⌘V key-downs actually posted: only these can have put text anywhere.
     private(set) var pastesPosted = 0
+    /// Every key-down posted, typed text and deletes included: none means the app was sent nothing.
+    private(set) var keysPosted = 0
 
     private static let keyV: CGKeyCode = 9
     private static let keyDelete: CGKeyCode = 51
@@ -93,6 +95,7 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
         }
         down.postToPid(pid)
         up.postToPid(pid)
+        keysPosted += 1
         return true
     }
 }

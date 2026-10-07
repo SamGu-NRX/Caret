@@ -85,12 +85,12 @@ final class FillCoordinator {
         machine.insertionFinished(FillInsertion(
             claim: result.claim, verified: result.insertion.verified == true, rejected: result.rejected,
             reason: result.reason, method: result.method, undo: result.undo,
-            insertedLength: UTF16Text.length(result.claim.insertionText), strayField: result.strayField
+            insertedLength: UTF16Text.length(result.claim.insertionText), strayField: result.strayField, recovery: result.recovery
         ))
     }
 
     func undoFinished(_ result: InsertionExecutor.UndoResult) {
-        machine.undoFinished(FillUndo(grant: result.grant, ok: result.ok, error: result.error))
+        machine.undoFinished(FillUndo(grant: result.grant, ok: result.ok, error: result.error, partial: result.partial, says: result.says))
     }
 
     func shutdown() {

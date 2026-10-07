@@ -177,6 +177,12 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// The types of each clipboard item the check read, names only. Nil when the clipboard was
         /// not read.
         public var clipboardTypes: [[String]]?
+        /// For a write Caret could not confirm, what a read of the field found afterwards
+        /// (`UnconfirmedInsert.Report.name`): `original`, `whole`, `partial`, `unrecognized` or
+        /// `unreadable`. Nil for a verified write or one that never reached the app.
+        public var recovery: String?
+        /// With `partial`: how many UTF-16 units of the text went in.
+        public var partialLength: Int?
 
         public init(claimID: UInt64, ok: Bool, error: String?, text: String, durationMs: Double, verified: Bool?) {
             self.claimID = claimID
@@ -610,6 +616,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var error: String?
         /// A writing fix's undo: `axRestore` or `nativeUndo` (`UndoStrategy`). Nil for other grants.
         public var strategy: String?
+        /// ⌘Z took out only the part of an unconfirmed write that had gone in (S2).
+        public var partial: Bool?
 
         public init(grantID: UInt64, ok: Bool, error: String?, strategy: String? = nil) {
             self.grantID = grantID
