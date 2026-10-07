@@ -85,11 +85,34 @@ final class UnconfirmedInsertReviewTests: XCTestCase {
 
     // MARK: - P2 5: inline text gets the same grant and an owner that shows it
 
-    /// A ghost insert has no fill origin; its grant is armed all the same.
-    func testAnInlineInsertIsArmedWithoutAFillOrigin() {
-        let grant = Self.partialGrant(before: "Hi ", at: 3, text: "there", held: "Hi th")
-        XCTAssertNil(grant.origin)
-        XCTAssertTrue(grant.partialWrite)
+    /// The insertion queue's own steps for a ghost Tab stopped after "th" of "there": `InsertAttempt`
+    /// arms the grant before the first write whatever the claim's kind, the stop makes the field be
+    /// read, and the partial read keeps the armed grant. Before S2's review the queue armed only
+    /// a fill (`origin.map`), so a ghost insert stopped partway had no undo at all.
+    func testAnInterruptedGhostInsertKeepsTheGrantArmedBeforeItsFirstWrite() {
+        let claim = Self.ghostClaim("there")
+        let before = InsertionGuard.LiveField(target: claim.offer.target, value: "Hi ", selection: .caret(3))
+        let approved = InsertionGuard.ApprovedEdit(target: claim.offer.target, replaceStart: 3, replaceEnd: 3, replacement: "there", resultingValue: "Hi there")
+        let attempt = InsertAttempt(claim: claim, before: before, approved: approved, writeID: 12)
+        XCTAssertNil(claim.offer.kind.fillOrigin, "a ghost claim")
+        XCTAssertEqual(attempt.armed.writeID, 12)
+        XCTAssertEqual(attempt.armed.priorValue, "Hi ")
+        XCTAssertEqual(attempt.armed.writtenValue, "Hi there")
+        // Stopped after two typed keys: posted, not verified, no stray paste.
+        XCTAssertTrue(InsertAttempt.needsRead(verified: false, dispatched: true, strayField: nil))
+        let report = attempt.report(held: "Hi th")
+        XCTAssertEqual(report.state, .partial(inserted: 2))
+        let grant = attempt.grant(verified: false, report: report, at: Date(timeIntervalSince1970: 5))
+        XCTAssertEqual(grant?.writeID, 12, "the grant is the one armed before the write, bound to its element")
+        XCTAssertEqual(grant?.partialWrite, true)
+        XCTAssertNil(grant?.origin)
+        XCTAssertEqual(grant?.createdAt, Date(timeIntervalSince1970: 5))
+        // A refusal before any key went out needs no read and leaves nothing.
+        XCTAssertFalse(InsertAttempt.needsRead(verified: false, dispatched: false, strayField: nil))
+        XCTAssertFalse(InsertAttempt.needsRead(verified: false, dispatched: true, strayField: "Email"))
+        XCTAssertFalse(InsertAttempt.needsRead(verified: true, dispatched: true, strayField: nil))
+        XCTAssertNil(attempt.grant(verified: false, report: nil, at: Date()))
+        XCTAssertEqual(attempt.grant(verified: true, report: nil, at: Date())?.unconfirmed, false)
     }
 
     private static func ghostClaim(_ text: String = "summary to the team") -> Claim {
@@ -119,6 +142,79 @@ final class UnconfirmedInsertReviewTests: XCTestCase {
         XCTAssertEqual(rig.takeLog(), ["line Undoing"])
         rig.machine.inlineUndoFinished(grantID: grant.id, ok: true, error: nil, partial: true, says: nil)
         XCTAssertEqual(rig.takeLog(), ["line Took out the part that went in"])
+    }
+
+    // MARK: - Re-review: the inline line's ownership
+
+    /// No visible anchor (the app went behind, or its field cannot be read): ⌘Z stays with the host
+    /// and a fill toast keeps its own, since a shortcut belongs to a visible offer or to the host.
+    func testAnInlineResultWithNoVisibleAnchorLeavesCommandZAlone() {
+        let rig = SurfaceRig()
+        rig.screen.front(.email)
+        rig.fillLineToast()
+        let fill = rig.arbiter.snapshot().toast?.id
+        XCTAssertNotNil(fill)
+        rig.screen.behind()
+        rig.machine.inlineInsertionFinished(Self.inline(Self.ghostClaim(), held: "summ"))
+        XCTAssertEqual(rig.takeLog(), [])
+        XCTAssertEqual(rig.arbiter.snapshot().toast?.id, fill, "the fill toast keeps ⌘Z")
+        XCTAssertNil(rig.machine.toastGrantID)
+        // In front, but another field has focus now: the line would describe a field the user left.
+        let other = SurfaceRig()
+        other.screen.front(.phone)
+        other.machine.inlineInsertionFinished(Self.inline(Self.ghostClaim(), held: "summ"))
+        XCTAssertEqual(other.takeLog(), [])
+        XCTAssertNil(other.arbiter.snapshot().toast)
+        XCTAssertEqual(other.arbiter.handleKeyDown(Fx.cmdZ(), now: other.clock.now), .pass(.noOffer))
+    }
+
+    /// The "Undoing" line ended (its 10 s ran out) before the queue answered: the late answer no
+    /// longer owns the panel and draws nothing.
+    func testALateInlineUndoAnswerDrawsNothingOnceItsLineEnded() {
+        let rig = SurfaceRig()
+        rig.screen.front(.email)
+        rig.machine.inlineInsertionFinished(Self.inline(Self.ghostClaim(), held: "summ"))
+        guard case .undo(let grant) = rig.arbiter.handleKeyDown(Fx.cmdZ(), now: rig.clock.now) else { return XCTFail("⌘Z is not Caret's") }
+        rig.machine.undoStarted(grant)
+        rig.clock.advance(by: 10.1)
+        rig.takeLog()
+        rig.machine.inlineUndoFinished(grantID: grant.id, ok: true, error: nil, partial: true, says: nil)
+        XCTAssertEqual(rig.takeLog(), [])
+        XCTAssertNil(rig.machine.lineText)
+    }
+
+    /// The queue's answer reached main before the tap's `undoStarted` did (an immediate refusal):
+    /// it is still the line's answer, and the late start draws no "Undoing" over it.
+    func testAnInlineUndoAnswerThatArrivesBeforeItsStartIsShown() {
+        let rig = SurfaceRig()
+        rig.screen.front(.email)
+        rig.machine.inlineInsertionFinished(Self.inline(Self.ghostClaim(), held: "summ"))
+        rig.takeLog()
+        guard case .undo(let grant) = rig.arbiter.handleKeyDown(Fx.cmdZ(), now: rig.clock.now) else { return XCTFail("⌘Z is not Caret's") }
+        rig.machine.inlineUndoFinished(grantID: grant.id, ok: false, error: "inputDuringUndo", partial: false, says: nil)
+        XCTAssertEqual(rig.takeLog(), ["line You typed as Caret was undoing, so Caret left the field as it is."])
+        rig.machine.undoStarted(grant)
+        XCTAssertEqual(rig.takeLog(), [])
+    }
+
+    /// The described-and-left line has no ⌘Z, but it is a result line: Esc closes it, and typing
+    /// on takes it down, instead of it staying until its timeout.
+    func testAnUngrantedInlineLineTakesEscAndTyping() {
+        let rig = SurfaceRig()
+        rig.screen.front(.email)
+        rig.machine.inlineInsertionFinished(Self.inline(Self.ghostClaim(), held: "summX"))
+        rig.takeLog()
+        XCTAssertNotNil(rig.arbiter.snapshot().statusLine)
+        rig.press(Fx.esc())
+        XCTAssertEqual(rig.takeLog(), ["hide 0.08"])
+        XCTAssertNil(rig.machine.lineText)
+        let typed = SurfaceRig()
+        typed.screen.front(.email)
+        typed.machine.inlineInsertionFinished(Self.inline(Self.ghostClaim(), held: "summX"))
+        typed.takeLog()
+        typed.press(Fx.type("a"))
+        XCTAssertEqual(typed.takeLog(), ["hide 0.08"])
+        XCTAssertNil(typed.arbiter.snapshot().statusLine)
     }
 
     func testAnUnrecognizedInlineInsertIsDescribedAndLeft() {

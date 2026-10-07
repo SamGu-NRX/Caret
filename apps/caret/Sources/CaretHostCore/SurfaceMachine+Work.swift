@@ -363,6 +363,7 @@ extension SurfaceMachine {
         if let id = toastGrantID { arbiter.dismissToast(grantID: id) }
         toastGrantID = nil
         undoing = nil
+        inlineUndo = nil
         toastInfo = nil
     }
 

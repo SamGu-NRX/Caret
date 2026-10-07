@@ -19,19 +19,21 @@ public struct InlineInsertion: Equatable, Sendable {
 /// The line at the caret is the inline insert's result owner: inline text has no toast of its own,
 /// so a recognized partial or whole write is reported here and ⌘Z belongs to Caret while the line
 /// shows, as a fill's toast does (`SURFACES.md` section 6). A field Caret does not recognize is
-/// described and left; one that reads as before needs no line.
+/// described and left, on a result line that Esc and typing take down. One that reads as before
+/// needs no line. Nothing is shown, and ⌘Z stays the host's, unless the line can be drawn at the
+/// written field, in front and uncovered: a shortcut belongs to a visible offer or to the host.
 extension SurfaceMachine {
     public func inlineInsertionFinished(_ r: InlineInsertion) {
         let recovery = r.recovery
         let text: String
-        var hints: [Hint] = []
+        var grant: UndoGrant?
         switch recovery.state {
         case .original:
             return count("surface.inline.unconfirmed.original")
         case .whole, .partial:
-            guard r.undo != nil else { return }
+            guard let g = r.undo else { return }
+            grant = g
             if case .partial = recovery.state { text = "Only part of the text went in." } else { text = "Caret couldn't confirm the text, but the field holds it." }
-            hints = [Hint(key: "⌘Z", label: "Undo")]
         case .unrecognized:
             guard let says = recovery.says else { return }
             text = FillMachine.sentence(says)
@@ -39,37 +41,43 @@ extension SurfaceMachine {
         count("surface.inline.unconfirmed.\(recovery.name)")
         // Work on the panel keeps it; the field shows the user what it holds.
         guard work == nil else { return count("surface.inline.unconfirmed.busy") }
+        let target = r.claim.offer.target
+        guard !headless, let field = world.focusedField(pid: target.pid),
+              field.identity.elementID == target.elementID, field.identity.windowID == target.windowID,
+              case .at(let caret) = world.caret(of: field),
+              gate(target, anchors: [CGPoint(x: caret.midX, y: caret.midY)], requireFocus: true) == nil
+        else { return count("surface.inline.unconfirmed.unseen") }
+        let anchor = Anchor(field: field.frame ?? caret, caret: caret)
         if let shown { arbiter.invalidate(offerID: shown.offerID) }
         displacedShown = nil
         clear(exit: 0)
         endResult()
         lineSuppressed = false
-        let line = WorkLine(LineContent(figure: .error, text: text, emphasis: .plain, hints: hints), text: text)
-        let target = r.claim.offer.target
-        var anchor: Anchor?
-        if !headless, let field = world.focusedField(pid: target.pid), case .at(let caret) = world.caret(of: field) {
-            anchor = Anchor(field: field.frame ?? caret, caret: caret)
-        }
+        let line = WorkLine(
+            LineContent(figure: .error, text: text, emphasis: .plain, hints: grant == nil ? [] : [Hint(key: "⌘Z", label: "Undo")]), text: text
+        )
         let taskID = "inline-\(r.claim.claimID)"
         result = Result(taskID: taskID, target: target, anchor: anchor, line: line)
         var lifetime = FillMachine.errorLifetime
-        if hints.isEmpty == false, let grant = r.undo {
-            let id = arbiter.showToast(grant)
-            toastGrantID = id
+        if let grant {
+            // The toast slot is the ⌘Z: it goes with this line, and the line goes with it.
+            toastGrantID = arbiter.showToast(grant)
             emit(.toastSlotTaken)
             lifetime = grant.lifetimeSeconds
+        } else {
+            // A result line with no ⌘Z still takes Esc, and typing on dismisses it.
+            resultStatusID = arbiter.showStatus(StatusLine(pid: target.pid, kind: .error, offerKey: taskID))
         }
         toastInfo = DebugState.Toast(kind: "error", caption: text, grantID: toastGrantID)
         lineText = text
         figure = line.content.figure
-        if let anchor, !headless {
-            showPanel(.line(line.content), text: text, placement: .atField(field: anchor.field, caret: anchor.caret, pid: target.pid, entering: true))
-            startWatch(.line, target: target, anchors: [CGPoint(x: anchor.caret.midX, y: anchor.caret.midY)], requireFocus: false, field: anchor.field)
-        }
+        showPanel(.line(line.content), text: text, placement: .atField(field: anchor.field, caret: anchor.caret, pid: target.pid, entering: true))
+        startWatch(.line, target: target, anchors: [CGPoint(x: caret.midX, y: caret.midY)], requireFocus: false, field: anchor.field)
         cancelResultTimer()
         let grantID = toastGrantID
+        let statusID = resultStatusID
         resultTimer = clock.schedule(after: lifetime, repeats: false) { [weak self] in
-            guard let self, self.result?.taskID == taskID, self.toastGrantID == grantID else { return }
+            guard let self, self.result?.taskID == taskID, self.toastGrantID == grantID, self.resultStatusID == statusID else { return }
             self.resultTimer = nil
             self.endResult()
             self.takeLineDown(exit: 0.20)
@@ -80,17 +88,28 @@ extension SurfaceMachine {
 
     /// ⌘Z took the inline line's grant; the insertion queue runs the undo.
     func inlineUndoStarted(_ grant: UndoGrant) {
-        guard let id = toastGrantID, id == grant.id else { return }
+        guard let id = toastGrantID, id == grant.id, let result else { return }
         toastGrantID = nil
-        inlineUndo = grant.id
+        inlineUndo = (grant.id, result.taskID)
         toastInfo = DebugState.Toast(kind: "undoing", caption: WorkLines.undoing.text, grantID: nil)
         showResult(WorkLines.undoing, lifetime: 10)
     }
 
-    /// The insertion queue's answer to the inline line's ⌘Z.
+    /// The insertion queue's answer to the inline line's ⌘Z. It may reach main before the tap's
+    /// `undoStarted` (an immediate refusal): the line whose grant it is still owns it, and the late
+    /// start then finds no grant to start. Drawn only while that line still owns the panel.
     public func inlineUndoFinished(grantID: UInt64, ok: Bool, error: String?, partial: Bool, says: String?) {
-        guard inlineUndo == grantID else { return }
+        let owner: String
+        if let pending = inlineUndo, pending.grant == grantID {
+            owner = pending.taskID
+        } else if toastGrantID == grantID, let result {
+            owner = result.taskID
+            toastGrantID = nil
+        } else {
+            return
+        }
         inlineUndo = nil
+        guard result?.taskID == owner else { return }
         let text: String
         switch (ok, error) {
         case (true, _): text = partial ? "Took out the part that went in" : "Undone"

@@ -1,0 +1,1 @@
+CaretHost Insertion/ typechecks without swift build: emit KeyType AutocompleteCore, AppCompatibility, TextInsertion, MacContextCapture modules from the main checkout (worktrees lack the submodule), then swiftc -typecheck Insertion/ Accessibility/ + HostStatus, TargetPolicy (S2).

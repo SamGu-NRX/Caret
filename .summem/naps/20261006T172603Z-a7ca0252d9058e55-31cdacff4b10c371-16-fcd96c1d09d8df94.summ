@@ -1,0 +1,1 @@
+Chrome: native AX writes ignored once web AX is on (PageInline.nativeYields); H14 rig uses 'pagetask start'. Live Jev sets once; W1 guard-adversary class (a) writes 0; writes use writeMisfit. Page writes need a CheckedValue; Ask scope is Jev's per-field ask, code vetoes.
