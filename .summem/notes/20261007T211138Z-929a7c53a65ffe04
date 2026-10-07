@@ -1,0 +1,1 @@
+SC1: request text compiles only as ModelText (privacy/disclosure.ts own/t/descriptor/candidate/memoryText); mint a reformatted value with derived(base, text), which refuses words the screen never showed. A ModelText cast outside src/privacy/ fails test/sc1-boundary.
