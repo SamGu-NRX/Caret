@@ -22,6 +22,17 @@
 # leases without waiting; a busy lock counts as a refusal, so the leases are released while waiting.
 # Children inherit the descriptor, so a VM left by a SIGKILLed rig-run keeps the lock until it is swept.
 #
+# Handed lease and managed mode (2026-10-07, Caret's coordinator, option b: one job holds one heavy lease). A job
+# that already holds the single heavy lease (the shared heavy-job queue takes one per job) passes its id in
+# RIG_HEAVY_LEASE_ID. rig-run then takes no heavy lease of its own and never releases that one; it uses it only if it
+# is an active heavy lease that is cleanup-required (obliged to the job's attempt, CARET_HEAVY_ATTEMPT when set), so
+# the queue's early release quarantines it rather than dropping it. RIG_RUN_MANAGED=1 (with CARET_HEAVY_REGISTER,
+# CARET_HEAVY_ATTEMPT and CARET_HEAVY_TOKEN_SHA256 from Caret's supervisor) is the managed cleanup mode: heavy.lock
+# (inherited) is taken before the vm lease, the vm lease is taken cleanup-required for the job's attempt, the VM is
+# registered with the job's recovery owner before the clone exists, and the vm lease is left for the job's custody to
+# acknowledge once the clone, Lume and the Virtualization processes are confirmed gone. rig-run still stops and
+# deletes its clone as before.
+#
 # Exit: the job's exit status; 75 no lease (or busy); 70 rig failure; 124 job timed out;
 # 130/143/129 interrupted.
 set -uo pipefail
@@ -39,6 +50,8 @@ KNOWN=$R/tmp/known_hosts_rig
 LEASE=~/.long-run/bin/lr-lease
 REAP=~/.long-run/bin/lr-reap
 HEAVY_LOCK=~/.long-run/locks/heavy.lock
+HANDED_HEAVY=${RIG_HEAVY_LEASE_ID:-}
+MANAGED=${RIG_RUN_MANAGED:-}
 
 usage() { echo "usage: rig-run <job-dir> [--wait SECONDS]" >&2; exit 64; }
 [ $# -ge 1 ] || usage
@@ -58,6 +71,15 @@ if [ -f "$JOB/tcc.txt" ]; then
   bad=$(grep -vE '^\s*(#|$)' "$JOB/tcc.txt" | grep -vE '^[A-Za-z]+(,[A-Za-z]+)* +[^ ]+$' || true)
   [ -z "$bad" ] || { echo "rig-run: bad tcc.txt line(s): $bad" >&2; exit 64; }
 fi
+
+VM_CLEANUP=()
+if [ -n "$MANAGED" ]; then
+  [ "$MANAGED" = 1 ] && [ -n "${CARET_HEAVY_REGISTER:-}" ] && [[ "${CARET_HEAVY_ATTEMPT:-}" =~ ^[A-Za-z0-9._-]{1,80}$ ]] &&
+    [[ "${CARET_HEAVY_TOKEN_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] ||
+    { echo "rig-run: RIG_RUN_MANAGED=1 needs CARET_HEAVY_REGISTER, CARET_HEAVY_ATTEMPT and CARET_HEAVY_TOKEN_SHA256" >&2; exit 64; }
+  VM_CLEANUP=(--cleanup-attempt "$CARET_HEAVY_ATTEMPT" --cleanup-token-sha256 "$CARET_HEAVY_TOKEN_SHA256")
+fi
+[ -z "$HANDED_HEAVY" ] || [[ "$HANDED_HEAVY" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo "rig-run: RIG_HEAVY_LEASE_ID is not a lease id" >&2; exit 64; }
 
 ID=$(date -u +%Y%m%dT%H%M%SZ)-$$
 VM=rig-run-$$
@@ -166,7 +188,11 @@ cleanup() {
   mark deleteS "$(python3 -c "print(round($(now)-$t,2))")"
   # heavy.lock before the leases, so no heavy job admitted by a lease finds it still taken.
   exec 9>&-
-  [ -n "$LEASE_ID" ] && "$LEASE" release "$LEASE_ID" >>"$LOG" 2>&1 && log "released lease $LEASE_ID"
+  if [ -n "$LEASE_ID" ] && [ -n "$MANAGED" ]; then
+    log "vm lease $LEASE_ID left to the job's custody (cleanup-required for attempt $CARET_HEAVY_ATTEMPT)"
+  elif [ -n "$LEASE_ID" ]; then
+    "$LEASE" release "$LEASE_ID" >>"$LOG" 2>&1 && log "released lease $LEASE_ID"
+  fi
   [ -n "$HEAVY_ID" ] && "$LEASE" release "$HEAVY_ID" >>"$LOG" 2>&1 && log "released heavy lease $HEAVY_ID"
   LEASE_ID="" HEAVY_ID=""
   rm -rf "$STATE"
@@ -267,6 +293,25 @@ fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' "$RIG_HEAVY_LOCK_FD" "$HEAVY_LOC
     python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' 2>/dev/null
 }
 
+# Why the handed heavy lease cannot be used (empty when it can): it must be listed, kind heavy, cleanup-required, not
+# quarantined, and obliged to CARET_HEAVY_ATTEMPT when that is set. A failed status lists nothing, so it fails closed.
+handed_problem() {
+  "$LEASE" status 2>/dev/null | python3 -c 'import json, sys
+want, attempt = sys.argv[1], sys.argv[2]
+for line in sys.stdin:
+    if not line.startswith("{"):
+        continue
+    r = json.loads(line)
+    if r.get("id") != want:
+        continue
+    if r.get("kind") != "heavy": print("not a heavy lease")
+    elif r.get("state"): print("it is " + str(r["state"]))
+    elif not r.get("cleanupRequired"): print("not cleanup-required: the job must oblige it before handing it over")
+    elif attempt and r.get("attempt") != attempt: print("obliged to attempt %s, not %s" % (r.get("attempt"), attempt))
+    sys.exit(0)
+print("no such lease")' "$HANDED_HEAVY" "${CARET_HEAVY_ATTEMPT:-}"
+}
+
 STEP=lease
 t=$(now)
 waited=0
@@ -285,24 +330,40 @@ while :; do
     # 14.9 GiB" (2026-10-05, Caret thread b9836627; vm floor 4). Then the vm lease carries the VM's
     # estimates against its own floor. Holding either while waiting for the other would block other
     # runs for nothing, so a refused vm lease releases the heavy one.
-    out=""; hout=$("$LEASE" acquire --run rig --kind heavy --est-mem 0 --est-disk 0 --ttl $(( TIMEOUT / 60 + 20 )) --owner-pid $$); rc=$?
+    out=""
+    if [ -n "$HANDED_HEAVY" ]; then
+      # The job's own heavy lease, handed over: used, never taken or released here.
+      why=$(handed_problem)
+      if [ -z "$why" ]; then hout=""; rc=0; else hout="handed lease $HANDED_HEAVY: $why"; rc=75; fi
+    else
+      hout=$("$LEASE" acquire --run rig --kind heavy --est-mem 0 --est-disk 0 --ttl $(( TIMEOUT / 60 + 20 )) --owner-pid $$); rc=$?
+    fi
   fi
   if [ $rc -eq 0 ]; then
     HEAVY_ID=$hout
-    out=$("$LEASE" acquire --run rig --kind vm --est-mem 6 --est-disk 2 --ttl $(( TIMEOUT / 60 + 20 )) --owner-pid $$); rc=$?
-    if [ $rc -eq 0 ]; then
-      LEASE_ID=$out
-      if take_heavy_lock; then
-        # Written only once both are held: the interrupt tests start their clock on lease.id.
-        echo "$LEASE_ID" > "$STATE/lease.id"; echo "$HEAVY_ID" > "$STATE/heavy.id"
-        break
-      fi
-      "$LEASE" release "$LEASE_ID" >>"$LOG" 2>&1; LEASE_ID=""
+    # Managed mode takes heavy.lock (the inherited descriptor) before the vm lease: that lease is cleanup-required,
+    # so releasing it after a busy lock would quarantine it.
+    if [ -n "$MANAGED" ] && ! take_heavy_lock; then
       out="heavy.lock is held by another heavy job"; rc=75
     else
-      out="vm: $out"
+      out=$("$LEASE" acquire --run rig --kind vm --est-mem 6 --est-disk 2 --ttl $(( TIMEOUT / 60 + 20 )) --owner-pid $$ \
+        ${VM_CLEANUP[@]+"${VM_CLEANUP[@]}"}); rc=$?
+      if [ $rc -eq 0 ]; then
+        LEASE_ID=$out
+        if [ -n "$MANAGED" ] || take_heavy_lock; then
+          # Written only once both are held: the interrupt tests start their clock on lease.id. A handed heavy lease is
+          # not written: rig-stop releases what heavy.id names, and that lease is the job's.
+          echo "$LEASE_ID" > "$STATE/lease.id"; [ -z "$HEAVY_ID" ] || echo "$HEAVY_ID" > "$STATE/heavy.id"
+          break
+        fi
+        "$LEASE" release "$LEASE_ID" >>"$LOG" 2>&1; LEASE_ID=""
+        out="heavy.lock is held by another heavy job"; rc=75
+      else
+        out="vm: $out"
+        [ -z "$MANAGED" ] || exec 9>&-
+      fi
     fi
-    "$LEASE" release "$HEAVY_ID" >>"$LOG" 2>&1; HEAVY_ID=""
+    [ -z "$HEAVY_ID" ] || "$LEASE" release "$HEAVY_ID" >>"$LOG" 2>&1; HEAVY_ID=""
   elif [ "${out#held by lead}" = "$out" ]; then
     out="heavy: $hout"
   fi
@@ -314,7 +375,7 @@ while :; do
   sleep 30 & wait $!; waited=$(( waited + 30 ))
 done
 mark leaseS "$(python3 -c "print(round($(now)-$t,2))")"
-log "lease $LEASE_ID, heavy lease $HEAVY_ID, heavy.lock"
+log "lease $LEASE_ID, heavy lease ${HEAVY_ID:-$HANDED_HEAVY (handed)}, heavy.lock"
 
 # Admission again, now that the leases and heavy.lock are held: the hold check and the readings above may be up to
 # --wait seconds old. The lead's hold, memory pressure, and free disk against the caller's floor (RIG_RUN_MIN_FREE_GIB,
@@ -327,6 +388,13 @@ if [ -n "${RIG_RUN_MIN_FREE_GIB:-}" ]; then
   [[ "$RIG_RUN_MIN_FREE_GIB" =~ ^[0-9]+$ ]] || { log "RIG_RUN_MIN_FREE_GIB must be whole GiB"; RC=64; exit 64; }
   [ "$(free_kib)" -ge $(( RIG_RUN_MIN_FREE_GIB * 1048576 )) ] ||
     { log "blocked after leases: disk ($(free_kib) KiB free, caller's floor ${RIG_RUN_MIN_FREE_GIB} GiB)"; RC=75; exit 75; }
+fi
+
+# Managed mode: the job's recovery owner records this VM before the clone exists, so it can find and check the clone,
+# Lume and the Virtualization processes if this rig-run and the job's supervisor both die.
+if [ -n "$MANAGED" ]; then
+  $CARET_HEAVY_REGISTER vm "$VM" >>"$LOG" 2>&1 || { log "the job's recovery owner did not register $VM; nothing cloned"; RC=70; exit 70; }
+  log "registered $VM with the job's recovery owner"
 fi
 
 # Test only: RIG_RUN_TEST_HOLD_AT_LOCK=<file> makes a run that holds both leases and heavy.lock create

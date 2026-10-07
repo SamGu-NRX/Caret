@@ -118,9 +118,9 @@ PROFILES = {
         "checkpoint's weights (0.64-0.84 GB) from Hugging Face into memory."),
     "caret-vm": Profile(
         "caret-vm", 15, 6, 2, False, 0, 10800, 60,
-        "Floor 15 GiB is Sam's figure (Brief Q1). rig-run takes its own heavy 0/0 and vm 6/2 leases (measured: "
-        "VM peak RSS 5.65 GiB over 54 runs, clone at most 0.51 GiB) and heavy.lock, so the supervisor takes "
-        "none. Execution 10800 s covers the feeder's 3600 s rig-run wait and H11's 3500 s guest limit; "
+        "Floor 15 GiB is Sam's figure (Brief Q1). rig-run takes the vm 6/2 lease (measured: VM peak RSS 5.65 GiB "
+        "over 54 runs, clone at most 0.51 GiB). The job's one heavy lease is 0/0: the queue's, obliged and handed to "
+        "rig-run (RIG_HEAVY_LEASE_ID, managed mode) on a queue that leases per job, else rig-run's own. Execution 10800 s covers the feeder's 3600 s rig-run wait and H11's 3500 s guest limit; "
         "unmeasured. Grace 60 s covers rig-run's documented cleanup budget of 45 s.",
         wait_flock=("ios_qa_lock",)),
 }
@@ -478,6 +478,16 @@ def write_plan(plan, job_dir):
     return path, hashlib.sha256(data).hexdigest()
 
 
+def rig_run_takes_lease(rig_run):
+    """Whether this rig-run accepts the job's heavy lease (RIG_HEAVY_LEASE_ID) and has the managed cleanup mode."""
+    try:
+        with open(rig_run, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return False
+    return "RIG_HEAVY_LEASE_ID" in text and "RIG_RUN_MANAGED" in text
+
+
 def queue_takes_leases(queue_script):
     """Whether this queue takes an lr-lease per job (heavy-job-queue 401c4d1 and later): it then needs estimates."""
     with open(queue_script, encoding="utf-8") as fh:
@@ -498,7 +508,10 @@ def queue_enqueue_argv(plan, plan_path, plan_digest):
     for key in profile["wait_flock"]:
         argv += ["--wait-flock", paths[key]]
     if queue_takes_leases(paths["queue_script"]):
-        argv += ["--est-mem-gib", _plain(profile["est_mem_gib"]), "--est-disk-gib", _plain(profile["est_disk_gib"])]
+        # A VM job's queue lease is the heavy lease rig-run is handed, 0/0 as rig-run's own heavy lease was: its vm
+        # lease carries the VM's estimates, which would otherwise count twice.
+        est = (profile["est_mem_gib"], profile["est_disk_gib"]) if profile["lease"] else (0, 0)
+        argv += ["--est-mem-gib", _plain(est[0]), "--est-disk-gib", _plain(est[1])]
     return argv + ["--", *boot_argv(plan["python"], plan_path, plan_digest, "relay")]
 
 
@@ -526,11 +539,12 @@ def enqueue(recipe_name, job_id, worktree, rev, recipe_args, paths, env_file=Non
             raise manifest.ManifestError("CARET_ENV_FILE must name an existing absolute file")
     else:
         env_file = None  # an offline recipe gets no key path at all
-    if not (profile or PROFILES[recipe.profile]).lease and queue_takes_leases(paths["queue_script"]):
-        # Pending a coordinator decision: rig-run takes the single heavy lease itself, which the queue's own per-job
-        # heavy lease (owner: the runner) now holds for the job's whole life.
-        raise manifest.ManifestError("VM jobs cannot run on this queue yet: it holds a heavy lease per job, and "
-                                     "rig-run's own heavy lease cannot be granted beside it (heavy maxCount 1)")
+    if not (profile or PROFILES[recipe.profile]).lease and queue_takes_leases(paths["queue_script"]) \
+            and not rig_run_takes_lease(paths["rig_run"]):
+        # The queue holds the job's one heavy lease (heavy maxCount 1); rig-run must be handed it (coordinator's
+        # option b, 2026-10-07), which this rig-run cannot.
+        raise manifest.ManifestError("VM jobs need a rig-run that is handed the queue's heavy lease "
+                                     "(RIG_HEAVY_LEASE_ID); {} would take its own beside it".format(paths["rig_run"]))
     recipe_argv, specs, recorded = recipe.plan_args(recipe_args, worktree, rev, paths)
     repo, commit = ops_repo_and_commit(ops_repo)
     run_root = os.path.join(paths["evidence_root"], job_id)

@@ -37,6 +37,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import select
 import signal
 import socket
@@ -50,6 +51,10 @@ import procs
 
 SOL_LOCAL, LOCAL_PEERCRED, LOCAL_PEERPID = 0, 0x001, 0x002
 TICK = 0.5
+# The process macOS's Virtualization framework runs each VM in. launchd starts it, not the job, so it is waited for and
+# never signalled.
+VZ_PATTERN = "com.apple.Virtualization.VirtualMachine"
+VM_NAME = re.compile(r"^rig-run-[0-9]+$")
 QUARANTINE_AFTER_S = 60
 RETRY_QUARANTINE_S = 15
 LOCK_PATHS = {"slot": "slot_lock", "heavy": "heavy_lock"}
@@ -305,6 +310,10 @@ def check_resource(resource, job_id):
     elif kind == "launchd-prefix":
         if resource.get("prefix") != "caret-heavy.{}.".format(job_id):
             raise ValueError("the launchd prefix must be this job's own")
+    elif kind == "vm":
+        # Registered by rig-run in managed mode before it clones; since is the job's start (the owner fills it in).
+        if not VM_NAME.match(str(resource.get("name", ""))) or not isinstance(resource.get("since"), int):
+            raise ValueError("a vm needs a rig-run-<pid> name and since (mach absolute time)")
     elif kind == "marker":
         if not str(resource.get("mark", "")).startswith(job_id + ".") or not isinstance(resource.get("since"), int):
             raise ValueError("a marker needs this job's mark and since (mach absolute time)")
@@ -342,6 +351,77 @@ def marked_state(probes, resource):
     if unreadable:
         return procs.UNKNOWN, "processes of this user that cannot be read: {}".format(unreadable)
     return (procs.PRESENT, found) if found else (procs.ABSENT, [])
+
+
+def vm_processes(probes, resource):
+    """(state, {"lume": [(pid, start)], "virtualization": [(pid, start)]} or detail) for one rig VM.
+
+    lume: this user's processes running `lume run NAME`. virtualization: this user's Virtualization processes started
+    since the job began. During the job its cleanup-required vm lease (lr-lease vm maxCount 1) and heavy.lock keep any
+    other rig VM from starting, so those are this VM's. A process of this user started since then that cannot be read
+    makes the answer UNKNOWN."""
+    found, unreadable = {"lume": [], "virtualization": []}, []
+    try:
+        for pid in probes.user_pids(os.getuid()):
+            if pid == os.getpid():
+                continue
+            try:
+                usage = probes.usage(pid)
+            except PermissionError:
+                unreadable.append(pid)
+                continue
+            if usage is None:
+                continue
+            got = probes.procargs(pid)
+            if got is None:
+                if usage[1] >= resource["since"] and probes.usage(pid) is not None:
+                    unreadable.append(pid)
+                continue
+            argv = got[0]
+            # Lume itself, or a lume script run through its interpreter (argv[1]), running this VM.
+            if any(os.path.basename(arg) == "lume" for arg in argv[:2]) and "run" in argv and resource["name"] in argv:
+                found["lume"].append((pid, usage[1]))
+            elif argv and VZ_PATTERN in argv[0] and usage[1] >= resource["since"]:
+                found["virtualization"].append((pid, usage[1]))
+    except OSError as ex:
+        return procs.UNKNOWN, "process scan failed: {}".format(ex)
+    if unreadable:
+        return procs.UNKNOWN, "processes of this user that cannot be read: {}".format(unreadable)
+    return (procs.PRESENT if found["lume"] or found["virtualization"] else procs.ABSENT), found
+
+
+def vm_state(probes, resource, clones_dir):
+    """(ABSENT|PRESENT|UNKNOWN, detail): the VM's clone directory, its Lume process and its Virtualization processes."""
+    state, found = vm_processes(probes, resource)
+    if state == procs.UNKNOWN:
+        return state, found
+    clone = os.path.join(clones_dir, resource["name"])
+    if os.path.lexists(clone) or state == procs.PRESENT:
+        return procs.PRESENT, "clone {} {}; lume {}; Virtualization {}".format(
+            clone, "present" if os.path.lexists(clone) else "gone", found["lume"], found["virtualization"])
+    return procs.ABSENT, "no clone, Lume or Virtualization process"
+
+
+def attempt_leases(lr_lease, attempt, env=None):
+    """Every lease that names this attempt: obliged or taken cleanup-required for it. Raises OSError."""
+    return [r for r in procs.lease_records(lr_lease, env=env) if r.get("attempt") == attempt]
+
+
+def settle_attempt_leases(lr_lease, attempt, token, env=None):
+    """Acknowledge every lease of this attempt (the queue's, obliged, and rig-run's vm lease in managed mode) with the
+    token. (ABSENT|PRESENT|UNKNOWN, detail)."""
+    try:
+        leases = attempt_leases(lr_lease, attempt, env=env)
+    except OSError as ex:
+        return procs.UNKNOWN, str(ex)
+    left = {}
+    for lease in leases:
+        state, detail = settle_lease(lr_lease, {"id": lease["id"], "cleanup": True}, token, attempt, env=env)
+        if state != procs.ABSENT:
+            left[lease["id"]] = [state, detail]
+    if left:
+        return (procs.UNKNOWN if any(v[0] == procs.UNKNOWN for v in left.values()) else procs.PRESENT), str(left)
+    return procs.ABSENT, "settled {}".format([lease["id"] for lease in leases])
 
 
 def signal_identities(probes, identities, sig):
@@ -615,7 +695,10 @@ class Owner:
             return {"ok": True, "state": self.state}
         if not self._from_supervisor(sock):
             if op == "register" and self._from_member(sock):
-                resource = check_resource(dict(msg["resource"]), self.plan["job_id"])
+                resource = dict(msg["resource"])
+                if resource.get("type") == "vm":
+                    resource["since"] = self._job_since()
+                resource = check_resource(resource, self.plan["job_id"])
                 if resource["type"] == "group":
                     # Only a group whose leader is a live child of one of the job's verified processes (rig.ts's
                     # held Chrome, a sibling of the register.py that asks): never a stranger's, which this owner
@@ -625,8 +708,10 @@ class Owner:
                     if same_process(self.probes, leader) is not True or not parents:
                         raise ValueError("group {} was not started by this job (its leader is no live child of the "
                                          "job's processes)".format(resource["pgid"]))
+                elif resource["type"] == "vm":
+                    pass  # since was filled in from the job's marker above
                 elif resource["type"] != "launchd":
-                    raise ValueError("a recipe registers launchd jobs and its own process groups only")
+                    raise ValueError("a recipe registers launchd jobs, its own process groups and rig VMs only")
                 return self._register(resource)
             raise ValueError("{} must come from the adopting supervisor".format(op))
         if op == "lock":
@@ -650,6 +735,13 @@ class Owner:
         if op == "clean":
             results = self.inventory()
             lease = procs.lease_state(self.paths["lr_lease"], self.lease["id"]) if self.lease else (procs.ABSENT, "none")
+            if lease[0] == procs.ABSENT:
+                try:
+                    left = [r["id"] for r in attempt_leases(self.paths["lr_lease"], self.attempt)]
+                except OSError as ex:
+                    lease = (procs.UNKNOWN, str(ex))
+                else:
+                    lease = (procs.PRESENT, "leases of this attempt {}".format(left)) if left else lease
             if all(r[0] == procs.ABSENT for r in results.values()) and lease[0] == procs.ABSENT:
                 self.journal.append({"event": "clean", "by": "supervisor", "results": results})
                 self.state = "clean"
@@ -679,6 +771,13 @@ class Owner:
             return {"ok": True, "state": "clean"}
         raise ValueError("{} after CLEAN".format(msg.get("op")))
 
+    def _job_since(self):
+        """When the job's processes began (the marker's since), which bounds a VM's Virtualization processes."""
+        for resource in self.resources.values():
+            if resource["type"] == "marker":
+                return resource["since"]
+        raise ValueError("a vm can only be registered once the job's marker is")
+
     def _register(self, resource):
         if resource["id"] in self.resources:
             if self.resources[resource["id"]] != resource:
@@ -704,6 +803,8 @@ class Owner:
                 results[rid] = list(procs.launchd_state(resource["label"]))
             elif kind == "launchd-prefix":
                 results[rid] = list(launchd_prefix_state(resource["prefix"]))
+            elif kind == "vm":
+                results[rid] = list(vm_state(self.probes, resource, self.paths["lume_clones"]))
             else:
                 state, pids = marked_state(self.probes, resource)
                 results[rid] = [state, pids if isinstance(pids, str) else "pids {}".format([p for p, _ in pids])]
@@ -738,6 +839,8 @@ class Owner:
                     state, found = marked_state(self.probes, resource)
                     if state == procs.PRESENT:
                         signal_identities(self.probes, found, sig)
+                elif kind == "vm":
+                    self._stop_vm(resource, sig)
                 else:
                     labels = [resource["label"]] if kind == "launchd" else \
                         [label for label, _ in procs.launchd_jobs(resource["prefix"])]
@@ -745,6 +848,19 @@ class Owner:
                         procs.launchd_bootout(label)
             except Exception as ex:  # noqa: BLE001 - the owner must outlive any one failed stop
                 self.log("stopping {} failed: {!r}".format(rid, ex))
+
+    def _stop_vm(self, resource, sig):
+        """Its Lume process by verified identity; never Virtualization (launchd's). A clone left once Lume is gone goes
+        to the rig's own recovery, rig-stop --orphans, on the SIGKILL rounds."""
+        state, found = vm_processes(self.probes, resource)
+        if state == procs.PRESENT:
+            signal_identities(self.probes, found["lume"], sig)
+        if sig == signal.SIGKILL and state != procs.UNKNOWN and not found["lume"] \
+                and os.path.lexists(os.path.join(self.paths["lume_clones"], resource["name"])):
+            done = subprocess.run([self.paths["rig_stop"], "--orphans", "--grace", "15"], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180)
+            self.log("rig-stop --orphans for {} exited {}: {}".format(resource["name"], done.returncode,
+                                                                    done.stdout.strip()[-300:]))
 
     def _cleanup_step(self):
         now = time.monotonic()

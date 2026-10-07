@@ -481,7 +481,10 @@ class Supervisor:
         if problem:
             self._release()
             return problem
-        if self.queue_lease and self.lease_oblige and self.profile["lease"]:
+        if self.queue_lease and not self.profile["lease"] and not self.lease_oblige:
+            raise procs.Refusal("a VM job under the queue's lease needs an lr-lease with oblige, so the lease rig-run is "
+                                "handed outlives the queue's release until this attempt's cleanup is confirmed")
+        if self.queue_lease and self.lease_oblige:
             # The queue releases its lease once the relay's group is empty, which its SIGKILL of the relay after 10 s
             # makes true while cleanup may still run. Obliged, that release quarantines the lease instead, until this
             # attempt's token acknowledges the clean (the vendored lr-lease; with the live one, _hold_reservation).
@@ -618,6 +621,13 @@ class Supervisor:
         if not self.profile["lease"]:
             # VM jobs: rig-run rechecks free disk against this floor once it holds its leases, before any clone.
             env["RIG_RUN_MIN_FREE_GIB"] = str(int(-(-self.profile["floor_gib"] // 1)))
+            if self.lease_obliged:
+                # The queue's lease, obliged to this attempt, is the job's one heavy lease: rig-run uses it instead of
+                # taking its own (heavy maxCount 1). Managed mode: rig-run registers its VM with the recovery owner
+                # before cloning and takes its vm lease cleanup-required for this attempt, leaving its settlement to
+                # this job's custody. The token's digest is not a secret; the token never leaves custody.
+                env.update(RIG_HEAVY_LEASE_ID=self.lease_id, RIG_RUN_MANAGED="1", CARET_HEAVY_ATTEMPT=self.attempt,
+                           CARET_HEAVY_TOKEN_SHA256=recovery.token_sha256(self.token))
         env.update(self.plan["env"])
         if self.plan["recipe"]["live"]:
             env["CARET_ENV_FILE"] = self.plan["env_file"]
@@ -858,7 +868,8 @@ class Supervisor:
                     rec = json.loads(line)
                 except ValueError:
                     raise OSError("lr-lease status printed a malformed lease line") from None
-                if rec.get("ownerPid") in rig_pids:
+                # A lease of this attempt (rig-run's vm lease in managed mode) is settled with the token at conclusion.
+                if rec.get("ownerPid") in rig_pids and rec.get("attempt") != self.attempt:
                     leases.append(rec.get("id"))
         return clones, leases
 
@@ -958,6 +969,8 @@ class Supervisor:
                 recovery.test_point(self.plan, "supervisor:before-settle")
                 lease = recovery.settle_lease(self.paths["lr_lease"], {"id": self.lease_id, "cleanup": self.lease_cleanup}
                                               if self.lease_id else None, self.token, self.attempt)
+                if lease[0] == procs.ABSENT:
+                    lease = recovery.settle_attempt_leases(self.paths["lr_lease"], self.attempt, self.token)
                 recovery.test_point(self.plan, "supervisor:after-settle")
                 if lease[0] == procs.ABSENT:
                     self.lease_id = None

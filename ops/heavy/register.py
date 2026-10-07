@@ -2,6 +2,7 @@
 
   $CARET_HEAVY_REGISTER launchd LABEL     a launchd job, before `launchctl bootstrap`
   $CARET_HEAVY_REGISTER group PGID        a process group the caller made and is holding (rig.ts holds Chrome)
+  $CARET_HEAVY_REGISTER vm NAME           a rig VM (rig-run-<pid>), before rig-run clones it (rig-run's managed mode)
 
 LABEL must start with $CARET_HEAVY_LAUNCHD_PREFIX. PGID's leader must be the caller's own child. The
 recovery owner accepts the request only from a process it already tracks as part of the job, and
@@ -19,11 +20,13 @@ import recovery  # noqa: E402
 
 
 def main(argv):
-    if len(argv) != 2 or argv[0] not in ("launchd", "group"):
-        print("usage: register.py launchd LABEL | group PGID", file=sys.stderr)
+    if len(argv) != 2 or argv[0] not in ("launchd", "group", "vm"):
+        print("usage: register.py launchd LABEL | group PGID | vm NAME", file=sys.stderr)
         return 2
     if argv[0] == "launchd":
         resource = {"id": "launchd:" + argv[1], "type": "launchd", "label": argv[1]}
+    elif argv[0] == "vm":
+        resource = {"id": "vm:" + argv[1], "type": "vm", "name": argv[1]}
     else:
         pgid = int(argv[1])
         leader = recovery.identity(procs.DarwinProbes(), pgid)

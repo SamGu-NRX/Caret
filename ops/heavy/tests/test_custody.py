@@ -1,10 +1,10 @@
-"""Astra's design, section 4, tests 1-6 and 8-10, for the group-contained profiles (phase A).
+"""Astra's design, section 4, tests 1-10: 1-6 and 8-10 for the group-contained profiles (phase A), 7 for VM jobs
+(phase C, with a fake rig-run in managed mode).
 
 End-to-end tests run the real queue runner, relay, supervisor and a real launchd recovery agent in a
 temporary world (support.World). Exclusion is checked by a separate contender that tries to lock
 slot.lock and heavy.lock, not by a recorded status. Probe failures and pid reuse are also checked
-in isolation with fake probes and fake commands. Test 7 (a fake VM leaving a Virtualization
-process) belongs to phase C.
+in isolation with fake probes and fake commands.
 """
 
 import hashlib
@@ -911,8 +911,21 @@ class QueueLeaseUntilClean(Custody):
         self.fail("not done within {} s".format(seconds))
 
     def held_until_clean(self, job_id, lease_id):
-        """The live lr-lease: the recovery owner never touches the queue's lease, so it must outlast CLEAN itself."""
-        return self.held_until(lambda: any(r["event"] == "clean" for r in self.journal(job_id)), lease_id)
+        """The relay stays in the queue's group until CLEAN: the queue keeps counting the job as running, and its lease
+        (obliged, so acknowledged by the token only once the workload's cleanup is done) outlives that cleanup.
+        Returns the moments either was not so."""
+        clean = lambda: any(r["event"] == "clean" for r in self.journal(job_id))
+        done = lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "cleanup-done"))
+        early = []
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline and not clean():
+            state = self.job(job_id)["state"]
+            listed = lease_id in [l["id"] for l in self.leases()]
+            if not clean() and (state != "running" or (not listed and not done())):
+                early.append((round(time.monotonic(), 1), state, listed))
+            time.sleep(0.3)
+        self.assertTrue(clean(), "no CLEAN within 90 s")
+        return early
 
     def test_a_dead_supervisor_leaves_the_relay_holding_the_queue_lease_until_recovery_journals_clean(self):
         job_id, _ = self.enqueue(["slow-cleanup", "12"], profile=profile(grace=30))
@@ -995,6 +1008,69 @@ class QueueLeaseObliged(QueueLeaseUntilClean):
         self.assert_all_released(job_id)
 
     assert_no_token_anywhere = Test10ReservationsAndCredentials.assert_no_token_anywhere
+
+
+
+VZ_NAME = ("/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/"
+           "com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine")
+
+
+class Test7VirtualizationOutlivesLume(Custody):
+    """Design test 7, on the live queue (401c4d1): a VM job hands the queue's lease, obliged to its attempt, to rig-run
+    (a fake rig-run in managed mode). A stand-in Virtualization process, started outside the job as launchd starts the
+    real one, outlives Lume. Nothing is released and no lease settled while it lives, and it is never signalled; once it
+    exits, the job concludes CLEAN with both leases acknowledged."""
+
+    def start_vm(self):
+        job_id, _ = self.enqueue(["rig", self.paths["rig_run"], "managed", "2"], profile=profile(lease=False, grace=5))
+        self.run_queue("--once", "--max-wait", "120")
+        registered = lambda: any(r["event"] == "register" and r["resource"]["type"] == "vm" for r in self.journal(job_id))
+        self.assertTrue(self.wait_for(registered, 120), self.queue_log(job_id))
+        clones = self.paths["lume_clones"]  # made only after the vm lease, so it may not exist yet
+        self.assertTrue(self.wait_for(lambda: len(self.leases()) == 2 and os.path.isdir(clones) and os.listdir(clones), 30))
+        vz = subprocess.Popen(["/bin/bash", "-c", 'exec -a "$0" /bin/sleep 600', VZ_NAME], start_new_session=True,
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: vz.poll() is None and (vz.kill(), vz.wait()))  # this test's own child, by exact pid
+        leases = {l["kind"]: l for l in self.leases()}
+        self.assertEqual(sorted(leases), ["heavy", "vm"])
+        self.assertEqual((leases["heavy"]["id"], leases["heavy"]["run"]), (self.job(job_id)["lease_id"], "heavy-job-queue"))
+        self.assertEqual(leases["vm"]["run"], "rig")
+        self.assertTrue(all(l["cleanupRequired"] for l in leases.values()))
+        self.assertEqual(len({l["attempt"] for l in leases.values()}), 1)
+        return job_id, vz, leases
+
+    def assert_held_while_virtualization_lives(self, job_id, vz):
+        self.assertTrue(self.wait_for(lambda: not os.listdir(self.paths["lume_clones"]), 60))  # rig-run's own cleanup
+        time.sleep(8)
+        self.assertIsNone(vz.poll(), "the Virtualization stand-in was signalled")
+        self.assertFalse(any(r["event"] == "clean" for r in self.journal(job_id)))
+        self.assertTrue(self.contender_blocked())
+        self.assertEqual(sorted(l["kind"] for l in self.leases()), ["heavy", "vm"])
+
+    def test_a_cancelled_vm_job_waits_for_virtualization_to_exit(self):
+        job_id, vz, leases = self.start_vm()
+        self.assertEqual(self.queue("cancel", "--id", job_id).returncode, 0)
+        self.assert_held_while_virtualization_lives(job_id, vz)
+        vz.kill()
+        vz.wait()
+        self.wait_clean(job_id, "supervisor")
+        self.assertTrue(self.wait_for(lambda: finished(self, job_id), 30))
+        outcome = self.outcome(job_id)
+        self.assertEqual(outcome["cleanup"], "clean")
+        self.assertTrue(outcome["lease"]["obliged"])
+        self.assert_all_released(job_id)
+
+    def test_with_the_supervisor_dead_the_recovery_owner_waits_for_virtualization(self):
+        job_id, vz, leases = self.start_vm()
+        with open(os.path.join(self.run_root(job_id), "supervisor.json")) as fh:
+            os.kill(json.load(fh)["supervisor_pid"], signal.SIGKILL)  # this test's own supervisor, by exact pid
+        self.assert_held_while_virtualization_lives(job_id, vz)
+        vz.kill()
+        vz.wait()
+        self.wait_clean(job_id, "recovery")
+        [clean] = [r for r in self.journal(job_id) if r["event"] == "clean"]
+        self.assertIn(leases["vm"]["id"], clean["reconciled"])  # rig-run's vm lease, settled by the attempt's token
+        self.assert_all_released(job_id)
 
 
 if __name__ == "__main__":

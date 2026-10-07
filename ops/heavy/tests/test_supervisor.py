@@ -71,11 +71,13 @@ class Cancellation(World):
         relay_gone_at = time.time()
         self.assertIn("SIGKILL", self.job(first)["outcome_reason"])  # the queue's 10 s grace ran out
         # The relay is dead, but the supervisor still holds the slot and a heavy lease while the recipe cleans up.
-        # The live queue releases its own lease once the relay's group is empty; the supervisor then takes the
-        # reservation over until its cleanup is confirmed.
+        # The live queue releases its own lease once the relay's group is empty; obliged to this attempt, that
+        # release quarantines it, and it stays until the supervisor acknowledges the confirmed cleanup.
         self.assertFalse(os.path.exists(os.path.join(out, "cleanup-done")))
         self.assertTrue(procs.lock_held(self.paths["slot_lock"]))
-        self.assertTrue(self.wait_for(lambda: [l["run"] for l in self.leases()] == ["caret"], 10), self.leases())
+        queue_lease = self.job(first)["lease_id"]
+        self.assertTrue(self.wait_for(lambda: [(l["id"], l.get("state")) for l in self.leases()] ==
+                                      [(queue_lease, "quarantined")], 10), self.leases())
         self.assertFalse(os.path.exists(self.run_root(second)))
         self.assertTrue(self.wait_for(lambda: self.outcome(second) and "exit" in self.outcome(second), 60))
         with open(os.path.join(out, "cleanup-done")) as fh:
