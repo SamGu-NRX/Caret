@@ -1,1 +1,0 @@
-W2: every page write needs a CheckedValue from helper/src/fill/contract.ts (checkValues or mintExempt); compilers (fillPlan, validatePlan, GoalRuns.propose, patterns plan) throw ContractError without one. Proposals built by hand in tests go through test/mint.ts.

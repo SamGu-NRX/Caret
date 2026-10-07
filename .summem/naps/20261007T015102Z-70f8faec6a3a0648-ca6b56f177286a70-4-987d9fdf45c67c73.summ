@@ -1,1 +1,0 @@
-Evals: run live sets once (slow-eval never settles); keep HOIST_SHARED_OPTIONS false. Run guard-adversary each batch: refuse mode writes 0 outside exemptions; check new exempt (c) writes. Value rules go in fill/contract.ts, not beside a caller.

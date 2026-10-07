@@ -1,0 +1,1 @@
+Every Ask route asks Jev's per-field scope question (purpose ask.scope) first, so a test Jev stand-in must answer it: wrap it with answeringScope in helper/test/builders.ts, or Asks refuse or ask back.
