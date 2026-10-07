@@ -102,3 +102,15 @@ export function jevPickingText(
     costUsd: 0.000042,
   });
 }
+
+/**
+ * I2 ruling D: every Ask route asks Jev's per-field scope question (planner/intent-heads.ts settleFields). A stand-in
+ * written before it answers that question here: every field it is asked about is one the request asks for (the maker's
+ * own fields stay as they were), unless `choose` says otherwise; every other request goes to `ask`.
+ */
+export function answeringScope(ask: AskJev, choose: (instructions: string) => "asks" | "not" | "unclear" = () => "asks"): AskJev {
+  return async (req) =>
+    req.purpose === "ask.scope"
+      ? { model: "scope-stand-in", inputTokens: 0, latencyMs: 0, costUsd: 0, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: choose(String(q.instructions)), confidence: 0.95 }])) }
+      : ask(req);
+}

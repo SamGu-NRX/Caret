@@ -18,7 +18,7 @@
 // Steps are then cut into segments: a new segment starts where the window changes (or the calendar starts or ends),
 // and after a press whose effect changes what the window offers. Each segment is one executor task, under one
 // forward grant for its one window, and needs its own acceptance.
-import { documentNow, scopeRefusal, type AskScope } from "../fill/ask-scope.ts";
+import { scopeKey, scopeRefusal, withScope, type AskScope, type DocumentReader, type ScopeSet } from "../fill/ask-scope.ts";
 import type { DraftPlan } from "../codemode/types.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { AskJev } from "../fill/jev.ts";
@@ -28,7 +28,7 @@ import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
-import { checkValues, ContractError, exemptRefusal, isChecked, mintExempt, requireChecked, VerifierUnavailable, type CheckedValue, type Proposed } from "../fill/contract.ts";
+import { checkValues, ContractError, exemptRefusal, isChecked, mintExempt, requireChecked, VerifierUnavailable, type CheckedValue, type Proposed, type Scoped } from "../fill/contract.ts";
 import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
@@ -217,17 +217,19 @@ export interface LowerOptions {
   /** When the write contract's mints are made (fill/contract.ts); now by default. */
   now?: number;
   /**
-   * I2: the Ask's settled scope (fill/ask-scope.ts). Every value is minted under it, and the goal gate drops any write
-   * whose mint was not, whose field it does not hold, or whose field changed since the Ask was asked.
+   * I2 lead ruling C: an Ask's goal's scopes (fill/ask-scope.ts ScopeSet), one per window and page document, kept across
+   * its replans. Every value is minted under its window's scope, and the goal gate drops any write whose mint was not,
+   * whose field the scope does not hold, or whose field changed since the question. Absent: a goal no Ask made.
    */
-  askScope?: AskScope;
+  scopes?: ScopeSet;
+  /** Which page document a window shows now (the helper's page engine); a scope on a page holds nothing without it. */
+  documentOf?: DocumentReader | null;
   /**
-   * I2 ruling: for an Ask's goal, the scope of a window the Ask's own question never saw (the reply window a goal from an
-   * email writes in, another window of a writer's plan): Jev's scope ask on that window's fields, settled once per
-   * window (helper.ts settleScopeFor). Present, or `askScope` present, makes every window write held to a scope; a
-   * window with neither is written in by no step.
+   * For an Ask's goal, the scope of a window and document its set does not hold yet (the reply window a goal from an
+   * email writes in; another window of a writer's plan; a next page): Jev's per-field scope question on its fields,
+   * settled once and added to the set (helper.ts settleScopeFor). Without it, such a window is written in by no step.
    */
-  settleScope?: (windowId: string) => Promise<AskScope>;
+  settleScope?: (windowId: string, document: string | null) => Promise<AskScope>;
 }
 
 /**
@@ -290,16 +292,27 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   // I2: an Ask's goal holds every write in a window to that window's scope (fill/ask-scope.ts): the Ask's own, or one
   // settled for that window; a goal no Ask made has none. Calendar events are not field writes: their own gates
   // (gates.ts eventAsAsked, the value gate) decide them, and no scope does.
-  const asked2 = o.askScope !== undefined || o.settleScope !== undefined;
-  const scopes = new Map<string, AskScope | null>();
-  if (o.askScope !== undefined) scopes.set(o.askScope.windowId, o.askScope);
-  /** The scope a window write is held to: undefined outside an Ask, null for an Ask with none for that window. */
+  let set = o.scopes;
+  const documentOf = o.documentOf ?? null;
+  const tried = new Set<string>();
+  /**
+   * The scope a window write is held to: undefined outside an Ask, null for an Ask with none for that window and
+   * document. A window and document the set holds keep their scope; one it does not is settled once, if it can be.
+   */
   const scopeFor = async (t: TargetBinding): Promise<AskScope | null | undefined> => {
-    if (!asked2 || t.domain.kind !== "window") return undefined;
+    if (set === undefined || t.domain.kind !== "window") return undefined;
     const id = t.domain.windowId;
-    if (!scopes.has(id)) scopes.set(id, o.settleScope === undefined ? null : await o.settleScope(id));
-    return scopes.get(id);
+    const doc = documentOf === null ? null : documentOf(id);
+    const k = scopeKey(id, doc);
+    const have = set.scopes[k];
+    if (have !== undefined) return have;
+    if (tried.has(k) || o.settleScope === undefined) return null;
+    tried.add(k);
+    const fresh = await o.settleScope(id, doc);
+    set = withScope(set, fresh);
+    return fresh;
   };
+  const scopedBy = (sc: AskScope | null | undefined): Scoped | undefined => (sc === null || sc === undefined ? undefined : { scope: sc, documentOf });
   const NO_SCOPE = "the Ask settled no field of this window for Caret to fill";
   /** Every target a fill named, dropped or not: a plan that fills one twice is refused either way. */
   const filled = new Set<string>();
@@ -367,12 +380,12 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         const at = `step ${s.ref}`;
         // I2 re-review: a write outside the Ask's scope is dropped with its reason, never the whole goal.
         const sc = await scopeFor(t);
-        const outside = sc === null ? NO_SCOPE : byFill ? null : scopeRefusal(proposedFor(t, v, lowered.writes), sc);
+        const outside = sc === null ? NO_SCOPE : byFill || sc === undefined ? null : scopeRefusal(proposedFor(t, v, lowered.writes), sc, documentOf);
         if (outside !== null) {
           dropAs(t, outside, v);
           continue;
         }
-        const scope = sc ?? undefined;
+        const scope = scopedBy(sc);
         if (byFill) checked = requireChecked(v.checked, lowered.writes, t.key, t.domain.kind === "window" ? t.domain.windowId : "", at);
         else if (v.draft !== null) checked = mintExempt(proposedFor(t, v, lowered.writes), "draft", now, instruction, scope);
         // A resolved date or time is the resolver's (resolverFormat). W2 review: a writer's option goes to the verifier
@@ -425,13 +438,13 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       recipientCheck(t, sender, inv);
       // W2: the sender is minted under its exemption, whose shape checks still run (fill/contract.ts exemptRefusal).
       const toScope = await scopeFor(t);
-      const gated = toScope === null ? NO_SCOPE : (codeGate(t, sender.text, sender.text, "copy", instruction) ?? exemptRefusal(proposedFor(t, sender, sender.text), "recipientFromFrom", instruction, toScope));
+      const gated = toScope === null ? NO_SCOPE : (codeGate(t, sender.text, sender.text, "copy", instruction) ?? exemptRefusal(proposedFor(t, sender, sender.text), "recipientFromFrom", instruction, scopedBy(toScope)));
       if (gated !== null) {
         left.push({ windowId, key: f.key, label: f.label, why: "recipient", says: `You add the recipient in '${f.label}': ${gated}` });
         continue;
       }
       const at = steps.findIndex((x) => x.target.domain.kind === "window" && x.target.domain.windowId === windowId);
-      const step = markDerived<GoalStep>({ ref: `to:${t.ref}`, index: 0, kind: "write", says: `${t.label}: ${sender.text}`, target: t, value: sender, writes: sender.text, effect: null, handoff: null, to: true, gate: "derived", checked: mintExempt(proposedFor(t, sender, sender.text), "recipientFromFrom", now, instruction, toScope ?? undefined) });
+      const step = markDerived<GoalStep>({ ref: `to:${t.ref}`, index: 0, kind: "write", says: `${t.label}: ${sender.text}`, target: t, value: sender, writes: sender.text, effect: null, handoff: null, to: true, gate: "derived", checked: mintExempt(proposedFor(t, sender, sender.text), "recipientFromFrom", now, instruction, scopedBy(toScope)) });
       steps.splice(at < 0 ? steps.length : at, 0, step);
     }
   }
@@ -447,6 +460,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     const byScope = new Map<AskScope | undefined, GoalStep[]>();
     for (const x of copies) {
       const sc = (await scopeFor(x.target)) ?? undefined;
+      // A copy into a window an Ask's goal holds no scope for was dropped above; none reaches here.
       byScope.set(sc, [...(byScope.get(sc) ?? []), x]);
     }
     const refusedSteps = new Set<GoalStep>();
@@ -454,7 +468,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       const proposed = group.map((x) => proposedFor(x.target, x.value as ValueBinding, x.writes as string));
       let result: Awaited<ReturnType<typeof checkValues>>;
       try {
-        result = await checkValues(proposed, { askJev: o.askJev, ledger: o.ledger, instruction, now, ...(scope === undefined ? {} : { scope }) });
+        result = await checkValues(proposed, { askJev: o.askJev, ledger: o.ledger, instruction, now, ...(scope === undefined ? {} : { scoped: { scope, documentOf } }) });
       } catch (e) {
         if (e instanceof VerifierUnavailable) throw new GoalError("unchecked", "Caret couldn't check the plan's values just now", e.message);
         throw e;
@@ -496,11 +510,13 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   });
   // I2: the goal gate for an Ask's scope. Every write's mint was made under it, for a field it holds that read then as
   // when the Ask was asked; the executor's guard checks the field again right before the write (contract.ts guardFor).
-  if (asked2) {
+  if (set !== undefined) {
+    const held = set;
     steps = steps.filter((x) => {
       if (x.kind !== "write" || x.writes === null || x.target.domain.kind !== "window") return true;
-      const scope = scopes.get(x.target.domain.windowId) ?? null;
-      const why = scope === null ? NO_SCOPE : x.checked === undefined || x.checked.scope !== scope ? `its value was not checked under this Ask's scope` : scopeRefusal(x.checked, scope);
+      const id = x.target.domain.windowId;
+      const scope = held.scopes[scopeKey(id, documentOf === null ? null : documentOf(id))] ?? null;
+      const why = scope === null ? NO_SCOPE : x.checked === undefined || x.checked.scope !== scope ? `its value was not checked under this Ask's scope` : scopeRefusal(x.checked, scope, documentOf);
       if (why === null) return true;
       dropAs(x.target, why, x.value);
       return false;
@@ -534,15 +550,20 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     const t = a.target;
     if (t.control !== "file" || t.domain.kind !== "window" || !t.domain.page) throw new GoalError("schema", `${named(t)} is not a page's file control`, t.ref);
     if (steps.some((x) => x.kind === "attach" && x.target.key === t.key)) throw new GoalError("schema", `the plan attaches to ${named(t)} twice`, t.ref);
-    // I2 ruling: an upload field is held to the Ask's scope as any field is; the file's own confirmation is a second gate.
+    // I2 lead ruling A: an attachment goes through the write contract as a write does, minted under the "attachment"
+    // exemption with its window's scope (membership, document, the question's fingerprint); the user's confirmation of
+    // the file at Tab is a second gate. The executor requires this mint and rechecks it right before the dispatch.
     const sc = await scopeFor(t);
-    const out = sc === undefined ? null : sc === null ? NO_SCOPE : !sc.fields.has(t.key) ? `the Ask did not ask Caret to attach a file to ${named(t)}` : documentNow(t.domain.windowId) !== sc.document ? "the page is no longer the one the Ask was about" : null;
-    if (out !== null) {
-      left.push({ windowId: t.domain.windowId, key: t.key, label: t.label, why: "dropped", says: `Caret left ${named(t)} empty: ${out}` });
+    const wants = clip(t.label === "" ? "a file" : t.label, 80);
+    const attachment: Proposed | null = t.field === undefined ? null : { field: t.field, text: wants, display: wants, provenance: { kind: "instruction", span: wants }, owner: null };
+    const out = attachment === null ? "Caret has no record of this file control" : sc === null ? NO_SCOPE : exemptRefusal(attachment, "attachment", instruction, scopedBy(sc));
+    if (out !== null || attachment === null) {
+      left.push({ windowId: t.domain.windowId, key: t.key, label: t.label, why: "dropped", says: `Caret left ${named(t)} empty: ${out ?? ""}` });
       continue;
     }
+    const attachMint = mintExempt(attachment, "attachment", now, instruction, scopedBy(sc));
     const what = t.label === "" ? "File" : t.label;
-    steps.push({ ref: `a${i + 1}`, index: steps.length, kind: "attach", says: a.file.source === "saved" ? `${what}: ${a.file.name}` : `${what}: a file you choose`, target: t, value: null, writes: null, effect: null, handoff: null, to: false, gate: null, file: a.file });
+    steps.push({ ref: `a${i + 1}`, index: steps.length, kind: "attach", says: a.file.source === "saved" ? `${what}: ${a.file.name}` : `${what}: a file you choose`, target: t, value: null, writes: null, effect: null, handoff: null, to: false, gate: null, file: a.file, checked: attachMint });
   }
   if (o.handoffRow !== undefined) {
     const h = o.handoffRow;
@@ -573,7 +594,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   }
   const segments = cut(draft.programDigest, steps, warnings, o.parts);
   if (segments.length > MAX_SEGMENTS) throw new GoalError("tooManySegments", `the plan needs ${segments.length} separate acceptances; Caret offers at most ${MAX_SEGMENTS}`);
-  return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv, ...(asked2 ? { askScope: o.askScope ?? null } : {}) };
+  return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv, ...(set === undefined ? {} : { scopes: set }) };
 }
 
 /** Why a fill's value may not go in a page field because the field is a message's recipient or subject (B30), or null. */

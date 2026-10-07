@@ -8,39 +8,31 @@ import type { WindowState } from "../model.ts";
 import type { Owner } from "./contract.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 
+/** Which page document a window shows now (the helper's page engine, helper.ts HelperOptions.pageDocument). */
+export type DocumentReader = (windowId: string) => string | null;
+
 /**
- * What an Ask settled, recorded once (planner/ask.ts): the only fields it may write, by node key in one window; how
- * each read when the user's question was asked (fieldFingerprint); and the person the user picked, when they picked
- * one, whose details alone may go in.
+ * What an Ask settled, once, by the per-field scope question (planner/intent-heads.ts), and never changed after: the only
+ * fields it may write, by node key in one window; the page document they were on; how each read when the question was
+ * asked (fieldFingerprint); and the person the user picked, when they picked one, whose details alone may go in.
+ * Anything that would change a scope is a new settle, for a new document or a new Ask (I2 lead ruling B).
  */
 export interface AskScope {
   readonly windowId: string;
   /**
-   * The page document the Ask was asked on (the page engine's generation, read through documentNow); null for a native
-   * window or with no page engine. A page's element keys repeat across documents (P3's next page had the same Full name
-   * key), so a key alone is no field. Plain data: a goal plan is cloned when it is offered (runs.ts propose).
+   * The page document the question was asked on, read before any planning awaited (ask.ts) and kept in a continued
+   * Ask's record; null for a native window or with no page engine. A page's element keys repeat across documents (P3's
+   * next page had the same Full name key), so a key alone is no field. Plain data: a goal plan is cloned when offered.
    */
   readonly document: string | null;
   readonly fields: ReadonlySet<string>;
-  /** By node key, each field's fingerprint when the Ask was asked (a continued Ask's first question's record). */
+  /** By node key, each field's fingerprint when the question was asked (a continued Ask's first question's record). */
   readonly seen: Readonly<Record<string, string>>;
   /** The person the user picked; null when they picked none, or picked themselves. */
   readonly person: string | null;
 }
 
-/**
- * The page engine's document for a window now (helper.ts HelperOptions.pageDocument), installed by the helper that owns
- * the screen model (one per process); none outside a helper, as in tests that plan without one.
- */
-let documents: ((windowId: string) => string | null) | null = null;
-export function readDocumentsWith(f: ((windowId: string) => string | null) | null): void {
-  documents = f;
-}
-export function documentNow(windowId: string): string | null {
-  return documents === null ? null : documents(windowId);
-}
-
-export function askScope(windowId: string, keys: Iterable<string>, seen: Readonly<Record<string, string>>, person: string | null): AskScope {
+export function askScope(windowId: string, document: string | null, keys: Iterable<string>, seen: Readonly<Record<string, string>>, person: string | null): AskScope {
   const fields = new Set(keys);
   const own: Record<string, string> = {};
   for (const k of fields) {
@@ -49,7 +41,27 @@ export function askScope(windowId: string, keys: Iterable<string>, seen: Readonl
     if (s === undefined) throw new Error(`the Ask's scope names field ${k}, which its record of the form lacks`);
     own[k] = s;
   }
-  return Object.freeze({ windowId, document: documentNow(windowId), fields, seen: Object.freeze(own), person });
+  return Object.freeze({ windowId, document, fields, seen: Object.freeze(own), person });
+}
+
+/**
+ * I2 lead ruling C: a goal's scopes, one per window and document it writes in, settled once each and kept across its
+ * replans. A replan reuses them; a field that changed since is refused, never settled again. `ask` is false for a goal
+ * no Ask made, which no scope holds.
+ */
+export interface ScopeSet {
+  readonly ask: boolean;
+  readonly person: string | null;
+  readonly scopes: Readonly<Record<string, AskScope>>;
+}
+export const scopeKey = (windowId: string, document: string | null): string => `${windowId}\n${document ?? ""}`;
+export function scopeSet(person: string | null, scopes: readonly AskScope[] = []): ScopeSet {
+  return Object.freeze({ ask: true, person, scopes: Object.freeze(Object.fromEntries(scopes.map((x) => [scopeKey(x.windowId, x.document), x]))) });
+}
+/** The set with `x` added; a window and document it already holds keeps its first scope. */
+export function withScope(set: ScopeSet, x: AskScope): ScopeSet {
+  const k = scopeKey(x.windowId, x.document);
+  return set.scopes[k] !== undefined ? set : Object.freeze({ ...set, scopes: Object.freeze({ ...set.scopes, [k]: x }) });
 }
 
 /** A heading node's text: its label, else its first static text child's. */
@@ -97,14 +109,17 @@ export interface ScopedWrite {
 }
 
 /**
- * Why `x` may not be written under `scope`, or null: its field is not one the Ask settled, the field no longer reads as
- * it did when the Ask was asked, or the user picked a person and the value is not that person's. Null with no scope.
+ * Why `x` may not be written under `scope`, or null: its field is not one the Ask settled, the page is another document
+ * than the one asked about (read through `documentOf`, the owning helper's reader; with none, a scope on a page refuses),
+ * the field no longer reads as it did when the question was asked, or the user picked a person and the value is not
+ * that person's. Null with no scope.
  */
-export function scopeRefusal(x: ScopedWrite, scope: AskScope | undefined): string | null {
+export function scopeRefusal(x: ScopedWrite, scope: AskScope | undefined, documentOf: DocumentReader | null = null): string | null {
   if (scope === undefined) return null;
   const f = x.field;
   if (f.windowId !== scope.windowId || !scope.fields.has(f.key)) return `the Ask did not ask Caret to fill '${f.name}'`;
-  if (documentNow(f.windowId) !== scope.document) return `the page is no longer the one Caret asked about '${f.name}' on`;
+  const doc = documentOf === null ? null : documentOf(f.windowId);
+  if (documentOf === null ? scope.document !== null : doc !== scope.document) return `the page is no longer the one Caret asked about '${f.name}' on`;
   if (f.fingerprint === null) return `Caret has no record of how '${f.name}' read, so it can't tell the field is the one the Ask was about`;
   if (f.fingerprint !== scope.seen[f.key]) return `'${f.name}' changed since Caret asked about it`;
   if (scope.person !== null && x.owner !== "person") return `the value for '${f.name}' is not ${scope.person}'s, whom you picked`;

@@ -224,13 +224,13 @@ describe("planWithCode under an Ask's scope (I2)", () => {
   const EMAIL = `${P}/textfield:email~0`;
   const scopeOn = (m: ScreenModel, keys: readonly string[]) => {
     const w = m.windows.get("form") as WindowState;
-    return askScope("form", keys, Object.fromEntries(keys.map((k) => [k, fieldFingerprint(w, k)])), null);
+    return askScope("form", null, keys, Object.fromEntries(keys.map((k) => [k, fieldFingerprint(w, k)])), null);
   };
 
   it("mints only the scope's field when the program fills two, told nothing of the scope", async () => {
     const m = desk();
     const scope = scopeOn(m, [NAME]);
-    const d = await planWithCode("fill in my name and email", m, memory, { writer: writer(fillByText([["Full name", "Harper Quinlan"], ["Email", "harper.quinlan@example.com"]])), askJev: jev().ask, offerKey: "plan-1", windowId: "form", now: 2000, scope });
+    const d = await planWithCode("fill in my name and email", m, memory, { writer: writer(fillByText([["Full name", "Harper Quinlan"], ["Email", "harper.quinlan@example.com"]])), askJev: jev().ask, offerKey: "plan-1", windowId: "form", now: 2000, scoped: { scope, documentOf: null } });
     expect(d.checked.writes.map((w) => w.node.key)).toEqual([NAME]);
     expect(d.checked.scope).toBe(scope);
   });

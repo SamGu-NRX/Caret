@@ -8,7 +8,7 @@
 // ask filled 12 of 60 fields wrongly at confidences up to 0.90
 // (~/.caret-run/evidence/screen/fill-distractors/fill-eval.md), so agreement and the cutoff exist
 // to turn those into blanks.
-import { fieldFingerprint, scopeRefusal, type AskScope } from "./ask-scope.ts";
+import { fieldFingerprint, scopeRefusal } from "./ask-scope.ts";
 import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
@@ -20,7 +20,7 @@ import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNameP
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { autocompletePart, checkValues, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
+import { autocompletePart, checkValues, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type Scoped, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
@@ -548,7 +548,7 @@ export interface FillOptions {
   /** W1: called once per proposal, before its first ask, with what it asks (FillTrace). Harnesses only. */
   trace?: (t: FillTrace) => void;
   /** I2: the Ask's settled scope, which the write contract enforces on every value this fill mints (fill/ask-scope.ts). */
-  askScope?: AskScope;
+  scoped?: Scoped;
   cutoff?: number;
   rand?: (n: number) => number;
   /** Makes the proposal id; tests pass a counter. */
@@ -1707,7 +1707,7 @@ export async function proposeFill(
   // A control's value Caret writes (an option's own label, a box's state, a resolved date) and a saved answer shown
   // whole are minted under their named exemption. A field's mint is kept by the field object (mintOf).
   const contracts = fields.map((f) => makeFieldContract({ windowId, node: f.node, descriptor: f.descriptor, name: f.name, labelWords: f.labelWords, control: f.control, kinds: f.kinds, part: f.part, fingerprint: fieldFingerprint(w, f.node.key) }));
-  const askScope = opts.askScope;
+  const scoped = opts.scoped;
   const proposed: { i: number; p: Proposed }[] = [];
   for (const [i, { p, text }] of picksOf) {
     const f = fields[i] as Field;
@@ -1719,7 +1719,7 @@ export async function proposeFill(
   if (proposed.length > 0) {
     let checked: Checked;
     try {
-      checked = await checkValues(proposed.map((x) => x.p), { askJev, ledger, now, ...(scope === undefined ? {} : { instruction: scope.instruction }), ...(askScope === undefined ? {} : { scope: askScope }) });
+      checked = await checkValues(proposed.map((x) => x.p), { askJev, ledger, now, ...(scope === undefined ? {} : { instruction: scope.instruction }), ...(scoped === undefined ? {} : { scoped }) });
     } catch (e) {
       if (!(e instanceof VerifierUnavailable)) throw e;
       // AC1 section 4: with no verifier, every proposed text write is withheld as unverified; exempt controls stand.
@@ -1746,11 +1746,11 @@ export async function proposeFill(
     const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : provenanceOf(model, pick.p, f.part, text, judgedText);
     const proposedExempt: Proposed = { field: contracts[i] as FieldContract, text, display: o.handoff?.display ?? text, provenance, owner: pick === undefined ? null : ownerOf(pick.p) };
     // I2: a control outside the Ask's scope is withheld, as the contract would refuse to mint it.
-    if (scopeRefusal(proposedExempt, askScope) !== null) {
+    if (scoped !== undefined && scopeRefusal(proposedExempt, scoped.scope, scoped.documentOf) !== null) {
       out[i] = { ...o, choice: NONE, value: null, source: null, memory: null, handoff: null, withheld: "outOfScope" };
       continue;
     }
-    fieldMints.set(o, mintExempt(proposedExempt, exempt, now, scope?.instruction ?? "", askScope));
+    fieldMints.set(o, mintExempt(proposedExempt, exempt, now, scope?.instruction ?? "", scoped));
   }
 
   return {

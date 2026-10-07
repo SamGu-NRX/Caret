@@ -22,7 +22,7 @@ import { redactWindow } from "./redact.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
-import { documentNow, fieldFingerprint, scopeRefusal, type AskScope } from "./ask-scope.ts";
+import { fieldFingerprint, scopeRefusal, type AskScope, type DocumentReader } from "./ask-scope.ts";
 import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind } from "./kinds.ts";
 import { writeMisfit, type ShapeSource } from "./writable.ts";
 import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
@@ -165,7 +165,10 @@ export type ExemptRule =
   // W2, not in AC1's list (flagged for the lead): the user's own words typed over a draft in the preview (H9, runs.ts
   // edit). They are typed, not copied, so no source can be exact against them; the draft's field rule (codeGate) and the
   // never-typed check still run, and its fact check does not (the words are the user's).
-  | "userTyped";
+  | "userTyped"
+  // I2 lead ruling A: a file into a page's file control. Its exactness is the user's confirmation of the file at Tab
+  // (runs.ts), a second gate; the mint carries only the Ask's scope check, which every attachment meets as a write does.
+  | "attachment";
 
 /**
  * The verifier's categories (AC1 section 4). A yes/no "is this right for the field?" invites a yes to a note about the
@@ -244,7 +247,13 @@ export interface CheckOptions {
   signal?: AbortSignal;
   cutoff?: number;
   /** I2: the Ask's settled scope: a value outside it, for a field that changed since, or not the picked person's, is refused. */
-  scope?: AskScope;
+  scoped?: Scoped;
+}
+
+/** I2: a scope to check against, and the owning helper's reader of which page document a window shows (null: none). */
+export interface Scoped {
+  readonly scope: AskScope;
+  readonly documentOf: DocumentReader | null;
 }
 
 /**
@@ -681,7 +690,7 @@ export async function checkValues(proposed: readonly Proposed[], o: CheckOptions
   const survivors: number[] = [];
   snaps.forEach((p, i) => {
     // I2: outside the Ask's scope first: such a value is refused whatever it is, and never reaches the verifier.
-    const out = scopeRefusal(p, o.scope);
+    const out = o.scoped === undefined ? null : scopeRefusal(p, o.scoped.scope, o.scoped.documentOf);
     if (out !== null) return void (results[i] = { proposed: proposed[i] as Proposed, why: "outOfScope", says: out });
     const why = neverTypedRefusal(p, o.instruction ?? "") ?? shapeRefusal(p) ?? textShapeRefusal(p);
     observer?.(p, why);
@@ -695,7 +704,7 @@ export async function checkValues(proposed: readonly Proposed[], o: CheckOptions
     const asks = v.asks[k] ?? null;
     if (asks === null) return void (results[i] = { proposed: original, why: "unverified", says: `Caret couldn't check '${clip(p.text)}' without sending more of its window than it may` });
     const confidence = Math.min(asks[0].confidence, asks[1].confidence);
-    results[i] = asks[0].choice === "exact" && asks[1].choice === "exact" && confidence >= cutoff ? mint(p, { by: "verifier", asks, confidence }, o.now, o.scope) : { proposed: original, why: "notExact", says: refusalSays(p, asks, cutoff), asks };
+    results[i] = asks[0].choice === "exact" && asks[1].choice === "exact" && confidence >= cutoff ? mint(p, { by: "verifier", asks, confidence }, o.now, o.scoped?.scope) : { proposed: original, why: "notExact", says: refusalSays(p, asks, cutoff), asks };
   });
   return { ok: results.filter(isChecked), refused: results.filter((r): r is Refused => !isChecked(r)), results, jev: v.jev };
 }
@@ -722,22 +731,22 @@ function deepFrozen<T>(x: T): T {
 const SHAPED: ReadonlySet<ExemptRule> = new Set(["recipientFromFrom"]);
 
 /** Why a value may not be minted under `rule`, or null: the Ask's scope (I2), the never-typed check, and for SHAPED rules shapeRefusal. */
-export function exemptRefusal(p: Proposed, rule: ExemptRule, instruction = "", scope?: AskScope): string | null {
-  return scopeRefusal(p, scope) ?? neverTypedRefusal(p, instruction) ?? (SHAPED.has(rule) ? shapeRefusal(p) : null);
+export function exemptRefusal(p: Proposed, rule: ExemptRule, instruction = "", scoped?: Scoped): string | null {
+  return (scoped === undefined ? null : scopeRefusal(p, scoped.scope, scoped.documentOf)) ?? (rule === "attachment" ? null : (neverTypedRefusal(p, instruction) ?? (SHAPED.has(rule) ? shapeRefusal(p) : null)));
 }
 
 /**
  * Mints without the verifier for a value whose exactness code settles (ExemptRule). Throws ContractError on a value
  * exemptRefusal refuses: a caller that may meet one asks exemptRefusal first; one that reaches here with it has a bug.
  */
-export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction = "", scope?: AskScope): CheckedValue {
+export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction = "", scoped?: Scoped): CheckedValue {
   // Frozen before it is judged, as checkValues does: what is judged is what is minted (W2 review).
   const p = snapshot(proposed);
-  const out = scopeRefusal(p, scope);
+  const out = scoped === undefined ? null : scopeRefusal(p, scoped.scope, scoped.documentOf);
   if (out !== null) throw new ContractError("outOfScope", out);
   const why = exemptRefusal(p, rule, instruction);
   if (why !== null) throw new ContractError(neverTypedRefusal(p, instruction) === null ? "shape" : "neverTyped", why);
-  return mint(p, { by: "exempt", rule }, now, scope);
+  return mint(p, { by: "exempt", rule }, now, scoped?.scope);
 }
 
 /**
@@ -865,7 +874,7 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
  * in the run's plan, its mint. Right before each dispatch the value must be the mint's text, and its source must still
  * say what it said (provenanceStale, read from `model()`); a value step with no mint is refused.
  */
-export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>): (step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null {
+export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>, documentOf: DocumentReader | null = null): (step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null {
   return (step, value, target) => {
     const m = mints.get(step);
     if (!isChecked(m)) return "the value has no check from the write contract";
@@ -877,8 +886,8 @@ export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, Ch
     // read from the window the executor resolved, right before the dispatch.
     if (m.scope !== undefined && target !== undefined) {
       if (target.window === undefined) return "Caret can't see the field to check it is still the one the Ask was about";
-      if (fieldFingerprint(target.window, m.field.key) !== m.scope.seen[m.field.key]) return `'${m.field.name}' changed since Caret asked about it`;
-      if (documentNow(m.field.windowId) !== m.scope.document) return `the page is no longer the one Caret asked about '${m.field.name}' on`;
+      const out = scopeRefusal({ field: { ...m.field, fingerprint: fieldFingerprint(target.window, m.field.key) }, owner: m.owner }, m.scope, documentOf);
+      if (out !== null) return out;
     }
     const stale = provenanceStale(model(), m.provenance);
     return stale === null ? null : `the source of '${clip(m.text)}' changed (${stale})`;

@@ -158,6 +158,9 @@ export function jevFailureSays(e: unknown, otherwise: string): string {
  * failed, and the client's own text kept for the log.
  */
 export function jevFailedError(e: unknown): SaidError {
+  // A failure already said (an inner caller's jevFailedError, the helper's own Jev wrapper) keeps its sentence: the
+  // second wrap read no kind from it and said "couldn't reach" for an out-of-credits account (I2, the scope question).
+  if (e instanceof SaidError && e.code === "jevFailed") return e;
   return new SaidError("jevFailed", jevFailureSays(e, SAYS.unreachable), `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
 }
 

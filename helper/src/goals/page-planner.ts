@@ -7,13 +7,13 @@
 // run. Caret presses nothing on a page: what the user presses is theirs, and so is every field fill withheld, a kind
 // Caret never types, and a form's fields past what one fill asks about (the size hand-off), each named before Tab.
 // Nothing here acts.
-import type { AskScope } from "../fill/ask-scope.ts";
+import { scopeKey, type AskScope, type DocumentReader, type ScopeSet } from "../fill/ask-scope.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { AboutValue } from "../fill/about.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { conversionOf, FILLABLE_ROLES, FillError, identityRefOf, MAX_FIELDS, memoryRefOf, mintOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
-import { requireChecked } from "../fill/contract.ts";
+import { ContractError, fieldContract, requireChecked, type FieldContract } from "../fill/contract.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { isAnswerField } from "../fill/answers.ts";
@@ -118,8 +118,13 @@ export interface PlanPageOptions {
   carried?: Pick<Replan, "owed">;
   /** The controls a finished page goal's writes revealed (runs.ts afterReveal): this plan's only fields. */
   revealed?: readonly string[];
-  /** I2: the Ask's settled scope, which fill's mints and the goal gate enforce (fill/ask-scope.ts); absent with no Ask. */
-  askScope?: AskScope;
+  /**
+   * I2 ruling C: an Ask's goal's scopes (fill/ask-scope.ts ScopeSet); the page's own, for its window and document, holds
+   * fill's mints, the goal gate and which file controls get attach rows. Absent with no Ask.
+   */
+  scopes?: ScopeSet;
+  /** Which page document a window shows now (the helper's page engine). */
+  documentOf?: DocumentReader | null;
   /** Test seams of proposeFill (its shuffles' randomness, the proposal id). */
   fill?: Pick<FillOptions, "rand" | "newId" | "trace">;
   /**
@@ -247,6 +252,8 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   if (w === undefined) throw new GoalError("nothingToDo", "the page closed");
   if (w.window.kind !== PAGE_WINDOW_KIND) throw new GoalError("schema", "a page plan needs a page window", o.windowId);
   const document = o.pageDocument(o.windowId);
+  // I2: the page's scope in the Ask's goal's set, for this window and the document it shows now; none, nothing is written.
+  const pageScope: AskScope | undefined = o.scopes === undefined ? undefined : o.scopes.scopes[scopeKey(o.windowId, o.documentOf === undefined || o.documentOf === null ? null : o.documentOf(o.windowId))];
   if (document === null) throw new GoalError("nothingToDo", "Caret can't tell which page this is, so it won't plan a fill of it");
   const instruction = o.instruction ?? "Fill this page";
 
@@ -287,6 +294,8 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       ? []
       : fileControls(w).filter((n) => {
           if (o.attached?.has(n.key) === true) return false;
+          // I2 ruling E: an Ask's goal offers an attach row only for an upload field its scope question chose.
+          if (o.scopes !== undefined) return pageScope?.fields.has(n.key) === true;
           if (o.revealed !== undefined) return o.revealed.includes(n.key);
           if (o.scope === null || o.kind === "all") return true;
           if (o.kind === "section") return sectionOf(n) === o.section;
@@ -323,7 +332,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
         // With no scope, the part's own fields (C2 review: a fill on focus asks about the 20 nearest the trigger, which
         // on a long form of look-alike fields were not the part's).
         const which = scope === undefined ? { only: part.map((x) => x.node.key) } : { scope };
-        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), ...(o.askScope === undefined ? {} : { askScope: o.askScope }) }), error: null };
+        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), ...(pageScope === undefined ? {} : { scoped: { scope: pageScope, documentOf: o.documentOf ?? null } }) }), error: null };
       } catch (e) {
         if (e instanceof FillError) return { part, scope, proposal: null, error: e };
         throw e;
@@ -435,7 +444,14 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   const attach: { target: TargetBinding; file: AttachOffer }[] = [];
   for (const n of files) {
     const label = (n.label ?? "").trim();
-    const t: TargetBinding = { ref: `t${++ref}`, domain, key: n.key, role: n.role, label, own: label, placeholder: n.placeholder ?? null, control: "file", value: "", options: null };
+    // I2 ruling A: its field contract, so the attachment is minted as a write is (goals/lower.ts), fingerprint included.
+    let field: FieldContract | undefined;
+    try {
+      field = fieldContract(w, n);
+    } catch (e) {
+      if (!(e instanceof ContractError)) throw e;
+    }
+    const t: TargetBinding = { ref: `t${++ref}`, domain, key: n.key, role: n.role, label, own: label, placeholder: n.placeholder ?? null, control: "file", value: "", options: null, ...(field === undefined ? {} : { field }) };
     targets.set(t.ref, t);
     attach.push({ target: t, file: o.attachOffer === undefined ? { source: "choose" } : await o.attachOffer(w, n, label) });
   }
@@ -446,7 +462,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   // 5. Lowering, with fill's picks gated by fill. 6. The planning's identity.
   const programHash = sha256(canonical({ planner: PAGE_PLANNER, instruction, scopeKind: o.kind, section: o.section, revealed: o.revealed ?? null, revision: windowRevision(w), document, fields: asked.map((x) => x.node.key), parts: parts.map((p) => p.length), files: files.map((n) => n.key) }));
   const draft: DraftPlan = { basedOn: windowRevision(w), window: o.windowId, steps, choices: [], drafts: [], programDigest: programHash };
-  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, carried: [...(o.carried?.owed ?? []), ...left], attach, handoffRow: row, parts: stepParts, ...(o.askScope === undefined ? {} : { askScope: o.askScope }) });
+  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, carried: [...(o.carried?.owed ?? []), ...left], attach, handoffRow: row, parts: stepParts, ...(o.scopes === undefined ? {} : { scopes: o.scopes, documentOf: o.documentOf ?? null }) });
   const page: PageGoal = {
     windowId: o.windowId,
     scope: o.scope ?? { fields: [], windows: null, memory: true, instruction, person: null, literals: new Map() },

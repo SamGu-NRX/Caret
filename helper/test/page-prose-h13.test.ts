@@ -21,6 +21,8 @@ describe("a prose question on a page goal's form (H13)", () => {
       controls: withQuestion,
       jev: (inner) => async (req) => {
         const a = await inner(req);
+        // The scope question (I2) asks for the question too; only fill's value questions are unsure.
+        if (req.purpose === "ask.scope") return a;
         for (const [id, q] of Object.entries(req.questions)) {
           const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
           if (ins.includes(QUESTION)) a.answers[id] = { choice: Object.keys(q.criteria).find((k) => k !== "none") ?? "none", confidence: 0.3 };

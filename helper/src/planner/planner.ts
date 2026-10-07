@@ -16,7 +16,7 @@
 //      step Caret takes: code cannot predict what a press changes, so it could not verify it.
 //   4. validatePlan checks the plan against the screen model and memory as they are once Jev answered.
 // Nothing here acts. The helper offers the plan, and it runs only after the user accepts it.
-import type { AskScope } from "../fill/ask-scope.ts";
+import type { Scoped } from "../fill/contract.ts";
 import { randomInt } from "node:crypto";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanWindow } from "../protocol.ts";
@@ -76,8 +76,8 @@ export interface PlanTaskOptions {
    * field, so only a press can be planned.
    */
   fields?: readonly string[];
-  /** I2: the Ask's settled scope, which the write contract and validatePlan enforce (fill/ask-scope.ts). */
-  scope?: AskScope;
+  /** I2: the Ask's settled scope and the helper's document reader, which the write contract and validatePlan enforce. */
+  scoped?: Scoped;
 }
 
 /** One question's two answers, as text: a value, a window or button label, or keep and none. */
@@ -261,7 +261,7 @@ async function planIn(
   }
   // W2: each value meets the write contract once, in its field, with where it was read (fill/contract.ts); a value it
   // refuses is withheld, as an unsure one is.
-  const minted = await mintWrites(agreedWrites.map(({ field, value }) => ({ key: field.node.key, w, node: field.node, name: field.name, text: value, provenance: read.get(field.node.key) as Provenance, owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now(), ...(o.scope === undefined ? {} : { scope: o.scope }) });
+  const minted = await mintWrites(agreedWrites.map(({ field, value }) => ({ key: field.node.key, w, node: field.node, name: field.name, text: value, provenance: read.get(field.node.key) as Provenance, owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now(), ...(o.scoped === undefined ? {} : { scoped: o.scoped }) });
   for (const r of minted.refused) withheld.push({ name: r.name, why: "lowConfidence" });
   const writes = agreedWrites.filter((x) => minted.mints.has(x.field.node.key));
   const pressLabel = askedButtons.length === 0 ? null : agreed("press", "press", byId(askedButtons.map((b) => ({ id: b.id, text: b.key }))), byId(second.buttons.map((b) => ({ id: b.id, text: b.key }))), NONE);
@@ -291,7 +291,7 @@ async function planIn(
 
   const mints = new Map(writes.map(({ field }, i) => [`v${i + 1}`, minted.mints.get(field.node.key) as CheckedValue]));
   await o.beforeCheck?.();
-  const ctx: PlanContext = { model, memory: memory.values(), instruction, ...(o.scope === undefined ? {} : { scope: o.scope }) };
+  const ctx: PlanContext = { model, memory: memory.values(), instruction, ...(o.scoped === undefined ? {} : { scoped: o.scoped }) };
   const checked = validatePlan(plan, slots, ctx, mints);
   // The plan names its window by app and title; one that replaced the chosen window while Jev answered is another window.
   if (checked.window.window.windowId !== w.window.windowId) throw new PlannerError("unknownWindow", `'${w.window.title}' closed while Caret planned, and another window took its title`);

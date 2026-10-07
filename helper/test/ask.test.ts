@@ -168,8 +168,8 @@ function jevBy(pick: (q: string) => string | null, owner: (d: string) => string 
     const answers = Object.fromEntries(
       Object.entries(req.questions).map(([id, q]) => {
         const ins = String(q.instructions);
-        // I2: Jev's scope ask, which settles a plan's fields for any maker: the fields the pick has a value for.
-        if (req.purpose === "ask.scope") return [id, { choice: pick(ins) === null ? "not" : "asks", confidence: 0.9 }];
+        // I2 ruling D: Jev's per-field scope question, asked on every route: every field it is asked about.
+        if (req.purpose === "ask.scope") return [id, { choice: "asks", confidence: 0.9 }];
         // G2 review: a field that wants the user's details takes only a value both asks call the user's; a landlord's
         // field wants someone else's.
         if (id.endsWith("_whose")) return [id, { choice: /landlord/iu.test(ins) ? "other" : "user", confidence: 0.9 }];

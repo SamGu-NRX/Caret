@@ -1,6 +1,7 @@
 // The planner (brief B16): instruction spans, value tracing and the plan check are each tested on
 // their own, since each has one right answer; then planTask with a fake Jev on a synthetic desk, and the
 // helper's planRequest, proposal and accept under an act grant. Everything here is invented.
+import { answeringScope } from "./builders.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -628,7 +629,7 @@ describe("planRequest through the helper", () => {
       );
       return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
     };
-    const asking = new Helper({ store, memory, askJev: fillJev, shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, now: () => clock, ask: { maker: "writer", writer: intentWriter } });
+    const asking = new Helper({ store, memory, askJev: answeringScope(fillJev), shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, now: () => clock, ask: { maker: "writer", writer: intentWriter } });
     app.helper = asking;
     app.show();
     void asking.handleReader(referenceWindow());

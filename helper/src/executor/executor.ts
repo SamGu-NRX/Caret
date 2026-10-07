@@ -1082,6 +1082,15 @@ export class Executor {
     this.checkSession(task);
     this.checkInterrupt(task);
     this.authorizeAct(task, w.window.windowId);
+    // I2 ruling A: an attachment meets the write contract's guard as a write does, on the field as it reads right now:
+    // its "attachment" mint, under the Ask's scope when an Ask made the plan.
+    if (task.guard !== null) {
+      const nowW = this.window(w.window.windowId);
+      const nowNode = nowW.nodes.get(node.key);
+      if (nowNode === undefined) throw StepStop.stop("changed", `the file control for '${step.says}' is gone, so Caret attached nothing`);
+      const stale = task.guard(i, end.wants, { windowId: nowW.window.windowId, node: nowNode, window: nowW });
+      if (stale !== null) throw StepStop.stop("changed", `${stale}, so Caret attached nothing`);
+    }
     const r = await link.attachFile(w.window.windowId, node.key, task.id, files);
     if (r.verb.outcome !== "ok" && task.interrupt !== null) throw new Interrupted();
     // The file the engine refused before the page saw it (a changed file, an expired confirmation): nothing landed.

@@ -5,7 +5,7 @@
 // picked person never reached native planning.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
-import { askScope, fieldFingerprint, readDocumentsWith, type AskScope } from "../src/fill/ask-scope.ts";
+import { askScope, fieldFingerprint, type AskScope } from "../src/fill/ask-scope.ts";
 import { checkValues, ContractError, fieldContract, guardFor, isChecked, mintExempt, type Proposed } from "../src/fill/contract.ts";
 import { mintOf, proposeFill, type FillScope } from "../src/fill/fill.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
@@ -58,7 +58,7 @@ function desk(email: { label?: string; value?: string } = {}): ScreenModel {
 const win = (m: ScreenModel) => m.windows.get(WIN) ?? (() => { throw new Error("no form"); })();
 const scopeOf = (m: ScreenModel, keys: readonly string[], person: string | null = null): AskScope => {
   const w = win(m);
-  return askScope(WIN, keys, Object.fromEntries([NAME, EMAIL].map((k) => [k, fieldFingerprint(w, k)])), person);
+  return askScope(WIN, null, keys, Object.fromEntries([NAME, EMAIL].map((k) => [k, fieldFingerprint(w, k)])), person);
 };
 const proposed = (m: ScreenModel, key: string, text: string, owner: Proposed["owner"] = "user"): Proposed => {
   const w = win(m);
@@ -99,22 +99,22 @@ describe("the write contract under an Ask's scope", () => {
     const m = desk();
     const scope = scopeOf(m, [NAME]);
     // The suite's stand-in verifier calls every value it is asked about exact (test/setup/verifier.ts).
-    const r = await checkValues([proposed(m, NAME, "Elena Vance"), proposed(m, EMAIL, "elena.vance@example.com")], { askJev: jev([]), ledger: null, now: 1, scope });
+    const r = await checkValues([proposed(m, NAME, "Elena Vance"), proposed(m, EMAIL, "elena.vance@example.com")], { askJev: jev([]), ledger: null, now: 1, scoped: { scope, documentOf: null } });
     expect(r.results.map((x) => (isChecked(x) ? "minted" : x.why))).toEqual(["minted", "outOfScope"]);
     expect((r.ok[0] as { scope?: AskScope }).scope).toBe(scope);
     const changed = desk({ label: "Work email" });
-    const r2 = await checkValues([proposed(changed, EMAIL, "elena.vance@example.com")], { askJev: jev([]), ledger: null, now: 1, scope: scopeOf(m, [NAME, EMAIL]) });
+    const r2 = await checkValues([proposed(changed, EMAIL, "elena.vance@example.com")], { askJev: jev([]), ledger: null, now: 1, scoped: { scope: scopeOf(m, [NAME, EMAIL]), documentOf: null } });
     expect(r2.refused[0]).toMatchObject({ why: "outOfScope", says: "'Work email' changed since Caret asked about it" });
     const person = scopeOf(m, [NAME], "Bea");
-    const r3 = await checkValues([proposed(m, NAME, "Elena Vance", "user")], { askJev: jev([]), ledger: null, now: 1, scope: person });
+    const r3 = await checkValues([proposed(m, NAME, "Elena Vance", "user")], { askJev: jev([]), ledger: null, now: 1, scoped: { scope: person, documentOf: null } });
     expect(r3.refused[0]?.says).toBe("the value for 'Name' is not Bea's, whom you picked");
   });
 
   it("mintExempt refuses outside the scope, and stamps the scope on what it mints", () => {
     const m = desk();
     const scope = scopeOf(m, [NAME]);
-    expect(() => mintExempt(proposed(m, EMAIL, "elena.vance@example.com"), "userTyped", 1, "", scope)).toThrow(ContractError);
-    expect(mintExempt(proposed(m, NAME, "Elena Vance"), "userTyped", 1, "", scope).scope).toBe(scope);
+    expect(() => mintExempt(proposed(m, EMAIL, "elena.vance@example.com"), "userTyped", 1, "", { scope, documentOf: null })).toThrow(ContractError);
+    expect(mintExempt(proposed(m, NAME, "Elena Vance"), "userTyped", 1, "", { scope, documentOf: null }).scope).toBe(scope);
   });
 
   it("validatePlan refuses a write minted outside the Ask's scope, and one whose field changed since", () => {
@@ -122,18 +122,18 @@ describe("the write contract under an Ask's scope", () => {
     const scope = scopeOf(m, [NAME, EMAIL]);
     const plan = (key: string) => ({ id: "p", title: "t", slots: { v1: "v" }, steps: [{ says: "x", end: { kind: "valueEquals", window: { bundleId: "com.example.signup", title: "Sign up" }, target: { key, describe: "f" }, value: "{{v1}}" } }] });
     const mintFree = mintExempt(proposed(m, EMAIL, "Elena Vance"), "userTyped", 1);
-    expect(() => validatePlan(plan(EMAIL), { v1: "Elena Vance" }, { model: m, memory: MEMORY, instruction: "x", scope }, new Map([["v1", mintFree]]))).toThrow(/not checked under this Ask's scope/u);
-    const minted = mintExempt(proposed(m, EMAIL, "Elena Vance"), "userTyped", 1, "", scope);
-    expect(validatePlan(plan(EMAIL), { v1: "Elena Vance" }, { model: m, memory: MEMORY, instruction: "x", scope }, new Map([["v1", minted]])).writes).toHaveLength(1);
+    expect(() => validatePlan(plan(EMAIL), { v1: "Elena Vance" }, { model: m, memory: MEMORY, instruction: "x", scoped: { scope, documentOf: null } }, new Map([["v1", mintFree]]))).toThrow(/not checked under this Ask's scope/u);
+    const minted = mintExempt(proposed(m, EMAIL, "Elena Vance"), "userTyped", 1, "", { scope, documentOf: null });
+    expect(validatePlan(plan(EMAIL), { v1: "Elena Vance" }, { model: m, memory: MEMORY, instruction: "x", scoped: { scope, documentOf: null } }, new Map([["v1", minted]])).writes).toHaveLength(1);
     // The user types into Email between the plan and its check.
     m.apply(snap([field(NAME, "", { label: "Name" }), field(EMAIL, "typed", { label: "Email" }), node("sf/submit", "AXButton", { label: "Submit" })], { at: 2000, windowId: WIN, title: "Sign up", app: { pid: 7100, bundleId: "com.example.signup", name: "Signup" } }));
-    expect(() => validatePlan(plan(EMAIL), { v1: "Elena Vance" }, { model: m, memory: MEMORY, instruction: "x", scope }, new Map([["v1", minted]]))).toThrow(PlannerError);
+    expect(() => validatePlan(plan(EMAIL), { v1: "Elena Vance" }, { model: m, memory: MEMORY, instruction: "x", scoped: { scope, documentOf: null } }, new Map([["v1", minted]]))).toThrow(PlannerError);
   });
 
   it("the executor's guard refuses a field that changed between the mint and the dispatch", () => {
     const m = desk();
     const scope = scopeOf(m, [EMAIL]);
-    const minted = mintExempt(proposed(m, EMAIL, "elena.vance@example.com"), "userTyped", 1, "", scope);
+    const minted = mintExempt(proposed(m, EMAIL, "elena.vance@example.com"), "userTyped", 1, "", { scope, documentOf: null });
     const guard = guardFor(() => m, new Map([[0, minted]]));
     expect(guard(0, "elena.vance@example.com", { windowId: WIN, node: win(m).nodes.get(EMAIL) as never, window: win(m) })).toBeNull();
     const moved = desk({ label: "Backup email" });
@@ -143,22 +143,23 @@ describe("the write contract under an Ask's scope", () => {
   });
 });
 
-describe("the scope is bound to the page document (re-review blocker 2)", () => {
-  afterEach(() => readDocumentsWith(null));
-  it("refuses a field with the same key and the same reading on another document", async () => {
+describe("the scope is bound to the page document, read through the owning helper's reader (rulings B, E)", () => {
+  it("refuses a field with the same key and the same reading on another document, and with no reader at all", async () => {
     let doc = "doc-1";
-    readDocumentsWith(() => doc);
+    const documentOf = (): string => doc;
     const m = desk();
-    const scope = scopeOf(m, [NAME]);
-    expect(scope.document).toBe("doc-1");
-    const before = await checkValues([proposed(m, NAME, "Elena Vance")], { askJev: jev([]), ledger: null, now: 1, scope });
+    const w = win(m);
+    const scope = askScope(WIN, documentOf(), [NAME], { [NAME]: fieldFingerprint(w, NAME) }, null);
+    const check = (reader: (() => string) | null) => checkValues([proposed(m, NAME, "Elena Vance")], { askJev: jev([]), ledger: null, now: 1, scoped: { scope, documentOf: reader } });
+    const before = await check(documentOf);
     expect(before.ok).toHaveLength(1);
+    // A page's scope checked by a caller with no reader holds nothing: it cannot tell the document.
+    expect((await check(null)).refused[0]?.why).toBe("outOfScope");
     doc = "doc-2";
-    const after = await checkValues([proposed(m, NAME, "Elena Vance")], { askJev: jev([]), ledger: null, now: 1, scope });
-    expect(after.refused[0]).toMatchObject({ why: "outOfScope", says: "the page is no longer the one Caret asked about 'Name' on" });
+    expect((await check(documentOf)).refused[0]).toMatchObject({ why: "outOfScope", says: "the page is no longer the one Caret asked about 'Name' on" });
     const minted = before.ok[0] as NonNullable<(typeof before.ok)[number]>;
-    const guard = guardFor(() => m, new Map([[0, minted]]));
-    expect(guard(0, "Elena Vance", { windowId: WIN, node: win(m).nodes.get(NAME) as never, window: win(m) })).toMatch(/no longer the one/u);
+    const guard = guardFor(() => m, new Map([[0, minted]]), documentOf);
+    expect(guard(0, "Elena Vance", { windowId: WIN, node: w.nodes.get(NAME) as never, window: w })).toMatch(/no longer the one/u);
   });
 });
 
@@ -168,7 +169,7 @@ describe("every path proposes every field; only the Ask's scope is minted", () =
     const scope = scopeOf(m, [NAME]);
     const wide: FillScope = { fields: [NAME, EMAIL], windows: null, memory: true, instruction: "fill this in", person: null, literals: new Map() };
     const about = MEMORY.map((x, i) => ({ id: `about-${i + 1}`, label: x.label, value: x.text, kind: x.label === "Email" ? ("email" as const) : ("fullName" as const) }));
-    const p = await proposeFill(m, jev([]), WIN, NAME, 2000, { about: about as never, scope: wide, askScope: scope, rand: () => 0 });
+    const p = await proposeFill(m, jev([]), WIN, NAME, 2000, { about: about as never, scope: wide, scoped: { scope, documentOf: null }, rand: () => 0 });
     // Name, in both scopes, survives with its value and the Ask's scope on its mint; Email is withheld as outside it.
     const name = p.fields.find((f) => f.key === NAME);
     expect(name?.value).toBe("Elena Vance");
@@ -180,7 +181,7 @@ describe("every path proposes every field; only the Ask's scope is minted", () =
   it("native plan: a planner told nothing of the fields writes only the scope's", async () => {
     const m = desk();
     const scope = scopeOf(m, [NAME]);
-    const d = await planTask("fill out this form", m, { values: () => MEMORY }, { askJev: jev([]), offerKey: "n1", windowId: WIN, now: 2000, rand: () => 0, scope });
+    const d = await planTask("fill out this form", m, { values: () => MEMORY }, { askJev: jev([]), offerKey: "n1", windowId: WIN, now: 2000, rand: () => 0, scoped: { scope, documentOf: null } });
     expect(d.checked.writes.map((w) => w.node.key)).toEqual([NAME]);
     expect(d.checked.scope).toBe(scope);
   });
@@ -280,8 +281,8 @@ describe("the executor rereads each field right before it writes it (re-review b
     const emailKey = K("textfield:email~0");
     const w = helper.model.windows.get(FA_WIN);
     if (w === undefined) throw new Error("no executor window");
-    const scope = askScope(FA_WIN, [nameKey, emailKey], Object.fromEntries([nameKey, emailKey].map((k) => [k, fieldFingerprint(w, k)])), null);
-    const mintFor = (key: string, text: string) => mintExempt({ field: fieldContract(w, w.nodes.get(key) as never), text, display: text, provenance: { kind: "instruction", span: text }, owner: "user" }, "userTyped", 1, "", scope);
+    const scope = askScope(FA_WIN, null, [nameKey, emailKey], Object.fromEntries([nameKey, emailKey].map((k) => [k, fieldFingerprint(w, k)])), null);
+    const mintFor = (key: string, text: string) => mintExempt({ field: fieldContract(w, w.nodes.get(key) as never), text, display: text, provenance: { kind: "instruction", span: text }, owner: "user" }, "userTyped", 1, "", { scope, documentOf: null });
     const mints = new Map([[0, mintFor(nameKey, "Dana Whitfield")], [1, mintFor(emailKey, "dana@example.com")]]);
     beforeAct = (i) => {
       if (i === 1) heading(emailKey);
@@ -297,8 +298,8 @@ describe("the executor rereads each field right before it writes it (re-review b
     const emailKey = K("textfield:email~0");
     const w = helper.model.windows.get(FA_WIN);
     if (w === undefined) throw new Error("no executor window");
-    const scope = askScope(FA_WIN, [nameKey, emailKey], Object.fromEntries([nameKey, emailKey].map((k) => [k, fieldFingerprint(w, k)])), null);
-    const mintFor = (key: string, text: string) => mintExempt({ field: fieldContract(w, w.nodes.get(key) as never), text, display: text, provenance: { kind: "instruction", span: text }, owner: "user" }, "userTyped", 1, "", scope);
+    const scope = askScope(FA_WIN, null, [nameKey, emailKey], Object.fromEntries([nameKey, emailKey].map((k) => [k, fieldFingerprint(w, k)])), null);
+    const mintFor = (key: string, text: string) => mintExempt({ field: fieldContract(w, w.nodes.get(key) as never), text, display: text, provenance: { kind: "instruction", span: text }, owner: "user" }, "userTyped", 1, "", { scope, documentOf: null });
     const mints = new Map([[0, mintFor(nameKey, "Dana Whitfield")], [1, mintFor(emailKey, "dana@example.com")]]);
     // Writing Name makes the app put a heading right before Email: the field Email is now under 'Work contact'.
     app.normalize = (v) => {

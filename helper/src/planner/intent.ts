@@ -9,6 +9,8 @@
 // An intent maker (the writer's strict JSON, or Jev's staged Choice and Noul) fills in the parts; checkIntent
 // checks each against the snapshot and the instruction, and turns the intent into the fill engine's scope
 // (fill.ts FillScope). Jev stays the chooser of values: the intent only narrows what fill asks about.
+import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
+import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
@@ -58,6 +60,8 @@ export interface AskIntent {
    * schema has no such key.
    */
   agreed?: true;
+  /** I2 ruling B: the upload fields (IntentSnapshot.uploads refs) Jev's scope question chose, which join the Ask's scope. */
+  uploads?: string[];
   /**
    * A3: the fields (refs) to offer when this intent asks which fields: those Jev left unclear, with those it chose. Only
    * the heads maker sets it, and choices.ts offers exactly these, never fields code picked itself.
@@ -113,6 +117,11 @@ export interface IntentSnapshot {
   /** The form window's title as the request carries it, or null when it did not fit its budget. */
   title: string | null;
   fields: IntentField[];
+  /**
+   * I2 lead ruling B: a page's file controls, in document order, each an upload field the scope question asks about
+   * with the fields (intent-heads.ts scopeRequest), never a field a fill writes; refs u1, u2, ...
+   */
+  uploads: IntentField[];
   sections: { ref: string; name: string }[];
   /** Other open windows a value could come from, most recent first, by title, and a mail's sender when it shows one. */
   windows: { ref: string; windowId: string; app: string; title: string; from: string | null }[];
@@ -206,6 +215,17 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
     fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, section: d.section, heading, control: x.control, filled, neverTyped: x.control === "text" ? neverTypedNode(w, x.node) : null });
   }
+  // File controls, as upload fields for the scope question: the name and its group taken together, as a field's are.
+  const uploads: IntentField[] = [];
+  for (const n of w.window.kind === PAGE_WINDOW_KIND ? w.nodes.values() : []) {
+    if (n.subrole !== FILE_INPUT_SUBROLE || n.states?.includes("disabled") === true || !inWebArea(w, n)) continue;
+    const d = describeField(w, n);
+    const name = d.label ?? d.nearest;
+    if (name === null || !ledger.take(w, "descriptor", [name, d.section])) continue;
+    const h = headings.get(n.key) ?? null;
+    const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
+    uploads.push({ ref: `u${uploads.length + 1}`, key: n.key, name, section: d.section, heading, control: "text", filled: false, neverTyped: null, upload: true });
+  }
   // Other windows by title, most recently focused first. A title is what names a source ("Morgan's email"); a
   // window whose title does not fit what the ledger allows is left out.
   const windows: IntentSnapshot["windows"] = [];
@@ -228,6 +248,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     window: w,
     title,
     fields,
+    uploads,
     sections,
     windows,
     memory: memoryLabels,

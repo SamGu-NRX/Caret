@@ -3,6 +3,7 @@
 // and nothing else trusted: Jev still chooses every value, sources stay what the user picked, and must-refuse asks
 // stay refusals. Imports only what existed before B29, so each test fails on the old code instead of failing to load.
 // All text is synthetic.
+import { answeringScope } from "./builders.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
@@ -48,6 +49,8 @@ function jevBy(pick: (q: string) => string | null, owner: (d: string) => string 
   const seen: JevRequest[] = [];
   const ask: AskJev = async (req) => {
     seen.push(req);
+    // I2 ruling D: the per-field scope question every route asks: every field it is asked about.
+    if (req.purpose === "ask.scope") return answeringScope(async () => { throw new Error("unreachable"); })(req);
     const answers = Object.fromEntries(
       Object.entries(req.questions).map(([id, q]) => {
         const ins = String(q.instructions);
@@ -165,7 +168,7 @@ describe("Ask asks which fields, with the fields that fit as choices (B29)", () 
 
   it("turns the whole-form fallback's 'which fields' into the same question, and never trusts a writer's reading of a picked field", async () => {
     // "Fill only Email; do not change Full name": B28b's exclusion word, and Jev confirms nothing, so it asked which fields.
-    const no: AskJev = async (req) => ({ model: "t", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "no", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 });
+    const no: AskJev = answeringScope(async (req) => ({ model: "t", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "no", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 }));
     const e = await fail(planAsk("fill only email; do not change full name", desk(), memory, about, { askJev: no, maker: maker({ scope: "all" }), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
     const q = questionOf(e) as Q;
     // "name" fits Landlord name too: the options are what the words fit, and the user picks.

@@ -18,6 +18,7 @@ import { secretIn, traceValue, type MemoryValue, type Trace } from "./trace.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { contractStale, provenanceStale, requireChecked, shapeRefusal, type CheckedValue } from "../fill/contract.ts";
 import { fieldFingerprint, scopeRefusal, type AskScope } from "../fill/ask-scope.ts";
+import type { Scoped } from "../fill/contract.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
@@ -45,7 +46,7 @@ export interface CheckedPlan {
   /** The last step, when it hands a press to the user. */
   handoff: { step: number; node: Node; label: string; why: HandoffWhy } | null;
   /** The step that attaches the file the user confirms (H5), at most one; null when the plan attaches none. */
-  attach: { step: number; node: Node; label: string; wants: string } | null;
+  attach: { step: number; node: Node; label: string; wants: string; checked: CheckedValue } | null;
   /** I2: the Ask's scope the plan was checked under, which a revalidation before the run passes again. */
   scope?: AskScope;
 }
@@ -55,7 +56,7 @@ export interface PlanContext {
   memory: readonly MemoryValue[];
   instruction: string;
   /** I2: an Ask's settled scope (fill/ask-scope.ts): every write must be minted under it, into a field it holds as it read then. */
-  scope?: AskScope;
+  scoped?: Scoped;
 }
 
 /** The hand-off reason the risk table gives a control's label: its risk class, or unverifiable for a safe or unlabelled one. */
@@ -110,7 +111,14 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
       // Only a page's file input takes a file, through its page engine (engines/page-link.ts attachFile).
       if (node.subrole !== FILE_INPUT_SUBROLE) throw new PlannerError("notEditable", `${at}: ${node.label === undefined ? "its target" : `'${node.label}'`} is not a file input`);
       if (attach !== null) throw new PlannerError("unsupportedStep", `${at} attaches a second file; a planned task attaches one`);
-      attach = { step: i, node, label: (node.label ?? "").trim(), wants: end.wants };
+      // I2 ruling A: the attachment's "attachment" mint (fill/contract.ts), by the key "attach", under the Ask's scope.
+      const mint = requireChecked(checked.get("attach"), end.wants, node.key, w.window.windowId, at);
+      if (ctx.scoped !== undefined) {
+        if (mint.scope !== ctx.scoped.scope) throw new PlannerError("outOfScope", `${at}: its attachment was not checked under this Ask's scope`);
+        const out = scopeRefusal({ field: { ...mint.field, fingerprint: fieldFingerprint(w, node.key) }, owner: mint.owner }, ctx.scoped.scope, ctx.scoped.documentOf);
+        if (out !== null) throw new PlannerError("outOfScope", `${at}: ${out}`);
+      }
+      attach = { step: i, node, label: (node.label ?? "").trim(), wants: end.wants, checked: mint };
       continue;
     }
     if (end.kind === "valueEquals") {
@@ -136,9 +144,9 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
       const bad = mint.verdict.by === "exempt" ? null : shapeRefusal(mint);
       if (bad !== null) throw new PlannerError("wrongKind", `${at}: ${bad}`);
       // I2: under an Ask, the value was minted under this Ask's scope, for a field it holds, which reads now as it did then.
-      if (ctx.scope !== undefined) {
-        if (mint.scope !== ctx.scope) throw new PlannerError("outOfScope", `${at}: its value was not checked under this Ask's scope`);
-        const out = scopeRefusal({ field: { ...mint.field, fingerprint: fieldFingerprint(w, node.key) }, owner: mint.owner }, ctx.scope);
+      if (ctx.scoped !== undefined) {
+        if (mint.scope !== ctx.scoped.scope) throw new PlannerError("outOfScope", `${at}: its value was not checked under this Ask's scope`);
+        const out = scopeRefusal({ field: { ...mint.field, fingerprint: fieldFingerprint(w, node.key) }, owner: mint.owner }, ctx.scoped.scope, ctx.scoped.documentOf);
         if (out !== null) throw new PlannerError("outOfScope", `${at}: ${out}`);
       }
       writes.push({ step: i, node, value: end.value, trace, checked: mint });
@@ -151,7 +159,7 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
   }
   // The schema requires a step, so the loop bound a window.
   if (window === null) throw new PlannerError("schema", "the plan has no steps");
-  return { plan, window, writes, handoff, attach, mints: checked, ...(ctx.scope === undefined ? {} : { scope: ctx.scope }) };
+  return { plan, window, writes, handoff, attach, mints: checked, ...(ctx.scoped === undefined ? {} : { scope: ctx.scoped.scope }) };
 }
 
 /** A step's raw value before its slots are filled: "{{v1}}" for a value a drafter minted. */

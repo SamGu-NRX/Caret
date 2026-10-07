@@ -8,7 +8,9 @@ import { HelperMessage, PROTOCOL_VERSION, type HelperToEngine, type PageSnapshot
 import { EngineSession } from "../src/engines/session.ts";
 import { FILE_INPUT_SUBROLE, PageEngineLink } from "../src/engines/page-link.ts";
 import { ScreenModel } from "../src/model.ts";
-import { attachWanted, planAttach } from "../src/planner/attach.ts";
+import { attachWanted, planAttach as planAttachScoped } from "../src/planner/attach.ts";
+import { askScope, fieldFingerprint } from "../src/fill/ask-scope.ts";
+import type { Scoped } from "../src/fill/contract.ts";
 import { proposed } from "../src/planner/proposal.ts";
 import { SAYS, SaidError } from "../src/planner/says.ts";
 import { Helper } from "../src/helper.ts";
@@ -65,13 +67,25 @@ describe("a page's file input in the screen model", () => {
   });
 });
 
+/**
+ * I2 ruling A: planAttach mints its attachment under a scope the per-field question settled. These tests are about which
+ * file input it picks, so their stand-in scope chooses every file input of the page (`chose`), or none.
+ */
+const choosing = (chose: boolean) => async (model: ScreenModel, id: string): Promise<Scoped | null> => {
+  const w = model.windows.get(id);
+  if (w === undefined) return null;
+  const files = [...w.nodes.values()].filter((n) => n.subrole === FILE_INPUT_SUBROLE).map((n) => n.key);
+  return { scope: askScope(id, null, chose ? files : [], Object.fromEntries(files.map((k) => [k, fieldFingerprint(w, k)])), null), documentOf: null };
+};
+const planAttach = (instruction: string, model: ScreenModel, windowId: string | null, offerKey: string, chose = true) => planAttachScoped(instruction, model, windowId, offerKey, (id) => choosing(chose)(model, id), 1);
+
 describe("planAttach", () => {
   it("plans one attach step into the file input the instruction names", async () => {
     const model = await walked([email, file("e4", "Resume/CV", 30), file("e5", "Cover Letter", 60)]);
-    const d = planAttach("attach my resume", model, W, "plan-1");
+    const d = await planAttach("attach my resume", model, W, "plan-1");
     expect(d?.plan.steps).toEqual([{ says: "Resume/CV holds your resume", end: { kind: "fileAttached", window: { bundleId: chrome.bundleId, title: "Apply: Synthetic Role", page: true, windowId: W }, target: { key: "f0/form[apply]/button:resume/cv~0", describe: "the Resume/CV input" }, wants: "your resume" } }]);
     expect(d?.checked.attach).toMatchObject({ step: 0, label: "Resume/CV", wants: "your resume" });
-    expect(planAttach("upload my cover letter", model, W, "plan-2")?.checked.attach?.label).toBe("Cover Letter");
+    expect((await planAttach("upload my cover letter", model, W, "plan-2"))?.checked.attach?.label).toBe("Cover Letter");
     // The proposal says what it attaches, names no press, and Tab says what it does.
     const p = proposed("r1", d as NonNullable<typeof d>, 1);
     expect(p).toMatchObject({ handoff: null, attach: { step: 0, field: "Resume/CV", wants: "your resume" } });
@@ -81,24 +95,20 @@ describe("planAttach", () => {
 
   it("takes the one file input when the label names nothing, and asks which when there are several", async () => {
     const one = await walked([email, file("e4", "Upload", 30)]);
-    expect(planAttach("attach my resume", one, W, "p")?.checked.attach?.label).toBe("Upload");
+    expect((await planAttach("attach my resume", one, W, "p"))?.checked.attach?.label).toBe("Upload");
     const two = await walked([email, file("e4", "Upload", 30), file("e5", "Other file", 60)]);
-    const e = (() => {
-      try {
-        return planAttach("attach my resume", two, W, "p");
-      } catch (x) {
-        return x;
-      }
-    })();
+    const e = await planAttach("attach my resume", two, W, "p").catch((x: unknown) => x);
     expect(e).toBeInstanceOf(SaidError);
     expect((e as SaidError).message).toBe(SAYS.whichField);
   });
 
   it("is not this rule's without an attach word, a file it knows, or a file input", async () => {
     const model = await walked([email, file("e4", "Resume", 30)]);
-    expect(planAttach("fill my email", model, W, "p")).toBeNull();
-    expect(planAttach("attach the thing", model, W, "p")).toBeNull();
-    expect(planAttach("attach my resume", await walked([email]), W, "p")).toBeNull();
+    expect(await planAttach("fill my email", model, W, "p")).toBeNull();
+    expect(await planAttach("attach the thing", model, W, "p")).toBeNull();
+    expect(await planAttach("attach my resume", await walked([email]), W, "p")).toBeNull();
+    // I2 ruling A: nor an upload field the scope question did not choose ("fill only Name; don't attach my resume").
+    expect(await planAttach("fill only Name; don't attach my resume", model, W, "p", false)).toBeNull();
     expect(attachWanted("Add my CV please")?.wants).toBe("your resume");
   });
 });
@@ -108,7 +118,7 @@ describe("the confirmed file's run (helper, executor, page engine)", () => {
   beforeEach(() => (dir = mkdtempSync(join(tmpdir(), "caret-h5-attach-"))));
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function setUp(attached: object = { via: "input", file: { name: "Resume.pdf", size: 3 }, shown: true }) {
+  async function setUp(attached: object = { via: "input", file: { name: "Resume.pdf", size: 3 }, shown: true }, instruction = "attach my resume") {
     const published: HelperMessage[] = [];
     const { session, sent } = rig([email, file("e4", "Resume/CV", 30)], (m) => (m.type === "pageCommand" && m.verb.kind === "pageAttachFile" ? { outcome: "ok", detail: null, attached } : { outcome: "ok", detail: null }));
     let helper: Helper | null = null;
@@ -118,20 +128,35 @@ describe("the confirmed file's run (helper, executor, page engine)", () => {
     const routed = new RoutedReaderLink(reader, { engineFor: (id) => (id.startsWith("page:") ? link : null), engines: () => [link] });
     helper = new Helper({
       store: new Store(join(dir, "data")),
-      askJev: () => Promise.reject(new Error("no Jev in this test")),
+      // I2 ruling A: the scope question, which settles the page's fields and upload fields before an attach is planned,
+      // chooses the upload fields; nothing else asks Jev here.
+      askJev: async (req) => {
+        if (req.purpose !== "ask.scope") throw new Error("no Jev in this test");
+        // A request that says not to attach asks for no upload field, as Jev reads it.
+        return { model: "scope", inputTokens: 0, latencyMs: 0, costUsd: 0, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: String(q.instructions).includes("file upload") && !String(q.instructions).includes("don't attach") ? "asks" : "not", confidence: 0.95 }])) };
+      },
       shadow: false,
       allowBackgroundFocus: false,
       publish: (m) => published.push(m),
       readerLink: routed,
     });
     await link.run({ kind: "walk", pid: chrome.pid, windowId: W });
-    const p = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "ask-1", at: 1, instruction: "attach my resume", windowId: W });
+    const p = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "ask-1", at: 1, instruction, windowId: W });
+    if (instruction !== "attach my resume") return { helper, published, sent, offerKey: p.offerKey as string, reply: p };
     expect(p.outcome).toBe("proposed");
     expect(p.attach).toEqual({ step: 0, field: "Resume/CV", wants: "your resume" });
     return { helper, published, sent, offerKey: p.offerKey as string };
   }
 
   const progress = (published: HelperMessage[], taskId: string): TaskProgress[] => published.flatMap((m) => (m.type === "taskProgress" && m.taskId === taskId ? [m] : []));
+
+  // I2 lead ruling A (review reproduction): the direct attach rule settles the page's scope by the per-field question
+  // first, so a request that asks for Name and says not to attach plans no attachment.
+  it("plans no attachment for \"fill only Name; don't attach my resume\"", async () => {
+    const { sent, reply } = (await setUp(undefined, "fill only Name; don't attach my resume")) as { sent: unknown[]; reply: { attach?: unknown } };
+    expect(reply.attach ?? null).toBeNull();
+    expect(verbs(sent as never).filter((v) => v.kind === "pageAttachFile")).toEqual([]);
+  });
 
   it("attaches the file the user confirmed, verified by the page's file list", async () => {
     const { helper, published, sent, offerKey } = await setUp();

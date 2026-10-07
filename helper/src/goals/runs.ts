@@ -18,7 +18,7 @@
 // goal is then offered again as a fresh plan built from the screen as it is now; it needs its own acceptance. Nothing
 // here persists: a helper that crashes leaves the executor's journal row (B23), and no goal resumes on its own.
 import { fieldFingerprint } from "../fill/ask-scope.ts";
-import type { AskScope } from "../fill/ask-scope.ts";
+import type { DocumentReader, ScopeSet } from "../fill/ask-scope.ts";
 import type { Change, ScreenModel } from "../model.ts";
 import type { Executor, Revocation, TaskResult } from "../executor/executor.ts";
 import { nodeText } from "../model.ts";
@@ -142,8 +142,8 @@ interface Carry {
   completed: StepReceipt[];
   owed: LeftItem[];
   until: number;
-  /** I2: the carried goal's Ask scope (GoalPlan.askScope). */
-  askScope?: AskScope | null;
+  /** I2: the carried goal's scopes (GoalPlan.scopes), kept for its next page. */
+  scopes?: ScopeSet;
 }
 
 export interface Replan {
@@ -165,13 +165,15 @@ export interface Replan {
    * fresh plan's only fields.
    */
   page?: PageGoal & { revealed?: readonly string[] };
-  /** I2: the stopped plan's Ask scope (GoalPlan.askScope): the fresh plan is held to it too; null for an Ask's goal with none of its own. */
-  askScope?: AskScope | null;
+  /** I2 ruling C: the stopped plan's scopes (GoalPlan.scopes), which the fresh plan reuses and adds to only for a new document. */
+  scopes?: ScopeSet;
 }
 
 export interface GoalRunDeps {
   executor: Executor;
   model: ScreenModel;
+  /** I2: which page document a window shows now (the helper's page engine), for the Ask's scope checks. */
+  documentOf?: DocumentReader;
   publish: (m: GoalProgress) => void;
   now: () => number;
   readerSession: () => number;
@@ -299,6 +301,8 @@ export class GoalRuns {
     // so acceptance and the executor's guard read these (W2 review: what runs is checked against the very mint).
     const mints = new Map<string, CheckedValue>();
     for (const seg of given.segments) for (const s of seg.steps) if (s.kind === "write" && s.row !== true) mints.set(`${seg.index}:${s.ref}`, requireChecked(s.checked, s.writes ?? "", s.target.key, s.target.domain.kind === "window" ? s.target.domain.windowId : "", `goal ${given.goalId}: step ${s.ref}`));
+    // I2 ruling A: and every attachment carries its "attachment" mint (goals/lower.ts), for what its step wants.
+    for (const seg of given.segments) for (const s of seg.steps) if (s.kind === "attach") mints.set(`${seg.index}:${s.ref}`, requireChecked(s.checked, s.checked?.text ?? "", s.target.key, s.target.domain.kind === "window" ? s.target.domain.windowId : "", `goal ${given.goalId}: step ${s.ref}`));
     // P3: an attach step is a page plan's, into a page's file control, with the file its row offers, after every other
     // step of its segment (runs drop the ones the acceptance gives no file, which must hold up nothing after them).
     for (const seg of given.segments) {
@@ -402,8 +406,11 @@ export class GoalRuns {
     for (const [j, i] of run.stepMap.entries()) {
       const s = seg.steps[i] as GoalStep;
       const end = plan.steps[j]?.end;
-      if (s.kind !== "write" || end?.kind !== "valueEquals") continue;
-      const resolved = end.value.replace(/\{\{(\w+)\}\}/gu, (_, k: string) => seg.slots[k] ?? "");
+      // I2 ruling A: an attachment's mint, by what the step wants, as a write's is by its value.
+      const attaching = s.kind === "attach" && end?.kind === "fileAttached";
+      if (!attaching && (s.kind !== "write" || end?.kind !== "valueEquals")) continue;
+      if (end === undefined || (end.kind !== "valueEquals" && end.kind !== "fileAttached")) continue;
+      const resolved = (end.kind === "fileAttached" ? end.wants : end.value).replace(/\{\{(\w+)\}\}/gu, (_, k: string) => seg.slots[k] ?? "");
       const key = end.target.key === undefined ? "" : end.target.key.replace(/\{\{(\w+)\}\}/gu, (_, k: string) => seg.slots[k] ?? "");
       try {
         runMints.set(j, requireChecked(run.mints.get(`${seg.index}:${s.ref}`), resolved, key, seg.domain.kind === "window" ? seg.domain.windowId : "", `step ${s.ref}`));
@@ -425,7 +432,7 @@ export class GoalRuns {
     try {
       // C1: a pick the page put back and the executor read back as it was is listed as the user's (leftNow), and the
       // segment's other steps still run.
-      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true, leaveFailedToYou: true, guard: guardFor(() => this.sourcesOf(run), runMints) }) };
+      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true, leaveFailedToYou: true, guard: guardFor(() => this.sourcesOf(run), runMints, this.deps.documentOf ?? null) }) };
     } catch (e) {
       // The executor refused the plan before its first step (PlanError): nothing was dispatched.
       const says = `${SAYS.error}: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`;
@@ -469,13 +476,14 @@ export class GoalRuns {
     // I2: under the Ask's scope the plan was made under; a field outside it, or changed since, takes no edit.
     // I2: under the scope the drafted value was minted under (the Ask's, or one settled for that window), against the
     // field as it reads now: an edit is a new write, so a field that changed since the Ask takes none.
-    const scope = s.checked?.scope;
+    const scope = run.mints.get(`${seg.index}:${s.ref}`)?.scope;
     const base = proposedFor(s.target, value, text);
     const nowW = s.target.domain.kind === "window" ? this.deps.model.windows.get(s.target.domain.windowId) : undefined;
     const proposed: Proposed = scope === undefined ? base : { ...base, field: Object.freeze({ ...base.field, fingerprint: nowW === undefined ? null : fieldFingerprint(nowW, base.field.key) }) };
-    const outside = exemptRefusal(proposed, "userTyped", run.plan.instruction, scope);
+    const scoped = scope === undefined ? undefined : { scope, documentOf: this.deps.documentOf ?? null };
+    const outside = exemptRefusal(proposed, "userTyped", run.plan.instruction, scoped);
     if (outside !== null) return { refused: outside };
-    const checked = mintExempt(proposed, "userTyped", this.deps.now(), run.plan.instruction, scope);
+    const checked = mintExempt(proposed, "userTyped", this.deps.now(), run.plan.instruction, scoped);
     const step: GoalStep = { ...s, value, writes: text, says: `${s.target.label}: ${text}`, gate: "you", checked };
     run.mints.set(`${seg.index}:${s.ref}`, checked);
     const edited = segmentOf(run.plan.programHash, { index: seg.index, domain: seg.domain, reason: seg.reason, steps: seg.steps.map((x, k) => (k === i ? step : x)) }, run.plan.warnings);
@@ -791,7 +799,7 @@ export class GoalRuns {
     const qualify = (windowId: string | null, key: string): string => (windowId === page.windowId && !key.startsWith("doc(") ? `doc(${doc}):${key}` : key);
     const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")].map((r) => ({ ...r, target: { ...r.target, key: qualify(r.target.windowId, r.target.key) } }));
     const owed = left.map((l): LeftItem => ({ ...l, key: qualify(l.windowId, l.key), why: "dropped", says: l.key.startsWith("doc(") ? l.says : `On an earlier page, ${l.says.charAt(0).toLowerCase()}${l.says.slice(1)}` }));
-    this.carries.set(page.windowId, { goalId: run.plan.goalId, instruction: run.plan.instruction, page: { ...page, scope: continuationScope(page, true), keys: [] }, document: doc, session: run.session, completed, owed, until: this.deps.now() + CARRY_MS, ...(run.plan.askScope === undefined ? {} : { askScope: run.plan.askScope }) });
+    this.carries.set(page.windowId, { goalId: run.plan.goalId, instruction: run.plan.instruction, page: { ...page, scope: continuationScope(page, true), keys: [] }, document: doc, session: run.session, completed, owed, until: this.deps.now() + CARRY_MS, ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
   }
 
   /**
@@ -827,7 +835,7 @@ export class GoalRuns {
       (async () => {
         let plan: GoalPlan | null;
         try {
-          plan = await replan({ goalId: `${c.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: c.instruction, completed: c.completed, pressed: [], owed: c.owed, why: "nextPage", session: c.session, page: c.page, ...(c.askScope === undefined ? {} : { askScope: c.askScope }) });
+          plan = await replan({ goalId: `${c.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: c.instruction, completed: c.completed, pressed: [], owed: c.owed, why: "nextPage", session: c.session, page: c.page, ...(c.scopes === undefined ? {} : { scopes: c.scopes }) });
         } catch {
           plan = null;
         }
@@ -973,7 +981,7 @@ export class GoalRuns {
     let plan: GoalPlan | null;
     try {
       const page = run.plan.page === undefined ? undefined : { ...run.plan.page, ...(revealed === undefined ? {} : { revealed }) };
-      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why, session: run.session, ...(page === undefined ? {} : { page }), ...(run.plan.askScope === undefined ? {} : { askScope: run.plan.askScope }) });
+      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why, session: run.session, ...(page === undefined ? {} : { page }), ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
     } catch {
       plan = null;
     }

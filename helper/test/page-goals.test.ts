@@ -82,7 +82,9 @@ function revealing(page: FakePage): void {
 }
 
 describe("the reveal continuation (P2)", () => {
-  it("offers the fields the writes revealed as a second preview, which one more acceptance fills", async () => {
+  // I2 lead ruling B: an Ask's scope is settled once, by the scope question, and changes only for a new document or a new
+  // Ask. A field the writes revealed on the same page was never asked about, so an Ask's goal leaves it to the user.
+  it("leaves the fields an Ask's writes revealed to the user: no second preview writes them (I2 ruling B)", async () => {
     const r = await rig({ note: `${NOTE}\nProvince: Ontario`, picks: { ...PICKS, Province: "Ontario" } });
     revealing(r.page);
     const preview = (await r.ask("fill out this form from my note")) as Segment;
@@ -92,12 +94,8 @@ describe("the reveal continuation (P2)", () => {
     await r.helper.goals.idle();
     const next = goalMessages(r).find((m): m is Segment => m.event === "segment" && m.goalId !== preview.goalId);
     expect(Date.now() - t0).toBeLessThan(1500);
-    expect(next).toMatchObject({ reason: "afterReveal", replaces: preview.goalId, segment: 0 });
-    expect(next?.steps.map((s) => s.says)).toEqual(["Province: Ontario", "You press Submit Application"]);
+    expect(next?.steps.some((s) => s.says.startsWith("Province")) ?? false).toBe(false);
     expect(r.page.shown("e20")).toBe("");
-    await r.accept(next as Segment);
-    await r.helper.goals.idle();
-    expect(r.page.shown("e20")).toBe("Ontario");
     expect(presses(r)).toBe(0);
   });
 
