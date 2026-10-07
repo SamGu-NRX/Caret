@@ -369,6 +369,9 @@ class Supervisor:
             # heavy.lock is held for this job; Caret's scripts would otherwise wait on it from a child, and rig-run
             # proves the descriptor holds it (flock through it) before using it instead of taking its own.
             env.update(CARET_HEAVY_LOCK_HELD="1", CARET_NO_LOCK="1", RIG_HEAVY_LOCK_FD=str(held))
+        if not self.profile["lease"]:
+            # VM jobs: rig-run rechecks free disk against this floor once it holds its leases, before any clone.
+            env["RIG_RUN_MIN_FREE_GIB"] = str(int(-(-self.profile["floor_gib"] // 1)))
         env.update(self.plan["env"])
         if self.plan["recipe"]["live"]:
             env["CARET_ENV_FILE"] = self.plan["env_file"]

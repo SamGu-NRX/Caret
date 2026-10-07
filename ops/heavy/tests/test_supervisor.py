@@ -478,6 +478,19 @@ class Credentials(World):
             self.assertEqual(json.load(fh)["env_file"], env_file)
 
 
+class VmFloor(World):
+    def test_a_vm_job_hands_its_floor_to_rig_run(self):
+        job_id, _ = self.enqueue(["env-dump"], profile=profile(lease=False, floor=0))
+        other, _ = self.enqueue(["env-dump"])
+        self.run_queue("--max-wait", "120").wait(timeout=300)
+        envs = []
+        for j in (job_id, other):
+            with open(os.path.join(self.run_root(j), "out", "env.txt")) as fh:
+                envs.append(dict(line.rstrip("\n").split("=", 1) for line in fh if "=" in line))
+        self.assertEqual(envs[0].get("RIG_RUN_MIN_FREE_GIB"), "0")
+        self.assertNotIn("RIG_RUN_MIN_FREE_GIB", envs[1])
+
+
 class VmPath(World):
     """rig-run's cleanup inside the slot, with a fake rig-run: real leases, real rig-stop, no Lume."""
 

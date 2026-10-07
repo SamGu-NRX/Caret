@@ -12,17 +12,25 @@ H='/Users/samgu/Programming Projects/caret-ops-heavy/ops/heavy/caret-heavy'
 "$H" status                     # runner, slot, and each Caret job's executed / validated / accepted
 "$H" show caret-UNIQUE-ID       # outcome and evidence directory
 "$H" accept caret-UNIQUE-ID --note "what the lead checked"
+"$H" prune caret-UNIQUE-ID      # after a job has finished: delete its sealed input copies
 ```
 
-Commit ops/heavy before enqueueing. Enqueue snapshots ops/heavy at HEAD of this checkout and refuses uncommitted changes under it. A job ID is used once. After any failure, enqueue again under a new ID.
+Commit ops/heavy before enqueueing. Enqueue copies ops/heavy at HEAD of this checkout and refuses uncommitted changes under it. A job ID is used once. After any failure, enqueue again under a new ID.
 
 Live recipes take the key file's path from `--env-file` or `CARET_ENV_FILE`. The plan records the path. Nothing in this directory opens the file except R2's feeder, which reads it on the host to hand the key to the guest.
 
 ## What a job is
 
-Enqueue writes a read-only plan, `~/.caret-run/queue/ops/plans/<id>.json`. It holds the recipe and its arguments, the profile, a content manifest of the job's inputs, and the SHA-256 of every file in a read-only snapshot of ops/heavy (`~/.caret-run/queue/ops/snapshots/<commit>/`). The queue job's argv carries the plan's SHA-256 and a short inline check. Before anything else runs, that check refuses the job (exit 65) if the plan, any snapshot file, or the set of snapshot files changed. The queue itself pins the worktree (`--repo`, `--expect-rev`; never `--unpinned`) and rechecks it just before release.
+Each job gets its own read-only directory, `~/.caret-run/queue/ops/jobs/<id>/`, made at enqueue:
+- `ops/heavy/`: this directory at the committed HEAD (git archive). The supervisor and recipes run from here.
+- `inputs/`: a clone (APFS clonefile, so no extra disk until a source changes) of every input git does not cover: the bridge build and Chrome for Testing, W4's saved pages, answer key, note and owners (the corpus set reads them from `~/.caret-run/evidence/browser/w4` by default), held-out pages, R2's ignored build inputs, and a staged VM job. Recipes read only these copies, never the shared paths, so a source changed after enqueue cannot reach the job.
+- `plan.json`: the recipe and its arguments, the profile, the SHA-256 of every `ops/heavy` file, and a content manifest of every sealed input.
 
-The manifest covers what git does not: the bridge build and Chrome for Testing, held-out pages, exports, staged VM payloads. Held-out pages are recorded as a sealed tree, by digest, file count and byte count only, so no record or message names a file. A VM payload's `REV` must equal the job's pin at enqueue and again at start. The supervisor rechecks every input just before the recipe starts, and refuses the job (65) on any change.
+The queue job's argv carries the plan's SHA-256 and a short inline check. Before anything else runs, that check refuses the job (exit 65) if the plan, any `ops/heavy` file, or the set of those files changed. The supervisor checks the `ops/heavy` files, every sealed input and the worktree pin again on start, and once more after admission, immediately before it spawns the recipe, since the lease wait can last up to half an hour. Any change refuses the job (65). The queue itself pins the worktree (`--repo`, `--expect-rev`; never `--unpinned`) and rechecks it just before release.
+
+A tree's digest covers every directory (an added empty one changes it), every file's content and executable bit, and every symlink's target text. A symlink that points out of its tree, or at nothing, is refused, so content the digest never read cannot stand in for an input. Held-out pages are a sealed tree: the record and every message carry only the digest, file count and byte count, never a name. A VM payload's `REV` must equal the job's pin. Its `CONFIG` and `spend-control.json` are left out of the digest, because vm.sh writes them at run time from the plan's arguments and the host's ledger.
+
+Every Python a job starts runs with `-I -B -X pycache_prefix=/var/empty`, or with `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/var/empty` in its environment when it is not isolated, so it neither writes bytecode nor reads a `.pyc` planted beside a sealed module.
 
 ## Who holds what
 
@@ -60,12 +68,22 @@ The queue timeout is the backstop: lease wait + execution + grace + 300 s. The s
 | Recipe | Profile | Runs | Pinned inputs beyond the worktree |
 |---|---|---|---|
 | `helper-window --tag T` | helper-suite | offline frozen install, then helper `pnpm test`, extension `pnpm test`, fixtures `tsc --noEmit` and `node --test` | none (node_modules come from the committed lockfiles) |
-| `canned-sets --tag T [--binaries-from W]` | browser-eval | the three canned sets; stops at the first wrong value | bridge, bridge test host, Chrome for Testing (from W when given) |
-| `live-tasks --tag T --spend-limit USD [--heldout DIR]` | browser-eval | one live pass of the task pages, or of the held-out pages; stops the eval at the first wrong value | as canned-sets, plus the held-out pages as a sealed tree |
-| `r2-prepare --harness h11\|h14 --work DIR [H11 stage options]` | swift | R2's build.sh then stage.sh at the pin; records the payload's digest | llama.xcframework, the Node tarball, helper and extension node_modules, Chrome for Testing |
-| `r2-vm --harness h11\|h14 --job-dir DIR [--config off\|on] [--allowance USD --prior-spend USD]` | vm | writes the run's spend control from the host ledger, then R2's feeder, which starts rig-run | the staged payload (REV = pin; `CONFIG` and `spend-control.json` are written at run time and left out), job.sh, tcc.txt, display |
+| `canned-sets --tag T [--binaries-from W]` | browser-eval | the three canned sets; stops at the first wrong value | bridge, bridge test host, Chrome for Testing (from W when given), W4's pages, key, note and owners |
+| `live-tasks --tag T --spend-limit USD [--heldout DIR]` | browser-eval | one live pass of the task pages, or of the held-out pages; stops the eval at the first wrong value | bridge, test host, Chrome for Testing, plus the held-out pages as a sealed tree |
+| `r2-prepare --harness h11\|h14 --work DIR [H11 stage options]` | swift | a fresh export of the pin (`recipes/r2/export.sh`, never reused by its `.REV`), then R2's build.sh and stage.sh; records the payload's digest | llama.xcframework, the Node tarball, helper and extension node_modules, Chrome for Testing |
+| `r2-vm --harness h11\|h14 --job-dir DIR [--config off\|on] [--allowance USD --prior-spend USD]` | vm | writes the run's configuration and spend control into the sealed payload, then R2's feeder, which starts rig-run on the sealed job | the staged payload (REV = pin), job.sh, tcc.txt, display |
 
 H11's stage options (`--pages`, `--sources`, `--next-page`, `--scenarios`) are arguments, so the plan records them. stage.sh writes them into the payload. The r2-vm plan records the payload's `h11-options.json`, and the check refuses guest results run with other options.
+
+R2's feeder (`recipes/r2/run.sh`) takes the run directory from rig-run itself (`RIG_RUN_ID_FILE`), never from a glob of `runs/` by pid. A stop request makes it stop rig-run and still run the host leak scan. It records a clean scan of that exact directory in `rig-run-scanned`; vm.sh copies nothing into the job's evidence without it.
+
+### What acceptance needs
+
+Each recipe names its required steps. A required step that never recorded is 12, unless an earlier step already failed and the recipe stopped there (it is then listed as skipped and the earlier failure decides the code). A checker that exits with an undocumented code is logged to `checker-errors.txt` and makes the recipe 12. Evidence that is present but malformed is 12, whatever the step exited.
+
+- **Browser sets** must report exactly the expected pages: the task fixture's `tasks/expect/*.json`, the held-out manifest, or the corpus forms plus the W4 sites present in the sealed copy. Every page must be walked, with no page error, press or POST, and on the goal path with a goal result (a task page with nothing eligible to fill excepted).
+- **H11** needs, for each page in its options, the rows `h11-<page>-ask-at-form` (offered and right), `-tab` (right and verified), `-no-submit` (verified) and `-undo` (undone; with the next page on, `h11-wizard-2-undo` stands in for wizard-1's), and no note saying a scenario crashed or was not run. The h10 scenario needs at least one `fill-` and one `ask-` row.
+- **H14** needs the rows attach-input, attach-dropzone, tab-never-confirms, click-opens (or click-opens-ungated), save-line, switches, zero-submits and both attach undo rows, and the setup checks fixture, caret-up, page and window-id, all passing.
 
 ## Exit codes and states
 
@@ -75,8 +93,8 @@ Recipes compute their own code with `recipes/check.py`, which writes `result.jso
 |---:|---|---|
 | 0 | every step passed and the evidence belongs to this job | recipe, adapter |
 | 10 | a wrong value (a page's `wrong` list, a guest row with `wrong: yes`, or one seen in a live log) | recipe |
-| 11 | a suite or eval failed: nonzero exit, failed tests, an H14 result with `pass: false` | recipe |
-| 12 | evidence missing, malformed, unwalked, for another revision or other options, or a leak check not saying CLEAN | recipe |
+| 11 | a suite or eval failed: nonzero exit, failed tests, a page error, press or POST, an acceptance row not passing, a crashed or skipped scenario | recipe |
+| 12 | evidence missing, malformed, incomplete (a missing page, row, goal result or required step), for another revision or other options, a leak check not saying CLEAN, or a checker failure | recipe |
 | 13 | spend over the limit (host ledger growth, or guest spend over the allowance left) | recipe |
 | 14 | preparation failed (offline install, binary copy, build, staging) | recipe |
 | 64 | bad recipe arguments | recipe |
@@ -103,11 +121,14 @@ cd '/Users/samgu/Programming Projects/caret-ops-heavy/ops/heavy/tests'
 cd ~/.long-run/bin && node --test lr-lease.test.mjs
 ```
 
+The tests run the shared queue at a fixed commit (`QUEUE_TEST_REV` in `tests/support.py`, now 7ef4ccb), copied into each test's temporary world, so they do not follow its owner's uncommitted work.
+
 `test_supervisor` runs the real queue runner, relay, supervisor, lr-lease, lr-reap, rig-stop and launchd, with real processes, against a temporary queue state, HOLD path, lease directory, zero-floor lease policy, heavy.lock and scratch repositories. The profile and the evidence are synthetic. The runner holds the test's heavy.lock (`--heavy-lock`), as it holds the real one in production; `RunnerHeavyLock` also points it at an unrelated file to cover an older runner. `test_recipes` runs the recipe scripts directly with stub `pnpm`, `node`, `npx`, `rig-run` and Lume (`tests/stubs`); r2-prepare's build and staging have no test beyond `bash -n`. Each test waits up to 90 s for normal memory pressure and skips if it never comes. `RealVm` is written but skipped: it boots and cancels a real rig VM, and runs only with `CARET_HEAVY_VM_TEST=1`, HOLD released and 15 GiB free.
 
 ## Rig changes this relies on
 
 - `~/.long-run/bin/lr-lease-core.mjs` reaps a lease only when its owner is gone, or its pid now belongs to a process started more than 2 s after the lease. Expiry alone no longer reaps a live owner. `lr-lease renew ID --owner-pid PID --ttl MIN` extends a live lease, because mem-guard only picks victims among unexpired leases.
-- `~/.long-run/rig/bin/rig-run` takes `heavy.lock` after its two leases, so a VM cannot start beside a build that holds the lock. A busy lock counts as a refusal and releases both leases. With `RIG_HEAVY_LOCK_FD`, it uses an inherited descriptor instead, but only one proven to hold the lock. Test: `test-rig-run-heavy-lock.sh`.
+  `renew` refuses a clock reading or an expiry that the lease record cannot represent.
+- `~/.long-run/rig/bin/rig-run` takes `heavy.lock` after its two leases, so a VM cannot start beside a build that holds the lock. A busy lock counts as a refusal and releases both leases. With `RIG_HEAVY_LOCK_FD`, it uses an inherited descriptor instead, but only one proven to hold the lock. Once it holds both leases and the lock, it checks the lead's hold, memory pressure and free disk again (against `RIG_RUN_MIN_FREE_GIB` when the caller sets it) before any clone, and refuses with 75. `RIG_RUN_ID_FILE` receives the run's exact directory. Test: `test-rig-run-heavy-lock.sh`.
 
-Backups of the originals are in `~/.long-run/backup/20261007-q2-lease-owner/`.
+Backups of the originals are in `~/.long-run/backup/20261007-q2-lease-owner/`. These files are not under git and every run on this Mac uses them, so further changes are made in `vendor/long-run/` here first, and any change to admission for other runs is installed only after the coordinator approves it.
