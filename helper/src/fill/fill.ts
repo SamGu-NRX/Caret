@@ -1392,7 +1392,7 @@ export async function proposeFill(
     for (const u of units) {
       let id = noteIds.get(unitKey(u));
       if (id === undefined) {
-        if (!ledger.takeFrom(u.windowId, "candidate", [u.text])) break;
+        if (!ledger.takeOwnerNote(u.windowId, u.text)) break;
         id = `note ${notes.size + 1}`;
         notes.set(id, u.text);
         noteIds.set(unitKey(u), id);

@@ -450,7 +450,7 @@ export async function verifyWrites(instruction: string, writes: readonly WriteTo
     for (const n of x.value.notes) {
       let id = [...notes].find(([, t]) => t === n.text)?.[0];
       if (id === undefined) {
-        if (!ledger.takeFrom(n.windowId, "candidate", [n.text])) return null;
+        if (!ledger.takeOwnerNote(n.windowId, n.text)) return null;
         id = `note ${notes.size + 1}`;
         notes.set(id, n.text);
       }

@@ -8,6 +8,7 @@ import type { AboutValue } from "../src/fill/about.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { field, snap } from "./builders.ts";
+import { OWNER_NOTE_CHARS, setOwnerNoteChars } from "../src/privacy.ts";
 
 const T0 = 1_000_000;
 const PHONE = "555-0388";
@@ -193,5 +194,38 @@ describe("HA2 rule 1: the exactness check makes no ownership claim", () => {
         `Proposed text for the field 'Phone': "${USER_PHONE}". Read from the user's instruction. The field: Text field. Label: 'Phone'. If Caret typed exactly this text into the field, what would it have typed?`,
       ].sort(),
     );
+  });
+});
+
+describe("HA2 recall lever 1: the owner-note allotment (privacy.ts OWNER_NOTE_CHARS, off in the product)", () => {
+  afterEach(() => setOwnerNoteChars(null));
+  const LONG_MINE = [...OPENING, PROSE, `Phone: ${USER_PHONE}`, `Email: ${USER_EMAIL}`].join("\n");
+  const mine = (l: string): string | null => (l === "Phone" ? USER_PHONE : l === "Email" ? USER_EMAIL : null);
+
+  it("is off by default: a note with a prose line is withheld as too long", async () => {
+    expect(OWNER_NOTE_CHARS).toBe(0);
+    const { by } = await fill(LONG_MINE, mine);
+    expect(by("Phone")?.value ?? null).toBeNull();
+  });
+
+  it("with an allotment the note fits, shows the whole note in both owner questions and fills the user's own values", async () => {
+    setOwnerNoteChars(4000);
+    const { by, j } = await fill(LONG_MINE, mine);
+    expect([by("Phone")?.value, by("Email")?.value]).toEqual([USER_PHONE, USER_EMAIL]);
+    const whose = j.reqs.filter((r) => r.purpose === "fill.whose");
+    expect(whose.every((r) => Object.values((r.state as { source_notes?: Record<string, string> }).source_notes ?? {}).includes(LONG_MINE))).toBe(true);
+  });
+
+  it("still withholds another person's card from a long note once the shown note disclaims it", async () => {
+    setOwnerNoteChars(4000);
+    const { by } = await fill([...OPENING, PROSE, ...CONTACTS, "Neither of those lines is mine."].join("\n"));
+    expect([by("Phone")?.value ?? null, by("Email")?.value ?? null]).toEqual([null, null]);
+  });
+
+  it("never sends a note longer than the allotment, nor a line redaction cut", async () => {
+    setOwnerNoteChars(200);
+    const { by, j } = await fill(LONG_MINE, mine);
+    expect(by("Phone")?.value ?? null).toBeNull();
+    expect(JSON.stringify(j.reqs)).not.toContain(PROSE);
   });
 });

@@ -40,6 +40,25 @@ export const CARD_LINE_CHARS = 80;
  */
 export const CONVERSATION_CHARS = 600;
 
+/**
+ * HA2 recall lever 1, unmeasured: the longest whole note an owner question may show beyond its window's budget and
+ * prose share, in characters; 0 turns the lever off, and a note goes only within those budgets, as before. Why it exists:
+ * an owner judgement counts only when it saw every note that holds the value whole (fill/note-unit.ts), and a note with
+ * a line over CARD_LINE_CHARS never fits a fill on focus's prose share, so its user values are withheld. What it sends
+ * when on: the whole note, as the redacted view shows it, in the owner questions only (the value questions keep the
+ * window's budget), charged to the window and declared like any other text; nothing redaction cut, and no window the
+ * model does not hold (Sites rules act before the model), is ever sent. Shipping a value above 0 is a privacy decision
+ * for Sam and the coordinator; evidence/screen/ha2 measures 2,000, 4,000 and 8,000.
+ */
+export const OWNER_NOTE_CHARS = 0;
+let ownerNoteChars = OWNER_NOTE_CHARS;
+/** Tests only: the owner-note allotment for this vitest worker; refused outside vitest, so the product reads OWNER_NOTE_CHARS. */
+export function setOwnerNoteChars(n: number | null): void {
+  const worker = (globalThis as { __vitest_worker__?: unknown }).__vitest_worker__;
+  if (process.env.VITEST !== "true" || typeof worker !== "object" || worker === null) throw new Error("setOwnerNoteChars is for vitest only");
+  ownerNoteChars = n ?? OWNER_NOTE_CHARS;
+}
+
 /** The window id under which a request declares values the user told Caret (SnippetLedger.memory). */
 export const MEMORY_SNIPPETS = "memory";
 
@@ -442,6 +461,8 @@ interface Entry {
   chars: number;
   /** Of `chars`, the characters of prose (WindowShare.prose). */
   prose: number;
+  /** HA2 lever 1: characters owner notes revealed under OWNER_NOTE_CHARS, apart from `chars`, so the value questions keep their whole budget. */
+  ownerChars: number;
   share: WindowShare;
 }
 
@@ -497,7 +518,7 @@ export class SnippetLedger {
   private entry(w: WindowState): Entry {
     const id = w.window.windowId;
     let e = this.entries.get(id);
-    if (e === undefined) this.entries.set(id, (e = { texts: new Set(), covered: new Set(), marks: new Map(), chars: 0, prose: 0, share: this.consented.has(id) ? CONSENTED : windowShare(w) }));
+    if (e === undefined) this.entries.set(id, (e = { texts: new Set(), covered: new Set(), marks: new Map(), chars: 0, prose: 0, ownerChars: 0, share: this.consented.has(id) ? CONSENTED : windowShare(w) }));
     return e;
   }
 
@@ -572,7 +593,7 @@ export class SnippetLedger {
    * taken from a window (`from`) is charged to it, whether or not a line of it shows the text; plan text (`from`
    * null) only pays for what windows' lines show of it. Null when a window would go over its budget.
    */
-  private price(from: WindowState | null, texts: readonly (string | null | undefined)[]): Priced | null {
+  private price(from: WindowState | null, texts: readonly (string | null | undefined)[], bounded = true): Priced | null {
     const own = from === null ? null : (this.know(from), this.entry(from));
     const fresh = [...new Set(texts.filter((t): t is string => t !== null && t !== undefined && t !== "" && own?.texts.has(t) !== true))];
     const adds = new Map<string, Add>();
@@ -661,6 +682,7 @@ export class SnippetLedger {
       }
     }
     for (const [wid, a] of adds) {
+      if (!bounded) break;
       const e = this.entries.get(wid) as Entry;
       if (e.chars + a.cost > e.share.budget) return null;
       if (e.share.prose !== null && e.prose + a.prose > e.share.prose) return null;
@@ -668,7 +690,7 @@ export class SnippetLedger {
     return { fresh, adds };
   }
 
-  private commit(p: Priced, windowId: string, kind: Snippet["kind"], own: Entry | null): void {
+  private commit(p: Priced, windowId: string, kind: Snippet["kind"], own: Entry | null, ownerNote = false): void {
     for (const t of p.fresh) {
       own?.texts.add(t);
       this.snippets.push({ windowId, kind, text: t });
@@ -677,8 +699,11 @@ export class SnippetLedger {
       const e = this.entries.get(wid) as Entry;
       for (const l of a.covered) e.covered.add(l);
       for (const [l, m] of a.marks) e.marks.set(l, m);
-      e.chars += a.cost;
-      e.prose += a.prose;
+      if (ownerNote) e.ownerChars += a.cost;
+      else {
+        e.chars += a.cost;
+        e.prose += a.prose;
+      }
       // Text no window gave (a plan's or an instruction's, or what the user told Caret) declares each line it
       // reveals under the window that shows it, so the request names every window whose text it carries:
       // an instruction that quotes a line of private notes names the notes (B17 privacy test, planner desk).
@@ -693,6 +718,21 @@ export class SnippetLedger {
   takeFrom(windowId: string, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
     const w = this.known.get(windowId);
     return w === undefined ? false : this.take(w, kind, texts);
+  }
+
+  /**
+   * HA2: an owner question's whole note, from the window this ledger knows by id: within the window's budget as any text
+   * is, else, when OWNER_NOTE_CHARS allows its length, under that allotment instead (still charged and declared). False
+   * when neither holds it: the value it would judge is withheld.
+   */
+  takeOwnerNote(windowId: string, text: string): boolean {
+    if (this.takeFrom(windowId, "candidate", [text])) return true;
+    const w = this.known.get(windowId);
+    if (w === undefined || ownerNoteChars <= 0 || text.length > ownerNoteChars) return false;
+    const p = this.price(w, [text], false);
+    if (p === null) return false;
+    this.commit(p, w.window.windowId, "candidate", this.entry(w), true);
+    return true;
   }
 
   take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
@@ -736,7 +776,7 @@ export class SnippetLedger {
 
   /** Characters charged to each window so far, by window id. */
   charges(): Record<string, number> {
-    return Object.fromEntries([...this.entries].filter(([, e]) => e.chars > 0).map(([id, e]) => [id, e.chars]));
+    return Object.fromEntries([...this.entries].filter(([, e]) => e.chars + e.ownerChars > 0).map(([id, e]) => [id, e.chars + e.ownerChars]));
   }
 
   /** What a request built from this ledger declares: its screen text, what each window was charged, and the windows the Ask named. */
