@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { KINDS, machineReaders, readPolicy, readLeases, snapshot, decision, acquire, release, renew, renewByToken, ack, reap } from './lr-lease-core.mjs';
+import { KINDS, machineReaders, readPolicy, readLeases, snapshot, decision, acquire, release, renew, renewByToken, ack, oblige, reap } from './lr-lease-core.mjs';
 
 const root = path.join(os.homedir(), '.long-run');
 const directory = path.join(root, 'leases');
@@ -71,6 +71,11 @@ try {
     const result = ack(directory, rest[0], opts['--attempt'], fs.readFileSync(0, 'utf8').trim());
     if (result.reason) { console.log(`refused: ${result.reason}`); process.exitCode = 75; }
     else console.log(rest[0]);
+  } else if (mode === 'lease' && verb === 'oblige' && rest.length === 5) {
+    const opts = options(rest.slice(1), ['--attempt', '--cleanup-token-sha256']);
+    const result = oblige(directory, rest[0], opts['--attempt'], opts['--cleanup-token-sha256']);
+    if (result.reason) { console.log(`refused: ${result.reason}`); process.exitCode = 75; }
+    else console.log(rest[0]);
   } else if (mode === 'lease' && verb === 'renew' && rest.length === 5 && rest.includes('--attempt')) {
     const opts = options(rest.slice(1), ['--attempt', '--ttl']);
     const result = renewByToken(directory, rest[0], opts['--attempt'], fs.readFileSync(0, 'utf8').trim(),
@@ -95,7 +100,7 @@ try {
       const reason = decision(kind, 0, 0, leases, policy, readings);
       console.log(`${kind}: ${reason ? `REFUSE: ${reason}` : 'GRANT: disk, pressure, swap, count and quiet checks pass'}`);
     }
-  } else throw new Error('usage: lr-lease acquire --run NAME --kind heavy|gui|vm|container --est-mem GiB --est-disk GiB [--ttl MIN] [--owner-pid PID] | release ID | renew ID --owner-pid PID --ttl MIN | renew ID --attempt A --ttl MIN (token on stdin) | ack ID --attempt A (token on stdin) | status; lr-reap [--run NAME]');
+  } else throw new Error('usage: lr-lease acquire --run NAME --kind heavy|gui|vm|container --est-mem GiB --est-disk GiB [--ttl MIN] [--owner-pid PID] | release ID | renew ID --owner-pid PID --ttl MIN | renew ID --attempt A --ttl MIN (token on stdin) | ack ID --attempt A (token on stdin) | oblige ID --attempt A --cleanup-token-sha256 HEX | status; lr-reap [--run NAME]');
 } catch (error) {
   console.log(`refused: ${error.message.replace(/[\r\n]+/g, ' ')}`);
   process.exitCode = 75;

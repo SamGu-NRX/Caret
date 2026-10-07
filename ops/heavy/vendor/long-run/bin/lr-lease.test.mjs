@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { acquire, release, renew, renewByToken, ack, reap, readLeases, readPolicy, decision, parsePressure, parseSwap, parseQuiet, machineReaders } from './lr-lease-core.mjs';
+import { acquire, release, renew, renewByToken, ack, oblige, reap, readLeases, readPolicy, decision, parsePressure, parseSwap, parseQuiet, machineReaders } from './lr-lease-core.mjs';
 
 const bin = path.dirname(fileURLToPath(import.meta.url));
 // Tests pin the counts they assert. The live policy's thresholds are reused, but its counts are tuned
@@ -283,6 +283,32 @@ test('a lease without cleanup_required keeps today\'s behaviour', t => {
   assert.deepEqual(reap(directory, dead), [{ id: lease.id, reason: 'owner dead' }]);
 });
 
+test('oblige makes an active lease cleanup-required for one attempt, whoever owns it', t => {
+  // The queue holds a job's lease (owner: its runner); the job's supervisor obliges it before any work starts, so the
+  // reservation outlives the runner's release until the job's cleanup is acknowledged.
+  const directory = fixture(t);
+  const { lease } = acquire(directory, policy, readers(), { ...request, ownerPid: 777 });
+  assert.throws(() => oblige(directory, lease.id, 'attempt-1', 'short'), /invalid/);
+  assert.throws(() => oblige(directory, lease.id, 'bad attempt!', cleanup.tokenSha256), /invalid/);
+  assert.deepEqual(oblige(directory, '00000000-0000-4000-8000-000000000000', 'attempt-1', cleanup.tokenSha256),
+    { reason: 'no such lease' });
+  const obliged = oblige(directory, lease.id, 'attempt-1', cleanup.tokenSha256).lease;
+  assert.deepEqual([obliged.cleanupRequired, obliged.attempt, obliged.tokenSha256, obliged.ownerPid],
+    [true, 'attempt-1', cleanup.tokenSha256, 777]);
+  assert.deepEqual(readLeases(directory), [obliged]);
+  assert.match(oblige(directory, lease.id, 'attempt-2', cleanup.tokenSha256).reason, /already cleanup-required for attempt attempt-1/);
+  // The owner's plain release now quarantines it; only the attempt's token clears it.
+  assert.deepEqual(release(directory, lease.id), { quarantined: true });
+  assert.match(oblige(directory, lease.id, 'attempt-1', cleanup.tokenSha256).reason, /already cleanup-required/);
+  assert.deepEqual(ack(directory, lease.id, 'attempt-1', token), { acked: true });
+  assert.deepEqual(readLeases(directory), []);
+  // Acknowledged before the owner releases: the owner's release is then the usual idempotent no-op.
+  const second = acquire(directory, policy, readers(), { ...request, ownerPid: 777 }).lease;
+  oblige(directory, second.id, 'attempt-1', cleanup.tokenSha256);
+  assert.deepEqual(ack(directory, second.id, 'attempt-1', token), { acked: true });
+  assert.deepEqual(release(directory, second.id), {});
+});
+
 test('CLI: the token travels on stdin only', t => {
   const home = fixture(t);
   const root = path.join(home, '.long-run');
@@ -300,6 +326,15 @@ test('CLI: the token travels on stdin only', t => {
   assert.equal(lr(['ack', id, '--attempt', 'attempt-1'], 'wrong\n').status, 75);
   const acked = lr(['ack', id, '--attempt', 'attempt-1'], token + '\n');
   assert.equal(acked.status, 0, acked.stdout);
+  assert.equal(readLeases(path.join(root, 'leases')).length, 0);
+  // oblige carries only the digest in argv; the acknowledgement still takes the token on stdin.
+  const plain = lr(['acquire', '--run', 'cli-test', '--kind', 'heavy', '--est-mem', '0', '--est-disk', '0',
+    '--owner-pid', String(process.pid)]).stdout.trim();
+  const obliged = lr(['oblige', plain, '--attempt', 'attempt-1', '--cleanup-token-sha256', cleanup.tokenSha256]);
+  assert.equal(obliged.status, 0, obliged.stdout);
+  assert.equal(lr(['oblige', plain, '--attempt', 'attempt-1', '--cleanup-token-sha256', cleanup.tokenSha256]).status, 75);
+  assert.equal(readLeases(path.join(root, 'leases'))[0].cleanupRequired, true);
+  assert.equal(lr(['ack', plain, '--attempt', 'attempt-1'], token + '\n').status, 0);
   assert.equal(readLeases(path.join(root, 'leases')).length, 0);
 });
 

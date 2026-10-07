@@ -705,5 +705,90 @@ class Test10ReservationsAndCredentials(Custody):
         self.assertFalse([h for h in hexes if hashlib.sha256(h).hexdigest() == token_sha256])
 
 
+
+class QueueLeaseUntilClean(Custody):
+    """The live queue (401c4d1) releases its per-job lease once the relay's process group is empty."""
+
+    def supervisor_pid(self, job_id):
+        with open(os.path.join(self.run_root(job_id), "supervisor.json")) as fh:
+            return json.load(fh)["supervisor_pid"]
+
+    def held_until(self, done, lease_id, seconds=90):
+        """Samples until done(): the moments the lease was missing before then. done() is checked again after the
+        lease list, so an end that landed in between does not count as missing."""
+        missing = []
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if done():
+                return missing
+            if lease_id not in [l["id"] for l in self.leases()] and not done():
+                missing.append(time.monotonic())
+            time.sleep(0.3)
+        self.fail("not done within {} s".format(seconds))
+
+    def held_until_clean(self, job_id, lease_id):
+        """The live lr-lease: the recovery owner never touches the queue's lease, so it must outlast CLEAN itself."""
+        return self.held_until(lambda: any(r["event"] == "clean" for r in self.journal(job_id)), lease_id)
+
+    def test_a_dead_supervisor_leaves_the_relay_holding_the_queue_lease_until_recovery_journals_clean(self):
+        job_id, _ = self.enqueue(["slow-cleanup", "12"], profile=profile(grace=30))
+        self.run_queue("--once", "--max-wait", "120")
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 120))
+        lease_id = self.job(job_id)["lease_id"]
+        os.kill(self.supervisor_pid(job_id), signal.SIGKILL)  # this test's own supervisor, by exact pid
+        self.assertEqual(self.held_until_clean(job_id, lease_id), [], "the queue's lease went before CLEAN")
+        self.assertTrue(os.path.exists(os.path.join(self.run_root(job_id), "out", "cleanup-done")))
+        self.wait_clean(job_id, "recovery")
+        self.assertTrue(self.wait_for(lambda: self.job(job_id)["state"] not in ("running", "launching"), 30))
+        self.assertIn("recovery owner journalled CLEAN", self.queue_log(job_id))
+        self.assert_all_released(job_id)
+
+
+class QueueLeaseObliged(QueueLeaseUntilClean):
+    """With the vendored lr-lease (pending install): the supervisor makes the queue's lease cleanup-required, so the
+    queue's own release after its 10 s SIGKILL of the relay quarantines it rather than dropping it."""
+
+    LEASE_SOURCE = os.path.join(HEAVY, "vendor/long-run/bin")
+
+    def test_a_dead_supervisor_leaves_the_relay_holding_the_queue_lease_until_recovery_journals_clean(self):
+        pass  # the parent class covers it
+
+    def test_the_queues_lease_outlives_the_queues_release_until_the_cleanup_is_acknowledged(self):
+        job_id, _ = self.enqueue(["slow-cleanup", "18"], profile=profile(grace=30))
+        self.run_queue("--once", "--max-wait", "120")
+        self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 120))
+        lease_id = self.job(job_id)["lease_id"]
+        [lease] = self.leases()
+        self.assertEqual((lease["id"], lease.get("cleanupRequired")), (lease_id, True))
+        self.assertEqual(self.queue("cancel", "--id", job_id).returncode, 0)
+        self.assertTrue(self.wait_for(lambda: self.job(job_id)["state"] == "cancelled", 25))
+        self.assertIn("SIGKILL", self.job(job_id)["outcome_reason"])  # the queue's 10 s ran out, then it released
+        self.assertNotIn("lease_release_error", self.job(job_id))
+        self.assertFalse(os.path.exists(os.path.join(self.run_root(job_id), "out", "cleanup-done")))
+        # Still the queue's lease, now quarantined; no second lease was taken over.
+        self.assertEqual([(l["id"], l.get("state")) for l in self.leases()], [(lease_id, "quarantined")])
+        # Kept while the workload is still cleaning up; acknowledged (so gone) just before the supervisor's CLEAN.
+        self.assertEqual(self.held_until(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out",
+                                                                             "cleanup-done")), lease_id), [])
+        self.wait_clean(job_id, "supervisor")
+        outcome = self.outcome(job_id)
+        self.assertNotIn("taken_over_from", outcome["lease"])
+        self.assertTrue(outcome["lease"]["obliged"])
+        self.assert_all_released(job_id)
+        self.assert_no_token_anywhere(lease["tokenSha256"])
+
+    def test_death_between_oblige_and_registration_is_settled_by_attempt(self):
+        job_id, _ = self.enqueue(["ok"], test={"kill_at": "supervisor:after-oblige"})
+        self.run_queue("--once", "--max-wait", "120").wait(timeout=300)
+        self.assertTrue(os.path.exists(os.path.join(self.run_root(job_id), "test-point-fired")))
+        self.wait_clean(job_id, "recovery")
+        [clean] = [r for r in self.journal(job_id) if r["event"] == "clean"]
+        self.assertEqual(clean["reconciled"], [self.job(job_id)["lease_id"]])
+        self.assertNotIn("lease_release_error", self.job(job_id))
+        self.assert_all_released(job_id)
+
+    assert_no_token_anywhere = Test10ReservationsAndCredentials.assert_no_token_anywhere
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

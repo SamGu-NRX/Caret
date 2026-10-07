@@ -164,10 +164,37 @@ def relay(plan_path, plan_digest, plan):
         code = int(json.loads(data)["exit"])
     except (ValueError, KeyError, TypeError):
         say("relay", "the supervisor ended without a status (exit {})".format(proc.returncode))
+        say("relay", await_recovery(plan))
         return EXIT_ERROR
     if forwarded:
         say("relay", "forwarded signal {}; supervisor finished cleanup".format(forwarded[0]))
     return code
+
+
+def await_recovery(plan, poll=1.0):
+    """After a supervisor died without a status: wait until its recovery owner journals CLEAN, and say why the wait
+    ended. A queue that leases per job releases the lease once this relay's process group is empty, so the relay stays
+    while the owner may still be cleaning up. A journal without an adoption means the supervisor died before custody
+    held anything, and custody comes before the lease and the workload. A quarantine is waited out like any other
+    unfinished cleanup; the queue's own timeout is what ends that wait."""
+    journal = recovery.Journal(os.path.join(plan["run_root"], "recovery", "journal.ndjson"))
+    said = None
+    while True:
+        try:
+            events = [r.get("event") for r in journal.load()]
+        except (recovery.JournalCorrupt, OSError) as ex:
+            events, why = None, "the recovery journal is unreadable ({}); waiting".format(ex)
+        else:
+            if "adopted" not in events:
+                return "no recovery owner ever held this job; nothing to wait for"
+            if "clean" in events:
+                return "the recovery owner journalled CLEAN"
+            why = "waiting for the recovery owner to journal CLEAN ({})".format(
+                "quarantined" if "quarantined" in events else "cleaning up")
+        if why != said:
+            say("relay", why)
+            said = why
+        time.sleep(poll)
 
 
 # Supervisor: its own session
@@ -201,7 +228,10 @@ class Supervisor:
         self.cancel_reason, self.cancel_code = None, None
         self.lease_id, self.lock_fd, self.queue_lease = None, None, None
         self.vz_before = set()
-        self.lease_cleanup = self._lease_supports_cleanup()
+        self.lease_cleanup = self._lease_supports("--cleanup-token-sha256")
+        # Whether lr-lease can make the queue's lease cleanup-required (`oblige`, the vendored version, pending install).
+        self.lease_oblige = self.lease_cleanup and self._lease_supports("verb === 'oblige'")
+        self.lease_obliged = False
         self.record = {"job_id": plan["job_id"], "plan": plan_path, "plan_sha256": plan_digest,
                        "supervisor_pid": self.pid, "mark": self.mark, "launchd_prefix": self.launchd_prefix,
                        "started_utc": utc_now(), "events": [], "states": {"executed": False, "validated": False,
@@ -245,11 +275,11 @@ class Supervisor:
                 self.log("cleanup attempt failed: {!r}".format(ex))
             time.sleep(QUARANTINE_RETRY[1])
 
-    def _lease_supports_cleanup(self):
-        """Whether this lr-lease takes --cleanup-attempt (the vendored version, pending install)."""
+    def _lease_supports(self, feature):
+        """Whether this lr-lease's CLI source has *feature* (the vendored version's cleanup-required leases)."""
         try:
             with open(os.path.join(os.path.dirname(self.paths["lr_lease"]), "lr-lease-cli.mjs"), encoding="utf-8") as fh:
-                return "--cleanup-token-sha256" in fh.read()
+                return feature in fh.read()
         except OSError:
             return False
 
@@ -439,6 +469,17 @@ class Supervisor:
         if problem:
             self._release()
             return problem
+        if self.queue_lease and self.lease_oblige and self.profile["lease"]:
+            # The queue releases its lease once the relay's group is empty, which its SIGKILL of the relay after 10 s
+            # makes true while cleanup may still run. Obliged, that release quarantines the lease instead, until this
+            # attempt's token acknowledges the clean (the vendored lr-lease; with the live one, _hold_reservation).
+            got = self._lease_cmd("oblige", self.queue_lease, "--attempt", self.attempt,
+                                  "--cleanup-token-sha256", recovery.token_sha256(self.token))
+            if got.returncode != 0:
+                self._release()
+                return "obliging the queue's lease {}: {}".format(self.queue_lease, got.stdout.strip()[:200])
+            self.lease_id, self.lease_obliged, self.lease_renewed = self.queue_lease, True, time.monotonic()
+            recovery.test_point(self.plan, "supervisor:after-oblige")
         # The recovery owner holds the lock and knows the lease before anything starts.
         try:
             if self.lock_fd is not None:
@@ -451,7 +492,8 @@ class Supervisor:
         self.log("admitted", lease=self.lease_id, queue_lease=self.queue_lease, lease_cleanup_required=self.lease_cleanup,
                  heavy_lock="inherited from the queue runner" if self.heavy_fd is not None
                  else "taken" if self.lock_fd is not None else "left to rig-run")
-        self.record["lease"] = {"id": self.lease_id, "cleanup_required": self.lease_cleanup, "renewals": 0,
+        self.record["lease"] = {"id": self.lease_id, "cleanup_required": self.lease_cleanup,
+                                "obliged": self.lease_obliged, "renewals": 0,
                                 "renew_failures": [], "queue_lease": self.queue_lease}
         return None
 
@@ -515,8 +557,17 @@ class Supervisor:
         if not self.lease_id or time.monotonic() - self.lease_renewed < self.plan["lease"]["renew_s"]:
             return
         self.lease_renewed = time.monotonic()
-        got = self._lease_cmd("renew", self.lease_id, "--owner-pid", str(self.pid),
-                              "--ttl", str(self.plan["lease"]["ttl_min"]))
+        if self.lease_obliged:
+            # The queue's runner owns this lease; this attempt renews it by its token, until the queue releases it
+            # (then it is quarantined, which keeps it without renewal).
+            got = subprocess.run([self.paths["lr_lease"], "renew", self.lease_id, "--attempt", self.attempt,
+                                  "--ttl", str(self.plan["lease"]["ttl_min"])], input=self.token + "\n",
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            if "is quarantined" in got.stdout:
+                return
+        else:
+            got = self._lease_cmd("renew", self.lease_id, "--owner-pid", str(self.pid),
+                                  "--ttl", str(self.plan["lease"]["ttl_min"]))
         if got.returncode == 0:
             self.record["lease"]["renewals"] += 1
         else:

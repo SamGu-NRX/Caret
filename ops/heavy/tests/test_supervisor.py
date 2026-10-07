@@ -102,12 +102,16 @@ class Cancellation(World):
         with open(os.path.join(self.run_root(job_id), "supervisor.json")) as fh:
             supervisor = json.load(fh)["supervisor_pid"]
         os.kill(supervisor, signal.SIGKILL)  # the exact pid of this test's supervisor
-        self.assertTrue(self.wait_for(lambda: self.job(job_id)["state"] == "failed", 20))  # the relay saw no status
-        # Exclusion holds while the recovery owner cleans up: a separate contender cannot take either lock.
-        self.assertTrue(self.contender_blocked())
-        journal = self.journal(job_id)
+        # Exclusion holds while the recovery owner cleans up: a separate contender cannot take either lock. The relay
+        # saw no status, so it stays until the owner journals CLEAN, and the queue still counts the job as running.
+        # (The journal is read last: if it has no CLEAN yet, it had none when the state and locks were read.)
+        state, blocked = self.job(job_id)["state"], self.contender_blocked()
+        if not any(r["event"] == "clean" for r in self.journal(job_id)):
+            self.assertEqual((state, blocked), ("running", True))
         self.assertTrue(self.wait_for(lambda: any(r["event"] == "clean" for r in self.journal(job_id)), 60),
                         self.journal(job_id))
+        self.assertTrue(self.wait_for(lambda: self.job(job_id)["state"] == "failed", 20))  # the relay saw no status
+        self.assertIn("recovery owner journalled CLEAN", self.queue_log(job_id))
         journal = self.journal(job_id)
         self.assertEqual([r["by"] for r in journal if r["event"] == "clean"], ["recovery"])
         self.assertIn("stopping", [r["event"] for r in journal])

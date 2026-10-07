@@ -209,6 +209,21 @@ export function ack(directory, id, attempt, token) {
   return { acked: true };
 }
 
+// Makes an active lease cleanup-required for one attempt, whoever owns it. A job queue holds a job's lease (owner: its
+// runner) and releases it when the job's process group is empty, which can come before the job's own cleanup is
+// confirmed; the job obliges the lease before starting work, so that release quarantines it instead of dropping it
+// until ack(). Only the token's digest is passed. A lease already obliged, or quarantined, is refused.
+export function oblige(directory, id, attempt, tokenSha256) {
+  if (!validId(id)) throw new Error('invalid lease ID');
+  if (!ATTEMPT.test(attempt ?? '') || !HEX64.test(tokenSha256 ?? '')) throw new Error('invalid cleanup attempt or token digest');
+  const lease = readLeases(directory).find(record => record.id === id);
+  if (!lease) return { reason: 'no such lease' };
+  if (lease.cleanupRequired) return { reason: `lease is already cleanup-required for attempt ${lease.attempt}` };
+  const obliged = { ...lease, cleanupRequired: true, attempt, tokenSha256 };
+  writeLease(directory, obliged, 'oblige');
+  return { lease: obliged };
+}
+
 // Renewal by whoever holds the token (the recovery owner after the original owner died), for an active lease only.
 export function renewByToken(directory, id, attempt, token, ttlMinutes, now) {
   if (!validId(id)) throw new Error('invalid lease ID');
