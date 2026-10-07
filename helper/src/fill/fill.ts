@@ -1040,7 +1040,7 @@ export async function proposeFill(
       const c = candidates[i];
       if (c === undefined) continue;
       const moved = labelledCandidate(anchorWindow, l.node, l.value, l.label, c.id, c.kind, "justLeft");
-      if (ledger.take(anchorWindow, "candidate", candidateTexts(moved))) candidates[i] = moved;
+      if (moved !== null && ledger.take(anchorWindow, "candidate", candidateTexts(moved))) candidates[i] = moved;
     }
   }
   // Values code derives for one field (derive.ts): a name's first, middle or last part for a field that asks

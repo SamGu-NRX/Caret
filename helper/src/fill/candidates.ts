@@ -7,9 +7,9 @@ import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf } from "../privacy.ts";
-import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
+import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, textKind, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
-import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, sentenceAround, sourceURL, urlTokens, WARNS } from "./line-values.ts";
+import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, sentenceAround, rawURLToken, WARNS } from "./line-values.ts";
 import { redactWindow } from "./redact.ts";
 import { WITHHELD } from "../privacy/exclude.ts";
 import { splitDate } from "./derive.ts";
@@ -284,14 +284,20 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   /** Windows a span of which did not fit their budget, closed or not. */
   const missed = new Set<string>();
   /** The candidate for a span, with every fact about it worked out. */
-  const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string): Candidate => {
+  const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string): Candidate | null => {
+    const url = kind === "url" || textKind(text) === "url";
+    const raw = url ? rawURLToken(nodeText(node), text, MAX_SCAN) : null;
+    if (url && raw === null) return null;
     const ctx = timed("context", context);
     const labelled = labelledSpan(node, text, ctx);
     // A span that must go with its line's words (line-values.ts LineText.with, or a clause its line warns in) carries them
     // from the start, charged with it; any other clause waits until every span is in.
     const fact = quote !== undefined ? null : timed("context", () => lineFact(w, node, text, labelled));
-    const required = quote ?? (fact?.required === true ? fact.clause : undefined);
-    const clause = fact === null || fact.required ? null : fact.clause;
+    let required = quote ?? (fact?.required === true ? fact.clause : undefined);
+    // The verifier must read the maximal raw token, not just the URL substring the extractor picked.
+    // It is required context, so a budget cut withholds the URL instead of silently omitting its evidence.
+    if (raw !== null && required?.includes(raw) !== true) required = required === undefined ? raw : lineHolding(nodeText(node), text);
+    const clause = required !== undefined || fact === null || fact.required ? null : fact.clause;
     const c: Candidate = {
     id: `c${out.length + 1}`,
     text,
@@ -340,6 +346,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     // SC1 2a: a span holding a value the model withheld is never a candidate; its line may still be another's context.
     if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId) || text.includes(WITHHELD)) return;
     const c = build(w, node, text, kind, context, quote, partOf);
+    if (c === null) return;
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       // W2: a part of a labelled value (line-values.ts valueParts) is an extra beside the whole value: one that does not
       // fit is dropped, and the window is neither cut nor closed for it. Counting it as a cut withheld Greenhouse's names
@@ -589,7 +596,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         const sp = spans[i] as (typeof spans)[number];
         if (sp.group !== k || seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
-        group.push(build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf));
+        const c = build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf);
+        if (c !== null) group.push(c);
       }
       if (group.length > 0) groups.set(k, group);
     }
@@ -733,15 +741,13 @@ const valuesCache = new WeakMap<WindowState, readonly TypedValue[]>();
 export function windowValues(w: WindowState): readonly TypedValue[] {
   const cached = valuesCache.get(w);
   if (cached !== undefined) return cached;
-  const out: TypedValue[] = w.values.flatMap((v) => {
-    if (v.kind !== "url") return [v];
+  const out: TypedValue[] = w.values.filter((v) => {
+    if (v.kind !== "url") return true;
     const node = w.nodes.get(v.nodeKey);
-    const token = node === undefined ? null : sourceURL(nodeText(node), v.text);
-    // Reader values obey the same whole-token and GFM rules as code-extracted URLs.
-    return token === null ? [] : [{ ...v, text: token.text }];
+    return node !== undefined && rawURLToken(nodeText(node), v.text, MAX_SCAN) !== null;
   });
   const byNode = new Map<string, TypedValue[]>();
-  for (const v of out) byNode.set(v.nodeKey, [...(byNode.get(v.nodeKey) ?? []), v]);
+  for (const v of w.values) byNode.set(v.nodeKey, [...(byNode.get(v.nodeKey) ?? []), v]);
   for (const node of w.nodes.values()) {
     if (!LINE_ROLES.has(node.role) && !sourceField(node)) continue;
     const reader = byNode.get(node.key) ?? [];
@@ -751,6 +757,7 @@ export function windowValues(w: WindowState): readonly TypedValue[] {
       if (line.length < 3) continue;
       for (const v of lineValues(line)) {
         if (seen.has(v.text) || reader.some((r) => r.text.includes(v.text) || v.text.includes(r.text))) continue;
+        if (v.kind === "url" && rawURLToken(nodeText(node), v.text, MAX_SCAN) === null) continue;
         seen.add(v.text);
         out.push({ kind: v.kind, text: v.text, nodeKey: node.key });
       }
@@ -822,11 +829,6 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
   if (WARNS.test(sentence.replace(text, " "))) return sentence === text ? null : { clause: sentence, required: true };
   const values = lineValues(line);
   const kind = values.find((v) => v.text === text)?.kind;
-  if (kind === "url") {
-    const token = urlTokens(line).find((v) => v.at === pos && v.text === text);
-    // A clean link still carries its original punctuation as required source evidence, not optional context.
-    if (token !== undefined && token.original !== text) return { clause: token.original, required: true };
-  }
   // G2: a date, email or phone number goes with the part of its clause that says what it is (line-values.ts
   // partAround) whenever that says more than "Label: value", on a short line and under a label too. A label alone does
   // not say which of two dates is which: "School: …, September 2016 to May 2020." offered both as labelled 'School', and
@@ -873,11 +875,15 @@ export function labelledLines(w: WindowState): { label: string; value: string; n
  * The candidate a labelled line of `w` offers, with the facts the generator gives a span (fill.ts moves a
  * text another window also shows to the window the user just left, where its label names it).
  */
-export function labelledCandidate(w: WindowState, node: Node, text: string, label: string, id: string, kind: ValueKind | null, recency: Recency): Candidate {
+export function labelledCandidate(w: WindowState, node: Node, text: string, label: string, id: string, kind: ValueKind | null, recency: Recency): Candidate | null {
+  const url = kind === "url" || textKind(text) === "url";
+  const raw = url ? rawURLToken(nodeText(node), text, MAX_SCAN) : null;
+  if (url && raw === null) return null;
   return {
     id,
     text,
     kind,
+    ...(raw === null ? {} : { line: raw }),
     context: label,
     labelled: true,
     section: sectionAround(w, node),

@@ -35,13 +35,10 @@ const DATE = new RegExp(
   "gu",
 );
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu;
-// Read whole source tokens first, never search for a URL inside a hostname, query or fragment.
-// Opening delimiters can introduce a token; parentheses inside it stay for GFM's balance check.
-const TOKEN_DELIMITER = /[\s<>\[\]"'`]/u;
-const URL_START = /^(?:https?:\/\/|www\.|(?:linkedin|github)\.com\/)/iu;
+const URL = /\bhttps?:\/\/[^\s<>()"'`]+|\bwww\.[^\s<>()"'`]+|\b(?:linkedin|github)\.com\/[^\s<>()"'`]+/giu;
 
 /** GFM extended-autolink path validation, https://github.github.com/gfm/#extended-autolink-path-validation. */
-function autolinkText(token: string): string {
+export function autolinkText(token: string): string {
   let text = token;
   for (;;) {
     const before = text;
@@ -56,40 +53,20 @@ function autolinkText(token: string): string {
   }
 }
 
-/** Whole source tokens with GFM punctuation removed only from the link text, not its evidence. */
-export function urlTokens(source: string) {
-  const tokens: { original: string; text: string; at: number; parsed: URL }[] = [];
-  let cursor = 0;
-  while (cursor < source.length) {
-    if (TOKEN_DELIMITER.test(source[cursor]!) || source[cursor] === "(") {
-      cursor++;
-      continue;
-    }
-    const at = cursor;
-    const link = URL_START.test(source.slice(at));
-    while (cursor < source.length && !TOKEN_DELIMITER.test(source[cursor]!) && (link || source[cursor] !== "(")) cursor++;
-    const original = source.slice(at, cursor);
-    const text = autolinkText(original);
-    // Keep the existing recognized URL forms; parsing a random word with https:// would invent an address.
-    if (!URL_START.test(text)) continue;
-    try {
-      const parsed = new URL(/^https?:\/\//iu.test(text) ? text : `https://${text}`);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") continue;
-      tokens.push({ original, text, at, parsed });
-    } catch {
-      // An unparseable complete token is not a URL candidate.
-    }
-  }
-  return tokens;
-}
-
-/** A reader span may omit GFM punctuation, but every occurrence must start the same complete source token. */
-export function sourceURL(source: string, text: string) {
-  const tokens = urlTokens(source).filter((v) => v.text === text || v.original === text);
-  const token = tokens[0];
-  if (text.length === 0 || token === undefined || tokens.some((v) => v.original !== token.original)) return null;
-  for (let at = source.indexOf(text); at >= 0; at = source.indexOf(text, at + text.length)) {
-    if (!tokens.some((v) => v.at === at)) return null;
+/** The maximal non-whitespace source run containing a URL span. Ambiguous or scan-cut runs give no evidence. */
+export function rawURLToken(source: string, span: string, scanLimit = Number.POSITIVE_INFINITY): string | null {
+  if (span === "" || /\s/u.test(span)) return null;
+  let token: string | null = null;
+  for (let at = source.indexOf(span); at >= 0; at = source.indexOf(span, at + span.length)) {
+    let start = at;
+    let end = at + span.length;
+    while (start > 0 && !/\s/u.test(source[start - 1]!)) start--;
+    while (end < source.length && !/\s/u.test(source[end]!)) end++;
+    // A reader span or code fallback at the slice edge may omit the rest of this very same token.
+    if (source.length >= scanLimit && end >= scanLimit) return null;
+    const raw = source.slice(start, end);
+    if (token !== null && token !== raw) return null;
+    token = raw;
   }
   return token;
 }
@@ -179,7 +156,7 @@ function scan(line: string): LineValue[] {
     }
   };
   scan(EMAIL, "email", true);
-  for (const token of urlTokens(line)) hits.push({ text: token.text, kind: "url", at: token.at });
+  scan(URL, "url", true);
   scan(PHONE, "phone");
   scan(POSTAL, "address");
   scan(DATE, "date");
