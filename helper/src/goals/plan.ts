@@ -252,7 +252,8 @@ export interface GoalPlan {
   digest: string;
   inventory: GoalInventory;
   /** I2: the Ask's settled scope the plan was made under (fill/ask-scope.ts); a fresh plan of the same goal keeps it. */
-  askScope?: AskScope;
+  /** null: an Ask's goal with no scope of its own (it came from a window with no field), whose windows settle theirs. */
+  askScope?: AskScope | null;
 }
 
 /** JSON with object keys sorted, so equal content always hashes equal. */

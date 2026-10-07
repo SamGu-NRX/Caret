@@ -1005,6 +1005,8 @@ public enum AskCopy {
         case .internal: return "Something went wrong while I planned, so nothing will run."
         // B29: says.ts's sentence, for a helper that sends none.
         case .questionGone: return "That question has expired. Ask again."
+        // I2: says.ts's sentence for outOfScope, for a helper that sends none.
+        case .outOfScope: return "The form changed while Caret worked on it. Ask again."
         }
     }
 

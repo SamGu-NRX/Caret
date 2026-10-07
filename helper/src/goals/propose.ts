@@ -55,6 +55,8 @@ export interface PlanGoalOptions {
   drafter?: LocalModelPort;
   /** I2: the Ask's settled scope, which the goal gate enforces (goals/lower.ts LowerOptions.askScope); absent with no Ask. */
   askScope?: AskScope;
+  /** I2: an Ask's goal settles each other window's scope with this (goals/lower.ts LowerOptions.settleScope). */
+  settleScope?: (windowId: string) => Promise<AskScope>;
 }
 
 /** The writer's program for a goal, run and lowered. Throws GoalError; `use` is set once the writer answered. */
@@ -81,7 +83,7 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
   if (!ran.ok) throw new GoalError("schema", "the plan program broke the rules a plan must keep", `${ran.kind}: ${ran.detail.slice(0, 200)}`);
   const local = o.drafter === undefined || ran.plan.drafts.length === 0 ? null : await localDrafts(o.drafter, o.instruction, ran.plan, inv.inventory, o.now, o.signal);
   // A draft's origin names the model that wrote its words: the local model's when it did.
-  const plan = await lowerGoal(o.goalId, o.instruction, local?.plan ?? ran.plan, inv.inventory, { done: o.done ?? [], writerModel: local?.model ?? written.model, askJev: o.askJev, ledger: inv.ledger, ...(o.carried === undefined ? {} : { carried: o.carried }), ...(o.askScope === undefined ? {} : { askScope: o.askScope }) });
+  const plan = await lowerGoal(o.goalId, o.instruction, local?.plan ?? ran.plan, inv.inventory, { done: o.done ?? [], writerModel: local?.model ?? written.model, askJev: o.askJev, ledger: inv.ledger, ...(o.carried === undefined ? {} : { carried: o.carried }), ...(o.askScope === undefined ? {} : { askScope: o.askScope }), ...(o.settleScope === undefined ? {} : { settleScope: o.settleScope }) });
   // Code checked each draft's facts in lowering; what it says the user promises or turns down goes to Jev (B30).
   const drafts = plan.segments.flatMap((g) => g.steps.flatMap((x) => (x.value?.draft == null ? [] : [{ text: x.value.text, basis: frozenBasis(o.instruction, x.value, inv.inventory) }])));
   try {

@@ -71,6 +71,8 @@ async function rig(o: { jev?: AskJev; view?: boolean; controls?: () => PageContr
     (async (req) => {
       const r = await pick(req);
       for (const [id, q] of Object.entries(req.questions)) if ("yes" in q.criteria) r.answers[id] = { choice: "yes", confidence: 0.95 };
+      // I2: Jev's scope ask, which settles a reveal's fields, says every field is asked for (page-rig.ts does the same).
+      if (req.purpose === "ask.scope") for (const id of Object.keys(req.questions)) r.answers[id] = { choice: "asks", confidence: 0.95 };
       return r;
     });
   let helper: Helper;

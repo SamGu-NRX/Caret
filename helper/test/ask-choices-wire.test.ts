@@ -128,6 +128,18 @@ describe("Ask questions in the helper (B29)", () => {
     expect(app.node(K("group:billing/textfield:city~0"))?.value).toBeUndefined();
   });
 
+  it("I2: refuses the acceptance once the picked field reads differently than when the Ask was asked, and writes nothing", async () => {
+    const q = AskQuestion.parse(await helper.handlePlanRequest(request, "s1", true));
+    const r = PlanProposal.parse(await helper.handleAskAnswer(answer(q.questionId, ["o2"]), "s1"));
+    expect(r).toMatchObject({ outcome: "proposed" });
+    // Between the proposal and Tab the app puts a heading right before the picked field: it is not the field the Ask was about.
+    const at = app.nodes.findIndex((n) => n.key === K("group:shipping/textfield:city~0"));
+    app.nodes.splice(at, 0, { key: K("heading:pickup~0"), parent: null, role: "AXHeading", label: "Pickup instead" });
+    app.show();
+    expect(await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: r.offerKey ?? "", actionId: "run", overrides: {}, at: clock })).toBeNull();
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(0);
+  });
+
   it("G2 review: refuses the acceptance once the line its value was read from warns about it, and writes nothing", async () => {
     const q = AskQuestion.parse(await helper.handlePlanRequest(request, "s1", true));
     const r = PlanProposal.parse(await helper.handleAskAnswer(answer(q.questionId, ["o2"]), "s1"));

@@ -11,6 +11,7 @@
 //     AskAsks, a refusal that carries the question. The user's pick comes back as AskOptions.resume, which continues
 //     the same intent with that part fixed through every check below.
 // Nothing here acts.
+import { settleFields } from "./intent-heads.ts";
 import { askScope, fieldFingerprint, type AskScope } from "../fill/ask-scope.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { AskOption, FillField, FillProposal, Node } from "../protocol.ts";
@@ -358,7 +359,9 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // questions about writes the contract would refuse. A part left open is asked first, as for a page goal. Fields open
   // with nothing to offer means Jev chose no field: the plan may only hand off a press ("hit submit"), so nothing is asked.
   let nativeFields: string[] | undefined;
-  if (!planAsAll && intent.route === "plan" && fromJev(intent)) {
+  // A window with no field (the email a reply goal starts from) gives no scope: the goal settles one on the window it
+  // writes in (helper.ts settleScopeFor), never an empty one from here.
+  if (!planAsAll && intent.route === "plan" && snap.fields.length > 0 && fromJev(intent)) {
     const offersFields = (intent.options ?? []).length > 0;
     const pending = (intent.pageOpen ?? []).filter((p) => fixed[p] === undefined && (p !== "fields" || offersFields));
     nativeFields = pending.includes("fields") ? [] : intent.fields.map((r) => snap.fields.find((f) => f.ref === r)?.key ?? changed(`the field ${r} is gone`));
@@ -495,10 +498,28 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // H11: a plan intent is a goal only when a writer can plan it. Since L1 there is none by default, and without one a
   // goal refuses every native plan ("no plan writer") that planTask below would still make; a page fill is a goal
   // (planPage, below) and needs no writer.
+  if (checked.route === "plan" && nativeFields === undefined && !fromJev(intent) && !planAsAll && intent.route === "plan" && snap.fields.length > 0) {
+    // I2 ruling: the writer's and the staged maker's plans are held to a scope too. Their intent names no fields, so
+    // Jev's scope ask settles them, as the heads maker's does, after code's vetoes; an unclear field is asked about first.
+    if (fixed.fields !== undefined) nativeFields = [...fixed.fields];
+    else {
+      let settled: Awaited<ReturnType<typeof settleFields>>;
+      try {
+        settled = await settleFields(snap, askJev);
+      } catch (e) {
+        return refused(e);
+      }
+      if (settled.unclear.length > 0) {
+        intent = { ...intent, options: snap.fields.filter((f) => settled.asks.includes(f) || settled.unclear.includes(f)).map((f) => f.ref) };
+        return refused(new Unclear("fields", SAYS.whichFields, `Jev left ${settled.unclear.map((f) => `'${f.name}'`).join(", ")} unclear for the plan`));
+      }
+      nativeFields = settled.asks.map((f) => f.key);
+    }
+  }
   // I2: the Ask's settled scope (fill/ask-scope.ts), recorded once and enforced by the write contract on every path
-  // below: a fill's fields as checked, or the fields a plan from Jev's scope ask may write; how each read when the Ask
-  // was asked (a continued Ask's first question's record); and the person the user picked. A plan from another maker
-  // has no settled fields, so the planner's own reading stands there, as before.
+  // below: a fill's fields as checked, or the fields a plan may write as Jev's scope ask settled them; how each read
+  // when the Ask was asked (a continued Ask's first question's record); the page document; and the person the user
+  // picked. With no scope here (a window with no field), a goal settles one on each window it writes in.
   const scopeKeys = checked.route === "fill" ? checked.fields.map((f) => f.key) : nativeFields;
   let scope: AskScope | undefined;
   if (scopeKeys !== undefined) {

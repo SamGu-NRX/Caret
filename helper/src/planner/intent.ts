@@ -103,6 +103,8 @@ export interface IntentField {
   /** A text field that already holds a value; only a list names it. */
   filled: boolean;
   neverTyped: SensitiveKind | null;
+  /** I2: a page's file control, asked about only by the scope ask (intent-heads.ts settleUploads); never a fill field. */
+  upload?: true;
 }
 
 export interface IntentSnapshot {

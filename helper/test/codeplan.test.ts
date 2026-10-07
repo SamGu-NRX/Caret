@@ -12,6 +12,10 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { field, node, snap, text } from "./builders.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
 import { STAND_IN } from "./setup/verifier.ts";
+import { askScope, fieldFingerprint } from "../src/fill/ask-scope.ts";
+import type { WindowState } from "../src/model.ts";
+import { planAsk } from "../src/planner/ask.ts";
+import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 
 // F2's memory-value check got "guest compute passed 250 ms" rather than its expected refusal.
 // The worker charges wall time inside QuickJS slices, including time it is descheduled.
@@ -211,5 +215,39 @@ describe("planWithCode, fix-check (B24)", () => {
     expect(sent).toBe(long.slice(0, 200));
     expect(r.writer.disclosed.some((x) => x.text === long.slice(0, 200))).toBe(true);
     expect(seen.at(-1)?.disclosed).toEqual(r.writer.disclosed);
+  });
+});
+
+// I2: the code-mode writer under an Ask's settled scope (fill/ask-scope.ts), directly and as planAsk's fallback.
+describe("planWithCode under an Ask's scope (I2)", () => {
+  const NAME = `${P}/textfield:full name~0`;
+  const EMAIL = `${P}/textfield:email~0`;
+  const scopeOn = (m: ScreenModel, keys: readonly string[]) => {
+    const w = m.windows.get("form") as WindowState;
+    return askScope("form", keys, Object.fromEntries(keys.map((k) => [k, fieldFingerprint(w, k)])), null);
+  };
+
+  it("mints only the scope's field when the program fills two, told nothing of the scope", async () => {
+    const m = desk();
+    const scope = scopeOn(m, [NAME]);
+    const d = await planWithCode("fill in my name and email", m, memory, { writer: writer(fillByText([["Full name", "Harper Quinlan"], ["Email", "harper.quinlan@example.com"]])), askJev: jev().ask, offerKey: "plan-1", windowId: "form", now: 2000, scope });
+    expect(d.checked.writes.map((w) => w.node.key)).toEqual([NAME]);
+    expect(d.checked.scope).toBe(scope);
+  });
+
+  it("as planAsk's fallback after the planner finds nothing: writes only the field Jev's scope ask chose", async () => {
+    const values = jev();
+    // Heads route plan; the scope ask chooses Full name alone; the planner's value questions keep every field, so it
+    // finds nothing and the code-mode writer, whose program fills Full name and Email, plans instead.
+    const ask: AskJev = async (req) => {
+      if (req.purpose === "ask.heads") return { model: "t", inputTokens: 1, latencyMs: 1, costUsd: 0, answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: { route: "plan", why: "nothingToFill", source: "any", whose: "user" }[id] ?? "none", confidence: 0.95 }])) };
+      if (req.purpose === "ask.scope") return { model: "t", inputTokens: 1, latencyMs: 1, costUsd: 0, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: /[Tt]he field '([^']+)'/u.exec(String(q.instructions))?.[1] === "Full name" ? "asks" : "not", confidence: 0.95 }])) };
+      if (req.purpose === "planner.fields") return { model: "t", inputTokens: 1, latencyMs: 1, costUsd: 0, answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: "keep" in q.criteria ? "keep" : "none", confidence: 0.95 }])) };
+      return values.ask(req);
+    };
+    const d = await planAsk("fill in my name and email", desk(), memory, [], { askJev: ask, maker: headsIntentMaker(ask), writer: writer(fillByText([["Full name", "Harper Quinlan"], ["Email", "harper.quinlan@example.com"]])), offerKey: "plan-2", windowId: "form", now: 2000 });
+    expect("checked" in d && d.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[NAME, "Harper Quinlan"]]);
+    expect("checked" in d && d.checked.scope?.fields).toEqual(new Set([NAME]));
+    expect(EMAIL).toBeTruthy();
   });
 });

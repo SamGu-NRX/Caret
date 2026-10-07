@@ -17,6 +17,7 @@
 // effect other than the predicted one revokes the task's grant and stops the goal. When a replanner is configured, the
 // goal is then offered again as a fresh plan built from the screen as it is now; it needs its own acceptance. Nothing
 // here persists: a helper that crashes leaves the executor's journal row (B23), and no goal resumes on its own.
+import { fieldFingerprint } from "../fill/ask-scope.ts";
 import type { AskScope } from "../fill/ask-scope.ts";
 import type { Change, ScreenModel } from "../model.ts";
 import type { Executor, Revocation, TaskResult } from "../executor/executor.ts";
@@ -36,7 +37,7 @@ import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
 import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
 import { effectKey, proposedFor, segmentOf, type DonePress } from "./lower.ts";
-import { contractStale, ContractError, exemptRefusal, guardFor, mintExempt, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
+import { contractStale, ContractError, exemptRefusal, guardFor, mintExempt, type Proposed, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
 import { codeGate } from "./gates.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
@@ -142,7 +143,7 @@ interface Carry {
   owed: LeftItem[];
   until: number;
   /** I2: the carried goal's Ask scope (GoalPlan.askScope). */
-  askScope?: AskScope;
+  askScope?: AskScope | null;
 }
 
 export interface Replan {
@@ -164,8 +165,8 @@ export interface Replan {
    * fresh plan's only fields.
    */
   page?: PageGoal & { revealed?: readonly string[] };
-  /** I2: the stopped plan's Ask scope (GoalPlan.askScope): the fresh plan is held to it too. */
-  askScope?: AskScope;
+  /** I2: the stopped plan's Ask scope (GoalPlan.askScope): the fresh plan is held to it too; null for an Ask's goal with none of its own. */
+  askScope?: AskScope | null;
 }
 
 export interface GoalRunDeps {
@@ -466,9 +467,15 @@ export class GoalRuns {
     const value: ValueBinding = { ...s.value, text, display: text, origin: { kind: "you", digest: sha256(text) }, source: null, memory: null, event: null, draft: null, owner: "user" };
     // W2: the user's own words over a draft, under the draft's exemption: its field rule passed (codeGate above).
     // I2: under the Ask's scope the plan was made under; a field outside it, or changed since, takes no edit.
-    const outside = exemptRefusal(proposedFor(s.target, value, text), "userTyped", run.plan.instruction, run.plan.askScope);
+    // I2: under the scope the drafted value was minted under (the Ask's, or one settled for that window), against the
+    // field as it reads now: an edit is a new write, so a field that changed since the Ask takes none.
+    const scope = s.checked?.scope;
+    const base = proposedFor(s.target, value, text);
+    const nowW = s.target.domain.kind === "window" ? this.deps.model.windows.get(s.target.domain.windowId) : undefined;
+    const proposed: Proposed = scope === undefined ? base : { ...base, field: Object.freeze({ ...base.field, fingerprint: nowW === undefined ? null : fieldFingerprint(nowW, base.field.key) }) };
+    const outside = exemptRefusal(proposed, "userTyped", run.plan.instruction, scope);
     if (outside !== null) return { refused: outside };
-    const checked = mintExempt(proposedFor(s.target, value, text), "userTyped", this.deps.now(), run.plan.instruction, run.plan.askScope);
+    const checked = mintExempt(proposed, "userTyped", this.deps.now(), run.plan.instruction, scope);
     const step: GoalStep = { ...s, value, writes: text, says: `${s.target.label}: ${text}`, gate: "you", checked };
     run.mints.set(`${seg.index}:${s.ref}`, checked);
     const edited = segmentOf(run.plan.programHash, { index: seg.index, domain: seg.domain, reason: seg.reason, steps: seg.steps.map((x, k) => (k === i ? step : x)) }, run.plan.warnings);

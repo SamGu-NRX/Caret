@@ -459,7 +459,8 @@ public struct FillAsk: Codable, Equatable, Sendable {
 /// person's details and the value is another's) and `ambiguous` (code could not read the value without guessing).
 /// W2 added `notExact` (Caret's check says the value is not exactly the field's) and `unverified` (that check could not
 /// run): the helper sends them only to a consumer whose hello names `valueChecks`, and `wrongKind` to any other.
-public enum FillWithheld: String, Codable, Sendable { case disagree, lowConfidence, sourceCut, wrongKind, otherPerson, ambiguous, notExact, unverified }
+/// I2 added `outOfScope` (a field the Ask did not settle, or that changed since), sent only to a host listing `askScope`.
+public enum FillWithheld: String, Codable, Sendable { case disagree, lowConfidence, sourceCut, wrongKind, otherPerson, ambiguous, notExact, unverified, outOfScope }
 
 /// What a field is (B24): a text field the helper's executor writes, or a control the user sets from the
 /// proposal's `handoff`. `combobox` is a web page's custom dropdown, named and left with no value.

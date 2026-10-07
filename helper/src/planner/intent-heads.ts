@@ -13,6 +13,9 @@
 // A2 found that hand-written rules for reading a request (A1's scope-reading.ts, removed here) did not converge: twelve
 // review rounds each found a new phrasing that widened the scope. A widening phrasing is answered by the vetoes or by
 // "unclear", never by a new reading rule.
+import type { Node } from "../protocol.ts";
+import { describeField } from "../fill/descriptor.ts";
+import { headingsBefore } from "../fill/ask-scope.ts";
 import { ownWording, sendable } from "../privacy.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { readWhose } from "./people.ts";
@@ -122,7 +125,7 @@ export function fieldContext(snap: IntentSnapshot, f: IntentField): FieldContext
   const same = (a: string | null, b: string | null): boolean => a !== null && b !== null && a.trim().toLowerCase() === b.trim().toLowerCase();
   const group = f.section === null || same(f.section, f.name) || same(f.section, f.heading) ? null : f.section;
   const named = (x: string | null | undefined, instead: string): string | null => (x === null || x === undefined ? null : sendable(x, instead));
-  return { label: sendable(f.name, FIELD), heading: named(f.heading, SECTION), group: named(group, SECTION), role: CONTROL_WORDS[f.control], before: named(snap.fields[i - 1]?.name, FIELD), after: named(snap.fields[i + 1]?.name, FIELD) };
+  return { label: sendable(f.name, FIELD), heading: named(f.heading, SECTION), group: named(group, SECTION), role: f.upload === true ? "file upload" : CONTROL_WORDS[f.control], before: named(snap.fields[i - 1]?.name, FIELD), after: named(snap.fields[i + 1]?.name, FIELD) };
 }
 
 /** The scope ask's two wordings. The first quotes the request first; the second describes the field first. */
@@ -138,11 +141,11 @@ const SCOPE_WORDINGS = [
 
 export const scopeId = (ref: string): string => `s_${ref}`;
 
-/** The scope ask in one wording: one categorical question per field, in one request. */
-export function scopeRequest(snap: IntentSnapshot, wording: 0 | 1): JevRequest {
+/** The scope ask in one wording: one categorical question per field (or per field in `only`, by key), in one request. */
+export function scopeRequest(snap: IntentSnapshot, wording: 0 | 1, only?: ReadonlySet<string>): JevRequest {
   const declared = snap.ledger.declared();
   const questions: JevRequest["questions"] = {};
-  for (const f of snap.fields) questions[scopeId(f.ref)] = { type: "choice", instructions: SCOPE_WORDINGS[wording](snap.instruction, fieldContext(snap, f)), criteria: { ...SCOPE_OPTIONS } };
+  for (const f of snap.fields) if (only === undefined || only.has(f.key)) questions[scopeId(f.ref)] = { type: "choice", instructions: SCOPE_WORDINGS[wording](snap.instruction, fieldContext(snap, f)), criteria: { ...SCOPE_OPTIONS } };
   const state = { instruction: snap.instruction, form: formTitle(snap), task: "Caret checks, field by field, which fields of the form the user's request asks it to fill in or change." };
   // Raw text, not JSON: a heading with a quote or a backslash is sent, so its snippet must be declared (A3 review 2).
   const sent = [state.instruction, state.form, ...Object.values(questions).map((q) => q.instructions)].join("\n");
@@ -161,6 +164,46 @@ export function scopeVerdict(scope: readonly [JevResult, JevResult], ref: string
   });
   if (answers.some((a) => a.choice === "unclear")) return "unclear";
   return answers.every((a) => a.choice === "asks" && a.confidence >= cutoff) ? "asks" : "not";
+}
+
+/**
+ * I2: the scope ask alone, both wordings, for a form the Ask's own question never saw: the next page a goal carried to,
+ * the fields its writes revealed, or the window a goal writes in when the Ask came from one with no field (a reply
+ * window). `only` limits it to those fields, by key. The fields Jev chose and the ones it left unclear, in form order;
+ * Caret cannot ask the user mid-goal, so its callers write only `asks`.
+ */
+export async function settleFields(snap: IntentSnapshot, askJev: AskJev, only?: ReadonlySet<string>): Promise<{ asks: IntentField[]; unclear: IntentField[] }> {
+  const fields = snap.fields.filter((f) => only === undefined || only.has(f.key));
+  if (fields.length === 0) return { asks: [], unclear: [] };
+  let rs: [JevResult, JevResult];
+  try {
+    rs = await Promise.all([askJev(scopeRequest(snap, 0, only)), askJev(scopeRequest(snap, 1, only))]);
+  } catch (e) {
+    throw jevFailedError(e);
+  }
+  const verdicts = fields.map((f) => ({ f, v: scopeVerdict(rs, f.ref) }));
+  return { asks: verdicts.filter((x) => x.v === "asks").map((x) => x.f), unclear: verdicts.filter((x) => x.v === "unclear").map((x) => x.f) };
+}
+
+/**
+ * I2 ruling: a page's file controls are held to the Ask's scope as fields are, so Jev's scope ask is asked about them
+ * too: each as an upload field beside the form's own fields. The keys Jev chose; an unclear one is not chosen.
+ */
+export async function settleUploads(snap: IntentSnapshot, files: readonly Node[], askJev: AskJev): Promise<string[]> {
+  const w = snap.window;
+  const headings = headingsBefore(w);
+  const uploads: IntentField[] = [];
+  for (const n of files) {
+    const d = describeField(w, n);
+    const name = d.label ?? d.nearest;
+    if (name === null || !snap.ledger.take(w, "descriptor", [name])) continue;
+    const h = headings.get(n.key) ?? null;
+    const heading = h !== null && snap.ledger.take(w, "descriptor", [h]) ? h : null;
+    uploads.push({ ref: `u${uploads.length + 1}`, key: n.key, name, section: d.section, heading, control: "text", filled: false, neverTyped: null, upload: true });
+  }
+  if (uploads.length === 0) return [];
+  const { asks } = await settleFields({ ...snap, fields: [...snap.fields, ...uploads] }, askJev, new Set(uploads.map((u) => u.key)));
+  return asks.map((f) => f.key);
 }
 
 /** A head's answer when it clears the floor, else null. Throws when Jev left the question unanswered. */

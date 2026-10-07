@@ -5,9 +5,9 @@
 // picked person never reached native planning.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
-import { askScope, fieldFingerprint, type AskScope } from "../src/fill/ask-scope.ts";
+import { askScope, fieldFingerprint, readDocumentsWith, type AskScope } from "../src/fill/ask-scope.ts";
 import { checkValues, ContractError, fieldContract, guardFor, isChecked, mintExempt, type Proposed } from "../src/fill/contract.ts";
-import { proposeFill, type FillScope } from "../src/fill/fill.ts";
+import { mintOf, proposeFill, type FillScope } from "../src/fill/fill.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel } from "../src/model.ts";
 import { PROTOCOL_VERSION, type GoalProgress } from "../src/protocol.ts";
@@ -20,6 +20,14 @@ import type { WriterPort } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import { button, cannedProgram, fieldKey, goalScene, line, MAIL, standInJev, SUPPORT, textField, type CannedStep, type GoalScene } from "./goal-desk.ts";
 import { field, node, snap } from "./builders.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Helper } from "../src/helper.ts";
+import { Store } from "../src/store.ts";
+import { FakeCalendar } from "../src/executor/means.ts";
+import type { Step } from "../src/executor/schema.ts";
+import { executorWindow, FakeApp, K, TITLE, WIN as FA_WIN } from "./fake-app.ts";
 
 beforeEach(() => setGeneratorClock(() => 0));
 afterEach(() => setGeneratorClock(null));
@@ -135,6 +143,25 @@ describe("the write contract under an Ask's scope", () => {
   });
 });
 
+describe("the scope is bound to the page document (re-review blocker 2)", () => {
+  afterEach(() => readDocumentsWith(null));
+  it("refuses a field with the same key and the same reading on another document", async () => {
+    let doc = "doc-1";
+    readDocumentsWith(() => doc);
+    const m = desk();
+    const scope = scopeOf(m, [NAME]);
+    expect(scope.document).toBe("doc-1");
+    const before = await checkValues([proposed(m, NAME, "Elena Vance")], { askJev: jev([]), ledger: null, now: 1, scope });
+    expect(before.ok).toHaveLength(1);
+    doc = "doc-2";
+    const after = await checkValues([proposed(m, NAME, "Elena Vance")], { askJev: jev([]), ledger: null, now: 1, scope });
+    expect(after.refused[0]).toMatchObject({ why: "outOfScope", says: "the page is no longer the one Caret asked about 'Name' on" });
+    const minted = before.ok[0] as NonNullable<(typeof before.ok)[number]>;
+    const guard = guardFor(() => m, new Map([[0, minted]]));
+    expect(guard(0, "Elena Vance", { windowId: WIN, node: win(m).nodes.get(NAME) as never, window: win(m) })).toMatch(/no longer the one/u);
+  });
+});
+
 describe("every path proposes every field; only the Ask's scope is minted", () => {
   it("fill: a FillScope wider than the Ask's (a path bug) still mints only the Ask's fields", async () => {
     const m = desk();
@@ -142,10 +169,12 @@ describe("every path proposes every field; only the Ask's scope is minted", () =
     const wide: FillScope = { fields: [NAME, EMAIL], windows: null, memory: true, instruction: "fill this in", person: null, literals: new Map() };
     const about = MEMORY.map((x, i) => ({ id: `about-${i + 1}`, label: x.label, value: x.text, kind: x.label === "Email" ? ("email" as const) : ("fullName" as const) }));
     const p = await proposeFill(m, jev([]), WIN, NAME, 2000, { about: about as never, scope: wide, askScope: scope, rand: () => 0 });
+    // Name, in both scopes, survives with its value and the Ask's scope on its mint; Email is withheld as outside it.
+    const name = p.fields.find((f) => f.key === NAME);
+    expect(name?.value).toBe("Elena Vance");
+    expect(mintOf(name as never)?.scope).toBe(scope);
     const email = p.fields.find((f) => f.key === EMAIL);
-    expect(email?.value).toBeNull();
-    expect(email?.withheld === "outOfScope" || email?.withheld === null).toBe(true);
-    expect(p.fields.filter((f) => f.value !== null).map((f) => f.key)).not.toContain(EMAIL);
+    expect(email).toMatchObject({ value: null, withheld: "outOfScope" });
   });
 
   it("native plan: a planner told nothing of the fields writes only the scope's", async () => {
@@ -215,5 +244,74 @@ describe("the writer goal (review reproduction 1)", () => {
     expect(steps.some((s) => s.startsWith("Email"))).toBe(false);
     expect(JSON.stringify(r)).toContain("the Ask did not ask Caret to fill");
     expect(fieldKey(SUPPORT, "Email")).toBeTruthy();
+  });
+});
+
+describe("the executor rereads each field right before it writes it (re-review blocker 1)", () => {
+  let dir: string;
+  let store: Store;
+  let app: FakeApp;
+  let helper: Helper;
+  /** Runs right before each dispatch, after the step resolved its field (ExecutorDeps.beforeAct). */
+  let beforeAct: (step: number) => void = () => {};
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "caret-i2-exec-"));
+    store = new Store(join(dir, "data"));
+    app = new FakeApp(executorWindow());
+    beforeAct = () => {};
+    helper = new Helper({ store, askJev: () => Promise.reject(new Error("no Jev in this test")), shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: app, calendar: new FakeCalendar(), executorHooks: { beforeAct: async (_t, i) => beforeAct(i) } });
+    app.helper = helper;
+    app.show();
+  });
+  afterEach(() => {
+    helper.memory.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const heading = (before: string): void => {
+    const at = app.nodes.findIndex((n) => n.key === before);
+    app.nodes.splice(at, 0, { key: K("heading:work~0"), parent: null, role: "AXHeading", label: "Work contact" });
+    app.show();
+  };
+
+  it("refuses step 2 when its field moved under a new heading after the step resolved it, right before the dispatch", async () => {
+    const nameKey = K("textfield:name~0");
+    const emailKey = K("textfield:email~0");
+    const w = helper.model.windows.get(FA_WIN);
+    if (w === undefined) throw new Error("no executor window");
+    const scope = askScope(FA_WIN, [nameKey, emailKey], Object.fromEntries([nameKey, emailKey].map((k) => [k, fieldFingerprint(w, k)])), null);
+    const mintFor = (key: string, text: string) => mintExempt({ field: fieldContract(w, w.nodes.get(key) as never), text, display: text, provenance: { kind: "instruction", span: text }, owner: "user" }, "userTyped", 1, "", scope);
+    const mints = new Map([[0, mintFor(nameKey, "Dana Whitfield")], [1, mintFor(emailKey, "dana@example.com")]]);
+    beforeAct = (i) => {
+      if (i === 1) heading(emailKey);
+    };
+    const steps: Step[] = [nameKey, emailKey].map((key, i) => ({ says: `${key} holds v${i}`, end: { kind: "valueEquals", window: { titleStartsWith: TITLE }, target: { key, describe: key }, value: i === 0 ? "Dana Whitfield" : "dana@example.com" } }));
+    const r = await helper.executor.run("i2-exec2", { id: "i2-exec2", title: "t", slots: {}, steps }, {}, undefined, { guard: guardFor(() => helper.model, mints) });
+    expect(r).toMatchObject({ outcome: "stopped", step: 1 });
+    expect(app.node(emailKey)?.value).toBe("old@example.com");
+  });
+
+  it("refuses step 2 when step 1's write moved its field under a new heading", async () => {
+    const nameKey = K("textfield:name~0");
+    const emailKey = K("textfield:email~0");
+    const w = helper.model.windows.get(FA_WIN);
+    if (w === undefined) throw new Error("no executor window");
+    const scope = askScope(FA_WIN, [nameKey, emailKey], Object.fromEntries([nameKey, emailKey].map((k) => [k, fieldFingerprint(w, k)])), null);
+    const mintFor = (key: string, text: string) => mintExempt({ field: fieldContract(w, w.nodes.get(key) as never), text, display: text, provenance: { kind: "instruction", span: text }, owner: "user" }, "userTyped", 1, "", scope);
+    const mints = new Map([[0, mintFor(nameKey, "Dana Whitfield")], [1, mintFor(emailKey, "dana@example.com")]]);
+    // Writing Name makes the app put a heading right before Email: the field Email is now under 'Work contact'.
+    app.normalize = (v) => {
+      if (v === "Dana Whitfield" && !app.nodes.some((n) => n.key === K("heading:work~0"))) {
+        const at = app.nodes.findIndex((n) => n.key === emailKey);
+        app.nodes.splice(at, 0, { key: K("heading:work~0"), parent: null, role: "AXHeading", label: "Work contact" });
+      }
+      return v;
+    };
+    const steps: Step[] = [nameKey, emailKey].map((key, i) => ({ says: `${key} holds v${i}`, end: { kind: "valueEquals", window: { titleStartsWith: TITLE }, target: { key, describe: key }, value: i === 0 ? "Dana Whitfield" : "dana@example.com" } }));
+    const r = await helper.executor.run("i2-exec", { id: "i2-exec", title: "t", slots: {}, steps }, {}, undefined, { guard: guardFor(() => helper.model, mints) });
+    expect(r).toMatchObject({ outcome: "stopped", step: 1 });
+    expect(app.node(nameKey)?.value).toBe("Dana Whitfield");
+    expect(app.node(emailKey)?.value).toBe("old@example.com");
   });
 });

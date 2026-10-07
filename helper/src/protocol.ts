@@ -1262,8 +1262,13 @@ export type PageInsert = z.infer<typeof PageInsert>;
  * answer: a fill value with `answer`, a pop-up that writes one, an answerSaveOffer; and only it may send answerSave.
  */
 export const SAVED_ANSWERS_CAPABILITY = "savedAnswers";
-/** W2: a consumer that reads FillWithheld's "notExact", "unverified" and (I2) "outOfScope"; any other is sent "wrongKind" for them. */
+/** W2: a consumer that reads FillWithheld's "notExact" and "unverified"; any other is sent "wrongKind" for both. */
 export const VALUE_CHECKS_CAPABILITY = "valueChecks";
+/**
+ * I2: a consumer that reads "outOfScope", as FillWithheld and as PlanErrorCode (fill/ask-scope.ts: a value for a field the
+ * Ask did not settle, or that changed since). Any other is sent "wrongKind" and "unknownWindow" in its place.
+ */
+export const ASK_SCOPE_CAPABILITY = "askScope";
 
 /** The longest answer Caret keeps. Its record line must stay under memory/parse.ts MAX_LINE_CHARS once JSON-quoted. */
 export const MAX_ANSWER_CHARS = 4000;

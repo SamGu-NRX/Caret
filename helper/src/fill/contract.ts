@@ -22,7 +22,7 @@ import { redactWindow } from "./redact.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
-import { fieldFingerprint, scopeRefusal, type AskScope } from "./ask-scope.ts";
+import { documentNow, fieldFingerprint, scopeRefusal, type AskScope } from "./ask-scope.ts";
 import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind } from "./kinds.ts";
 import { writeMisfit, type ShapeSource } from "./writable.ts";
 import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
@@ -878,6 +878,7 @@ export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, Ch
     if (m.scope !== undefined && target !== undefined) {
       if (target.window === undefined) return "Caret can't see the field to check it is still the one the Ask was about";
       if (fieldFingerprint(target.window, m.field.key) !== m.scope.seen[m.field.key]) return `'${m.field.name}' changed since Caret asked about it`;
+      if (documentNow(m.field.windowId) !== m.scope.document) return `the page is no longer the one Caret asked about '${m.field.name}' on`;
     }
     const stale = provenanceStale(model(), m.provenance);
     return stale === null ? null : `the source of '${clip(m.text)}' changed (${stale})`;

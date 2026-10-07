@@ -159,8 +159,11 @@ describe("the size hand-off (P2), in parts since C2", () => {
     const firsts = [1, 21, 41, 61, 81];
     const r = await rig({ controls: many, note: firsts.map((i) => `Q${i}: a${i}`).join("\n"), picks: Object.fromEntries(firsts.map((i) => [`Q${i}`, `a${i}`])) });
     const preview = (await r.ask("fill out this form from my note")) as Segment;
-    expect(preview).toMatchObject({ segments: 4 });
+    // I2 ruling: the Ask's scope is the fields its own question saw (the intent snapshot holds the first ones a request
+    // may carry), so Q41 and Q61 past it are the user's, said as such, and the plan has two parts, not four.
+    expect(preview).toMatchObject({ segments: 2 });
     expect(preview.warnings.some((w) => /Caret fills 80 fields of a form, 20 at a time, so 5 more are yours: 'Q81'/.test(w))).toBe(true);
+    expect(preview.warnings).toContain("'Q41' is yours: the Ask did not ask Caret to fill it.");
   });
 });
 

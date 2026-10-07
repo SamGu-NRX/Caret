@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, VALUE_CHECKS_CAPABILITY, type AnswerSaveReply, type FillProposal, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ASK_SCOPE_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, VALUE_CHECKS_CAPABILITY, type AnswerSaveReply, type FillProposal, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
 import { carriesAnswer, withoutAnswers } from "./offers/answer-gate.ts";
 import type { Helper } from "./helper.ts";
 import type { HostLocalModel } from "./writer/local-port.ts";
@@ -56,6 +56,8 @@ export class HelperServer {
   private readonly pageText = new Set<Socket>();
   /** W2: consumers whose hello listed VALUE_CHECKS_CAPABILITY: only they read FillWithheld's "notExact" and "unverified". */
   private readonly valueChecks = new Set<Socket>();
+  /** I2: consumers whose hello listed ASK_SCOPE_CAPABILITY: only they read "outOfScope" (FillWithheld, PlanErrorCode). */
+  private readonly askScope = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -116,7 +118,8 @@ export class HelperServer {
       const answer = carriesAnswer(m, (id) => this.helper().writesAnswer(id));
       for (const c of this.consumers) {
         const shown = answer && !this.savedAnswers.has(c) ? withoutAnswers(m) : m;
-        c.write(JSON.stringify(this.valueChecks.has(c) ? shown : withOldReasons(shown)) + "\n");
+        const scoped = this.askScope.has(c) ? shown : withoutScopeReason(shown);
+        c.write(JSON.stringify(this.valueChecks.has(c) ? scoped : withOldReasons(scoped)) + "\n");
       }
       return;
     }
@@ -219,6 +222,7 @@ export class HelperServer {
             if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
             if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
             if (hello.data.capabilities?.includes(VALUE_CHECKS_CAPABILITY) === true) this.valueChecks.add(s);
+            if (hello.data.capabilities?.includes(ASK_SCOPE_CAPABILITY) === true) this.askScope.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
             if (hello.data.capabilities?.includes(SPEND_CAPABILITY) === true) {
               this.spend.add(s);
@@ -404,7 +408,7 @@ export class HelperServer {
               })
               .then((r) => {
                 if (s.destroyed) return;
-                s.write(JSON.stringify(r) + "\n");
+                s.write(JSON.stringify(this.askScope.has(s) ? r : withoutScopeCode(r)) + "\n");
                 // The noticed facts the plan used, to the asker too, when it understands them.
                 const p = r.type === "planProposal" && r.outcome === "proposed" && this.memoryDocuments.has(s) ? this.helper().provenanceFor(r.offerKey) : null;
                 if (p !== null) s.write(JSON.stringify(p) + "\n");
@@ -468,6 +472,7 @@ export class HelperServer {
       this.goalFiles.delete(s);
       this.pageText.delete(s);
       this.valueChecks.delete(s);
+      this.askScope.delete(s);
       if (this.localModelHost === s) {
         this.localModelHost = null;
         this.localModel?.hostGone();
@@ -546,5 +551,16 @@ export function withoutPageText(m: PageField): PageField {
  * "wrongKind", the nearest of the six reasons it decodes.
  */
 export function withOldReasons(p: FillProposal): FillProposal {
-  return { ...p, fields: p.fields.map((f) => (f.withheld === "notExact" || f.withheld === "unverified" || f.withheld === "outOfScope" ? { ...f, withheld: "wrongKind" as const } : f)) };
+  return { ...p, fields: p.fields.map((f) => (f.withheld === "notExact" || f.withheld === "unverified" ? { ...f, withheld: "wrongKind" as const } : f)) };
+}
+
+/** I2: a fill proposal as a consumer from before ASK_SCOPE_CAPABILITY reads it: "outOfScope" becomes "wrongKind". */
+export function withoutScopeReason(p: FillProposal): FillProposal {
+  return p.fields.some((f) => f.withheld === "outOfScope") ? { ...p, fields: p.fields.map((f) => (f.withheld === "outOfScope" ? { ...f, withheld: "wrongKind" as const } : f)) } : p;
+}
+
+/** I2: a plan reply as a consumer from before ASK_SCOPE_CAPABILITY reads it: the code "outOfScope" becomes "unknownWindow", whose sentence it shares. */
+export function withoutScopeCode<T extends { type: string }>(r: T): T {
+  const e = (r as { error?: { code?: string } | null }).error;
+  return r.type === "planProposal" && e?.code === "outOfScope" ? { ...r, error: { ...e, code: "unknownWindow" } } : r;
 }

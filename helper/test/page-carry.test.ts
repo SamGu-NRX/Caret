@@ -70,6 +70,8 @@ describe("a whole-form goal carries across the user's Next (P3)", () => {
     // Fill asked Jev about the new page's fields: values were chosen again, not carried.
     const fresh = r.asked.slice(before);
     expect(fresh.length).toBeGreaterThan(0);
+    // I2 ruling: the new page's scope is settled afresh by Jev's scope ask, never the old page's reused.
+    expect(fresh.some((q) => q.purpose === "ask.scope")).toBe(true);
     expect(fresh.some((q) => JSON.stringify(q.questions).includes("Email"))).toBe(true);
   });
 

@@ -168,6 +168,8 @@ function jevBy(pick: (q: string) => string | null, owner: (d: string) => string 
     const answers = Object.fromEntries(
       Object.entries(req.questions).map(([id, q]) => {
         const ins = String(q.instructions);
+        // I2: Jev's scope ask, which settles a plan's fields for any maker: the fields the pick has a value for.
+        if (req.purpose === "ask.scope") return [id, { choice: pick(ins) === null ? "not" : "asks", confidence: 0.9 }];
         // G2 review: a field that wants the user's details takes only a value both asks call the user's; a landlord's
         // field wants someone else's.
         if (id.endsWith("_whose")) return [id, { choice: /landlord/iu.test(ins) ? "other" : "user", confidence: 0.9 }];
@@ -525,7 +527,8 @@ describe("what an Ask says when it refuses or asks (B26 lead decision 3)", () =>
     const form = m.windows.get("form") as never as { nodes: Map<string, Node> };
     const page2 = [...form.nodes.values(), node(`${P}/button:submit~0`, "AXButton", { parent: `${P}/webarea:~0`, label: "Submit application", frame: [100, 400, 100, 20] })];
     m.apply(snap(page2, { at: 1100, windowId: "form", title: "Apply", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: KEY("full name") }));
-    const press: AskJev = async (req) => ({ model: "t", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: Object.entries(q.criteria).find(([, d]) => d?.includes("Submit"))?.[0] ?? "none", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 });
+    // I2: the scope ask (every maker's plan settles its fields) chooses no field: the plan is a press alone.
+    const press: AskJev = async (req) => ({ model: "t", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: req.purpose === "ask.scope" ? "not" : Object.entries(q.criteria).find(([, d]) => d?.includes("Submit"))?.[0] ?? "none", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 });
     const e = await planAsk("ok that all looks right, hit submit", m, memory, about, { askJev: press, maker: maker({ route: "plan", scope: "none" }), writer: null, offerKey: "s1", windowId: "form", now: 2000 }).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(AskRefused);
     expect((e as AskRefused).code).toBe("unsupportedStep");
@@ -1013,8 +1016,9 @@ describe("planAsk for a goal-planning host", () => {
     const j = jevBy(() => null);
     const d = await planAsk("add the meeting to my calendar and draft a reply saying I'm in", desk(), memory, about, goals(maker({ route: "plan", scope: "none" }), j.ask));
     expect(d).toMatchObject({ route: "goal", windowId: "form", intent: { route: "plan" } });
-    // The single-window planner and the code-mode writer are not a second path: nothing asked Jev.
-    expect(j.seen).toEqual([]);
+    // The single-window planner and the code-mode writer are not a second path: Jev was asked only the scope ask that
+    // settles the goal's fields (I2 ruling: every maker's plan is held to a scope).
+    expect(j.seen.map((r) => r.purpose)).toEqual(["ask.scope", "ask.scope"]);
   });
 
   it("keeps a fill intent a scoped fill", async () => {

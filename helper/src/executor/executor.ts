@@ -949,7 +949,12 @@ export class Executor {
         throw StepStop.stop("changed", `what you told Caret for '${step.says}' changed or is gone, so Caret did not write it`);
       }
       // W2: and a copied value's source must still say what it said when the value was checked, right before each dispatch.
-      const stale = attribute === "value" ? (task.guard?.(i, value, { windowId: w.window.windowId, node, window: w }) ?? null) : null;
+      // I2: the field as the model reads it now, not as this step resolved it: an earlier step, a fallback's write or the
+      // page may have changed it since (the Ask's scope compares its fingerprint, contract.ts guardFor).
+      const nowW = task.guard === null ? w : this.window(w.window.windowId);
+      const nowNode = nowW.nodes.get(node.key);
+      if (attribute === "value" && task.guard !== null && nowNode === undefined) throw StepStop.stop("changed", `the field for '${step.says}' is gone, so Caret did not write it`);
+      const stale = attribute === "value" ? (task.guard?.(i, value, { windowId: nowW.window.windowId, node: nowNode ?? node, window: nowW }) ?? null) : null;
       if (stale !== null) throw StepStop.stop("changed", `${stale}, so Caret did not write it`);
       try {
         return await this.act(task, v, w.window.windowId);

@@ -36,11 +36,13 @@ function askAndGoalWriter(route: string): WriterPort & { kinds: string[] } {
   };
 }
 /**
- * Jev that is asked only the goal's value gate on these paths (G2, goals/gates.ts), and confirms each value there; any
- * other question (an intent, a claim) fails the test.
+ * Jev that is asked only the goal's value gate on these paths (G2, goals/gates.ts), and confirms each value there, and
+ * (I2) the scope ask; any other question (an intent, a claim) fails the test.
  */
 const confirming = standInJev();
 const silentJev: AskJev = async (req) => {
+  // I2 ruling: an Ask's goal settles each window's fields with Jev's scope ask; here every field is asked for.
+  if (req.purpose === "ask.scope") return { model: "scope", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "asks", confidence: 0.95 }])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
   const task = typeof req.state === "string" ? req.state : String(req.state.task);
   if (task !== "Caret checks each value a drafted plan would write before offering the plan.") throw new Error(`Jev was asked: ${task}`);
   return confirming(req);
