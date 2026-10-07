@@ -19,6 +19,7 @@ import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNameP
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { questionAnswer, severalValues } from "./line-values.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -1342,6 +1343,28 @@ export async function proposeFill(
   const refYear = new Date(now).getUTCFullYear();
 
   /**
+   * W1: whether a text a field would take is more than the one value the field takes, checked after Jev's pick beside
+   * misfit and withheld as wrongKind, never written. Live Jev put a whole note line holding the right value into a field
+   * that takes one of its values at 0.77 to 0.9 (evidence/screen/lv1: "Brightline Dental Labs, lab technician, $5,200/mo
+   * gross" in Job title, "Junior Analyst at Ridgeline Outdoor Co" in Current company).
+   *   - A question and its answer on one line is a label and a value, for any field.
+   *   - A field that takes one value (a part of a name or an address, a kind its label names, or a name, a company, a
+   *     title or a role: NAME_TERM) takes no text holding several (line-values.ts severalValues).
+   *   - A preferred name takes no whole name: the guard adversary (scripts/guard-adversary.ts) wrote "Jo Abernathy-Cole"
+   *     into F1's Preferred name, whose key is "Jo".
+   *   - A City text field takes no "City, State": the adversary wrote "Austin, Texas" there (4 of its 51 wrong values at
+   *     8801642). A location dropdown is left alone: its options are "City, Region, Country" (F1's and W4's "Location
+   *     (City)"), and no City text field's key holds a comma.
+   * A field for prose (a reason, a message, a description) names none of these and is left alone.
+   */
+  const moreThanOne = (f: Field, text: string): boolean => {
+    if (questionAnswer(text)) return true;
+    const takesOne = f.part !== null || f.kinds.size > 0 || f.terms.has(NAME_TERM);
+    if (takesOne && severalValues(text) !== null) return true;
+    if (f.control === "text" && f.part === "city" && text.includes(",")) return true;
+    return f.part === "full" && /\bpreferred\b/iu.test(f.name) && !/\b(?:full|legal)\b/iu.test(f.name) && splitName(text).kind === "split";
+  };
+  /**
    * The value a control takes from a pick (the option it names, PAGE_CHECKED, or the input's own date or time format),
    * whether a Fill all may write it there (D2-04), or why it cannot be read. Only a page window's controls are ever
    * written, each on a stricter rule than a hand-off, which the user sees and sets themselves:
@@ -1421,7 +1444,7 @@ export async function proposeFill(
       case "combobox":
         // Read as a text field is, then as one option's name: the page engine types it as the list's filter and picks
         // only an option named exactly that (B27).
-        if (misfit(text, f.labelWords) !== null || (f.part !== null && !partFits(f.part, text))) return { why: "wrongKind" };
+        if (misfit(text, f.labelWords) !== null || (f.part !== null && !partFits(f.part, text)) || moreThanOne(f, text)) return { why: "wrongKind" };
         // C2 (lead decision 2): in a field that asks where, a place "City, Region" is asked for with its country, as location
         // lists name it; the page engine types that as the list's filter and picks only the one option named exactly
         // that, once the list has loaded for it. A place that already names its country, or a bare city, is asked for as
@@ -1430,7 +1453,7 @@ export async function proposeFill(
         if (placed !== null) return { value: placed, display: placed, writes: page };
         return optionName(text) ? { value: text, display: text, writes: page } : { why: "ambiguous" };
       case "text":
-        return misfit(text, f.labelWords) === null && (f.part === null || partFits(f.part, text)) ? { value: text, display: text, writes: true } : { why: "wrongKind" };
+        return misfit(text, f.labelWords) === null && (f.part === null || partFits(f.part, text)) && !moreThanOne(f, text) ? { value: text, display: text, writes: true } : { why: "wrongKind" };
     }
   };
   const sourceOf = (p: Pick): FillSource | null => windowOf(p)?.source ?? null;

@@ -354,11 +354,22 @@ export function asksPlace(label: string | null): boolean {
   return /\b(?:location|city|town|hometown)\b/iu.test(label) || /\bwhere\b.*\b(?:live|living|based|located|work|working|reside|from)\b/iu.test(label);
 }
 
+/** One word of a name: letters, with apostrophes and hyphens inside, and a period only at its end ("O'Neil", "Abernathy-Cole", "J."). */
+const NAME_PART_WORD = /^\p{L}[\p{L}'’-]*\.?$/u;
+
 /**
  * Whether a value reads as the part of a name or an address a field asks for: a person's full name splits
- * (splitName), a first, middle or last name is words of letters, a ZIP code is five digits (or ZIP+4), a
- * state is letters, and a unit names one. Street and city are left to kinds.ts misfit, which already reads
- * them. A sentence in a name field ("Dr. Simone Achebe, my manager at Ridgeline") does not fit.
+ * (splitName), a first or middle name is one word of letters, a last name one word or words after a particle ("de la
+ * Cruz"), a ZIP code is five digits (or ZIP+4), a state is letters, and a unit names one. Street and city are left to
+ * kinds.ts misfit, which already reads them. A sentence in a name field ("Dr. Simone Achebe, my manager at Ridgeline")
+ * does not fit.
+ *
+ * W1: a first, middle or last name took up to three words, so a whole name went into each part of it: the guard
+ * adversary (scripts/guard-adversary.ts) wrote "Elena Marisol Vance" into First name, Middle name and Last name; 41 of
+ * the 51 wrong values it wrote at 8801642 were a name in one of its parts (two of them a file name,
+ * "dmitri-halvorsen-firmware.pdf", which a period inside a word now refuses). No first, middle or last name in any
+ * answer key has a space (the corpus, F1's tasks, W4 and the four Ask sets), so the stricter shapes refuse no key value.
+ * A two-word first name ("Mary Ann") is refused too: a blank, never a wrong value.
  */
 export function partFits(part: FillPart, value: string): boolean {
   const v = value.trim();
@@ -369,8 +380,12 @@ export function partFits(part: FillPart, value: string): boolean {
       return splitName(v).kind === "split";
     case "first":
     case "middle":
-    case "last":
-      return /^[\p{L}][\p{L}'’. -]*$/u.test(v) && v.split(" ").length <= 3;
+      return NAME_PART_WORD.test(v);
+    case "last": {
+      // One word, or a surname after its particles: "de la Cruz", "van der Rohe".
+      const ws = v.split(/\s+/u);
+      return ws.every((w) => NAME_PART_WORD.test(w)) && ws.slice(0, -1).every((w) => PARTICLES.has(w.toLowerCase()));
+    }
     case "zip":
       return /^\d{5}(?:-\d{4})?$/u.test(v);
     case "state":

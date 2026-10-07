@@ -8,7 +8,7 @@ import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
-import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, sentenceAround, WARNS } from "./line-values.ts";
+import { bareLine, clauseAround, instructionLine, LABELLED, lineTexts, lineValues, questionAnswer, sentenceAround, severalValues, WARNS } from "./line-values.ts";
 import { splitDate } from "./derive.ts";
 
 /**
@@ -639,6 +639,10 @@ function secretValue(w: WindowState, v: TypedValue): boolean {
 /**
  * The span a screen line offers: a "Label: value" line offers its value, with the label as context; a
  * line too short or too long to be a value, with no letter or digit, or ending in a colon offers none.
+ * W1: nor does a labelled value that holds several values (line-values.ts severalValues: "work: Brightline Dental Labs,
+ * lab technician, $5,200/mo gross") and no warning, whose parts lineTexts offers instead; a labelled instruction to the user
+ * (instructionLine); or a question and its answer on one line (questionAnswer), whose label is too long to read as one.
+ * Live Jev put each whole into a field that takes one of its values (evidence/screen/lv1).
  */
 function spanOfLine(raw: string): { line: string; text: string; label: string | null } | null {
   const line = bareLine(raw);
@@ -648,8 +652,18 @@ function spanOfLine(raw: string): { line: string; text: string; label: string | 
   // A value Caret never types (a password, a card or account number, a government ID, a one-time code or an API
   // key, by its label or its shape: memory/sensitive.ts) is no span: it is never offered, so no fill or plan can
   // choose it, and it never goes out in a question (B25 lead decision 2).
-  if (m !== null && m[1] !== undefined && m[2] !== undefined) return sensitiveKind(m[1], m[2]) === null ? { line, text: m[2].trim(), label: m[1].trim() } : null;
-  return valueKind(line) === null ? { line, text: line, label: null } : null;
+  if (m !== null && m[1] !== undefined && m[2] !== undefined) {
+    const label = m[1].trim();
+    const text = m[2].trim();
+    // A value its line warns about keeps its whole span: lineTexts offers no part of it, and Jev reads the warning
+    // ("Name: Josephine Abernathy-Cole, but everyone calls me Jo.").
+    const parted = severalValues(text) !== null && !WARNS.test(text);
+    return sensitiveKind(m[1], m[2]) === null && !instructionLine(label, text) && !parted ? { line, text, label } : null;
+  }
+  // An unlabelled line that holds several values is still offered whole: no label bounds its parts, and the names a
+  // contact line holds are read from its span ("landlord - Gary Pruitt, (512) 555-0193, …", rankWindow). A field that
+  // takes one value refuses it after the pick (fill.ts moreThanOne).
+  return valueKind(line) === null && !questionAnswer(line) ? { line, text: line, label: null } : null;
 }
 
 /**
