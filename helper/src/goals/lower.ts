@@ -28,7 +28,9 @@ import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
-import { checkValues, ContractError, exemptRefusal, isChecked, mintExempt, requireChecked, VerifierUnavailable, type CheckedValue, type Proposed } from "../fill/contract.ts";
+import { checkValues, ContractError, exemptRefusal, isChecked, mintExempt, requireChecked, statedChoice, VerifierUnavailable, type CheckedValue, type Proposed, type Provenance } from "../fill/contract.ts";
+import { readClock, readDate, readDateTime, readMonth } from "../fill/when.ts";
+import type { ResolveContext } from "../values/resolve.ts";
 import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
@@ -237,10 +239,35 @@ export interface LowerOptions {
  * control will hold, and where the value was read. A target with no field contract is one the inventory never froze
  * one for (a field Caret never types, refused by codeGate before this), so a write into it is a bug.
  */
-export function proposedFor(t: TargetBinding, v: ValueBinding, written: string): Proposed {
+export function proposedFor(t: TargetBinding, v: ValueBinding, written: string, as?: Provenance): Proposed {
   if (t.field === undefined) throw new ContractError("unchecked", `${t.ref}: the target has no field contract`);
-  const provenance = v.provenance ?? (v.source !== null ? { kind: "window" as const, windowId: v.source.windowId, nodeKey: v.source.key, app: "", title: "", span: v.text, label: null, line: null, partOf: null, context: null, lines: [], sentences: [] } : v.memory !== null ? { kind: "memory" as const, id: v.memory, label: "", part: null, whose: v.owner === "user" || v.owner === "other" ? v.owner : null } : { kind: "instruction" as const, span: v.text });
+  const provenance = as ?? v.provenance ?? (v.source !== null ? { kind: "window" as const, windowId: v.source.windowId, nodeKey: v.source.key, app: "", title: "", span: v.text, label: null, line: null, partOf: null, context: null, lines: [], sentences: [] } : v.memory !== null ? { kind: "memory" as const, id: v.memory, label: "", part: null, whose: v.owner === "user" || v.owner === "other" ? v.owner : null } : { kind: "instruction" as const, span: v.text });
   return { field: t.field, text: written, display: v.display, provenance, owner: v.owner };
+}
+
+/** The span a provenance was read from, or null when it names none (a memory entry, a saved answer). */
+function spanOf(p: Provenance): string | null {
+  return p.kind === "window" || p.kind === "instruction" ? p.span : p.kind === "derived" ? spanOf(p.base) : null;
+}
+
+/**
+ * I3 (V3's open gap): what code chose in a writer's date or time, said for the verifier, or null when the resolver reads
+ * the source span as exactly the written text with no assumption, the only reading fill mints under resolverFormat
+ * (fill.ts stated). A choice the provenance states, a reading's assumptions (a year, an order, a locale), and a span that
+ * no longer reads as the written text are all code's choice. The context is the helper's own locale and zone with no
+ * reference instant, as fill's recheck reads (fill.ts dateGives); a context fill read differently with only reads
+ * differently, which sends the value to the verifier, never past it.
+ */
+export function resolvedChoice(control: "date" | "time", written: string, provenance: Provenance): string | null {
+  const stated = statedChoice(provenance);
+  if (stated !== null) return stated;
+  const span = spanOf(provenance);
+  if (span === null) return `Caret has no source text to read this ${control} from again`;
+  const zone = Intl.DateTimeFormat().resolvedOptions();
+  const ctx: ResolveContext = { locale: zone.locale, timeZone: zone.timeZone, referenceInstant: null };
+  const r = control === "time" ? readClock(span, ctx) : /^\d{4}-\d{2}$/u.test(written) ? readMonth(span) : written.includes("T") ? readDateTime(span, ctx) : readDate(span, ctx);
+  if (r === null || r.value !== written) return `Caret's reader does not read "${clip(span)}" as ${written}`;
+  return r.assumptions.length === 0 ? null : `Caret assumed: ${r.assumptions.join("; ")}`;
 }
 
 /** Segment warnings a goalProgress carries at most (protocol GoalProgress.warnings). */
@@ -328,6 +355,8 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   const writesIn = new Set<string>();
   /** A press's waitFor, merged into it: only the effect of the press right before may be waited for. */
   let lastPress: GoalStep | null = null;
+  /** I3: a resolved date or time whose reading chose something, with the provenance that says so, for the verifier below. */
+  const verifiedAs = new Map<GoalStep, Provenance>();
   for (const s of draft.steps) {
     if (steps.some((x) => x.kind === "handoff")) throw new GoalError("stepAfterHandoff", "the plan goes on after a step that is yours, and Caret cannot know what that step did", s.ref);
     if (s.kind === "ask") throw new GoalError("unsupportedStep", "the plan stops to ask you something, which a goal plan cannot do yet", s.ref);
@@ -384,6 +413,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       // W2: the write contract's mint (fill/contract.ts). Fill's own mint for a value fill agreed on for this very target;
       // a draft and a non-text control under their named exemption; a copied text value is checked below, all at once.
       let checked: CheckedValue | undefined;
+      let verifyAs: Provenance | undefined;
       if (lowered.kind === "write" && lowered.writes !== null) {
         const at = `step ${s.ref}`;
         // I2 re-review: a write outside the Ask's scope is dropped with its reason, never the whole goal.
@@ -396,11 +426,18 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         const authority = authorityBy(sc);
         if (byFill) checked = requireChecked(v.checked, lowered.writes, t.key, t.domain.kind === "window" ? t.domain.windowId : "", at);
         else if (v.draft !== null) checked = mintExempt(proposedFor(t, v, lowered.writes), "draft", now, instruction, authority, documentOf);
-        // A resolved date or time is the resolver's (resolverFormat). W2 review: a writer's option goes to the verifier
-        // with every copied value, below: matching an option settles its spelling, not that the instruction chose it.
-        else if (t.control === "date" || t.control === "time") checked = mintExempt(proposedFor(t, v, lowered.writes), "resolverFormat", now, instruction, authority, documentOf);
+        // A resolved date or time is the resolver's (resolverFormat) only when its reading chose nothing (resolvedChoice);
+        // otherwise it goes to the verifier with the copied values below, what Caret assumed said (I3). W2 review: a
+        // writer's option goes there too: matching an option settles its spelling, not that the instruction chose it.
+        else if (t.control === "date" || t.control === "time") {
+          const proposed = proposedFor(t, v, lowered.writes);
+          const says = resolvedChoice(t.control, lowered.writes, proposed.provenance);
+          if (says === null) checked = mintExempt(proposed, "resolverFormat", now, instruction, authority, documentOf);
+          else verifyAs = proposed.provenance.kind === "derived" && proposed.provenance.says !== undefined ? proposed.provenance : { kind: "derived", how: "resolved", base: proposed.provenance, also: null, says };
+        }
       }
       const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered, ...(checked === undefined ? {} : { checked }) };
+      if (verifyAs !== undefined) verifiedAs.set(step, verifyAs);
       steps.push(gate === "derived" ? markDerived(step) : step);
       lastPress = null;
       continue;
@@ -473,7 +510,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     }
     const refusedSteps = new Set<GoalStep>();
     for (const [scope, group] of byScope) {
-      const proposed = group.map((x) => proposedFor(x.target, x.value as ValueBinding, x.writes as string));
+      const proposed = group.map((x) => proposedFor(x.target, x.value as ValueBinding, x.writes as string, verifiedAs.get(x)));
       let result: Awaited<ReturnType<typeof checkValues>>;
       try {
         result = await checkValues(proposed, { askJev: o.askJev, ledger: o.ledger, instruction, now, authority: authorityBy(scope), documentOf });

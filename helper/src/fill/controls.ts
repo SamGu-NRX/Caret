@@ -154,6 +154,91 @@ export function optionInText(options: readonly string[], text: string): string |
   return hits.length === 1 ? (hits[0] as string) : null;
 }
 
+/** A weekday's full name, then the abbreviations an option's label may write it as. */
+const WEEKDAYS: readonly (readonly string[])[] = [
+  ["monday", "mon"],
+  ["tuesday", "tue", "tues"],
+  ["wednesday", "wed", "weds"],
+  ["thursday", "thu", "thur", "thurs"],
+  ["friday", "fri"],
+  ["saturday", "sat"],
+  ["sunday", "sun"],
+];
+/** V3 review: whether a text negates, excludes, conditions or offers an alternative, so it picks no option ("except", "not", "only if", "or"). */
+export function leavesChoiceOpen(text: string, option = ""): boolean {
+  // A word that is the option's own ("no" for the option "No", "any" for "Any time") answers; it does not negate it.
+  return negates(option, text) || tokens(text).some((w) => (NOT_A_CHOICE.has(w) || OPEN_CHOICE.has(w)) && !tokens(option).includes(w));
+}
+
+/** Words that leave a choice open beside NOT_A_CHOICE's: an alternative or a restriction ("only if"). */
+const OPEN_CHOICE: ReadonlySet<string> = new Set(["or", "either", "only", "whichever", "any"]);
+/**
+ * Words a request uses for any form, which say nothing about which field it means (V3 review A3: "this" of "fill out this
+ * job application" matched "How did you hear about this role?").
+ */
+const ANY_FIELD: ReadonlySet<string> = new Set(["this", "that", "these", "those", "it", "its", "my", "me", "mine", "your", "yours", "our", "the", "a", "an", "form", "forms", "fill", "filling", "out", "in", "up", "application", "apply", "applying", "page", "field", "fields", "info", "information", "details", "detail", "everything", "whatever", "all", "about", "know", "please", "can", "you", "do", "for", "with", "and", "to", "of", "on", "put", "use", "enter", "sign", "add", "set", "choose", "pick", "select"]);
+
+/**
+ * V3: whether a request names a field by a word that means that field: a word of the field's label or heading that is not
+ * one any request about any form uses (ANY_FIELD). "the saturday section" names "Section"; "fill out this job
+ * application" names none of "How did you hear about this role?".
+ */
+export function namesField(request: string, asked: readonly (string | null)[]): boolean {
+  const field = new Set(asked.flatMap((t) => (t === null ? [] : wordsOf(t))).filter((w) => w.length >= 3 && !ANY_FIELD.has(w)));
+  return wordsOf(request).some((w) => field.has(w));
+}
+
+/** Short words that name no option on their own. */
+const NAMES_NOTHING: ReadonlySet<string> = new Set(["the", "and", "for", "with", "any", "all", "none", "other", "yes", "not", "one", "per", "from", "into", "only", "each", "some", "more", "less", "than", "then", "also", "your", "you", "our", "this", "that", "these", "those", "are", "was", "has", "have", "will", "can", "but", "nor", "its", "his", "her", "their", "them", "they", "she", "him", "who", "what", "when", "where", "which", "how", "why", "please", "put", "sign", "use", "fill", "pick", "choose", "select", "want", "like"]);
+
+/**
+ * The weekday (0 for Monday) a word of a label or a text names, or null. A full name in any case counts. An abbreviation
+ * counts only written as a name is ("Sat", "Sat."): lowercase "sat" is the verb, and "SAT" the test.
+ */
+function weekdayOf(word: string): number | null {
+  const lw = word.toLowerCase().replace(/\.$/u, "");
+  const i = WEEKDAYS.findIndex((d) => d.includes(lw));
+  if (i < 0) return null;
+  return lw === WEEKDAYS[i]![0] || /^\p{Lu}\p{Ll}+\.?$/u.test(word) ? i : null;
+}
+
+/**
+ * V3 (B24 ask-17): the one option of a select or radio group that a word of `text` names: a word of three or more letters
+ * that is the first word of that option's label, compared without case ("saturday" names "Saturday 9–11am"), or the full
+ * name of a weekday the label opens with abbreviated ("saturday" names "Sat 9:00 AM-12:30 PM"). Only the first word, so
+ * "Lee" of "Bruce Lee" does not name "Jordan Lee". An option written in comma-separated parts names a place or a "Last,
+ * First" name, which one shared word does not pick (C2: "Toronto, ON" is not "Toronto, Ontario, Canada"), so a word
+ * names none of those. A word that opens every option names none; "several" when the words name two or more options,
+ * so the choice is the user's; null when they name none, or the text holds a negating word ("not saturday"). A word of
+ * `asked` (the field's own label and heading) names nothing: it repeats the question, as "job" in "How did you hear about
+ * this job?" does for a note that opens "Job search" (V3 adversary: it offered "Job board").
+ */
+export function optionNamedBy(options: readonly string[], text: string, asked: readonly (string | null)[] = []): { option: string; word: string } | "several" | null {
+  // V3 review A1: a negation, an exclusion, a condition or an alternative ("except Saturday", "only if it is online",
+  // "Thursday or Saturday") leaves the choice open, so no word of such a text names an option.
+  if (leavesChoiceOpen(text)) return null;
+  const question = new Set(asked.flatMap((t) => (t === null ? [] : wordsOf(t))));
+  const allWords = options.map((o) => (o.includes(",") ? [] : o.normalize("NFKC").split(/[^\p{L}\p{N}.]+/u).map((w) => w.replace(/\.$/u, "")).filter((w) => w !== "")));
+  const optionWords = allWords.map((ws) => ws.slice(0, 1));
+  const hits = new Map<string, string>();
+  for (const w of text.normalize("NFKC").split(/[^\p{L}\p{N}']+/u)) {
+    const lw = w.toLowerCase();
+    if (lw.length < 3 || !/^\p{L}+$/u.test(lw) || NAMES_NOTHING.has(lw) || question.has(lw)) continue;
+    const day = weekdayOf(w);
+    // A text's abbreviation that is not written as a name (the verb "sat") names nothing, even an option's "Sat".
+    if (day === null && WEEKDAYS.some((d) => d.includes(lw))) continue;
+    const named = options.filter((_o, i) => optionWords[i]!.some((t) => t.toLowerCase() === lw || (day !== null && weekdayOf(t) === day)));
+    if (named.length === 0 || named.length === options.length) continue;
+    // V3 review A2: a weekday a compound label holds after its first word ("Sat" of "Thu/Sat 6:00-8:00 PM") competes.
+    const competing = day === null ? [] : options.filter((_o, i) => allWords[i]!.some((t) => weekdayOf(t) === day));
+    for (const o of [...named, ...competing]) if (!hits.has(o)) hits.set(o, w);
+  }
+  if (hits.size === 0) return null;
+  if (hits.size > 1) return "several";
+  const [option, word] = [...hits][0] as [string, string];
+  return { option, word };
+}
+
 /** Words that turn a statement into its opposite; a box is never ticked from text that holds one its label lacks. Any word ending in n't is one too. */
 const NEGATION = new Set(["no", "not", "never", "none", "without", "nor", "neither", "cannot", "dont", "doesnt", "isnt", "arent", "wont", "cant"]);
 /**

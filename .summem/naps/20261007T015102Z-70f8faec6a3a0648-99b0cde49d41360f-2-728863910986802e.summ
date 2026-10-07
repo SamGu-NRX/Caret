@@ -1,1 +1,0 @@
-Live Jev: run live sets once (R1's slow-eval never settles; each pass sends 43-81 new requests). Keep HOIST_SHARED_OPTIONS false: on, Jev answered 'none' on names and emails on four small forms (LV1 compare-hoist.txt).

@@ -1,0 +1,1 @@
+Ask evals: realfill-asks --spend-limit 0 refuses replayed requests too; for a $0 replay set CARET_JEV_CACHE_MODE=replay, unset CARET_ENV_FILE and pass a nonzero --spend-limit (misses fail as jevFailed).

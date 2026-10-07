@@ -23,6 +23,7 @@ import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
 import { authorityRefusal, fieldFingerprint, scopeRefusal, type Authority, type DocumentReader, type Origin } from "./ask-scope.ts";
+import { sentLineFor } from "./when.ts";
 import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind } from "./kinds.ts";
 import { writeMisfit, type ShapeSource } from "./writable.ts";
 import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
@@ -95,7 +96,11 @@ export function autocompletePart(token: AutocompleteToken | null | undefined): F
   return token == null ? null : (AUTOCOMPLETE_PART[token] ?? null);
 }
 
-export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "placeWithCountry" | "optionFromPart";
+/**
+ * V3: "timePart" is the time of a span that names a date and a time; "resolved" is a whole date, time or date and time
+ * written in its input's own format (when.ts), no part taken.
+ */
+export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "timePart" | "resolved" | "placeWithCountry" | "optionFromPart";
 
 /** Where a value came from, carried unchanged from the moment it was read to the step that writes it. */
 export type Provenance =
@@ -137,7 +142,22 @@ export type Provenance =
   | { kind: "memory"; id: string; label: string; part: FillMemory["part"] | null; whose: "user" | "other" | null }
   | { kind: "instruction"; span: string }
   | { kind: "answer"; id: string; question: string }
-  | { kind: "derived"; how: DeriveHow; base: Provenance; also: Provenance | null }
+  | {
+      kind: "derived";
+      how: DeriveHow;
+      base: Provenance;
+      also: Provenance | null;
+      /**
+       * V3: a choice code made in deriving the value, said plainly for the verifier ("the year 2026 is assumed: …", "read
+       * month first, as …"). Such a value is never minted under an exemption: the verifier judges it with this sentence.
+       */
+      says?: string;
+      /**
+       * V3 review: "sentLine" when `also` is the send line of the message `base` sits in (when.ts sentLineFor), a pairing
+       * provenanceStale makes again on the window as it is now.
+       */
+      via?: "sentLine";
+    }
   | { kind: "transfer"; srcWindowId: string; srcKey: string; rounds: number; reshaped: "memory" | null; /** The source element's whole value when read. */ value?: string };
 
 /** G2's slot. The contract never computes it; it only reads it into the verifier's description. */
@@ -269,7 +289,8 @@ export class VerifierUnavailable extends Error {
 }
 
 export class ContractError extends Error {
-  readonly code: "unchecked" | "textMismatch" | "targetMismatch" | "shape" | "neverTyped" | "outOfScope";
+  /** V3: "chosen" when a value whose provenance states a choice code made (Provenance.says) reaches an exemption. */
+  readonly code: "unchecked" | "textMismatch" | "targetMismatch" | "shape" | "neverTyped" | "outOfScope" | "chosen";
   constructor(code: ContractError["code"], message: string) {
     super(message);
     this.name = "ContractError";
@@ -399,13 +420,32 @@ function inputKindRefusal(kind: InputKind, v: string): string | null {
  * number field), the part of a name or an address the field takes (derive.ts partFits), and maxlength. Nothing here
  * reads commas, "at", capitals or verbs: those are W1's text-shape families (textShapeRefusal).
  */
+/** V3: the value a date-like input holds, in its own format (controls.ts DateFormat), as the resolver writes it. */
+const WIRE_FORMAT: Partial<Record<NonNullable<InputKind>, RegExp>> = {
+  date: /^\d{4}-\d{2}-\d{2}$/u,
+  time: /^\d{2}:\d{2}(?::\d{2})?$/u,
+  datetime: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/u,
+  month: /^\d{4}-\d{2}$/u,
+};
+
+/** V3: a value code resolved into a date-like input's own format, saying the choice it made (Provenance.says). */
+function chosenWire(p: Proposed): boolean {
+  return p.provenance.kind === "derived" && p.provenance.says !== undefined && p.field.inputKind !== null && WIRE_FORMAT[p.field.inputKind]?.test(p.text.trim()) === true;
+}
+
 export function shapeRefusal(p: Proposed): string | null {
   const v = p.text.trim();
   const secret = secretIn(v, "");
   if (secret !== null) return `Caret never types ${SENSITIVE_SAYS[secret]}; that is yours to enter`;
-  const input = inputKindRefusal(p.field.inputKind, v) ?? (p.field.autocomplete === null ? null : inputKindRefusal(AUTOCOMPLETE_INPUT[p.field.autocomplete] ?? null, v));
+  // V3: a date or time input takes a value through the verifier only when code resolved it into the input's own format and
+  // said the choice it made doing so (Provenance.says: an assumed year, an order a format hint gave); every other value
+  // there is still an exemption's (resolverFormat) or refused.
+  const chosen = chosenWire(p);
+  const input = chosen ? null : (inputKindRefusal(p.field.inputKind, v) ?? (p.field.autocomplete === null ? null : inputKindRefusal(AUTOCOMPLETE_INPUT[p.field.autocomplete] ?? null, v)));
   if (input !== null) return input;
-  const kind = misfit(v, p.field.labelWords);
+  // I3: such a value is in the input's own format, which the label's kinds cannot judge (kinds.ts reads "2022-08" and
+  // "08:45" as plain text): c2-page's month from "Aug '22" was refused here once V3 sent it to the verifier.
+  const kind = chosen ? null : misfit(v, p.field.labelWords);
   if (kind !== null) return kind;
   if (p.field.part !== null && !partFits(p.field.part, v)) return `'${clip(v)}' is not the ${p.field.part} the field takes`;
   if (p.field.maxLength !== null && p.text.length > p.field.maxLength) return `'${clip(v)}' is longer than the ${p.field.maxLength} characters the field takes`;
@@ -442,6 +482,8 @@ export function sourceLabel(p: Proposed): string | null {
  * time, each only on verifier evidence (migration step 4).
  */
 export function textShapeRefusal(p: Proposed): string | null {
+  // I3: W1's families read copied text; a value in a date-like input's own format that code resolved is the verifier's.
+  if (chosenWire(p)) return null;
   return writeMisfit(p.text, { labelWords: p.field.labelWords, part: p.field.part }, shapeSource(p));
 }
 
@@ -497,8 +539,9 @@ export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean)
     case "transfer":
       return "a value the user copied there before";
     case "derived": {
-      const how: Record<DeriveHow, string> = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", placeWithCountry: "the place with its country", optionFromPart: "the option for a part" };
-      return `${how[pr.how]} in ${provenanceSays(pr.base, admitted)}`;
+      const how: Record<DeriveHow, string> = { namePart: "a part of the name", addressPart: "a part of the address", placePart: "a part of the place", datePart: "a part of the date", timePart: "the time", resolved: "the date or time, in the field's own format,", placeWithCountry: "the place with its country", optionFromPart: "the option for a part" };
+      const plain = `${how[pr.how]} in ${provenanceSays(pr.base, admitted)}`;
+      return pr.says === undefined ? plain : `${plain}${pr.also === null ? "" : `, and ${provenanceSays(pr.also, admitted)}`}; ${pr.says}`;
     }
   }
 }
@@ -749,11 +792,21 @@ export function exemptRefusal(p: Proposed, rule: ExemptRule, instruction = "", a
  * Mints without the verifier for a value whose exactness code settles (ExemptRule). Throws ContractError on a value
  * exemptRefusal refuses: a caller that may meet one asks exemptRefusal first; one that reaches here with it has a bug.
  */
+/** V3: the first choice a provenance states (Provenance.says), in it or in any source it was derived from; null when none. */
+export function statedChoice(pr: Provenance): string | null {
+  if (pr.kind !== "derived") return null;
+  return pr.says ?? statedChoice(pr.base) ?? (pr.also === null ? null : statedChoice(pr.also));
+}
+
 export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction: string, authority: Authority, documentOf: DocumentReader | null = null): CheckedValue {
   // Frozen before it is judged, as checkValues does: what is judged is what is minted (W2 review).
   const p = snapshot(proposed);
   const out = authorityScopeRefusal(p, authority, documentOf);
   if (out !== null) throw new ContractError("outOfScope", out);
+  // V3 (lead): a value code derived by a choice (an assumed year, an order a hint gave, an option a word names) is judged by
+  // the verifier, never minted as a plain conversion; reaching here is a bug in the caller.
+  const chose = statedChoice(p.provenance);
+  if (chose !== null) throw new ContractError("chosen", `'${clip(p.text)}' was derived by a choice code made (${clip(chose)}), so only the verifier may check it, not the ${rule} exemption`);
   const why = exemptRefusal(p, rule, instruction);
   if (why !== null) throw new ContractError(neverTypedRefusal(p, instruction) === null ? "shape" : "neverTyped", why);
   return mint(p, { by: "exempt", rule }, now, authority);
@@ -865,8 +918,15 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
       if (pr.context !== null && !spanContexts(view, seen as Node, pr.span).includes(pr.context)) return "the label it was read beside changed";
       return null;
     }
-    case "derived":
-      return provenanceStale(model, pr.base) ?? (pr.also === null ? null : provenanceStale(model, pr.also));
+    case "derived": {
+      const stale = provenanceStale(model, pr.base) ?? (pr.also === null ? null : provenanceStale(model, pr.also));
+      if (stale !== null || pr.via !== "sentLine" || pr.base.kind !== "window" || pr.also?.kind !== "window") return stale;
+      // V3 review: the send line must still be the one of the message the value sits in, on the window as it is now (a
+      // quoted "Original message" put in between, or a second sender, unpairs them).
+      const w = model.windows.get(pr.base.windowId);
+      const now = w === undefined ? null : sentLineFor([...w.nodes.values()].map((n) => ({ key: n.key, text: nodeText(n) })), pr.base.nodeKey, pr.base.span);
+      return now !== null && now.nodeKey === pr.also.nodeKey && now.value === pr.also.span ? null : "the message its date's year was read from no longer reads as one";
+    }
     case "transfer": {
       // A routine's cell: the element it copies must still be there, and still hold the value unless a memory rule
       // reshaped it (W2 review: patterns runs recheck their sources at dispatch too).
