@@ -184,6 +184,27 @@ def relay(plan_path, plan_digest, plan):
 # lease ID cannot make another run's lease cleanup-required.
 QUEUE_LEASE_RUN = "heavy-job-queue"
 
+def vm_admission(lr_lease, profile, owner_pid, env=None):
+    """None when lr-lease would grant a vm lease of the profile's estimates now, else why not. lr-lease answers, not a
+    floor of ours: it takes that lease and releases it at once, so its whole vm decision applies (lease-policy.json's
+    vm floor, the estimates charged to disk under normal pressure, pressure, count, quiet). rig-run takes the real vm
+    lease right after, and waits for it if the machine changed in between."""
+    est = [str(profile["est_mem_gib"]), str(profile["est_disk_gib"])]
+    got = subprocess.run([lr_lease, "acquire", "--run", "caret-vm-admission", "--kind", "vm", "--est-mem", est[0],
+                          "--est-disk", est[1], "--ttl", "1", "--owner-pid", str(owner_pid)], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env, timeout=60)
+    if got.returncode != 0:
+        return "lr-lease would not grant vm ({} + {} GiB): {}".format(est[0], est[1], got.stdout.strip()[:300])
+    lease_id = got.stdout.strip()
+    for _ in range(3):
+        done = subprocess.run([lr_lease, "release", lease_id], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, env=env, timeout=60)
+        if done.returncode == 0:
+            return None
+    # Held by this live supervisor, it would keep rig-run's own vm lease out (count 1): never admit with it held.
+    return "the vm admission lease {} could not be released: {}".format(lease_id, done.stdout.strip()[:300])
+
+
 # outcome.json's "cleanup" when the supervisor left before the cleanup was confirmed; also sent to the relay.
 HANDED_OVER = "left to the recovery owner"
 
@@ -483,6 +504,8 @@ class Supervisor:
                     break
         if problem is None and os.path.lexists(self.paths["hold"]):
             problem = "HOLD {} exists".format(self.paths["hold"])
+        if problem is None and self.profile.get("admit_kind") == "vm":
+            problem = vm_admission(self.paths["lr_lease"], self.profile, self.pid)
         if problem:
             self._release()
             return problem

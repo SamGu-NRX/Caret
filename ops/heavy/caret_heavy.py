@@ -95,6 +95,9 @@ class Profile:
     # 0: no cap. Otherwise the supervisor stops the job (exit 76) once the summed physical footprint of its processes
     # goes over this many GiB. Every job's peak is recorded either way (outcome.json "memory").
     mem_cap_gib: float = 0.0
+    # "vm": the job has no disk floor of its own; the supervisor admits it exactly when lr-lease would grant a vm lease
+    # of est_mem_gib + est_disk_gib (supervise.vm_admission), and the queue is given none (--min-free-gib 0).
+    admit_kind: str = ""
 
     @property
     def queue_timeout_s(self):
@@ -130,13 +133,19 @@ PROFILES = {
         "Unmeasured. Estimates 3.5 + 0.1 are LY1's own (queue.sh); the lead's Q1 amendment set 8 + 3.6, rounded up to "
         "12 GiB. No run of the three checkpoints and the scoring has completed; 7200 s is a default. It downloads each "
         "checkpoint's weights (0.64-0.84 GB) from Hugging Face into memory."),
+    # No floor of its own (coordinator, 2026-10-07). The 15 GiB that was here was stale: ~/.long-run/lease-policy.json's
+    # vm entry records that Sam said on 2026-10-05 to run the VM at about 14.9 GiB free, and the vm floor came down the
+    # same day, 15 -> 7 -> 4 GiB, over the measured worst case (VM peak 5.65 GiB charged to disk as swap, clone at most
+    # 0.51 GiB, rig-run's estimates 6 + 2). Two thresholds owned one fact; now lr-lease's vm decision is the only one.
+    # The lease wait lets the supervisor wait for that grant; it is unmeasured, like the other profiles'.
     "caret-vm": Profile(
-        "caret-vm", 15, 6, 2, False, 0, 10800, 60,
-        "Floor 15 GiB is Sam's figure (Brief Q1). rig-run takes the vm 6/2 lease (measured: VM peak RSS 5.65 GiB "
+        "caret-vm", 0, 6, 2, False, 1800, 10800, 60,
+        "No floor of its own: admitted when lr-lease would grant vm for 6 + 2 GiB (lease-policy.json's vm floor). "
+        "rig-run takes the vm 6/2 lease (measured: VM peak RSS 5.65 GiB "
         "over 54 runs, clone at most 0.51 GiB). The job's one heavy lease is 0/0: the queue's, obliged and handed to "
         "rig-run (RIG_HEAVY_LEASE_ID, managed mode) on a queue that leases per job, else rig-run's own. Execution 10800 s covers the feeder's 3600 s rig-run wait and H11's 3500 s guest limit; "
         "unmeasured. Grace 60 s covers rig-run's documented cleanup budget of 45 s.",
-        wait_flock=("ios_qa_lock",)),
+        wait_flock=("ios_qa_lock",), admit_kind="vm"),
 }
 
 
@@ -712,6 +721,7 @@ def queue_enqueue_argv(plan, plan_path, plan_digest):
     argv = [plan["python"], paths["queue_script"], "--state-dir", paths["queue_state"], "enqueue",
             "--id", plan["job_id"], "--timeout", str(profile["queue_timeout_s"]),
             "--cwd", plan["worktree"], "--repo", plan["worktree"], "--expect-rev", plan["rev"],
+            # A vm-admitted profile gives the queue no floor: left out, the queue would apply its own 12 GiB default.
             "--min-free-gib", str(profile["floor_gib"]), "--wait-absent", paths["hold"]]
     for key in profile["wait_flock"]:
         argv += ["--wait-flock", paths[key]]

@@ -567,7 +567,7 @@ class ProfileAndEnqueueTest(Temp):
     def test_profiles_floors_estimates_and_evidence(self):
         expected = {"caret-browser-eval": (11, 2.5, 0.5, True), "caret-helper-suite": (12, 3, 0.5, True),
                     "caret-laya": (12, 3.5, 0.1, True),
-                    "caret-swift": (8, 6, 2, True), "caret-vm": (15, 6, 2, False)}
+                    "caret-swift": (8, 6, 2, True), "caret-vm": (0, 6, 2, False)}
         self.assertEqual({k: (p.floor_gib, p.est_mem_gib, p.est_disk_gib, p.lease)
                           for k, p in caret_heavy.PROFILES.items()}, expected)
         for name, p in caret_heavy.PROFILES.items():
@@ -577,6 +577,9 @@ class ProfileAndEnqueueTest(Temp):
                     # lr-lease's heavy floor exactly; the queue's per-job lease charges the estimates against it.
                     with open(os.path.expanduser("~/.long-run/lease-policy.json")) as fh:
                         self.assertEqual(p.floor_gib, json.load(fh)["kinds"]["heavy"]["diskFloorGB"])
+                elif name == "caret-vm":
+                    # No floor of its own: lr-lease's vm decision for these estimates admits it (VmAdmissionTest).
+                    self.assertEqual((p.floor_gib, p.admit_kind), (0, "vm"))
                 elif p.lease:
                     # Older profiles: the floor covers the lease's own 8 GiB plus the estimates.
                     self.assertGreaterEqual(p.floor_gib, 8 + p.est_mem_gib + p.est_disk_gib)
@@ -850,3 +853,106 @@ class NodeDistTest(KeytypeWorld):
         self.write("source/extension/pnpm-lock.yaml", "lock extension, another version\n")
         with self.assertRaisesRegex(manifest.ManifestError, "extension/pnpm-lock.yaml"):
             caret_heavy.RECIPES["r2-prepare"].plan_args(args, main, rev, paths)
+
+
+class VmAdmissionTest(Temp):
+    """A caret-vm job is admitted exactly when lr-lease would grant a vm lease of rig-run's estimates (6 + 2 GiB), and
+    waits exactly when it would refuse one. The stub lr-lease is lr-lease-core.mjs's own decision on the real
+    lease-policy.json, with a fixed free-disk reading, so the threshold is lr-lease's, not this test's."""
+
+    POLICY = os.path.expanduser("~/.long-run/lease-policy.json")
+    CORE = os.path.expanduser("~/.long-run/bin/lr-lease-core.mjs")
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.join(self.root, "home")
+        os.makedirs(os.path.join(self.home, ".long-run/leases"))
+        shutil.copy2(self.POLICY, os.path.join(self.home, ".long-run/lease-policy.json"))
+        self.write("home/.long-run/shim.mjs", """import path from 'node:path';
+import { acquire, release, readLeases, readPolicy, machineReaders } from '%s';
+const root = path.join(process.env.HOME, '.long-run'), dir = path.join(root, 'leases');
+const readers = { ...machineReaders(root), diskGB: () => Number(process.env.STUB_FREE_GIB), swapGB: () => 1000,
+  pressure: () => 'normal', quietUntil: () => 0 };
+const [verb, ...rest] = process.argv.slice(2);
+const opt = (n) => rest[rest.indexOf(n) + 1];
+if (verb === 'release') { release(dir, rest[0]); process.exit(0); }
+if (verb === 'status') { const l = readLeases(dir); console.log('Readings (stub)'); console.log('Leases: ' + l.length); for (const x of l) console.log(JSON.stringify(x)); process.exit(0); }
+const r = acquire(dir, readPolicy(path.join(root, 'lease-policy.json')), readers, { run: opt('--run'), kind: opt('--kind'),
+  estMemGB: Number(opt('--est-mem')), estDiskGB: Number(opt('--est-disk')), ttlMinutes: Number(opt('--ttl')), ownerPid: Number(opt('--owner-pid')) });
+if (r.reason) { console.log('refused: ' + r.reason); process.exit(75); }
+console.log(r.lease.id);
+""" % self.CORE)
+        self.lr_lease = self.write("home/.long-run/lr-lease", '#!/bin/sh\nexec node "$HOME/.long-run/shim.mjs" "$@"\n')
+        os.chmod(self.lr_lease, 0o755)
+        with open(self.POLICY) as fh:
+            vm = json.load(fh)["kinds"]["vm"]
+        prof = caret_heavy.PROFILES["caret-vm"]
+        # lr-lease charges the estimates against free disk on top of the vm floor under normal pressure.
+        self.threshold = vm["diskFloorGB"] + prof.est_mem_gib + prof.est_disk_gib
+
+    def admission(self, free_gib):
+        env = dict(os.environ, HOME=self.home, STUB_FREE_GIB=str(free_gib))
+        import supervise
+        return supervise.vm_admission(self.lr_lease, caret_heavy.dataclasses.asdict(caret_heavy.PROFILES["caret-vm"]),
+                                      os.getpid(), env=env)
+
+    def leases(self):
+        return [n for n in os.listdir(os.path.join(self.home, ".long-run/leases")) if n.endswith(".json")]
+
+    def test_admitted_exactly_when_lr_lease_grants_vm(self):
+        self.assertLessEqual(self.threshold, 12.9)
+        self.assertIsNone(self.admission(12.9))
+        self.assertIsNone(self.admission(self.threshold))
+        self.assertEqual(self.leases(), [])  # the question leaves no lease behind
+        refused = self.admission(self.threshold - 0.05)
+        self.assertIn("lr-lease would not grant vm", refused)
+        self.assertEqual(self.leases(), [])
+
+    def test_a_vm_lease_held_elsewhere_refuses_too(self):
+        env = dict(os.environ, HOME=self.home, STUB_FREE_GIB="100")
+        held = subprocess.run([self.lr_lease, "acquire", "--run", "rig", "--kind", "vm", "--est-mem", "6", "--est-disk", "2",
+                               "--ttl", "5", "--owner-pid", str(os.getpid())], env=env, capture_output=True, text=True, check=True)
+        self.assertIn("count limit", self.admission(100))
+        self.assertEqual(self.leases(), [held.stdout.strip() + ".json"])
+
+    def test_the_supervisor_admits_on_the_grant_and_waits_on_the_refusal(self):
+        import procs
+        import supervise
+
+        class Probes:
+            def pressure_level(self):
+                return procs.PRESSURE_NORMAL
+
+            def free_bytes(self, path):
+                return 0  # far under any floor: a vm job has none of its own, so this must not matter
+
+        sup = supervise.Supervisor.__new__(supervise.Supervisor)
+        sup.plan = {"job_id": "caret-x", "worktree": self.root}
+        sup.run_root = os.path.join(self.root, "runs", "caret-x")
+        sup.paths = {"hold": os.path.join(self.root, "no-hold"), "lr_lease": self.lr_lease,
+                     "queue_state": os.path.join(self.root, "queue")}
+        sup.profile = caret_heavy.dataclasses.asdict(caret_heavy.PROFILES["caret-vm"])
+        sup.probes, sup.pid, sup.heavy_fd, sup.lock_fd, sup.lease_id = Probes(), os.getpid(), None, None, None
+        sup.lease_cleanup = sup.lease_oblige = sup.lease_obliged = False
+        sup.custody, sup.record, sup.log = None, {}, lambda *a, **k: None
+        old = os.environ.get("HOME")
+        self.addCleanup(lambda: os.environ.__setitem__("HOME", old))
+        os.environ["HOME"] = self.home
+        for free, admitted in ((12.9, True), (self.threshold - 0.05, False)):
+            with self.subTest(free):
+                os.environ["STUB_FREE_GIB"] = str(free)
+                why = sup._try_admit()
+                self.assertEqual(why is None, admitted, why)
+                if not admitted:
+                    self.assertIn("lr-lease would not grant vm", why)
+        os.environ.pop("STUB_FREE_GIB", None)
+        self.assertEqual(self.leases(), [])
+
+    def test_the_queue_gets_no_floor_of_its_own_for_vm_jobs(self):
+        paths = caret_heavy.default_paths("/tmp/state-for-argv-only")
+        recipe = caret_heavy.RECIPES["vm-cancel-proof"]
+        plan = caret_heavy.build_plan(recipe, "caret-x", "/w", "a" * 40, [], [], {}, None, paths,
+                                      ("/snap", {}, "/ops", "b" * 40))
+        head = caret_heavy.queue_enqueue_argv(plan, "/plans/caret-x.json", "c" * 64)
+        head = head[:head.index("--")]
+        self.assertEqual(head[head.index("--min-free-gib") + 1], "0")  # without it the queue applies its own 12 GiB
