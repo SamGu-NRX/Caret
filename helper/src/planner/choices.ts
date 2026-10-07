@@ -55,11 +55,19 @@ const no = (why: string): ChoicesResult => ({ choices: null, why });
 /**
  * The question for `part`, or why there is none. `scoped` are the fields the Ask has in scope so far, for a source
  * question. `offered` are the fields an intent from Jev's scope ask offers (AskIntent.options), or null for any other.
+ * `settled` are the keys the Ask's scope question settled (I2); null only for a caller with no Ask scope.
  */
-export function choicesFor(part: AskPart, snap: IntentSnapshot, model: ScreenModel, scoped: readonly IntentField[], now: number, offered: readonly IntentField[] | null = null): ChoicesResult {
+export function choicesFor(part: AskPart, snap: IntentSnapshot, model: ScreenModel, scoped: readonly IntentField[], now: number, offered: readonly IntentField[] | null = null, settled: ReadonlySet<string> | null = null): ChoicesResult {
   if (mustRefuse(snap.instruction)) return no("the instruction asks for something Caret refuses");
-  if (part === "fields") return offered === null ? fieldChoices(snap, fittingFields(snap), "words") : fieldChoices(snap, offered.filter((f) => f.neverTyped === null), "jev");
-  if (part === "source") return sourceChoices(snap, model, scoped.length > 0 ? scoped : empties(snap), now);
+  // I2 ruling: a question offers only fields the Ask's scope question settled, filtered before any option limit, and a
+  // source question looks for the values of those fields only.
+  const held = (fs: readonly IntentField[]): IntentField[] => (settled === null ? [...fs] : fs.filter((f) => settled.has(f.key)));
+  if (part === "fields") return offered === null ? fieldChoices(snap, held(fittingFields(snap)), "words") : fieldChoices(snap, held(offered.filter((f) => f.neverTyped === null)), "jev");
+  if (part === "source") {
+    const fields = held(scoped.length > 0 ? scoped : empties(snap));
+    if (fields.length === 0) return no("no field the scope question settled to find a source for");
+    return sourceChoices(snap, model, fields, now);
+  }
   return personChoices(snap);
 }
 

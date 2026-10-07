@@ -63,6 +63,8 @@ export interface AskIntent {
   agreed?: true;
   /** I2 ruling B: the upload fields (IntentSnapshot.uploads refs) Jev's scope question chose, which join the Ask's scope. */
   uploads?: string[];
+  /** I2: the field and upload refs the scope question settled (chose or left unclear), on every route; absent when it was not asked. */
+  settled?: string[];
   /**
    * A3: the fields (refs) to offer when this intent asks which fields: those Jev left unclear, with those it chose. Only
    * the heads maker sets it, and choices.ts offers exactly these, never fields code picked itself.

@@ -28,7 +28,7 @@ import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
 import { isDerived } from "./gates.ts";
 import { memoryWrites, parseMemoryRef } from "../fill/fill.ts";
 import { identityKey } from "../fill/whose.ts";
-import { continuationScope, pageInputKeys } from "./page-planner.ts";
+import { continuationScope, pageInputKeys, readsForward } from "./page-planner.ts";
 import { pageView } from "./page-view.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { formControls } from "../fill/controls.ts";
@@ -144,6 +144,14 @@ interface Carry {
   until: number;
   /** I2: the carried goal's scopes (GoalPlan.scopes), kept for its next page. */
   scopes?: ScopeSet;
+  /** I2 ruling: since when a press of the page's forward control counts as the user's Next for this carry. */
+  since: number;
+}
+
+/** I2 ruling: a press seen on a window: Caret's own goal press, or one the reader saw the user make (userPress). */
+interface SeenPress {
+  at: number;
+  label: string;
 }
 
 export interface Replan {
@@ -246,6 +254,8 @@ export class GoalRuns {
   private readonly goneHosts = new Set<string>();
   /** P3: finished page goals waiting for the user's Next, by page window id (one per window: the latest finished). */
   private readonly carries = new Map<string, Carry>();
+  /** I2 ruling: the last press seen on each window, which a carry needs before a new document: the observed Next. */
+  private readonly presses = new Map<string, SeenPress>();
   /** P3: the document of each page window a carry is planning or planned for, so the ambient offer stays out of its way. */
   private readonly carried = new Map<string, string>();
   /** Stops and fresh plans under way (each may wait on the writer): idle() waits for them. */
@@ -631,6 +641,8 @@ export class GoalRuns {
       // The first "acting" of a step: a fallback means acts again and its time counts from the first try.
       if (s !== undefined && !run.acting.has(s.index)) run.acting.set(s.index, this.deps.now());
       if (s?.kind === "press" && seg.domain.kind === "window" && !run.pressed.some((p) => p.key === s.target.key && p.effect === s.effect)) run.pressed.push({ windowId: seg.domain.windowId, key: s.target.key, effect: s.effect });
+      // I2 ruling: Caret's own press is an observed press of its control (a carry's Next, onChanges).
+      if (s?.kind === "press" && seg.domain.kind === "window") this.onPress(seg.domain.windowId, s.target.label, this.deps.now());
     }
     if ((m.phase === "verified" || m.phase === "skipped") && m.step !== null) {
       const s = stepOf(run, seg, m.step);
@@ -801,7 +813,7 @@ export class GoalRuns {
     const qualify = (windowId: string | null, key: string): string => (windowId === page.windowId && !key.startsWith("doc(") ? `doc(${doc}):${key}` : key);
     const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")].map((r) => ({ ...r, target: { ...r.target, key: qualify(r.target.windowId, r.target.key) } }));
     const owed = left.map((l): LeftItem => ({ ...l, key: qualify(l.windowId, l.key), why: "dropped", says: l.key.startsWith("doc(") ? l.says : `On an earlier page, ${l.says.charAt(0).toLowerCase()}${l.says.slice(1)}` }));
-    this.carries.set(page.windowId, { goalId: run.plan.goalId, instruction: run.plan.instruction, page: { ...page, scope: continuationScope(page, true), keys: [] }, document: doc, session: run.session, completed, owed, until: this.deps.now() + CARRY_MS, ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
+    this.carries.set(page.windowId, { goalId: run.plan.goalId, instruction: run.plan.instruction, page: { ...page, scope: continuationScope(page, true), keys: [] }, document: doc, session: run.session, completed, owed, since: this.deps.now(), until: this.deps.now() + CARRY_MS, ...(run.plan.scopes === undefined ? {} : { scopes: run.plan.scopes }) });
   }
 
   /**
@@ -825,7 +837,7 @@ export class GoalRuns {
     // The carry goes on waiting for the page after this one, under the same instruction and scope, until a carried goal
     // finishes (keepCarry then replaces it with what that goal did and left): a page Caret found nothing for, or whose
     // preview the user did not take, does not end it (P3 eval: wizard-2 had nothing to fill, and wizard-3 then got none).
-    this.carries.set(windowId, { ...c, document, until: this.deps.now() + CARRY_MS });
+    this.carries.set(windowId, { ...c, document, since: this.deps.now(), until: this.deps.now() + CARRY_MS });
     this.carried.set(windowId, document);
     if (this.carried.size > 64) this.carried.delete(this.carried.keys().next().value as string);
     for (const run of this.runs.values()) {
@@ -1047,6 +1059,12 @@ export class GoalRuns {
    * A snapshot, change or closed window arrived: a running segment the screen moved under is revoked at once, so an act
    * already queued in the reader is refused there; blocked() catches the same right before the next act.
    */
+  /** I2 ruling: a press seen on `windowId` (helper.ts: the reader's userPress, or a goal's own press step). */
+  onPress(windowId: string, label: string, at: number): void {
+    this.presses.set(windowId, { at, label });
+    if (this.presses.size > 64) this.presses.delete(this.presses.keys().next().value as string);
+  }
+
   onChanges(_changes: readonly Change[]): void {
     const now = this.deps.now();
     for (const [windowId, c] of [...this.carries]) {
@@ -1055,7 +1073,18 @@ export class GoalRuns {
         continue;
       }
       const doc = this.deps.pageDocument?.(windowId) ?? null;
-      if (doc !== null && doc !== c.document) this.carryOn(c, windowId, doc);
+      if (doc === null || doc === c.document) continue;
+      // I2 ruling: a carry goes on only after an observed Next: Caret's own press, or the user's press the reader saw, of
+      // the page's forward control since the carry began. A new document with none (a reload, a redirect) ends the
+      // carry, says the page changed, and settles nothing.
+      const press = this.presses.get(windowId);
+      if (press !== undefined && press.at >= c.since && readsForward(press.label)) {
+        this.presses.delete(windowId);
+        this.carryOn(c, windowId, doc);
+      } else {
+        this.carries.delete(windowId);
+        this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: now, goalId: c.goalId, requestId: null, event: "stopped", segment: null, step: null, reason: "reload", says: "The page changed without a Next Caret saw, so Caret stopped here. Ask again for this page.", freshPlan: null });
+      }
     }
     for (const run of this.runs.values()) {
       if (run.state !== "running" || run.task === null) continue;

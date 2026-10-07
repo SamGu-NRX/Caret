@@ -8,6 +8,20 @@ import type { WindowState } from "../model.ts";
 import type { Owner } from "./contract.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 
+/**
+ * I2 ruling: one request, one settlement. What the per-field scope question settled for a request, kept so a later step
+ * of the same request (the Ask after the direct attach rule fell through) uses it rather than asking again: the Ask's
+ * id, the window and the document it was asked on, each field's fingerprint then, and the keys Jev chose or left unclear.
+ */
+export interface Settled {
+  readonly askId: string;
+  readonly windowId: string;
+  readonly document: string | null;
+  readonly seen: Readonly<Record<string, string>>;
+  readonly asks: readonly string[];
+  readonly unclear: readonly string[];
+}
+
 /** Which page document a window shows now (the helper's page engine, helper.ts HelperOptions.pageDocument). */
 export type DocumentReader = (windowId: string) => string | null;
 

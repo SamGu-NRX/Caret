@@ -5,6 +5,7 @@
 //     value's field, asked twice with the options reordered; then Noul questions that confirm each field of a list
 //     and each value's field. A part both asks do not agree on, at the floors below, is not taken.
 // Neither makes values. checkIntent checks whatever a maker returns.
+import type { Settled } from "../fill/ask-scope.ts";
 import { ownWording, sendable } from "../privacy.ts";
 import { secretText } from "../memory/sensitive.ts";
 import * as z from "zod";
@@ -31,7 +32,11 @@ export interface MakerUse {
 export interface IntentMaker {
   /** "heads" is the one-request Jev maker (intent-heads.ts). */
   readonly name: "writer" | "jev" | "heads";
-  make(snap: IntentSnapshot, signal?: AbortSignal): Promise<{ intent: AskIntent; use: MakerUse }>;
+  /**
+   * `settled`: what the request's scope question already settled (fill/ask-scope.ts Settled), which the heads maker uses
+   * instead of asking it again (I2 ruling: one request, one settlement); other makers ignore it.
+   */
+  make(snap: IntentSnapshot, signal?: AbortSignal, settled?: Pick<Settled, "asks" | "unclear">): Promise<{ intent: AskIntent; use: MakerUse }>;
 }
 
 const IntentJson = z

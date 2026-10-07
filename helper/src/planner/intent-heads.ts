@@ -241,23 +241,31 @@ export function tieLiterals(snap: IntentSnapshot, scoped: readonly IntentField[]
 export function headsIntentMaker(askJev: AskJev): IntentMaker {
   return {
     name: "heads",
-    async make(snap) {
+    async make(snap, _signal, settled) {
       let rs: JevResult[];
       try {
-        // A window with no field has nothing to ask the scope of.
-        rs = await Promise.all([askJev(headsRequest(snap)), ...(snap.fields.length === 0 ? [] : [askJev(scopeRequest(snap, 0)), askJev(scopeRequest(snap, 1))])]);
+        // A window with no field has nothing to ask the scope of; a request that already settled it asks it no more
+        // (I2 ruling: one request, one settlement), and its verdicts stand in for both wordings.
+        const asked = snap.fields.length > 0 && settled === undefined;
+        rs = await Promise.all([askJev(headsRequest(snap)), ...(asked ? [askJev(scopeRequest(snap, 0)), askJev(scopeRequest(snap, 1))] : [])]);
+        if (settled !== undefined && snap.fields.length > 0) {
+          const verdict = (f: IntentField): string => (settled.asks.includes(f.key) ? "asks" : settled.unclear.includes(f.key) ? "unclear" : "not");
+          const given: JevResult = { model: "settled", inputTokens: 0, latencyMs: 0, costUsd: 0, answers: Object.fromEntries(scopeFields(snap).map((f) => [scopeId(f.ref), { choice: verdict(f), confidence: 1 }])) };
+          rs.push(given, given);
+        }
       } catch (e) {
         throw jevFailedError(e);
       }
       const [heads, a, b] = rs as [JevResult, JevResult?, JevResult?];
+      const sent = rs.filter((r) => r.model !== "settled");
       const use: MakerUse = {
         maker: "heads",
         model: heads.model,
-        calls: rs.length,
-        inputTokens: rs.reduce((n, r) => n + r.inputTokens, 0),
+        calls: sent.length,
+        inputTokens: sent.reduce((n, r) => n + r.inputTokens, 0),
         outputTokens: 0,
-        costUsd: rs.reduce((n, r) => n + r.costUsd, 0),
-        latencyMs: Math.max(...rs.map((r) => r.latencyMs)),
+        costUsd: sent.reduce((n, r) => n + r.costUsd, 0),
+        latencyMs: Math.max(...sent.map((r) => r.latencyMs)),
       };
       return { intent: readHeads(snap, heads, a === undefined || b === undefined ? null : [a, b]), use };
     },
@@ -271,6 +279,13 @@ const inOrder = (snap: IntentSnapshot, fs: Iterable<IntentField>): IntentField[]
  * null only for a window with no field.
  */
 export function readHeads(snap: IntentSnapshot, heads: JevResult, scope: readonly [JevResult, JevResult] | null): AskIntent {
+  // I2 ruling: what the scope question settled travels with every intent, refusals included, so no question an Ask then
+  // saves is without it (planner/ask.ts settledKeys): the fields and upload fields Jev chose or left unclear.
+  const settledRefs = scope === null ? [] : scopeFields(snap).filter((f) => scopeVerdict(scope, f.ref) !== "not").map((f) => f.ref);
+  return { ...readHeadsIntent(snap, heads, scope), settled: settledRefs };
+}
+
+function readHeadsIntent(snap: IntentSnapshot, heads: JevResult, scope: readonly [JevResult, JevResult] | null): AskIntent {
   const base: AskIntent = { route: "ask", why: "whichFields", scope: "all", section: "none", fields: [], sources: [], whose: "user", literals: [] };
   const route = settled(heads, "route");
   if (route === "refuse") {

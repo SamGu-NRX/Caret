@@ -34,6 +34,19 @@ async function fillFirst(r: Rig, instruction = "fill out this form from my note"
 }
 
 describe("a whole-form goal carries across the user's Next (P3)", () => {
+  // I2 lead ruling (review reproduction): a carry needs an observed Next. A new document with no press seen (a reload, a
+  // redirect) stops the goal, says the page changed, and settles no scope there.
+  it("stops, says the page changed, and settles nothing when the page changes with no Next seen", async () => {
+    const r = await rig();
+    const first = await fillFirst(r);
+    const before = r.asked.length;
+    await r.next(page2, "Apply: step 2", "/two", false);
+    await settle(r);
+    expect(segments(r).some((x) => x.reason === "nextPage")).toBe(false);
+    expect(goalMessages(r).some((m) => m.event === "stopped" && m.goalId === first.goalId && /page changed without a Next/u.test((m as Stopped).says))).toBe(true);
+    expect(r.asked.slice(before).some((q) => q.purpose === "ask.scope")).toBe(false);
+  });
+
   it("offers the next page as a fresh preview with reason nextPage, which one more Tab fills", async () => {
     const r = await rig();
     const first = await fillFirst(r);

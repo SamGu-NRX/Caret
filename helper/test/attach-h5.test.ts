@@ -190,6 +190,34 @@ describe("the confirmed file's run (helper, executor, page engine)", () => {
     expect(verbs(sent).filter((v) => v.kind === "pageAttachFile" || v.kind === "pageWrite" || v.kind === "pageInsertText")).toEqual([]);
   });
 
+  // I2 lead ruling (review reproduction): one request, one settlement. When the direct attach rule falls through, the
+  // Ask of the same request uses the rule's settlement and its id, and asks the scope question no more.
+  it("asks the scope question once for a request whose attach rule falls through to the Ask", async () => {
+    const { session } = rig([email, file("e4", "Resume/CV", 30)]);
+    let helper: Helper | null = null;
+    const link = new PageEngineLink(session, (s: Snapshot) => void helper?.handleReader(s));
+    const reader: ReaderLink = { run: async () => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "r", at: 0, outcome: "ok", detail: null }) };
+    const routed = new RoutedReaderLink(reader, { engineFor: (id) => (id.startsWith("page:") ? link : null), engines: () => [link] });
+    const scopeAsks: unknown[] = [];
+    const askJev = async (req: Parameters<NonNullable<ConstructorParameters<typeof Helper>[0]["askJev"]>>[0]) => {
+      if (req.purpose === "ask.scope") scopeAsks.push(req);
+      const answers = Object.fromEntries(
+        Object.entries(req.questions).map(([id, q]) => {
+          const ins = String(q.instructions);
+          if (req.purpose === "ask.heads") return [id, { choice: ({ route: "some", why: "nothingToFill", source: "any", whose: "user" } as Record<string, string>)[id] ?? "none", confidence: 0.95 }];
+          if (req.purpose === "ask.scope") return [id, { choice: ins.includes("file upload") ? "not" : /field 'Email'/u.test(ins) ? "asks" : "not", confidence: 0.95 }];
+          return [id, { choice: Object.keys(q.criteria).at(-1) ?? "none", confidence: 0.95 }];
+        }),
+      );
+      return { model: "t", inputTokens: 0, latencyMs: 0, costUsd: 0, answers };
+    };
+    helper = new Helper({ store: new Store(join(dir, "data")), askJev, shadow: false, allowBackgroundFocus: false, publish: () => {}, readerLink: routed, ask: { maker: "heads" } });
+    await link.run({ kind: "walk", pid: chrome.pid, windowId: W });
+    await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "one", at: 1, instruction: "fill in my email; don't attach my resume", windowId: W }, "s1", true);
+    // One settlement: one request in each of the two wordings.
+    expect(scopeAsks).toHaveLength(2);
+  });
+
   it("attaches the file the user confirmed, verified by the page's file list", async () => {
     const { helper, published, sent, offerKey } = await setUp();
     const path = join(dir, "Resume.pdf");

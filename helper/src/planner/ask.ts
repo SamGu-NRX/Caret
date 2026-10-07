@@ -14,7 +14,7 @@
 import { randomUUID } from "node:crypto";
 import { unnamedTargets } from "./targets.ts";
 import { settleFields } from "./intent-heads.ts";
-import { askScope, fieldFingerprint, type AskScope, type Authority, type DocumentReader } from "../fill/ask-scope.ts";
+import { askScope, fieldFingerprint, type AskScope, type Authority, type DocumentReader, type Settled } from "../fill/ask-scope.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { AskOption, FillField, FillProposal, Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
@@ -49,6 +49,8 @@ export interface AskOptions {
    * holds nothing on any page.
    */
   documentOf?: DocumentReader;
+  /** I2: what this request's scope question already settled (the direct attach rule's, helper.ts), used in place of asking again. */
+  settled?: Settled;
   /** W1: passed to the fill step's proposal (FillOptions.trace), for evaluation harnesses only. */
   fillTrace?: FillOptions["trace"];
   /** Fault-injection seam for the planner evaluation (PlanTaskOptions.beforeCheck). */
@@ -370,11 +372,14 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // I2 ruling B: the page document the question is asked on, read with the snapshot, before any planning awaits; a
   // continued Ask keeps its first question's.
   const documentOf = o.documentOf ?? null;
-  const document = resume !== undefined ? resume.document : documentOf === null ? null : documentOf(w.window.windowId);
+  // I2 ruling: one request, one settlement: a settlement this request already made on this window (the direct attach
+  // rule's, helper.ts) is used, with its id, document and fingerprints, and the scope question is not asked again.
+  const presettled = resume === undefined && o.settled !== undefined && o.settled.windowId === w.window.windowId ? o.settled : undefined;
+  const document = resume !== undefined ? resume.document : presettled !== undefined ? presettled.document : documentOf === null ? null : documentOf(w.window.windowId);
   try {
     snap = intentSnapshot(instruction, model, w, memory.values());
     // A continued Ask reads the maker's intent against the form as it is now, and asks the maker nothing.
-    made = resume === undefined ? await o.maker.make(snap) : { intent: remapIntent(resume.intent, resume.refs, snap, fixed.fields !== undefined), use: resume.maker };
+    made = resume === undefined ? await o.maker.make(snap, undefined, presettled) : { intent: remapIntent(resume.intent, resume.refs, snap, fixed.fields !== undefined), use: resume.maker };
     intent = applyFixed(made.intent, fixed, snap);
     // A window with no field at all (the email the user is reading) has nothing to fill or to ask which fields of, so
     // for a host that runs goals an Ask from it is about other windows: a fill or an unsettled intent is a plan, which
@@ -389,7 +394,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // I2 rulings: the Ask's own id, which its scope and every mint's authority carry; a continued Ask keeps it, carries
   // the scope its first question froze, and is on the document that question was asked on, or it goes no further
   // (no goal, no settling: settlement is a fresh Ask's or a carry's, helper.ts).
-  const askId = resume?.askId ?? randomUUID();
+  const askId = resume?.askId ?? presettled?.askId ?? randomUUID();
   if (resume !== undefined) {
     if (resume.scopeKeys === undefined || resume.askId === undefined) throw new AskRefused(new SaidError("questionGone", SAYS.questionGone, "the question carries no settled scope"), null, null);
     const docNow = documentOf === null ? null : documentOf(w.window.windowId);
@@ -400,6 +405,10 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   let frozen: string[] | undefined = resume?.scopeKeys;
   const settledKeys = (): string[] | undefined => {
     if (frozen !== undefined) return frozen;
+    if (made.intent.settled !== undefined) {
+      const k = (r: string): string | undefined => snap.fields.find((f) => f.ref === r)?.key ?? snap.uploads.find((u) => u.ref === r)?.key;
+      return made.intent.settled.flatMap((r) => k(r) ?? []);
+    }
     if (!fromJev(intent)) return undefined;
     const key = (r: string): string | undefined => snap.fields.find((f) => f.ref === r)?.key ?? snap.uploads.find((u) => u.ref === r)?.key;
     return [...new Set([...intent.fields, ...(intent.options ?? []), ...(intent.uploads ?? [])].flatMap((r) => key(r) ?? []))];
@@ -438,15 +447,12 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     if (fixed[e.part] !== undefined) return `the user already picked the ${e.part}`;
     // A3: an intent from Jev's scope ask offers exactly the fields Jev left unclear or chose, never fields code picked.
     const offered = intent.options === undefined ? null : intent.options.map((r) => snap.fields.find((f) => f.ref === r) ?? changed(`the field ${r} is gone`));
-    const r = choicesFor(e.part, snap, model, scopeFields(intent, snap), now, offered);
-    if (r.choices === null) return r.why;
-    // I2 ruling: a fields question offers only fields the scope question settled (the question carries that scope).
+    // I2 rulings: no question is saved for an Ask whose scope is not settled; every question carries that scope, and
+    // offers (and looks for sources of) the settled fields only.
     const settled = settledKeys();
-    if (e.part === "fields" && settled !== undefined) {
-      const options = r.choices.options.filter((c) => (c.fixes.fields ?? []).every((k) => settled.includes(k)));
-      if (options.length === 0) return "no field the scope question settled fits";
-      r.choices = { ...r.choices, options };
-    }
+    if (settled === undefined) return "the Ask's scope was not settled";
+    const r = choicesFor(e.part, snap, model, scopeFields(intent, snap), now, offered, new Set(settled));
+    if (r.choices === null) return r.why;
     return {
       ...r.choices,
       window: { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title },
@@ -458,10 +464,10 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
         maker: use,
         makerName,
         fixed,
-        seen: seenOf(snap, resume?.seen),
+        seen: seenOf(snap, resume?.seen ?? (presettled === undefined ? undefined : { title: w.window.title, fields: { ...presettled.seen } })),
         document,
         askId,
-        scopeKeys: settledKeys() ?? [],
+        scopeKeys: settled,
       },
     };
   };
@@ -481,15 +487,19 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // the writer's and the staged maker's fields are asked here, every field and upload field of the form in one
   // question, before code reads the intent, so every question carries the frozen scope (AskResume.scopeKeys). Fields
   // left unclear are asked about first. No whole-form confirmation stands in for this question.
-  if (frozen === undefined && !fromJev(intent) && intent.route !== "refuse") {
+  if (frozen === undefined && made.intent.settled === undefined && !fromJev(intent)) {
     if (snap.fields.length === 0 && snap.uploads.length === 0) frozen = [];
     else if (fixed.fields === undefined) {
       let settled: Awaited<ReturnType<typeof settleFields>>;
-      try {
-        settled = await settleFields(snap, askJev);
-      } catch (e) {
-        return refused(e);
-      }
+      if (presettled !== undefined) {
+        const of = (keys: readonly string[]): IntentField[] => [...snap.fields, ...snap.uploads].filter((f) => keys.includes(f.key));
+        settled = { asks: of(presettled.asks), unclear: of(presettled.unclear) };
+      } else
+        try {
+          settled = await settleFields(snap, askJev);
+        } catch (e) {
+          return refused(e);
+        }
       const unclear = settled.unclear.filter((f) => f.upload !== true);
       frozen = [...settled.asks, ...unclear].map((f) => f.key);
       if (unclear.length > 0) {
@@ -615,7 +625,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   let scope: AskScope;
   try {
     // A window with no field gives a scope of no field: it authorizes nothing (a goal settles each window it writes in).
-    scope = askScope(w.window.windowId, document, scopeKeys, resume?.seen.fields ?? seenOf(snap, undefined).fields, fixed.person?.kind === "person" ? fixed.person.name : null, askId);
+    scope = askScope(w.window.windowId, document, scopeKeys, resume?.seen.fields ?? { ...seenOf(snap, undefined).fields, ...(presettled?.seen ?? {}) }, fixed.person?.kind === "person" ? fixed.person.name : null, askId);
   } catch (e) {
     return refused(new SaidError("unknownWindow", SAYS.windowChanged, e instanceof Error ? e.message : String(e)));
   }

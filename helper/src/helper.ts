@@ -3,7 +3,7 @@
 // grounded fill proposals. server.ts connects it to the socket; tests drive it directly.
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
-import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScope, type DocumentReader, type ScopeSet } from "./fill/ask-scope.ts";
+import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
 import { MEMORY_SNIPPETS, SnippetLedger, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
@@ -1026,6 +1026,8 @@ export class Helper {
         return null;
       case "userPress":
         this.patterns.onUserPress(m);
+        // I2 ruling: the user's press a carry needs before it plans the next page (goals/runs.ts onChanges).
+        this.goals.onPress(m.windowId, m.label, m.at);
         return null;
     }
   }
@@ -1425,18 +1427,24 @@ export class Helper {
    * the question was sent. Caret cannot ask the user mid-goal, so an unclear field is not chosen. With no Jev or no such
    * window, a scope of no field: nothing is written there.
    */
-  private async settleScopeFor(_ticket: SettleTicket, instruction: string, windowId: string, of: { askId: string; person: string | null }, document?: string | null): Promise<AskScope> {
-    const person = of.person;
+  private async settleScopeFor(ticket: SettleTicket, instruction: string, windowId: string, of: { askId: string; person: string | null }, document?: string | null): Promise<AskScope> {
+    const r = await this.settleRequest(ticket, instruction, windowId, of.askId, document);
+    return askScope(windowId, r.document, r.asks, r.seen, of.person, of.askId);
+  }
+
+  /** The per-field scope question on a window for a request holding a ticket: what it settled (fill/ask-scope.ts Settled). */
+  private async settleRequest(_ticket: SettleTicket, instruction: string, windowId: string, askId: string, document?: string | null): Promise<Settled> {
     const reader = this.documentReader();
     const doc = document !== undefined ? document : reader === null ? null : reader(windowId);
     const w = this.model.windows.get(windowId);
     const ask = this.ask;
-    if (w === undefined || ask === null) return askScope(windowId, doc, [], {}, person, of.askId);
+    if (w === undefined || ask === null) return { askId, windowId, document: doc, seen: {}, asks: [], unclear: [] };
     const snap = intentSnapshot(instruction, this.model, w, this.plannerMemory());
     const seen = Object.fromEntries([...snap.fields, ...snap.uploads].map((f) => [f.key, fieldFingerprint(w, f.key)]));
-    const { asks } = await settleFields(snap, ask);
-    return askScope(windowId, doc, asks.map((f) => f.key), seen, person, of.askId);
+    const { asks, unclear } = await settleFields(snap, ask);
+    return { askId, windowId, document: doc, seen, asks: asks.map((f) => f.key), unclear: unclear.map((f) => f.key) };
   }
+
 
   /** The set with the page's scope for its document now: the one it holds, or one settled for a document it has none for. */
   private async withPageScope(ticket: SettleTicket | null, instruction: string, windowId: string, scopes: ScopeSet): Promise<ScopeSet> {
@@ -1702,10 +1710,18 @@ export class Helper {
     const tab = this.askTabRead(offerKey, ask);
     // "Attach my resume" (H5): code plans it, with no model, when the page holds a file input that fits.
     let attachDraft: PlanDraft | null = null;
+    let requestSettled: Settled | undefined;
     try {
       // I2 ruling A: never unscoped: the page's fields and upload fields are settled by the scope question first. A
       // continued Ask never comes here: it goes on from its frozen scope (planner/ask.ts AskResume), settling nothing.
-      if (resume === undefined) attachDraft = await planAttach(instruction, this.model, windowId, offerKey, async (id) => (this.ask === null ? null : await this.settleScopeFor(settleTicket("freshAsk"), instruction, id, { askId: randomUUID(), person: null })), this.now(), this.documentReader());
+      // I2 ruling: one request, one settlement. The rule's settlement is kept, and an Ask after it falls through uses it.
+      if (resume === undefined)
+        attachDraft = await planAttach(instruction, this.model, windowId, offerKey, async (id) => {
+          if (this.ask === null) return null;
+          const r = await this.settleRequest(settleTicket("freshAsk"), instruction, id, randomUUID());
+          requestSettled = r;
+          return askScope(r.windowId, r.document, r.asks, r.seen, null, r.askId);
+        }, this.now(), this.documentReader());
     } catch (e) {
       if (!(e instanceof PlannerError)) throw e;
       return fail(e.code, e.message, said(e));
@@ -1717,7 +1733,7 @@ export class Helper {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
         const maker = askConfig.maker === "writer" ? writerIntentMaker(askConfig.writer, () => offerKey) : askConfig.maker === "heads" ? headsIntentMaker(ask) : jevIntentMaker(ask);
-        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: tab.ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, fillModel: tab.fillModel, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...(this.opts.pageDocument === undefined ? {} : { documentOf: this.opts.pageDocument }), ...this.opts.plannerHooks });
+        const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: tab.ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, fillModel: tab.fillModel, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...(requestSettled === undefined ? {} : { settled: requestSettled }), ...(this.opts.pageDocument === undefined ? {} : { documentOf: this.opts.pageDocument }), ...this.opts.plannerHooks });
         // Rule 6: text that was dropped while Jev answered offers nothing made from it.
         if (tab.expired()) return fail("unseenWindow", SAYS.tabExpired, SAYS.tabExpired);
         store.count(`plan.ask_${d.route}`, 1);

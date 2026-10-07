@@ -276,3 +276,32 @@ describe("ruling 3: an Ask's goal never mints a goal's authority", () => {
     expect(seen.filter((c) => c.authority.kind === "goal")).toEqual([]);
   });
 });
+
+describe("last round: questions carry and offer only the settled scope", () => {
+  const writerSays = (intent: Record<string, unknown>) => ({ name: "writer" as const, async make() { return { intent: { route: "ask", why: "whichFields", scope: "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [], ...intent } as never, use: { maker: "writer" as const, model: "t", calls: 1, inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 } }; } });
+
+  it("ruling 3: a writer's refusal still asks the scope question first, so no question is ever saved unsettled", async () => {
+    const log: JevRequest[] = [];
+    await planAsk("pay for it", desk(), { values: () => MEMORY }, ABOUT, { askJev: jev("some", ["Name"], log), maker: writerSays({ route: "refuse", why: "payment", scope: "none" }) as never, writer: null, offerKey: "rf", windowId: WIN, now: 2000 }).catch(() => null);
+    expect(log.some((r) => r.purpose === "ask.scope")).toBe(true);
+  });
+
+  it("ruling 4: filters the fields that fit to the settled ones before the option limit", async () => {
+    const phones = Array.from({ length: 10 }, (_, i) => field(`sf/p${i + 1}`, "", { label: `Phone ${i + 1}`, frame: [10, 10 + 30 * i, 200, 20] }));
+    const e = await planAsk("add my phone", desk(phones), { values: () => MEMORY }, ABOUT, { askJev: jev("some", ["Phone 1", "Phone 2"]), maker: writerSays({}) as never, writer: null, offerKey: "lim", windowId: WIN, now: 2000 }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(AskAsks);
+    expect((e as AskAsks).question.options.map((c) => (c.option.kind === "field" ? c.option.label : c.option.kind))).toEqual(["Phone 1", "Phone 2"]);
+  });
+
+  it("ruling 5: a source question looks for the values of the settled fields only", async () => {
+    const m = desk([field("sf/email", "", { label: "Email", frame: [10, 10, 200, 20] }), field("sf/phone", "", { label: "Phone", frame: [10, 40, 200, 20] })]);
+    m.apply(snap([field("n1/t", "Email: elena.vance@example.com", { role: "AXTextArea" })], { at: 900, windowId: "n1", title: "Email note.txt", app: { pid: 7201, bundleId: "com.apple.TextEdit", name: "TextEdit" } }));
+    m.apply(snap([field("n2/t", "Phone: (512) 555-0147", { role: "AXTextArea" })], { at: 950, windowId: "n2", title: "Phone note.txt", app: { pid: 7202, bundleId: "com.apple.TextEdit", name: "TextEdit" } }));
+    m.apply(snap([field("sf/email", "", { label: "Email", frame: [10, 10, 200, 20] }), field("sf/phone", "", { label: "Phone", frame: [10, 40, 200, 20] })], { at: 1000, windowId: WIN, title: "Sign up", app: { pid: 7100, bundleId: "com.example.signup", name: "Signup" }, focused: true, focusedKey: "sf/email" }));
+    const e = await planAsk("fill it in from my note", m, { values: () => MEMORY }, ABOUT, { askJev: jev("some", ["Email"]), maker: writerSays({ why: "whichSource", scope: "all" }) as never, writer: null, offerKey: "src", windowId: WIN, now: 2000 }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(AskAsks);
+    const titles = (e as AskAsks).question.options.map((c) => JSON.stringify(c.option));
+    expect(titles.some((t) => t.includes("Email note"))).toBe(true);
+    expect(titles.some((t) => t.includes("Phone note"))).toBe(false);
+  });
+});
