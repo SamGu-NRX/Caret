@@ -221,12 +221,28 @@ const NAME_SUFFIX = /^(?:jr|sr|ii|iii|iv|phd|md|esq|dds|cpa|rn)\.?$/iu;
  * names ("Elena Varga, Marcus Cole") from a name and the place it continues into ("Stanford University, Palo Alto"):
  * both read as one value here, and a name field's own part check (derive.ts partFits) refuses the first.
  */
-export function severalValues(text: string): string[] | null {
+export function severalValues(text: string): readonly string[] | null {
+  // The generator reads every line within GENERATOR_BUDGET_MS, also on its first call in a fresh process, and a desk
+  // that runs out withholds every name: this reading first made a cold job-application desk 11.9 to 14.5 ms of 15, and
+  // a live Ask then withheld every name on it (evidence/screen/w1/live-held09). Most lines hold no comma, semicolon or
+  // "at", and the readers below compile their patterns at load (WARM), not inside a fill.
+  if (!SPLITS.test(text)) return null;
+  const hit = severalMemo.get(text);
+  if (hit !== undefined) return hit;
+  const found = readSeveral(text);
+  if (severalMemo.size >= MEMO_LINES) severalMemo.clear();
+  severalMemo.set(text, found === null ? null : Object.freeze(found));
+  return found;
+}
+const SPLITS = /[,;]|\sat\s/u;
+const severalMemo = new Map<string, readonly string[] | null>();
+
+function readSeveral(text: string): string[] | null {
   let v = text.trim().replace(/[.!]+$/u, "");
   const remark = /^(.+?)\s*\([^()]*\)$/u.exec(v);
   if (remark?.[1] !== undefined) v = remark[1].trim();
   if (v === "") return null;
-  const at = roleAt(v);
+  const at = /\sat\s/u.test(v) ? roleAt(v) : null;
   if (at !== null) return [at.role, at.org];
   if (textKind(v) !== "text" || dateShaped(v) || timeShaped(v) || splitPlace(v) !== null) return null;
   // Typed values and amounts masked, length for length, so their commas split nothing.
@@ -261,6 +277,14 @@ export function severalValues(text: string): string[] | null {
   const shapes = kept.map(shape);
   return new Set(shapes).size > 1 || shapes.every((x) => x !== "words") ? kept : null;
 }
+
+/**
+ * Lines that take each path of readSeveral once, read when this module loads, so the patterns they use (kinds.ts
+ * textKind and dateShaped, derive.ts splitPlace and splitName, roleAt, lineValues) are compiled before the first fill
+ * (severalValues). Their results are not kept.
+ */
+const WARM = ["Junior Analyst at Ridgeline Outdoor Co", "4410 Speedway Apt 2, Austin, Texas 78751", "Jan 4, 2027, 3:00 PM", "Austin, Texas", "Okafor, Riley Ade", "Gary Pruitt, (512) 555-0193, $5,200, gpruitt@example.net"];
+for (const line of WARM) readSeveral(line);
 
 /** Whether a text is a question and its answer on one line ("What are your salary expectations?: $185,000"): a label and its value, never one value. */
 export function questionAnswer(text: string): boolean {
