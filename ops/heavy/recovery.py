@@ -388,10 +388,14 @@ class Owner:
             self.log("another recovery owner holds this job; exiting")
             return 0
         self._restore()  # only the holder of owner.lock reads (and may repair) the journal
+        self.finished = False
         if self.state == "clean":
-            self.log("journal says CLEAN; nothing to hold")
-            self._bootout_self()
-            return 0
+            if self.supervisor is None or same_process(self.probes, self.supervisor) is not True:
+                self.log("journal says CLEAN; nothing to hold")
+                self._bootout_self()
+                return 0
+            # The CLEAN reply may have died with the previous owner: answer the living supervisor again.
+            self.log("journal says CLEAN; replaying it to supervisor {}".format(self.supervisor))
         if os.path.lexists(self.sock_path):
             os.unlink(self.sock_path)  # owner.lock is ours, so no live owner is listening on it
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -400,7 +404,7 @@ class Owner:
         listener.listen(8)
         signal.signal(signal.SIGTERM, signal.SIG_IGN)  # only the journal's CLEAN ends custody, never a stray TERM
         self.log("listening on {} (state {})".format(self.sock_path, self.state))
-        while self.state != "clean":
+        while not self.finished:
             # Custody ends only with CLEAN: any other failure is logged and the loop carries on, holding the locks.
             try:
                 readable, _, _ = select.select([listener, *self.clients], [], [], TICK)
@@ -508,6 +512,8 @@ class Owner:
 
     def _handle(self, sock, msg, fds):
         op = msg.get("op")
+        if self.state == "clean":
+            return self._replay(sock, msg)
         if op == "adopt":
             uid, pid = peer(sock)
             sup = msg["supervisor"]
@@ -563,11 +569,27 @@ class Owner:
             if all(r[0] == procs.ABSENT for r in results.values()) and lease[0] == procs.ABSENT:
                 self.journal.append({"event": "clean", "by": "supervisor", "results": results})
                 self.state = "clean"
+                test_point(self.plan, "recovery:after-clean")
+                self.finished = True
                 return {"ok": True}
             return {"ok": False, "results": results, "lease": lease}
         if op == "status":
             return {"ok": True, "state": self.state, "locks": sorted(self.fds), "token": self.token is not None}
         raise ValueError("unknown op {!r}".format(op))
+
+    def _replay(self, sock, msg):
+        """CLEAN is journalled: no custody is needed any more. The same attempt's supervisor may adopt (its
+        descriptors are not kept) and ask for `clean` again; that answer ends the replay."""
+        uid, pid = peer(sock)
+        if uid != os.getuid() or self.supervisor is None or pid != self.supervisor[0]:
+            raise ValueError("only this attempt's supervisor may talk to a CLEAN owner")
+        if msg.get("op") == "adopt" and msg.get("attempt") != self.attempt:
+            raise ValueError("this owner serves attempt {}".format(self.attempt))
+        if msg.get("op") == "clean":
+            self.finished = True
+        if msg.get("op") in ("adopt", "clean", "status"):
+            return {"ok": True, "state": "clean"}
+        raise ValueError("{} after CLEAN".format(msg.get("op")))
 
     def _register(self, resource):
         if resource["id"] in self.resources:
@@ -600,6 +622,10 @@ class Owner:
         return results
 
     def _tick(self):
+        if self.state == "clean":
+            if self.supervisor is None or same_process(self.probes, self.supervisor) is False:
+                self.finished = True
+            return
         self._tick_groups()
         if self.state == "custody" and self.supervisor is not None \
                 and same_process(self.probes, self.supervisor) is False:
@@ -645,6 +671,7 @@ class Owner:
             if lease[0] == procs.ABSENT:
                 self.journal.append({"event": "clean", "by": "recovery", "results": results, "lease": list(lease)})
                 self.state = "clean"
+                self.finished = True
                 return
             results["lease"] = list(lease)
         if now - self.term_at >= grace and (self.next_kill is None or now >= self.next_kill):

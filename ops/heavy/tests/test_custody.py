@@ -100,14 +100,19 @@ class Test3KillEachHolderAtEachBoundary(Custody):
                 self.assert_all_released(job_id)
 
     def test_recovery_owner_death_at_each_boundary_is_survived(self):
-        for point in ("recovery:after-adopt", "recovery:after-register"):
+        for point in ("recovery:after-adopt", "recovery:after-register", "recovery:after-clean"):
             with self.subTest(point):
                 job_id = self.run_killed(point)
                 outcome = self.outcome(job_id)
                 self.assertEqual((outcome["exit"], outcome["cleanup"]), (0, "clean"), outcome["reason"])
                 self.assertTrue(os.path.exists(os.path.join(self.run_root(job_id), "test-point-fired")))
                 adopted = [r for r in self.journal(job_id) if r["event"] == "adopted"]
-                self.assertGreaterEqual(len(adopted), 2)  # the restarted owner was adopted again
+                if point == "recovery:after-clean":
+                    # CLEAN was journalled but its reply died with the owner: the restarted owner replays it.
+                    with open(os.path.join(self.run_root(job_id), "recovery", "recovery.log")) as fh:
+                        self.assertIn("replaying it to supervisor", fh.read())
+                else:
+                    self.assertGreaterEqual(len(adopted), 2)  # the restarted owner was adopted again
                 self.wait_clean(job_id, "supervisor")
                 self.assert_all_released(job_id)
 
