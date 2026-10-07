@@ -16,7 +16,7 @@
 import type { AutocompleteToken, FillMemory, FillWithheld, Node, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { createHash } from "node:crypto";
-import { lineDigests, logicalLines, sentenceAround } from "./line-values.ts";
+import { bareLine, LABELLED, lineDigests, logicalLines, sentenceAround } from "./line-values.ts";
 import { spanContexts } from "./candidates.ts";
 import { redactWindow } from "./redact.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
@@ -124,10 +124,10 @@ export type Provenance =
        */
       lines: readonly string[];
       /**
-       * Digests of each sentence that held the span, read across the lines a sentence wraps over (sentenceDigests). Kept
-       * beside `lines` (I1 review): a wrapped sentence changes two lines below its value, outside `lines`'s neighbourhood
-       * ("Phone: 555-0142 / and this is my current / number, safe to use." whose last line becomes "number, do not use
-       * it."). A wrap whose next line starts with a capital is not read as one sentence, here or by the generator.
+       * Digests of each sentence that held the span, read across the lines of its "Label: value" record
+       * (sentenceDigests). Kept beside `lines` (I1 review): a wrapped sentence changes two lines below its value, outside
+       * `lines`'s neighbourhood ("Phone: 555-0142 / and this is my current / number, safe to use." whose last line
+       * becomes "number, do not use it.").
        */
       sentences: readonly string[];
     }
@@ -760,21 +760,33 @@ export function windowProvenance(w: WindowState | undefined, c: { text: string; 
 }
 
 /**
- * Digests of each sentence of `text` that holds `span`, a sentence read within a logical line (line-values.ts
- * logicalLines: a line joined to the one before when it goes on with that one's sentence, as the generator reads a
- * wrapped sentence) as line-values.ts sentenceAround reads it. W2's version joined every line of the text, so a note of
- * "Label: value" lines, none ending in a stop, read as one sentence and any edit anywhere refused every value in it
- * (test/g2-ownership.test.ts, recheck by neighbourhood).
+ * Digests of each sentence of `text` that holds `span`. The text is read as records: a "Label: value" line starts one
+ * (line-values.ts LABELLED, any capitalization), and every other line, blank lines aside, goes on with the record above
+ * it, however it starts; each record's lines are joined (bareLine) and read for sentences as line-values.ts
+ * sentenceAround reads them. A span no record holds whole (a multi-line span across a labelled line) is read in all the
+ * lines joined, W2's rule.
+ * Why records: W2 joined every line, so a note of unpunctuated "Label: value" lines read as one sentence and any edit
+ * anywhere refused every value in it (test/g2-ownership.test.ts, recheck by neighbourhood); reading wraps only where a
+ * line starts in lowercase (logicalLines) missed "Phone: 555-0142 / And this is my current / number, safe to use." whose
+ * last line changes (I1 re-review).
  */
 export function sentenceDigests(text: string, span: string): string[] {
-  const want = span.replace(/\s+/gu, " ").trim();
+  const flat = (t: string): string => t.replace(/\s+/gu, " ").trim();
+  const want = flat(span);
   if (want === "") return [];
-  const out: string[] = [];
-  for (const l of logicalLines(text)) {
-    const line = l.replace(/\s+/gu, " ");
-    for (let at = line.indexOf(want); at >= 0; at = line.indexOf(want, at + 1)) out.push(createHash("sha256").update(sentenceAround(line, at, want)).digest("hex").slice(0, 16));
+  const lines = text.split(/\r?\n/u).map(bareLine).filter((l) => l !== "");
+  const records: string[] = [];
+  for (const l of lines) {
+    if (records.length === 0 || LABELLED.test(l)) records.push(l);
+    else records[records.length - 1] += ` ${l}`;
   }
-  return out;
+  const digests = (joined: string): string[] => {
+    const out: string[] = [];
+    for (let at = joined.indexOf(want); at >= 0; at = joined.indexOf(want, at + 1)) out.push(createHash("sha256").update(sentenceAround(joined, at, want)).digest("hex").slice(0, 16));
+    return out;
+  };
+  const held = records.flatMap((r) => digests(flat(r)));
+  return held.length > 0 ? held : digests(flat(lines.join(" ")));
 }
 
 /** Whether two digest lists hold the same digests. */

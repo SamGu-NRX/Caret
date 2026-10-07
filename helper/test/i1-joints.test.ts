@@ -19,6 +19,7 @@ import type { HelperMessage, TaskProgress } from "../src/protocol.ts";
 import { field, MAIL_APP, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, WIN, wireButtons } from "./fake-app.ts";
 import { STAND_IN } from "./setup/verifier.ts";
+import { holds } from "./recheck.ts";
 
 const T0 = 1_790_000_000_000;
 const ME = "jo.abernathy@example.com";
@@ -211,5 +212,27 @@ describe("I1 joint 4: a source line edited after acceptance stops the write", ()
     await run("t-i1-wrap", plan, slots, guardFor(() => helper.model, checks));
     expect(app.verbs.filter((v) => v.kind === "write")).toEqual([]);
     expect(progress("t-i1-wrap").at(-1)?.stopReason).toBe("changed");
+  });
+});
+
+describe("I1 re-review: a sentence is read across its record's lines, however each line starts", () => {
+  const held = (was: string, now: string, span: string): boolean => holds((t) => desk(["Phone"], t), { windowId: "note", nodeKey: "src/note" }, was, now, span);
+  it("refuses a value once a later line of its sentence changes, the wrap led by lowercase, a capital or a digit", () => {
+    for (const second of ["and this is my current", "And this is my current", "24 hours a day, this is my current"]) {
+      const was = `Phone: 555-0142\n${second}\nnumber, safe to use.`;
+      expect(held(was, was, "555-0142"), second).toBe(true);
+      expect(held(was, was.replace("safe to use.", "do not use it."), "555-0142"), second).toBe(false);
+    }
+  });
+  it("refuses a multi-line span once a later line of its sentence changes", () => {
+    const was = "Address: 455 Congress Ave\nAustin, Texas 78701\nand this is the current\naddress, safe to use.";
+    const span = "455 Congress Ave\nAustin, Texas 78701";
+    expect(held(was, was, span)).toBe(true);
+    expect(held(was, was.replace("safe to use.", "do not use it."), span)).toBe(false);
+  });
+  it("keeps a value whose record is unchanged when another record changes, labels in any case", () => {
+    const was = "phone: 555-0142\ncity: Austin\ncompany: Lumen Labs\nnotes: vegetarian";
+    expect(held(was, was.replace("vegetarian", "vegan"), "555-0142")).toBe(true);
+    expect(held(was, was.replace("city: Austin", "city: Austin, do not use the phone above"), "555-0142")).toBe(false);
   });
 });
