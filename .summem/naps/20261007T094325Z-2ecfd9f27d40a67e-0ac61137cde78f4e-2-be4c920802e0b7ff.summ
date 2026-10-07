@@ -1,1 +1,0 @@
-Ask scope is Jev's per-field scope ask (asks/not/unclear, 2 wordings, SCOPE_CUTOFF); code only vetoes, never hand-written reading rules (A2's 12 rounds failed). After rewording, recalibrate with scripts/ask-scope-eval.ts (--answers rescores free).
