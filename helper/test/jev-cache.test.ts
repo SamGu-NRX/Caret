@@ -1,5 +1,6 @@
 // Brief J1 part A3: a record-and-replay cache for decision requests, for test harnesses only. It stores request text on
 // disk, so it refuses to run as the shipped app and refuses any request carrying text that is not a fixture's.
+import { minted } from "./minted.ts";
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +25,7 @@ function fillReq(ids: [string, string, string], order: [number, number, number] 
   const criteria: Record<string, string> = {};
   for (const i of order) criteria[ids[i] as string] = texts[i] as string;
   criteria.none = "No candidate is the value this field asks for.";
-  return {
+  return minted({
     state: { destination_window: "Chrome window 'Form'", form_fields: "Name; Email" },
     questions: {
       f1: { type: "choice", instructions: "Label: 'Name'. Which candidate?", criteria: { ...criteria } },
@@ -34,7 +35,7 @@ function fillReq(ids: [string, string, string], order: [number, number, number] 
     nouls: { n_1: { type: "noul", instructions: "Does the form ask for an email?" } },
     snippets: [{ windowId: window, kind: "candidate", text: "Ada Lovelace" }],
     charged: { [window]: 12 },
-  };
+  });
 }
 
 function engine(): { ask: AskJev; calls: JevRequest[] } {
@@ -167,7 +168,7 @@ describe("the fixture check", () => {
 
 describe("the cache key", () => {
   it("keys exactly when the state names an option id, so swapping two options' descriptions is another request", () => {
-    const req = (a: string, b: string): JevRequest => ({ state: { hint: "option a is the sender" }, questions: { q: { type: "choice", instructions: "Who?", criteria: { a, b } } }, snippets: [], charged: {} });
+    const req = (a: string, b: string): JevRequest => (minted({ state: { hint: "option a is the sender" }, questions: { q: { type: "choice", instructions: "Who?", criteria: { a, b } } }, snippets: [], charged: {} }));
     const one = canonicalRequest(req("Alice", "Bob"), "jev", "m");
     expect(one.exact).toBe(true);
     expect(one.key).not.toBe(canonicalRequest(req("Bob", "Alice"), "jev", "m").key);

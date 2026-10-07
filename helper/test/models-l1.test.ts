@@ -1,6 +1,7 @@
 // L1: the models Sam chose. No default path calls Groq or any chat provider: the helper starts with no program writer
 // and Jev makes Ask's intents. A route runs only when a developer names it, and the helper says so on start. A goal
 // that needs a program writer says plainly that it is not available, and no model is called.
+import { minted } from "./minted.ts";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as config from "../src/writer/config.ts";
@@ -94,7 +95,7 @@ describe("Vercel AI Gateway route", () => {
       seen.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown>, auth: (init?.headers as Record<string, string>).Authorization ?? "" });
       return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
     }) as typeof fetch;
-  const plan = { kind: "plan" as const, disclosureId: "l1", input: { goal: "Sign me up", snapshots: [FORM] }, maxOutputTokens: 16, signal: new AbortController().signal };
+  const plan = minted({ kind: "plan" as const, disclosureId: "l1", input: { goal: "Sign me up", snapshots: [FORM] }, maxOutputTokens: 16, signal: new AbortController().signal });
   // The body the gateway sent on 2026-10-05 for a free model, with the key added to show it is never echoed.
   const card = { error: { message: `AI Gateway requires a valid credit card on file to service requests. key=${KEY}`, type: "customer_verification_required" } };
 

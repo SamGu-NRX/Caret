@@ -2,10 +2,11 @@
 // the form's own: typed values first, then single lines of visible text, splitting "Label: value"
 // lines so the value is the span and the label is its context. Jev later picks among these by id,
 // and code copies the chosen span verbatim.
+import { Disclosure } from "../privacy/disclosure.ts";
 import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
-import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
+import { heldAsConversation, heldToHalf } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
 import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, sentenceAround, WARNS } from "./line-values.ts";
@@ -158,7 +159,7 @@ export interface GenerateOptions {
    * budget; the first that does not closes that window to the rest of the generator. Absent for the
    * audit's measures, which send nothing.
    */
-  ledger?: SnippetLedger;
+  ledger?: Disclosure;
   /** Windows that give no candidates: the first look leaves out windows the reader could not walk just now. */
   exclude?: ReadonlySet<string>;
   /**
@@ -925,7 +926,7 @@ function linesHolding(text: string, span: string): string[] {
 }
 
 /** The candidates for a fill; see collectCandidates. With a ledger, each window gives only what fits its budget. */
-export function generateCandidates(model: ScreenModel, targetWindowId: string, max = MAX_CANDIDATES, now = Date.now(), ledger?: SnippetLedger, exclude?: ReadonlySet<string>): Candidate[] {
+export function generateCandidates(model: ScreenModel, targetWindowId: string, max = MAX_CANDIDATES, now = Date.now(), ledger?: Disclosure, exclude?: ReadonlySet<string>): Candidate[] {
   return collectCandidates(model, targetWindowId, { max, now, ...(ledger === undefined ? {} : { ledger }), ...(exclude === undefined ? {} : { exclude }) }).candidates;
 }
 

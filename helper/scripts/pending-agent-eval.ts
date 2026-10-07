@@ -10,6 +10,7 @@
 //
 // Writes results.json and summary.md. The key is read when a request is made and never printed. Live Jev stops
 // before spending more than --max-usd (scripts/spend.ts); the questions past it are rows with got "error".
+import { minted } from "../test/minted.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -76,7 +77,7 @@ function b6Request(w: WindowState, then: readonly string[], now: readonly string
   const thenText = then.length <= 20 ? then : [...then.slice(0, 3), ...then.slice(-17)];
   const list = (ms: readonly Marker[]): string => (ms.length === 0 ? "none" : [...new Set(ms.map((m) => m.line))].slice(0, 10).join("\n"));
   const current = buildPendingRequest(w, [w], then, now, thenMarkers, nowMarkers);
-  return {
+  return minted({
     purpose: "pending.change",
     state: {
       window: `${w.app.name} window '${w.window.title}'`,
@@ -89,7 +90,7 @@ function b6Request(w: WindowState, then: readonly string[], now: readonly string
     questions: current.questions,
     snippets: [],
     charged: {},
-  };
+  });
 }
 
 /** Characters of window text in a request's state and questions, for the summary. */

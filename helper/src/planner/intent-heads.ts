@@ -92,7 +92,7 @@ export function headsRequest(snap: IntentSnapshot): JevRequest {
     source: { type: "choice", instructions: "Where does the instruction say the values come from?", criteria: source },
     whose: { type: "choice", instructions: "Whose details does the instruction ask Caret to put in the form?", criteria: whose },
   };
-  return assertNoSecrets({ purpose: "ask.heads", state, questions, snippets: declared.snippets, charged: declared.charged });
+  return snap.ledger.legacy({ purpose: "ask.heads", state, questions, snippets: declared.snippets, charged: declared.charged });
 }
 
 // G2 round 4: a screen text that holds a secret marker word is sent as what it is, never as its words (privacy.ts
@@ -158,7 +158,7 @@ export function scopeRequest(snap: IntentSnapshot, wording: 0 | 1, only?: Readon
   const state = { instruction: instructionForModel(snap.instruction), form: formTitle(snap), task: "Caret checks, field by field, which fields of the form the user's request asks it to fill in or change." };
   // Raw text, not JSON: a heading with a quote or a backslash is sent, so its snippet must be declared (A3 review 2).
   const sent = [state.instruction, state.form, ...Object.values(questions).map((q) => q.instructions)].join("\n");
-  return assertNoSecrets({ purpose: "ask.scope", state, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged });
+  return snap.ledger.legacy({ purpose: "ask.scope", state, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged });
 }
 
 /** One field's scope: "asks" only when both wordings say so at SCOPE_CUTOFF; "unclear" when either says so. */

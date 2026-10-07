@@ -1,3 +1,4 @@
+import { minted } from "./minted.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { DailySpend } from "../src/engines/decide/daily-cap.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { jevSettings, loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
 
-const req = { state: "synthetic", questions: {}, snippets: [], charged: {}, retry429: false };
+const req = minted({ state: "synthetic", questions: {}, snippets: [], charged: {}, retry429: false });
 const fixture = { windows: (id: string) => id === "fixture", memory: false, plan: false };
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "jev-safety-")); });

@@ -11,6 +11,7 @@
 // provider's Retry-After and retries once. Retries are counted in the report; WriterPort never retries.
 // The run stops before a call that could take total spend past --budget (USD), estimated from the
 // largest cost seen so far.
+import { minted } from "../test/minted.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -77,7 +78,7 @@ log(`gateway lists ${gatewayModels.length} models; groq lists ${groqModels.lengt
 // 2. Whether the gateway serves completions for this key. A refusal costs nothing.
 let gatewayStatus = "not tried";
 try {
-  const w = await makeWriterPort(GATEWAY_GPT_OSS_120B).write({ kind: "plan", disclosureId: "writer-eval", input: { goal: WRITER_CORPUS[0]!.goal, snapshots: WRITER_CORPUS[0]!.snapshots }, maxOutputTokens: 64, signal: AbortSignal.timeout(10_000) });
+  const w = await makeWriterPort(GATEWAY_GPT_OSS_120B).write(minted({ kind: "plan", disclosureId: "writer-eval", input: { goal: WRITER_CORPUS[0]!.goal, snapshots: WRITER_CORPUS[0]!.snapshots }, maxOutputTokens: 64, signal: AbortSignal.timeout(10_000) }));
   gatewayStatus = `served by ${w.model}, ${Math.round(w.latencyMs)} ms, $${w.costUsd.toFixed(6)}`;
 } catch (e) {
   gatewayStatus = e instanceof ChatHttpError ? `HTTP ${e.status} ${e.errorType ?? ""}: ${e.message.slice(0, 160)}` : String(e).slice(0, 200);
@@ -99,7 +100,7 @@ for (const route of routes) {
     }
     const call: Call = { model: route.model, servedModel: null, case: c.id, latencyMs: null, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0, valid: false, correct: false, failure: null, program: null };
     if (calls.length > 0) await sleep(gapMs);
-    const write = () => port.write({ kind: "plan", disclosureId: "writer-eval", input: { goal: c.goal, snapshots: c.snapshots }, maxOutputTokens: MAX_OUTPUT, signal: AbortSignal.timeout(15_000) });
+    const write = () => port.write(minted({ kind: "plan", disclosureId: "writer-eval", input: { goal: c.goal, snapshots: c.snapshots }, maxOutputTokens: MAX_OUTPUT, signal: AbortSignal.timeout(15_000) }));
     try {
       const w = await write().catch(async (e: unknown) => {
         if (!(e instanceof ChatHttpError) || e.status !== 429) throw e;

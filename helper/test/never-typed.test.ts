@@ -3,6 +3,7 @@
 // fill, the planner and Ask refuse exactly what memory refuses to keep; its label and shape rules are tested with
 // memory. Here: that every path agrees with it, and secretIn's reading of the instruction around a value. All numbers
 // are invented; the card numbers are standard test numbers.
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { TEST_AUTHORITY } from "./mint.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
@@ -13,7 +14,6 @@ import { PlannerError } from "../src/planner/validate.ts";
 import { validateMinted } from "./mint.ts";
 import { secretIn } from "../src/planner/trace.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { SnippetLedger } from "../src/privacy.ts";
 import { field, jevPickingText, snap, value } from "./builders.ts";
 
 describe("secretIn", () => {
@@ -77,7 +77,7 @@ describe("fill and the planner agree on what is never typed", () => {
 
   it("never offers such a value as a candidate, from a line or from a field labelled as one", () => {
     const m = desk();
-    const c = collectCandidates(m, "form", { now: 2000, ledger: new SnippetLedger(m.windows.values()) }).candidates.map((x) => x.text);
+    const c = collectCandidates(m, "form", { now: 2000, ledger: new Disclosure(m.windows.values()) }).candidates.map((x) => x.text);
     expect(c).toContain("(737) 555-0112");
     expect(c).toContain("elena.v");
     for (const secret of [...SECRETS, "card 4242 4242 4242 4242"]) expect(c).not.toContain(secret);

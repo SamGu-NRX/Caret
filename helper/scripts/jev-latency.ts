@@ -2,6 +2,7 @@
 // Usage: CARET_ENV_FILE=/path/to/.env node scripts/jev-latency.ts [--n 30] [--provider typesafe|gateway|both]
 //        [--gateway-model typesafe-ai/jev] [--small-only] [--record /path/to/goal-live-3-jev.ndjson]
 // No response text or credentials are printed. Each provider sends at most 30 requests per shape, without retries.
+import { minted } from "../test/minted.ts";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,12 +13,12 @@ import { DailySpend, JevCapError } from "../src/engines/decide/daily-cap.ts";
 import { CacheRefused } from "../src/engines/decide/cache.ts";
 import { JevGatewayPolicyError, JEV_GATEWAY_MODEL, LAYA_FREE_MODEL, jevFailureKind, jevSettings, loadJevKey, makeJevClient, type JevProvider, type JevRequest } from "../src/fill/jev.ts";
 
-export const SMALL_REQUEST: JevRequest = {
+export const SMALL_REQUEST: JevRequest = minted({
   purpose: "probe.latency",
   state: "The fixture asks for an email address.",
   questions: { q: { type: "choice", instructions: "Choose the email address.", criteria: { email: "alex@example.test", none: "No email address." } } },
   snippets: [], charged: {}, retry429: false,
-};
+});
 const fixtureRequests = new Set([JSON.stringify(SMALL_REQUEST)]);
 const FIXTURES = fileURLToPath(new URL("../../fixtures/realfill/", import.meta.url));
 const Recorded = z.object({ page: z.string(), questions: z.record(z.string(), z.object({ ins: z.string(), criteria: z.record(z.string(), z.string().nullable()) })) });
@@ -54,7 +55,7 @@ export function fixtureFillRequest(recordText: string): JevRequest {
     }
     questions[id] = { type: "choice", instructions: `The user asked "fill out this form". Which candidate belongs in the ${field.control} field '${field.label}'? Choose none if no candidate fits.`, criteria };
   }
-  const req: JevRequest = { purpose: "probe.latency", state: { form: form.fields, windows }, questions, snippets: [], charged: {}, retry429: false };
+  const req: JevRequest = minted({ purpose: "probe.latency", state: { form: form.fields, windows }, questions, snippets: [], charged: {}, retry429: false });
   fixtureRequests.add(JSON.stringify(req));
   return req;
 }
@@ -104,7 +105,8 @@ export async function runProbe(o: ProbeOptions): Promise<ProbeSample[]> {
     for (const [shape, req] of Object.entries(o.requests)) {
       if (req === undefined) continue;
       // Keep the approved text private: a caller can mutate its request while earlier samples await a response.
-      const sampleReq = structuredClone(req);
+      // The clone is of the request's text; its Disclosure, which minted that text, is the same object.
+      const sampleReq = { ...structuredClone({ ...req, disclosure: undefined }), disclosure: req.disclosure };
       if (settings.model === LAYA_FREE_MODEL && !fixtureRequests.has(JSON.stringify(sampleReq))) throw new JevGatewayPolicyError("Laya probe requests must be built from the synthetic fixtures", settings.model);
       for (let i = 0; i < o.count; i++) {
         let start = now();

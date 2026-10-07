@@ -1,10 +1,11 @@
 // The ledger's line table follows each window id from snapshot to snapshot, changing only the lines of
 // nodes that differ (privacy.ts LineTable). Whatever the order of snapshots, a ledger must charge exactly
 // what it charges over the same states read from scratch. All text is synthetic.
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import type { AppRef, Node } from "../src/protocol.ts";
-import { forgetWindow, readWindow, SnippetLedger, windowBudget } from "../src/privacy.ts";
+import { forgetWindow, readWindow, windowBudget } from "../src/privacy.ts";
 import { rng } from "./large-scene.ts";
 import { snap } from "./builders.ts";
 
@@ -27,7 +28,7 @@ interface Outcome {
 }
 
 function priceAll(states: readonly WindowState[], texts: readonly { from: number; t: string }[]): Outcome {
-  const ledger = new SnippetLedger(states);
+  const ledger = new Disclosure(states);
   const takes = texts.map(({ from, t }) => ledger.take(states[from] as WindowState, "candidate", [t]));
   return { budgets: Object.fromEntries(states.map((w) => [w.window.windowId, windowBudget(w)])), takes, charges: ledger.charges() };
 }
@@ -81,14 +82,14 @@ describe("the ledger's line table", () => {
     other.apply(snap([{ key: "c", parent: null, role: "AXStaticText", label: "Dana Whitfield" }], { at: 3, windowId: "lt-card", app: NOTES }));
     const card = other.windows.get("lt-card") as WindowState;
     // The late state does not show the name; the early one does, and is charged for it.
-    const onLate = new SnippetLedger([late, card]);
+    const onLate = new Disclosure([late, card]);
     expect(onLate.take(card, "candidate", ["Dana Whitfield"])).toBe(true);
     expect(onLate.charges()).toEqual({ "lt-card": 14 });
-    const onEarly = new SnippetLedger([early, card]);
+    const onEarly = new Disclosure([early, card]);
     expect(onEarly.take(card, "candidate", ["Dana Whitfield"])).toBe(true);
     expect(onEarly.charges()).toEqual({ "lt-card": 14, "lt-kept": 14 });
     // And back again.
-    const again = new SnippetLedger([late, card]);
+    const again = new Disclosure([late, card]);
     expect(again.take(card, "candidate", ["Dana Whitfield"])).toBe(true);
     expect(again.charges()).toEqual({ "lt-card": 14 });
   });

@@ -18,13 +18,13 @@
 // Steps are then cut into segments: a new segment starts where the window changes (or the calendar starts or ends),
 // and after a press whose effect changes what the window offers. Each segment is one executor task, under one
 // forward grant for its one window, and needs its own acceptance.
+import type { Disclosure } from "../privacy/disclosure.ts";
 import { authorityRefusal, scopeKey, scopeRefusal, withScope, type AskScope, type Authority, type DocumentReader, type Origin, type ScopeSet } from "../fill/ask-scope.ts";
 import type { DraftPlan } from "../codemode/types.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { matchOption } from "../fill/controls.ts";
 import { MAX_FIELDS } from "../fill/fill.ts";
-import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
@@ -196,7 +196,7 @@ export interface LowerOptions {
   /** Jev, for the value gate; null confirms nothing, so no copied value is written. */
   askJev: AskJev | null;
   /** The ledger the inventory's texts went through: what a Jev request may carry. */
-  ledger: SnippetLedger;
+  ledger: Disclosure;
   /** Writes a stopped goal this plan replaces meant and did not make (runs.ts): those this plan leaves out are left. */
   carried?: readonly LeftItem[];
 

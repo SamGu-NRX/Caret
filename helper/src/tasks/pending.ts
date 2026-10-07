@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { redactWindow } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Pending-state watch (deep plan section 6.4). When the user leaves a window that shows unfinished
@@ -13,7 +14,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PendingInfo, ReaderVerb, TaskCause, TaskState, VerbResult } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
-import { SnippetLedger, cut, flat } from "../privacy.ts";
+import { cut, flat } from "../privacy.ts";
 import { composers } from "../conversation.ts";
 import { FINISHED, type TaskRegistry } from "./registry.ts";
 
@@ -299,7 +300,7 @@ export function buildPendingRequest(
   nowMarkers: readonly Marker[] = [],
 ): JevRequest {
   w = redactWindow(w);
-  const ledger = new SnippetLedger(screen);
+  const ledger = new Disclosure(screen);
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const before = new Set(then.map(mask));
   const changed = now.filter((l) => !before.has(mask(l)));
@@ -309,7 +310,7 @@ export function buildPendingRequest(
   const lines = takeLines(ledger, w, picked, CHANGED_LINES);
   const signsNow = takeLines(ledger, w, markerLines(nowMarkers), SIGN_LINES);
   const signsThen = takeLines(ledger, w, markerLines(thenMarkers), SIGN_LINES);
-  return assertNoSecrets({
+  return ledger.legacy({
     purpose: "pending.change",
     state: {
       window: windowName(w, title),
@@ -350,7 +351,7 @@ const windowName = (w: WindowState, title: string | null): string => (title === 
  * indicator's line ("[progress bar]") names a role, not text on screen, so it costs nothing, unless some
  * text in the window reads the same; a marker from when the user left may name an indicator now gone.
  */
-function takeLines(ledger: SnippetLedger, w: WindowState, lines: readonly string[], max: number): string[] {
+function takeLines(ledger: Disclosure, w: WindowState, lines: readonly string[], max: number): string[] {
   const out: string[] = [];
   for (const l of lines) {
     if (out.length >= max) break;
@@ -377,13 +378,13 @@ function isIndicatorLine(w: WindowState, line: string): boolean {
  */
 export function buildLookRequest(w: WindowState, screen: Iterable<WindowState>, markers: readonly Marker[]): { req: JevRequest; lines: string[] } {
   w = redactWindow(w);
-  const ledger = new SnippetLedger(screen);
+  const ledger = new Disclosure(screen);
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const signs = takeLines(ledger, w, markerLines(markers), SIGN_LINES);
   const tail = takeLines(ledger, w, allWatchLines(w).slice(-CHANGED_LINES), CHANGED_LINES);
   return {
     lines: tail,
-    req: assertNoSecrets({
+    req: ledger.legacy({
       purpose: "pending.look",
       state: {
         window: windowName(w, title),

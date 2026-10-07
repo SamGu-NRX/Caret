@@ -77,7 +77,7 @@ export function writerIntentMaker(writer: WriterPort, disclosureId: () => string
     async make(snap, signal) {
       let r: Awaited<ReturnType<WriterPort["write"]>>;
       try {
-        r = await writer.write(assertNoSecrets({ kind: "intent", disclosureId: disclosureId(), disclosed: snap.ledger.declared().snippets, input: intentInput(snap), maxOutputTokens: INTENT_MAX_OUTPUT_TOKENS, signal: signal ?? AbortSignal.timeout(15_000) }));
+        r = await writer.write(snap.ledger.legacy({ kind: "intent", disclosureId: disclosureId(), disclosed: snap.ledger.declared().snippets, input: intentInput(snap), maxOutputTokens: INTENT_MAX_OUTPUT_TOKENS, signal: signal ?? AbortSignal.timeout(15_000) }));
       } catch (e) {
         throw new PlannerError("unavailable", `the intent writer failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
       }
@@ -179,7 +179,7 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
         snap.literals.forEach((span, i) => {
           questions[`lit${i + 1}`] = { type: "choice", instructions: WORDS.literal[wording](instructionForModel(span)), criteria: order(fieldCriteria) };
         });
-        return assertNoSecrets({ purpose: "intent.route", state, questions, snippets: declared.snippets, charged: declared.charged });
+        return snap.ledger.legacy({ purpose: "intent.route", state, questions, snippets: declared.snippets, charged: declared.charged });
       };
       const [a, b] = await ask(stage1(0), stage1(1));
       const agreed = (q: string): string | null => {
@@ -215,7 +215,7 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
         ties.forEach((t, i) => {
           nouls[`t${i + 1}`] = { type: "noul", instructions: WORDS.tie[wording](instructionForModel(t.span), t.field.modelName ?? sendable(t.field.name, "a field Caret leaves to the user")) };
         });
-        return assertNoSecrets({ purpose: "intent.fields", state, questions: {}, nouls, snippets: declared.snippets, charged: declared.charged });
+        return snap.ledger.legacy({ purpose: "intent.fields", state, questions: {}, nouls, snippets: declared.snippets, charged: declared.charged });
       };
       let yes = (_: string): boolean => false;
       if (listed.length > 0 || ties.length > 0) {

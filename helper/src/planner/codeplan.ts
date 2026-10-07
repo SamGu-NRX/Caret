@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { instructionForModel, instructionView } from "../fill/redact.ts";
 import { viewOf } from "../fill/candidates.ts";
 import { assertNoSecrets } from "../privacy.ts";
@@ -19,7 +20,7 @@ import { fieldPart, namePart, splitAddress, splitName } from "../fill/derive.ts"
 import { fieldKinds, isNameLike } from "../fill/kinds.ts";
 import { candidateProvenance, OWNER_CRITERIA, WHOSE_CRITERIA, WHOSE_CUTOFF } from "../fill/fill.ts";
 import type { CheckedValue, Provenance } from "../fill/contract.ts";
-import { SnippetLedger, WINDOW_CHARS } from "../privacy.ts";
+import { WINDOW_CHARS } from "../privacy.ts";
 import type { AskJev } from "../fill/jev.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { runCodePlan } from "../codemode/sandbox.ts";
@@ -95,7 +96,7 @@ export interface Value {
  * an address, by window, most recent first, in at most MAX_SOURCE_WINDOWS windows, as the plan API's
  * readWindow(windowRef) shapes it. Each window's list is held to the writer's per-window budget (plan-prompt.ts).
  */
-export function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number, formRoom: number): Value[] {
+export function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: Disclosure, now: number, formRoom: number): Value[] {
   const out: Value[] = [];
   const retainedValues = new Set(instructionView(instruction).retained.flatMap(instructionValues));
   const used = new Map<WindowState | null, number>();
@@ -152,7 +153,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   if (w === undefined) throw new PlannerError("unseenWindow", `window ${o.windowId} is not open`);
   const all = writableFields(w).filter((f) => o.fields === undefined || o.fields.includes(f.node.key));
   if (all.length === 0) throw new PlannerError("nothingToDo", `'${w.window.title}' has no field Caret can write`);
-  const ledger = new SnippetLedger(model.windows.values());
+  const ledger = new Disclosure(model.windows.values());
   if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", "your instruction quotes more of an open window than one request may carry");
   // The title as the writer sees it, cut to the snapshot's 200 characters, is what the ledger declares (fix-check review).
   const title = w.window.title.slice(0, 200);
@@ -199,7 +200,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   const writerDisclosure = disclosureFor(ledger.declared().snippets, snapshots, instruction);
   let written: Awaited<ReturnType<WriterPort["write"]>>;
   try {
-    written = await o.writer.write(assertNoSecrets({ kind: "plan", disclosureId: o.offerKey, disclosed: writerDisclosure, input: { goal: instructionForModel(instruction).slice(0, 500), snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) }));
+    written = await o.writer.write(ledger.legacy({ kind: "plan", disclosureId: o.offerKey, disclosed: writerDisclosure, input: { goal: instructionForModel(instruction).slice(0, 500), snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) }));
   } catch (e) {
     throw new PlannerError("unavailable", `the plan writer failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
   }
@@ -298,12 +299,12 @@ const ASKS_ABOUT = { yes: "Yes: the instruction asks for this field.", no: "No: 
  * The fields of `unnamed` that Jev, asked twice with different wordings, agrees at PLAN_CUTOFF the instruction
  * asks to change. Their descriptors were taken through the ledger with the window's other field names.
  */
-async function confirmFields(instruction: string, unnamed: readonly Field[], askJev: AskJev, ledger: SnippetLedger): Promise<Set<string>> {
+async function confirmFields(instruction: string, unnamed: readonly Field[], askJev: AskJev, ledger: Disclosure): Promise<Set<string>> {
   instruction = instructionForModel(instruction);
   if (unnamed.length === 0) return new Set();
   const declared = ledger.declared();
   const req = (wording: 0 | 1): JevRequest =>
-    sentOnly(assertNoSecrets({
+    sentOnly(ledger.legacy({
       purpose: "codeplan.asksAbout",
       state: { instruction: instructionForModel(instruction), task: "Caret drafted field writes for the user's instruction and checks that each field is one the instruction asks about." },
       questions: Object.fromEntries(unnamed.map((f, i) => [`f${i + 1}`, { type: "choice" as const, instructions: ASKS_ABOUT_WORDINGS[wording](instruction, f.name), criteria: { ...ASKS_ABOUT } }])),
@@ -356,7 +357,7 @@ export interface WriteToVerify {
  * the value is another's (fill.ts WHOSE_CRITERIA and OWNER_CRITERIA, at WHOSE_CUTOFF); a value from memory is
  * the user's, and one written in the instruction is the user's own choice.
  */
-export async function verifyWrites(instruction: string, writes: readonly WriteToVerify[], askJev: AskJev, ledger: SnippetLedger): Promise<Set<string>> {
+export async function verifyWrites(instruction: string, writes: readonly WriteToVerify[], askJev: AskJev, ledger: Disclosure): Promise<Set<string>> {
   instruction = instructionForModel(instruction);
   // W2: nothing to ask when no write asks its value and none takes a person's details.
   if (writes.every((x) => x.askValue !== true && !personalField(x.field.label))) return new Set();
@@ -376,7 +377,7 @@ export async function verifyWrites(instruction: string, writes: readonly WriteTo
       questions[`f${i + 1}`] = { type: "choice", instructions: wording === 0 ? `The user asked: "${instruction}". A form has the field '${x.field.name}'. Whose details does this field ask for?` : `Field: '${x.field.name}'. Instruction: "${instruction}". Is this field for the details of the user filling in the form, of someone else, or can you not tell?`, criteria: { ...WHOSE_CRITERIA } };
       if (x.value.window !== null) questions[`v${i + 1}`] = { type: "choice", instructions: wording === 0 ? `A value on the user's screen: ${x.value.display} Whose details is it?` : `Whose details is this value, the user's or someone else's? ${x.value.display}`, criteria: { ...OWNER_CRITERIA } };
     });
-    return sentOnly(assertNoSecrets({ purpose: "plan.verify", state: { instruction: instructionForModel(instruction), task: "Caret checks each value a drafted plan would write before offering the plan." }, questions, snippets: declared.snippets, charged: declared.charged }));
+    return sentOnly(ledger.legacy({ purpose: "plan.verify", state: { instruction: instructionForModel(instruction), task: "Caret checks each value a drafted plan would write before offering the plan." }, questions, snippets: declared.snippets, charged: declared.charged }));
   };
   let r: Awaited<ReturnType<AskJev>>[];
   try {

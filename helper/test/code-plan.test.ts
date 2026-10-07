@@ -1,5 +1,6 @@
 // D2-06: a goal program's DraftPlan lowered to executor end states, cut into segments, and digested. The press
 // registry is strict and isolated: one capability, and Send, Submit, Pay and Delete are always the user's.
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCodePlan } from "../src/codemode/sandbox.ts";
 import type { DraftPlan, PlanningSnapshot } from "../src/codemode/types.ts";
@@ -9,7 +10,6 @@ import { buildInventory } from "../src/goals/inventory.ts";
 import { GoalError, lowerGoal, MAX_SEGMENTS } from "../src/goals/lower.ts";
 import { goalDigest, segmentDigest, type GoalDomain, type GoalInventory, type GoalPlan, type GoalStep, type TargetBinding, type ValueBinding } from "../src/goals/plan.ts";
 import { macClock } from "../src/offers/event-time.ts";
-import { SnippetLedger } from "../src/privacy.ts";
 import { cannedProgram, caseWindow, detailsWindow, goalScene, mailWindow, replyWindow, standInJev, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
 import { targetField } from "./mint.ts";
 import { isChecked } from "../src/fill/contract.ts";
@@ -177,7 +177,7 @@ function inventory(targets: TargetBinding[], values: ValueBinding[]): GoalInvent
   return { readerSession: 1, targets: new Map(targets.map((t) => [t.ref, t])), values: new Map(values.map((v) => [v.ref, v])), revisions: new Map([["w-a", "r1"]]), documents: new Map(), windowRefs: new Map(), texts: new Map(), owed: new Map() };
 }
 const draft = (steps: DraftPlan["steps"]): DraftPlan => ({ basedOn: "s1", window: "w1", steps, choices: [], drafts: [], programDigest: "b".repeat(64) });
-const lowerOpts = () => ({ askJev: standInJev(), ledger: new SnippetLedger([]) });
+const lowerOpts = () => ({ askJev: standInJev(), ledger: new Disclosure([]) });
 const refusal = async (f: () => Promise<unknown>): Promise<string> => {
   try {
     await f();
@@ -297,7 +297,7 @@ describe("G2 review finding 4: the gates read what a control will hold", () => {
 
   it("checks a writer's option with the write contract's verifier, with the value it came from, and asks Jev's yes/no nothing (W2)", async () => {
     const jev = standInJev();
-    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t2", value: "v2" }]), inv, { askJev: jev, ledger: new SnippetLedger([]) });
+    const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t2", value: "v2" }]), inv, { askJev: jev, ledger: new Disclosure([]) });
     const step = g.segments[0]?.steps[0];
     expect(step?.writes).toBe("Canada");
     expect(isChecked(step?.checked)).toBe(true);

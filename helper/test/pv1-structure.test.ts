@@ -20,7 +20,7 @@ const builders: Record<string, number> = {
   "planner/intent-makers.ts": 3, "planner/planner.ts": 2, "routing/judge.ts": 3, "tasks/pending.ts": 2,
 };
 // These transform an already checked request, or normalize it for a cache; they never extract window text.
-const transforms: Record<string, number> = { "engines/decide/cache.ts": 2, "engines/decide/harness.ts": 1, "fill/jev.ts": 4 };
+const transforms: Record<string, number> = { "engines/decide/cache.ts": 2, "engines/decide/harness.ts": 1, "fill/jev.ts": 4, "privacy/disclosure.ts": 1 };
 const contributors = ["fill/answers.ts", "goals/inventory.ts", "patterns/skills.ts", "planner/intent.ts", "planner/people.ts", "planner/sources.ts", "planner/targets.ts"];
 
 // Exact raw model lookups are allowed only for local safety/execution, privacy-budget accounting, or an audited redaction boundary.
@@ -100,7 +100,9 @@ function inspect(sources: Map<string, string>): string[] {
         if ((keys.includes("state") && keys.includes("questions")) || (keys.includes("disclosureId") && keys.includes("input"))) {
           foundBuilders[file] = (foundBuilders[file] ?? 0) + 1;
           const parent = ancestors.at(-1);
-          if (!(file in transforms) && !(parent?.type === "CallExpression" && name(parent.callee) === "assertNoSecrets")) errors.push(`${file}: unguarded request`);
+          // SC1 step 1: a Disclosure's legacy() or seal() checks the request as assertNoSecrets did, and mints it.
+          const guard = parent?.type === "CallExpression" && (name(parent.callee) === "assertNoSecrets" || ["legacy", "seal"].includes(String(name(prop(parent.callee, "property")))));
+          if (!(file in transforms) && !guard) errors.push(`${file}: unguarded request`);
         }
       }
       if ((file in builders || contributors.includes(file)) && n.type === "CallExpression" && prop(prop(n.callee, "object"), "type") === "MemberExpression" && name(prop(prop(n.callee, "object"), "property")) === "windows" && ["get", "values"].includes(String(name(prop(n.callee, "property"))))) {

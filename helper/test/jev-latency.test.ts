@@ -46,7 +46,8 @@ describe("the bounded latency probe", () => {
     vi.useFakeTimers();
     try {
       const probe = await import("../scripts/jev-latency.ts");
-      const req = structuredClone(probe.SMALL_REQUEST);
+      // A clone of the request's text, with the Disclosure that minted it (structuredClone cannot keep a class instance).
+      const req = { ...structuredClone({ ...probe.SMALL_REQUEST, disclosure: undefined }), disclosure: probe.SMALL_REQUEST.disclosure };
       const fetch = vi.fn<typeof globalThis.fetch>(async () => {
         req.state = "private replacement text";
         return new Response('{"model":"convaiinnovations/laya-free","answers":{"q":{"choice":"email","confidence":1}},"usage":{"input_tokens":1},"provider_metadata":{"gateway":{"cost":"0"}}}');

@@ -18,6 +18,7 @@
 // as they do off the reader's socket, so their strings are flat as in the helper. Writes results.json
 // and summary.md.
 // Every text is invented.
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { loadavg } from "node:os";
 import { join } from "node:path";
@@ -26,7 +27,6 @@ import { positiveInt } from "./flags.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import type { AppRef, Node, Snapshot } from "../src/protocol.ts";
 import * as privacy from "../src/privacy.ts";
-import { SnippetLedger } from "../src/privacy.ts";
 import { rng } from "../test/large-scene.ts";
 import { snap } from "../test/builders.ts";
 
@@ -159,7 +159,7 @@ function run(mode: Mode): Row {
     const states = new Map([...model.windows].map(([id, w]) => [id, w] as const));
     const c0 = process.threadCpuUsage();
     const t0 = performance.now();
-    const ledger = new SnippetLedger(model.windows.values());
+    const ledger = new Disclosure(model.windows.values());
     let ok = 0;
     for (let k = 0; k < texts.length; k++) {
       const { w, t } = texts[k] as { w: number; t: string };
@@ -199,7 +199,7 @@ for (const mode of chosen) {
 const loadAfter = loadavg();
 writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toISOString(), rounds: ROUNDS, windows: WINDOWS, lines: LINES, loadavg: { before: load, after: loadAfter }, rows }, null, 2)}\n`);
 const md = [
-  "# SnippetLedger on eight windows of 5,000 lines",
+  "# Disclosure on eight windows of 5,000 lines",
   "",
   `\`node ${(globalThis as { gc?: unknown }).gc === undefined ? "" : "--expose-gc "}scripts/ledger-bench.ts --out DIR --rounds ${ROUNDS}\` in the helper, ${new Date().toISOString().slice(0, 16)}Z, one-minute load average ${load[0]?.toFixed(1)} before and ${loadAfter[0]?.toFixed(1)} after (this Mac was shared). ${ROUNDS} rounds per row; four of the windows are Messages chats. ${readAtArrival ? "Each window's line table was read as its snapshot arrived; *Arrival* is that, per snapshot." : "No line table was read at arrival."}`,
   "",

@@ -7,6 +7,7 @@
 //   (chat or document), CARET_LLAMA_THINKING=off (tells a thinking model's template not to think), and
 //   CARET_ENGINE_CALIBRATION ("choiceT,noulT"; 1,1 is none).
 import { assertNoSecrets } from "../../privacy.ts";
+import { verifySent } from "../../privacy/disclosure.ts";
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -68,7 +69,8 @@ export function calibrationFromEnv(env: NodeJS.ProcessEnv, model?: string): Cali
  * send objects, so for Laya the state goes as its JSON text: the same characters, in one string.
  */
 function layaState(ask: AskJev): AskJev {
-  return (req) => ask(typeof req.state === "string" ? req : { ...req, state: JSON.stringify(req.state) });
+  // The JSON text is minted from the state's own minted strings, so the client's check still holds (SC1 risk 2).
+  return (req) => ask(typeof req.state === "string" ? req : { ...req, state: req.disclosure.jsonText(req.state) });
 }
 
 function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngine {
@@ -83,7 +85,8 @@ function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngi
       if (o.canned === null) throw new Error("this harness has no canned engine");
       // G2 round 4: a canned engine meets the Jev client's disclosure check too (privacy.ts assertNoSecrets), so a canned
       // run fails where a live one would.
-      return { name: "canned", model: "canned", reach: "mac", ask: (req) => (assertNoSecrets(req), (o.canned as AskJev)(req)) };
+      // SC1 2b: and the minting check on the body a live client would send.
+      return { name: "canned", model: "canned", reach: "mac", ask: (req) => (assertNoSecrets(req), verifySent(req, wireBody(req, "canned")), (o.canned as AskJev)(req)) };
     case "llama": {
       const prompt = env.CARET_LLAMA_PROMPT ?? "chat";
       if (prompt !== "chat" && prompt !== "document") throw new Error(`CARET_LLAMA_PROMPT is '${prompt}'; it must be chat or document`);

@@ -3,6 +3,7 @@
 // text: a plan program still has to pass compileProgram and the sandbox.
 import { chat, type ChatRoute } from "./chat.ts";
 import { assertNoSecrets, type Snippet } from "../privacy.ts";
+import { verifyWriterInput, type Disclosure } from "../privacy/disclosure.ts";
 import { readKey } from "./env.ts";
 import { extractProgram, PLAN_SYSTEM, PlanInputSchema, planUserMessage } from "./plan-prompt.ts";
 import { GOAL_SYSTEM } from "./goal-prompt.ts";
@@ -22,6 +23,8 @@ export interface WriterRequest {
    */
   disclosed?: readonly Snippet[];
   input: unknown;
+  /** SC1 2b: the Disclosure that minted every text in `input` (privacy/disclosure.ts). Never sent; write() verifies against it. */
+  disclosure: Disclosure;
   maxOutputTokens: number;
   signal: AbortSignal;
 }
@@ -53,6 +56,8 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
     route,
     async write(req) {
       assertNoSecrets(req);
+      // SC1 2b: every string in the input was minted for this request, before schema parsing, key access or transport.
+      verifyWriterInput(req);
       if (req.kind !== "plan" && req.kind !== "goal" && req.kind !== "intent") throw new Error(`writer kind ${req.kind} is not implemented yet`);
       if (req.disclosureId.length === 0) throw new Error("writer request has no disclosureId");
       if (req.kind === "intent") {

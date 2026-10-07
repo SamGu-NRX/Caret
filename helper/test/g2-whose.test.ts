@@ -1,5 +1,6 @@
 // G2: who a value belongs to, decided from evidence; and the Greenhouse task page's Location stops. Every name, number
 // and address is synthetic (F1's task fixtures, fixtures/web-form/tasks/expect).
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +16,6 @@ import { field, jevPickingText, snap } from "./builders.ts";
 import { identitiesOf, identityOf } from "../src/fill/whose.ts";
 import { lineDigests, partAround } from "../src/fill/line-values.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
-import { SnippetLedger } from "../src/privacy.ts";
 
 const TASKS = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "fixtures", "web-form", "tasks", "expect");
 const expectation = (page: string): { sources: { note: string } } => JSON.parse(readFileSync(join(TASKS, `${page}.json`), "utf8"));
@@ -135,7 +135,7 @@ describe("G2 review: optional context never takes a span's place", () => {
   it("6: with deferClauses the generator sets no optional clause; every one waits for fill, after every span", () => {
     for (const page of ["greenhouse", "wizard-2", "forty"]) {
       const m = pageModel([control("e1", "text", "Start date")], expectation(page).sources.note);
-      const ledger = new SnippetLedger(m.windows.values());
+      const ledger = new Disclosure(m.windows.values());
       const c = collectCandidates(m, WIN, { deferClauses: true, ledger, fields: [new Set(["kind:date", "start"])] });
       const optional = c.candidates.filter((x) => c.clauses.has(x));
       expect(optional.length, page).toBeGreaterThan(0);

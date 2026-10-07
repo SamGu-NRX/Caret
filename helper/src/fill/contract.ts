@@ -13,6 +13,7 @@
 // (writeMisfit with the carried provenance) until the verifier replaces it family by family (AC1 section 6). Values
 // whose exactness code settles (an option's own label, a resolved date, the user's saved answer, a user transfer, a
 // draft) are minted under a named exemption instead (ExemptRule); only the never-typed check runs on them.
+import { Disclosure } from "../privacy/disclosure.ts";
 import type { AutocompleteToken, FillMemory, FillWithheld, Node, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { createHash } from "node:crypto";
@@ -29,7 +30,7 @@ import { writeMisfit, type ShapeSource } from "./writable.ts";
 import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { secretIn } from "../planner/trace.ts";
 import type { AskJev, JevRequest } from "./jev.ts";
-import { assertNoSecrets, SnippetLedger } from "../privacy.ts";
+import { assertNoSecrets } from "../privacy.ts";
 
 /** The page walk's text input kind (protocol.ts PageControlKind), projected into Node by toWindowSnapshot; null through Accessibility. */
 export type InputKind = "text" | "email" | "tel" | "url" | "number" | "search" | "date" | "time" | "datetime" | "month" | "week" | "textarea" | null;
@@ -260,7 +261,7 @@ export interface CheckOptions {
   /** Jev, for the verifier; null verifies nothing, so every value the shape checks pass is refused as unverified. */
   askJev: AskJev | null;
   /** The ledger the caller's asks took screen text through: the verifier quotes only what it admits (privacy.ts). */
-  ledger: SnippetLedger | null;
+  ledger: Disclosure | null;
   /** The user's instruction when an Ask or goal scoped the write: quoted in the request's state, and a value it labels as a secret is never typed (trace.ts secretIn). */
   instruction?: string;
   now: number;
@@ -654,7 +655,7 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
   if (proposed.length === 0) return { asks: [], jev };
   if (o.askJev === null) throw new VerifierUnavailable("no Jev to verify values with");
   const ask = testVerifier ?? o.askJev;
-  const ledger = o.ledger ?? new SnippetLedger([]);
+  const ledger = o.ledger ?? new Disclosure([]);
   // What the ledger admits: a text the request may quote. `plan` declares it, charging each window whose lines it
   // holds; text already taken for the value asks costs nothing more.
   const admittedCache = new Map<string, boolean>();
@@ -686,7 +687,7 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     const order = wording === 0 ? batch : [...batch].reverse();
     const qs: JevRequest["questions"] = Object.fromEntries(order.map((i) => [`x${i + 1}`, { type: "choice" as const, instructions: (questions[i] as readonly [string, string])[wording], criteria: { ...VERDICTS } }]));
     const sent = sentStrings([state, qs]);
-    const req: JevRequest = assertNoSecrets({ purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged });
+    const req: JevRequest = ledger.legacy({ purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged });
     // I1: the disclosure rule every Jev request meets at build (privacy.ts assertNoSecrets, G2), the verifier's included:
     // its provenance sentences quote only redacted, ledger-admitted text, and this is the guarantee behind that. A throw
     // here makes the verifier unavailable (below), so every value it would have checked is withheld, nothing is sent.

@@ -2,6 +2,7 @@
 // instead of once per question. A fill asks every field about every candidate, so its candidate list was repeated per
 // field: 86.5% of the characters of the corpus's fill requests were option descriptions (evidence/screen/j1). The body
 // must say exactly what the request says, so expanding it back gives the request's own questions.
+import { minted } from "./minted.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,7 +26,7 @@ function fill(fields: number, cands: number): JevRequest {
   criteria.none = "No candidate is the value this field asks for.";
   const questions: JevRequest["questions"] = {};
   for (let f = 1; f <= fields; f++) questions[`f${f}`] = { type: "choice", instructions: `Label: 'Field ${f}'. Which candidate?`, criteria: { ...criteria } };
-  return { state: { destination_window: "Chrome window 'Form'", task: "The user is filling in this form." }, questions, nouls: { n_1: { type: "noul", instructions: "yes?" } }, snippets: [], charged: {} };
+  return minted({ state: { destination_window: "Chrome window 'Form'", task: "The user is filling in this form." }, questions, nouls: { n_1: { type: "noul", instructions: "yes?" } }, snippets: [], charged: {} });
 }
 
 describe("the body sent to Jev", () => {
@@ -85,7 +86,7 @@ describe("the body sent to Jev", () => {
     let before = 0;
     let after = 0;
     for (const { body } of rows) {
-      const req: JevRequest = { state: body.state, questions: Object.fromEntries(Object.entries(body.questions).filter(([, q]) => q.type === "choice")) as JevRequest["questions"], snippets: [], charged: {} };
+      const req: JevRequest = minted({ state: body.state, questions: Object.fromEntries(Object.entries(body.questions).filter(([, q]) => q.type === "choice")) as JevRequest["questions"], snippets: [], charged: {} });
       before += JSON.stringify(plain({ ...req, nouls: undefined })).length;
       after += JSON.stringify(wireBody(req)).length;
     }

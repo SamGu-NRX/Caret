@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { redactWindow } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Finding the element a step names. An exact key wins. Otherwise role and label filter the window;
@@ -7,7 +8,7 @@ import { assertNoSecrets } from "../privacy.ts";
 import type { Node } from "../protocol.ts";
 import { nodeText, type WindowState } from "../model.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
-import { SnippetLedger, cut, type Declared } from "../privacy.ts";
+import { cut, type Declared } from "../privacy.ts";
 import { shuffled } from "../fill/fill.ts";
 import type { Target } from "./schema.ts";
 
@@ -135,7 +136,7 @@ export function quotedPart(sent: string, value: string): string | null {
  */
 export function targetSnippets(w: WindowState, screen: Iterable<WindowState>, goal: string, t: Target, cands: readonly { node: Node }[], sourced: readonly SourcedValue[] = []): Declared | null {
   w = redactWindow(w);
-  const ledger = new SnippetLedger(screen);
+  const ledger = new Disclosure(screen);
   const sent = [cut(goal), cut(t.describe)];
   for (const v of sourced) {
     const shown = sent.map((s) => quotedPart(s, v.text)).filter((p): p is string => p !== null);
@@ -167,7 +168,7 @@ export function buildTargetRequest(w: WindowState, goal: string, t: Target, cand
   const criteria: Record<string, string> = {};
   for (const c of cands) criteria[c.id] = describeElement(w, c.node);
   criteria[NONE] = "None of these elements.";
-  return assertNoSecrets({
+  return new Disclosure([]).legacy({
     purpose: "executor.target",
     state: { window: `${w.app.name} window '${w.window.title}'`, task: "Choose the element an automated step should act on." },
     // The goal and target are plan text, which can quote a value copied from any window: each goes out cut to SNIPPET_CHARS.

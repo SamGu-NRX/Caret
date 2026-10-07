@@ -3,6 +3,7 @@
 // start per two seconds, stale replies dropped, a waiting context replaced rather than queued, no retry, no Router 2
 // outside act, and every forged or weak answer abstaining. Then the helper end to end: routed fills and event cards
 // make the same offers, with the same spans, as the producers make on their own. Everything is invented.
+import { minted } from "./minted.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1102,7 +1103,7 @@ describe("the Jev client's retry", () => {
       return new Response("slow down", { status: 429, headers: { "retry-after": "0" } });
     });
     const client = makeJevClient(() => "test-key");
-    const req: JevRequest = { state: "s", questions: { q: { type: "choice", instructions: "i", criteria: { a: "A" } } }, snippets: [], charged: {} };
+    const req: JevRequest = minted({ state: "s", questions: { q: { type: "choice", instructions: "i", criteria: { a: "A" } } }, snippets: [], charged: {} });
     await expect(client({ ...req, retry429: false })).rejects.toThrow(/429/);
     expect(fetches).toHaveLength(1);
     await expect(client(req)).rejects.toThrow(/429/);

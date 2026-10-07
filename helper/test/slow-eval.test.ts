@@ -1,6 +1,7 @@
 // R1: the slow Laya runner. The layer in each eval process (engines/decide/slow.ts) and the runner's loop
 // (scripts/slow-eval-core.ts), on a fake clock: pacing and backoff, resume after a kill without a repeated request,
 // the stops (cost, auth, HOLD, disk), and the heavy lease released through every wait.
+import { minted } from "./minted.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +35,7 @@ function fakeClock(start = 1_000_000): SlowClock & { sleeps: number[] } {
   };
 }
 
-const req = (q: string): JevRequest => ({ state: { form: "fixture" }, questions: { [q]: { type: "choice", instructions: `Pick for ${q}`, criteria: { a: "A", b: "B" } } }, snippets: [], charged: {} });
+const req = (q: string): JevRequest => (minted({ state: { form: "fixture" }, questions: { [q]: { type: "choice", instructions: `Pick for ${q}`, criteria: { a: "A", b: "B" } } }, snippets: [], charged: {} }));
 const answer = (q: string, costUsd = 0): JevResult => ({ model: "convaiinnovations/laya-free", answers: { [q]: { choice: "a", confidence: 0.9 } }, inputTokens: 10, latencyMs: 400, costUsd });
 const qOf = (r: JevRequest): string => Object.keys(r.questions)[0] as string;
 

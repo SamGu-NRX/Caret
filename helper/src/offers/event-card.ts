@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { redactWindow } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // The event card (Fable plan section 2, pop-up A). A sentence that names a time and a person, finished
@@ -14,7 +15,6 @@ import { nodeText, type Change, type ScreenModel, type WindowState } from "../mo
 import { PROTOCOL_VERSION, type HelperMessage, type OfferAction, type OfferField, type OfferWithdrawn } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import { isConversation } from "../conversation.ts";
-import { SnippetLedger } from "../privacy.ts";
 import type { PopupBlock, PopupSpecT } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import type { TaskResult } from "../executor/executor.ts";
@@ -181,7 +181,7 @@ export const OFFER_WHEN: Record<SentenceSource, string> = {
 
 /** One of the two asks. `declared` is the sentence as its window's ledger took it. */
 export function buildAttendRequest(sentence: string, wording: 0 | 1, declared: { snippets: JevRequest["snippets"]; charged: JevRequest["charged"] }, source: SentenceSource = "typed"): JevRequest {
-  return assertNoSecrets({
+  return new Disclosure([]).legacy({
     purpose: "event.card",
     state: { sentence, task: source === "typed" ? "The user is typing this sentence. Caret is deciding whether to offer adding an event to the user's calendar." : "The user is reading this line in a conversation. Caret is deciding whether to offer adding an event to the user's calendar." },
     questions: { attend: { type: "choice", instructions: WORDINGS[source][wording], criteria: { yes: "Yes: a future event the user will attend.", no: "No." } } },
@@ -201,7 +201,7 @@ export async function askAttend(ask: AskJev, model: ScreenModel, w: WindowState,
   // Changed-node events may supply raw sentence text. Admit it only when the redacted view retains it.
   w = redactWindow(w);
   if (![...w.nodes.values()].some((n) => nodeText(n).includes(sentence))) return null;
-  const ledger = new SnippetLedger(model.windows.values());
+  const ledger = new Disclosure(model.windows.values());
   if (!ledger.take(w, "candidate", [sentence])) return null;
   const declared = ledger.declared();
   const [r1, r2] = await Promise.all([ask(buildAttendRequest(sentence, 0, declared, source)), ask(buildAttendRequest(sentence, 1, declared, source))]);

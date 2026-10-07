@@ -3,10 +3,11 @@
 // grounded fill proposals. server.ts connects it to the socket; tests drive it directly.
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
+import { Disclosure } from "./privacy/disclosure.ts";
 import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
-import { MEMORY_SNIPPETS, SnippetLedger, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
+import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
 import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
@@ -2987,7 +2988,7 @@ export class Helper {
       if (ctx.sentences > 0 && this.gate.holds("event", now).length === 0) {
         const last = sentences(node.value ?? "", false).at(-1);
         // The event card asks Jev about the sentence through its window's budget; one that will not fit makes no card.
-        if (last !== undefined && !this.events.isJudged(w.window.windowId, last) && new SnippetLedger(this.model.windows.values()).cost(w, [last]) !== null) {
+        if (last !== undefined && !this.events.isJudged(w.window.windowId, last) && new Disclosure(this.model.windows.values()).cost(w, [last]) !== null) {
           const c = this.events.candidate(w, f.key, last, "typed");
           if (c !== null) {
             const key = f.key;
@@ -3011,7 +3012,7 @@ export class Helper {
           this.events.forgetHeard(l);
           continue;
         }
-        const c = new SnippetLedger(this.model.windows.values()).cost(l.w, [l.sentence]) === null ? null : this.events.candidate(l.w, l.key, l.sentence, "conversation");
+        const c = new Disclosure(this.model.windows.values()).cost(l.w, [l.sentence]) === null ? null : this.events.candidate(l.w, l.key, l.sentence, "conversation");
         if (c === null) {
           this.events.forgetHeard(l);
           continue;

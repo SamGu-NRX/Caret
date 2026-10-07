@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Naming a routine (B19, plan section 4: "When a routine crosses the threshold, a language model names it
 // in the background. The name is a label only."). Jev answers only choice questions, so the house rule
@@ -16,7 +17,6 @@ import { assertNoSecrets } from "../privacy.ts";
 import { randomInt } from "node:crypto";
 import type { WindowState } from "../model.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
-import { SnippetLedger } from "../privacy.ts";
 
 /** Words a name may have. The brief's rule; no measurement behind it. */
 export const NAME_MAX_WORDS = 6;
@@ -211,7 +211,7 @@ const WORDINGS = [
  * names that use it; null when no name or the question itself cannot go.
  */
 export function namingRequest(f: RoutineFacts, windows: Iterable<WindowState>, wording: number, rand: (n: number) => number): { req: JevRequest; ids: Map<string, string> } | null {
-  const ledger = new SnippetLedger(windows);
+  const ledger = new Disclosure(windows);
   const dstLabels = f.dstWindow === null ? [] : f.dstLabels.filter((l) => ledger.take(f.dstWindow as WindowState, "descriptor", [l]));
   const srcLabels = f.srcLabels.filter((x) => ledger.take(x.window, "candidate", [x.text]));
   const apps = [...new Set([f.dstApp, ...f.srcApps])].filter((x) => x !== "");
@@ -231,7 +231,7 @@ export function namingRequest(f: RoutineFacts, windows: Iterable<WindowState>, w
   criteria[NONE] = "None of these names fits.";
   const declared = ledger.declared();
   return {
-    req: assertNoSecrets({
+    req: ledger.legacy({
       purpose: "pattern.naming",
       state: { into: facts.dstApp, intoFields: dstLabels, from: facts.srcApps, fromSections: srcLabels.map((x) => x.text), timesSeen: facts.count },
       questions: { name: { type: "choice", instructions, criteria } },

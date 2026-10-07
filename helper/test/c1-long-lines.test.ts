@@ -1,6 +1,7 @@
 // C1: fill reads values inside lines. A note line over 80 characters offered nothing, and a short line was offered only
 // whole, so "Mobile 555-0164 (no landline anymore)." gave a phone field nothing (evidence/screen/p2 tasks-dev4). Jev is
 // a fake that answers by rule; every name, number and address is invented.
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { collectCandidates, describeCandidate } from "../src/fill/candidates.ts";
@@ -204,8 +205,8 @@ describe("a value its line warns about, under a tight budget", () => {
     const m = new ScreenModel();
     m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: `Contact\n${long}`, editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
     m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));
-    const { SnippetLedger } = await import("../src/privacy.ts");
-    const cs = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()) }).candidates;
+    const { Disclosure } = await import("../src/privacy/disclosure.ts");
+    const cs = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m.windows.values()) }).candidates;
     const c = cs.find((x) => x.text === "555-0101");
     expect(c === undefined || (c.line ?? "").includes("no longer works")).toBe(true);
   });
@@ -227,26 +228,26 @@ describe("a labelled value its line warns about", () => {
 
 describe("a warned value that does not fit", () => {
   it("keeps a later bare copy of it out too, and the cut rules count its kind", async () => {
-    const { SnippetLedger } = await import("../src/privacy.ts");
+    const { Disclosure } = await import("../src/privacy/disclosure.ts");
     const { cutKinds } = await import("../src/fill/candidates.ts");
     const pad = "The building manager said the lobby will be repainted next week and the elevator inspection is on Friday morning. ".repeat(10);
     const m = new ScreenModel();
     m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: `Phone: 555-0101; do not use this old number belonging to Dana Whitfield because ${pad}\\nPhone: 555-0101`, editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
     m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));
-    const r = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()) });
+    const r = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m.windows.values()) });
     const c = r.candidates.find((x) => x.text === "555-0101");
     expect(c === undefined || (c.line ?? "").includes("do not use")).toBe(true);
     if (c === undefined) expect([...cutKinds(m, r.cut, r.candidates)]).toContain("phone");
   });
 
   it("keeps out a later span that holds it, and the cut rules still count its kind", async () => {
-    const { SnippetLedger } = await import("../src/privacy.ts");
+    const { Disclosure } = await import("../src/privacy/disclosure.ts");
     const { cutKinds } = await import("../src/fill/candidates.ts");
     const pad = "the records were incorrect and await review ".repeat(40);
     const m = new ScreenModel();
     m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: `Phone: 555-0101; do not use this old number because ${pad}\nPhone: 555-0101 ext 42`, editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
     m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));
-    const r = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()) });
+    const r = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m.windows.values()) });
     const bare = r.candidates.filter((x) => x.text.includes("555-0101") && !(x.line ?? "").includes("do not use"));
     expect(bare.map((x) => x.text)).toEqual([]);
     expect([...cutKinds(m, r.cut, r.candidates)]).toContain("phone");

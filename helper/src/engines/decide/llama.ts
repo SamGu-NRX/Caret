@@ -1,4 +1,5 @@
 import { assertNoSecrets } from "../../privacy.ts";
+import { verifySent } from "../../privacy/disclosure.ts";
 // A decision engine on this Mac: an open instruct model in llama-server (llama.cpp), J1 part B.
 //
 // Each request becomes one prompt prefix, the state and every option once with a label, and then one short question
@@ -9,7 +10,7 @@ import { assertNoSecrets } from "../../privacy.ts";
 // digit by digit, since the tokenizers of the models screened here split numbers into digits.
 //
 // A yes/no question is a choice of two labels, A for yes and B for no; its answer is the probability of A.
-import type { AskJev, ChoiceQuestion, JevRequest, JevResult, NoulQuestion } from "../../fill/jev.ts";
+import { wireBody, type AskJev, type ChoiceQuestion, type JevRequest, type JevResult, type NoulQuestion } from "../../fill/jev.ts";
 import type { DecideEngine } from "./port.ts";
 
 export interface LlamaOptions {
@@ -204,6 +205,8 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
   // prompt prefix out of its cache, evaluating each prefix again for every question.
   const ask: AskJev = (req) => {
     assertNoSecrets(req);
+    // SC1 2b: the local engine refuses unminted text as the Jev client does, so an evaluation fails where a live run would.
+    verifySent(req, wireBody(req, opts.model));
     const run = queue.then(() => answer(req));
     queue = run.catch(() => undefined);
     return run;

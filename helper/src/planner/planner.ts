@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { instructionForModel, instructionView } from "../fill/redact.ts";
 import { viewOf } from "../fill/candidates.ts";
 import { redactWindow } from "../fill/redact.ts";
@@ -34,7 +35,7 @@ import { addressParts } from "../fill/kinds.ts";
 import { writeMisfit } from "../fill/writable.ts";
 import { fieldPart, splitAddress, splitName } from "../fill/derive.ts";
 import { inWebArea } from "../fill/controls.ts";
-import { SnippetLedger, type Declared } from "../privacy.ts";
+import { type Declared } from "../privacy.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { instructionValues } from "./spans.ts";
 import type { MemoryValue } from "./trace.ts";
@@ -196,7 +197,7 @@ async function planIn(
   w = redactWindow(w);
   const fields = writableFields(w);
   const buttons = labelledButtons(w);
-  const ledger = new SnippetLedger(model.windows.values());
+  const ledger = new Disclosure(model.windows.values());
   if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", PRIVACY_SAYS);
   // A title that does not fit the window's budget is left out; the question then names the app alone.
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
@@ -527,7 +528,7 @@ export function requestedWindow(model: ScreenModel, req: { windowId?: string | u
 }
 
 /** Values to choose from: the instruction's spans, then memory, then the other windows' candidates; each text once. */
-function valueOptions(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number): Option[] {
+function valueOptions(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: Disclosure, now: number): Option[] {
   const out: Option[] = [];
   const retainedValues = new Set(instructionView(instruction).retained.flatMap(instructionValues));
   const seen = new Set<string>();
@@ -602,14 +603,14 @@ async function chooseWindow(
   const candidates = [...model.windows.values()].map(redactWindow).filter(actionable);
   if (candidates.length === 0) throw new PlannerError("noWindow", "no open window has a field or a button");
   if (candidates.length === 1) return candidates[0] as WindowState;
-  const ledger = new SnippetLedger(model.windows.values());
+  const ledger = new Disclosure(model.windows.values());
   if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", PRIVACY_SAYS);
   const listed = candidates.filter((w) => ledger.take(w, "descriptor", [w.window.title]));
   if (listed.length === 0) throw new PlannerError("privacy", "no open window's title fits what one question to Jev may carry");
   const declared = ledger.declared();
   const first = listed.map((w, i) => ({ id: `w${i + 1}`, w }));
   const second = shuffled(first, rand).map((x, i) => ({ id: `x${i + 1}`, w: x.w }));
-  const req = (list: typeof first, wording: 0 | 1): JevRequest => (assertNoSecrets({
+  const req = (list: typeof first, wording: 0 | 1): JevRequest => (ledger.legacy({
     purpose: "planner.window",
     state: { instruction: instructionForModel(instruction), task: "Caret is about to plan the user's instruction in one of the user's open windows." },
     questions: {
@@ -666,7 +667,7 @@ function fieldRequest(instruction: string, w: WindowState, title: string | null,
       criteria: { ...Object.fromEntries(buttons.map((b) => [b.id, `the '${b.label}' button`])), [NONE]: "No button." },
     };
   }
-  return assertNoSecrets({
+  return new Disclosure([]).legacy({
     purpose: "planner.fields",
     state: {
       instruction,

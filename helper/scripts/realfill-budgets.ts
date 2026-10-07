@@ -6,6 +6,7 @@
 //   node scripts/realfill-budgets.ts --out FILE.md [--consent]
 //
 // --consent gives the source the budget an Ask that names it gets (privacy.ts SnippetLedger consented).
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +15,7 @@ import { collectCandidates, labelledLines, setGeneratorClock } from "../src/fill
 import { describeField } from "../src/fill/descriptor.ts";
 import { formInputs } from "../src/fill/fill.ts";
 import { fieldTerms } from "../src/fill/kinds.ts";
-import { SnippetLedger, windowBudget } from "../src/privacy.ts";
+import { windowBudget } from "../src/privacy.ts";
 import { Snapshot } from "../src/protocol.ts";
 import type { WindowState } from "../src/model.ts";
 import { buildDesk, loadCorpus, T0 } from "./realfill-corpus.ts";
@@ -59,7 +60,7 @@ for (const form of corpus.forms) {
     return fieldTerms([d.label, d.nearest, d.placeholder]);
   });
   const opts = a.consent ? { consented: new Set([sw.window.windowId]) } : {};
-  const ledger = new SnippetLedger(desk.model.windows.values(), opts);
+  const ledger = new Disclosure(desk.model.windows.values(), opts);
   const gen = collectCandidates(desk.model, desk.form.window.windowId, { now: T0, ledger, fields: terms });
   const c = chars(sw);
   const offered = new Set(gen.candidates.filter((x) => x.source.windowId === sw.window.windowId).map((x) => x.text));

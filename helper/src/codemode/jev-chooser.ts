@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { instructionForModel } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // choose() inside a plan program, answered by Jev through the existing client (fill/jev.ts). The question
@@ -20,7 +21,7 @@ export function jevChooser(ask: AskJev, goal: string): ChooserPort {
     options.forEach((o, i) => (criteria[String(i + 1)] = o.label));
     criteria[NONE] = "None of these is supported by what is on screen";
     const snippets: Snippet[] = [{ windowId: window, kind: "descriptor", text: question.text }, ...options.map((o): Snippet => ({ windowId: window, kind: "candidate", text: o.label }))];
-    const req: JevRequest = assertNoSecrets({
+    const req: JevRequest = new Disclosure([]).legacy({
       purpose: "codemode.choice",
       state: { goal: instructionForModel(goal) },
       questions: { choice: { type: "choice", instructions: question.text, criteria } },

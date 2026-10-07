@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { instructionForModel, instructionView, redactWindow } from "../fill/redact.ts";
 // Ask as a scoped fill (B25 lead decision 1). An instruction becomes a small intent, and every part of it is a
 // choice from what code listed or an exact span of the instruction:
@@ -20,7 +21,6 @@ import { inWebArea, type Control } from "../fill/controls.ts";
 import { localTargets } from "./targets.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
 import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
-import { SnippetLedger } from "../privacy.ts";
 import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
 import { fieldWords, namedSources, onlyInSources, restrictsSources, senderNames, senderOf, type NamedSource } from "./sources.ts";
@@ -157,7 +157,7 @@ export interface IntentSnapshot {
   excluded: string[];
   /** The instruction names a source no open window could be ("off my LinkedIn" with no LinkedIn open). */
   missing: boolean;
-  ledger: SnippetLedger;
+  ledger: Disclosure;
 }
 
 /** Fields and windows one snapshot lists at most: the plan's provisional inventory limit (section 4), and sources by recency. */
@@ -197,7 +197,7 @@ export function personSpans(instruction: string): string[] {
 export function intentSnapshot(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[]): IntentSnapshot {
   const local = w;
   w = redactWindow(w);
-  const ledger = new SnippetLedger(model.windows.values());
+  const ledger = new Disclosure(model.windows.values());
   if (!ledger.plan([instructionForModel(instruction)])) throw new SaidError("privacy", SAYS.privacy, "the instruction quotes more of an open window than one request may carry");
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const fields: IntentField[] = [];

@@ -1,4 +1,5 @@
 // WriterPort, prompt and transport, with a fake fetch. The live measurement is scripts/writer-eval.ts.
+import { minted } from "../minted.ts";
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { runCodePlan } from "../../src/codemode/sandbox.ts";
@@ -26,7 +27,7 @@ const completion = (content: string, model = "openai/gpt-oss-120b") => ({
   usage: { prompt_tokens: 2000, completion_tokens: 500, completion_tokens_details: { reasoning_tokens: 120 } },
 });
 
-const request = (input: unknown = { goal: "Sign me up", snapshots: [FORM, MAIL] }) => ({ kind: "plan" as const, disclosureId: "disc-1", input, maxOutputTokens: 1500, signal: new AbortController().signal });
+const request = (input: unknown = { goal: "Sign me up", snapshots: [FORM, MAIL] }) => (minted({ kind: "plan" as const, disclosureId: "disc-1", input, maxOutputTokens: 1500, signal: new AbortController().signal }));
 
 describe("plan prompt", () => {
   test("the API the writer reads names exactly the functions the sandbox exposes", () => {

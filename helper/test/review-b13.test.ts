@@ -1,6 +1,7 @@
 // Findings from the independent review of B12's fill and privacy path (B13), each as the case the
 // reviewer traced. A Jev stand-in picks the right value when it is offered and a decoy otherwise, as
 // live Jev did in B11's replay. All text is synthetic.
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +14,7 @@ import { ScreenModel } from "../src/model.ts";
 import { collectCandidates, setGeneratorClock } from "../src/fill/candidates.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { fieldTerms } from "../src/fill/kinds.ts";
-import { SnippetLedger, WINDOW_CHARS, windowBudget } from "../src/privacy.ts";
+import { WINDOW_CHARS, windowBudget } from "../src/privacy.ts";
 import { targetSnippets } from "../src/executor/target.ts";
 import { conversationSign } from "../src/conversation.ts";
 import { PROTOCOL_VERSION, type AppRef, type FillProposal, type HelperMessage, type ReaderMessage, type ReaderVerb, type Snapshot, type VerbResult } from "../src/protocol.ts";
@@ -69,7 +70,7 @@ describe("B13 review: no wrong fill from a partial set", () => {
       }),
     );
     m.apply(scheduleForm(2000, ["Meeting date", "Start time"]));
-    const ledger = new SnippetLedger(m.windows.values());
+    const ledger = new Disclosure(m.windows.values());
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Meeting date"]), fieldTerms(["Start time"])] });
     expect(cut).toContain(CHAT);
     expect(candidates.map((c) => c.text)).not.toContain(MEETING);
@@ -95,7 +96,7 @@ describe("B13 review: no wrong fill from a partial set", () => {
       ),
     );
     m.apply(scheduleForm(2000, ["Start time"]));
-    const ledger = new SnippetLedger(m.windows.values());
+    const ledger = new Disclosure(m.windows.values());
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Start time"])] });
     expect(cut).toContain(CHAT);
     expect(candidates.map((c) => c.text)).toContain("3:45 PM");
@@ -121,7 +122,7 @@ describe("B13 review: no wrong fill from a partial set", () => {
     m.apply(calendar(1500));
     const labels = ["Start time", "Meeting date"];
     m.apply(scheduleForm(2000, labels));
-    const ledger = new SnippetLedger(m.windows.values());
+    const ledger = new Disclosure(m.windows.values());
     // No time budget, so only the cap stops it: under a loaded test run the 15 ms clock can stop it first.
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: labels.map((l) => fieldTerms([l])), budgetMs: Number.POSITIVE_INFINITY });
     expect(candidates).toHaveLength(80);
@@ -178,7 +179,7 @@ describe("B13 second review: the fixes' own gaps", () => {
     m.apply(snap([text(`${CHAT}/e`, "Email: a@example.com"), text(`${CHAT}/k`, "ok")], { at: 1000, windowId: CHAT, title: "Kofi", app: MESSAGES, values: [value("email", "a@example.com", `${CHAT}/e`)] }));
     m.apply(snap([text("notes/0", "dana@example.com")], { at: 1200, windowId: "6464-1", title: "Notes", app: NOTES, values: [value("email", "dana@example.com", "notes/0")] }));
     m.apply(scheduleForm(2000, ["Email"]));
-    const ledger = new SnippetLedger(m.windows.values());
+    const ledger = new Disclosure(m.windows.values());
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Email"])] });
     expect(cut).toContain(CHAT);
     expect(candidates.map((c) => c.text)).toContain("dana@example.com");

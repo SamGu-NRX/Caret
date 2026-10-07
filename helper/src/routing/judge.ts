@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { viewOf } from "../fill/candidates.ts";
 import { redactWindow } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
@@ -8,7 +9,6 @@ import { assertNoSecrets } from "../privacy.ts";
 // else abstains, with the reason logged. Nothing here acts.
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
-import { SnippetLedger } from "../privacy.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { isConversation } from "../conversation.ts";
 import { formFields, FillError } from "../fill/fill.ts";
@@ -91,7 +91,7 @@ const OTHER_WINDOWS = 5;
 
 /** The screen text one request carries, taken through one ledger; null pieces did not fit their window's budget. */
 interface Taken {
-  ledger: SnippetLedger;
+  ledger: Disclosure;
   state: Record<string, unknown>;
   says: Map<string, string>;
   /** Candidates whose quotes fit their windows' budgets. */
@@ -108,7 +108,7 @@ export class PrivacyRefusal extends Error {}
 function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly RouteCandidate[], form = true): Taken {
   const w = viewOf(model, ctx.windowId);
   if (w === undefined) throw new PrivacyRefusal(`window ${ctx.windowId} left the model`);
-  const ledger = new SnippetLedger(model.windows.values());
+  const ledger = new Disclosure(model.windows.values());
   const state: Record<string, unknown> = {
     task: "Caret is a helper on this Mac. It is deciding, once for this moment, what to do for the person using it.",
     app: ctx.app,
@@ -143,7 +143,7 @@ function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly 
 }
 
 /** The other empty fields around the focused one, as a count and the first labels that fit; null when it is no form. */
-function formLabels(w: WindowState, key: string, ledger: SnippetLedger): { emptyFields: number; labels: string[] } | null {
+function formLabels(w: WindowState, key: string, ledger: Disclosure): { emptyFields: number; labels: string[] } | null {
   if (w.nodes.get(key)?.editable !== true) return null;
   let fields;
   try {
@@ -198,7 +198,7 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
       else if (o === "ask") criteria.ask = `${OUTCOME_SAYS.ask} ${reg.question?.question?.says ?? ""}; then: ${t.says.get(reg.question?.id ?? "") ?? ""}.`;
       else criteria[o] = OUTCOME_SAYS[o];
     }
-    const request: JevRequest = assertNoSecrets({
+    const request: JevRequest = t.ledger.legacy({
       purpose: "route.judge",
       state: t.state,
       questions: {
@@ -218,7 +218,7 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
   if (cand === null || cand === undefined || ev === undefined) return { outcome, task: null, taskPrivacy: false };
   const t = describe(model, ctx, [cand], false);
   if (!t.quoted.has(cand.id)) return { outcome, task: null, taskPrivacy: true };
-  const request: JevRequest = assertNoSecrets({
+  const request: JevRequest = t.ledger.legacy({
     purpose: "route.task",
     state: { ...t.state, offer: { task: ev.task, sentence: ev.sentence, found: ev.found } },
     questions: { task: { type: "choice", instructions: taskInstructions(ev.offerWhen), criteria: { abstain: TASK_QUESTION.abstain, act: TASK_QUESTION.act } } },
@@ -234,7 +234,7 @@ export function router2Request(model: ScreenModel, ctx: RoutingContext, reg: Reg
   const t = describe(model, ctx, cands);
   const criteria: Record<string, string> = {};
   for (const r of reg.routes) criteria[r.option] = r.candidate === null ? `None of these: ${r.reason ?? ""}. Offer nothing.` : (t.says.get(r.candidate.id) ?? r.candidate.plain);
-  const request: JevRequest = assertNoSecrets({
+  const request: JevRequest = t.ledger.legacy({
     purpose: "route.pick",
     state: { ...t.state, decided: "Caret will offer to do one task now." },
     questions: { route: { type: "choice", instructions: "Which one task fits what the user is doing now?", criteria } },

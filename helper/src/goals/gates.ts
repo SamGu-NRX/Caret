@@ -18,12 +18,12 @@
 // P2 (plans/fast-browser.md, gate "fill"): a page plan's values were chosen by proposeFill itself, both wordings
 // agreeing at FILL_CUTOFF with the owner veto, and minted by the write contract there (W2: the mint replaced the
 // markFilled identity mark), so lowering passes the mint through and asks nothing again.
+import type { Disclosure } from "../privacy/disclosure.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { fieldKinds, NUMBER_FIELD } from "../fill/kinds.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { verifyWrites } from "../planner/codeplan.ts";
 import { secretIn } from "../planner/trace.ts";
-import type { SnippetLedger } from "../privacy.ts";
 import type { GoalStep, TargetBinding, ValueBinding } from "./plan.ts";
 
 const clip = (s: string): string => {
@@ -145,7 +145,7 @@ function shown(w: JevWrite): string {
  * The writes Jev does not confirm, by step ref, each with the sentence the preview shows. With no Jev, every write is
  * unconfirmed. Throws JevUnavailable when the request fails: code does not guess on Jev's behalf.
  */
-export async function jevGate(instruction: string, writes: readonly JevWrite[], askJev: AskJev | null, ledger: SnippetLedger): Promise<Map<string, string>> {
+export async function jevGate(instruction: string, writes: readonly JevWrite[], askJev: AskJev | null, ledger: Disclosure): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (writes.length === 0) return out;
   if (askJev === null) {

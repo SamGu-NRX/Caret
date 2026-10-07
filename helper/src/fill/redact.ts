@@ -180,6 +180,13 @@ function valueGoes(texts: readonly { text: string; dropped: ReadonlySet<number> 
 const TEXT_ROLES: ReadonlySet<string> = new Set(["AXStaticText", "AXCell", "AXHeading", "AXLink", "AXTextArea", "AXTextField"]);
 
 const views = new WeakMap<WindowState, { at: number; view: WindowState }>();
+/** Every window object redactWindow returned: the only windows a Disclosure mints screen text from (privacy/disclosure.ts). */
+const REDACTED = new WeakSet<WindowState>();
+
+/** Whether `w` is a view redactWindow returned (the window itself, when its redaction removed nothing). */
+export function isRedacted(w: WindowState): boolean {
+  return REDACTED.has(w);
+}
 
 /**
  * The window as fill may read it: a WindowState of its own, built once per window state the model holds (each snapshot
@@ -191,6 +198,7 @@ export function redactWindow(w: WindowState): WindowState {
   if (hit !== undefined && hit.at === w.updatedAt) return hit.view;
   const view = build(w);
   views.set(w, { at: w.updatedAt, view });
+  REDACTED.add(view);
   return view;
 }
 

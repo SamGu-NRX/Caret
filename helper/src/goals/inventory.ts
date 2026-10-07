@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { instructionForModel } from "../fill/redact.ts";
 import { redactWindow } from "../fill/redact.ts";
 // The frozen snapshots a goal program reads, and the bindings behind their refs (D2-06). Built from the screen model
@@ -16,7 +17,7 @@ import type { EventClock } from "../offers/event-time.ts";
 import { valueList, type Value } from "../planner/codeplan.ts";
 import { writableFields } from "../planner/planner.ts";
 import type { MemoryValue } from "../planner/trace.ts";
-import { SnippetLedger, WINDOW_CHARS } from "../privacy.ts";
+import { WINDOW_CHARS } from "../privacy.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import { allowedEffects } from "./capabilities.ts";
 import { markDerived } from "./gates.ts";
@@ -70,7 +71,7 @@ export interface InventoryOptions {
 export interface Inventory {
   snapshots: PlanningSnapshot[];
   inventory: GoalInventory;
-  ledger: SnippetLedger;
+  ledger: Disclosure;
 }
 
 const CONTROL: Record<string, GoalControl> = { select: "select", combobox: "combobox", radio: "radio", date: "date" };
@@ -90,7 +91,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   });
   const first = windows[0];
   if (first === undefined) throw new Error("no window to plan in");
-  const ledger = new SnippetLedger(model.windows.values());
+  const ledger = new Disclosure(model.windows.values());
   if (!ledger.plan([instructionForModel(o.instruction)])) throw new Error("the instruction quotes more of an open window than one request may carry");
   const targets = new Map<string, TargetBinding>();
   const values = new Map<string, ValueBinding>();
@@ -211,7 +212,7 @@ function contractOf(w: WindowState, node: Node, form: FormControl | null): { fie
 }
 
 /** Events code reads from a source window's sentences: a resolved time and a person, as an event card would offer. */
-function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventClock, snapshot: string, ledger: SnippetLedger, nextRef: () => string): ReadValue[] {
+function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventClock, snapshot: string, ledger: Disclosure, nextRef: () => string): ReadValue[] {
   w = redactWindow(w);
   const out: ReadValue[] = [];
   for (const n of w.nodes.values()) {

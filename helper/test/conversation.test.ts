@@ -1,10 +1,11 @@
 // Which windows count as conversations, and the budget privacy.ts gives them. Every window here is
 // synthetic; snap() gives each an 800 by 600 frame at the origin.
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import type { AppRef, Frame, Node } from "../src/protocol.ts";
 import { CONVERSATION_BUNDLES, conversationSign } from "../src/conversation.ts";
-import { CONVERSATION_CHARS, SnippetLedger, WINDOW_CHARS, setConversationCap, windowBudget } from "../src/privacy.ts";
+import { CONVERSATION_CHARS, WINDOW_CHARS, setConversationCap, windowBudget } from "../src/privacy.ts";
 import { buildLookRequest } from "../src/tasks/pending.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { snap } from "./builders.ts";
@@ -131,7 +132,7 @@ describe("the budget of a conversation", () => {
     const MESSAGES: AppRef = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
     const w = windowOf(["Alice, meet Bob at 3:41 PM", "Alice", "meet Bob", "Bob at 3:41 PM", "3:41 PM", "Bob"].map((l) => t(l)), MESSAGES);
     const budget = windowBudget(w);
-    const ledger = new SnippetLedger([w]);
+    const ledger = new Disclosure([w]);
     // The parent line is 26 characters, but with the four lines inside it, 59: over the budget.
     expect(budget).toBeLessThan(59);
     expect(ledger.take(w, "candidate", ["Alice, meet Bob at 3:41 PM"])).toBe(false);

@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import * as z from "zod";
 import { assertNoSecrets, type Snippet } from "../privacy.ts";
+import { verifySent, type Disclosure } from "../privacy/disclosure.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
 
@@ -171,6 +172,11 @@ export interface JevRequest {
    * sent: the text is already in the question, through the ledger.
    */
   subjects?: Readonly<Record<string, string>>;
+  /**
+   * SC1 2b: the Disclosure that minted every text in this request (privacy/disclosure.ts). Never sent: the client
+   * verifies the wire body against it, and refuses a request without one.
+   */
+  disclosure: Disclosure;
 }
 
 const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number(), probabilities: z.record(z.string(), z.number()).optional() }).loose();
@@ -307,6 +313,9 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
     // G2 review: no request leaves with a secret marker in it, whichever builder made it (privacy.ts assertNoSecrets).
     assertNoSecrets(req);
     const wire = wireBody(req, route.model);
+    // SC1 2b: every string on the wire was minted for this request, checked after wireBody so a string the client makes
+    // up shows too.
+    verifySent(req, wire);
     if (route.provider === "gateway") {
       wire.providerOptions = { gateway: { only: [checkGatewayModel(route.model)] } };
     }

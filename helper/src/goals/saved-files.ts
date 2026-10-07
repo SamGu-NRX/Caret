@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { redactWindow } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Saved files (P3): a file the user attached once, kept for the same question next time ("Use this file for résumés
@@ -18,7 +19,6 @@ import { words } from "../fill/kinds.ts";
 import { MemoryDocumentError, type MemoryDocumentStore } from "../memory/documents.ts";
 import { fileFor, fileQuestion, forgetFile, normalizeQuestion, saveFile, savedFiles, UnknownFileError, type SavedFile } from "../memory/files.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
-import { SnippetLedger } from "../privacy.ts";
 import { FileFields, PROTOCOL_VERSION, type FileSave, type FileSaveOffer, type FileSaveReply, type Node, type SavedFilesReply, type SavedFilesRequest, type SavedFileView } from "../protocol.ts";
 import type { AttachOffer } from "./plan.ts";
 
@@ -143,7 +143,7 @@ export class SavedFiles {
 
     // The control's label and the page's title are screen text, held to the window's budget; a saved file's question
     // and name are memory, declared as memory and charged to any window that shows them (privacy.ts).
-    const ledger = new SnippetLedger(this.deps.model.windows.values());
+    const ledger = new Disclosure(this.deps.model.windows.values());
     const d = `"${questionExcerpt(question)}"`;
     if (!ledger.take(w, "descriptor", [questionExcerpt(question)])) return null;
     const title = w.window.title.trim() !== "" && ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
@@ -155,7 +155,7 @@ export class SavedFiles {
     // f1... in the first ask, g1..., shuffled, in the second: neither position nor id carries a choice across.
     const first = new Map(asked.map((c, i) => [`f${i + 1}`, c]));
     const second = new Map(shuffled(asked).map((c, i) => [`g${i + 1}`, c]));
-    const request = (ids: Map<string, (typeof asked)[number]>, wording: 0 | 1): JevRequest => (assertNoSecrets({
+    const request = (ids: Map<string, (typeof asked)[number]>, wording: 0 | 1): JevRequest => (ledger.legacy({
       purpose: "savedFile.match",
       state: {
         destination_window: where,

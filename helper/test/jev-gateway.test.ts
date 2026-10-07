@@ -1,3 +1,4 @@
+import { minted } from "./minted.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +14,7 @@ import { jevFailureSays, SAYS } from "../src/planner/says.ts";
 
 const URL = "https://ai-gateway.vercel.sh/typesafe/v1/systemone";
 const MODEL = "typesafe-ai/jev";
-const req = { state: "fixture", questions: { q: { type: "choice" as const, instructions: "Pick A", criteria: { a: "A", b: "B" } } }, snippets: [], charged: {}, retry429: false };
+const req = minted({ state: "fixture", questions: { q: { type: "choice" as const, instructions: "Pick A", criteria: { a: "A", b: "B" } } }, snippets: [], charged: {}, retry429: false });
 const success = (cost?: unknown) => new Response(JSON.stringify({ model: MODEL, answers: { q: { choice: "a", confidence: 0.9 } }, usage: { input_tokens: 10 }, ...(cost === undefined ? {} : { provider_metadata: { gateway: { cost } } }) }));
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "gw1-")); });

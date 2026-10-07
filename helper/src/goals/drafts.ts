@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { instructionForModel } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Text a goal plan writes in Caret's own words (B30): a short reply, message or description. The writer composes it;
@@ -750,7 +751,7 @@ export async function confirmClaims(instruction: string, drafts: readonly { text
     const carried = snippets.filter((x) => sent.includes(x.text));
     const charged: Record<string, number> = {};
     for (const x of carried) charged[x.windowId] = (charged[x.windowId] ?? 0) + x.text.length;
-    return assertNoSecrets({ purpose: "draft.check", state: { instruction: safeInstruction, task: "Caret checks that a short text it drafted for the user adds nothing the user did not ask to say." }, questions: {}, nouls, snippets: carried, charged });
+    return new Disclosure([]).legacy({ purpose: "draft.check", state: { instruction: safeInstruction, task: "Caret checks that a short text it drafted for the user adds nothing the user did not ask to say." }, questions: {}, nouls, snippets: carried, charged });
   };
   let r: Awaited<ReturnType<AskJev>>[];
   try {

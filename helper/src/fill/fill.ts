@@ -1,3 +1,4 @@
+import { Disclosure } from "../privacy/disclosure.ts";
 import { instructionForModel } from "../fill/redact.ts";
 import { redactWindow } from "./redact.ts";
 // Grounded fill: one Jev request per form, one Choice question per empty field, each offering
@@ -16,7 +17,7 @@ import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillFi
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, PLACEMENT_SAYS, viewOf, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
-import { assertNoSecrets, SnippetLedger, type Declared } from "../privacy.ts";
+import { assertNoSecrets, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
@@ -473,7 +474,7 @@ export function buildFillRequest(
   }
   const anyAbout = fields.some((f) => (about.get(f.id)?.length ?? 0) > 0);
   const anyDerived = fields.some((f) => (more.derived?.get(f.id)?.length ?? 0) > 0);
-  const req: JevRequest = assertNoSecrets({
+  const req: JevRequest = new Disclosure([]).legacy({
     purpose: more.stage === "whose" ? "fill.whose" : "fill.values",
     state: {
       ...(more.instruction === undefined ? {} : { instruction: more.instruction }),
@@ -822,7 +823,7 @@ export async function proposeFill(
   // budget (privacy.ts): the form's title and each field's descriptor, nearest field first, then the
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
   const scope = opts.scope;
-  const ledger = new SnippetLedger(model.windows.values(), scope?.consented === undefined ? {} : { consented: scope.consented });
+  const ledger = new Disclosure(model.windows.values(), scope?.consented === undefined ? {} : { consented: scope.consented });
   // C1 (item 6): an Ask for the whole form that narrows nothing (every source, memory, no person, no value it spells out)
   // asks each value as a Fill all does. Live on the same corpus and W4 pages and sources, Ask's wording that quotes the
   // instruction (B25) agreed on the same values as Fill all's but under FILL_CUTOFF, which was calibrated on Fill all's

@@ -31,6 +31,7 @@
 //    sessions' bystander windows (paragraphs no fill can use) give nothing to any request.
 //
 // PRIVACY_REPORT=FILE writes the measured numbers as JSON.
+import { Disclosure } from "../src/privacy/disclosure.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,7 +48,6 @@ import { ScreenModel } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { fieldTerms } from "../src/fill/kinds.ts";
-import { SnippetLedger } from "../src/privacy.ts";
 import { FIXTURE_APP, focus, node, snap, text } from "./builders.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { largeScene } from "./large-scene.ts";
@@ -100,7 +100,7 @@ function textOf(w: WindowState): WindowText {
 }
 
 /** Every string a request sends: the values in its state and questions (keys are fixed names and candidate ids). */
-function bodyOf(req: JevRequest): string {
+function bodyOf(req: Omit<JevRequest, "disclosure">): string {
   const out: string[] = [];
   const walk = (v: unknown): void => {
     if (typeof v === "string") out.push(v);
@@ -115,7 +115,8 @@ function bodyOf(req: JevRequest): string {
 interface Recorded {
   session: string;
   producer: string;
-  req: JevRequest;
+  /** The request as recorded; the check's own synthetic requests have no Disclosure, since none is ever sent. */
+  req: Omit<JevRequest, "disclosure">;
   windows: WindowText[];
 }
 
@@ -711,7 +712,7 @@ describe("a window the Ask names (B26 lead decision 1)", () => {
     const offered = (first: boolean): string[] => {
       const m = desk(50);
       const terms = ["Guest's full name", "Guest phone", "Guest email", "Arrival time", "Meal notes"].map((l) => fieldTerms([l]));
-      const ledger = new SnippetLedger(m.windows.values(), { consented: new Set([MAIL]) });
+      const ledger = new Disclosure(m.windows.values(), { consented: new Set([MAIL]) });
       return collectCandidates(m, FORM, { now: 1000, ledger, fields: terms, ...(first ? { first: { windows: new Set([MAIL]), names: ["Bea", "Beatrice Sutherland"] } } : {}) }).candidates.map((c) => c.text);
     };
     expect(offered(true)).toContain("My shift ends at 7, so we'd get there around 7:45 pm. See you soon, Bea");
