@@ -40,9 +40,9 @@ describe("typed values inside a line", () => {
     expect(values("ZIP+4 97214-1234, order 20261-0042, range 2021-2022")).toEqual([]);
   });
 
-  it("reads web addresses and emails without their closing punctuation, an email never as a link", () => {
+  it("preserves a URL token's punctuation, but trims email punctuation and never reads email as a link", () => {
     expect(values("See https://www.linkedin.com/in/example-jo, or mail jo@example.org.")).toEqual([
-      ["url", "https://www.linkedin.com/in/example-jo"],
+      ["url", "https://www.linkedin.com/in/example-jo,"],
       ["email", "jo@example.org"],
     ]);
   });

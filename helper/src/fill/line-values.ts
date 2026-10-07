@@ -35,7 +35,8 @@ const DATE = new RegExp(
   "gu",
 );
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu;
-const URL = /\bhttps?:\/\/[^\s<>()"'`]+|\bwww\.[^\s<>()"'`]+|\b(?:linkedin|github)\.com\/[^\s<>()"'`]+/giu;
+// A URL never starts inside a hostname or path: gist.github.com and evil.example/github.com are not github.com.
+const URL = /(?<![\p{L}\p{N}_.\/@%+-])(?:https?:\/\/|www\.|(?:linkedin|github)\.com\/)[^\s<>()"'`]+/giu;
 /**
  * Phone numbers: international with a "+", ten digits in the North American groups, and seven digits joined by a
  * hyphen ("555-0147"). Digits or a joining mark on either side refuse it, so a part of a card number, a ZIP+4, a date
@@ -122,7 +123,8 @@ function scan(line: string): LineValue[] {
     }
   };
   scan(EMAIL, "email", true);
-  scan(URL, "url", true);
+  // A trailing dot or comma can be part of the path. Preserve the whole token rather than guess it is prose punctuation.
+  scan(URL, "url");
   scan(PHONE, "phone");
   scan(POSTAL, "address");
   scan(DATE, "date");

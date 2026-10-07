@@ -91,12 +91,12 @@ describe("F1 field-format values", () => {
     ["github.com/harperq-data extra", "GitHub URL"],
     ["github.com/harperq-data", "Notes"],
   ])("does not format an ambiguous or unsupported value %s", (text, label) => {
-    expect(formatForField(text, [label], undefined)).toBeNull();
+    expect(formatForField(text, [label], undefined, text)).toBeNull();
   });
 
   it("uses the input's URL kind as evidence but never changes an existing scheme", () => {
-    expect(formatForField("github.com/harperq-data", ["Profile"], "url")?.value).toBe("https://github.com/harperq-data");
-    expect(formatForField("http://github.com/harperq-data", ["GitHub URL"], "url")).toBeNull();
+    expect(formatForField("github.com/harperq-data", ["Profile"], "url", "github.com/harperq-data")?.value).toBe("https://github.com/harperq-data");
+    expect(formatForField("http://github.com/harperq-data", ["GitHub URL"], "url", "http://github.com/harperq-data")).toBeNull();
   });
 
   it.each([

@@ -1166,7 +1166,9 @@ export async function proposeFill(
       if (f.control !== "text") continue;
       const list = derived.get(f.id) ?? [];
       for (const c of candidates) {
-        const r = formatForField(c.text, f.labelWords, f.node.inputKind);
+        const source = viewOf(model, c.source.windowId)?.nodes.get(c.source.nodeKey);
+        if (source === undefined) continue;
+        const r = formatForField(c.text, f.labelWords, f.node.inputKind, nodeText(source));
         if (r === null || candidates.some((x) => x.text === r.value) || list.some((x) => x.text === r.value)) continue;
         const [whole, base] = [candidateSaid(c), textSaid(c)];
         list.push({ key: `${f.id}:${list.length}`, text: r.value, describe: `"${r.value}" (the value in the field's format of ${describeCandidate(c)})`, said: () => {
