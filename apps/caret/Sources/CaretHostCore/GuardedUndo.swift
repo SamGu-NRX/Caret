@@ -89,3 +89,16 @@ public enum GuardedUndo {
         return fail(answer == .uncertain ? WriteFallback.writeUncertain : "writeMismatch")
     }
 }
+
+/// After a refused range write, the selection Caret made is put back only when a fresh read shows
+/// the field exactly as before and the selection still Caret's span, and then the permit (the
+/// target, and for an undo ⌘Z's input mark) holds immediately before the selection write. A click
+/// recorded during the reads is the user's selection to keep (S2 confirmation).
+public enum SelectionRollback {
+    public static func allowed(
+        read: () -> (value: String, selection: UTF16Selection)?, before: String, span: UTF16Selection, permit: () -> Bool
+    ) -> Bool {
+        guard let now = read(), UTF16Text.same(now.value, before), now.selection == span else { return false }
+        return permit()
+    }
+}
