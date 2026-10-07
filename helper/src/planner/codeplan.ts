@@ -111,14 +111,14 @@ export function valueList(instruction: string, model: ScreenModel, w: WindowStat
     const win = model.windows.get(id) ?? null;
     if (win === null) continue;
     const mine = cands.filter((c) => c.source.windowId === id);
-    for (const c of mine) add(c.text, describeCandidate(c), win, null, candidateProvenance(c), c.source.nodeKey);
+    for (const c of mine) add(c.text, describeCandidate(c), win, null, candidateProvenance(model, c), c.source.nodeKey);
     for (const c of mine) {
       const parts = splitAddress(c.text);
-      if (parts !== null) for (const [k, v] of Object.entries(parts)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, win, null, { kind: "derived", how: "addressPart", base: candidateProvenance(c), also: null }, c.source.nodeKey);
+      if (parts !== null) for (const [k, v] of Object.entries(parts)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, win, null, { kind: "derived", how: "addressPart", base: candidateProvenance(model, c), also: null }, c.source.nodeKey);
       const name = c.context !== null && /\bname\b/i.test(c.context) && isNameLike(c.text, c.context) ? splitName(c.text) : null;
       if (name?.kind === "split") for (const part of ["first", "middle", "last"] as const) {
         const t = namePart(name, part);
-        if (t !== null) add(t, `"${t}" (the ${part} name in ${describeCandidate(c)})`, win, null, { kind: "derived", how: "namePart", base: candidateProvenance(c), also: null }, c.source.nodeKey);
+        if (t !== null) add(t, `"${t}" (the ${part} name in ${describeCandidate(c)})`, win, null, { kind: "derived", how: "namePart", base: candidateProvenance(model, c), also: null }, c.source.nodeKey);
       }
     }
   }

@@ -341,8 +341,8 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       const said = scope?.literals.get(f.key);
       if (writes.has(f.key) || said === undefined || f.asks[0]?.value !== said) continue;
       // W2: with the mint the write contract made for that very field (fill.ts mintOf).
-      if (f.control === "text" && f.value === said && f.source === null && f.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: said, display: said, span: said, context: null, source: null, memory: null, checked: requireChecked(mintOf(f), said, f.key, `field ${f.key}`) });
-      else if (f.handoff !== null && f.handoff.writes === true && f.handoff.source === null && f.handoff.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: f.handoff.value, display: f.handoff.display, span: said, context: null, source: null, memory: null, checked: requireChecked(mintOf(f), f.handoff.value, f.key, `field ${f.key}`) });
+      if (f.control === "text" && f.value === said && f.source === null && f.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: said, display: said, span: said, context: null, source: null, memory: null, checked: requireChecked(mintOf(f), said, f.key, o.windowId, `field ${f.key}`) });
+      else if (f.handoff !== null && f.handoff.writes === true && f.handoff.source === null && f.handoff.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: f.handoff.value, display: f.handoff.display, span: said, context: null, source: null, memory: null, checked: requireChecked(mintOf(f), f.handoff.value, f.key, o.windowId, `field ${f.key}`) });
     }
     for (const f of proposal.fields) {
       if (writes.has(f.key)) continue;

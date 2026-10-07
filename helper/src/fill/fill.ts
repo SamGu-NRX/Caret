@@ -19,7 +19,7 @@ import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNameP
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { autocompletePart, checkValues, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Proposed, type Provenance } from "./contract.ts";
+import { autocompletePart, checkValues, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Proposed, type Provenance } from "./contract.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -1602,7 +1602,7 @@ export async function proposeFill(
   for (const [i, { p, text }] of picksOf) {
     const f = fields[i] as Field;
     if (f.control !== "text" && f.control !== "combobox") continue;
-    proposed.push({ i, p: { field: contracts[i] as FieldContract, text, display: text, provenance: provenanceOf(p, f.part, text), owner: null } });
+    proposed.push({ i, p: { field: contracts[i] as FieldContract, text, display: text, provenance: provenanceOf(model, p, f.part, text), owner: null } });
   }
   let verify: VerifyUse | null = null;
   let verifierDown: string | null = null;
@@ -1614,7 +1614,8 @@ export async function proposeFill(
       if (!(e instanceof VerifierUnavailable)) throw e;
       // AC1 section 4: with no verifier, every proposed text write is withheld as unverified; exempt controls stand.
       verifierDown = e.message;
-      checked = { ok: [], refused: proposed.map((x) => ({ proposed: x.p, why: "unverified" as const, says: "Caret couldn't check this value just now" })), jev: { requests: 0, model: null, latencyMs: 0, inputTokens: 0, costUsd: 0 } };
+      const refused = proposed.map((x) => ({ proposed: x.p, why: "unverified" as const, says: "Caret couldn't check this value just now" }));
+      checked = { ok: [], refused, results: refused, jev: { requests: 0, model: null, latencyMs: 0, inputTokens: 0, costUsd: 0 } };
     }
     verify = checked.jev;
     for (const r of checked.refused) {
@@ -1622,10 +1623,9 @@ export async function proposeFill(
       const o = out[x.i] as FillField;
       out[x.i] = { ...o, choice: NONE, value: null, source: null, memory: null, handoff: null, withheld: r.why };
     }
-    for (const c of checked.ok) {
-      const x = proposed.find((y) => y.p.field === c.field && y.p.text === c.text) as { i: number; p: Proposed };
-      fieldMints.set(out[x.i] as FillField, c);
-    }
+    checked.results.forEach((c, k) => {
+      if (isChecked(c)) fieldMints.set(out[(proposed[k] as { i: number }).i] as FillField, c);
+    });
   }
   for (const [i, o] of out.entries()) {
     const f = fields[i] as Field;
@@ -1633,7 +1633,7 @@ export async function proposeFill(
     if (exempt === null) continue;
     const text = o.value ?? o.handoff?.value ?? "";
     const pick = picksOf.get(i);
-    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : provenanceOf(pick.p, f.part, text);
+    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : provenanceOf(model, pick.p, f.part, text);
     fieldMints.set(o, mintExempt({ field: contracts[i] as FieldContract, text, display: o.handoff?.display ?? text, provenance, owner: null }, exempt, now, scope?.instruction ?? ""));
   }
 
@@ -1680,8 +1680,8 @@ export function mintOf(f: FillField): CheckedValue | undefined {
  * mint for exactly the value the field writes, in exactly its field (requireChecked), so this admits nothing the
  * contract did not check.
  */
-export function bindMint(f: FillField, c: CheckedValue): FillField {
-  fieldMints.set(f, requireChecked(c, f.value ?? f.handoff?.value ?? "", f.key, `field ${f.key}`));
+export function bindMint(f: FillField, windowId: string, c: CheckedValue): FillField {
+  fieldMints.set(f, requireChecked(c, f.value ?? f.handoff?.value ?? "", f.key, windowId, `field ${f.key}`));
   return f;
 }
 
@@ -1697,15 +1697,15 @@ function deriveHow(part: FillPart | null, written: string, base: string): Derive
   return written === base ? "placePart" : "placeWithCountry";
 }
 
-/** A candidate's provenance: its window, its exact span, and the label, line and labelled value it sits in. */
-export function candidateProvenance(c: Candidate): Provenance {
-  return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null };
+/** A candidate's provenance: its window, its exact span, the label, line and labelled value it sits in, and its sentences now (contract.ts windowProvenance). */
+export function candidateProvenance(model: ScreenModel, c: Candidate): Provenance {
+  return windowProvenance(model.windows.get(c.source.windowId), c);
 }
 
 /** Where a pick's value came from, as the write contract carries it (fill/contract.ts Provenance). */
-function provenanceOf(p: Pick, part: FillPart | null, written: string): Provenance {
+function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, written: string): Provenance {
   const base = (b: Exclude<Pick, { from: "derived" }>): Provenance =>
-    b.from === "window" ? candidateProvenance(b.c) : b.from === "memory" ? { kind: "memory", id: b.a.id, label: b.a.label, part: null, whose: "user" } : { kind: "instruction", span: b.text };
+    b.from === "window" ? candidateProvenance(model, b.c) : b.from === "memory" ? { kind: "memory", id: b.a.id, label: b.a.label, part: null, whose: "user" } : { kind: "instruction", span: b.text };
   if (p.from !== "derived") {
     const own = base(p);
     // A web dropdown asked for a place with its country (placeWithCountry) writes more than the pick's text.
@@ -1713,7 +1713,7 @@ function provenanceOf(p: Pick, part: FillPart | null, written: string): Provenan
   }
   const b = base(p.base);
   const how = written !== p.text ? "placeWithCountry" : deriveHow(part, p.text, b.kind === "window" ? b.span : "");
-  return { kind: "derived", how, base: b, also: p.also === null ? null : candidateProvenance(p.also) };
+  return { kind: "derived", how, base: b, also: p.also === null ? null : candidateProvenance(model, p.also) };
 }
 
 /** What a memory entry gives a field now: the whole value, or the part of the name the proposal took (FillMemory.part). */

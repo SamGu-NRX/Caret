@@ -836,6 +836,16 @@ function lineContext(w: WindowState, node: Node, lines: number, isSourceField: b
   return isSourceField ? (node.label ?? nearestText(w, node, true)) : nearestText(w, node, true);
 }
 
+/**
+ * W2: every label the generator would read a span beside in this node now: its "Label: value" line's label, an editable
+ * source field's own label, the nearest text of a one-line node. The write contract's recheck (contract.ts
+ * provenanceStale) requires a value's recorded context among them.
+ */
+export function spanContexts(w: WindowState, node: Node, span: string): string[] {
+  const lines = nodeText(node).split(/\r?\n/).length;
+  return [contextFor(w, node, span), lineContext(w, node, lines, sourceField(node)), ...lineSpans(lineHolding(nodeText(node), span)).filter((s) => s.text === span).map((s) => s.label)].filter((x): x is string => x !== null);
+}
+
 /** The line of a node's text that holds a span, found by search rather than by splitting the whole text. */
 function lineHolding(text: string, span: string): string {
   const at = text.indexOf(span);

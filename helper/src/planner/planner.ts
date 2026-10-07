@@ -21,7 +21,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { candidateProvenance, FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
-import { checkValues, ContractError, fieldContract, VerifierUnavailable, type CheckedValue, type CheckOptions, type FieldContract, type Owner, type Proposed, type Provenance } from "../fill/contract.ts";
+import { checkValues, ContractError, fieldContract, isChecked, VerifierUnavailable, type CheckedValue, type CheckOptions, type FieldContract, type Owner, type Proposed, type Provenance } from "../fill/contract.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts } from "../fill/kinds.ts";
@@ -325,12 +325,14 @@ export async function mintWrites(writes: readonly { key: string; w: WindowState;
     if (e instanceof VerifierUnavailable) throw new PlannerError("jevFailed", `Caret couldn't check the plan's values: ${e.message}`);
     throw e;
   }
-  const keyOf = (p: Proposed): string => (writes[proposed.indexOf(p)] as (typeof writes)[number]).key;
-  const nameOf = (p: Proposed): string => (writes[proposed.indexOf(p)] as (typeof writes)[number]).name;
-  return {
-    mints: new Map(r.ok.map((c) => [writes[proposed.findIndex((p) => p.field === c.field && p.text === c.text)]?.key as string, c])),
-    refused: r.refused.map((x) => ({ key: keyOf(x.proposed), name: nameOf(x.proposed), says: x.says, why: x.why })),
-  };
+  const mints = new Map<string, CheckedValue>();
+  const refused: { key: string; name: string; says: string; why: string }[] = [];
+  r.results.forEach((x, i) => {
+    const w = writes[i] as (typeof writes)[number];
+    if (isChecked(x)) mints.set(w.key, x);
+    else refused.push({ key: w.key, name: w.name, says: x.says, why: x.why });
+  });
+  return { mints, refused };
 }
 
 /** The refusal of a plan whose every write the write contract refused: wrongKind when code refused one, else unsure. */
@@ -522,7 +524,7 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
     }
   }
   const cands = generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger);
-  for (const c of cands) add(c.text, describeCandidate(c), candidateProvenance(c));
+  for (const c of cands) add(c.text, describeCandidate(c), candidateProvenance(model, c));
   // A whole address fits no City or Street field (kinds.ts misfit), so its parts are offered too: B17's and
   // B18's held-out sets asked for the city or street of an address the windows show only whole (a change
   // tuned on those sets). Each part is a span of the same line, so it traces to it. They have their own
@@ -534,12 +536,12 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
   for (const c of cands) {
     const split = unitField ? splitAddress(c.text) : null;
     if (split !== null) {
-      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: candidateProvenance(c), also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: candidateProvenance(model, c), also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
       continue;
     }
     const parts = addressParts(c.text);
     if (parts === null) continue;
-    const whole = candidateProvenance(c);
+    const whole = candidateProvenance(model, c);
     add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
     if (parts.city !== null) add(parts.city, `"${parts.city}" (the city of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
   }

@@ -1227,7 +1227,7 @@ export class PatternEngine {
     const sources: Record<string, string> = {};
     const steps = cells.map((c, i) => {
       // W2: the cell's mint for exactly this value in this field (fill/contract.ts), or ContractError.
-      requireChecked(c.checked, c.written, c.dstKey, `cell ${i + 1}`);
+      requireChecked(c.checked, c.written, c.dstKey, c.dstWindowId, `cell ${i + 1}`);
       slots[`v${i}`] = c.written;
       declared[`v${i}`] = `value ${i + 1}`;
       sources[`v${i}`] = c.srcWindowId;

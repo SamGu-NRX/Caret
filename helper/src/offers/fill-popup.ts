@@ -13,7 +13,7 @@ import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
 import { labelledLines, lineGives } from "../fill/candidates.ts";
 import { splitAddress, splitPlace } from "../fill/derive.ts";
 import { conversionOf, describeInput, emptyInput, memoryRefOf, memoryValue, mintOf } from "../fill/fill.ts";
-import { requireChecked, type CheckedValue } from "../fill/contract.ts";
+import { contractStale, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import { offerField } from "./field.ts";
@@ -84,12 +84,12 @@ export function writtenFields(p: FillProposal, w?: WindowState, opts: { answers?
     }
     if (isAnswer(f)) answers++;
     if (f.control === "text" && f.value !== null && (f.source !== null || f.memory !== null)) {
-      fields.push({ ...f, value: f.value, span: f.value, display: f.value, context: null, checked: requireChecked(mintOf(f), f.value, f.key, `field ${f.key}`) } as GroundedField);
+      fields.push({ ...f, value: f.value, span: f.value, display: f.value, context: null, checked: requireChecked(mintOf(f), f.value, f.key, p.windowId, `field ${f.key}`) } as GroundedField);
       continue;
     }
     const h = f.handoff;
     if (h !== null && h.writes === true && (h.source !== null || h.memory !== null)) {
-      fields.push({ ...f, handoff: null, value: h.value, source: h.source, memory: h.memory, span: span ?? h.value, display: h.display, context: h.context ?? null, checked: requireChecked(mintOf(f), h.value, f.key, `field ${f.key}`) } as GroundedField);
+      fields.push({ ...f, handoff: null, value: h.value, source: h.source, memory: h.memory, span: span ?? h.value, display: h.display, context: h.context ?? null, checked: requireChecked(mintOf(f), h.value, f.key, p.windowId, `field ${f.key}`) } as GroundedField);
       continue;
     }
     const ref = h === null ? null : sourceRef(h.source, h.memory, span ?? h.value);
@@ -255,6 +255,18 @@ export function sourceHolds(sw: WindowState, nodeKey: string, span: string, cont
 type FieldStale = { log: string; says: string };
 
 function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, about: AboutNow, answer: AnswerNow, page: PageContext | null): FieldStale | null {
+  const earlier = recheckFieldBefore(model, w, f, about, answer, page);
+  if (earlier !== null) return earlier;
+  // W2: then what the write contract checked: the field's input kind and autocomplete field name, and the value's
+  // provenance (its source's sentences and the label it was read beside), which the checks above do not read.
+  const node = w.nodes.get(f.key);
+  if (node !== undefined && contractStale(node, f.checked.field, f.value) !== null) return { log: `the field ${f.key} now asks for something else`, says: "it asks for something else now" };
+  const stale = provenanceStale(model, f.checked.provenance);
+  return stale === null ? null : { log: `the source of ${f.key}'s value changed: ${stale}`, says: stale };
+}
+
+/** recheckField's checks before W2: the destination, then the saved answer, memory entry or source the value came from. */
+function recheckFieldBefore(model: ScreenModel, w: WindowState, f: GroundedField, about: AboutNow, answer: AnswerNow, page: PageContext | null): FieldStale | null {
   const node = w.nodes.get(f.key);
   if (node === undefined) return { log: `the field ${f.key} is gone`, says: "the field is gone" };
   const input = emptyInput(w, f.key);
@@ -331,7 +343,7 @@ export function recheckFields(model: ScreenModel, p: GroundedProposal, about: Ab
  * that follows the country) comes after it. Every string read from the screen (title, labels, values) is passed as a
  * slot, so braces in it are never read as a placeholder.
  */
-export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan; slots: Record<string, string> } {
+export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan; slots: Record<string, string>; checks: ReadonlyMap<number, CheckedValue> } {
   const w = model.windows.get(p.windowId);
   const slots: Record<string, string> = { title: w?.window.title ?? "" };
   const declared: Record<string, string> = { title: "the form window's title" };
@@ -341,7 +353,7 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
   const fields = [...p.fields].sort((a, b) => (order.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.key) ?? Number.MAX_SAFE_INTEGER));
   const steps = fields.map((f, i) => {
     // W2: the write contract's mint for exactly this value in this field, or ContractError (fill/contract.ts).
-    requireChecked(f.checked, f.value, f.key, `field ${f.key}`);
+    requireChecked(f.checked, f.value, f.key, p.windowId, `field ${f.key}`);
     slots[`v${i}`] = f.value;
     slots[`l${i}`] = fieldLabel(model, p.windowId, f.key);
     // A value from memory is no window's text, so no window is charged when a question quotes it.
@@ -373,5 +385,6 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       },
     };
   });
-  return { plan: { id: p.id, title: `Fill ${p.fields.length} fields`, slots: declared, sources, steps }, slots };
+  // W2: each step's mint by its index, for the executor's guard right before each write (contract.ts guardFor).
+  return { plan: { id: p.id, title: `Fill ${p.fields.length} fields`, slots: declared, sources, steps }, slots, checks: new Map(fields.map((f, i) => [i, f.checked])) };
 }

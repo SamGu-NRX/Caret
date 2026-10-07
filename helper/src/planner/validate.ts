@@ -16,7 +16,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanErrorCode } from "../protocol.ts";
 import { secretIn, traceValue, type MemoryValue, type Trace } from "./trace.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { requireChecked, shapeRefusal, type CheckedValue } from "../fill/contract.ts";
+import { contractStale, provenanceStale, requireChecked, shapeRefusal, type CheckedValue } from "../fill/contract.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
@@ -123,8 +123,11 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
       // W2: the mint the drafter made for this slot's value in this field (fill/contract.ts), never a recomputed guess:
       // the field and provenance it was checked with travel with it (REVIEW-R2 P2.5: "Mary Ann" lost her source label here).
       const slot = /^\{\{(\w+)\}\}$/u.exec(rawValue(parsed.data, i) ?? "")?.[1];
-      const mint = requireChecked(slot === undefined ? undefined : checked.get(slot), end.value, node.key, at);
-      if (mint.field.descriptor !== d.text && mint.verdict.by !== "exempt") throw new PlannerError("unknownTarget", `${at}: the field no longer reads as it did when its value was checked`);
+      const mint = requireChecked(slot === undefined ? undefined : checked.get(slot), end.value, node.key, w.window.windowId, at);
+      if ((mint.field.descriptor !== d.text && mint.verdict.by !== "exempt") || contractStale(node, mint.field, end.value) !== null) throw new PlannerError("unknownTarget", `${at}: the field no longer reads as it did when its value was checked`);
+      // W2 review: and the value's source must still say what it said then (the line, its sentences, its label).
+      const stale = provenanceStale(ctx.model, mint.provenance);
+      if (stale !== null) throw new PlannerError("untracedValue", `${at}: ${stale}`);
       const bad = mint.verdict.by === "exempt" ? null : shapeRefusal(mint);
       if (bad !== null) throw new PlannerError("wrongKind", `${at}: ${bad}`);
       writes.push({ step: i, node, value: end.value, trace, checked: mint });

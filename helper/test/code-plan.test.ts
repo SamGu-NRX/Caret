@@ -295,13 +295,13 @@ describe("G2 review finding 4: the gates read what a control will hold", () => {
     expect(g.warnings).toEqual(["Caret left 'Plan' empty: Caret never types passwords; that is yours to enter."]);
   });
 
-  it("mints the option written under its exemption, with the value it came from, and asks Jev nothing about it (W2)", async () => {
+  it("checks a writer's option with the write contract's verifier, with the value it came from, and asks Jev's yes/no nothing (W2)", async () => {
     const jev = standInJev();
     const g = await lowerGoal("g", "x", draft([{ ref: "a", kind: "fill", target: "t2", value: "v2" }]), inv, { askJev: jev, ledger: new SnippetLedger([]) });
     const step = g.segments[0]?.steps[0];
     expect(step?.writes).toBe("Canada");
     expect(isChecked(step?.checked)).toBe(true);
-    expect(step?.checked).toMatchObject({ text: "Canada", verdict: { by: "exempt", rule: "optionLabel" }, provenance: { kind: "window", span: "canada" } });
+    expect(step?.checked).toMatchObject({ text: "Canada", verdict: { by: "verifier" }, provenance: { kind: "window", span: "canada" } });
     expect(jev.asked).toEqual([]);
   });
 });

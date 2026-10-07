@@ -20,7 +20,7 @@ const desk = (nodes: Node[]): ScreenModel => {
 /** A field contract read from a label alone, with an input kind and a maxlength when given. */
 const fc = (label: string, o: { inputKind?: Node["inputKind"]; maxLength?: number; key?: string } = {}): FieldContract =>
   makeFieldContract({ windowId: WIN, node: { key: o.key ?? `k:${label}`, parent: null, role: "AXTextField", label, ...(o.inputKind === undefined ? {} : { inputKind: o.inputKind }), ...(o.maxLength === undefined ? {} : { maxLength: o.maxLength }) }, descriptor: label, name: label, labelWords: [label], control: "text", kinds: fieldKinds([label]), part: fieldPart(label) });
-const win = (span: string, label: string | null = null, partOf: string | null = null): Provenance => ({ kind: "window", windowId: "note", nodeKey: "n", app: "TextEdit", title: "notes.txt", span, label, line: null, partOf });
+const win = (span: string, label: string | null = null, partOf: string | null = null): Provenance => ({ kind: "window", windowId: "note", nodeKey: "n", app: "TextEdit", title: "notes.txt", span, label, line: null, partOf, context: label, sentences: [] });
 const prop = (field: FieldContract, text: string, provenance: Provenance = win(text)): Proposed => ({ field, text, display: text, provenance, owner: null });
 const opts = { askJev: exactJev, ledger: null, now: 1 };
 
@@ -73,7 +73,7 @@ describe("checkValues and the mint", () => {
     const r = await checkValues([labelled, prop(fc("Phone"), "dana@lumen.example")], opts);
     expect(r.ok.map((c) => c.text)).toEqual(["Mary Ann"]);
     expect(r.ok[0]?.verdict).toMatchObject({ by: "verifier", confidence: 0.95 });
-    expect(r.ok[0]?.provenance).toBe(labelled.provenance);
+    expect(r.ok[0]?.provenance).toEqual(labelled.provenance);
     expect(r.refused.map((x) => [x.proposed.text, x.why])).toEqual([["dana@lumen.example", "wrongKind"]]);
   });
 
@@ -101,11 +101,11 @@ describe("checkValues and the mint", () => {
         return e instanceof ContractError ? e.code : String(e);
       }
     };
-    expect(code(() => requireChecked(c, "lab technician", "k1", "x"))).toBe("passed");
-    expect(code(() => requireChecked(structuredClone(c), "lab technician", "k1", "x"))).toBe("unchecked");
-    expect(code(() => requireChecked(undefined, "lab technician", "k1", "x"))).toBe("unchecked");
-    expect(code(() => requireChecked(c, "Senior Engineer", "k1", "x"))).toBe("textMismatch");
-    expect(code(() => requireChecked(c, "lab technician", "k2", "x"))).toBe("targetMismatch");
+    expect(code(() => requireChecked(c, "lab technician", "k1", WIN, "x"))).toBe("passed");
+    expect(code(() => requireChecked(structuredClone(c), "lab technician", "k1", WIN, "x"))).toBe("unchecked");
+    expect(code(() => requireChecked(undefined, "lab technician", "k1", WIN, "x"))).toBe("unchecked");
+    expect(code(() => requireChecked(c, "Senior Engineer", "k1", WIN, "x"))).toBe("textMismatch");
+    expect(code(() => requireChecked(c, "lab technician", "k2", WIN, "x"))).toBe("targetMismatch");
   });
 
   it("mints an exemption by its rule, and never a value Caret never types", () => {
@@ -138,7 +138,7 @@ describe("validatePlan takes the mints and refuses without one", () => {
   const ctx = { model: m, memory: [], instruction: "fill in my job" };
 
   it("passes the slot's mint for exactly its text in exactly its field", async () => {
-    const [c] = (await checkValues([prop(fieldContract(w, w.nodes.get("f/job") as Node), "lab technician")], opts)).ok;
+    const [c] = (await checkValues([prop(fieldContract(w, w.nodes.get("f/job") as Node), "lab technician", { kind: "instruction", span: "lab technician" })], opts)).ok;
     if (c === undefined) throw new Error("not minted");
     expect(validatePlan(plan, { v1: "lab technician" }, ctx, new Map([["v1", c]])).writes[0]?.checked).toBe(c);
     // Another text than the slot holds, no mint, a copy of the mint: each is the contract's error, not a plan refusal.
@@ -149,7 +149,7 @@ describe("validatePlan takes the mints and refuses without one", () => {
 
   it("refuses a field that no longer reads as it did when its value was checked", async () => {
     const other = makeFieldContract({ windowId: WIN, node: w.nodes.get("f/job") as Node, descriptor: "Job title (as it read before).", name: "Job title", labelWords: ["Job title"], control: "text", kinds: new Set(), part: null });
-    const [c] = (await checkValues([prop(other, "lab technician")], opts)).ok;
+    const [c] = (await checkValues([prop(other, "lab technician", { kind: "instruction", span: "lab technician" })], opts)).ok;
     try {
       validatePlan(plan, { v1: "lab technician" }, ctx, new Map([["v1", c as never]]));
       throw new Error("passed");

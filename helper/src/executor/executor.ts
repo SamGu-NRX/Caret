@@ -126,6 +126,12 @@ export interface RunOptions {
    * the run, as every other failure does.
    */
   leaveFailedToYou?: boolean;
+  /**
+   * W2: why a copied value may no longer be written at step `step` (its index in the plan) with `value`, or null: the
+   * caller holds each step's write-contract mint and rechecks its text and provenance (fill/contract.ts provenanceStale)
+   * immediately before each dispatch, as memoryHolds does for a memory entry. A refusal stops the run there.
+   */
+  guard?: (step: number, value: string) => string | null;
 }
 
 /** A step a run left to the user (RunOptions.leaveFailedToYou): its index in the plan, and the sentence that says why. */
@@ -233,6 +239,8 @@ interface Task {
   /** Started from an accepted offer, so it may hold an act grant. */
   granted: boolean;
   /** Started by a skill with no Tab (RunOptions.unprompted). */
+  /** W2: the caller's recheck of each copied value before its dispatch (RunOptions.guard). */
+  guard: ((step: number, value: string) => string | null) | null;
   unprompted: boolean;
   /** The act grant the reader holds for this task now, or null. One window per task. */
   grant: { pid: number; windowId: string } | null;
@@ -413,6 +421,7 @@ export class Executor {
       grant: null,
       calendarGranted: false,
       leaveFailedToYou: opts.leaveFailedToYou === true,
+      guard: opts.guard ?? null,
       left: [],
       dependents: new Map(),
       userWindow: this.userWindow(),
@@ -606,8 +615,11 @@ export class Executor {
     const ask = (action: ActionType | null): Revocation | null => authorize?.({ taskId: task.id, unprompted: task.unprompted, action }) ?? null;
     const general = ask(null);
     if (general !== null) return general;
-    for (const step of task.plan.steps.slice(task.next)) {
+    for (const [k, step] of task.plan.steps.slice(task.next).entries()) {
       const end = step.end;
+      // W2: a copied value's source must still say what it said when its value was checked (RunOptions.guard).
+      const stale = end.kind === "valueEquals" ? (task.guard?.(task.next + k, end.value) ?? null) : null;
+      if (stale !== null) return { why: stale, by: "screen" };
       if (end.kind === "calendarEvent") {
         const r = ask("writeElsewhere");
         if (r !== null) return r;
@@ -936,6 +948,9 @@ export class Executor {
       if (step.memory !== undefined && this.deps.memoryHolds?.(step.memory, value) !== true) {
         throw StepStop.stop("changed", `what you told Caret for '${step.says}' changed or is gone, so Caret did not write it`);
       }
+      // W2: and a copied value's source must still say what it said when the value was checked, right before each dispatch.
+      const stale = attribute === "value" ? (task.guard?.(i, value) ?? null) : null;
+      if (stale !== null) throw StepStop.stop("changed", `${stale}, so Caret did not write it`);
       try {
         return await this.act(task, v, w.window.windowId);
       } catch (e) {
@@ -1306,6 +1321,8 @@ export class Executor {
     this.tasks.set(r.taskId, {
       id: r.taskId,
       plan: r.plan,
+      // A recovered task only undoes; it dispatches no write, so it rechecks no source.
+      guard: null,
       windows,
       expected: new Map(),
       next: r.next,

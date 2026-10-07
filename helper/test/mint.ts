@@ -53,7 +53,7 @@ export async function validateMinted(raw: unknown, slots: Record<string, string>
       throw e;
     }
     const t = traceValue(text, ctx.model, ctx.memory, ctx.instruction);
-    const provenance: Provenance = t?.from === "window" ? { kind: "window", windowId: t.windowId, nodeKey: t.nodeKey ?? "", app: "", title: "", span: text, label: null, line: null, partOf: null } : t?.from === "memory" ? { kind: "memory", id: t.id, label: "", part: null, whose: "user" } : { kind: "instruction", span: text };
+    const provenance: Provenance = t?.from === "window" ? { kind: "window", windowId: t.windowId, nodeKey: t.nodeKey ?? "", app: "", title: "", span: text, label: null, line: null, partOf: null, context: null, sentences: [] } : t?.from === "memory" ? { kind: "memory", id: t.id, label: "", part: null, whose: "user" } : { kind: "instruction", span: text };
     const r = await checkValues([{ field, text, display: text, provenance, owner: null }], { askJev: exactJev, ledger: null, instruction: ctx.instruction, now: 0 });
     const ok = r.ok[0];
     if (ok !== undefined) mints.set(slot, ok);
@@ -95,15 +95,15 @@ export async function minted(p: FillProposal): Promise<FillProposal> {
     const control = f.control as Control;
     const field = makeFieldContract({ windowId: p.windowId, node: { key: f.key, parent: null, role: "AXTextField", label }, descriptor: f.descriptor, name: label, labelWords: [label], control, kinds: control === "text" ? fieldKinds([label]) : new Set(), part: null });
     const source = f.source ?? f.handoff?.source ?? null;
-    const provenance: Provenance = f.answer !== undefined ? { kind: "answer", id: f.answer.id, question: f.memory?.label ?? "" } : source !== null ? { kind: "window", windowId: source.windowId, nodeKey: source.nodeKey, app: source.appName, title: source.windowTitle, span: text, label: null, line: null, partOf: null } : { kind: "instruction", span: text };
+    const provenance: Provenance = f.answer !== undefined ? { kind: "answer", id: f.answer.id, question: f.memory?.label ?? "" } : source !== null ? { kind: "window", windowId: source.windowId, nodeKey: source.nodeKey, app: source.appName, title: source.windowTitle, span: text, label: null, line: null, partOf: null, context: null, sentences: [] } : { kind: "instruction", span: text };
     const proposed = { field, text, display: text, provenance, owner: null };
-    if (f.answer !== undefined) bindMint(f, mintExempt(proposed, "savedAnswerShown", 0));
-    else if (control !== "text" && control !== "combobox") bindMint(f, mintExempt(proposed, control === "checkbox" ? "boxFromLabelledLine" : control === "date" || control === "time" ? "resolverFormat" : "optionLabel", 0));
+    if (f.answer !== undefined) bindMint(f, p.windowId, mintExempt(proposed, "savedAnswerShown", 0));
+    else if (control !== "text" && control !== "combobox") bindMint(f, p.windowId, mintExempt(proposed, control === "checkbox" ? "boxFromLabelledLine" : control === "date" || control === "time" ? "resolverFormat" : "optionLabel", 0));
     else {
       const r = await checkValues([proposed], { askJev: exactJev, ledger: null, now: 0 });
       const c = r.ok[0];
       if (c === undefined) throw new Error(`the write contract refused the test's value '${text}' for ${f.key}: ${r.refused[0]?.says}`);
-      bindMint(f, c);
+      bindMint(f, p.windowId, c);
     }
   }
   return p;

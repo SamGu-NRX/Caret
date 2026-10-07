@@ -14,6 +14,7 @@ import { FirstLookReply, PROTOCOL_VERSION, type FillProposal, type FirstLook, ty
 import type { PopupBlock, PopupRef, PopupSpecT } from "../popup.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { FILLABLE_ROLES, FillError, proposeFill } from "../fill/fill.ts";
+import { guardFor } from "../fill/contract.ts";
 import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, MAX_FILL_ROWS, recheckFill, writtenFields, type AboutNow, type GroundedProposal } from "./fill-popup.ts";
 import type { AboutValue } from "../fill/about.ts";
 import { allWatchLines, buildLookRequest, readPendingAnswer, stateFor, windowMarkers } from "../tasks/pending.ts";
@@ -61,7 +62,7 @@ export interface FirstLookDeps {
   patterns: PatternEngine;
   /** The event card generator, whose first-look scan the `event` family runs. */
   events: EventCards;
-  run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>) => Promise<TaskResult>;
+  run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, guard?: (step: number, value: string) => string | null) => Promise<TaskResult>;
   /**
    * Records the found offer so an offerAccept with its key reaches `accept`. `underlying` is the id of the
    * engine's offer it reports, so that offer's withdrawal ends the first look's key too.
@@ -303,9 +304,10 @@ export class FirstLookRunner {
     const stale = recheckFill(this.deps.model, p, this.deps.aboutNow);
     this.deps.withdraw(offerKey, stale === null ? "taken" : "stale");
     if (stale !== null) return { refused: `${stale}; nothing was written` };
-    const { plan, slots } = fillPlan(this.deps.model, p);
-    // The destinations were empty just now; one the user fills before the run's first read stops it.
-    return this.deps.run(offerKey, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+    const { plan, slots, checks } = fillPlan(this.deps.model, p);
+    // The destinations were empty just now; one the user fills before the run's first read stops it. W2: each copied
+    // value's source is rechecked right before its write (contract.ts guardFor).
+    return this.deps.run(offerKey, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, guardFor(() => this.deps.model, checks));
   }
 
   // MARK: - pending

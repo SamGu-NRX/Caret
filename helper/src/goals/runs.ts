@@ -35,7 +35,7 @@ import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
 import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
 import { effectKey, proposedFor, segmentOf, type DonePress } from "./lower.ts";
-import { mintExempt, requireChecked } from "../fill/contract.ts";
+import { contractStale, ContractError, guardFor, mintExempt, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
 import { codeGate } from "./gates.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
@@ -83,6 +83,8 @@ export interface GoalCursor {
 type State = "awaiting" | "running" | "finished" | "stopped";
 
 interface Run {
+  /** W2: each write step's write-contract mint, by `${segment}:${ref}` (GoalRuns.propose; edit replaces one). */
+  mints: Map<string, CheckedValue>;
   plan: GoalPlan;
   /** The host session it was offered to; acceptances from any other are refused. Undefined in process. */
   session: string | undefined;
@@ -287,7 +289,10 @@ export class GoalRuns {
     if (unchecked !== undefined) throw new Error(`goal ${given.goalId}: step ${unchecked.ref} writes '${unchecked.target.label}' without passing the value gates`);
     // W2: every write carries the write contract's mint for exactly what it writes, in exactly its target
     // (fill/contract.ts); checked here, on the very objects lowering built, before the run keeps its own copy.
-    for (const s of all) if (s.kind === "write" && s.row !== true) requireChecked(s.checked, s.writes ?? "", s.target.key, `goal ${given.goalId}: step ${s.ref}`);
+    // The mints themselves, kept by segment and ref: the run's own copy below is a structuredClone, which carries none,
+    // so acceptance and the executor's guard read these (W2 review: what runs is checked against the very mint).
+    const mints = new Map<string, CheckedValue>();
+    for (const seg of given.segments) for (const s of seg.steps) if (s.kind === "write" && s.row !== true) mints.set(`${seg.index}:${s.ref}`, requireChecked(s.checked, s.writes ?? "", s.target.key, s.target.domain.kind === "window" ? s.target.domain.windowId : "", `goal ${given.goalId}: step ${s.ref}`));
     // P3: an attach step is a page plan's, into a page's file control, with the file its row offers, after every other
     // step of its segment (runs drop the ones the acceptance gives no file, which must hold up nothing after them).
     for (const seg of given.segments) {
@@ -320,6 +325,7 @@ export class GoalRuns {
       acting: new Map(),
       stepMap: [],
       confirmed: null,
+      mints,
     };
     this.runs.set(plan.goalId, run);
     return this.segmentMessage(run, replaces === null ? undefined : "freshPlan");
@@ -384,6 +390,26 @@ export class GoalRuns {
     run.stepMap = seg.steps.flatMap((_, i) => (keep[i] === true ? [i] : []));
     run.confirmed = cf === undefined || attachStep === undefined ? null : { step: attachStep.index, path: cf.path };
     const plan = { ...seg.plan, steps: seg.plan.steps.filter((_, i) => keep[i] === true) };
+    // W2 review: every write the executor will make, as its slots resolve, must be the very mint checked for its step's
+    // text and target; then the executor rechecks each one's source right before its dispatch (guard).
+    const runMints = new Map<number, CheckedValue>();
+    for (const [j, i] of run.stepMap.entries()) {
+      const s = seg.steps[i] as GoalStep;
+      const end = plan.steps[j]?.end;
+      if (s.kind !== "write" || end?.kind !== "valueEquals") continue;
+      const resolved = end.value.replace(/\{\{(\w+)\}\}/gu, (_, k: string) => seg.slots[k] ?? "");
+      const key = end.target.key === undefined ? "" : end.target.key.replace(/\{\{(\w+)\}\}/gu, (_, k: string) => seg.slots[k] ?? "");
+      try {
+        runMints.set(j, requireChecked(run.mints.get(`${seg.index}:${s.ref}`), resolved, key, seg.domain.kind === "window" ? seg.domain.windowId : "", `step ${s.ref}`));
+      } catch (e) {
+        if (!(e instanceof ContractError)) throw e;
+        // Nothing was dispatched: refused as the executor's own refusal of a plan is.
+        const says = `${SAYS.error}: ${e.message.slice(0, 200)}`;
+        this.endTask(run);
+        this.stop(run, "error", null, says);
+        return { refused: says };
+      }
+    }
     this.tasks.set(taskId, run.plan.goalId);
     this.ever.add(taskId);
     this.deps.bind(taskId, session);
@@ -393,7 +419,7 @@ export class GoalRuns {
     try {
       // C1: a pick the page put back and the executor read back as it was is listed as the user's (leftNow), and the
       // segment's other steps still run.
-      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true, leaveFailedToYou: true }) };
+      return { result: await this.deps.executor.run(taskId, plan, seg.slots, expect, { grant: true, leaveFailedToYou: true, guard: guardFor(() => this.sourcesOf(run), runMints) }) };
     } catch (e) {
       // The executor refused the plan before its first step (PlanError): nothing was dispatched.
       const says = `${SAYS.error}: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`;
@@ -436,6 +462,7 @@ export class GoalRuns {
     // W2: the user's own words over a draft, under the draft's exemption: its field rule passed (codeGate above).
     const checked = mintExempt(proposedFor(s.target, value, text), "draft", this.deps.now(), run.plan.instruction);
     const step: GoalStep = { ...s, value, writes: text, says: `${s.target.label}: ${text}`, gate: "you", checked };
+    run.mints.set(`${seg.index}:${s.ref}`, checked);
     const edited = segmentOf(run.plan.programHash, { index: seg.index, domain: seg.domain, reason: seg.reason, steps: seg.steps.map((x, k) => (k === i ? step : x)) }, run.plan.warnings);
     deepFreeze(edited);
     run.plan.segments[at] = edited;
@@ -473,6 +500,9 @@ export class GoalRuns {
           if (now !== s.target.value && now !== s.writes) return { reason: "targetChanged", says: `'${s.target.label}' changed since Caret planned this` };
           // The gates judged the value against this field's name (G2): a field that now reads as another is not that field.
           if (!sameField(w, s)) return { reason: "targetChanged", says: `'${s.target.label}' in '${d.title}' now reads as another field` };
+          // W2: nor one whose input kind, autocomplete field name or maxlength changed since its value was checked.
+          const m = run.mints.get(`${seg.index}:${s.ref}`);
+          if (m !== undefined && contractStale(n, m.field, s.writes ?? "") !== null) return { reason: "targetChanged", says: `'${s.target.label}' in '${d.title}' now asks for something else` };
         }
       }
     }
@@ -495,10 +525,18 @@ export class GoalRuns {
         const now = this.deps.aboutNow?.(ref.id) ?? null;
         if (now === null || !memoryWrites(now.value, ref.part, v.text, ref.conv) || now.label !== v.fill.memoryLabel) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
       }
+      // W2: a copied value's source must still say what it said when its value was checked (fill/contract.ts).
+      const m = s.kind === "write" ? run.mints.get(`${seg.index}:${s.ref}`) : undefined;
+      if (m !== undefined && provenanceStale(this.sourcesOf(run), m.provenance) !== null) return { reason: "sourceChanged", says: `what '${s.target.label}' was copied from changed since Caret planned this` };
       if (v.source === null) continue;
       if (!this.sourceShows(run, v)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
     }
     return null;
+  }
+
+  /** The model a goal's sources are read from: the tab text its plan read (I6), else the screen. */
+  private sourcesOf(run: Run): ScreenModel {
+    return this.deps.sourceModel?.(run.plan.goalId) ?? this.deps.model;
   }
 
   /**

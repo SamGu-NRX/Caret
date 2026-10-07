@@ -14,7 +14,10 @@
 // whose exactness code settles (an option's own label, a resolved date, the user's saved answer, a user transfer, a
 // draft) are minted under a named exemption instead (ExemptRule); only the never-typed check runs on them.
 import type { AutocompleteToken, FillMemory, FillWithheld, Node, ValueKind } from "../protocol.ts";
-import type { WindowState } from "../model.ts";
+import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
+import { createHash } from "node:crypto";
+import { bareLine, sentenceAround } from "./line-values.ts";
+import { spanContexts } from "./candidates.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
@@ -106,6 +109,17 @@ export type Provenance =
       line: string | null;
       /** The labelled value this span was cut from (Candidate.partOf), or null. */
       partOf: string | null;
+      /**
+       * The label the candidate was read beside (Candidate.context): a line's own label, or an editable source field's
+       * label ("Mobile" for "555-0164"). The recheck before a write requires the source to give it still (provenanceStale).
+       */
+      context: string | null;
+      /**
+       * Digests of the sentences of the source node that held the span when it was read (sentenceDigests), in order. A
+       * sentence that changed around a value that stayed ("Do not use: 555-0164") or a new one that holds it is not what
+       * the value was read from. Digests, not sentences, so no more screen text travels with the value.
+       */
+      sentences: readonly string[];
     }
   | { kind: "memory"; id: string; label: string; part: FillMemory["part"] | null; whose: "user" | "other" | null }
   | { kind: "instruction"; span: string }
@@ -194,6 +208,8 @@ export interface VerifyUse {
 export interface Checked {
   readonly ok: readonly CheckedValue[];
   readonly refused: readonly Refused[];
+  /** Each proposed value's outcome, in the order proposed: its mint, or its refusal (whose `proposed` is the caller's object). */
+  readonly results: readonly (CheckedValue | Refused)[];
   readonly jev: VerifyUse;
 }
 
@@ -416,10 +432,13 @@ export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean)
   switch (pr.kind) {
     case "window": {
       const at = where(pr.app, pr.title, admitted);
+      // Every quoted text must be admitted; a span the ledger refused is named, not quoted (W2 review).
+      const span = admitted(pr.span);
       const base =
         pr.line !== null && admitted(pr.line) ? `the line "${pr.line}" in ${at}`
-        : pr.label !== null && admitted(pr.label) ? `"${pr.span}" labelled '${pr.label}' in ${at}`
-        : `"${pr.span}" in ${at}`;
+        : span && pr.label !== null && admitted(pr.label) ? `"${pr.span}" labelled '${pr.label}' in ${at}`
+        : span ? `"${pr.span}" in ${at}`
+        : `a value in ${at}`;
       return pr.partOf !== null && pr.partOf !== pr.line && admitted(pr.partOf) ? `${base}, which is part of "${pr.partOf}"` : base;
     }
     case "memory":
@@ -526,7 +545,10 @@ function refusalSays(p: Proposed, asks: readonly [VerifyAsk, VerifyAsk], cutoff:
  */
 let testVerifier: AskJev | null = null;
 export function setTestVerifier(f: AskJev | null): void {
-  if (process.env.VITEST === undefined) throw new Error("setTestVerifier is for vitest only");
+  // Vitest's own worker state, which only a vitest worker has, as well as its environment flag (W2 review: the flag alone
+  // can be set by anyone).
+  const worker = (globalThis as { __vitest_worker__?: unknown }).__vitest_worker__;
+  if (process.env.VITEST !== "true" || typeof worker !== "object" || worker === null) throw new Error("setTestVerifier is for vitest only");
   testVerifier = f;
 }
 
@@ -615,24 +637,40 @@ export function setCheckObserver(f: ((p: Proposed, codeRefusal: string | null) =
  */
 export async function checkValues(proposed: readonly Proposed[], o: CheckOptions): Promise<Checked> {
   const cutoff = o.cutoff ?? VERIFY_CUTOFF;
-  const ok: CheckedValue[] = [];
-  const refused: Refused[] = [];
-  const survivors: Proposed[] = [];
-  for (const p of proposed) {
+  const results: (CheckedValue | Refused)[] = [];
+  // Each value as it is now, frozen, before anything is awaited: what the verifier is asked about is what is minted,
+  // whatever a caller does with its own object meanwhile (W2 review).
+  const snaps = proposed.map(snapshot);
+  const survivors: number[] = [];
+  snaps.forEach((p, i) => {
     const why = neverTypedRefusal(p, o.instruction ?? "") ?? shapeRefusal(p) ?? textShapeRefusal(p);
     observer?.(p, why);
-    if (why !== null) refused.push({ proposed: p, why: "wrongKind", says: why });
-    else survivors.push(p);
-  }
-  const v = await verifyProposed(survivors, o);
-  survivors.forEach((p, i) => {
-    const asks = v.asks[i] ?? null;
-    if (asks === null) return void refused.push({ proposed: p, why: "unverified", says: `Caret couldn't check '${clip(p.text)}' without sending more of its window than it may` });
-    const confidence = Math.min(asks[0].confidence, asks[1].confidence);
-    if (asks[0].choice === "exact" && asks[1].choice === "exact" && confidence >= cutoff) ok.push(mint(p, { by: "verifier", asks, confidence }, o.now));
-    else refused.push({ proposed: p, why: "notExact", says: refusalSays(p, asks, cutoff), asks });
+    if (why !== null) results[i] = { proposed: proposed[i] as Proposed, why: "wrongKind", says: why };
+    else survivors.push(i);
   });
-  return { ok, refused, jev: v.jev };
+  const v = await verifyProposed(survivors.map((i) => snaps[i] as Proposed), o);
+  survivors.forEach((i, k) => {
+    const p = snaps[i] as Proposed;
+    const original = proposed[i] as Proposed;
+    const asks = v.asks[k] ?? null;
+    if (asks === null) return void (results[i] = { proposed: original, why: "unverified", says: `Caret couldn't check '${clip(p.text)}' without sending more of its window than it may` });
+    const confidence = Math.min(asks[0].confidence, asks[1].confidence);
+    results[i] = asks[0].choice === "exact" && asks[1].choice === "exact" && confidence >= cutoff ? mint(p, { by: "verifier", asks, confidence }, o.now) : { proposed: original, why: "notExact", says: refusalSays(p, asks, cutoff), asks };
+  });
+  return { ok: results.filter(isChecked), refused: results.filter((r): r is Refused => !isChecked(r)), results, jev: v.jev };
+}
+
+/** A deep copy of a value with everything frozen; a field contract already frozen (makeFieldContract) is kept as it is. */
+function snapshot(p: Proposed): Proposed {
+  const field = Object.isFrozen(p.field) && Object.isFrozen(p.field.labelWords) ? p.field : Object.freeze({ ...p.field, labelWords: Object.freeze([...p.field.labelWords]), kinds: new Set(p.field.kinds) });
+  return Object.freeze({ field, text: p.text, display: p.display, provenance: deepFrozen(structuredClone(p.provenance)), owner: p.owner });
+}
+function deepFrozen<T>(x: T): T {
+  if (typeof x === "object" && x !== null) {
+    for (const v of Object.values(x)) deepFrozen(v);
+    Object.freeze(x);
+  }
+  return x;
 }
 
 /**
@@ -662,9 +700,87 @@ export function mintExempt(p: Proposed, rule: ExemptRule, now: number, instructi
  * The mint a compiler needs for one write: `c` must be a CheckedValue (isChecked), for exactly this text and this
  * field. Throws ContractError naming what failed; `at` names the step for the message.
  */
-export function requireChecked(c: unknown, text: string, key: string, at: string): CheckedValue {
+export function requireChecked(c: unknown, text: string, key: string, windowId: string, at: string): CheckedValue {
   if (!isChecked(c)) throw new ContractError("unchecked", `${at}: the value has no check from the write contract`);
   if (c.text !== text) throw new ContractError("textMismatch", `${at}: the value checked was '${clip(c.text)}', not '${clip(text)}'`);
-  if (c.field.key !== key) throw new ContractError("targetMismatch", `${at}: the value was checked for another field`);
+  if (c.field.key !== key || c.field.windowId !== windowId) throw new ContractError("targetMismatch", `${at}: the value was checked for another field`);
   return c;
+}
+
+/**
+ * W2 review: why a field no longer takes what its contract said when its value was checked, or null: the page walk's
+ * input kind or autocomplete field name changed on the same descriptor, or a lowered maxlength no longer fits `text`.
+ * A changed contract needs a fresh check.
+ */
+export function contractStale(node: Node, f: FieldContract, text: string): string | null {
+  if ((node.inputKind ?? null) !== f.inputKind || (node.autocomplete ?? null) !== f.autocomplete) return "the field now asks for something else than when its value was checked";
+  // A maxlength that changed matters only when the value no longer fits it.
+  if (node.maxLength !== undefined && text.length > node.maxLength) return `the field now takes at most ${node.maxLength} characters`;
+  return null;
+}
+
+/**
+ * Digests of each sentence of `text` that holds `span`: the text's lines as the generator reads them (bareLine) joined
+ * by a space, so a sentence a line break wraps reads as one, each sentence as line-values.ts sentenceAround reads it.
+ * The same rule as G2's sentence-digest recheck (caret-v2-whose ca01553, line-values.ts sentenceDigests).
+ */
+export function sentenceDigests(text: string, span: string): string[] {
+  const joined = text.split(/\r?\n/u).map(bareLine).filter((l) => l !== "").join(" ").replace(/\s+/gu, " ");
+  const want = span.replace(/\s+/gu, " ").trim();
+  if (want === "") return [];
+  const out: string[] = [];
+  for (let at = joined.indexOf(want); at >= 0; at = joined.indexOf(want, at + 1)) out.push(createHash("sha256").update(sentenceAround(joined, at, want)).digest("hex").slice(0, 16));
+  return out;
+}
+
+/**
+ * A window value's provenance as read now from `w` (fill, the planner and code plans build theirs with this): its
+ * candidate's facts, and the digests of the sentences that hold it.
+ */
+export function windowProvenance(w: WindowState | undefined, c: { text: string; context: string | null; labelled?: boolean; line?: string | null; partOf?: string; source: { windowId: string; nodeKey: string; appName: string; windowTitle: string } }): Provenance {
+  const node = w?.nodes.get(c.source.nodeKey);
+  return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null, context: c.context, sentences: node === undefined ? [] : sentenceDigests(nodeText(node), c.text) };
+}
+
+/**
+ * Why a value no longer rests on what it was read from, or null (W2: the lead's G2 round-3 gaps). For a window's value:
+ * the window and node are still there, the sentences that held the span are exactly those that hold it now (a sentence
+ * changed around it, or a new one holds it, refuses it), and the label it was read beside is still one the source
+ * gives it (an editable source field relabelled "Do not use" refuses it). A derived value meets its sources' checks. A
+ * memory entry is checked by the executor's memoryHolds; an instruction, a saved answer and a transfer have no screen
+ * source here.
+ */
+export function provenanceStale(model: ScreenModel, pr: Provenance): string | null {
+  switch (pr.kind) {
+    case "window": {
+      const sw = model.windows.get(pr.windowId);
+      if (sw === undefined) return "the window it was read from closed";
+      const node = sw.nodes.get(pr.nodeKey);
+      if (node === undefined) return "what it was read from is gone";
+      const now = sentenceDigests(nodeText(node), pr.span);
+      if (now.length === 0) return "its source no longer shows it";
+      if (pr.sentences.length > 0 && (now.some((d) => !pr.sentences.includes(d)) || pr.sentences.some((d) => !now.includes(d)))) return "what its source says around it changed";
+      if (pr.context !== null && !spanContexts(sw, node, pr.span).includes(pr.context)) return "the label it was read beside changed";
+      return null;
+    }
+    case "derived":
+      return provenanceStale(model, pr.base) ?? (pr.also === null ? null : provenanceStale(model, pr.also));
+    default:
+      return null;
+  }
+}
+
+/**
+ * The executor's guard for a run whose copied values the write contract checked (RunOptions.guard): by the step's index
+ * in the run's plan, its mint. Right before each dispatch the value must be the mint's text, and its source must still
+ * say what it said (provenanceStale, read from `model()`); a value step with no mint is refused.
+ */
+export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>): (step: number, value: string) => string | null {
+  return (step, value) => {
+    const m = mints.get(step);
+    if (!isChecked(m)) return "the value has no check from the write contract";
+    if (m.text !== value) return "the value is not the one Caret checked";
+    const stale = provenanceStale(model(), m.provenance);
+    return stale === null ? null : `the source of '${clip(m.text)}' changed (${stale})`;
+  };
 }

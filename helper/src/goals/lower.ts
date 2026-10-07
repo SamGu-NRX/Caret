@@ -27,7 +27,7 @@ import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
-import { checkValues, ContractError, exemptRefusal, isChecked, mintExempt, requireChecked, VerifierUnavailable, type CheckedValue, type ExemptRule, type Proposed } from "../fill/contract.ts";
+import { checkValues, ContractError, exemptRefusal, isChecked, mintExempt, requireChecked, VerifierUnavailable, type CheckedValue, type Proposed } from "../fill/contract.ts";
 import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
@@ -224,12 +224,9 @@ export interface LowerOptions {
  */
 export function proposedFor(t: TargetBinding, v: ValueBinding, written: string): Proposed {
   if (t.field === undefined) throw new ContractError("unchecked", `${t.ref}: the target has no field contract`);
-  const provenance = v.provenance ?? (v.source !== null ? { kind: "window" as const, windowId: v.source.windowId, nodeKey: v.source.key, app: "", title: "", span: v.text, label: null, line: null, partOf: null } : v.memory !== null ? { kind: "memory" as const, id: v.memory, label: "", part: null, whose: v.owner === "user" || v.owner === "other" ? v.owner : null } : { kind: "instruction" as const, span: v.text });
+  const provenance = v.provenance ?? (v.source !== null ? { kind: "window" as const, windowId: v.source.windowId, nodeKey: v.source.key, app: "", title: "", span: v.text, label: null, line: null, partOf: null, context: null, sentences: [] } : v.memory !== null ? { kind: "memory" as const, id: v.memory, label: "", part: null, whose: v.owner === "user" || v.owner === "other" ? v.owner : null } : { kind: "instruction" as const, span: v.text });
   return { field: t.field, text: written, display: v.display, provenance, owner: v.owner };
 }
-
-/** The exemption a non-text control's written value is minted under in a goal: an option's own label or a resolved date. */
-const EXEMPT_GOAL: Partial<Record<TargetBinding["control"], ExemptRule>> = { select: "optionLabel", radio: "optionLabel", combobox: "optionLabel", date: "resolverFormat", time: "resolverFormat" };
 
 /** Segment warnings a goalProgress carries at most (protocol GoalProgress.warnings). */
 const MAX_WARNINGS = 24;
@@ -341,9 +338,11 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       let checked: CheckedValue | undefined;
       if (lowered.kind === "write" && lowered.writes !== null) {
         const at = `step ${s.ref}`;
-        if (byFill) checked = requireChecked(v.checked, lowered.writes, t.key, at);
+        if (byFill) checked = requireChecked(v.checked, lowered.writes, t.key, t.domain.kind === "window" ? t.domain.windowId : "", at);
         else if (v.draft !== null) checked = mintExempt(proposedFor(t, v, lowered.writes), "draft", now, instruction);
-        else if (t.control !== "text") checked = mintExempt(proposedFor(t, v, lowered.writes), EXEMPT_GOAL[t.control] ?? "optionLabel", now, instruction);
+        // A resolved date or time is the resolver's (resolverFormat). W2 review: a writer's option goes to the verifier
+        // with every copied value, below: matching an option settles its spelling, not that the instruction chose it.
+        else if (t.control === "date" || t.control === "time") checked = mintExempt(proposedFor(t, v, lowered.writes), "resolverFormat", now, instruction);
       }
       const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered, ...(checked === undefined ? {} : { checked }) };
       steps.push(gate === "derived" ? markDerived(step) : step);
@@ -413,15 +412,14 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       throw e;
     }
     const refusedSteps = new Set<GoalStep>();
-    for (const r of result.refused) {
-      const x = copies[proposed.indexOf(r.proposed)] as GoalStep;
-      refusedSteps.add(x);
-      dropAs(x.target, r.says, x.value);
-    }
-    for (const c of result.ok) {
-      const x = copies.find((y, i) => proposed[i]?.field === c.field && proposed[i]?.text === c.text) as GoalStep;
-      x.checked = c;
-    }
+    result.results.forEach((r, i) => {
+      const x = copies[i] as GoalStep;
+      if (isChecked(r)) x.checked = r;
+      else {
+        refusedSteps.add(x);
+        dropAs(x.target, r.says, x.value);
+      }
+    });
     steps = steps.filter((x) => !refusedSteps.has(x));
   }
   // Jev's question for every copied value still in the plan (drafts are drafts.ts's, derived values code's), both

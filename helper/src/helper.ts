@@ -79,6 +79,7 @@ import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
+import { guardFor, type CheckedValue } from "./fill/contract.ts";
 import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFields, recheckFill, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
 import { aboutValues, type AboutValue } from "./fill/about.ts";
 import type { PopupSpecT } from "./popup.ts";
@@ -739,7 +740,7 @@ export class Helper {
       events: this.events,
       // A first look's offer runs only from the host's offerAccept.
       // The family is recorded when the offer is withdrawn as taken, just before this (withdrawFirstLook).
-      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect, { grant: true }),
+      run: (taskId, plan, slots, expect, guard) => this.executor.run(taskId, plan, slots, expect, { grant: true, ...(guard === undefined ? {} : { guard }) }),
       record: (msg, family, accept, underlying) => {
         this.offers.record(msg, accept);
         this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying });
@@ -1185,9 +1186,21 @@ export class Helper {
   }
 
   /** Runs an accepted offer of this settings family under a grant, recording the family it depends on. */
-  private runFrom(family: Family | null, taskId: string, plan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>): Promise<TaskResult> {
+  private runFrom(family: Family | null, taskId: string, plan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, guard?: (step: number, value: string) => string | null): Promise<TaskResult> {
     if (family !== null) this.taskDeps.set(taskId, { family, routineId: null });
-    return this.executor.run(taskId, plan, slots, expect, { grant: true });
+    return this.executor.run(taskId, plan, slots, expect, { grant: true, ...(guard === undefined ? {} : { guard }) });
+  }
+
+  /**
+   * W2: the model a run's copied values are rechecked against right before each write (contract.ts guardFor): the
+   * screen as it is then, with the text of the tab the user left that `owner`'s fill read (P4) as it was at acceptance,
+   * since that text is let go once the run carries its values and a tab the user left does not change under them.
+   */
+  private guardSources(owner: string): () => ScreenModel {
+    const captured = this.fillModel(owner);
+    if (captured === this.model) return () => this.model;
+    const held = [...captured.windows].filter(([id, w]) => this.model.windows.get(id) !== w).map(([id, w]) => [id, { nodes: [...w.nodes.values()], title: w.window.title }] as const);
+    return () => (held.length === 0 ? this.model : this.model.withNodes(new Map(held)));
   }
 
   /**
@@ -1786,7 +1799,9 @@ export class Helper {
     // (a value from text that was dropped is then in no window, so the check refuses it), as fill's recheck is. Taken
     // here, before the withdrawal lets the text go: the run carries its values as slots.
     const sources = this.fillModel(offerKey);
+    const guardModel = this.guardSources(offerKey);
     this.withdrawPlan(offerKey, "taken");
+    let mints: ReadonlyMap<number, CheckedValue> = new Map();
     try {
       // W2: with the mints the plan was drafted with (CheckedPlan.mints): a value is never re-judged without them.
       const now = validatePlan(p.draft.plan, p.draft.slots, { model: sources, memory: this.plannerMemory(), instruction: p.instruction }, p.draft.checked.mints);
@@ -1794,11 +1809,13 @@ export class Helper {
       // title is another window, and the destinations' expected values were read from the first.
       const proposed = p.draft.checked.window.window.windowId;
       if (now.window.window.windowId !== proposed) return { refused: `unknownWindow: the window the plan was made for (${proposed}) closed; nothing was written` };
+      // W2: each write's mint, by its step, for the executor's recheck of its source right before it (contract.ts guardFor).
+      mints = new Map(now.writes.map((wr) => [wr.step, wr.checked]));
     } catch (e) {
       if (e instanceof PlannerError) return { refused: `${e.code}: ${e.message}; nothing was written` };
       throw e;
     }
-    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true });
+    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true, guard: guardFor(guardModel, mints) });
   }
 
   private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings" | "stale"): void {
@@ -2039,11 +2056,12 @@ export class Helper {
     if ("refused" in checked) return this.refuseAccept(taskId, checked.refused);
     const p = checked.p;
     this.bindNew(taskId, session);
-    const { plan, slots } = fillPlan(this.model, p);
+    const { plan, slots, checks } = fillPlan(this.model, p);
+    const guard = guardFor(this.guardSources(m.proposalId), checks);
     // P4: the run carries its values as slots; the text they were read from is not needed past this point.
     this.tabSource?.release(m.proposalId);
     // The destinations were empty just now; one the user fills before the run's first read stops it.
-    return this.runFrom("fill", taskId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+    return this.runFrom("fill", taskId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, guard);
   }
 
   /**
@@ -3064,7 +3082,8 @@ export class Helper {
       return checked;
     }
     const p = checked.p;
-    const { plan, slots } = fillPlan(this.model, p);
+    const { plan, slots, checks } = fillPlan(this.model, p);
+    const guard = guardFor(this.guardSources(p.id), checks);
     this.withdrawFill(p.id, "taken");
     const answers = p.fields.flatMap((f) => (f.answer === undefined ? [] : [{ answerId: f.answer.id, windowId: p.windowId, key: f.key }]));
     if (answers.length > 0) {
@@ -3073,7 +3092,7 @@ export class Helper {
       this.answerWrites.set(p.id, answers);
     }
     // The destinations were empty just now; one the user fills before the run's first read stops it.
-    return this.runFrom("fill", p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+    return this.runFrom("fill", p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, guard);
   }
 
   /**
