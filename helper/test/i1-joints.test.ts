@@ -11,7 +11,7 @@ import { Store } from "../src/store.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import type { AboutValue } from "../src/fill/about.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { makeFieldContract, setTestVerifier, verifyProposed, VerifierUnavailable, guardFor, type Proposed } from "../src/fill/contract.ts";
+import { makeFieldContract, provenanceSays, setTestVerifier, verifyProposed, VerifierUnavailable, guardFor, type Proposed } from "../src/fill/contract.ts";
 import { fieldKinds } from "../src/fill/kinds.ts";
 import { fillPlan, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { assertNoSecrets } from "../src/privacy.ts";
@@ -118,7 +118,7 @@ describe("I1 joint 2: a secret on a source line never appears in a verifier requ
   it("stops a verifier request whose provenance would quote a secret, before Jev sees it (privacy.ts assertNoSecrets)", async () => {
     // A provenance no reading path makes (fill reads the redacted view): the request build is the backstop.
     const field = makeFieldContract({ windowId: "form", node: { key: "form/email", parent: null, role: "AXTextField", label: "Email" }, descriptor: "Text field. Label: 'Email'.", name: "Email", labelWords: ["Email"], control: "text", kinds: fieldKinds(["Email"]), part: null });
-    const p: Proposed = { field, text: ME, display: ME, owner: null, provenance: { kind: "window", windowId: "note", nodeKey: "src/note", app: "Mail", title: "Notes", span: ME, label: null, line: `${ME} password: hunter2-violet`, partOf: null, context: null, lines: [] } };
+    const p: Proposed = { field, text: ME, display: ME, owner: null, provenance: { kind: "window", windowId: "note", nodeKey: "src/note", app: "Mail", title: "Notes", span: ME, label: null, line: `${ME} password: hunter2-violet`, partOf: null, context: null, lines: [], sentences: [] } };
     let sent = 0;
     const ask: AskJev = async () => {
       sent++;
@@ -126,6 +126,16 @@ describe("I1 joint 2: a secret on a source line never appears in a verifier requ
     };
     await expect(verifyProposed([p], { askJev: ask, ledger: null, now: T0 })).rejects.toBeInstanceOf(VerifierUnavailable);
     expect(sent).toBe(0);
+  });
+});
+
+describe("I1 review: the verifier quotes a memory label or a saved answer's question only when the ledger admitted it", () => {
+  it("names them instead", () => {
+    const refused = (t: string): boolean => t !== "Home phone" && t !== "Why do you want to volunteer?";
+    expect(provenanceSays({ kind: "memory", id: "about-2", label: "Home phone", part: null, whose: "user" }, refused)).toBe("what the user told Caret");
+    expect(provenanceSays({ kind: "memory", id: "about-2", label: "Home phone", part: null, whose: "user" }, () => true)).toBe("what the user told Caret as 'Home phone'");
+    expect(provenanceSays({ kind: "answer", id: "answer-1", question: "Why do you want to volunteer?" }, refused)).toBe("one of the user's saved answers");
+    expect(provenanceSays({ kind: "derived", how: "namePart", base: { kind: "memory", id: "about-3", label: "Home phone", part: "first", whose: "user" }, also: null }, refused)).not.toContain("Home phone");
   });
 });
 
@@ -187,5 +197,19 @@ describe("I1 joint 4: a source line edited after acceptance stops the write", ()
     await run("t-i1", plan, slots, guardFor(() => helper.model, checks));
     expect(app.verbs.filter((v) => v.kind === "write")).toEqual([]);
     expect(progress("t-i1").at(-1)?.stopReason).toBe("changed");
+  });
+
+  it("writes nothing once a sentence wrapped over three lines changes two lines below the value (I1 review blocker)", async () => {
+    showSource("Contact: Dana Reyes\nand this is my current\nname, safe to use.");
+    const j = scripted({ pick: (l) => (l === "Name" ? "Dana Reyes" : null), owner: () => ({ choice: "user", confidence: 0.95 }) });
+    const g = writtenFields(await proposeFill(helper.model, j.ask, WIN, K("textfield:name~0"), Date.now(), { rand: () => 0 }));
+    expect(g.fields.map((f) => f.value)).toEqual(["Dana Reyes"]);
+    expect(recheckFill(helper.model, g, () => null)).toBeNull();
+    const { plan, slots, checks } = fillPlan(helper.model, g);
+    // Outside the value's line and the line after it: only the sentence digests see it.
+    showSource("Contact: Dana Reyes\nand this is my current\nname, do not use it.");
+    await run("t-i1-wrap", plan, slots, guardFor(() => helper.model, checks));
+    expect(app.verbs.filter((v) => v.kind === "write")).toEqual([]);
+    expect(progress("t-i1-wrap").at(-1)?.stopReason).toBe("changed");
   });
 });

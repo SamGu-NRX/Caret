@@ -224,7 +224,7 @@ export interface LowerOptions {
  */
 export function proposedFor(t: TargetBinding, v: ValueBinding, written: string): Proposed {
   if (t.field === undefined) throw new ContractError("unchecked", `${t.ref}: the target has no field contract`);
-  const provenance = v.provenance ?? (v.source !== null ? { kind: "window" as const, windowId: v.source.windowId, nodeKey: v.source.key, app: "", title: "", span: v.text, label: null, line: null, partOf: null, context: null, lines: [] } : v.memory !== null ? { kind: "memory" as const, id: v.memory, label: "", part: null, whose: v.owner === "user" || v.owner === "other" ? v.owner : null } : { kind: "instruction" as const, span: v.text });
+  const provenance = v.provenance ?? (v.source !== null ? { kind: "window" as const, windowId: v.source.windowId, nodeKey: v.source.key, app: "", title: "", span: v.text, label: null, line: null, partOf: null, context: null, lines: [], sentences: [] } : v.memory !== null ? { kind: "memory" as const, id: v.memory, label: "", part: null, whose: v.owner === "user" || v.owner === "other" ? v.owner : null } : { kind: "instruction" as const, span: v.text });
   return { field: t.field, text: written, display: v.display, provenance, owner: v.owner };
 }
 

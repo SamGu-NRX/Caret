@@ -706,7 +706,7 @@ describe("G2 round 5", () => {
     const KEY = "com.apple.TextEdit/standard/textarea:~0";
     expect(holdsAfter(() => m, { windowId: "w4-note", nodeKey: KEY }, text, text, "555-0164")).toBe(true);
     const window = { kind: "window" as const, windowId: "w4-note", nodeKey: KEY, app: "", title: "", span: "555-0164", label: null, line: null, partOf: null, context: null };
-    expect(provenanceStale(m, { ...window, lines: [] })).not.toBeNull();
+    expect(provenanceStale(m, { ...window, lines: [], sentences: [] })).not.toBeNull();
   });
 
   it("5: acceptance refuses a source the redacted view no longer admits", async () => {

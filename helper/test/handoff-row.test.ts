@@ -155,7 +155,7 @@ describe("forgetting a source's values from a goal that ended (I6 review, GoalRu
     const plan = await planPage(r.helper.model, { goalId: "g-clause", instruction: "fill out this form", windowId: WIN, scope: null, kind: "all", section: null, about: [], askJev: jevPickingText(byLabel, 0.95), now: Date.now(), clock: macClock(new Date()), readerSession: 0, pageDocument: (id) => r.host.registry.documentOf(id) });
     // A value read with a clause and from a longer source text. I1: fill records them in the value's write-contract
     // provenance (fill/contract.ts Provenance), which G2 kept as FillField.basis.clause and .from.
-    for (const v of plan.inventory.values.values()) if (v.fill !== undefined) Object.assign(v, { provenance: { kind: "window", windowId: "note", nodeKey: "n", app: "", title: "", span: "source text Kestrel-7732 split", label: null, line: "the clause Kestrel-7731 quoted", partOf: null, context: null, lines: [] } });
+    for (const v of plan.inventory.values.values()) if (v.fill !== undefined) Object.assign(v, { provenance: { kind: "window", windowId: "note", nodeKey: "n", app: "", title: "", span: "source text Kestrel-7732 split", label: null, line: "the clause Kestrel-7731 quoted", partOf: null, context: null, lines: [], sentences: [] } });
     r.helper.goals.propose(plan, undefined, null);
     r.helper.goals.readerRestarted();
     r.helper.goals.forgetSource("g-clause", new Set(["note"]));

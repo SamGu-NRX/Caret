@@ -15,7 +15,8 @@
 // draft) are minted under a named exemption instead (ExemptRule); only the never-typed check runs on them.
 import type { AutocompleteToken, FillMemory, FillWithheld, Node, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
-import { lineDigests, logicalLines } from "./line-values.ts";
+import { createHash } from "node:crypto";
+import { lineDigests, logicalLines, sentenceAround } from "./line-values.ts";
 import { spanContexts } from "./candidates.ts";
 import { redactWindow } from "./redact.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
@@ -117,11 +118,18 @@ export type Provenance =
       /**
        * G2's digests of each source line that held the span when Jev judged it, with the line before and after it
        * (line-values.ts lineDigests, on the source as written). Any edit there refuses the value (provenanceStale): a
-       * changed sentence around a value that stayed ("Do not use: 555-0164"), a line added beside it. Empty when none
-       * could be found, and such a value is never held. Digests, not lines, so no more screen text travels with the value.
-       * I1: these replace W2's sentence digests and G2's FillField.basis.lines, so one record backs one recheck.
+       * changed line around a value that stayed ("Do not use: 555-0164"), a line added beside it. Empty when none could
+       * be found, and such a value is never held. Digests, not lines, so no more screen text travels with the value.
+       * I1: these replace G2's FillField.basis.lines, read by the same one recheck as `sentences`.
        */
       lines: readonly string[];
+      /**
+       * Digests of each sentence that held the span, read across the lines a sentence wraps over (sentenceDigests). Kept
+       * beside `lines` (I1 review): a wrapped sentence changes two lines below its value, outside `lines`'s neighbourhood
+       * ("Phone: 555-0142 / and this is my current / number, safe to use." whose last line becomes "number, do not use
+       * it."). A wrap whose next line starts with a capital is not read as one sentence, here or by the generator.
+       */
+      sentences: readonly string[];
     }
   | { kind: "memory"; id: string; label: string; part: FillMemory["part"] | null; whose: "user" | "other" | null }
   | { kind: "instruction"; span: string }
@@ -447,12 +455,16 @@ export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean)
         : `a value in ${at}`;
       return pr.partOf !== null && pr.partOf !== pr.line && admitted(pr.partOf) ? `${base}, which is part of "${pr.partOf}"` : base;
     }
-    case "memory":
-      return pr.part === null ? `what the user told Caret as '${pr.label}'` : `the ${pr.part} part of what the user told Caret as '${pr.label}'`;
+    // I1 review: a memory entry's label and a saved answer's question are quoted only when the ledger admitted them, as a
+    // window's texts are; otherwise they are named, not quoted.
+    case "memory": {
+      const as = admitted(pr.label) ? ` as '${pr.label}'` : "";
+      return pr.part === null ? `what the user told Caret${as}` : `the ${pr.part} part of what the user told Caret${as}`;
+    }
     case "instruction":
       return "the user's instruction";
     case "answer":
-      return `the user's saved answer to '${pr.question}'`;
+      return admitted(pr.question) ? `the user's saved answer to '${pr.question}'` : "one of the user's saved answers";
     case "transfer":
       return "a value the user copied there before";
     case "derived": {
@@ -744,8 +756,29 @@ export function contractStale(node: Node, f: FieldContract, text: string): strin
 export function windowProvenance(w: WindowState | undefined, c: { text: string; context: string | null; labelled?: boolean; line?: string | null; partOf?: string; source: { windowId: string; nodeKey: string; appName: string; windowTitle: string } }, text?: string): Provenance {
   const node = w?.nodes.get(c.source.nodeKey);
   const read = text ?? (node === undefined ? undefined : nodeText(node));
-  return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null, context: c.context, lines: read === undefined ? [] : lineDigests(read, c.text) };
+  return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null, context: c.context, lines: read === undefined ? [] : lineDigests(read, c.text), sentences: read === undefined ? [] : sentenceDigests(read, c.text) };
 }
+
+/**
+ * Digests of each sentence of `text` that holds `span`, a sentence read within a logical line (line-values.ts
+ * logicalLines: a line joined to the one before when it goes on with that one's sentence, as the generator reads a
+ * wrapped sentence) as line-values.ts sentenceAround reads it. W2's version joined every line of the text, so a note of
+ * "Label: value" lines, none ending in a stop, read as one sentence and any edit anywhere refused every value in it
+ * (test/g2-ownership.test.ts, recheck by neighbourhood).
+ */
+export function sentenceDigests(text: string, span: string): string[] {
+  const want = span.replace(/\s+/gu, " ").trim();
+  if (want === "") return [];
+  const out: string[] = [];
+  for (const l of logicalLines(text)) {
+    const line = l.replace(/\s+/gu, " ");
+    for (let at = line.indexOf(want); at >= 0; at = line.indexOf(want, at + 1)) out.push(createHash("sha256").update(sentenceAround(line, at, want)).digest("hex").slice(0, 16));
+  }
+  return out;
+}
+
+/** Whether two digest lists hold the same digests. */
+const sameDigests = (a: readonly string[], b: readonly string[]): boolean => a.every((d) => b.includes(d)) && b.every((d) => a.includes(d));
 
 const norm = (t: string): string => t.replace(/\s+/gu, " ").trim();
 
@@ -759,7 +792,7 @@ const norm = (t: string): string => t.replace(/\s+/gu, " ").trim();
  *     nothing);
  *   - its lines were recorded, and the lines that hold the span now, each with the line before and after it, are
  *     exactly those (G2's neighbourhood digests): a changed line, a line added beside it, or a new line that holds it
- *     refuses it;
+ *     refuses it; and so are the sentences that hold it, however many lines they wrap over (W2's sentence digests);
  *   - the label it was read beside is still one the source gives it (W2: an editable source field relabelled "Do not
  *     use").
  * A derived value meets each of its sources' checks. G2 also derived the value again from its source texts; with each
@@ -782,7 +815,7 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
       if (pr.lines.length === 0) return "Caret has no record of the lines it was read from";
       const now = lineDigests(nodeText(node), pr.span);
       if (now.length === 0) return "its source no longer shows it";
-      if (now.some((d) => !pr.lines.includes(d)) || pr.lines.some((d) => !now.includes(d))) return "what its source says around it changed";
+      if (!sameDigests(now, pr.lines) || !sameDigests(sentenceDigests(nodeText(node), pr.span), pr.sentences)) return "what its source says around it changed";
       if (pr.context !== null && !spanContexts(view, seen as Node, pr.span).includes(pr.context)) return "the label it was read beside changed";
       return null;
     }

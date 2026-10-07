@@ -1,1 +1,0 @@
-R1's slow-eval runner never settles on live Jev: each pass sends 43-81 new requests, so a set costs about 3x one pass. Run live sets once.
