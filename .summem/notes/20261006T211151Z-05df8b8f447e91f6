@@ -1,1 +1,0 @@
-H14: PageTaskMachine.publish must invalidate its own live offer before republishing (a click changes the preview without a key): otherwise the arbiter's onDisplaced puts the whole page task away.

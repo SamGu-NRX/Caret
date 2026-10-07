@@ -1,0 +1,1 @@
+Chrome page fields: once web AX is on, Chrome ignores native AX writes (HostCoordinator yields via PageInline.nativeYields); PageTaskMachine.publish invalidates its own live offer before republishing, or onDisplaced drops the page task.
