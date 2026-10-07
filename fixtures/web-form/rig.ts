@@ -59,20 +59,36 @@ function groupMembers(pgid: number): number[] | null {
 
 /**
  * Every process of one Chrome launch carries this variable, set to the launch's random nonce: Chrome's helpers inherit
- * its environment. Once node has reaped Chrome, its group id can name someone else's group (the id is free again
- * when the group empties), so groupStop then signals only members whose environment shows the nonce.
+ * its environment. groupStop signals only what it has just proved is the launch's own: the leader by its pid, start time
+ * and marker, or a member by its marker. A group id alone proves nothing once the group may have emptied (I4 review).
  */
 const OWNER_VAR = "CARET_RIG_CHROME_OWNER";
-const owners = new WeakMap<ChildProcess, string>();
+const owners = new WeakMap<ChildProcess, { nonce: string; start: string | undefined }>();
 
-/** Whether `pid`'s environment holds this launch's marker; false when it is gone or `ps` cannot read it. */
-function carriesOwner(pid: number, nonce: string): boolean {
-  try {
-    const shown = execFileSync("ps", ["-wwE", "-o", "command=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    return new RegExp(`(^|\\s)${OWNER_VAR}=${nonce}(\\s|$)`).test(shown);
-  } catch {
-    return false;
-  }
+/** A process as `ps` shows it: its start time and whether its environment entries hold the marker. */
+type Seen = { start: string; marked: boolean } | "gone" | "unknown";
+
+/**
+ * Reads `pid` twice, without and with its environment (`ps -E` appends the environment to the arguments), so the
+ * marker is looked for in the environment entries alone. "gone": no such process. "unknown": `ps` failed otherwise,
+ * or the two reads disagree (the pid changed hands, or its arguments changed, between them).
+ */
+function inspect(pid: number, nonce: string): Seen {
+  const read = (env: boolean): string | "gone" | "unknown" => {
+    try {
+      return execFileSync("ps", [env ? "-wwE" : "-ww", "-o", "lstart=,command=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).replace(/\n$/, "");
+    } catch (e) {
+      const { status, stdout } = e as { status?: number; stdout?: string };
+      return status === 1 && !stdout ? "gone" : "unknown";
+    }
+  };
+  const plain = read(false);
+  if (plain === "gone" || plain === "unknown") return plain;
+  const withEnv = read(true);
+  if (withEnv === "gone") return "gone";
+  if (withEnv === "unknown" || !withEnv.startsWith(plain)) return "unknown";
+  // lstart is the first 24 characters ("Wed Oct  7 13:55:12 2026").
+  return { start: plain.slice(0, 24), marked: new RegExp(`(^|\\s)${OWNER_VAR}=${nonce}(\\s|$)`).test(withEnv.slice(plain.length)) };
 }
 
 // ---- cleanup registry: everything this run creates is undone here, in reverse order ----
@@ -291,7 +307,9 @@ export function spawnChrome(exe: string, flags: string[], env: NodeJS.ProcessEnv
     ? spawn(exe, flags, { env: marked, detached: true, stdio })
     : spawn("/bin/sh", ["-c", `IFS= read -r _ <&${go} || exit 97; exec ${go}<&-; exec "$@"`, "chrome-held", exe, ...flags], { env: marked, detached: true, stdio: [...stdio, "pipe"] });
   if (proc.pid === undefined) throw new Error("Chrome for Testing did not start");
-  owners.set(proc, nonce);
+  // The leader's start time, while it is certainly alive (not yet reaped: this function has not yielded since spawn).
+  const seen = inspect(proc.pid, nonce);
+  owners.set(proc, { nonce, start: typeof seen === "object" && seen.marked ? seen.start : undefined });
   if (REGISTER !== undefined) {
     try {
       register("group", String(proc.pid));
@@ -305,65 +323,84 @@ export function spawnChrome(exe: string, flags: string[], env: NodeJS.ProcessEnv
 }
 
 /**
- * Stops the process group `proc` leads: SIGTERM, up to 5 s for the whole group to empty (Chrome's helpers can outlive
- * it), then SIGKILL and a report of any survivor. An unreadable group listing counts as not empty.
- * Ownership is proved, not read off the group id. While node has not reaped Chrome, its pid and so the group id are
- * still Chrome's: the whole group is signalled, and the check and the signal run with no event-loop turn between them,
- * so the reap cannot slip in. Once Chrome is reaped and its group has emptied, the id is free, and another process can
- * lead a group under it, start helpers and exit (I4 re-review). So after the reap only members whose environment
- * shows this launch's marker are signalled, each by its own pid; any other member is reported, never signalled.
+ * Stops the process group `proc` leads: SIGTERM, up to 5 s for everything of the launch's to go (Chrome's helpers can
+ * outlive it), then SIGKILL and a report of any survivor.
+ * Nothing is signalled on the group id alone: once the group has emptied, the id is free, and another process can lead
+ * a group under it, start helpers and exit (I4 re-review), and node's exit fields can lag the reap (libuv reaps first).
+ * So each signal follows its own proof, read just before it: while the leader is alive with its recorded start time
+ * and the marker, it holds the group id and the whole group is signalled; otherwise each member whose environment
+ * shows the marker is signalled by its pid. A member without it is reported, never signalled; one `ps` cannot read is
+ * reported too, and keeps the stop from counting the launch as gone. What is left is the classic pid race: a pid would
+ * have to be freed and reused within the moment between its `ps` read and the signal.
  * Once nothing of the launch's is left, `gone` latches and nothing is signalled again (I4 review: accept.ts stops a
  * browser, and cleanup stops it again).
  */
 export function groupStop(proc: ChildProcess): () => Promise<void> {
   const pid = proc.pid;
   if (pid === undefined) throw new Error("no process group to stop: the process did not start");
-  const nonce = owners.get(proc);
+  const owner = owners.get(proc);
   let gone = false;
-  const reaped = (): boolean => proc.exitCode !== null || proc.signalCode !== null;
-  /** Members of the group shown to be this launch's: all of them while Chrome is unreaped; null when unlistable. */
-  const ours = (): number[] | null => {
+  type Count = { ours: number; unknown: number[]; foreign: number[] };
+  /** One pass over the group: signals what it proves is the launch's (when `sig` is given) and counts. */
+  const pass = (sig: NodeJS.Signals | null): Count | null => {
+    if (owner?.start !== undefined) {
+      const leader = inspect(pid, owner.nonce);
+      if (typeof leader === "object" && leader.marked && leader.start === owner.start) {
+        if (sig !== null) {
+          try {
+            process.kill(-pid, sig);
+          } catch {
+            /* the group emptied since the read */
+          }
+        }
+        return { ours: 1, unknown: [], foreign: [] };
+      }
+    }
     const members = groupMembers(pid);
-    if (members === null || !reaped()) return members;
-    return nonce === undefined ? [] : members.filter((m) => carriesOwner(m, nonce));
+    if (members === null) return null;
+    const count: Count = { ours: 0, unknown: [], foreign: [] };
+    for (const member of members) {
+      const seen: Seen = owner === undefined ? "unknown" : inspect(member, owner.nonce);
+      if (seen === "gone") continue;
+      if (seen === "unknown") count.unknown.push(member);
+      else if (!seen.marked) count.foreign.push(member);
+      else {
+        count.ours++;
+        if (sig !== null) {
+          try {
+            process.kill(member, sig);
+          } catch {
+            /* exited since the read */
+          }
+        }
+      }
+    }
+    return count;
   };
   const empty = (): boolean => {
-    if (!gone && ours()?.length === 0) gone = true;
+    if (gone) return true;
+    const count = pass(null);
+    if (count !== null && count.ours === 0 && count.unknown.length === 0) gone = true;
     return gone;
   };
-  const signal = (sig: NodeJS.Signals): void => {
-    if (gone) return;
-    if (!reaped()) {
-      try {
-        process.kill(-pid, sig);
-      } catch {
-        /* the group emptied meanwhile, or only zombies remain */
-      }
-      return;
-    }
-    for (const member of ours() ?? []) {
-      try {
-        process.kill(member, sig);
-      } catch {
-        /* exited since the listing */
-      }
-    }
-  };
-  const others = (): void => {
-    if (!reaped()) return;
-    const members = groupMembers(pid) ?? [];
-    const foreign = nonce === undefined ? members : members.filter((m) => !carriesOwner(m, nonce));
-    if (foreign.length > 0) say(`Chrome's process group id ${pid} also lists ${JSON.stringify(foreign)} without this launch's marker; not signalled`);
+  const report = (): void => {
+    const count = pass(null);
+    if (count === null) return say(`Chrome's process group ${pid} cannot be listed`);
+    if (count.unknown.length > 0) say(`Chrome's process group id ${pid} lists ${JSON.stringify(count.unknown)}, whose environment cannot be read; not signalled`);
+    if (count.foreign.length > 0) say(`Chrome's process group id ${pid} also lists ${JSON.stringify(count.foreign)} without this launch's marker; not signalled`);
   };
   return async () => {
-    if (empty()) return others();
-    signal("SIGTERM");
-    for (let i = 0; i < 50 && !empty(); i++) await sleep(100);
-    if (empty()) return others();
-    signal("SIGKILL");
-    for (let i = 0; i < 50 && !empty(); i++) await sleep(100);
-    if (!empty()) say(`Chrome's process group ${pid} still has members ${JSON.stringify(ours())} after SIGKILL`);
-    others();
+    if (gone) return;
+    if (!empty()) {
+      pass("SIGTERM");
+      for (let i = 0; i < 50 && !empty(); i++) await sleep(100);
+    }
+    if (!gone) {
+      pass("SIGKILL");
+      for (let i = 0; i < 50 && !empty(); i++) await sleep(100);
+      if (!gone) say(`Chrome's process group ${pid} still has members of this launch, or unreadable ones, after SIGKILL`);
+    }
+    report();
   };
 }
 
