@@ -1,1 +1,0 @@
-W1-W2: run helper/scripts/guard-adversary.ts each batch; --verifier refuse writes 0 outside exemptions, and new exempt (c) writes need a look. Value rules go in the write contract (fill/contract.ts), not beside a caller; labelled multi-value lines offer parts.
