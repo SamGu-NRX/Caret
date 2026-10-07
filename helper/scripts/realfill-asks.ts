@@ -33,6 +33,7 @@ import { parseArgs } from "node:util";
 import type { AskJev } from "../src/fill/jev.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { cannedReply } from "../src/engines/decide/canned.ts";
+import type { FillTrace } from "../src/fill/fill.ts";
 import { engineName } from "../src/engines/decide/port.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft, type AskQuestionDraft } from "../src/planner/ask.ts";
 import { jevIntentMaker, writerIntentMaker, type IntentMaker, type MakerUse } from "../src/planner/intent-makers.ts";
@@ -136,7 +137,21 @@ const oracle: AskJev = async (req) => {
   const wholeForm = new Set((form?.fields ?? []).map((f) => f.expected));
   const theirs = new Set(Object.entries(want).filter(([l, v]) => form?.fields.find((f) => normLabel(f.label) === normLabel(l))?.expected !== v).map(([, v]) => v));
   const wanted = (label: string): boolean => Object.keys(want).some((l) => normLabel(l) === normLabel(label) && want[l] !== "none");
-  const labelIn = (ins: string): string | null => /(?:Label|field): '([^']+)'|[Tt]he field '([^']+)'|fill or change '([^']+)'/u.exec(ins)?.slice(1).find((x) => x !== undefined) ?? null;
+  // A question fill sent names its field and its options in fill's own record (FillTrace), never parsed from its text
+  // (I2: "Guest's full name" was cut at its apostrophe, so held-12's value question answered none). Other questions (the
+  // planner's, Ask's confirmations) name a field as 'label' followed by punctuation, a space or the end, so a label may
+  // hold an apostrophe.
+  const trace = traces.find((t) => t.owns(req));
+  const labelIn = (ins: string): string | null => /(?:Label|field): '(.+?)'(?=[.,;:?)]|\s|$)|[Tt]he field '(.+?)'(?=[.,;:?)]|\s|$)|fill or change '(.+?)'(?=[.,;:?)]|\s|$)/u.exec(ins)?.slice(1).find((x) => x !== undefined) ?? null;
+  /** The corpus label of the field a fill question (`f3`, `f3_whose`, `f3_answer`) is about, from the trace; else from the text. */
+  const labelOf = (id: string, ins: string): string | null => {
+    if (trace === undefined) return labelIn(ins);
+    const f = trace.fields.find((x) => x.id === id.replace(/_(?:whose|answer)$/u, ""));
+    if (f === undefined) throw new Error(`the oracle got fill question ${id}, which fill's trace does not list`);
+    return corpusLabel.get(f.key) ?? f.name;
+  };
+  /** An option's text: fill's record for a traced question; else the quoted text that opens its description. */
+  const optionText = (k: string, d: string): string => (trace === undefined ? quoted(d) : (trace.options.get(k)?.text ?? quoted(d)));
   const answers: Record<string, { choice: string; confidence: number }> = {};
   const answer = (id: string, q: (typeof req.questions)[string]): { choice: string; confidence: number } => {
     const keys = Object.keys(q.criteria);
@@ -154,12 +169,12 @@ const oracle: AskJev = async (req) => {
     else if (id === "whose") pick("user");
     else if (id.endsWith("_whose")) {
       // A field the ask fills with someone else's value (not the whole-form one) wants that person's details.
-      const label = labelIn(ins);
+      const label = labelOf(id, ins);
       const v = label === null ? null : valueOf(label);
       pick((v !== null && theirs.has(v)) || /\b(?:landlord|reference|emergency|guest|referr|relationship|recipient)/iu.test(label ?? "") ? "other" : "user");
     }
     else if (id.endsWith("_owner")) {
-      const text = /"([^"]*)"/u.exec(ins)?.[1] ?? "";
+      const text = trace?.options.get(id.replace(/_owner$/u, ""))?.text ?? /"([^"]*)"/u.exec(ins)?.[1] ?? "";
       // A value the ask expects for someone else's field is that person's; any other whole-form value is the user's.
       const forOther = Object.entries(want).some(([l, v]) => same(text, v) && (theirs.has(v) || /\b(?:landlord|reference|emergency|guest|referr|relationship|recipient)/iu.test(l)));
       const mine = forOther ? (keys.includes("person") ? "person" : "other") : [...wholeForm].some((v) => same(text, v)) ? "user" : "unclear";
@@ -167,9 +182,9 @@ const oracle: AskJev = async (req) => {
     }
     else if ("yes" in q.criteria) pick(id === "all" ? "no" : wanted(labelIn(ins) ?? "") ? "yes" : "no");
     else {
-      const label = labelIn(ins);
+      const label = labelOf(id, ins);
       const v = label === null ? null : valueOf(label);
-      const hit = v === null || v === "none" ? undefined : Object.entries(q.criteria).find(([, d]) => typeof d === "string" && (same(quoted(d), v) || d === v));
+      const hit = v === null || v === "none" ? undefined : Object.entries(q.criteria).find(([k, d]) => typeof d === "string" && (same(optionText(k, d), v) || d === v));
       // The planner's target questions (an Ask that asks for a press): the press the must-refuse ask names.
       const press = ask?.reason === "submit" || ask?.reason === "send" ? Object.entries(q.criteria).find(([, d]) => typeof d === "string" && new RegExp(`\\b${ask.reason}\\b`, "iu").test(d)) : undefined;
       pick(hit?.[0] ?? press?.[0] ?? "none");
@@ -220,6 +235,10 @@ const replay = { hits: 0, misses: 0 };
 /** Each decision request's latency, for the bake-off's p50 and p95. */
 const requestMs: number[] = [];
 let current = "";
+/** Fill's record of each proposal the current ask made (FillTrace), for the oracle; reset per ask. */
+let traces: FillTrace[] = [];
+/** The current ask's form, its field keys to the corpus labels, for the oracle. */
+let corpusLabel = new Map<string, string>();
 /** A1: decision requests by the ask (or "<id>+pick" for the simulated picks after a question) that made them. */
 const requestsBy = new Map<string, number>();
 const askJev: AskJev = async (req) => {
@@ -313,6 +332,8 @@ for (const [i, ask] of asks.entries()) {
   const r = rng(Number(a.seed) * 1000 + i);
   const offerKey = `realfill-ask-${ask.id}`;
   current = ask.id;
+  traces = [];
+  corpusLabel = new Map(form.fields.flatMap((f) => nodesFor(desk.form, f).map((n) => [n.key, f.label] as const)));
   const maker: IntentMaker = a.maker === "heads" ? headsIntentMaker(askJev) : a.maker === "jev" || writer === null ? jevIntentMaker(askJev, { rand: (n) => Math.floor(r() * n) }) : writerIntentMaker(writer, () => offerKey);
   let draft: AskDraft | null = null;
   let error: string | null = null;
@@ -322,7 +343,7 @@ for (const [i, ask] of asks.entries()) {
   let use: MakerUse | null = null;
   let question: AskQuestionDraft | null = null;
   const run = (resume?: AskQuestionDraft["resume"]) =>
-    planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n), ...(resume === undefined ? {} : { resume }) });
+    planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n), fillTrace: (t) => traces.push(t), ...(resume === undefined ? {} : { resume }) });
   try {
     draft = await run();
     intent = draft.intent;
