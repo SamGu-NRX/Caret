@@ -395,5 +395,75 @@ class SwiftTests(RecipeWorld):
         self.assertIn(("suite", "swift-bridge-t", 14), self.steps(result))
 
 
+class VmCancelProof(RecipeWorld):
+    """vm-cancel-proof.sh with a stub rig-run (tests/stubs/vm-proof/rig-run): it starts rig-run on the sealed job, waits
+    for the guest, cancels rig-run itself, and proves the clone, Lume and Virtualization are gone and where the vm lease
+    went. 14 when no guest ever boots, 11 when a proof fails."""
+
+    def setUp(self):
+        super().setUp()
+        write(os.path.join(self.inputs, "vm-job/job.sh"), "# rig-timeout-seconds: 120\nexit 0\n")
+        os.makedirs(os.path.join(self.inputs, "vm-job/runs"))
+        rig = os.path.join(self.home, ".long-run/rig/bin")
+        os.makedirs(rig)
+        shutil.copy2(os.path.join(STUBS, "vm-proof/rig-run"), os.path.join(rig, "rig-run"))
+        self.leases = os.path.join(self.home, "leases.ndjson")
+        lr = os.path.join(self.home, ".long-run/bin/lr-lease")
+        write(lr, "#!/bin/sh\n[ \"$1\" = status ] || exit 2\nf=\"$HOME/leases.ndjson\"\necho 'Readings (stub)'\n"
+                  "if [ -s \"$f\" ]; then echo \"Leases: $(wc -l < \"$f\" | tr -d ' ')\"; cat \"$f\"; else echo 'Leases: 0'; fi\n")
+        os.chmod(lr, 0o755)
+        self.addCleanup(self.kill_stand_in)
+
+    def kill_stand_in(self):
+        path = os.path.join(self.inputs, "stub-vz.pid")
+        if os.path.exists(path):
+            with open(path) as fh:
+                pid = int(fh.read())
+            if "sleep" in subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout:
+                os.kill(pid, signal.SIGKILL)  # the stub's stand-in, by its exact recorded pid
+
+    def proof(self, extra=None):
+        done, result = self.run_recipe("vm-cancel-proof.sh", "60", "30", "3", env=extra)
+        try:
+            with open(os.path.join(self.out, "proof.json")) as fh:
+                proof = json.load(fh)
+        except FileNotFoundError:
+            proof = None
+        return done, result, proof
+
+    def test_a_clean_cancellation_proves_everything_gone(self):
+        done, result, proof = self.proof()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.steps(result), [("prepare", "boot", 0), ("prepare", "cancel", 0), ("vm-proof", "proof", 0)])
+        self.assertEqual(proof["checks"], {"rig_run_cancelled": True, "clone_gone": True, "lume_gone": True,
+                                           "virtualization_gone": True, "vm_lease_released": True})
+        self.assertTrue(os.path.exists(os.path.join(self.out, "state-before/lume.pid")))
+
+    def test_a_virtualization_process_that_outlives_the_cleanup_fails_the_proof(self):
+        done, result, proof = self.proof({"STUB_VM": "linger"})
+        self.assertEqual(done.returncode, 11)
+        self.assertFalse(proof["checks"]["virtualization_gone"])
+
+    def test_a_clone_left_behind_fails_the_proof(self):
+        done, result, proof = self.proof({"STUB_VM": "clone"})
+        self.assertEqual(done.returncode, 11)
+        self.assertFalse(proof["checks"]["clone_gone"])
+
+    def test_no_guest_is_14(self):
+        done, result, proof = self.proof({"STUB_VM": "no-boot"})
+        self.assertEqual(done.returncode, 14)
+        self.assertEqual(self.steps(result)[0], ("prepare", "boot", 14))
+
+    def test_in_managed_mode_the_vm_lease_must_be_left_cleanup_required_for_the_attempt(self):
+        managed = {"RIG_RUN_MANAGED": "1", "CARET_HEAVY_ATTEMPT": "att-1"}
+        done, result, proof = self.proof(dict(managed, STUB_LEASE_FILE=self.leases))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertTrue(proof["checks"]["vm_lease_left_for_custody"])
+        self.assertNotIn("vm_lease_released", proof["checks"])
+        os.unlink(self.leases)
+        done, result, proof = self.proof(managed)  # the lease is not listed: not left for custody
+        self.assertEqual(done.returncode, 11)
+        self.assertFalse(proof["checks"]["vm_lease_left_for_custody"])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

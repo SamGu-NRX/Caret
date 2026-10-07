@@ -1,0 +1,42 @@
+#!/bin/bash
+# Stub rig-run for the vm-cancel-proof recipe tests (tests/test_recipes.py, VmCancelProof): the state a real rig-run
+# leaves while a VM runs, with no Lume and no VM. Makes ~/.long-run/rig/runs/rig-run-$$ (lume.pid, vz.pids, lease.id), a
+# clone directory ~/.lume/rig-run-$$, a stand-in `lume run rig-run-$$` (a script named lume) and a detached stand-in
+# Virtualization process, then logs "guest ready". On TERM it stops the stand-in Lume, deletes the clone and its state
+# and exits 143, like rig-run's trap. STUB_VM:
+#   clean     (default) the Virtualization stand-in exits with Lume
+#   linger    it outlives the cleanup (the test kills it by the pid in its file)
+#   clone     the clone directory is left behind
+#   no-boot   exits 75 before any guest is ready (no lease)
+# STUB_LEASE_FILE: append the vm lease there as lr-lease status would list it (managed mode leaves it for custody).
+JOB=$1
+R=~/.long-run/rig
+RUN="$JOB/runs/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+STATE="$R/runs/rig-run-$$"
+CLONE=~/.lume/rig-run-$$
+mkdir -p "$RUN/out" "$STATE"
+[ -z "${RIG_RUN_ID_FILE:-}" ] || echo "$RUN" > "$RIG_RUN_ID_FILE"
+LOG="$RUN/rig.log"
+if [ "${STUB_VM:-clean}" = no-boot ]; then echo "no lease: heavy: refused (stub)" >> "$LOG"; rm -rf "$STATE"; exit 75; fi
+echo "stub-vm-lease-$$" > "$STATE/lease.id"
+# Managed mode leaves the vm lease cleanup-required for the attempt; STUB_LEASE_FILE is what lr-lease status lists.
+[ -z "${STUB_LEASE_FILE:-}" ] || printf '{"id": "stub-vm-lease-%s", "kind": "vm", "run": "rig", "cleanupRequired": true, "attempt": "%s"}\n' "$$" "${CARET_HEAVY_ATTEMPT:-}" >> "$STUB_LEASE_FILE"
+mkdir -p "$CLONE"; echo disk > "$CLONE/disk.img"
+printf '%s\n' '#!/bin/bash' "trap 'exit 0' TERM" 'sleep 600 & wait $!' > "$STATE/lume"; chmod +x "$STATE/lume"
+"$STATE/lume" run "rig-run-$$" & LUME=$!
+echo "$LUME" > "$STATE/lume.pid"
+VZNAME=/System/Library/Frameworks/Virtualization.framework/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+/usr/bin/env -i /bin/bash -c 'exec -a "$0" /bin/sleep 600' "$VZNAME" < /dev/null > /dev/null 2>&1 & VZ=$!
+echo "$VZ" > "$STATE/vz.pids"; echo "$VZ" > "$JOB/../stub-vz.pid"
+echo "lume run pid $LUME" >> "$LOG"
+echo "guest ready at 192.0.2.10" >> "$LOG"
+cleanup() {
+  kill "$LUME" 2>/dev/null; wait "$LUME" 2>/dev/null
+  [ "${STUB_VM:-clean}" = linger ] || { kill -KILL "$VZ" 2>/dev/null; wait "$VZ" 2>/dev/null; }
+  [ "${STUB_VM:-clean}" = clone ] || rm -rf "$CLONE"
+  rm -rf "$STATE"
+  echo '{"exit": 143}' > "$RUN/rig.json"
+  exit 143
+}
+trap cleanup TERM
+sleep 600 & wait $!

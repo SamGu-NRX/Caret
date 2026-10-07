@@ -217,6 +217,28 @@ def suite(name, log, exit_code, kind):
     return record(step)
 
 
+def vm_proof(exit_code):
+    """vm-cancel-proof.sh's OUT/proof.json: every named check must be true. 11 when one is not (or the proof script
+    failed), 12 when there is no readable proof."""
+    path = os.path.join(out_dir(), "proof.json")
+    step = {"kind": "vm-proof", "name": "proof", "exit": exit_code, "evidence": existing(path)}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            checks = json.load(fh)["checks"]
+        if not isinstance(checks, dict) or not checks:
+            raise ValueError("no checks")
+    except (OSError, ValueError, KeyError, TypeError) as ex:
+        step.update(code=EVIDENCE, why="no readable proof.json: {}".format(ex))
+        return record(step)
+    failed = sorted(k for k, v in checks.items() if v is not True)
+    step["checks"] = checks
+    if failed or exit_code != 0:
+        step.update(code=FAILED, why="failed: {}".format(failed) if failed else "the proof exited {}".format(exit_code))
+    else:
+        step["code"] = OK
+    return record(step)
+
+
 def prepare(name, log, exit_code, fail_code=PREPARE):
     step = {"kind": "prepare", "name": name, "exit": exit_code, "evidence": existing(log)}
     step["code"] = OK if exit_code == 0 else fail_code
@@ -512,6 +534,8 @@ def main(argv=None):
     ls.add_argument("name")
     ls.add_argument("--exit", type=int, required=True)
     ls.add_argument("--ckpts", nargs="+", required=True)
+    vp = sub.add_parser("vm-proof")
+    vp.add_argument("--exit", type=int, required=True)
     f = sub.add_parser("finish")
     f.add_argument("--require", nargs="*", default=[], help="step names that must have been recorded")
     args = parser.parse_args(argv)
@@ -525,6 +549,8 @@ def main(argv=None):
         return spend(args.day, args.from_line, args.limit, args.ledger_dir)
     if args.cmd == "r2":
         return r2(args.harness, args.run, args.rev, args.exit, args.options, args.spend_limit)
+    if args.cmd == "vm-proof":
+        return vm_proof(args.exit)
     if args.cmd == "laya":
         return laya(args.name, args.exit, args.expected)
     if args.cmd == "laya-score":

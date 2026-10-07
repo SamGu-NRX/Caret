@@ -441,6 +441,30 @@ def _swift_tests_plan(args, worktree, rev, paths):
     return [args.tag, *packages], inputs, {}
 
 
+RIG_SMOKE_JOB = os.path.join(HOME, ".long-run/rig/jobs/smoke")
+
+
+def _vm_cancel_proof_options(parser):
+    parser.add_argument("--job-dir", default=RIG_SMOKE_JOB, metavar="DIR",
+                        help="the rig job to boot (job.sh, optional tcc.txt and display); default the rig's smoke job")
+    parser.add_argument("--rig-wait", type=int, default=3600, help="rig-run --wait for its leases (seconds)")
+    parser.add_argument("--boot-timeout", type=int, default=900,
+                        help="seconds after the lease wait for the guest to be ready before the proof gives up")
+    parser.add_argument("--vz-grace", type=int, default=60,
+                        help="seconds the Virtualization processes get to exit after rig-run's cleanup")
+
+
+def _vm_cancel_proof_plan(args, worktree, rev, paths):
+    if not 0 <= args.rig_wait <= 7200 or not 60 <= args.boot_timeout <= 3600 or not 1 <= args.vz_grace <= 600:
+        raise manifest.ManifestError("--rig-wait 0..7200, --boot-timeout 60..3600 and --vz-grace 1..600 seconds")
+    job = os.path.realpath(args.job_dir)
+    inputs = [spec("job.sh", "file", os.path.join(job, "job.sh"), "vm-job/job.sh")]
+    for name in ("tcc.txt", "display", "no-reboot"):
+        if os.path.exists(os.path.join(job, name)):
+            inputs.append(spec(name, "file", os.path.join(job, name), "vm-job/" + name))
+    return [str(args.rig_wait), str(args.boot_timeout), str(args.vz_grace)], inputs, {}
+
+
 def _laya_options(parser):
     # Required, with no default: Laya's peak has never been measured, and the 17:31Z near-miss on 2026-10-07 (0.40 GiB
     # free, swap 22.19 of 22.28 GB) stopped its first run. Whoever commissions it chooses the cap.
@@ -486,6 +510,8 @@ RECIPES = {
                          _r2_prepare_options, _r2_prepare_plan),
     "r2-vm": Recipe("r2-vm", "caret-vm", "recipes/r2/vm.sh", True, _r2_vm_options, _r2_vm_plan),
     "laya": Recipe("laya", "caret-laya", "recipes/laya.sh", False, _laya_options, _laya_plan),
+    "vm-cancel-proof": Recipe("vm-cancel-proof", "caret-vm", "recipes/vm-cancel-proof.sh", False,
+                              _vm_cancel_proof_options, _vm_cancel_proof_plan),
     "swift-tests": Recipe("swift-tests", "caret-swift", "recipes/swift-tests.sh", False, _swift_tests_options,
                           _swift_tests_plan),
 }

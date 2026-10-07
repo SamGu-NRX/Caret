@@ -237,6 +237,20 @@ class CheckTest(Temp):
         self.assertEqual((summary["xctest"], summary["swift_testing"]),
                          ({"executed": 42, "failures": 0}, {"tests": 12, "verdict": "passed", "issues": 0}))
 
+    def test_vm_proof_needs_every_check_true(self):
+        self.write("out/proof.json", json.dumps({"checks": {"clone_gone": True, "virtualization_gone": True}}))
+        self.assertEqual(self.run_check("vm-proof", "--exit", "0"), 0)
+        self.write("out/proof.json", json.dumps({"checks": {"clone_gone": True, "virtualization_gone": False}}))
+        self.assertEqual(self.run_check("vm-proof", "--exit", "0"), check.FAILED)
+        self.write("out/proof.json", json.dumps({"checks": {}}))
+        self.assertEqual(self.run_check("vm-proof", "--exit", "0"), check.EVIDENCE)
+        self.write("out/proof.json", "{not json")
+        self.assertEqual(self.run_check("vm-proof", "--exit", "0"), check.EVIDENCE)
+        os.unlink(os.path.join(self.out, "proof.json"))
+        self.assertEqual(self.run_check("vm-proof", "--exit", "0"), check.EVIDENCE)
+        self.write("out/proof.json", json.dumps({"checks": {"clone_gone": True}}))
+        self.assertEqual(self.run_check("vm-proof", "--exit", "1"), check.FAILED)  # the proof script itself failed
+
     def test_spend_limit(self):
         ledger = os.path.join(self.root, "ledger")
         self.write("ledger/2026-10-07.ndjson", '{"usd": 0.05}\n{"usd": 0.04}\n{"usd": 0.07}\n')
