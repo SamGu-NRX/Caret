@@ -23,7 +23,8 @@ import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { addressParts, misfit } from "../fill/kinds.ts";
+import { addressParts } from "../fill/kinds.ts";
+import { writeMisfit } from "../fill/writable.ts";
 import { fieldPart, splitAddress, splitName } from "../fill/derive.ts";
 import { inWebArea } from "../fill/controls.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
@@ -207,7 +208,7 @@ async function planIn(
   const second = { values: shuffled(values, rand).map((v, i) => ({ ...v, id: `k${i + 1}` })), buttons: shuffled(askedButtons, rand).map((b, i) => ({ ...b, id: `d${i + 1}` })) };
   // A field is offered only the values that fit it: B17's held-out live pass wrote a whole address into
   // Billing City when the address was the only value it was offered. validatePlan checks the same rule.
-  const fitting = (f: Field, vs: readonly Option[]): Option[] => vs.filter((v) => misfit(v.text, [f.label]) === null);
+  const fitting = (f: Field, vs: readonly Option[]): Option[] => vs.filter((v) => writeMisfit(v.text, { labelWords: [f.label] }) === null);
   const [r1, r2] = await ask(
     ...sentOnly([
       fieldRequest(instruction, w, title, questioned, (f) => fitting(f, values), askedButtons, 0, declared),

@@ -8,7 +8,7 @@ import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
-import { bareLine, clauseAround, instructionLine, LABELLED, lineTexts, lineValues, questionAnswer, sentenceAround, severalValues, WARNS } from "./line-values.ts";
+import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, sentenceAround, WARNS } from "./line-values.ts";
 import { splitDate } from "./derive.ts";
 
 /**
@@ -37,6 +37,11 @@ export interface Candidate {
    * Don't give out 555-0112, …"). Jev reads it to tell the value the line gives from one it warns about.
    */
   line?: string | null;
+  /**
+   * W1: the labelled value this span was cut from, when it is a part of one (line-values.ts LineText.partOf): only a
+   * field that takes one value may take it (fill.ts).
+   */
+  partOf?: string;
   /** The nearest named container around the span, such as a group box or a section heading. */
   section: string | null;
   /**
@@ -241,7 +246,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   /** Windows a span of which did not fit their budget, closed or not. */
   const missed = new Set<string>();
   /** The candidate for a span, with every fact about it worked out. */
-  const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string): Candidate => {
+  const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string): Candidate => {
     const ctx = timed("context", context);
     const labelled = labelledSpan(node, text, ctx);
     // A span that must go with its line's words (line-values.ts LineText.with, or a clause its line warns in) carries them
@@ -256,6 +261,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     context: ctx,
     labelled,
     line: required ?? null,
+    ...(partOf === undefined ? {} : { partOf }),
     section: timed("section", () => sectionAround(w, node)),
     blockHead: timed("blockHead", () => blockHead(w, node, text)),
     recency: recency(w),
@@ -292,9 +298,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * Adds a span unless the cap is reached, its text is already in, or its window is closed. A span that
    * does not fit its window's budget closes the window.
    */
-  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string): void => {
+  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string): void => {
     if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId)) return;
-    const c = build(w, node, text, kind, context, quote);
+    const c = build(w, node, text, kind, context, quote, partOf);
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       missed.add(w.window.windowId);
       // A span that goes only with its line (a warning, a remark) and does not fit with it is left out alone: the window
@@ -412,7 +418,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * them in relevance order. False when the cap or the clock ran out. A span's group is the term of the
    * whole-or-nothing set it goes in with: its kind's for a typed value, NAME_TERM for a name-like line.
    */
-  type Span = { node: Node; text: string; kind: ValueKind | null; group: string | null; context: () => string | null; terms: Set<string>; names: string[]; quote?: string };
+  type Span = { node: Node; text: string; kind: ValueKind | null; group: string | null; context: () => string | null; terms: Set<string>; names: string[]; quote?: string; partOf?: string };
   const byRelevance = (w: WindowState, fields: readonly ReadonlySet<string>[]): boolean => {
     const spans: Span[] = [];
     const built = { done: false };
@@ -480,7 +486,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
           const names = wantsNames && kinds.some((k) => CONTACT_KINDS.has(k)) ? namesOutside(s.line, valuesOf.get(node.key)) : [];
           if (name) names.push(s.text);
           if (names.length > 0) terms.add(NAME_TERM);
-          spans.push({ node, text: s.text, kind: null, group: name ? NAME_TERM : null, context, terms, names, ...(s.with === undefined ? {} : { quote: s.with }) });
+          spans.push({ node, text: s.text, kind: null, group: name ? NAME_TERM : null, context, terms, names, ...(s.with === undefined ? {} : { quote: s.with }), ...(s.partOf === undefined ? {} : { partOf: s.partOf }) });
           // Each name a contact line holds goes in with the names too, as its own span, copied verbatim from
           // the line: else "From: Priya Raman <priya.raman@…>" left a name out whenever the line was cut, and
           // the names spent the budget for nothing (B14 oracle replay, Claim form with the sources as Messages).
@@ -538,7 +544,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         const sp = spans[i] as (typeof spans)[number];
         if (sp.group !== k || seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
-        group.push(build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote));
+        group.push(build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf));
       }
       if (group.length > 0) groups.set(k, group);
     }
@@ -576,7 +582,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (closed.has(w.window.windowId)) break;
       const sp = spans[i] as (typeof spans)[number];
       if ([...sp.terms].some((t) => leftOut.has(t))) continue;
-      add(w, sp.node, sp.text, sp.kind, sp.context, sp.quote);
+      add(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf);
     }
     return true;
   };
@@ -616,7 +622,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       for (const raw of lines) {
         // A node can hold thousands of lines (a log, a transcript), so the cap and the clock apply per line too.
         if (full() || outOfTime()) return stop();
-        for (const s of lineSpans(raw)) add(w, node, s.text, null, s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField), s.with);
+        for (const s of lineSpans(raw)) add(w, node, s.text, null, s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField), s.with, s.partOf);
       }
     }
   }
@@ -639,10 +645,6 @@ function secretValue(w: WindowState, v: TypedValue): boolean {
 /**
  * The span a screen line offers: a "Label: value" line offers its value, with the label as context; a
  * line too short or too long to be a value, with no letter or digit, or ending in a colon offers none.
- * W1: nor does a labelled value that holds several values (line-values.ts severalValues: "work: Brightline Dental Labs,
- * lab technician, $5,200/mo gross") and no warning, whose parts lineTexts offers instead; a labelled instruction to the user
- * (instructionLine); or a question and its answer on one line (questionAnswer), whose label is too long to read as one.
- * Live Jev put each whole into a field that takes one of its values (evidence/screen/lv1).
  */
 function spanOfLine(raw: string): { line: string; text: string; label: string | null } | null {
   const line = bareLine(raw);
@@ -652,18 +654,8 @@ function spanOfLine(raw: string): { line: string; text: string; label: string | 
   // A value Caret never types (a password, a card or account number, a government ID, a one-time code or an API
   // key, by its label or its shape: memory/sensitive.ts) is no span: it is never offered, so no fill or plan can
   // choose it, and it never goes out in a question (B25 lead decision 2).
-  if (m !== null && m[1] !== undefined && m[2] !== undefined) {
-    const label = m[1].trim();
-    const text = m[2].trim();
-    // A value its line warns about keeps its whole span: lineTexts offers no part of it, and Jev reads the warning
-    // ("Name: Josephine Abernathy-Cole, but everyone calls me Jo.").
-    const parted = severalValues(text) !== null && !WARNS.test(text);
-    return sensitiveKind(m[1], m[2]) === null && !instructionLine(label, text) && !parted ? { line, text, label } : null;
-  }
-  // An unlabelled line that holds several values is still offered whole: no label bounds its parts, and the names a
-  // contact line holds are read from its span ("landlord - Gary Pruitt, (512) 555-0193, …", rankWindow). A field that
-  // takes one value refuses it after the pick (fill.ts moreThanOne).
-  return valueKind(line) === null && !questionAnswer(line) ? { line, text: line, label: null } : null;
+  if (m !== null && m[1] !== undefined && m[2] !== undefined) return sensitiveKind(m[1], m[2]) === null ? { line, text: m[2].trim(), label: m[1].trim() } : null;
+  return valueKind(line) === null ? { line, text: line, label: null } : null;
 }
 
 /**
@@ -671,12 +663,12 @@ function spanOfLine(raw: string): { line: string; text: string; label: string | 
  * under its line's label or none. A line of any length offers the bounded text; only spanOfLine's needs it short. Its
  * typed values are offered as the window's typed values (windowValues), not here.
  */
-export function lineSpans(raw: string): { line: string; text: string; label: string | null; with?: string }[] {
+export function lineSpans(raw: string): { line: string; text: string; label: string | null; with?: string; partOf?: string }[] {
   const line = bareLine(raw);
   if (line.length < MIN_LINE) return [];
   const whole = spanOfLine(raw);
-  const out: { line: string; text: string; label: string | null; with?: string }[] = whole === null ? [] : [whole];
-  for (const t of lineTexts(line)) if (!out.some((o) => o.text === t.text)) out.push({ line, text: t.text, label: t.label, ...(t.with === undefined ? {} : { with: t.with }) });
+  const out: { line: string; text: string; label: string | null; with?: string; partOf?: string }[] = whole === null ? [] : [whole];
+  for (const t of lineTexts(line)) if (!out.some((o) => o.text === t.text)) out.push({ line, text: t.text, label: t.label, ...(t.with === undefined ? {} : { with: t.with }), ...(t.partOf === undefined ? {} : { partOf: t.partOf }) });
   return out;
 }
 

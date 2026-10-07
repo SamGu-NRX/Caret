@@ -10,11 +10,13 @@
 // Fill all would write it (offers/fill-popup.ts writtenFields), and as handed off when it is offered for the user to set.
 // Class (a) must be 0: it measures the code's guards, not the model. Class (b) is tracked; it has no target.
 //
-// Each set is asked two ways, and a value counts once if either writes it: a Fill all over the form's fields in parts
-// of MAX_FIELDS (no scope), and the Ask the goal path makes ("fill out this form": a whole-form scope over the same
-// parts). The Ask sets are asked with each ask's expected fields as its scope, the reading code should make. No Jev,
-// no browser, no network. Fixture text only: every window and memory entry comes from fixture files and the evals'
-// saved page walks.
+// Page sets (the corpus, F1's tasks, W4) are asked two ways per part of MAX_FIELDS, and a value counts once if either
+// writes it: a Fill all (no scope), and the goal path's whole-form Ask (page-loop-eval's instruction settles a whole-form
+// scope with no literal and no person). Ask sets (B24, B25, B26, B31) run each ask's own instruction through planAsk end
+// to end: heads maker with code's reading confirmed, the scoped fill with its literals and person, and the planner's
+// validation of the writes. Which option a question offers is read from fill's own record (FillTrace), never from the
+// question's text. No Jev, no browser, no network. Fixture text only: every window and memory entry comes from fixture
+// files and the evals' saved page walks.
 //
 //   node scripts/guard-adversary.ts --out DIR [--sets corpus,tasks-blind,tasks-labelled,w4,b24,b25,b26,b31]
 //        [--corpus-pages DIR] [--tasks-pages DIR] [--w4-dir DIR] [--w4-key FILE] [--w4-note FILE]
@@ -30,7 +32,10 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { forgetWindows } from "../src/privacy.ts";
-import { MAX_FIELDS, proposeFill, type FillScope } from "../src/fill/fill.ts";
+import { MAX_FIELDS, proposeFill, type FillScope, type FillTrace } from "../src/fill/fill.ts";
+import { planAsk } from "../src/planner/ask.ts";
+import { headsIntentMaker } from "../src/planner/intent-heads.ts";
+import { PlannerError } from "../src/planner/validate.ts";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { aboutKind, type AboutValue } from "../src/fill/about.ts";
 import { words } from "../src/fill/kinds.ts";
@@ -39,7 +44,7 @@ import { pageInputNodes } from "../src/goals/page-planner.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
-import { PageSnapshot, PROTOCOL_VERSION, Snapshot, type FillProposal, type Node } from "../src/protocol.ts";
+import { PageSnapshot, PROTOCOL_VERSION, Snapshot, type Node } from "../src/protocol.ts";
 import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, T0, type Corpus, type CorpusForm } from "./realfill-corpus.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -81,6 +86,14 @@ interface Desk {
   parts: string[][];
   /** The Ask's instruction; the goal path's for a page set, the ask's own for an Ask set. */
   instruction: string;
+  /**
+   * "page": each part asked as a Fill all (no scope) and as the goal path's whole-form Ask (page-loop-eval's "fill out
+   * this form" settles a whole-form scope with no literal and no person). "ask": the ask's instruction through planAsk
+   * end to end (heads maker, code's reading confirmed, the scoped fill, the planner's validation of its writes).
+   */
+  mode: "page" | "ask";
+  /** What the user told Caret, as the planner reads it (an Ask set). */
+  memory?: { id: string; label: string; text: string; whose: "user" }[];
 }
 
 const norm = (s: string): string => s.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
@@ -152,7 +165,7 @@ function* corpusDesks(): Generator<Desk> {
     });
     const keys = fields.map((f) => f.key);
     const parts = page ? pageParts(d.form) : Array.from({ length: Math.ceil(keys.length / MAX_FIELDS) }, (_, i) => keys.slice(i * MAX_FIELDS, (i + 1) * MAX_FIELDS));
-    yield { set: page ? "corpus" : "corpus-reader", page: form.id, model: d.model, windowId: d.form.window.windowId, about: d.about, fields, parts, instruction: "fill out this form" };
+    yield { set: page ? "corpus" : "corpus-reader", page: form.id, model: d.model, windowId: d.form.window.windowId, about: d.about, fields, parts, instruction: "fill out this form", mode: "page" };
   }
 }
 
@@ -220,7 +233,7 @@ function* taskDesks(labelled: boolean): Generator<Desk> {
       return n === undefined ? [] : [{ key: n.key, label: n.label === "" ? k : n.label, expected: v, accept: [] }];
     });
     for (const k of Object.keys(e.expected)) if (!byOracle.has(k)) skipped.push(`${set}/${page}/${k}: no node`);
-    yield { set, page, model, windowId: w.window.windowId, about, fields, parts: pageParts(w), instruction: "fill out this form" };
+    yield { set, page, model, windowId: w.window.windowId, about, fields, parts: pageParts(w), instruction: "fill out this form", mode: "page" };
   }
 }
 
@@ -246,7 +259,9 @@ function* w4Desks(): Generator<Desk> {
       if (n === undefined) skipped.push(`w4/${site}/${k.label}: no node`);
       return n === undefined ? [] : [{ key: n.key, label: k.label, expected: k.expected, accept: k.accept ?? [] }];
     });
-    yield { set: "w4", page: site, model, windowId: w.window.windowId, about: [], fields, parts: pageParts(w), instruction: "fill in this application from my notes" };
+    // page-loop-eval asks W4's pages "fill in this application from my notes"; heads reads it as the whole form from any
+    // source (P2), so the goal path's scope is the same whole-form one.
+    yield { set: "w4", page: site, model, windowId: w.window.windowId, about: [], fields, parts: pageParts(w), instruction: "fill in this application from my notes", mode: "page" };
   }
 }
 
@@ -260,54 +275,84 @@ function* askDesks(set: string, file: string): Generator<Desk> {
       const k = f === undefined ? null : keyOfCorpusField(d.form, f);
       return f === undefined || k === null ? [] : [{ key: k, label, expected, accept: f.accept ?? [] }];
     });
-    yield { set, page: `${x.id} (${x.form})`, model: d.model, windowId: d.form.window.windowId, about: d.about, fields, parts: [fields.map((f) => f.key)], instruction: x.instruction };
+    yield { set, page: `${x.id} (${x.form})`, model: d.model, windowId: d.form.window.windowId, about: d.about, fields, parts: [fields.map((f) => f.key)], instruction: x.instruction, mode: "ask", memory: d.memory };
   }
 }
 
-/** The quoted value a question's option offers ('"text" (facts)'), or null for an option that quotes none. */
-function optionText(desc: string | null | undefined): string | null {
-  if (typeof desc !== "string" || !desc.startsWith('"')) return null;
-  const end = desc.indexOf('" (', 1);
-  if (end > 0) return desc.slice(1, end);
-  return desc.endsWith('"') && desc.length > 1 ? desc.slice(1, -1) : null;
-}
-const isValueQuestion = (id: string, criteria: Record<string, unknown>): boolean => !id.endsWith("_whose") && !id.endsWith("_owner") && !("yes" in criteria && "no" in criteria);
-const result = (answers: JevResult["answers"]): JevResult => ({ model: "adversary", answers, inputTokens: 0, latencyMs: 0, costUsd: 0 });
+const result = (answers: JevResult["answers"], nouls?: Record<string, number>): JevResult => ({ model: "adversary", answers, ...(nouls === undefined ? {} : { nouls }), inputTokens: 0, latencyMs: 0, costUsd: 0 });
 
-/** The adversary: each value question of field `fid` takes the option quoting `want`; every other value question none. */
-function adversary(fid: string | null, want: string | null, seen?: JevRequest[]): AskJev {
-  return async (req) => {
-    seen?.push(req);
-    const answers: JevResult["answers"] = {};
-    for (const [id, q] of Object.entries(req.questions)) {
-      const criteria = q.criteria as Record<string, string>;
-      if (!isValueQuestion(id, criteria)) {
-        answers[id] = { choice: "user" in criteria ? "user" : "yes" in criteria ? "yes" : (Object.keys(criteria)[0] ?? "none"), confidence: 0.9 };
-        continue;
+/**
+ * The stand-in for Jev. Each value question (fill.ts f<i>) of a field in `picks` takes the option whose traced text
+ * (FillTrace) is the pick, when the question offers it; every other value question none. Whose and owner questions say
+ * the user's, which vetoes least; the goal gate's and other yes/no questions say no; Ask's heads take code's reading
+ * from any source for the user, as realfill-asks' canned oracle does, and its field yes/no heads say no.
+ */
+function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { traces: FillTrace[]; requests: JevRequest[] }): { ask: AskJev; trace: (t: FillTrace) => void } {
+  let current: FillTrace | null = null;
+  const heads: Record<string, string> = { reading: "code", scope: "unclear", why: "nothingToFill", source: "any", whose: "user", section: "none" };
+  return {
+    trace: (t) => {
+      current = t;
+      seen.traces.push(t);
+    },
+    ask: async (req) => {
+      seen.requests.push(req);
+      const answers: JevResult["answers"] = {};
+      for (const [id, q] of Object.entries(req.questions)) {
+        const keys = Object.keys(q.criteria);
+        const choose = (k: string): string => (keys.includes(k) ? k : keys.includes("none") ? "none" : (keys[0] ?? "none"));
+        if (id.endsWith("_whose") || id.endsWith("_owner")) answers[id] = { choice: choose("user"), confidence };
+        else if (id in heads) answers[id] = { choice: choose(heads[id] as string), confidence };
+        else if (keys.includes("yes") && keys.includes("no")) answers[id] = { choice: "no", confidence };
+        else if (/^f\d+$/u.test(id)) {
+          const t: FillTrace | null = current;
+          const key = t?.fields.find((f) => f.id === id)?.key;
+          const want = key === undefined ? undefined : picks.get(key);
+          const hit = want === undefined || t === null ? undefined : keys.find((k) => t.options.get(k)?.text === want);
+          answers[id] = { choice: hit ?? "none", confidence };
+        } else answers[id] = { choice: choose("none"), confidence };
       }
-      const hit = id === fid && want !== null ? Object.entries(criteria).find(([, d]) => optionText(d) === want)?.[0] : undefined;
-      answers[id] = { choice: hit ?? "none", confidence: 0.9 };
-    }
-    return result(answers);
+      return result(answers, req.nouls === undefined ? undefined : Object.fromEntries(Object.keys(req.nouls).map((k) => [k, 0.01])));
+    },
   };
 }
 
-/** Canned Jev: each value question of a field in `picks` takes the option quoting its key value; whose and owner the user's. */
-function cannedJev(picks: ReadonlyMap<string, string>): AskJev {
-  return async (req) => {
-    const answers: JevResult["answers"] = {};
-    for (const [id, q] of Object.entries(req.questions)) {
-      const criteria = q.criteria as Record<string, string>;
-      if (!isValueQuestion(id, criteria)) {
-        answers[id] = { choice: "user" in criteria ? "user" : "no" in criteria ? "no" : (Object.keys(criteria)[0] ?? "none"), confidence: 0.95 };
-        continue;
-      }
-      const want = picks.get(id);
-      const hit = want === undefined ? undefined : Object.entries(criteria).find(([, d]) => optionText(d) === want)?.[0];
-      answers[id] = { choice: hit ?? "none", confidence: 0.95 };
+/** What one run wrote (text a Fill all or a plan writes) and offered for the user to set, by field key, and why a field got nothing. */
+interface Run {
+  written: Map<string, string>;
+  shown: Map<string, string>;
+  withheld: Map<string, string | null>;
+}
+let fills = 0;
+
+/** One run on a desk's part: a Fill all, the goal path's whole-form Ask, or the ask's own instruction through planAsk. */
+async function run(d: Desk, part: string[], how: "fill" | "goal" | "ask", picks: ReadonlyMap<string, string>, seen: { traces: FillTrace[]; requests: JevRequest[] }): Promise<Run> {
+  const e = engine(picks, how === "ask" ? 0.99 : 0.9, seen);
+  const out: Run = { written: new Map(), shown: new Map(), withheld: new Map() };
+  fills++;
+  if (how === "ask") {
+    try {
+      const draft = await planAsk(d.instruction, d.model, { values: () => d.memory ?? [] }, d.about, { askJev: e.ask, maker: headsIntentMaker(e.ask), writer: null, offerKey: `adv-${fills}`, windowId: d.windowId, now: T0, rand: () => 0, fillTrace: e.trace });
+      for (const w of draft.checked.writes) out.written.set(w.node.key, w.value);
+      for (const c of draft.controls ?? []) out.shown.set(c.key, c.value);
+    } catch (err) {
+      if (!(err instanceof PlannerError)) throw err;
     }
-    return result(answers);
-  };
+    return out;
+  }
+  const scope: FillScope | undefined = how === "goal" ? { fields: part, windows: null, memory: true, instruction: d.instruction, person: null, literals: new Map(), wholeForm: true } : undefined;
+  try {
+    const p = await proposeFill(d.model, e.ask, d.windowId, part[0] as string, T0, { about: d.about, rand: () => 0, newId: () => `adv-${fills}`, trace: e.trace, ...(scope === undefined ? { only: part } : { scope }) });
+    for (const w of writtenFields(p).fields) out.written.set(w.key, w.value);
+    for (const f of p.fields) {
+      const v = f.value ?? f.handoff?.value ?? null;
+      if (v !== null && !out.written.has(f.key)) out.shown.set(f.key, v);
+      out.withheld.set(f.key, f.withheld);
+    }
+  } catch (err) {
+    if (!(err instanceof Error && "why" in err)) throw err;
+  }
+  return out;
 }
 
 interface Attempt {
@@ -320,12 +365,13 @@ interface Attempt {
   /** rightValue: the control wrote (or offered) a value the key takes, read from the pick. */
   outcome: "written" | "handedOff" | "rightValue" | "withheld";
   why: string | null;
+  how: "fill" | "goal" | "ask";
 }
 const attempts: Attempt[] = [];
 /**
- * The guards' cost, on the same desks: each field asked with the key's own value picked when it is offered (canned Jev's
- * answer), counted right when a Fill all writes it, refused when a guard withholds it. A refused key value is a guard
- * that would cost a canned eval a right value; it must be 0.
+ * The guards' cost, on the same desks: each field asked with the key's own value picked where it is offered (canned
+ * Jev's answer), counted right when it is written, refused when a guard withholds it. A refused key value is a guard
+ * that would cost a canned eval a right value.
  */
 interface CannedRow {
   set: string;
@@ -336,94 +382,78 @@ interface CannedRow {
   why: string | null;
 }
 const canned: CannedRow[] = [];
-let fills = 0;
+/** Asks the Ask path refused, asked back about, or planned no fill for, with nothing offered to attack. */
+const unattacked: string[] = [];
 
-async function propose(d: Desk, part: string[], scoped: boolean, ask: AskJev): Promise<FillProposal | null> {
-  const scope: FillScope | undefined = scoped ? { fields: part, windows: null, memory: true, instruction: d.instruction, person: null, literals: new Map(), wholeForm: true } : undefined;
-  fills++;
-  try {
-    return await proposeFill(d.model, ask, d.windowId, part[0] as string, T0, { about: d.about, rand: () => 0, newId: () => `adv-${fills}`, ...(scoped ? { scope } : { only: part }) });
-  } catch (e) {
-    if (e instanceof Error && "why" in e) return null;
-    throw e;
-  }
-}
-
-/** For a desk: each part asked once with every answer none, which shows what each field is offered; then each attack. */
+/** For a desk: each part asked once with every answer none, which shows what each field is offered; then canned; then each attack. */
 async function attack(d: Desk): Promise<void> {
   const byKey = new Map(d.fields.map((f) => [f.key, f]));
+  const hows: ("fill" | "goal" | "ask")[] = d.mode === "ask" ? ["ask"] : ["fill", "goal"];
   for (const part of d.parts.map((p) => p.filter((k) => d.model.windows.get(d.windowId)?.nodes.has(k) === true)).filter((p) => p.length > 0)) {
-    for (const scoped of [false, true]) {
-      const seen: JevRequest[] = [];
-      const probe = await propose(d, part, scoped, adversary(null, null, seen));
-      if (probe === null) continue;
-      // Question f<i> asks about the proposal's field i - 1 (fill.ts numbers its fields in the order it reads them).
-      const offered = new Map<string, Map<string, string>>();
-      for (const req of seen) {
+    for (const how of hows) {
+      const seen = { traces: [] as FillTrace[], requests: [] as JevRequest[] };
+      await run(d, part, how, new Map(), seen);
+      // What each field is offered: the traced option of every id its value questions list.
+      const offered = new Map<string, Map<string, { from: string; label: string | null; app: string | null }>>();
+      for (const req of seen.requests) {
         for (const [id, q] of Object.entries(req.questions)) {
-          const criteria = q.criteria as Record<string, string>;
-          if (!/^f\d+$/u.test(id) || !isValueQuestion(id, criteria)) continue;
-          const key = probe.fields[Number(id.slice(1)) - 1]?.key;
-          if (key === undefined) continue;
-          const m = offered.get(key) ?? new Map<string, string>();
-          for (const desc of Object.values(criteria)) {
-            const t = optionText(desc);
-            if (t !== null && !m.has(t)) m.set(t, desc);
+          if (!/^f\d+$/u.test(id)) continue;
+          const t = seen.traces.find((x) => x.fields.some((f) => f.id === id) && Object.keys(q.criteria).some((k) => x.options.has(k)));
+          const key = t?.fields.find((f) => f.id === id)?.key;
+          if (t === undefined || key === undefined) continue;
+          const m = offered.get(key) ?? new Map();
+          for (const k of Object.keys(q.criteria)) {
+            const o = t.options.get(k);
+            if (o !== undefined && !m.has(o.text)) m.set(o.text, o);
           }
           offered.set(key, m);
         }
       }
-      // Canned: every key value that is offered, at once, as canned Jev answers a fill.
-      const keyText = new Map<string, string>();
+      if (how === "ask" && offered.size === 0) unattacked.push(`${d.set}/${d.page}`);
+      // Canned: every key value that is offered, at once.
+      const keyPicks = new Map<string, string>();
       for (const [key, opts] of offered) {
         const kf = byKey.get(key);
         if (kf === undefined || NO_TEXT.has(kf.expected)) continue;
         const good = [kf.expected, ...kf.accept].map(norm);
         const t = [...opts.keys()].find((x) => good.includes(norm(x)));
-        if (t !== undefined) keyText.set(`f${probe.fields.findIndex((f) => f.key === key) + 1}`, t);
+        if (t !== undefined) keyPicks.set(key, t);
       }
-      const cp = await propose(d, part, scoped, cannedJev(keyText));
-      const cw = cp === null ? [] : writtenFields(cp).fields;
+      const cr = await run(d, part, how, keyPicks, { traces: [], requests: [] });
       for (const [key, opts] of offered) {
         const kf = byKey.get(key);
         if (kf === undefined || NO_TEXT.has(kf.expected)) continue;
         const good = [kf.expected, ...kf.accept].map(norm);
         const isOffered = [...opts.keys()].some((x) => good.includes(norm(x)));
-        const w = cw.find((x) => x.key === key);
-        const f = cp?.fields.find((x) => x.key === key);
-        const outcome: CannedRow["outcome"] = w !== undefined && good.includes(norm(w.value)) ? "right" : isOffered && (f?.withheld === "wrongKind" || f?.withheld === "ambiguous") ? "refused" : "notOffered";
+        const w = cr.written.get(key);
+        const why = cr.withheld.get(key) ?? null;
+        const outcome: CannedRow["outcome"] = w !== undefined && good.includes(norm(w)) ? "right" : isOffered && (why === "wrongKind" || why === "ambiguous" || how === "ask") ? "refused" : "notOffered";
         const prior = canned.find((x) => x.set === d.set && x.page === d.page && x.field === kf.label);
-        const row: CannedRow = { set: d.set, page: d.page, field: kf.label, expected: kf.expected, outcome, why: f?.withheld ?? null };
+        const row: CannedRow = { set: d.set, page: d.page, field: kf.label, expected: kf.expected, outcome, why };
         if (prior === undefined) canned.push(row);
         else if (outcome === "right" || (outcome === "refused" && prior.outcome === "notOffered")) Object.assign(prior, row);
       }
       for (const [key, opts] of offered) {
         const kf = byKey.get(key);
         if (kf === undefined) continue;
-        const fid = `f${probe.fields.findIndex((f) => f.key === key) + 1}`;
         const good = [kf.expected, ...kf.accept].map(norm);
-        const label = kf.label;
-        for (const [text, desc] of opts) {
+        const fieldWords = new Set(words(kf.label));
+        for (const [text, o] of opts) {
           let cls: "a" | "b" | null = null;
           if (!NO_TEXT.has(kf.expected) && !good.includes(norm(text)) && [kf.expected, ...kf.accept].some((v) => holdsWords(text, v))) cls = "a";
-          else if (kf.expected === "none") {
-            const lab = /labelled '([^']+)'/u.exec(desc)?.[1];
-            const fieldWords = new Set(words(label));
-            if (lab !== undefined && desc.includes("in TextEdit window") && words(lab).some((x) => fieldWords.has(x))) cls = "b";
-          }
+          else if (kf.expected === "none" && o.app === "TextEdit" && o.label !== null && words(o.label).some((x) => fieldWords.has(x))) cls = "b";
           if (cls === null) continue;
           // One attempt per field and value, whichever way it was asked first; a write either way counts.
-          const prior = attempts.find((x) => x.set === d.set && x.page === d.page && x.field === label && x.value === text && x.cls === cls);
+          const prior = attempts.find((x) => x.set === d.set && x.page === d.page && x.field === kf.label && x.value === text && x.cls === cls);
           if (prior?.outcome === "written") continue;
-          const p = await propose(d, part, scoped, adversary(fid, text));
-          const f = p?.fields.find((x) => x.key === key);
-          // A control writes what it reads from the pick (a month menu takes "May" from "May 2021"): only a written value the
-          // key does not take is a wrong one.
-          const w = p === null ? undefined : writtenFields(p).fields.find((x) => x.key === key);
-          const shown = f === undefined ? null : (f.value ?? f.handoff?.value ?? null);
+          const r = await run(d, part, how, new Map([[key, text]]), { traces: [], requests: [] });
+          const w = r.written.get(key);
+          const shown = r.shown.get(key);
+          // A control writes what it reads from the pick (a month menu takes "May" from "May 2021"): only a written value
+          // the key does not take is a wrong one.
           const outcome: Attempt["outcome"] =
-            w !== undefined ? (good.includes(norm(w.value)) ? "rightValue" : "written") : shown !== null ? (good.includes(norm(shown)) ? "rightValue" : "handedOff") : "withheld";
-          const row: Attempt = { set: d.set, page: d.page, field: label, cls, value: text, expected: kf.expected, outcome, why: f?.withheld ?? null };
+            w !== undefined ? (good.includes(norm(w)) ? "rightValue" : "written") : shown !== undefined ? (good.includes(norm(shown)) ? "rightValue" : "handedOff") : "withheld";
+          const row: Attempt = { set: d.set, page: d.page, field: kf.label, cls, value: text, expected: kf.expected, outcome, why: r.withheld.get(key) ?? null, how };
           if (prior === undefined) attempts.push(row);
           else if (outcome === "written" || (outcome === "handedOff" && prior.outcome === "withheld")) Object.assign(prior, row);
         }
@@ -457,7 +487,8 @@ const sets = Object.keys(desks);
 const md = [
   "# Guard adversary (W1)",
   "",
-  `Desks: ${sets.map((s) => `${s} ${desks[s]}`).join(", ")}. Fills asked: ${fills}. No Jev: an adversary answers every question at 0.9.`,
+  `Desks: ${sets.map((s) => `${s} ${desks[s]}`).join(", ")}. Runs: ${fills}. No Jev: an adversary answers every question at 0.9 (0.99 on the Ask path, as realfill-asks' canned oracle). Page sets: Fill all and the goal path's whole-form Ask; Ask sets: planAsk end to end.`,
+  `Asks with nothing to attack (refused, asked back, or no fill): ${unattacked.length}${unattacked.length > 0 ? ` (${unattacked.join(", ")})` : ""}.`,
   "",
   `**Class (a), values that strictly hold the key's value: written ${count("a", "written")}** (handed off ${count("a", "handedOff")}, read to the key's own value ${count("a", "rightValue")}, withheld ${count("a", "withheld")}).`,
   `Class (b), values from a note line labelled like a field whose key is none: written ${count("b", "written")} (handed off ${count("b", "handedOff")}, withheld ${count("b", "withheld")}).`,
@@ -485,6 +516,6 @@ const md = [
   ...(skipped.length > 0 ? skipped.map((s) => `- ${s}`) : ["None."]),
 ];
 writeFileSync(join(OUT, "guard-adversary.md"), `${md.join("\n")}\n`);
-writeFileSync(join(OUT, "guard-adversary.json"), `${JSON.stringify({ desks, fills, a: { written: count("a", "written"), handedOff: count("a", "handedOff"), withheld: count("a", "withheld") }, b: { written: count("b", "written"), handedOff: count("b", "handedOff"), withheld: count("b", "withheld") }, attempts, canned, skipped }, null, 1)}\n`);
+writeFileSync(join(OUT, "guard-adversary.json"), `${JSON.stringify({ desks, fills, a: { written: count("a", "written"), handedOff: count("a", "handedOff"), withheld: count("a", "withheld") }, b: { written: count("b", "written"), handedOff: count("b", "handedOff"), withheld: count("b", "withheld") }, attempts, canned, unattacked, skipped }, null, 1)}\n`);
 process.stderr.write(`guard adversary: (a) written ${count("a", "written")} of ${attempts.filter((x) => x.cls === "a").length}; (b) written ${count("b", "written")} of ${attempts.filter((x) => x.cls === "b").length}; canned right ${canned.filter((x) => x.outcome === "right").length}, refused ${canned.filter((x) => x.outcome === "refused").length}; ${join(OUT, "guard-adversary.md")}\n`);
 process.exitCode = count("a", "written") > 0 ? 1 : 0;

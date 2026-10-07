@@ -15,7 +15,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { AskOption, FillField, FillProposal, Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
-import { conversionOf, FillError, memoryRefOf, PAGE_WINDOW_KIND, proposeFill, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FillError, memoryRefOf, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
@@ -39,6 +39,8 @@ export interface AskOptions {
   windowId?: string;
   now?: number;
   rand?: (n: number) => number;
+  /** W1: passed to the fill step's proposal (FillOptions.trace), for evaluation harnesses only. */
+  fillTrace?: FillOptions["trace"];
   /** Fault-injection seam for the planner evaluation (PlanTaskOptions.beforeCheck). */
   beforeCheck?: () => Promise<void>;
   /**
@@ -511,7 +513,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   const sourceModel = o.fillModel === undefined ? model : await o.fillModel(w.window.windowId);
   let p: FillProposal;
   try {
-    p = await proposeFill(sourceModel, askJev, w.window.windowId, checked.trigger, now, { about, scope: checked.scope, newId: () => o.offerKey, ...(o.rand === undefined ? {} : { rand: o.rand }) });
+    p = await proposeFill(sourceModel, askJev, w.window.windowId, checked.trigger, now, { about, scope: checked.scope, newId: () => o.offerKey, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.fillTrace === undefined ? {} : { trace: o.fillTrace }) });
   } catch (e) {
     if (e instanceof FillError) return refused(new SaidError("nothingToDo", SAYS.nothingOnScreen, `the fill found nothing: ${e.message}`));
     return refused(e);

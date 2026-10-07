@@ -12,14 +12,14 @@ import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, type Candidate } from "./candidates.ts";
-import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, misfit, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
+import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { questionAnswer, severalValues } from "./line-values.ts";
+import { takesOneValue, writeMisfit } from "./writable.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -501,7 +501,19 @@ export function shuffledWithinWindows(cands: readonly Candidate[], rand?: (n: nu
   return windowOrder.flatMap((id) => shuffled(groups.get(id) ?? [], rand));
 }
 
+/**
+ * W1: what one proposal asks, for evaluation harnesses (scripts/guard-adversary.ts): the asked fields by question id, and
+ * every option id either ask uses (c/v for window candidates, m/n for memory, d/e for derived values) with the text it
+ * offers and where that text came from. An explicit record, so a harness never reads ids or texts out of question strings.
+ */
+export interface FillTrace {
+  fields: readonly { id: string; key: string; name: string }[];
+  options: ReadonlyMap<string, { text: string; from: "window" | "memory" | "derived"; label: string | null; app: string | null }>;
+}
+
 export interface FillOptions {
+  /** W1: called once per proposal, before its first ask, with what it asks (FillTrace). Harnesses only. */
+  trace?: (t: FillTrace) => void;
   cutoff?: number;
   rand?: (n: number) => number;
   /** Makes the proposal id; tests pass a counter. */
@@ -1100,6 +1112,27 @@ export async function proposeFill(
   const personalCand = (c: Candidate): boolean => [...candidateKinds(model, c)].some((k) => PERSONAL_KINDS.has(k)) || personName(c) !== null || isNameLike(c.text, c.context);
   const ownerCands = owners && personal.size > 0 ? candidates.filter(personalCand).slice(0, MAX_OWNERS) : [];
   const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
+  if (opts.trace !== undefined) {
+    const traced = new Map<string, { text: string; from: "window" | "memory" | "derived"; label: string | null; app: string | null }>();
+    for (const c of candidates) {
+      const o = { text: c.text, from: "window" as const, label: c.labelled === true ? c.context : null, app: c.source.appName };
+      traced.set(c.id, o);
+      traced.set(secondId.get(c.id) ?? "", o);
+    }
+    for (const a of aboutSent) {
+      const o = { text: a.value, from: "memory" as const, label: a.label, app: null };
+      traced.set(aboutIds.get(a.id) ?? "", o);
+      traced.set(aboutSecond.get(a.id) ?? "", o);
+    }
+    for (const d of allDerived) {
+      const base = d.base.from === "window" ? d.base.c : null;
+      const o = { text: d.text, from: "derived" as const, label: base?.labelled === true ? base.context : null, app: base?.source.appName ?? null };
+      traced.set(derivedIds.get(d.key) ?? "", o);
+      traced.set(derivedSecond.get(d.key) ?? "", o);
+    }
+    traced.delete("");
+    opts.trace({ fields: asked.map((f) => ({ id: f.id, key: f.node.key, name: f.name })), options: traced });
+  }
   // C2: a field offered a part of a memory entry is asked whose details it wants, as one offered the whole entry is
   // (theUsers), a date's month, day or year included, which no other rule makes personal.
   const whoseAsked = new Set([...personal, ...asked.filter((f) => (derived.get(f.id) ?? []).some((d) => d.base.from === "memory")).map((f) => f.id)]);
@@ -1343,26 +1376,22 @@ export async function proposeFill(
   const refYear = new Date(now).getUTCFullYear();
 
   /**
-   * W1: whether a text a field would take is more than the one value the field takes, checked after Jev's pick beside
-   * misfit and withheld as wrongKind, never written. Live Jev put a whole note line holding the right value into a field
-   * that takes one of its values at 0.77 to 0.9 (evidence/screen/lv1: "Brightline Dental Labs, lab technician, $5,200/mo
-   * gross" in Job title, "Junior Analyst at Ridgeline Outdoor Co" in Current company).
-   *   - A question and its answer on one line is a label and a value, for any field.
-   *   - A field that takes one value (a part of a name or an address, a kind its label names, or a name, a company, a
-   *     title or a role: NAME_TERM) takes no text holding several (line-values.ts severalValues).
-   *   - A preferred name takes no whole name: the guard adversary (scripts/guard-adversary.ts) wrote "Jo Abernathy-Cole"
-   *     into F1's Preferred name, whose key is "Jo".
-   *   - A City text field takes no "City, State": the adversary wrote "Austin, Texas" there (4 of its 51 wrong values at
-   *     8801642). A location dropdown is left alone: its options are "City, Region, Country" (F1's and W4's "Location
-   *     (City)"), and no City text field's key holds a comma.
-   * A field for prose (a reason, a message, a description) names none of these and is left alone.
+   * W1: the shared write check (writable.ts writeMisfit), with what labels the pick: its "Label: value" line, its memory
+   * entry's label, the part code derived it as, or, for a value the instruction spells out for this field, the field
+   * itself. A part of a labelled value (Candidate.partOf) goes only in a field that takes one value: in a prose field
+   * ("Delivery instructions") it is no complete answer ("ring twice" from "Reception Desk, ring twice").
    */
-  const moreThanOne = (f: Field, text: string): boolean => {
-    if (questionAnswer(text)) return true;
-    const takesOne = f.part !== null || f.kinds.size > 0 || f.terms.has(NAME_TERM);
-    if (takesOne && severalValues(text) !== null) return true;
-    if (f.control === "text" && f.part === "city" && text.includes(",")) return true;
-    return f.part === "full" && /\bpreferred\b/iu.test(f.name) && !/\b(?:full|legal)\b/iu.test(f.name) && splitName(text).kind === "split";
+  const writeRefused = (f: Field, p: Pick, text: string): boolean => {
+    const c = windowOf(p);
+    if (p.from === "window" && p.c.partOf !== undefined && !takesOneValue(f.labelWords)) return true;
+    const label =
+      p.from === "window" ? (p.c.labelled === true ? p.c.context : null)
+      : p.from === "memory" ? p.a.label
+      : p.from === "instruction" ? f.name
+      : p.base.from === "instruction" ? f.name
+      : f.part !== null && NAME_PARTS.has(f.part) ? `${f.part} name`
+      : c?.labelled === true ? c.context : null;
+    return writeMisfit(text, { labelWords: f.labelWords, part: f.part }, { label }) !== null;
   };
   /**
    * The value a control takes from a pick (the option it names, PAGE_CHECKED, or the input's own date or time format),
@@ -1444,7 +1473,7 @@ export async function proposeFill(
       case "combobox":
         // Read as a text field is, then as one option's name: the page engine types it as the list's filter and picks
         // only an option named exactly that (B27).
-        if (misfit(text, f.labelWords) !== null || (f.part !== null && !partFits(f.part, text)) || moreThanOne(f, text)) return { why: "wrongKind" };
+        if (writeRefused(f, p, text) || (f.part !== null && !partFits(f.part, text))) return { why: "wrongKind" };
         // C2 (lead decision 2): in a field that asks where, a place "City, Region" is asked for with its country, as location
         // lists name it; the page engine types that as the list's filter and picks only the one option named exactly
         // that, once the list has loaded for it. A place that already names its country, or a bare city, is asked for as
@@ -1453,7 +1482,7 @@ export async function proposeFill(
         if (placed !== null) return { value: placed, display: placed, writes: page };
         return optionName(text) ? { value: text, display: text, writes: page } : { why: "ambiguous" };
       case "text":
-        return misfit(text, f.labelWords) === null && (f.part === null || partFits(f.part, text)) && !moreThanOne(f, text) ? { value: text, display: text, writes: true } : { why: "wrongKind" };
+        return !writeRefused(f, p, text) && (f.part === null || partFits(f.part, text)) ? { value: text, display: text, writes: true } : { why: "wrongKind" };
     }
   };
   const sourceOf = (p: Pick): FillSource | null => windowOf(p)?.source ?? null;
@@ -1649,6 +1678,8 @@ function adjacentLines(model: ScreenModel, a: Candidate, b: Candidate): boolean 
   return i >= 0 && j >= 0 && Math.abs(i - j) === 1;
 }
 
+/** The parts of a person's name a field can ask for, which a derived value is labelled as (writeRefused). */
+const NAME_PARTS: ReadonlySet<string> = new Set(["first", "middle", "last"]);
 type FillMemoryPart = NonNullable<FillMemory["part"]>;
 /** The parts a value from memory may be (protocol FillMemory.part): a name's (B24), an address's or a date's (C2). */
 const MEMORY_PARTS: ReadonlySet<string> = new Set<FillMemoryPart>(["first", "middle", "last", "street", "unit", "city", "state", "zip", "month", "day", "year"]);

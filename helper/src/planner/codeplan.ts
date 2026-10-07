@@ -12,7 +12,8 @@ import { createHash } from "node:crypto";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { fieldPart, namePart, splitAddress, splitName } from "../fill/derive.ts";
-import { fieldKinds, isNameLike, misfit } from "../fill/kinds.ts";
+import { fieldKinds, isNameLike } from "../fill/kinds.ts";
+import { writeMisfit } from "../fill/writable.ts";
 import { OWNER_CRITERIA, WHOSE_CRITERIA, WHOSE_CUTOFF } from "../fill/fill.ts";
 import { SnippetLedger, WINDOW_CHARS } from "../privacy.ts";
 import type { AskJev } from "../fill/jev.ts";
@@ -229,7 +230,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
     if (seenTargets.has(field.node.key)) throw new PlannerError("schema", `the plan program fills ${field.name} twice`);
     seenTargets.add(field.node.key);
     // The kind check runs again in validatePlan; here it names the field, so a refusal says which.
-    const bad = misfit(value.text, [field.label]);
+    const bad = writeMisfit(value.text, { labelWords: [field.label] });
     if (bad !== null) throw new PlannerError("wrongKind", `${field.name}: ${bad}`);
     const slot = `v${i + 1}`;
     slots[slot] = value.text;

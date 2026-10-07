@@ -18,7 +18,8 @@
 // agreeing at FILL_CUTOFF with the owner veto, so lowering skips Jev's question for them and keeps the code checks
 // (see markFilled). Whether verifyWrites would have dropped any such pick is measured in P2's disagreement report.
 import type { AskJev } from "../fill/jev.ts";
-import { fieldKinds, misfit, NUMBER_FIELD } from "../fill/kinds.ts";
+import { fieldKinds, NUMBER_FIELD } from "../fill/kinds.ts";
+import { writeMisfit } from "../fill/writable.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { verifyWrites } from "../planner/codeplan.ts";
 import { secretIn } from "../planner/trace.ts";
@@ -131,7 +132,7 @@ export function codeGate(t: TargetBinding, written: string, source: string, as: 
     return t.control === "text" && prose ? null : "Caret writes drafts only in a field for a message or a description";
   }
   if (as === "event" || t.control !== "text") return null;
-  return misfit(written, [t.label]);
+  return writeMisfit(written, { labelWords: [t.label] });
 }
 
 export interface JevWrite {

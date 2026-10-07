@@ -139,10 +139,19 @@ export interface LineText {
    * remark goes with the remark ("Dima (legal name Dmitri Halvorsen)."), so Jev reads what the note said about it.
    */
   with?: string;
+  /**
+   * W1: the labelled value this span is a part of (valueParts). A part is offered beside its whole value, quoting it
+   * (`with`), and only a field that takes one value may take it (fill.ts): it is no complete answer for a prose field.
+   */
+  partOf?: string;
 }
 
-/** What may follow a value in its "Label: value" line and is a remark about it, not part of it: "Dima (legal name …)". */
-const REMARK = /^(.+?)\s+\(([^()]*)\)[.!]?(?:\s.*)?$/u;
+/**
+ * What may follow a value in its "Label: value" line and is a remark about it, not part of it: "Dima (legal name …)". A
+ * remark holds a letter: W1's guard adversary found "(720) 555-0146" read as a remark "720", which cut "mileage is 59,870
+ * and the best number for you is" from a mail's line and let it into Current mileage.
+ */
+const REMARK = /^(.+?)\s+\(([^()]*\p{L}[^()]*)\)[.!]?(?:\s.*)?$/u;
 /**
  * Words that make a remark a warning about the value before it ("Alex (do not use this old name; use Robin instead)"):
  * then the value is not offered apart from its line at all (C1 review). Written for common note wording, not measured.
@@ -155,58 +164,86 @@ export const WARNS = /\b(?:not|don'?t|doesn'?t|never|no longer|old|former|previo
 const CONTINUES = /^\p{Lu}[\p{L}'’-]*(?: \p{Lu}[\p{L}'’-]*)?$/u;
 
 /**
- * W1: a labelled note line that tells the user what to do is no value for any field, even under a label that matches
- * one: live Jev put "use the token-leak story, write it fresh." from "Incident question: use the token-leak story, write
- * it fresh." into the Ashby task page's incident question in all 5 passes (evidence/screen/lv1/r1-jev; key none). Such a
- * value starts with a verb telling the user to act, or with a to-do ("still need to ask someone."). Derived from the
- * corpora's own lines: of the 67 distinct "Label: value" lines in the realfill notes and mails, F1's task notes and mails
- * and W4's note, this rule takes 2 ("Incident question: use the …", "Reference #2: still need to ask someone.") and
- * drops no value an answer key holds (0 wrongly dropped). Verbs that are as often nouns at a value's start ("text",
- * "email", "call") and those a courier is told ("leave", "ring") are left out, and a label naming instructions for
- * someone else ("Delivery instructions: …") is no note to self.
+ * W1: a note line that tells the user what to do is no value: live Jev put "use the token-leak story, write it fresh."
+ * from "Incident question: use the token-leak story, write it fresh." into the Ashby task page's incident question in
+ * all 5 passes (evidence/screen/lv1/r1-jev; key none). Read here as a verb telling the user to act followed by what it
+ * acts on ("use the", "ask someone"), or a to-do ("still need to"), so a name that starts like a verb ("Send Labs",
+ * "Skip") is not one. Derived from the corpora's own lines (distinct lines and labelled values: 236 in the realfill notes
+ * and mails and F1's task notes and mails, 28 in W4's note): it takes 2 ("use the token-leak story, write it fresh.",
+ * "still need to ask someone.") and no value any answer key holds (0 wrongly dropped; test/w1-wrongs.test.ts counts the
+ * repository's, and W4's note and key gave 0 and 0 by the same count). Checked
+ * where a value is written (writable.ts), so no candidate is removed and a field that asks for instructions to someone
+ * else ("Delivery instructions") still takes one.
  */
-const INSTRUCTION = /^(?:use|write|ask|pick|choose|mention|say|tell|put|add|attach|upload|send|skip|remember|bring|copy|paste|describe|don'?t|do not|make sure|(?:still )?need to|to-?do)\b/iu;
-const FOR_SOMEONE_ELSE = /\b(?:instructions?|directions?|delivery|notes? for)\b/iu;
+const INSTRUCTION = /^(?:(?:use|write|ask|mention|bring|attach|send|pick|choose|tell|say)\s+(?:the|a|an|it|my|this|that|them|someone|something|one|him|her)\b|(?:still\s+)?need\s+to\b|(?:remember|don'?t\s+forget)\s+to\b|to-?do\b)/iu;
 
-/** Whether a "Label: value" line is an instruction to the user rather than a value (INSTRUCTION). */
-export function instructionLine(label: string, value: string): boolean {
-  return INSTRUCTION.test(value.trim()) && !FOR_SOMEONE_ELSE.test(label);
+/** Whether a value is an instruction to the user rather than a value (INSTRUCTION). */
+export function instructionText(value: string): boolean {
+  return INSTRUCTION.test(value.trim());
 }
 
-/** Words before "at" that make it an institution's name, not a role: "The University of Texas at Austin". */
-const INSTITUTION = /\b(?:university|college|institute|school|academy|hospital|clinic|museum|library|bank|center|centre)\b/iu;
-/** Words that open a phrase about someone rather than a role: "my manager at Ridgeline". */
-const OWNER_WORDS = /^(?:my|his|her|their|our|your|the|a|an)\b/iu;
+/**
+ * Words that end a role, for roleAt: a role at an organization names one ("Junior Analyst", "lab technician"). Written
+ * for common job titles. Of the corpora's lines (as INSTRUCTION counts them) it splits only "Junior Analyst at Ridgeline
+ * Outdoor Co" (from "Currently: …"), and no answer-key value (0 wrongly split; test/w1-wrongs.test.ts).
+ */
+const ROLE_WORDS = new Set(["analyst", "engineer", "manager", "technician", "designer", "developer", "director", "lead", "intern", "assistant", "specialist", "coordinator", "consultant", "scientist", "officer", "associate", "representative", "administrator", "nurse", "teacher", "editor", "writer", "accountant", "architect", "advisor", "programmer", "researcher", "supervisor", "clerk", "cashier", "owner", "founder", "president", "partner", "vp", "ceo", "cto", "cfo", "coo", "head", "chef", "attorney", "paralegal", "recruiter", "therapist", "pharmacist", "physician", "librarian", "producer", "strategist", "operator", "mechanic", "electrician", "planner", "buyer", "agent", "student", "fellow", "professor", "lecturer"]);
 const ORG_WORD = /^[\p{Lu}\p{N}][\p{L}\p{N}'’&.-]*$/u;
 
-/** An organization as a note writes it: capitalized words (or a number, "3M"), with joining words between, at most eight. */
+/**
+ * An organization as a note writes it: two to eight capitalized words (or numbers), joining words between, and a legal
+ * suffix after a comma ("Ridgeline Outdoor Co, Inc."). One word is not enough: "Editor at Large", "Software at Scale".
+ */
 function orgRun(t: string): boolean {
-  const ws = t.split(/\s+/u);
-  return ws.length <= 8 && ORG_WORD.test(ws[0] ?? "") && ORG_WORD.test(ws[ws.length - 1] ?? "") && ws.every((w) => ORG_WORD.test(w) || NAME_JOINERS.has(w));
+  const head = t.replace(/,\s*([^,]+)$/u, (m, suffix: string) => (ORG_SUFFIX.test(suffix.trim()) ? "" : m));
+  if (head.includes(",")) return false;
+  const ws = head.split(/\s+/u);
+  return ws.length >= 2 && ws.length <= 8 && ORG_WORD.test(ws[0] ?? "") && ORG_WORD.test(ws[ws.length - 1] ?? "") && ws.every((w) => ORG_WORD.test(w) || NAME_JOINERS.has(w));
 }
 
 /**
  * A role and the organization it is at, when that is the whole text: "Junior Analyst at Ridgeline Outdoor Co" gives
- * "Junior Analyst" and "Ridgeline Outdoor Co". The organization must be a run of capitalized words to the end; the side
- * before "at" is up to six words of letters naming no institution, so "The University of Texas at Austin" is one name.
+ * "Junior Analyst" and "Ridgeline Outdoor Co". The role is up to six words of letters with a word of ROLE_WORDS in it;
+ * the organization runs to the end (orgRun). "The University of Texas at Austin" and "Editor at Large" are one value.
  */
 export function roleAt(text: string): { role: string; org: string } | null {
   const m = /^(.+?)\s+at\s+(.+)$/u.exec(text.trim());
   if (m?.[1] === undefined || m[2] === undefined) return null;
   const role = m[1].trim();
-  const org = m[2].trim().replace(/[.,;]+$/u, "");
-  if (INSTITUTION.test(role) || role.split(/\s+/u).length > 6 || !/^\p{L}[\p{L}'’&./ -]*$/u.test(role)) return null;
+  const org = m[2].trim().replace(SENTENCE_STOP, "");
+  const words = role.toLowerCase().split(/\s+/u);
+  if (words.length > 6 || !/^\p{L}[\p{L}'’&./ -]*$/u.test(role) || !words.some((w) => ROLE_WORDS.has(w.replace(/[.,]$/u, "")))) return null;
   return orgRun(org) ? { role, org } : null;
 }
 
+/** A closing period, "!" or ";" ends the sentence, unless it ends an abbreviation ("Acme, Inc.", "Jr.", "J."). */
+const SENTENCE_STOP = /(?<!\b(?:Inc|Co|Corp|Ltd|Jr|Sr|St|Ave|Dr|\p{Lu}))[.!;]+$/u;
+
 /** Whether a part of a line reads as a role: a name's shape ("Junior Analyst"), or a few lowercase words ("lab technician"). */
 function roleLike(t: string): boolean {
-  return isNameLike(t, null) || (/^\p{Ll}[\p{Ll}'’ -]*$/u.test(t) && !OWNER_WORDS.test(t) && t.split(/\s+/u).length <= 4);
+  return isNameLike(t, null) || (/^\p{Ll}[\p{Ll}'’ -]*$/u.test(t) && !/^(?:my|his|her|their|our|your|the|a|an)\b/iu.test(t) && t.split(/\s+/u).length <= 4);
 }
 
-const AMOUNT = /[$€£¥]\s?\d[\d,]*(?:\.\d+)?/gu;
+/** An amount with its sign; a comma inside it is followed by three digits ("$5,200"), so "$5,200, lab technician" still splits. */
+const AMOUNT = /[$€£¥]\s?\d{1,3}(?:,\d{3})+(?:\.\d+)?|[$€£¥]\s?\d+(?:\.\d+)?/gu;
 /** What may follow a comma and still be part of a person's name: "Jr.", "MD", "PhD". */
 const NAME_SUFFIX = /^(?:jr|sr|ii|iii|iv|phd|md|esq|dds|cpa|rn)\.?$/iu;
+/**
+ * Words that make a name an organization's, after which a part that may continue a name continues it as a place or a
+ * campus ("Stanford University, Palo Alto"; "University of California, Berkeley"). Two people's names are not merged so:
+ * "Elena Varga, Marcus Cole" is two values.
+ */
+const ORG_NAME_WORDS = /\b(?:university|college|institute|school|academy|hospital|clinic|labs?|inc|co|corp|company|group|bank|center|centre|museum|library|foundation|studio|systems|technologies|robotics|partners|associates)\b\.?/iu;
+/** A street line ("455 Congress Ave", "12B Elm St") or a post office box ("PO Box 12"), at the head of an address. */
+const ADDRESS_HEAD = /^(?:\d+[A-Za-z]?\s+\p{L}|P\.?\s?O\.?\s+Box\s+\d)/iu;
+const UNIT_PART = /^(?:suite|ste|apt|apartment|unit|floor|fl|room|rm|building|bldg|#)\s*#?[\w-]+$/iu;
+/** What follows the head of an address: a unit, a place in capitals (with a ZIP), a state code with a ZIP, a ZIP, a Canadian postal code. */
+const ADDRESS_TAIL = /^(?:\p{Lu}[\p{L}'’.-]*(?:\s+\p{Lu}[\p{L}'’.-]*)*(?:\s+\d{5}(?:-\d{4})?)?|\p{Lu}{2}\s+\d{5}(?:-\d{4})?|\d{5}(?:-\d{4})?|[A-Z]\d[A-Z] ?\d[A-Z]\d)$/u;
+/** Whether a text is one whole address: a street line or a box, then only units and place parts ("12 Main St, lab technician" is not). */
+function wholeAddress(v: string): boolean {
+  const parts = v.split(/\s*,\s*/u);
+  return parts.length >= 2 && ADDRESS_HEAD.test(parts[0] as string) && parts.slice(1).every((p) => UNIT_PART.test(p) || ADDRESS_TAIL.test(p));
+}
 
 /**
  * W1: the values a text holds side by side, when it holds more than one; null when it reads as one value. Live Jev put
@@ -214,18 +251,16 @@ const NAME_SUFFIX = /^(?:jr|sr|ii|iii|iv|phd|md|esq|dds|cpa|rn)\.?$/iu;
  * Analyst at Ridgeline Outdoor Co" (a role and an employer) into Current company (evidence/screen/lv1). A text holds
  * several values when it is a role at an organization (roleAt), or its comma or semicolon parts are values of different
  * shapes (a name, a typed value or amount, other words) or are all names or typed values ("Gary Pruitt, (512) 555-0193,
- * gpruitt@example.net"). Typed values keep their own commas ("Jan 4, 2027"); a whole address, date, time or place, a name
- * written last name first, a legal or name suffix ("Acme, Inc.", "Okafor, MD") and a part that may continue a name
- * ("University of California, Berkeley") read as one. A list of like words ("English, Spanish", "side door, ring twice")
- * is one answer. A remark in brackets at the end is about the value, and is not counted. Shape alone cannot tell two
- * names ("Elena Varga, Marcus Cole") from a name and the place it continues into ("Stanford University, Palo Alto"):
- * both read as one value here, and a name field's own part check (derive.ts partFits) refuses the first.
+ * gpruitt@example.net"; "Elena Varga, Marcus Cole"). Typed values keep their own commas ("Jan 4, 2027"); a whole address,
+ * date, time or place, a name written last name first, a legal or name suffix ("Acme, Inc.", "Okafor, MD") and a place
+ * after an organization's name ("University of California, Berkeley") read as one. A list of like words ("English,
+ * Spanish", "side door, ring twice") is one answer. A remark in brackets at the end is about the value, not counted.
  */
 export function severalValues(text: string): readonly string[] | null {
   // The generator reads every line within GENERATOR_BUDGET_MS, also on its first call in a fresh process, and a desk
   // that runs out withholds every name: this reading first made a cold job-application desk 11.9 to 14.5 ms of 15, and
   // a live Ask then withheld every name on it (evidence/screen/w1/live-held09). Most lines hold no comma, semicolon or
-  // "at", and the readers below compile their patterns at load (WARM), not inside a fill.
+  // "at", and the readers below compile their patterns when this module loads (WARM), not inside a fill.
   if (!SPLITS.test(text)) return null;
   const hit = severalMemo.get(text);
   if (hit !== undefined) return hit;
@@ -238,13 +273,15 @@ const SPLITS = /[,;]|\sat\s/u;
 const severalMemo = new Map<string, readonly string[] | null>();
 
 function readSeveral(text: string): string[] | null {
-  let v = text.trim().replace(/[.!]+$/u, "");
+  let v = text.trim().replace(SENTENCE_STOP, "");
   const remark = /^(.+?)\s*\([^()]*\)$/u.exec(v);
   if (remark?.[1] !== undefined) v = remark[1].trim();
   if (v === "") return null;
   const at = /\sat\s/u.test(v) ? roleAt(v) : null;
   if (at !== null) return [at.role, at.org];
-  if (textKind(v) !== "text" || dateShaped(v) || timeShaped(v) || splitPlace(v) !== null) return null;
+  if (wholeAddress(v) || dateShaped(v) || timeShaped(v) || splitPlace(v) !== null) return null;
+  const kind = textKind(v);
+  if (kind !== "text" && kind !== "address" && kind !== "street") return null;
   // Typed values and amounts masked, length for length, so their commas split nothing.
   let masked = v;
   const mask = (at0: number, len: number): void => {
@@ -268,7 +305,7 @@ function readSeveral(text: string): string[] | null {
     const prev = kept[kept.length - 1];
     // Read without a remark in brackets: "University of California, Berkeley (UC Berkeley)" still continues the name.
     const bare = p.replace(/\s*\([^()]*\)/gu, "").trim();
-    if (prev !== undefined && (ORG_SUFFIX.test(bare) || NAME_SUFFIX.test(bare) || (isNameLike(prev, null) && CONTINUES.test(bare)))) kept[kept.length - 1] = `${prev}, ${p}`;
+    if (prev !== undefined && (ORG_SUFFIX.test(bare) || NAME_SUFFIX.test(bare) || (ORG_NAME_WORDS.test(prev) && CONTINUES.test(bare)))) kept[kept.length - 1] = `${prev}, ${p}`;
     else kept.push(p);
   }
   // A name written last name first ("Okafor, Riley Ade") is one value: a one-word surname, a comma, then the rest.
@@ -279,9 +316,9 @@ function readSeveral(text: string): string[] | null {
 }
 
 /**
- * Lines that take each path of readSeveral once, read when this module loads, so the patterns they use (kinds.ts
- * textKind and dateShaped, derive.ts splitPlace and splitName, roleAt, lineValues) are compiled before the first fill
- * (severalValues). Their results are not kept.
+ * Lines that take each path of readSeveral once, read when this module loads so the patterns they use (kinds.ts
+ * textKind and dateShaped, derive.ts splitPlace and splitName, roleAt, lineValues) are compiled before the first fill.
+ * readSeveral itself keeps nothing; lineValues keeps these few lines in its memo.
  */
 const WARM = ["Junior Analyst at Ridgeline Outdoor Co", "4410 Speedway Apt 2, Austin, Texas 78751", "Jan 4, 2027, 3:00 PM", "Austin, Texas", "Okafor, Riley Ade", "Gary Pruitt, (512) 555-0193, $5,200, gpruitt@example.net"];
 for (const line of WARM) readSeveral(line);
@@ -292,14 +329,16 @@ export function questionAnswer(text: string): boolean {
 }
 
 /**
- * W1: the parts of a labelled value that holds several values (severalValues) a field could take on its own: a role or
- * an organization ("lab technician", "Ridgeline Outdoor Co"), each a span of the line. A part holding a typed value or
- * an amount is not one: that value is offered as the window's typed value.
+ * W1: the parts of a labelled value that holds several values (severalValues) a field that takes one value could take:
+ * a role or an organization ("lab technician", "Ridgeline Outdoor Co"), each a span of the line. A part holding a typed
+ * value or an amount is not one: that value is offered as the window's typed value.
  */
 function valueParts(value: string): string[] {
   return (severalValues(value) ?? []).filter((p) => !typedPart(p) && p.split(/\s+/u).length <= 6 && (isNameLike(p, null) || roleLike(p)));
 }
 const typedPart = (p: string): boolean => lineValues(p).length > 0 || new RegExp(AMOUNT.source, "u").test(p) || /\d/u.test(p);
+/** Labels that name an organization, though "name" is in them: "Company name", "Employer". */
+const ORG_LABEL = /\b(?:company|employer|business|organi[sz]ation|school|university|college|firm)\b/iu;
 
 /** Labels that say their value is a person: "Emergency contact", "Reference", "Landlord". Written for common note labels, not measured. */
 const PERSON_LABEL = /\b(?:name|contact|reference|referee|landlord|manager|spouse|partner|husband|wife|parent|guardian|recruiter|advisor|supervisor)\b/iu;
@@ -315,7 +354,7 @@ const PERSON_LABEL = /\b(?:name|contact|reference|referee|landlord|manager|spous
  *   - W1: in a "Label: value" line whose value holds several values (severalValues) and no warning, under a label that
  *     says no person, each part that is a role or a name ("work: Brightline Dental Labs, lab technician, $5,200/mo gross"
  *     gives "lab technician"; "Currently: Junior Analyst at Ridgeline Outdoor Co (since 2024)" gives "Junior Analyst" and
- *     "Ridgeline Outdoor Co"), under the line's label. The whole value is then not offered (candidates.ts spanOfLine);
+ *     "Ridgeline Outdoor Co"), under the line's label, beside the whole value (candidates.ts spanOfLine) and quoting it;
  *   - anywhere, a US place written "City, State" ("Moving to San Diego, California in November"), with no label.
  * A one-word part ("Languages: English, Spanish") is no name, and a list of like words holds one value, so such a list is
  * never broken into items.
@@ -323,20 +362,19 @@ const PERSON_LABEL = /\b(?:name|contact|reference|referee|landlord|manager|spous
 export function lineTexts(line: string): LineText[] {
   if (secretLine(line)) return [];
   const out: LineText[] = [];
-  const add = (text: string, label: string | null, quote?: string): void => {
+  const add = (text: string, label: string | null, quote?: string, partOf?: string): void => {
     const t = text.trim().replace(/[.,;:!?]+$/u, "");
     if (t.length < 2 || !line.includes(t) || out.some((o) => o.text === t)) return;
-    out.push({ text: t, label, ...(quote === undefined ? {} : { with: quote }) });
+    out.push({ text: t, label, ...(quote === undefined ? {} : { with: quote }), ...(partOf === undefined ? {} : { partOf }) });
   };
   const m = LABELLED.exec(line);
   const label = m?.[1]?.trim() ?? null;
   const value = m?.[2]?.trim() ?? null;
-  if (label !== null && value !== null && instructionLine(label, value)) return [];
   // A labelled value its line warns about ("Legal name: Alex Smith (do not use this old name ...)") gives no piece of
   // itself: only the whole value, whose words Jev reads (C1 review).
   if (label !== null && value !== null && !WARNS.test(value)) {
     const r = REMARK.exec(value);
-    if (r?.[1] !== undefined && !r[1].includes("(") && severalValues(r[1]) === null) add(r[1], label, value);
+    if (r?.[1] !== undefined && !r[1].includes("(")) add(r[1], label, value);
     const parts = value.split(/\s*[,;]\s*/u);
     const first = (parts[0] ?? "").replace(/\s*\(.*$/u, "").replace(/[.!?]+$/u, "").trim();
     const next = (parts[1] ?? "").replace(/\s*\(.*$/u, "").replace(/[.!?]+$/u, "").trim();
@@ -348,7 +386,8 @@ export function lineTexts(line: string): LineText[] {
       }
     }
     // Under a label that says a person, only the name above: a later part is another fact about them (their employer).
-    if (!PERSON_LABEL.test(label)) for (const p of valueParts(value)) add(p, label);
+    // A label that names an organization is no person's, though it says "name" ("Company name").
+    if (!PERSON_LABEL.test(label) || ORG_LABEL.test(label)) for (const p of valueParts(value)) add(p, label, value, value);
   }
   for (const p of line.matchAll(PLACE)) {
     const city = (p[1] ?? "").split(" ");

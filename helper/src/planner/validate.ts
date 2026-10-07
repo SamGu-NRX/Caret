@@ -15,7 +15,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanErrorCode } from "../protocol.ts";
 import { secretIn, traceValue, type MemoryValue, type Trace } from "./trace.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { misfit } from "../fill/kinds.ts";
+import { partIn, writeMisfit } from "../fill/writable.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
@@ -113,8 +113,9 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
       if (secretValue !== null) throw new PlannerError("notEditable", `${at}: its value is one of the ${SENSITIVE_SAYS[secretValue]} Caret never types; that is left to you`);
       const trace = traceValue(end.value, ctx.model, ctx.memory, ctx.instruction);
       if (trace === null) throw new PlannerError("untracedValue", `${at}: '${clip(end.value)}' is not in any window, in memory or in your instruction`);
-      // The field's own label, nearest label or placeholder, as the planner names it (planner.ts Field.label).
-      const bad = misfit(end.value, [d.label ?? d.nearest ?? d.placeholder]);
+      // The field's own label, nearest label or placeholder, as the planner names it (planner.ts Field.label), by the
+      // write check every path shares (fill/writable.ts, W1). A plan names no source label, so a value's shape decides.
+      const bad = writeMisfit(end.value, { labelWords: [d.label ?? d.nearest ?? d.placeholder], part: partIn(w, node) });
       if (bad !== null) throw new PlannerError("wrongKind", `${at}: ${bad}`);
       writes.push({ step: i, node, value: end.value, trace });
       continue;
