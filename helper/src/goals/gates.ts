@@ -19,7 +19,6 @@
 // (see markFilled). Whether verifyWrites would have dropped any such pick is measured in P2's disagreement report.
 import type { AskJev } from "../fill/jev.ts";
 import { fieldKinds, NUMBER_FIELD } from "../fill/kinds.ts";
-import { writeMisfit } from "../fill/writable.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { verifyWrites } from "../planner/codeplan.ts";
 import { secretIn } from "../planner/trace.ts";
@@ -131,8 +130,9 @@ export function codeGate(t: TargetBinding, written: string, source: string, as: 
     const prose = t.role === "AXTextArea" ? ![...kinds].some((k) => k !== "id") : PROSE_FIELD.test(t.own) && kinds.size === 0 && !NUMBER_FIELD.test(t.own.toLowerCase()) && !/\bname\b/iu.test(t.own);
     return t.control === "text" && prose ? null : "Caret writes drafts only in a field for a message or a description";
   }
-  if (as === "event" || t.control !== "text") return null;
-  return writeMisfit(written, { labelWords: [t.label] });
+  // W2: a copied value's kind and shape are the write contract's (fill/contract.ts checkValues, from lower.ts), with the
+  // field and provenance it carries; options, dates and events are minted under their named exemptions there.
+  return null;
 }
 
 export interface JevWrite {

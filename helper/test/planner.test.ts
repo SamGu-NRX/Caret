@@ -14,7 +14,8 @@ import type { Plan, Step } from "../src/executor/schema.ts";
 import { instructionValues } from "../src/planner/spans.ts";
 import { occursBounded, traceValue, type MemoryValue } from "../src/planner/trace.ts";
 import { addressParts, misfit, textKind, type TextKind } from "../src/fill/kinds.ts";
-import { handoffWhy, PlannerError, validatePlan } from "../src/planner/validate.ts";
+import { handoffWhy, PlannerError } from "../src/planner/validate.ts";
+import { validateMinted } from "./mint.ts";
 import { asksToFillForm, byRelevance, namesShortLabel, planTask, requestedWindow, type PlanTaskOptions } from "../src/planner/planner.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
@@ -49,9 +50,9 @@ const write = (key: string, value: string): Step => ({ says: `${key} holds ${val
 const plan = (steps: Step[]): Plan => ({ id: "p", title: "p", slots: {}, steps });
 const noMemory: MemoryValue[] = [];
 
-function code(f: () => unknown): PlanErrorCode | "passed" {
+async function code(f: () => unknown): Promise<PlanErrorCode | "passed"> {
   try {
-    f();
+    await f();
     return "passed";
   } catch (e) {
     if (e instanceof PlannerError) return e.code;
@@ -115,47 +116,47 @@ describe("value tracing", () => {
 describe("the plan check", () => {
   const ctx = (instruction = "", memory = noMemory, model = desk()) => ({ model, memory, instruction });
 
-  it("passes a plan of traced writes and a hand-off, and reports each write's source", () => {
+  it("passes a plan of traced writes and a hand-off, and reports each write's source", async () => {
     const p = plan([
       write(K("textfield:name~0"), "Dana Whitfield"),
       write(K("group:billing/textfield:city~0"), "Lisbon"),
       { says: "You press Send", end: { kind: "handoff", window: W, target: { key: K("button:send~0"), describe: "Send" }, why: "outbound" } },
     ]);
-    const c = validatePlan(p, {}, ctx("Set the billing city to Lisbon"));
+    const c = await validateMinted(p, {}, ctx("Set the billing city to Lisbon"));
     expect(c.writes.map((w) => w.trace.from)).toEqual(["window", "instruction"]);
     expect(c.handoff).toMatchObject({ step: 2, label: "Send", why: "outbound" });
     expect(c.window.window.windowId).toBe(WIN);
   });
 
-  it("refuses each broken rule with its own code", () => {
+  it("refuses each broken rule with its own code", async () => {
     const ok = write(K("textfield:name~0"), "Dana Whitfield");
     const handoff = (key: string, why: "outbound" | "unverifiable" | "money"): Step => ({ says: "press", end: { kind: "handoff", window: W, target: { key, describe: key }, why } });
-    expect(code(() => validatePlan({ id: "p" }, {}, ctx()))).toBe("schema");
-    expect(code(() => validatePlan({ ...plan([write(K("textfield:name~0"), "{{n}}")]), slots: { n: "name" } }, {}, ctx()))).toBe("schema");
-    expect(code(() => validatePlan(plan([{ says: "event", end: { kind: "calendarEvent", calendar: "c", title: "Dana Whitfield", start: "2026-10-08T15:00:00-05:00", end: "2026-10-08T15:30:00-05:00" } }]), {}, ctx()))).toBe("unsupportedStep");
-    expect(code(() => validatePlan(plan([{ ...ok, via: { kind: "press", target: { label: "Send", describe: "Send" } } }]), {}, ctx()))).toBe("unsupportedStep");
-    expect(code(() => validatePlan(plan([{ says: "front", end: { kind: "windowFocused", window: W } }]), {}, ctx()))).toBe("unsupportedStep");
-    expect(code(() => validatePlan(plan([ok, { ...ok, end: { ...ok.end, window: { title: REF_TITLE } } as Step["end"] }]), {}, ctx()))).toBe("multipleWindows");
-    expect(code(() => validatePlan(plan([{ ...ok, end: { ...ok.end, window: { title: "Nowhere" } } as Step["end"] }]), {}, ctx()))).toBe("unknownWindow");
+    expect(await code(() => validateMinted({ id: "p" }, {}, ctx()))).toBe("schema");
+    expect(await code(() => validateMinted({ ...plan([write(K("textfield:name~0"), "{{n}}")]), slots: { n: "name" } }, {}, ctx()))).toBe("schema");
+    expect(await code(() => validateMinted(plan([{ says: "event", end: { kind: "calendarEvent", calendar: "c", title: "Dana Whitfield", start: "2026-10-08T15:00:00-05:00", end: "2026-10-08T15:30:00-05:00" } }]), {}, ctx()))).toBe("unsupportedStep");
+    expect(await code(() => validateMinted(plan([{ ...ok, via: { kind: "press", target: { label: "Send", describe: "Send" } } }]), {}, ctx()))).toBe("unsupportedStep");
+    expect(await code(() => validateMinted(plan([{ says: "front", end: { kind: "windowFocused", window: W } }]), {}, ctx()))).toBe("unsupportedStep");
+    expect(await code(() => validateMinted(plan([ok, { ...ok, end: { ...ok.end, window: { title: REF_TITLE } } as Step["end"] }]), {}, ctx()))).toBe("multipleWindows");
+    expect(await code(() => validateMinted(plan([{ ...ok, end: { ...ok.end, window: { title: "Nowhere" } } as Step["end"] }]), {}, ctx()))).toBe("unknownWindow");
     const twice = desk();
     twice.apply(snap(executorWindow(), { at: 1000, windowId: "5150-8", title: TITLE }));
-    expect(code(() => validatePlan(plan([ok]), {}, ctx("", noMemory, twice)))).toBe("ambiguousWindow");
-    expect(code(() => validatePlan(plan([write(K("textfield:fax~0"), "Dana Whitfield")]), {}, ctx()))).toBe("unknownTarget");
+    expect(await code(() => validateMinted(plan([ok]), {}, ctx("", noMemory, twice)))).toBe("ambiguousWindow");
+    expect(await code(() => validateMinted(plan([write(K("textfield:fax~0"), "Dana Whitfield")]), {}, ctx()))).toBe("unknownTarget");
     const byLabel: Step = { says: "city", end: { kind: "valueEquals", window: W, target: { role: "AXTextField", label: "City", describe: "a city" }, value: "Lisbon" } };
-    expect(code(() => validatePlan(plan([byLabel]), {}, ctx("to Lisbon")))).toBe("ambiguousTarget");
-    expect(code(() => validatePlan(plan([write(K("button:archive~0"), "Dana Whitfield")]), {}, ctx()))).toBe("notEditable");
+    expect(await code(() => validateMinted(plan([byLabel]), {}, ctx("to Lisbon")))).toBe("ambiguousTarget");
+    expect(await code(() => validateMinted(plan([write(K("button:archive~0"), "Dana Whitfield")]), {}, ctx()))).toBe("notEditable");
     const secure = desk([...executorWindow(), { key: K("textfield:pin~0"), parent: null, role: "AXTextField", editable: true, states: ["secure"] }]);
-    expect(code(() => validatePlan(plan([write(K("textfield:pin~0"), "Dana Whitfield")]), {}, ctx("", noMemory, secure)))).toBe("notEditable");
-    expect(code(() => validatePlan(plan([write(K("textfield:name~0"), "Dana W.")]), {}, ctx()))).toBe("untracedValue");
-    expect(code(() => validatePlan(plan([write(K("textfield:name~0"), "")]), {}, ctx()))).toBe("untracedValue");
+    expect(await code(() => validateMinted(plan([write(K("textfield:pin~0"), "Dana Whitfield")]), {}, ctx("", noMemory, secure)))).toBe("notEditable");
+    expect(await code(() => validateMinted(plan([write(K("textfield:name~0"), "Dana W.")]), {}, ctx()))).toBe("untracedValue");
+    expect(await code(() => validateMinted(plan([write(K("textfield:name~0"), "")]), {}, ctx()))).toBe("untracedValue");
     // A value whose kind does not fit its field (B18): an email in Name, a whole address in City; a city in City passes.
-    expect(code(() => validatePlan(plan([write(K("textfield:name~0"), "dana.whitfield@lumenlabs.example")]), {}, ctx()))).toBe("wrongKind");
-    expect(code(() => validatePlan(plan([write(K("group:billing/textfield:city~0"), "455 Congress Ave, Austin, TX 78701")]), {}, ctx("ship to 455 Congress Ave, Austin, TX 78701")))).toBe("wrongKind");
-    expect(code(() => validatePlan(plan([write(K("group:billing/textfield:city~0"), "Austin")]), {}, ctx("ship to 455 Congress Ave, Austin, TX 78701")))).toBe("passed");
-    expect(code(() => validatePlan(plan([handoff(K("button:archive~0"), "unverifiable"), ok]), {}, ctx()))).toBe("stepAfterHandoff");
-    expect(code(() => validatePlan(plan([handoff(K("button:send~0"), "unverifiable")]), {}, ctx()))).toBe("riskMismatch");
-    expect(code(() => validatePlan(plan([handoff(K("button:archive~0"), "money")]), {}, ctx()))).toBe("riskMismatch");
-    expect(code(() => validatePlan(plan([handoff(K("button:~0"), "unverifiable")]), {}, ctx()))).toBe("passed");
+    expect(await code(() => validateMinted(plan([write(K("textfield:name~0"), "dana.whitfield@lumenlabs.example")]), {}, ctx()))).toBe("wrongKind");
+    expect(await code(() => validateMinted(plan([write(K("group:billing/textfield:city~0"), "455 Congress Ave, Austin, TX 78701")]), {}, ctx("ship to 455 Congress Ave, Austin, TX 78701")))).toBe("wrongKind");
+    expect(await code(() => validateMinted(plan([write(K("group:billing/textfield:city~0"), "Austin")]), {}, ctx("ship to 455 Congress Ave, Austin, TX 78701")))).toBe("passed");
+    expect(await code(() => validateMinted(plan([handoff(K("button:archive~0"), "unverifiable"), ok]), {}, ctx()))).toBe("stepAfterHandoff");
+    expect(await code(() => validateMinted(plan([handoff(K("button:send~0"), "unverifiable")]), {}, ctx()))).toBe("riskMismatch");
+    expect(await code(() => validateMinted(plan([handoff(K("button:archive~0"), "money")]), {}, ctx()))).toBe("riskMismatch");
+    expect(await code(() => validateMinted(plan([handoff(K("button:~0"), "unverifiable")]), {}, ctx()))).toBe("passed");
   });
 
   it("reads hand-off reasons from the risk table", () => {
@@ -349,7 +350,8 @@ describe("planTask", () => {
   });
 
   it("hands a Send press back as outbound and a safe press as unverifiable, after the writes", async () => {
-    const d = await planTask("Write 'See you at 3' in Name and send it", desk(), mem(), opts(plannerJev({ fields: { Name: "See you at 3" }, press: "Send" })));
+    // W2: a value that is no name is refused in Name (fill/contract.ts shapeRefusal, derive.ts partFits), as fill refuses it.
+    const d = await planTask("Write 'Dana Reyes' in Name and send it", desk(), mem(), opts(plannerJev({ fields: { Name: "Dana Reyes" }, press: "Send" })));
     expect(d.plan.steps.at(-1)?.end).toEqual({ kind: "handoff", window: W, target: { key: K("button:send~0"), describe: "the Send button" }, why: "outbound" });
     expect(d.checked.handoff?.why).toBe("outbound");
     const a = await planTask("Archive the order", desk(), mem(), opts(plannerJev({ press: "Archive" })));

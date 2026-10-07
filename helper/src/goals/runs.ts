@@ -34,7 +34,8 @@ import { fieldName } from "../planner/planner.ts";
 import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
 import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
-import { effectKey, segmentOf, type DonePress } from "./lower.ts";
+import { effectKey, proposedFor, segmentOf, type DonePress } from "./lower.ts";
+import { mintExempt, requireChecked } from "../fill/contract.ts";
 import { codeGate } from "./gates.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
@@ -284,6 +285,9 @@ export class GoalRuns {
     // A "fill" step (P2) skipped Jev because fill agreed on its very value for its very target: only lowering marks one.
     const unchecked = given.segments.flatMap((s) => s.steps).find((s) => (s.kind === "write" || s.kind === "calendar") && (s.gate === null || (s.gate === "derived" && !isDerived(s)) || (s.gate === "fill" && !isFilled(s))));
     if (unchecked !== undefined) throw new Error(`goal ${given.goalId}: step ${unchecked.ref} writes '${unchecked.target.label}' without passing the value gates`);
+    // W2: every write carries the write contract's mint for exactly what it writes, in exactly its target
+    // (fill/contract.ts); checked here, on the very objects lowering built, before the run keeps its own copy.
+    for (const s of all) if (s.kind === "write" && s.row !== true) requireChecked(s.checked, s.writes ?? "", s.target.key, `goal ${given.goalId}: step ${s.ref}`);
     // P3: an attach step is a page plan's, into a page's file control, with the file its row offers, after every other
     // step of its segment (runs drop the ones the acceptance gives no file, which must hold up nothing after them).
     for (const seg of given.segments) {
@@ -429,7 +433,9 @@ export class GoalRuns {
     const gated = codeGate(s.target, text, text, "draft", run.plan.instruction);
     if (gated !== null) return { refused: gated };
     const value: ValueBinding = { ...s.value, text, display: text, origin: { kind: "you", digest: sha256(text) }, source: null, memory: null, event: null, draft: null, owner: "user" };
-    const step: GoalStep = { ...s, value, writes: text, says: `${s.target.label}: ${text}`, gate: "you" };
+    // W2: the user's own words over a draft, under the draft's exemption: its field rule passed (codeGate above).
+    const checked = mintExempt(proposedFor(s.target, value, text), "draft", this.deps.now(), run.plan.instruction);
+    const step: GoalStep = { ...s, value, writes: text, says: `${s.target.label}: ${text}`, gate: "you", checked };
     const edited = segmentOf(run.plan.programHash, { index: seg.index, domain: seg.domain, reason: seg.reason, steps: seg.steps.map((x, k) => (k === i ? step : x)) }, run.plan.warnings);
     deepFreeze(edited);
     run.plan.segments[at] = edited;
@@ -1059,7 +1065,10 @@ export class GoalRuns {
     const fromTab = (v: ValueBinding | null): boolean => v !== null && ((v.source !== null && windows.has(v.source.windowId)) || (v.origin.kind === "span" && windows.has(v.origin.source)));
     const blank = (v: ValueBinding): ValueBinding => {
       for (const t of [v.text, v.fill?.span ?? "", v.fill?.context ?? ""]) if (t.trim() !== "") quoted.add(t);
-      return { ...v, text: "", display: "", ...(v.fill === undefined ? {} : { fill: { ...v.fill, span: "", context: null } }) };
+      // W2: the write contract's provenance and mint quote the source too (its span, line and label); a goal that ended
+      // needs neither.
+      const { provenance: _p, checked: _c, ...rest } = v;
+      return { ...rest, text: "", display: "", ...(v.fill === undefined ? {} : { fill: { ...v.fill, span: "", context: null } }) };
     };
     // A left item's quoted value (a hand-off's), wherever the item went: the plan, the run's obligations, a carry.
     const items = [...run.plan.left, ...run.owed, ...[...this.carries.values()].filter((c) => c.goalId === goalId).flatMap((c) => c.owed)];
@@ -1071,6 +1080,7 @@ export class GoalRuns {
       for (const s of seg.steps) {
         if (s.value === null || !fromTab(s.value)) continue;
         s.value = blank(s.value);
+        delete s.checked;
         if (s.writes !== null) s.writes = "";
       }
     }

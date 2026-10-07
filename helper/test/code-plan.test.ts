@@ -11,6 +11,7 @@ import { goalDigest, segmentDigest, type GoalDomain, type GoalInventory, type Go
 import { macClock } from "../src/offers/event-time.ts";
 import { SnippetLedger } from "../src/privacy.ts";
 import { cannedProgram, caseWindow, detailsWindow, goalScene, mailWindow, replyWindow, standInJev, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { targetField } from "./mint.ts";
 
 const native = { windowKind: "standard", bundleId: "dev.caret.supportfixture", page: false } as const;
 
@@ -164,7 +165,11 @@ describe("lowering", () => {
 
 const win = { kind: "window" as const, windowId: "w-a", pid: 10, bundleId: "dev.caret.a", appName: "A", title: "Form A", number: null, windowKind: "standard", page: false };
 const page = { ...win, windowId: "page:e1:3", bundleId: "com.google.Chrome", appName: "Chrome", title: "Apply", windowKind: "page", page: true };
-const tgt = (ref: string, over: Partial<TargetBinding> = {}): TargetBinding => ({ ref, domain: win, key: `k-${ref}`, role: "AXTextField", label: `Field ${ref}`, own: over.label ?? `Field ${ref}`, placeholder: null, control: "text", value: "", options: null, ...over });
+const tgt = (ref: string, over: Partial<TargetBinding> = {}): TargetBinding => {
+  const t: TargetBinding = { ref, domain: win, key: `k-${ref}`, role: "AXTextField", label: `Field ${ref}`, own: over.label ?? `Field ${ref}`, placeholder: null, control: "text", value: "", options: null, ...over };
+  const field = t.field ?? targetField(t);
+  return field === undefined ? t : { ...t, field };
+};
 const val = (ref: string, text: string, over: Partial<ValueBinding> = {}): ValueBinding => ({ ref, text, display: `"${text}"`, origin: { kind: "span", snapshot: "s1", source: "w-src", startUTF16: 0, endUTF16: text.length, digest: "d" }, source: { windowId: "w-src", key: "src", revision: "r" }, memory: null, event: null, draft: null, owner: null, ...over });
 
 function inventory(targets: TargetBinding[], values: ValueBinding[]): GoalInventory {

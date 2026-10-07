@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, type AnswerSaveReply, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
+import { ASK_CHOICES_CAPABILITY, ConsumerMessage, FILL_ALL_CAPABILITY, GOAL_FILES_CAPABILITY, GOAL_PLANS_CAPABILITY, Hello, PAGE_TEXT_CAPABILITY, LOCAL_MODEL_CAPABILITY, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, ROUTING_CAPABILITY, SPEND_CAPABILITY, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type LocalTextRequest, type MemoryReply, type Spend, SAVED_ANSWERS_CAPABILITY, VALUE_CHECKS_CAPABILITY, type AnswerSaveReply, type FillProposal, type MemoryDocumentReply, type PageField, type PageInsertReply } from "./protocol.ts";
 import { carriesAnswer, withoutAnswers } from "./offers/answer-gate.ts";
 import type { Helper } from "./helper.ts";
 import type { HostLocalModel } from "./writer/local-port.ts";
@@ -54,6 +54,8 @@ export class HelperServer {
    * send pageInsert: a host that has not promised to keep the text off its logs and debug socket never sees it.
    */
   private readonly pageText = new Set<Socket>();
+  /** W2: consumers whose hello listed VALUE_CHECKS_CAPABILITY: only they read FillWithheld's "notExact" and "unverified". */
+  private readonly valueChecks = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -107,6 +109,17 @@ export class HelperServer {
   }
 
   publish(m: HelperMessage): void {
+    // W2: a fill proposal that withholds a field as "notExact" or "unverified" (fill/contract.ts) goes as it is only to
+    // consumers that read those reasons; every other consumer is sent "wrongKind" in their place, as S1 maps an answer's
+    // reasons, and a saved answer only to a host that shows it whole (below).
+    if (m.type === "fillProposal" && m.fields.some((f) => f.withheld === "notExact" || f.withheld === "unverified")) {
+      const answer = carriesAnswer(m, (id) => this.helper().writesAnswer(id));
+      for (const c of this.consumers) {
+        const shown = answer && !this.savedAnswers.has(c) ? withoutAnswers(m) : m;
+        c.write(JSON.stringify(this.valueChecks.has(c) ? shown : withOldReasons(shown)) + "\n");
+      }
+      return;
+    }
     const line = JSON.stringify(m) + "\n";
     // Provenance is new in M1: a consumer that did not ask for it is not sent it.
     // A goal's previews and progress quote values and name windows: only hosts that plan goals get them.
@@ -205,6 +218,7 @@ export class HelperServer {
             if (hello.data.host === true) this.hosts.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(FILL_ALL_CAPABILITY) === true) this.fillAll.add(s);
             if (hello.data.capabilities?.includes(ASK_CHOICES_CAPABILITY) === true) this.askChoices.add(s);
+            if (hello.data.capabilities?.includes(VALUE_CHECKS_CAPABILITY) === true) this.valueChecks.add(s);
             if (hello.data.host === true && hello.data.capabilities?.includes(GOAL_PLANS_CAPABILITY) === true) this.goalPlans.add(s);
             if (hello.data.capabilities?.includes(SPEND_CAPABILITY) === true) {
               this.spend.add(s);
@@ -453,6 +467,7 @@ export class HelperServer {
       this.spend.delete(s);
       this.goalFiles.delete(s);
       this.pageText.delete(s);
+      this.valueChecks.delete(s);
       if (this.localModelHost === s) {
         this.localModelHost = null;
         this.localModel?.hostGone();
@@ -524,4 +539,12 @@ function isAlive(path: string): Promise<boolean> {
 export function withoutPageText(m: PageField): PageField {
   const { text: _text, caret: _caret, ownSuggestions: _own, docsText: _docs, token: _token, pageFocused: _focused, fieldKind: _kind, ...rest } = m;
   return rest;
+}
+
+/**
+ * W2: a fill proposal as a consumer from before VALUE_CHECKS_CAPABILITY reads it: "notExact" and "unverified" become
+ * "wrongKind", the nearest of the six reasons it decodes.
+ */
+export function withOldReasons(p: FillProposal): FillProposal {
+  return { ...p, fields: p.fields.map((f) => (f.withheld === "notExact" || f.withheld === "unverified" ? { ...f, withheld: "wrongKind" as const } : f)) };
 }

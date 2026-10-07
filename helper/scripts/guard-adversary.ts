@@ -50,6 +50,7 @@ import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { cannedReply, type CannedAnswer, type CannedRules } from "../src/engines/decide/canned.ts";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { isChecked, setVerifierStandIn, type CheckedValue } from "../src/fill/contract.ts";
 import { aboutKind, type AboutValue } from "../src/fill/about.ts";
 import { words } from "../src/fill/kinds.ts";
 import { writtenFields } from "../src/offers/fill-popup.ts";
@@ -80,6 +81,8 @@ const OUT = resolve(a.values.out);
 const SETS = new Set(a.values.sets.split(",").map((s) => s.trim()));
 if (a.values.verifier !== "accept" && a.values.verifier !== "refuse") throw new Error(`--verifier is accept or refuse, not ${a.values.verifier}`);
 const VERIFIER: "accept" | "refuse" = a.values.verifier;
+// W2 step 2: the write contract has no model call yet, so its stand-in decides in Jev's place (fill/contract.ts).
+setVerifierStandIn(() => (VERIFIER === "accept" ? "exact" : "more"));
 // The generator's time budget reads a fixed clock, so a loaded machine cannot stop it partway and change what is offered.
 setGeneratorClock(() => 0);
 
@@ -361,14 +364,19 @@ function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { 
 interface Run {
   written: Map<string, string>;
   /**
-   * How each written value was checked, by field key: "unchecked text" or "unchecked control" before the write
-   * contract (W2 step 1's baseline), then the mint's verdict: "verifier", or "exempt:<rule>".
+   * How each written value was checked, by field key: the mint's verdict ("code" or "verifier", or "exempt:<rule>"),
+   * or "unchecked" for a write that carries no mint (a path that skipped the write contract).
    */
   via: Map<string, string>;
   shown: Map<string, string>;
   withheld: Map<string, string | null>;
   refusal: string | null;
   failure: string | null;
+}
+/** How a written value was checked: its mint's verdict, or "unchecked" when it carries no mint (fill/contract.ts isChecked). */
+function viaOf(c: CheckedValue | undefined): string {
+  if (!isChecked(c)) return "unchecked";
+  return c.verdict.by === "exempt" ? `exempt:${c.verdict.rule}` : c.verdict.by;
 }
 let fills = 0;
 /** Every run's refusal and failure, by how it was asked, for the report. */
@@ -396,7 +404,7 @@ async function run(d: Desk, part: string[], how: "fill" | "goal" | "ask", picks:
       const draft = await planAsk(d.instruction, d.model, memory, d.about, { askJev: e.ask, maker: headsIntentMaker(e.ask), writer: null, offerKey: `adv-${fills}`, windowId: d.windowId, now: T0, rand: () => 0, fillTrace: e.trace });
       for (const w of draft.checked.writes) {
         out.written.set(w.node.key, w.value);
-        out.via.set(w.node.key, "unchecked text");
+        out.via.set(w.node.key, viaOf(w.checked));
       }
       for (const c of draft.controls ?? []) out.shown.set(c.key, c.value);
     } catch (err) {
@@ -416,7 +424,7 @@ async function run(d: Desk, part: string[], how: "fill" | "goal" | "ask", picks:
       for (const st of plan.segments.flatMap((x) => x.steps)) {
         if (st.kind !== "write" || st.writes === null) continue;
         out.written.set(st.target.key, st.writes);
-        out.via.set(st.target.key, st.target.control === "text" || st.target.control === "combobox" ? "unchecked text" : "unchecked control");
+        out.via.set(st.target.key, viaOf(st.checked));
       }
       for (const l of plan.left) out.withheld.set(l.key, `${l.why}: ${l.says}`);
     } catch (err) {
@@ -428,7 +436,7 @@ async function run(d: Desk, part: string[], how: "fill" | "goal" | "ask", picks:
     const p = await proposeFill(d.model, e.ask, d.windowId, part[0] as string, T0, { about: d.about, rand: () => 0, newId: () => `adv-${fills}`, trace: e.trace, only: part });
     for (const w of writtenFields(p).fields) {
       out.written.set(w.key, w.value);
-      out.via.set(w.key, w.control === "text" || w.control === "combobox" ? "unchecked text" : "unchecked control");
+      out.via.set(w.key, viaOf(w.checked));
     }
     for (const f of p.fields) {
       const v = f.value ?? f.handoff?.value ?? null;

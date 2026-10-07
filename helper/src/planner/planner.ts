@@ -20,7 +20,8 @@ import { randomInt } from "node:crypto";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
-import { FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
+import { candidateProvenance, FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
+import { checkValues, ContractError, fieldContract, type CheckedValue, type CheckOptions, type FieldContract, type Owner, type Proposed, type Provenance } from "../fill/contract.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts } from "../fill/kinds.ts";
@@ -92,6 +93,8 @@ interface Option {
   id: string;
   text: string;
   describe: string;
+  /** W2: where the value was read, as the write contract carries it (fill/contract.ts). */
+  provenance: Provenance;
 }
 
 export interface Field {
@@ -238,9 +241,13 @@ async function planIn(
   };
   const byId = (xs: readonly { id: string; text: string }[]): Map<string, string> => new Map(xs.map((x) => [x.id, x.text]));
   const writes: { field: Field; value: string }[] = [];
+  /** W2: by field key, where its agreed value was read (the option of that text). */
+  const read = new Map<string, Provenance>();
   for (const f of questioned) {
     const v = agreed(f.id, f.name, byId(fitting(f, values)), byId(fitting(f, second.values)), KEEP);
-    if (v !== null) writes.push({ field: f, value: v });
+    if (v === null) continue;
+    writes.push({ field: f, value: v });
+    read.set(f.node.key, (values.find((x) => x.text === v) as Option).provenance);
   }
   const pressLabel = askedButtons.length === 0 ? null : agreed("press", "press", byId(askedButtons.map((b) => ({ id: b.id, text: b.key }))), byId(second.buttons.map((b) => ({ id: b.id, text: b.key }))), NONE);
   const press = pressLabel === null ? null : (askedButtons.find((b) => b.key === pressLabel) ?? null);
@@ -266,9 +273,12 @@ async function planIn(
   }
   const plan: Plan = { id: o.offerKey, title: titleOf(instruction), slots: slotNames, steps };
 
+  // W2: each value meets the write contract once, in its field, with where it was read (fill/contract.ts); a refusal
+  // refuses the plan, as validatePlan's kind check did before W2.
+  const mints = await mintWrites(writes.map(({ field, value }, i) => ({ slot: `v${i + 1}`, w, node: field.node, name: field.name, text: value, provenance: read.get(field.node.key) as Provenance, owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now() });
   await o.beforeCheck?.();
   const ctx: PlanContext = { model, memory: memory.values(), instruction };
-  const checked = validatePlan(plan, slots, ctx);
+  const checked = validatePlan(plan, slots, ctx, mints);
   // The plan names its window by app and title; one that replaced the chosen window while Jev answered is another window.
   if (checked.window.window.windowId !== w.window.windowId) throw new PlannerError("unknownWindow", `'${w.window.title}' closed while Caret planned, and another window took its title`);
   // A value copied from a window charges that window when a target question quotes it (Plan.sources).
@@ -283,6 +293,29 @@ async function planIn(
   });
   const withSources: Plan = { ...plan, steps: steps2, ...(Object.keys(sources).length === 0 ? {} : { sources }) };
   return { plan: withSources, slots, checked, answers, withheld, jev };
+}
+
+/**
+ * W2: the write contract's mints for a drafted plan's writes, by slot (fill/contract.ts checkValues), each checked in its
+ * field as fieldContract reads it, with where its value was read. Throws PlannerError("wrongKind") naming the first
+ * value it refuses, as validatePlan's kind check did before W2.
+ */
+export async function mintWrites(writes: readonly { slot: string; w: WindowState; node: Node; name: string; text: string; provenance: Provenance; owner: Owner }[], o: CheckOptions): Promise<Map<string, CheckedValue>> {
+  const proposed: Proposed[] = [];
+  for (const x of writes) {
+    let field: FieldContract;
+    try {
+      field = fieldContract(x.w, x.node);
+    } catch (e) {
+      if (e instanceof ContractError) throw new PlannerError("notEditable", `${x.name}: ${e.message}`);
+      throw e;
+    }
+    proposed.push({ field, text: x.text, display: x.text, provenance: x.provenance, owner: x.owner });
+  }
+  const r = await checkValues(proposed, o);
+  const first = r.refused[0];
+  if (first !== undefined) throw new PlannerError("wrongKind", `${writes[proposed.indexOf(first.proposed)]?.name ?? "a field"}: ${first.says}`);
+  return new Map(r.ok.map((c) => [writes[proposed.findIndex((p) => p.field === c.field && p.text === c.text)]?.slot as string, c]));
 }
 
 /**
@@ -447,14 +480,15 @@ export function requestedWindow(model: ScreenModel, req: { windowId?: string | u
 function valueOptions(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number): Option[] {
   const out: Option[] = [];
   const seen = new Set<string>();
-  const add = (text: string, describe: string, max = MAX_PLAN_VALUES): void => {
+  const add = (text: string, describe: string, provenance: Provenance, max = MAX_PLAN_VALUES): void => {
     if (out.length >= max || seen.has(text)) return;
     seen.add(text);
-    out.push({ id: `v${out.length + 1}`, text, describe });
+    out.push({ id: `v${out.length + 1}`, text, describe, provenance });
   };
+  const entry = (m: MemoryValue): Provenance => ({ kind: "memory", id: m.id, label: m.label, part: null, whose: m.whose ?? null });
   const spans = instructionValues(instruction);
-  if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`);
-  for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`);
+  if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`, { kind: "instruction", span: s });
+  for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`, entry(m));
   // A remembered name's first and last parts, split by code (fill/derive.ts, B24), for First and Last name
   // fields: "fill my name and email" on a form with split name fields found no value for either (Q1 bug 11).
   for (const m of memory) {
@@ -463,11 +497,11 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
     const s = splitName(m.text);
     if (s.kind !== "split") continue;
     for (const [part, text] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) {
-      if (text !== null) add(text, `"${text}" (the ${part} in the user's memory: ${m.label} "${m.text}")`);
+      if (text !== null) add(text, `"${text}" (the ${part} in the user's memory: ${m.label} "${m.text}")`, { kind: "derived", how: "namePart", base: entry(m), also: null });
     }
   }
   const cands = generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger);
-  for (const c of cands) add(c.text, describeCandidate(c));
+  for (const c of cands) add(c.text, describeCandidate(c), candidateProvenance(c));
   // A whole address fits no City or Street field (kinds.ts misfit), so its parts are offered too: B17's and
   // B18's held-out sets asked for the city or street of an address the windows show only whole (a change
   // tuned on those sets). Each part is a span of the same line, so it traces to it. They have their own
@@ -479,13 +513,14 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
   for (const c of cands) {
     const split = unitField ? splitAddress(c.text) : null;
     if (split !== null) {
-      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: candidateProvenance(c), also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
       continue;
     }
     const parts = addressParts(c.text);
     if (parts === null) continue;
-    add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
-    if (parts.city !== null) add(parts.city, `"${parts.city}" (the city of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+    const whole = candidateProvenance(c);
+    add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+    if (parts.city !== null) add(parts.city, `"${parts.city}" (the city of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
   }
   return out;
 }

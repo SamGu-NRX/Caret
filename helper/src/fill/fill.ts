@@ -18,8 +18,8 @@ import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
-import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { takesOneValue, writeMisfit } from "./writable.ts";
+import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { checkValues, makeFieldContract, mintExempt, requireChecked, type CheckedValue, type DeriveHow, type ExemptRule, type FieldContract, type Proposed, type Provenance } from "./contract.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -1385,24 +1385,6 @@ export async function proposeFill(
   const refYear = new Date(now).getUTCFullYear();
 
   /**
-   * W1: the shared write check (writable.ts writeMisfit), with what labels the pick: its "Label: value" line, its memory
-   * entry's label, the part code derived it as, or, for a value the instruction spells out for this field, the field
-   * itself. A part of a labelled value (Candidate.partOf) goes only in a field that takes one value: in a prose field
-   * ("Delivery instructions") it is no complete answer ("ring twice" from "Reception Desk, ring twice").
-   */
-  const writeRefused = (f: Field, p: Pick, text: string): boolean => {
-    const c = windowOf(p);
-    if (p.from === "window" && p.c.partOf !== undefined && !takesOneValue(f.labelWords)) return true;
-    const label =
-      p.from === "window" ? (p.c.labelled === true ? p.c.context : null)
-      : p.from === "memory" ? p.a.label
-      : p.from === "instruction" ? f.name
-      : p.base.from === "instruction" ? f.name
-      : f.part !== null && NAME_PARTS.has(f.part) ? `${f.part} name`
-      : c?.labelled === true ? c.context : null;
-    return writeMisfit(text, { labelWords: f.labelWords, part: f.part }, { label }) !== null;
-  };
-  /**
    * The value a control takes from a pick (the option it names, PAGE_CHECKED, or the input's own date or time format),
    * whether a Fill all may write it there (D2-04), or why it cannot be read. Only a page window's controls are ever
    * written, each on a stricter rule than a hand-off, which the user sees and sets themselves:
@@ -1480,9 +1462,8 @@ export async function proposeFill(
         return loose === null ? { why: "ambiguous" } : { ...loose, writes: false };
       }
       case "combobox":
-        // Read as a text field is, then as one option's name: the page engine types it as the list's filter and picks
-        // only an option named exactly that (B27).
-        if (writeRefused(f, p, text) || (f.part !== null && !partFits(f.part, text))) return { why: "wrongKind" };
+        // Read as one option's name: the page engine types it as the list's filter and picks only an option named exactly
+        // that (B27). What it types meets the write contract as a text field's value does (W2: below, checkValues).
         // C2 (lead decision 2): in a field that asks where, a place "City, Region" is asked for with its country, as location
         // lists name it; the page engine types that as the list's filter and picks only the one option named exactly
         // that, once the list has loaded for it. A place that already names its country, or a bare city, is asked for as
@@ -1491,7 +1472,8 @@ export async function proposeFill(
         if (placed !== null) return { value: placed, display: placed, writes: page };
         return optionName(text) ? { value: text, display: text, writes: page } : { why: "ambiguous" };
       case "text":
-        return !writeRefused(f, p, text) && (f.part === null || partFits(f.part, text)) ? { value: text, display: text, writes: true } : { why: "wrongKind" };
+        // W2: the write contract (checkValues, below) decides whether it may be written.
+        return { value: text, display: text, writes: true };
     }
   };
   const sourceOf = (p: Pick): FillSource | null => windowOf(p)?.source ?? null;
@@ -1530,7 +1512,9 @@ export async function proposeFill(
     if (held !== null) return { ...empty, confidence, withheld: held.why === "tooLong" ? "wrongKind" : "otherPerson", asks, answer: fillAnswer(saved, held) };
     return { ...empty, choice: a1.choice, confidence, value: saved.fields.answer, memory: { id: saved.id, label: saved.fields.question, says: ANSWER_SAYS }, withheld: null, asks, answer: fillAnswer(saved, null) };
   };
-  const out: FillField[] = fields.map((f) => {
+  /** W2: by output field, the pick it carries and what the control takes from it, for the write contract below. */
+  const picksOf = new Map<number, { p: Pick; text: string }>();
+  const out: FillField[] = fields.map((f, i) => {
     const empty = { key: f.node.key, control: f.control, handoff: null, frame: f.node.frame ?? null, descriptor: f.descriptor, choice: NONE, confidence: 0, value: null, source: null, memory: null };
     if (answersFor.has(f.id)) return answerField(f, empty);
     if (r1 === null || r2 === null || !asked.includes(f)) {
@@ -1591,6 +1575,7 @@ export async function proposeFill(
         ? null
         : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f), ...(context === null ? {} : { context }), ...(got.writes ? { writes: true as const } : {}) };
     const text = f.control === "text" && p !== undefined && got !== null;
+    if (p !== undefined && got !== null) picksOf.set(i, { p, text: got.value });
     return {
       ...empty,
       handoff,
@@ -1603,6 +1588,39 @@ export async function proposeFill(
       asks: [a1, a2],
     };
   });
+
+  // W2: the write contract (fill/contract.ts). Every text and web dropdown value the asks agreed on, past the cutoff,
+  // the cuts and the owner veto, meets checkValues once, with the provenance its pick carries; a refusal withholds it.
+  // A control's value Caret writes (an option's own label, a box's state, a resolved date) and a saved answer shown
+  // whole are minted under their named exemption. A field's mint is kept by the field object (mintOf).
+  const contracts = fields.map((f) => makeFieldContract({ windowId, node: f.node, descriptor: f.descriptor, name: f.name, labelWords: f.labelWords, control: f.control, kinds: f.kinds, part: f.part }));
+  const proposed: { i: number; p: Proposed }[] = [];
+  for (const [i, { p, text }] of picksOf) {
+    const f = fields[i] as Field;
+    if (f.control !== "text" && f.control !== "combobox") continue;
+    proposed.push({ i, p: { field: contracts[i] as FieldContract, text, display: text, provenance: provenanceOf(p, f.part, text), owner: null } });
+  }
+  if (proposed.length > 0) {
+    const checked = await checkValues(proposed.map((x) => x.p), { askJev, ledger, now, ...(scope === undefined ? {} : { instruction: scope.instruction }) });
+    for (const r of checked.refused) {
+      const x = proposed.find((y) => y.p === r.proposed) as { i: number; p: Proposed };
+      const o = out[x.i] as FillField;
+      out[x.i] = { ...o, choice: NONE, value: null, source: null, memory: null, handoff: null, withheld: r.why };
+    }
+    for (const c of checked.ok) {
+      const x = proposed.find((y) => y.p.field === c.field && y.p.text === c.text) as { i: number; p: Proposed };
+      fieldMints.set(out[x.i] as FillField, c);
+    }
+  }
+  for (const [i, o] of out.entries()) {
+    const f = fields[i] as Field;
+    const exempt: ExemptRule | null = o.answer !== undefined && o.value !== null ? "savedAnswerShown" : o.handoff?.writes === true ? EXEMPT_BY_CONTROL[f.control] : null;
+    if (exempt === null) continue;
+    const text = o.value ?? o.handoff?.value ?? "";
+    const pick = picksOf.get(i);
+    const provenance: Provenance = o.answer !== undefined ? { kind: "answer", id: o.answer.id, question: o.memory?.label ?? "" } : pick === undefined ? { kind: "instruction", span: text } : provenanceOf(pick.p, f.part, text);
+    fieldMints.set(o, mintExempt({ field: contracts[i] as FieldContract, text, display: o.handoff?.display ?? text, provenance, owner: null }, exempt, now, scope?.instruction ?? ""));
+  }
 
   return {
     type: "fillProposal",
@@ -1627,6 +1645,59 @@ export async function proposeFill(
           },
     cutoff,
   };
+}
+
+/**
+ * W2: each proposed field's mint from the write contract (fill/contract.ts), by the very FillField object proposeFill
+ * returned. A copy of the field, or a field built any other way, has none, so offers/fill-popup.ts writtenFields
+ * refuses to write it.
+ */
+const fieldMints = new WeakMap<FillField, CheckedValue>();
+
+/** The write contract's mint for a field proposeFill returned, or undefined (fieldMints). */
+export function mintOf(f: FillField): CheckedValue | undefined {
+  return fieldMints.get(f);
+}
+
+/**
+ * Records `c` as the mint of a field built outside proposeFill (an evaluation's or a test's proposal). `c` must be a
+ * mint for exactly the value the field writes, in exactly its field (requireChecked), so this admits nothing the
+ * contract did not check.
+ */
+export function bindMint(f: FillField, c: CheckedValue): FillField {
+  fieldMints.set(f, requireChecked(c, f.value ?? f.handoff?.value ?? "", f.key, `field ${f.key}`));
+  return f;
+}
+
+/** The exemption a control's written value is minted under: an option's own label, a box's state, a resolved date. */
+const EXEMPT_BY_CONTROL: Record<Control, ExemptRule | null> = { text: null, combobox: null, select: "optionLabel", radio: "optionLabel", checkbox: "boxFromLabelledLine", date: "resolverFormat", time: "resolverFormat" };
+
+/** How code derived a part for a field, by the part the field takes. */
+function deriveHow(part: FillPart | null, written: string, base: string): DeriveHow {
+  if (part === "first" || part === "middle" || part === "last" || part === "full") return "namePart";
+  if (part === "month" || part === "day" || part === "year") return "datePart";
+  if (part === "country") return "placePart";
+  if (part === "street" || part === "unit" || part === "city" || part === "state" || part === "zip") return "addressPart";
+  return written === base ? "placePart" : "placeWithCountry";
+}
+
+/** A candidate's provenance: its window, its exact span, and the label, line and labelled value it sits in. */
+export function candidateProvenance(c: Candidate): Provenance {
+  return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null };
+}
+
+/** Where a pick's value came from, as the write contract carries it (fill/contract.ts Provenance). */
+function provenanceOf(p: Pick, part: FillPart | null, written: string): Provenance {
+  const base = (b: Exclude<Pick, { from: "derived" }>): Provenance =>
+    b.from === "window" ? candidateProvenance(b.c) : b.from === "memory" ? { kind: "memory", id: b.a.id, label: b.a.label, part: null, whose: "user" } : { kind: "instruction", span: b.text };
+  if (p.from !== "derived") {
+    const own = base(p);
+    // A web dropdown asked for a place with its country (placeWithCountry) writes more than the pick's text.
+    return written === (p.from === "window" ? p.c.text : p.from === "memory" ? p.a.value : p.text) ? own : { kind: "derived", how: "placeWithCountry", base: own, also: null };
+  }
+  const b = base(p.base);
+  const how = written !== p.text ? "placeWithCountry" : deriveHow(part, p.text, b.kind === "window" ? b.span : "");
+  return { kind: "derived", how, base: b, also: p.also === null ? null : candidateProvenance(p.also) };
 }
 
 /** What a memory entry gives a field now: the whole value, or the part of the name the proposal took (FillMemory.part). */

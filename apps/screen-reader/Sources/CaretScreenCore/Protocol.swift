@@ -457,7 +457,9 @@ public struct FillAsk: Codable, Equatable, Sendable {
 /// memory is also `lowConfidence` when the asks did not both say the field wants the user's own details (B18).
 /// B24 added `wrongKind` (the value is not the kind the field takes), `otherPerson` (the field wants one
 /// person's details and the value is another's) and `ambiguous` (code could not read the value without guessing).
-public enum FillWithheld: String, Codable, Sendable { case disagree, lowConfidence, sourceCut, wrongKind, otherPerson, ambiguous }
+/// W2 added `notExact` (Caret's check says the value is not exactly the field's) and `unverified` (that check could not
+/// run): the helper sends them only to a consumer whose hello names `valueChecks`, and `wrongKind` to any other.
+public enum FillWithheld: String, Codable, Sendable { case disagree, lowConfidence, sourceCut, wrongKind, otherPerson, ambiguous, notExact, unverified }
 
 /// What a field is (B24): a text field the helper's executor writes, or a control the user sets from the
 /// proposal's `handoff`. `combobox` is a web page's custom dropdown, named and left with no value.

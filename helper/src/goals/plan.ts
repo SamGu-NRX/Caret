@@ -8,6 +8,7 @@ import type * as z from "zod";
 import type { ValueOriginSchema } from "../codemode/types.ts";
 import type { Plan } from "../executor/schema.ts";
 import type { FillScope } from "../fill/fill.ts";
+import type { CheckedValue, FieldContract, Provenance } from "../fill/contract.ts";
 import type { HandoffWhy } from "./capabilities.ts";
 import type { OwedField } from "./left.ts";
 
@@ -40,6 +41,11 @@ export interface TargetBinding {
    */
   own: string;
   placeholder: string | null;
+  /**
+   * W2: what the field takes, read when the target was frozen (fill/contract.ts fieldContract), which a copied value
+   * meets before it is written. Absent for a button, a file control, the calendar, and a field Caret never types.
+   */
+  field?: FieldContract;
 }
 
 /** What a value ref stood for: its exact text and where it came from. */
@@ -73,6 +79,10 @@ export interface ValueBinding {
    * renamed entry no longer stands behind it (P2 review). Absent for every other value.
    */
   fill?: { span: string; context: string | null; control: string; memoryLabel?: string };
+  /** W2: where the value was read, as the write contract carries it (fill/contract.ts Provenance); absent for a draft or an event. */
+  provenance?: Provenance;
+  /** W2: the mint fill made for this very value in its target (goals/page-planner.ts), which lowering passes on. */
+  checked?: CheckedValue;
 }
 
 /** A value code read or derived for a planning snapshot: never the user's edit, so its origin is one the sandbox knows. */
@@ -137,6 +147,11 @@ export interface GoalStep {
    * gates.ts did not mark (isDerived).
    */
   gate: "jev" | "fill" | "draft" | "derived" | "you" | null;
+  /**
+   * W2: on a write step, the write contract's mint for exactly `writes` in `target` (fill/contract.ts); GoalRuns.propose
+   * refuses a plan whose write step has none.
+   */
+  checked?: CheckedValue;
   /** P3: on an attach step only, the file its row offers. */
   file?: AttachOffer;
   /**

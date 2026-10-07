@@ -1,9 +1,9 @@
-// W1: whether a value may be written into a field, the one check every write path makes after a value is chosen: fill's
-// proposal (fill.ts controlValue), the planner's validation of a plan (planner/validate.ts, which the writer's plans
-// meet too), code mode's plan (planner/codeplan.ts), the planner's offer of values to a field (planner/planner.ts) and
-// the goal value gate (goals/gates.ts). Before W1 each called kinds.ts misfit alone; live Jev then wrote values misfit
+// W1: W1's text-shape gate on whether a value may be written into a field. Since W2 it runs in one place, the write
+// contract (fill/contract.ts textShapeRefusal, which every write path's checkValues calls with the value's carried
+// field and provenance); the planner's offer of values to a field (planner/planner.ts) still uses it to choose what to
+// offer, which admits nothing. Before W1 each path called kinds.ts misfit alone; live Jev then wrote values misfit
 // passes (evidence/screen/lv1): a whole note line holding the right job title, a role at the right company, and an
-// instruction to the user. A refusal is withheld as wrongKind, never written.
+// instruction to the user. AC1 (migration step 4) retires its families one at a time on verifier evidence.
 import type { Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import { fieldKinds, fieldTerms, misfit, NAME_TERM } from "./kinds.ts";

@@ -39,6 +39,7 @@ import { offerField } from "../offers/field.ts";
 import type { Family, OfferGate } from "../offers/settings.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { cleanRun, Skills, type WriteAction } from "./skills.ts";
+import { ContractError, fieldContract, mintExempt, requireChecked, type CheckedValue } from "../fill/contract.ts";
 
 /** How long after Caret fills a field an edit to it is read as a preference. Assumed. */
 export const EDIT_WATCH_MS = 60_000;
@@ -137,7 +138,7 @@ export interface RunDeps {
 
 interface OfferState {
   msg: PatternOffer;
-  cells: (Cell & { written: string; dstShapeHash: string; memory: string[] })[];
+  cells: (Cell & { written: string; dstShapeHash: string; memory: string[]; checked: CheckedValue })[];
   plan: Plan;
   slots: Record<string, string>;
   loopId: string | null;
@@ -956,6 +957,7 @@ export class PatternEngine {
     });
     if (!decision.speak) return null;
     const o = this.create(kind, patternId, ids, cells, w.window.windowId, decision.showProbability, false, finish);
+    if (o === null) return null;
     if (ids.routineId !== null && this.deps.hostConnected() && this.skills.runsOnItsOwn(ids.routineId, this.writeAction(windowId), o.plan)) {
       this.deps.gate.spoke(this.clock);
       this.startUnprompted(o);
@@ -1023,6 +1025,7 @@ export class PatternEngine {
       if (best === undefined) continue;
       const cells = best.cells.filter((c): c is RoutineCell => c !== null);
       const o = this.create("routine", best.routine.id, { loopId: null, routineId: best.routine.id }, cells, windowId, (best.routine.hits + 1) / (best.routine.hits + best.routine.misses + 2), false, best.finish);
+      if (o === null) continue;
       this.drafts.set(o.msg.id, o);
       out.push(o.msg);
     }
@@ -1047,19 +1050,31 @@ export class PatternEngine {
     showProbability: number,
     show: boolean,
     finish: SilentPrediction["finish"] = null,
-  ): OfferState {
+  ): OfferState | null {
     const model = this.deps.model;
     const w = model.windows.get(windowId);
     if (w === undefined) throw new Error(`offer for window ${windowId}, which is not in the model`);
     const memory = this.deps.memory;
     const bundleId = w.app.bundleId;
     const id = this.nextId();
-    const written = cells.map((c) => {
+    const written: OfferState["cells"] = [];
+    for (const c of cells) {
       const node = w.nodes.get(c.dstKey);
       const dstShapeHash = this.deps.hash(`dst\u0000${bundleId}\u0000${w.window.kind}\u0000${templateOf(c.dstKey, node?.role ?? c.dstRole)}`);
       const m = applyMemory(memory, this.deps.hash, c.value, c.kind, dstShapeHash);
-      return { ...c, written: m.value, dstShapeHash, memory: m.used };
-    });
+      // W2: each cell is minted under the user-transfer exemption (fill/contract.ts): the user copied this value's shape
+      // in earlier rounds (shape.ts refuses a fragment that is no typed span), reshaped only by a memory rule. A field
+      // Caret never types, or a value that is a secret, gets no mint, and then no offer.
+      if (node === undefined) return null;
+      try {
+        const provenance = { kind: "transfer" as const, srcWindowId: c.srcWindowId, srcKey: c.srcKey, rounds: 0, reshaped: m.used.length > 0 ? ("memory" as const) : null };
+        const checked = mintExempt({ field: fieldContract(w, node), text: m.value, display: m.value, provenance, owner: null }, "userTransfer", this.clock);
+        written.push({ ...c, written: m.value, dstShapeHash, memory: m.used, checked });
+      } catch (e) {
+        if (e instanceof ContractError) return null;
+        throw e;
+      }
+    }
     const { plan, slots } = this.plan(id, kind, w.window.title, bundleId, written, finish, ids.routineId);
     const msgCells: OfferCell[] = written.map((c) => {
       const src = model.windows.get(c.srcWindowId);
@@ -1202,7 +1217,7 @@ export class PatternEngine {
     kind: OfferKind,
     title: string,
     bundleId: string,
-    cells: (Cell & { written: string })[],
+    cells: (Cell & { written: string; checked: CheckedValue })[],
     finish: SilentPrediction["finish"] = null,
     routineId: string | null = null,
   ): { plan: Plan; slots: Record<string, string> } {
@@ -1211,6 +1226,8 @@ export class PatternEngine {
     // A written value is the source cell's value, maybe reshaped by memory; it is charged to the source window (Plan.sources).
     const sources: Record<string, string> = {};
     const steps = cells.map((c, i) => {
+      // W2: the cell's mint for exactly this value in this field (fill/contract.ts), or ContractError.
+      requireChecked(c.checked, c.written, c.dstKey, `cell ${i + 1}`);
       slots[`v${i}`] = c.written;
       declared[`v${i}`] = `value ${i + 1}`;
       sources[`v${i}`] = c.srcWindowId;

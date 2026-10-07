@@ -12,7 +12,8 @@ import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
 import { labelledLines, lineGives } from "../fill/candidates.ts";
 import { splitAddress, splitPlace } from "../fill/derive.ts";
-import { conversionOf, describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
+import { conversionOf, describeInput, emptyInput, memoryRefOf, memoryValue, mintOf } from "../fill/fill.ts";
+import { requireChecked, type CheckedValue } from "../fill/contract.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import { offerField } from "./field.ts";
@@ -28,9 +29,10 @@ export const MAX_FILL_ROWS = 5;
  * A field Caret writes, with its value in the form the field takes it: a text field's text, or (D2-04) a control's
  * option name, PAGE_CHECKED, or date or time in the input's own format. `span` is the source text the value was read
  * from, which a recheck looks for in the source again, on the line labelled `context` when the value came from a
- * "Label: value" line (FillHandoff.context); `display` is how the pop-up says the value.
+ * "Label: value" line (FillHandoff.context); `display` is how the pop-up says the value. `checked` is the write
+ * contract's mint for exactly this value in this field (fill/contract.ts), which fillPlan requires.
  */
-type GroundedField = FillField & { value: string; span: string; display: string; context: string | null } & ({ source: FillSource; memory: null } | { source: null; memory: FillMemory });
+type GroundedField = FillField & { value: string; span: string; display: string; context: string | null; checked: CheckedValue } & ({ source: FillSource; memory: null } | { source: null; memory: FillMemory });
 
 /** A field of the form that Caret leaves to the user: its name, and the value Caret would use when it has one. */
 export interface YourField {
@@ -64,6 +66,8 @@ const isAnswer = (f: FillField): boolean => f.answer !== undefined && f.answer.w
  * native select, radio group, checkbox, date, time or custom dropdown). Left to the user: every other field of the
  * proposal, with the value Caret would use when it has one, and, when `w` (the form's window) is given, the form's
  * empty controls fill never asks about: a file input, a consent or sign-up box, a control past the question's cap.
+ * Each field written carries the write contract's mint proposeFill made for that very field object (fill.ts mintOf);
+ * a field without one throws ContractError: a proposal that was copied or built by hand is never written.
  */
 export function writtenFields(p: FillProposal, w?: WindowState, opts: { answers?: boolean } = {}): GroundedProposal {
   const fields: GroundedField[] = [];
@@ -80,12 +84,12 @@ export function writtenFields(p: FillProposal, w?: WindowState, opts: { answers?
     }
     if (isAnswer(f)) answers++;
     if (f.control === "text" && f.value !== null && (f.source !== null || f.memory !== null)) {
-      fields.push({ ...f, value: f.value, span: f.value, display: f.value, context: null } as GroundedField);
+      fields.push({ ...f, value: f.value, span: f.value, display: f.value, context: null, checked: requireChecked(mintOf(f), f.value, f.key, `field ${f.key}`) } as GroundedField);
       continue;
     }
     const h = f.handoff;
     if (h !== null && h.writes === true && (h.source !== null || h.memory !== null)) {
-      fields.push({ ...f, handoff: null, value: h.value, source: h.source, memory: h.memory, span: span ?? h.value, display: h.display, context: h.context ?? null } as GroundedField);
+      fields.push({ ...f, handoff: null, value: h.value, source: h.source, memory: h.memory, span: span ?? h.value, display: h.display, context: h.context ?? null, checked: requireChecked(mintOf(f), h.value, f.key, `field ${f.key}`) } as GroundedField);
       continue;
     }
     const ref = h === null ? null : sourceRef(h.source, h.memory, span ?? h.value);
@@ -336,6 +340,8 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
   const order = new Map([...(w?.nodes.keys() ?? [])].map((k, i) => [k, i]));
   const fields = [...p.fields].sort((a, b) => (order.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.key) ?? Number.MAX_SAFE_INTEGER));
   const steps = fields.map((f, i) => {
+    // W2: the write contract's mint for exactly this value in this field, or ContractError (fill/contract.ts).
+    requireChecked(f.checked, f.value, f.key, `field ${f.key}`);
     slots[`v${i}`] = f.value;
     slots[`l${i}`] = fieldLabel(model, p.windowId, f.key);
     // A value from memory is no window's text, so no window is charged when a question quotes it.

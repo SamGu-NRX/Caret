@@ -18,6 +18,9 @@ import { OfferGate } from "../src/offers/settings.ts";
 import { offerField } from "../src/offers/field.ts";
 import { fillSlots, Plan } from "../src/executor/schema.ts";
 import { FIXTURE_APP, MAIL_APP, field, focus, snap, text, value } from "./builders.ts";
+import { minted } from "./mint.ts";
+/** W2: writtenFields on a hand-built proposal whose written fields the write contract minted first (test/mint.ts). */
+const writtenMinted = async (p: FillProposal, ...rest: Parameters<typeof writtenFields> extends [unknown, ...infer R] ? R : never): Promise<ReturnType<typeof writtenFields>> => writtenFields(await minted(p), ...rest);
 
 const accept = (offerId: string, actionId: string, overrides: Record<string, number> = {}): OfferAccept => ({ type: "offerAccept", v: PROTOCOL_VERSION, offerId, actionId, overrides, at: 1 });
 const FIELD = { pid: 5150, windowId: "5150-2", key: "k", frame: null, window: { number: null, title: "Checkout" } };
@@ -199,15 +202,15 @@ const nameField = grounded(FK("textfield:name~0"), "Dana Whitfield", { ...mail, 
 const phoneField = grounded(FK("textfield:phone~0"), "+1 (512) 555-0142", { ...mail, nodeKey: MK("statictext:phone: +# (#) #-#~0") });
 
 describe("fill pop-up", () => {
-  it("is offered only when two or more fields all carry a value and its source", () => {
-    expect(fillPopupEligible(proposal([nameField]))).toBe(false);
-    expect(fillPopupEligible(proposal([nameField, { ...phoneField, value: null, source: null, choice: "none" }]))).toBe(false);
-    expect(fillPopupEligible(proposal([nameField, phoneField]))).toBe(true);
+  it("is offered only when two or more fields all carry a value and its source", async () => {
+    expect(fillPopupEligible(await minted(proposal([nameField])))).toBe(false);
+    expect(fillPopupEligible(await minted(proposal([nameField, { ...phoneField, value: null, source: null, choice: "none" }])))).toBe(false);
+    expect(fillPopupEligible(await minted(proposal([nameField, phoneField])))).toBe(true);
   });
 
-  it("builds a valid spec in which every shown value names the node it came from", () => {
+  it("builds a valid spec in which every shown value names the node it came from", async () => {
     const m = desk();
-    const msg = buildFillPopup(m, writtenFields(proposal([nameField, phoneField])));
+    const msg = buildFillPopup(m, await writtenMinted(proposal([nameField, phoneField])));
     expect(msg).toEqual({
       type: "popup",
       v: PROTOCOL_VERSION,
@@ -245,7 +248,7 @@ describe("fill pop-up", () => {
     expect(HelperMessage.safeParse(msg).success).toBe(true);
   });
 
-  it("lists a control Caret never writes as a row the user sets, after the rows it fills (H5, as D2-04 lists them)", () => {
+  it("lists a control Caret never writes as a row the user sets, after the rows it fills (H5, as D2-04 lists them)", async () => {
     const m = desk();
     const size: FillField = {
       ...nameField,
@@ -258,7 +261,7 @@ describe("fill pop-up", () => {
       asks: [],
       handoff: { value: "Large", display: "Large", source: { pid: 1, bundleId: "b", kind: null, ...mail, nodeKey: MK("statictext:large pizza~0") }, memory: null },
     };
-    const msg = buildFillPopup(m, writtenFields(proposal([nameField, phoneField, size])));
+    const msg = buildFillPopup(m, await writtenMinted(proposal([nameField, phoneField, size])));
     expect(msg.spec.blocks.map((b) => b.type)).toEqual(["header", "source", "fields", "facts", "actions"]);
     expect(msg.spec.blocks[0]).toMatchObject({ title: { text: "Fill 2 fields" } });
     const field = { node: `${FORM}/${FK("popupbutton:pizza size~0")}` };
@@ -272,18 +275,18 @@ describe("fill pop-up", () => {
     expect(parsePopupSpec(msg.spec)).toEqual(msg.spec);
     expect(HelperMessage.safeParse(msg).success).toBe(true);
     // A control with no value to set is still the user's: its row names the field alone.
-    const none = buildFillPopup(m, writtenFields(proposal([nameField, phoneField, { ...size, handoff: null }])));
+    const none = buildFillPopup(m, await writtenMinted(proposal([nameField, phoneField, { ...size, handoff: null }])));
     expect(none.spec.blocks[3]).toMatchObject({ type: "facts", rows: [{ label: "You set", value: { text: "Field" } }] });
   });
 
-  it("lists five rows and counts the rest, and names every source window when there are several", () => {
+  it("lists five rows and counts the rest, and names every source window when there are several", async () => {
     const m = desk();
     const fields = LABELS.map((l, i) =>
       i === 3
         ? grounded(FK(`textfield:${l.toLowerCase()}~0`), "Austin", { windowId: SRC2, nodeKey: "dev.caret.directory/standard/statictext:austin~0", appName: "Directory Fixture", windowTitle: "Directory Fixture" })
         : { ...nameField, key: FK(`textfield:${l.toLowerCase()}~0`) },
     );
-    const spec = buildFillPopup(m, writtenFields(proposal(fields))).spec;
+    const spec = buildFillPopup(m, await writtenMinted(proposal(fields))).spec;
     const [header, source, rows] = spec.blocks;
     expect(header).toMatchObject({ title: { text: "Fill 6 fields" } });
     expect(source).toEqual({
@@ -299,11 +302,11 @@ describe("fill pop-up", () => {
     expect(() => parsePopupSpec(spec)).not.toThrow();
   });
 
-  it("rechecks every destination and source before it fills", () => {
+  it("rechecks every destination and source before it fills", async () => {
     const m = desk();
     // Each field as fill describes it, which recheckFill compares with the form as it is now.
     const form = m.windows.get(FORM)!;
-    const p = writtenFields(proposal([nameField, phoneField].map((f) => ({ ...f, descriptor: describeField(form, form.nodes.get(f.key)!).text }))));
+    const p = await writtenMinted(proposal([nameField, phoneField].map((f) => ({ ...f, descriptor: describeField(form, form.nodes.get(f.key)!).text }))));
     expect(recheckFill(m, p, () => null)).toBeNull();
     m.apply(snap([text(MK("statictext:dana whitfield~0"), "Dana W.")], { at: 4000, windowId: SRC, title: "Order confirmation", app: MAIL_APP, root: MK("statictext:dana whitfield~0") }));
     expect(recheckFill(m, p, () => null)).toBe(`the source ${MK("statictext:dana whitfield~0")} changed`);
@@ -312,8 +315,8 @@ describe("fill pop-up", () => {
     expect(recheckFill(filled, p, () => null)).toBe(`the field ${FK("textfield:phone~0")} is no longer empty`);
   });
 
-  it("writes each field by its exact key, with every screen string a slot", () => {
-    const { plan, slots } = fillPlan(desk(), writtenFields(proposal([nameField, phoneField])));
+  it("writes each field by its exact key, with every screen string a slot", async () => {
+    const { plan, slots } = fillPlan(desk(), await writtenMinted(proposal([nameField, phoneField])));
     const filled = fillSlots(Plan.parse(plan), slots);
     expect(filled.steps.map((s) => [s.says, s.end.kind === "valueEquals" && s.end.target.key, s.end.kind === "valueEquals" && s.end.window.title])).toEqual([
       ["Name holds Dana Whitfield", FK("textfield:name~0"), "Checkout {{x}}"],

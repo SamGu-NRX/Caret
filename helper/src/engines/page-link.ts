@@ -248,6 +248,8 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         ...(c.entry === undefined ? {} : { entry: c.entry }),
         // H14: the types a file control's chooser may offer, for its attach row.
         ...(c.accept === undefined ? {} : { accept: c.accept }),
+        // W2: a text input's own kind, which the write contract checks a value's shape against (fill/contract.ts).
+        ...(TEXT_KINDS.has(c.kind) ? { inputKind: c.kind as NonNullable<Node["inputKind"]> } : {}),
       });
       // A native select's options, as the AXMenuItem children fill reads a select's options from (controls.ts), so a
       // hand-off for it can name one. Chrome's Accessibility shows only the selected one. An option whose value is

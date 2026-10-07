@@ -277,6 +277,23 @@
                       "minLength": 1,
                       "maxLength": 100
                     }
+                  },
+                  "inputKind": {
+                    "type": "string",
+                    "enum": [
+                      "text",
+                      "email",
+                      "tel",
+                      "url",
+                      "number",
+                      "search",
+                      "date",
+                      "time",
+                      "datetime",
+                      "month",
+                      "week",
+                      "textarea"
+                    ]
                   }
                 },
                 "required": [
@@ -2533,7 +2550,9 @@
                           "sourceCut",
                           "wrongKind",
                           "otherPerson",
-                          "ambiguous"
+                          "ambiguous",
+                          "notExact",
+                          "unverified"
                         ]
                       },
                       {

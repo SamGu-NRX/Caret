@@ -13,8 +13,8 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { fieldPart, namePart, splitAddress, splitName } from "../fill/derive.ts";
 import { fieldKinds, isNameLike } from "../fill/kinds.ts";
-import { writeMisfit } from "../fill/writable.ts";
-import { OWNER_CRITERIA, WHOSE_CRITERIA, WHOSE_CUTOFF } from "../fill/fill.ts";
+import { candidateProvenance, OWNER_CRITERIA, WHOSE_CRITERIA, WHOSE_CUTOFF } from "../fill/fill.ts";
+import type { Provenance } from "../fill/contract.ts";
 import { SnippetLedger, WINDOW_CHARS } from "../privacy.ts";
 import type { AskJev } from "../fill/jev.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
@@ -24,7 +24,7 @@ import type { PlanningSnapshot } from "../codemode/types.ts";
 import type { WriterPort } from "../writer/port.ts";
 import { WRITER_MAX_OUTPUT_TOKENS } from "../writer/config.ts";
 import { instructionValues } from "./spans.ts";
-import { asksToFillForm, byRelevance, namesShortLabel, outrankedFields, PLAN_CUTOFF, relevance, writableFields, type Field, type PlanDraft, type PlannerMemory } from "./planner.ts";
+import { asksToFillForm, byRelevance, mintWrites, namesShortLabel, outrankedFields, PLAN_CUTOFF, relevance, writableFields, type Field, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import type { JevRequest } from "../fill/jev.ts";
 import { PlannerError, validatePlan, type PlanContext } from "./validate.ts";
 import type { MemoryValue } from "./trace.ts";
@@ -72,6 +72,8 @@ export interface Value {
   key: string | null;
   /** The memory entry it was copied from, as Step.memory names it ("about-1", or "about-1#first" for a part). */
   memory: string | null;
+  /** W2: where it was read, as the write contract carries it (fill/contract.ts). */
+  provenance: Provenance;
 }
 
 /**
@@ -83,24 +85,25 @@ export interface Value {
 export function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number, formRoom: number): Value[] {
   const out: Value[] = [];
   const used = new Map<WindowState | null, number>();
-  const add = (text: string, display: string, win: WindowState | null, owner: Value["owner"], key: string | null = null, memoryRef: string | null = null): void => {
+  const add = (text: string, display: string, win: WindowState | null, owner: Value["owner"], provenance: Provenance, key: string | null = null, memoryRef: string | null = null): void => {
     const d = display.length <= 400 ? display : `${display.slice(0, 399)}…`;
     const room = win === null ? formRoom : WINDOW_CHARS - win.window.title.length;
     const u = used.get(win) ?? 0;
     if (out.length >= MAX_VALUES || out.some((v) => v.text === text) || u + d.length > room) return;
     used.set(win, u + d.length);
-    out.push({ text, display: d, window: win, owner, key, memory: memoryRef });
+    out.push({ text, display: d, window: win, owner, key, memory: memoryRef, provenance });
   };
   const spans = instructionValues(instruction);
-  if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`, null, null);
+  if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`, null, null, { kind: "instruction", span: s });
   for (const m of memory) {
     if (!ledger.plan([m.text, m.label])) continue;
     // Memory holds people as well as the user (helper.ts plannerMemory): whose an entry is comes from the entry.
     const owner = m.whose ?? null;
     const whose = owner === "user" ? "the user's" : owner === "other" ? "someone else's" : "a";
-    add(m.text, `"${m.text}" (${whose} ${m.label}, from memory)`, null, owner, null, m.id);
+    const entry: Provenance = { kind: "memory", id: m.id, label: m.label, part: null, whose: owner };
+    add(m.text, `"${m.text}" (${whose} ${m.label}, from memory)`, null, owner, entry, null, m.id);
     const s = /\bname\b/i.test(m.label) || owner === "other" ? splitName(m.text) : null;
-    if (s?.kind === "split") for (const [part, t] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) if (t !== null) add(t, `"${t}" (the ${part} in ${whose} ${m.label}, from memory)`, null, owner, null, `${m.id}#${part.split(" ")[0]}`);
+    if (s?.kind === "split") for (const [part, t] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) if (t !== null) add(t, `"${t}" (the ${part} in ${whose} ${m.label}, from memory)`, null, owner, { kind: "derived", how: "namePart", base: entry, also: null }, null, `${m.id}#${part.split(" ")[0]}`);
   }
   const cands = generateCandidates(model, w.window.windowId, MAX_VALUES, now, ledger);
   const windows = [...new Set(cands.map((c) => c.source.windowId))].slice(0, MAX_SOURCE_WINDOWS);
@@ -108,14 +111,14 @@ export function valueList(instruction: string, model: ScreenModel, w: WindowStat
     const win = model.windows.get(id) ?? null;
     if (win === null) continue;
     const mine = cands.filter((c) => c.source.windowId === id);
-    for (const c of mine) add(c.text, describeCandidate(c), win, null, c.source.nodeKey);
+    for (const c of mine) add(c.text, describeCandidate(c), win, null, candidateProvenance(c), c.source.nodeKey);
     for (const c of mine) {
       const parts = splitAddress(c.text);
-      if (parts !== null) for (const [k, v] of Object.entries(parts)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, win, null, c.source.nodeKey);
+      if (parts !== null) for (const [k, v] of Object.entries(parts)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, win, null, { kind: "derived", how: "addressPart", base: candidateProvenance(c), also: null }, c.source.nodeKey);
       const name = c.context !== null && /\bname\b/i.test(c.context) && isNameLike(c.text, c.context) ? splitName(c.text) : null;
       if (name?.kind === "split") for (const part of ["first", "middle", "last"] as const) {
         const t = namePart(name, part);
-        if (t !== null) add(t, `"${t}" (the ${part} name in ${describeCandidate(c)})`, win, null, c.source.nodeKey);
+        if (t !== null) add(t, `"${t}" (the ${part} name in ${describeCandidate(c)})`, win, null, { kind: "derived", how: "namePart", base: candidateProvenance(c), also: null }, c.source.nodeKey);
       }
     }
   }
@@ -229,17 +232,21 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
     if (field === undefined || value === undefined || !/^t\d+$/.test(f.target) || !/^v\d+$/.test(f.value)) throw new PlannerError("schema", `the plan program named ${f.target} and ${f.value}, which the snapshot did not list`);
     if (seenTargets.has(field.node.key)) throw new PlannerError("schema", `the plan program fills ${field.name} twice`);
     seenTargets.add(field.node.key);
-    // The kind check runs again in validatePlan; here it names the field, so a refusal says which.
-    const bad = writeMisfit(value.text, { labelWords: [field.label] });
-    if (bad !== null) throw new PlannerError("wrongKind", `${field.name}: ${bad}`);
     const slot = `v${i + 1}`;
     slots[slot] = value.text;
     slotNames[slot] = `the value for ${field.name}`;
     return { says: `${field.name} holds {{${slot}}}`, end: { kind: "valueEquals", window: sel, target: { key: field.node.key, describe: `the ${field.name} field` }, value: `{{${slot}}}` } };
   });
   const plan: Plan = { id: o.offerKey, title: instruction.replace(/\s+/g, " ").trim().slice(0, 100), slots: slotNames, steps };
+  // W2: each value the program chose meets the write contract in its field, with where it was read (fill/contract.ts);
+  // a refusal names the field and refuses the plan.
+  const mints = await mintWrites(unvetoed.map((f, i) => {
+    const field = fields[Number(f.target.slice(1)) - 1] as Field;
+    const value = values[Number(f.value.slice(1)) - 1] as Value;
+    return { slot: `v${i + 1}`, w, node: field.node, name: field.name, text: value.text, provenance: value.provenance, owner: value.owner };
+  }), { askJev: o.askJev, ledger, instruction, now });
   const ctx: PlanContext = { model, memory: memoryValues, instruction };
-  const checked = validatePlan(plan, slots, ctx);
+  const checked = validatePlan(plan, slots, ctx, mints);
   if (checked.window.window.windowId !== w.window.windowId) throw new PlannerError("unknownWindow", `'${w.window.title}' closed while Caret planned, and another window took its title`);
   const sources: Record<string, string> = {};
   for (const wr of checked.writes) if (wr.trace.from === "window") sources[`v${wr.step + 1}`] = wr.trace.windowId;

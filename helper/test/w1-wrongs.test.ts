@@ -15,7 +15,8 @@ import { instructionText, LABELLED, lineTexts, questionAnswer, roleAt, severalVa
 import { writeMisfit } from "../src/fill/writable.ts";
 import { misfit } from "../src/fill/kinds.ts";
 import { fieldPart } from "../src/fill/derive.ts";
-import { PlannerError, validatePlan } from "../src/planner/validate.ts";
+import { PlannerError } from "../src/planner/validate.ts";
+import { validateMinted } from "./mint.ts";
 import { Snapshot, type FillProposal, type Node } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { buildDesk, loadAsks, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
@@ -79,20 +80,20 @@ describe("LV1 wrong 1: the rental application's Job title took the whole work li
     expect(fieldOf(p, "form/job")).toMatchObject({ value: null, withheld: "wrongKind", confidence: 0.9 });
   });
 
-  it("is refused by the planner's validation, which the writer's plans meet (review 7)", () => {
+  it("is refused by the planner's validation, which the writer's plans meet (review 7)", async () => {
     const m = noteDesk(`work: ${LINE}\n`, [field("form/job", "", { label: "Job title" })]);
     const step = { says: "Job title", end: { kind: "valueEquals" as const, window: { bundleId: "dev.caret.fixture", title: "Application" }, target: { key: "form/job", describe: "Job title" }, value: LINE } };
-    const run = (value: string): string => {
+    const run = async (value: string): Promise<string> => {
       try {
-        validatePlan({ id: "p", title: "p", slots: {}, steps: [{ ...step, end: { ...step.end, value } }] }, {}, { model: m, memory: [], instruction: "fill in my job" });
+        await validateMinted({ id: "p", title: "p", slots: {}, steps: [{ ...step, end: { ...step.end, value } }] }, {}, { model: m, memory: [], instruction: "fill in my job" });
         return "passed";
       } catch (e) {
         if (e instanceof PlannerError) return e.code;
         throw e;
       }
     };
-    expect(run(LINE)).toBe("wrongKind");
-    expect(run("lab technician")).toBe("passed");
+    expect(await run(LINE)).toBe("wrongKind");
+    expect(await run("lab technician")).toBe("passed");
   });
 });
 
@@ -391,6 +392,23 @@ describe("the guard adversary (scripts/guard-adversary.ts) on the committed desk
       // Canned right values measured on these desks when W1's review fixes landed (the corpus by the reader's windows, the Ask sets through
       // planAsk): the guards must not cost one.
       expect(r.canned.filter((x) => x.outcome === "right").length).toBeGreaterThanOrEqual(167);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  }, 300_000);
+
+  it("writes nothing outside a named exemption when every value check refuses (W2: no path skips the write contract), routines included", () => {
+    const out = mkdtempSync(join(tmpdir(), "w2-adversary-"));
+    try {
+      execFileSync(process.execPath, [join(here, "../scripts/guard-adversary.ts"), "--out", out, "--verifier", "refuse", "--sets", "corpus,b24,b25,b26,b31,routine", "--corpus-pages", join(out, "none")], { stdio: "pipe" });
+      const r = JSON.parse(readFileSync(join(out, "guard-adversary.json"), "utf8")) as { unexempt: number; c: { written: number }; attempts: { cls: string; outcome: string; via: string | null }[]; routine: { offers: number; cells: number; errors: string[] }; failures: string[] };
+      expect(r.attempts.filter((x) => x.cls === "c").length).toBeGreaterThan(1000);
+      expect(r.unexempt).toBe(0);
+      // Every write left is an option's own label or a resolved date (named exemptions); none is unchecked.
+      expect(r.attempts.filter((x) => x.outcome === "written" && x.via?.startsWith("exempt:") !== true)).toEqual([]);
+      expect(r.routine.offers).toBeGreaterThan(0);
+      expect(r.routine.errors).toEqual([]);
+      expect(r.failures).toEqual([]);
     } finally {
       rmSync(out, { recursive: true, force: true });
     }

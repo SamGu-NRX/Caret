@@ -15,7 +15,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { AskOption, FillField, FillProposal, Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
-import { conversionOf, FillError, memoryRefOf, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FillError, memoryRefOf, mintOf, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
 import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
@@ -571,7 +571,12 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   const ctx: PlanContext = { model: sourceModel, memory: memory.values(), instruction };
   let checkedPlan: ReturnType<typeof validatePlan>;
   try {
-    checkedPlan = validatePlan(plan, slots, ctx);
+    // W2: the write contract's mint fill made for each written field (fill.ts mintOf), by the step's slot.
+    const mints = new Map(writes.flatMap((f, i) => {
+      const m = mintOf(f);
+      return m === undefined ? [] : [[`v${i + 1}`, m] as const];
+    }));
+    checkedPlan = validatePlan(plan, slots, ctx, mints);
   } catch (e) {
     return refused(e);
   }

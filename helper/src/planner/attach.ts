@@ -63,6 +63,7 @@ export function planAttach(instruction: string, model: ScreenModel, windowId: st
     slots: {},
     steps: [{ says: `${label === "" ? "The file input" : label} holds ${kind.wants}`, end: { kind: "fileAttached", window: sel, target: { key: target.key, describe: `the ${label === "" ? "file" : label} input` }, wants: kind.wants } }],
   };
-  const checked = validatePlan(plan, {}, { model, memory: [], instruction });
+  // No value step, so no write contract mint (fill/contract.ts).
+  const checked = validatePlan(plan, {}, { model, memory: [], instruction }, new Map());
   return { plan, slots: {}, checked, answers: {}, withheld: [], jev: { calls: 0, costUsd: 0, latencyMs: 0 } };
 }

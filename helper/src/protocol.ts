@@ -68,6 +68,11 @@ export const Node = z.object({
   entry: PageEntry.optional(),
   /** H14, page file controls only: the accept attribute's tokens, lowercased. */
   accept: z.array(z.string().min(1).max(100)).max(20).optional(),
+  /**
+   * W2, page text inputs only: the input's kind as the page walk read it (PageControlKind, one of page-link.ts
+   * TEXT_KINDS), which the write contract checks a value's shape against (fill/contract.ts FieldContract.inputKind).
+   */
+  inputKind: z.enum(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea"]).optional(),
 });
 export type Node = z.infer<typeof Node>;
 
@@ -1251,6 +1256,8 @@ export type PageInsert = z.infer<typeof PageInsert>;
  * answer: a fill value with `answer`, a pop-up that writes one, an answerSaveOffer; and only it may send answerSave.
  */
 export const SAVED_ANSWERS_CAPABILITY = "savedAnswers";
+/** W2: a consumer that reads FillWithheld's "notExact" and "unverified"; any other is sent "wrongKind" for both. */
+export const VALUE_CHECKS_CAPABILITY = "valueChecks";
 
 /** The longest answer Caret keeps. Its record line must stay under memory/parse.ts MAX_LINE_CHARS once JSON-quoted. */
 export const MAX_ANSWER_CHARS = 4000;
@@ -1388,8 +1395,11 @@ export type FillMemory = z.infer<typeof FillMemory>;
  * wants the user's and the asks did not both say the value is the user's;
  * "ambiguous": code could not read the value without guessing (a single name for First/Last, a date that
  * could be two days, no option or more than one that the source names).
+ * W2 (fill/contract.ts) adds "notExact": Caret's check of the value says it is not exactly the field's value, and
+ * "unverified": that check could not run just now, so nothing was written. A consumer whose hello lacks
+ * VALUE_CHECKS_CAPABILITY is sent "wrongKind" for both (server.ts), the nearest of the six it reads.
  */
-export const FillWithheld = z.enum(["disagree", "lowConfidence", "sourceCut", "wrongKind", "otherPerson", "ambiguous"]);
+export const FillWithheld = z.enum(["disagree", "lowConfidence", "sourceCut", "wrongKind", "otherPerson", "ambiguous", "notExact", "unverified"]);
 export type FillWithheld = z.infer<typeof FillWithheld>;
 
 /**

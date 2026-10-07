@@ -27,6 +27,7 @@ import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived, markFilled } from "./gates.ts";
+import { checkValues, ContractError, exemptRefusal, mintExempt, requireChecked, type CheckedValue, type ExemptRule, type Proposed } from "../fill/contract.ts";
 import { PAGE_CHECKED } from "../protocol.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
@@ -217,7 +218,23 @@ export interface LowerOptions {
    * and the hand-off row go with the last.
    */
   parts?: ReadonlyMap<string, number>;
+  /** When the write contract's mints are made (fill/contract.ts); now by default. */
+  now?: number;
 }
+
+/**
+ * W2: what the write contract is asked about a value written into a target: the target's field as frozen, what the
+ * control will hold, and where the value was read. A target with no field contract is one the inventory never froze
+ * one for (a field Caret never types, refused by codeGate before this), so a write into it is a bug.
+ */
+export function proposedFor(t: TargetBinding, v: ValueBinding, written: string): Proposed {
+  if (t.field === undefined) throw new ContractError("unchecked", `${t.ref}: the target has no field contract`);
+  const provenance = v.provenance ?? (v.source !== null ? { kind: "window" as const, windowId: v.source.windowId, nodeKey: v.source.key, app: "", title: "", span: v.text, label: null, line: null, partOf: null } : v.memory !== null ? { kind: "memory" as const, id: v.memory, label: "", part: null, whose: v.owner === "user" || v.owner === "other" ? v.owner : null } : { kind: "instruction" as const, span: v.text });
+  return { field: t.field, text: written, display: v.display, provenance, owner: v.owner };
+}
+
+/** The exemption a non-text control's written value is minted under in a goal: an option's own label or a resolved date. */
+const EXEMPT_GOAL: Partial<Record<TargetBinding["control"], ExemptRule>> = { select: "optionLabel", radio: "optionLabel", combobox: "optionLabel", date: "resolverFormat", time: "resolverFormat" };
 
 /** Segment warnings a goalProgress carries at most (protocol GoalProgress.warnings). */
 const MAX_WARNINGS = 24;
@@ -229,6 +246,7 @@ const MAX_WARNINGS = 24;
  */
 export async function lowerGoal(goalId: string, instruction: string, draft: DraftPlan, inv: GoalInventory, o: LowerOptions): Promise<GoalPlan> {
   const done = o.done ?? [];
+  const now = o.now ?? Date.now();
   if (!/^[0-9a-f]{64}$/.test(draft.programDigest)) throw new GoalError("schema", "the plan has no program behind it", draft.programDigest);
   // Drafted texts (B30) as values: their basis is the windows and values the program named, by what they stood for.
   // Memory a fill of this plan copies is part of every draft's basis ("memory the plan used").
@@ -322,7 +340,16 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       // whether it is the one asked for. Any other value is the writer's pick.
       const derived = lowered.kind === "calendar" && v.event !== null && isDerived(v) && soleEvent && eventAsAsked(instruction, v.event, labelWords);
       const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : derived ? "derived" : byFill ? "fill" : "jev";
-      const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered };
+      // W2: the write contract's mint (fill/contract.ts). Fill's own mint for a value fill agreed on for this very target;
+      // a draft and a non-text control under their named exemption; a copied text value is checked below, all at once.
+      let checked: CheckedValue | undefined;
+      if (lowered.kind === "write" && lowered.writes !== null) {
+        const at = `step ${s.ref}`;
+        if (byFill) checked = requireChecked(v.checked, lowered.writes, t.key, at);
+        else if (v.draft !== null) checked = mintExempt(proposedFor(t, v, lowered.writes), "draft", now, instruction);
+        else if (t.control !== "text") checked = mintExempt(proposedFor(t, v, lowered.writes), EXEMPT_GOAL[t.control] ?? "optionLabel", now, instruction);
+      }
+      const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered, ...(checked === undefined ? {} : { checked }) };
       steps.push(gate === "derived" ? markDerived(step) : gate === "fill" ? markFilled(step) : step);
       lastPress = null;
       continue;
@@ -366,15 +393,34 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         continue;
       }
       recipientCheck(t, sender, inv);
-      const gated = codeGate(t, sender.text, sender.text, "copy", instruction);
+      // W2: the sender is minted under its exemption, whose shape checks still run (fill/contract.ts exemptRefusal).
+      const gated = codeGate(t, sender.text, sender.text, "copy", instruction) ?? exemptRefusal(proposedFor(t, sender, sender.text), "recipientFromFrom", instruction);
       if (gated !== null) {
         left.push({ windowId, key: f.key, label: f.label, why: "recipient", says: `You add the recipient in '${f.label}': ${gated}` });
         continue;
       }
       const at = steps.findIndex((x) => x.target.domain.kind === "window" && x.target.domain.windowId === windowId);
-      const step = markDerived<GoalStep>({ ref: `to:${t.ref}`, index: 0, kind: "write", says: `${t.label}: ${sender.text}`, target: t, value: sender, writes: sender.text, effect: null, handoff: null, to: true, gate: "derived" });
+      const step = markDerived<GoalStep>({ ref: `to:${t.ref}`, index: 0, kind: "write", says: `${t.label}: ${sender.text}`, target: t, value: sender, writes: sender.text, effect: null, handoff: null, to: true, gate: "derived", checked: mintExempt(proposedFor(t, sender, sender.text), "recipientFromFrom", now, instruction) });
       steps.splice(at < 0 ? steps.length : at, 0, step);
     }
+  }
+  // W2: every copied text value the program chose meets the write contract once (fill/contract.ts checkValues), with the
+  // provenance the inventory froze; a refusal is dropped and said, as a gate's is.
+  const copies = steps.filter((x) => x.kind === "write" && x.checked === undefined && x.writes !== null && x.value !== null);
+  if (copies.length > 0) {
+    const proposed = copies.map((x) => proposedFor(x.target, x.value as ValueBinding, x.writes as string));
+    const result = await checkValues(proposed, { askJev: o.askJev, ledger: o.ledger, instruction, now });
+    const refusedSteps = new Set<GoalStep>();
+    for (const r of result.refused) {
+      const x = copies[proposed.indexOf(r.proposed)] as GoalStep;
+      refusedSteps.add(x);
+      dropAs(x.target, r.says, x.value);
+    }
+    for (const c of result.ok) {
+      const x = copies.find((y, i) => proposed[i]?.field === c.field && proposed[i]?.text === c.text) as GoalStep;
+      x.checked = c;
+    }
+    steps = steps.filter((x) => !refusedSteps.has(x));
   }
   // Jev's question for every copied value still in the plan (drafts are drafts.ts's, derived values code's), both
   // wordings, fill's floor.

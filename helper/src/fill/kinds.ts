@@ -205,7 +205,7 @@ const DATE_PART: ReadonlyMap<string, RegExp> = new Map([
 ]);
 const ORGANIZATION = /\b(?:company|employer|organi[sz]ation)\b/;
 /** A label that spells out a date's format: "Moved in (MM/YYYY)", "Start date (DD.MM.YYYY)". */
-const DATE_FORMAT = /\b(?:mm|dd|yyyy|yy)(?:\s*[/.-]\s*(?:mm|dd|yyyy|yy))+\b/iu;
+export const DATE_FORMAT = /\b(?:mm|dd|yyyy|yy)(?:\s*[/.-]\s*(?:mm|dd|yyyy|yy))+\b/iu;
 /** A label that shows the currency beside the field, so the field takes the number alone: "Monthly rent ($)". */
 export const CURRENCY_SHOWN = /\(\s*(?:\$|€|£|¥|usd|eur|gbp)\s*\)/iu;
 /** A company's name: up to eight words with no brackets, @ or sentence punctuation ("Ridgeline Outdoor Co", "Acme, Inc.", "3M"). */

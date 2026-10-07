@@ -4,7 +4,8 @@
 //   - it writes fields and hands off presses, in one window, since an act grant covers one window;
 //   - every window and target exists in the screen model, and every written target is an editable field;
 //   - every value traces verbatim to a window, a memory entry or the instruction (trace.ts);
-//   - every value's kind fits its field: no whole address in City, no email in Phone (kinds.ts misfit);
+//   - every value carries the write contract's mint for exactly that text in exactly that field (W2,
+//     fill/contract.ts), whose deterministic checks are run again here: no whole address in City, no email in Phone;
 //   - a hand-off comes last, and its reason is the one the risk table gives its control's label, so a
 //     Send press can never be passed off as merely unverifiable.
 // Each failure is a PlannerError with a code the host can act on and a sentence that says what failed.
@@ -15,7 +16,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanErrorCode } from "../protocol.ts";
 import { secretIn, traceValue, type MemoryValue, type Trace } from "./trace.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { partIn, writeMisfit } from "../fill/writable.ts";
+import { requireChecked, shapeRefusal, type CheckedValue } from "../fill/contract.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
 import { PAGE_WINDOW_KIND } from "../engines/windows.ts";
@@ -36,8 +37,10 @@ export interface CheckedPlan {
   /** The plan with its slots filled. */
   plan: Plan;
   window: WindowState;
-  /** For each step that writes, the field and where its value came from. */
-  writes: { step: number; node: Node; value: string; trace: Trace }[];
+  /** For each step that writes, the field, where its value came from, and the write contract's mint for it. */
+  writes: { step: number; node: Node; value: string; trace: Trace; checked: CheckedValue }[];
+  /** The mints by slot name, as validatePlan took them: a revalidation before the run passes them again. */
+  mints: ReadonlyMap<string, CheckedValue>;
   /** The last step, when it hands a press to the user. */
   handoff: { step: number; node: Node; label: string; why: HandoffWhy } | null;
   /** The step that attaches the file the user confirms (H5), at most one; null when the plan attaches none. */
@@ -56,8 +59,12 @@ export function handoffWhy(label: string): HandoffWhy {
   return risk === "safe" ? "unverifiable" : risk;
 }
 
-/** Checks a drafted plan against the screen model now. Throws PlannerError naming the first rule it breaks. */
-export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: PlanContext): CheckedPlan {
+/**
+ * Checks a drafted plan against the screen model now. Throws PlannerError naming the first rule it breaks, and
+ * ContractError (fill/contract.ts) for a write whose value is "{{slot}}" without the mint `checked` holds for that slot,
+ * for exactly its text in exactly its field: whoever drafted the plan mints its values before it is checked.
+ */
+export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: PlanContext, checked: ReadonlyMap<string, CheckedValue>): CheckedPlan {
   const parsed = Plan.safeParse(raw);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -113,11 +120,14 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
       if (secretValue !== null) throw new PlannerError("notEditable", `${at}: its value is one of the ${SENSITIVE_SAYS[secretValue]} Caret never types; that is left to you`);
       const trace = traceValue(end.value, ctx.model, ctx.memory, ctx.instruction);
       if (trace === null) throw new PlannerError("untracedValue", `${at}: '${clip(end.value)}' is not in any window, in memory or in your instruction`);
-      // The field's own label, nearest label or placeholder, as the planner names it (planner.ts Field.label), by the
-      // write check every path shares (fill/writable.ts, W1). A plan names no source label, so a value's shape decides.
-      const bad = writeMisfit(end.value, { labelWords: [d.label ?? d.nearest ?? d.placeholder], part: partIn(w, node) });
+      // W2: the mint the drafter made for this slot's value in this field (fill/contract.ts), never a recomputed guess:
+      // the field and provenance it was checked with travel with it (REVIEW-R2 P2.5: "Mary Ann" lost her source label here).
+      const slot = /^\{\{(\w+)\}\}$/u.exec(rawValue(parsed.data, i) ?? "")?.[1];
+      const mint = requireChecked(slot === undefined ? undefined : checked.get(slot), end.value, node.key, at);
+      if (mint.field.descriptor !== d.text && mint.verdict.by !== "exempt") throw new PlannerError("unknownTarget", `${at}: the field no longer reads as it did when its value was checked`);
+      const bad = mint.verdict.by === "exempt" ? null : shapeRefusal(mint);
       if (bad !== null) throw new PlannerError("wrongKind", `${at}: ${bad}`);
-      writes.push({ step: i, node, value: end.value, trace });
+      writes.push({ step: i, node, value: end.value, trace, checked: mint });
       continue;
     }
     const label = (node.label ?? "").trim();
@@ -127,7 +137,13 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
   }
   // The schema requires a step, so the loop bound a window.
   if (window === null) throw new PlannerError("schema", "the plan has no steps");
-  return { plan, window, writes, handoff, attach };
+  return { plan, window, writes, handoff, attach, mints: checked };
+}
+
+/** A step's raw value before its slots are filled: "{{v1}}" for a value a drafter minted. */
+function rawValue(p: Plan, i: number): string | undefined {
+  const end = p.steps[i]?.end;
+  return end?.kind === "valueEquals" ? end.value : undefined;
 }
 
 function bindWindow(model: ScreenModel, sel: WindowSel, at: string): WindowState {

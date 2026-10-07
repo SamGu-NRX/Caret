@@ -11,7 +11,8 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { AboutValue } from "../fill/about.ts";
 import type { AskJev } from "../fill/jev.ts";
-import { conversionOf, FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { conversionOf, FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, mintOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { requireChecked } from "../fill/contract.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { isAnswerField } from "../fill/answers.ts";
@@ -129,7 +130,7 @@ export interface PlanPageOptions {
 }
 
 /** A value fill would write, with what it was read from: a Fill all's GroundedField, or a value the instruction spells out. */
-type Written = Pick<ReturnType<typeof writtenFields>["fields"][number], "key" | "control" | "value" | "display" | "span" | "context" | "source" | "memory">;
+type Written = Pick<ReturnType<typeof writtenFields>["fields"][number], "key" | "control" | "value" | "display" | "span" | "context" | "source" | "memory" | "checked">;
 
 /** An empty control of a page fill can ask about, in document order: what a page goal may fill. */
 interface PageInput {
@@ -227,6 +228,9 @@ const WITHHELD_SAYS: Record<string, string> = {
   wrongKind: "the value Caret found doesn't fit it",
   otherPerson: "the value Caret found is someone else's",
   ambiguous: "the value Caret found could mean more than one thing",
+  // W2 (fill/contract.ts).
+  notExact: "the value Caret found isn't exactly what the field asks for",
+  unverified: "Caret couldn't check this value just now",
 };
 
 /**
@@ -336,8 +340,9 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     for (const f of proposal.fields) {
       const said = scope?.literals.get(f.key);
       if (writes.has(f.key) || said === undefined || f.asks[0]?.value !== said) continue;
-      if (f.control === "text" && f.value === said && f.source === null && f.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: said, display: said, span: said, context: null, source: null, memory: null });
-      else if (f.handoff !== null && f.handoff.writes === true && f.handoff.source === null && f.handoff.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: f.handoff.value, display: f.handoff.display, span: said, context: null, source: null, memory: null });
+      // W2: with the mint the write contract made for that very field (fill.ts mintOf).
+      if (f.control === "text" && f.value === said && f.source === null && f.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: said, display: said, span: said, context: null, source: null, memory: null, checked: requireChecked(mintOf(f), said, f.key, `field ${f.key}`) });
+      else if (f.handoff !== null && f.handoff.writes === true && f.handoff.source === null && f.handoff.memory === null) writes.set(f.key, { key: f.key, control: f.control, value: f.handoff.value, display: f.handoff.display, span: said, context: null, source: null, memory: null, checked: requireChecked(mintOf(f), f.handoff.value, f.key, `field ${f.key}`) });
     }
     for (const f of proposal.fields) {
       if (writes.has(f.key)) continue;
@@ -380,7 +385,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     // Named as runs.ts sameField reads it again before each write: a text field or web dropdown by fieldName, any
     // other control by formControls' label.
     const named = x.control === "text" || x.control === "combobox";
-    const t: TargetBinding = { ref: `t${++ref}`, domain, key: n.key, role: n.role, label: named ? fieldName(w, n) : (x.label ?? ""), own: named ? (d.label ?? d.nearest ?? d.placeholder ?? "") : (x.label ?? ""), placeholder: n.placeholder ?? null, control: x.control, value: "", options: x.options };
+    const t: TargetBinding = { ref: `t${++ref}`, domain, key: n.key, role: n.role, label: named ? fieldName(w, n) : (x.label ?? ""), own: named ? (d.label ?? d.nearest ?? d.placeholder ?? "") : (x.label ?? ""), placeholder: n.placeholder ?? null, control: x.control, value: "", options: x.options, field: f.checked.field };
     const src = f.source === null ? undefined : (o.sources ?? model).windows.get(f.source.windowId);
     if (f.source !== null && src === undefined) continue;
     const resolved = x.control === "date" || x.control === "time";
@@ -400,6 +405,9 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
       draft: null,
       owner: f.memory !== null ? "user" : null,
       fill: { span: f.span, context: f.context, control: f.control, ...(f.memory === null ? {} : { memoryLabel: f.memory.label }) },
+      // W2: fill's mint for this value in this field, which lowering passes on without asking again.
+      provenance: f.checked.provenance,
+      checked: f.checked,
     };
     targets.set(t.ref, t);
     values.set(v.ref, v);

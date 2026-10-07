@@ -1788,7 +1788,8 @@ export class Helper {
     const sources = this.fillModel(offerKey);
     this.withdrawPlan(offerKey, "taken");
     try {
-      const now = validatePlan(p.draft.plan, p.draft.slots, { model: sources, memory: this.plannerMemory(), instruction: p.instruction });
+      // W2: with the mints the plan was drafted with (CheckedPlan.mints): a value is never re-judged without them.
+      const now = validatePlan(p.draft.plan, p.draft.slots, { model: sources, memory: this.plannerMemory(), instruction: p.instruction }, p.draft.checked.mints);
       // The plan names its window by app and title; a window that replaced the proposed one under the same
       // title is another window, and the destinations' expected values were read from the first.
       const proposed = p.draft.checked.window.window.windowId;
