@@ -3,7 +3,8 @@
 import { readFileSync } from "node:fs";
 import * as z from "zod";
 import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
-import { storable, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
+import { storable, UnmintedText, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
+import { sealedBody } from "../privacy/send.ts";
 import { jevPolicy } from "../privacy/providers.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
@@ -337,13 +338,12 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
     assertNoExcludedValue(req);
     const wire = wireBody(req, route.model);
     // SC1 2b: every string on the wire was minted for this request, checked after wireBody so a string the client makes
-    // up shows too.
+    // up shows too; checked again as it leaves, on every attempt (privacy/send.ts sealedBody).
     verifySent(req, wire);
     if (route.provider === "gateway") {
       wire.providerOptions = { gateway: { only: [checkGatewayModel(route.model)] } };
     }
-    const body = JSON.stringify(wire);
-    const hold = spend.reserve(DailySpend.estimateUsd(body.length, JEV_USD_PER_INPUT_TOKEN));
+    const hold = spend.reserve(DailySpend.estimateUsd(JSON.stringify(wire).length, JEV_USD_PER_INPUT_TOKEN));
     let settled = false;
     const settle = (costUsd: number, inputTokens: number): void => {
       settled = true;
@@ -351,7 +351,7 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
       onUsage?.({ costUsd, inputTokens });
     };
     try {
-      const result = await post(key, timeoutMs, req, body, ids, route, fetchFn, settle);
+      const result = await post(key, timeoutMs, req, wire, ids, route, fetchFn, settle);
       if (!settled) settle(result.costUsd, result.inputTokens);
       return result;
     } catch (e) {
@@ -419,7 +419,7 @@ function gatewayUsage(json: unknown): { inputTokens: number; hasInputTokens: boo
   };
 }
 
-async function post(key: (provider: JevProvider) => string, timeoutMs: number, req: JevRequest, body: string, ids: string[], settings: JevSettings, fetchFn: typeof fetch, settle: (costUsd: number, inputTokens: number) => void): Promise<JevResult> {
+async function post(key: (provider: JevProvider) => string, timeoutMs: number, req: JevRequest, wire: WireBody, ids: string[], settings: JevSettings, fetchFn: typeof fetch, settle: (costUsd: number, inputTokens: number) => void): Promise<JevResult> {
   for (let attempt = 0; ; attempt++) {
     if (settings.provider === "gateway") {
       if (settings.model === LAYA_FREE_MODEL) await paceLaya();
@@ -434,10 +434,12 @@ async function post(key: (provider: JevProvider) => string, timeoutMs: number, r
       res = await fetchFn(settings.url, {
         method: "POST",
         headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" },
-        body,
+        body: sealedBody({ req, wire }),
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
+      // A request the boundary refused (privacy/send.ts sealedBody) is that refusal, not a network failure.
+      if (e instanceof UnmintedText) throw e;
       const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
       const rawDetail = e instanceof Error ? e.message : String(e);
       const detail = credential === "" ? rawDetail : rawDetail.split(credential).join("[redacted]");

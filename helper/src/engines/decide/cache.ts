@@ -22,7 +22,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MEMORY_SNIPPETS } from "../../privacy.ts";
 import { wireBody, type AskJev, type ChoiceQuestion, type JevRequest, type JevResult, type NoulQuestion } from "../../fill/jev.ts";
-import { storable, verifySent } from "../../privacy/disclosure.ts";
+import { verifySent } from "../../privacy/disclosure.ts";
+import { storedLine } from "../../privacy/send.ts";
 
 export type CacheMode = "record" | "replay" | "replay-or-record";
 const MODES: readonly CacheMode[] = ["record", "replay", "replay-or-record"];
@@ -232,7 +233,7 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
       v: FORMAT,
       engine: opts.engine,
       model: opts.model,
-      canonical: storable(req, wire, { exact: c.exact, state: req.state, questions: c.questions }),
+      canonical: { exact: c.exact, state: req.state, questions: c.questions },
       answeredBy: r.model,
       answers: Object.fromEntries(Object.entries(r.answers).map(([id, a]) => [at(id), { choice: name(a.choice), confidence: a.confidence }])),
       nouls: Object.fromEntries(Object.entries(r.nouls ?? {}).map(([id, p]) => [at(id), p])),
@@ -244,7 +245,8 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
     mkdirSync(join(opts.dir, c.key.slice(0, 2)), { recursive: true, mode: 0o700 });
     mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
     const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    // Checked as it is written, after the answer came back (privacy/send.ts storedLine).
+    writeFileSync(tmp, storedLine({ req, wire }, entry), { mode: 0o600 });
     renameSync(tmp, path);
     return r;
   };

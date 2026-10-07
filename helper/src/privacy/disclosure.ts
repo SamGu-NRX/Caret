@@ -61,15 +61,15 @@ const REMOVED_WORDS = new WeakMap<WindowState, ReadonlySet<string>>();
 const VALUE_WORD = /[\p{L}\p{N}][\p{L}\p{N}._@#$%&*!+/-]*[\p{L}\p{N}]/gu;
 
 /**
- * A text's value-shaped words, lower-cased: each whole word (VALUE_WORD) and each part of one between its joining marks,
- * so "hunter2" is a word of "https://hunter2@example.test" as of "hunter2" (PV2 re-review).
+ * A text's words as they are written, each whole word (VALUE_WORD) and each part of one between its joining marks, so
+ * "hunter2" is a word of "https://hunter2@example.test" as of "hunter2" (PV2 re-review). Case is kept: the inner-capital
+ * mark of a value ("violetOrchard") is read on the word as written.
  */
 function valueWords(text: string): Set<string> {
   const out = new Set<string>();
   for (const m of text.matchAll(VALUE_WORD)) {
-    const w = m[0].toLowerCase();
-    out.add(w);
-    for (const part of w.split(/[._@#$%&*!+/-]+/u)) if (part !== "") out.add(part);
+    out.add(m[0]);
+    for (const part of m[0].split(/[._@#$%&*!+/-]+/u)) if (part !== "") out.add(part);
   }
   return out;
 }
@@ -90,7 +90,7 @@ function removedValueWords(raw: WindowState): ReadonlySet<string> {
   const lines = [raw.window.title, ...[...raw.nodes.values()].flatMap((n) => [n.label, n.value, n.placeholder])].flatMap((t) => (t === undefined || t === "" ? [] : t.split(/\r?\n/u)));
   for (const line of lines) {
     if (flat(line) === "" || viewHolds(view, line)) continue;
-    for (const w of valueWords(line)) if (w.length >= 4 && /\p{N}|[._@#$%&*!+/-]|\p{Ll}\p{Lu}/u.test(w) && !shown.includes(w)) words.add(w);
+    for (const w of valueWords(line)) if (w.length >= 4 && /\p{N}|[._@#$%&*!+/-]|\p{Ll}\p{Lu}/u.test(w) && !shown.includes(w.toLowerCase())) words.add(w.toLowerCase());
   }
   REMOVED_WORDS.set(raw, (out = words));
   return out;
@@ -432,7 +432,7 @@ export class Disclosure extends SnippetLedger {
         if (w !== undefined && !viewHolds(redactWindow(w), run)) return false;
       }
       // And a shorter value-shaped word only a removed line shows ("The note says hunter2").
-      const said = valueWords(piece);
+      const said = new Set([...valueWords(piece)].map((w) => w.toLowerCase()));
       if (said.size > 0) for (const w of this.known.values()) for (const word of removedValueWords(w)) if (said.has(word)) return false;
     }
     return true;
@@ -531,15 +531,13 @@ export class Disclosure extends SnippetLedger {
     const ws = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x !== "");
     if (ws.length === 0 && text.trim() !== "") return null;
     for (const w of ws) if (!shown.has(w) && !/^\d+(?:st|nd|rd|th|am|pm|h)?$/u.test(w) && !DERIVED_WORDS.has(w)) return null;
-    // A basis was never priced, so what the derivation shows of its window is charged to that window here (PV2
-    // review and re-review): every character of every word of the derived text that the basis also shows, repeats
-    // included, whether or not code could have written that word itself. A word is free only when the basis does not show
-    // it, so code wrote it. A template's own words go in by t`` around the derivation, never through it.
+    // A basis was never priced, so what the derivation shows of its window is taken from that window here, by the
+    // ledger's one span rule (SnippetLedger.takeDerived): every run of it that stands where the basis stands in a line,
+    // each repeat at another occurrence, a prose line's share counting all of them. A word the basis does not show is
+    // code's. A template's own words go in by t`` around the derivation, never through it.
     for (const b of bases) {
       if (!(b instanceof Basis) || b.view === null) continue;
-      const shownWords = new Set(b.text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x !== ""));
-      const chars = text.split(/[^\p{L}\p{N}]+/u).filter((x) => x !== "" && shownWords.has(x.toLowerCase())).reduce((n, x) => n + x.length, 0);
-      if (chars > 0 && !this.chargeDerived(b.view, b.text, chars, text)) return null;
+      if (!this.takeDerived(b.view, b.text, text)) return null;
     }
     return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
   }

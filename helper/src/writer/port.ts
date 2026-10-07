@@ -84,7 +84,7 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
           { role: "user" as const, content: intentUserMessage(input) },
         ];
         const signal = AbortSignal.any([req.signal, AbortSignal.timeout(WRITER_TIMEOUT_MS)]);
-        const r = await chat(route, key(), messages, req.maxOutputTokens, signal, opts.fetchFn, intentResponseFormat(input));
+        const r = await chat(route, key(), messages, req.maxOutputTokens, signal, opts.fetchFn, intentResponseFormat(input), { writer: req });
         let json: unknown;
         try {
           json = JSON.parse(r.text);
@@ -99,7 +99,7 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
         { role: "user" as const, content: planUserMessage(input) },
       ];
       const signal = AbortSignal.any([req.signal, AbortSignal.timeout(WRITER_TIMEOUT_MS)]);
-      const r = await chat(route, key(), messages, req.maxOutputTokens, signal, opts.fetchFn);
+      const r = await chat(route, key(), messages, req.maxOutputTokens, signal, opts.fetchFn, undefined, { writer: req });
       return {
         model: r.servedModel,
         provider: route.provider,

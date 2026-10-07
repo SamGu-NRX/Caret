@@ -297,18 +297,23 @@ function mergeCutWalk(prior: Map<string, Node>, sent: readonly Node[]): Map<stri
  * which inherit its exclusion all the same.
  */
 function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[]): void {
-  let groupExcluded = false;
+  let excluded = false;
   for (const f of fresh) {
     const n = nodes.get(f.key);
     if (n === undefined) continue;
     const a = admitNode(n, inherited(nodes, n));
     if (a !== n) nodes.set(f.key, a);
-    if (a.excluded !== undefined) groupExcluded = true;
+    if (a.excluded !== undefined) excluded = true;
   }
-  if (!groupExcluded) return;
-  for (const [k, n] of nodes) {
-    const a = admitNode(n, inherited(nodes, n));
-    if (a !== n) nodes.set(k, a);
+  // Any excluded node in the window, fresh or kept, holds its exclusion over every descendant, kept or fresh: one pass
+  // over every node, repeated until nothing changes (a pass may exclude a node whose own descendants come before it).
+  if (!excluded) for (const n of nodes.values()) if (n.excluded !== undefined) excluded = true;
+  for (let changed = excluded; changed; ) {
+    changed = false;
+    for (const [k, n] of nodes) {
+      const a = admitNode(n, inherited(nodes, n));
+      if (a !== n) (nodes.set(k, a), (changed = true));
+    }
   }
 }
 

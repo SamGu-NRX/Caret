@@ -39,7 +39,7 @@ describe("T-P3: the boundary's casts and internals stay under src/privacy/", () 
   const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
   const RULES: [string, RegExp][] = [
     ["a cast to ModelText or ModelValue", /\bas\s+(?:unknown\s+as\s+)?[^;,)\n]*\bModel(?:Text|Value)\b/u],
-    ["a private Disclosure member", /\[\s*["'](?:record|recordWays|composedWays|mints|ways|asJson|policy|reasons|fromView|keptByViews|asTaken|asPlan|asMemory|walk|chargeDerived)["']\s*\]/u],
+    ["a private Disclosure member", /\[\s*["'](?:record|recordWays|composedWays|mints|ways|asJson|policy|reasons|fromView|keptByViews|asTaken|asPlan|asMemory|walk|takeDerived)["']\s*\]/u],
     ["a Basis made by hand", /\bnew\s+Basis\s*\(/u],
     ["own() of a cast value", /\.own\([^)]*\bas\s+(?:never|any|unknown)\b/u],
     ["a legacy minter", /\.legacy\s*\(/u],
@@ -61,6 +61,40 @@ describe("T-P3: the boundary's casts and internals stay under src/privacy/", () 
     expect(add("const b = new Basis(token, d, raw);")).toEqual(["planner/new-builder.ts: a Basis made by hand"]);
     expect(add("const t = d.own(raw as never);")).toEqual(["planner/new-builder.ts: own() of a cast value"]);
     expect(add("return d.legacy(req);")).toEqual(["planner/new-builder.ts: a legacy minter"]);
+  });
+});
+
+describe("the I/O boundary: every POST body and every request store is checked as it leaves (privacy/send.ts)", () => {
+  const helperRoot = fileURLToPath(new URL("../", import.meta.url));
+  const tsFiles = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === "node_modules" ? [] : tsFiles(join(dir, e.name))) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
+  const read = (dirs: readonly string[]): Map<string, string> => new Map(dirs.flatMap((d) => tsFiles(join(helperRoot, d))).map((f) => [relative(helperRoot, f), readFileSync(f, "utf8")]));
+  /** A POST's body that is not sealedBody(...), or a write of request text that is not storedLine(...) or storableRequest(...). */
+  const breaks = (sources: Map<string, string>): string[] =>
+    [...sources].flatMap(([file, src]) => {
+      const out: string[] = [];
+      for (const m of src.matchAll(/method:\s*"POST"[\s\S]{0,400}?\bbody:\s*([A-Za-z_]+)/gu)) if (m[1] !== "sealedBody") out.push(`${file}: a POST body that is not sealedBody`);
+      for (const line of src.split("\n")) {
+        if (!/\b(?:append|write)FileSync\(/u.test(line) || !/\breq\b|\.questions\b|\.state\b|\bwire\b/u.test(line)) continue;
+        if (!/\b(?:storedLine|storableRequest)\(/u.test(line)) out.push(`${file}: a store of request text that is not storedLine or storableRequest`);
+      }
+      return out;
+    });
+  // The fixture harness's own scripts (fixtures/web-form/*.ts) send and store requests; its tests and pages post to the
+  // local fixture site, never to a model, and are left out.
+  const fixtureScripts = (): Map<string, string> => {
+    const dir = join(helperRoot, "../fixtures/web-form");
+    return new Map(readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith(".ts")).map((e) => [`../fixtures/web-form/${e.name}`, readFileSync(join(dir, e.name), "utf8")]));
+  };
+  const all = (): Map<string, string> => new Map([...read(["src", "scripts"]), ...fixtureScripts()]);
+
+  it("finds every POST body sealed and every request store checked", () => {
+    expect(breaks(all())).toEqual([]);
+  });
+
+  it("catches a transport or a store that skips them", () => {
+    const s = all();
+    expect(breaks(new Map([...s, ["src/new-transport.ts", 'await f(url, { method: "POST", headers: {}, body: JSON.stringify(wire) });']]))).toEqual(["src/new-transport.ts: a POST body that is not sealedBody"]);
+    expect(breaks(new Map([...s, ["src/new-store.ts", "appendFileSync(log, JSON.stringify({ state: req.state }));"]]))).toEqual(["src/new-store.ts: a store of request text that is not storedLine or storableRequest"]);
   });
 });
 

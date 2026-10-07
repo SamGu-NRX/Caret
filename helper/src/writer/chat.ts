@@ -1,5 +1,6 @@
 // One OpenAI-compatible chat completion, the shape both Vercel AI Gateway and Groq serve. No retry: a
 // failed write is reported, and the plan says a provider change is explicit configuration.
+import { sealedBody, type Outbound } from "../privacy/send.ts";
 import * as z from "zod";
 
 export interface Pricing {
@@ -90,14 +91,16 @@ export async function chat(
   signal: AbortSignal,
   fetchFn: typeof fetch = fetch,
   /** An OpenAI-style response_format, such as a strict json_schema (B25 intents); absent for free text. */
-  responseFormat?: Readonly<Record<string, unknown>>,
+  responseFormat: Readonly<Record<string, unknown>> | undefined,
+  /** The request these messages carry, checked as the body leaves (privacy/send.ts sealedBody). */
+  out: Outbound,
 ): Promise<ChatResult> {
   const body = { ...route.extraBody, model: route.model, messages, [route.maxTokensParam]: maxOutputTokens, temperature: 0, ...(responseFormat === undefined ? {} : { response_format: responseFormat }) };
   const t0 = performance.now();
   const res = await fetchFn(`${route.baseUrl}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: sealedBody(out, body),
     signal,
   });
   const raw = await res.text();

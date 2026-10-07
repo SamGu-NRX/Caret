@@ -7,7 +7,8 @@
 //   (chat or document), CARET_LLAMA_THINKING=off (tells a thinking model's template not to think), and
 //   CARET_ENGINE_CALIBRATION ("choiceT,noulT"; 1,1 is none).
 import { assertNoExcludedValue } from "../../privacy.ts";
-import { storable, verifySent } from "../../privacy/disclosure.ts";
+import { verifySent } from "../../privacy/disclosure.ts";
+import { storedLine } from "../../privacy/send.ts";
 import { withholdValues } from "../../privacy/exclude.ts";
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -155,19 +156,20 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
     ask = async (req) => {
       // The log holds request text, so it takes what the cache takes: fixture text only.
       checkFixture(req, o.fixture);
-      // PV2 Q2: verified as the client verifies it, with values in formats Caret never carries withheld (storable).
+      // PV2 Q2: written only as it is checked at the write, as the client checks what it sends, with values in formats
+      // Caret never carries withheld (privacy/send.ts storedLine).
       const wire = { state: req.state, model: engine.model, questions: { ...req.questions, ...req.nouls } };
-      const body = storable(req, wire, wire);
+      const out = { req, wire };
       const t0 = performance.now();
       let r: Awaited<ReturnType<AskJev>>;
       try {
         r = await inner(req);
       } catch (e) {
         // A failed request is logged with its error, which the eval's report shows only as the user's sentence.
-        appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, error: withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e)), afterMs: performance.now() - t0 })}\n`, { mode: 0o600 });
+        appendFileSync(log, storedLine(out, { body: wire, chars: JSON.stringify(wire).length, error: withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e)), afterMs: performance.now() - t0 }), { mode: 0o600 });
         throw e;
       }
-      appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, sharedChars: JSON.stringify(wireBody(req, engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })}\n`, { mode: 0o600 });
+      appendFileSync(log, storedLine(out, { body: wire, chars: JSON.stringify(wire).length, sharedChars: JSON.stringify(wireBody(req, engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens }), { mode: 0o600 });
       return r;
     };
   }

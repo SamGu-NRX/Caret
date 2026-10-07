@@ -248,3 +248,12 @@ describe("PV2 re-review of 0f636d0", () => {
     expect(d.planText("Login at https://austin.example.test")).toBe("Login at https://austin.example.test");
   });
 });
+
+describe("PV2 second re-review should-fix", () => {
+  it("8: reads a value's inner capital on the word as written", () => {
+    const { m } = note(["Password: violetOrchard", "City: Austin"]);
+    const d = new Disclosure(m.windows.values());
+    expect(d.planText("The note says violetOrchard")).toBeNull();
+    expect(d.planText("The note says Austin")).toBe("The note says Austin");
+  });
+});

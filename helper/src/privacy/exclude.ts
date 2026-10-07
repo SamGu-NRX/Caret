@@ -154,19 +154,42 @@ export interface Inherited {
 }
 
 /**
- * The name of the nearest ancestor that groups a field (a fieldset, a group, a list), as an attribute, never a static
- * text's content; and the exclusion of any excluded ancestor up to the window, page or scroll view, whose own title names
- * no field.
+ * What a node takes from its ancestors, by two rules kept apart (PV2 re-review): an excluded ancestor's exclusion, from
+ * any ancestor at all (excludedAncestor), and the nearest group's name a field's kind is read from, which stops at a
+ * window, page or scroll view (groupLabel).
  */
 export function inherited(nodes: ReadonlyMap<string, Node>, n: Node): Inherited {
-  const out: Inherited = {};
+  const excluded = excludedAncestor(nodes, n);
+  const label = groupLabel(nodes, n);
+  return { ...(excluded === null ? {} : { excluded }), ...(label === null ? {} : { label }) };
+}
+
+/**
+ * Rule (i): the exclusion of the nearest ancestor that is excluded (its own `excluded`, or a secure state or role), with no
+ * stop of any kind: everything inside an excluded node is its content, whatever lies between. Only a cycle ends the walk.
+ */
+export function excludedAncestor(nodes: ReadonlyMap<string, Node>, n: Node): NodeExclusion | null {
+  const seen = new Set<string>([n.key]);
+  for (let p = n.parent === null ? undefined : nodes.get(n.parent); p !== undefined && !seen.has(p.key); p = p.parent === null ? undefined : nodes.get(p.parent)) {
+    seen.add(p.key);
+    if (p.excluded !== undefined) return p.excluded;
+    if (p.states?.includes("secure") === true || p.role === "AXSecureTextField") return "secure";
+  }
+  return null;
+}
+
+/**
+ * Rule (ii): the name of the nearest ancestor that groups a field (a fieldset, a group, a list), as an attribute, never a
+ * static text's content, read for a sensitive kind (excludedNode). It stops at a window, page or scroll view, whose own
+ * title names no field.
+ */
+function groupLabel(nodes: ReadonlyMap<string, Node>, n: Node): string | null {
   let p = n.parent === null ? undefined : nodes.get(n.parent);
   for (let depth = 0; p !== undefined && depth < 64; depth++, p = p.parent === null ? undefined : nodes.get(p.parent)) {
-    if (NOT_A_GROUP.has(p.role)) break;
-    if (p.excluded !== undefined && out.excluded === undefined) out.excluded = p.excluded;
-    if (out.label === undefined && !TEXT_ROLES.has(p.role) && p.editable !== true && p.label !== undefined && p.label.trim() !== "") out.label = p.label;
+    if (NOT_A_GROUP.has(p.role)) return null;
+    if (!TEXT_ROLES.has(p.role) && p.editable !== true && p.label !== undefined && p.label.trim() !== "") return p.label;
   }
-  return out;
+  return null;
 }
 
 /**

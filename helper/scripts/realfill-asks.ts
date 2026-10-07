@@ -257,15 +257,14 @@ const requestsBy = new Map<string, number>();
 const askJev: AskJev = async (req) => {
   if (jevSpent + writerSpent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   requestsBy.set(current, (requestsBy.get(current) ?? 0) + 1);
-  // PV2 Q2: the log keeps an excerpt of a verified request (fill/jev.ts storableRequest), replayed or sent.
-  const qs = storableRequest(req, Object.fromEntries(Object.entries({ ...req.questions, ...req.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])));
+  const qs = Object.fromEntries(Object.entries({ ...req.questions, ...req.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]));
   const hit = a.replay === undefined ? undefined : recorded.get(replayKey(current, qs))?.shift();
   if (a.replay !== undefined) replay[hit === undefined ? "misses" : "hits"]++;
   const r = hit === undefined ? await decide.ask(req) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
   jevSpent += r.costUsd;
   jevModels.add(r.model);
   requestMs.push(r.latencyMs);
-  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], JSON.stringify({ ask: current, questions: qs, answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
+  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], JSON.stringify({ ask: current, questions: storableRequest(req, qs), answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
   return r;
 };
 // Intents go to the --writer-model named (only with --maker writer); the plan route's programs to --plan-writer's.

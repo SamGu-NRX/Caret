@@ -332,7 +332,7 @@ export function forgetWindows(): void {
   tables.clear();
 }
 
-interface WindowShare {
+export interface WindowShare {
   budget: number;
   /** Characters of the window's prose (lines over CARD_LINE_CHARS) a request may cover, apart from `budget`; null when only `budget` holds it. */
   prose: number | null;
@@ -380,7 +380,7 @@ export function windowBudget(w: WindowState): number {
   return windowShare(w).budget;
 }
 
-function windowShare(w: WindowState): WindowShare {
+export function windowShare(w: WindowState): WindowShare {
   const cached = budgets.get(w);
   if (cached !== undefined) return cached;
   // Every line is read, however large the window. B10 stopped at 2 * WINDOW_CHARS, where the budget no
@@ -572,7 +572,7 @@ export class SnippetLedger {
    * taken from a window (`from`) is charged to it, whether or not a line of it shows the text; plan text (`from`
    * null) only pays for what windows' lines show of it. Null when a window would go over its budget.
    */
-  private price(from: WindowState | null, texts: readonly (string | null | undefined)[]): Priced | null {
+  private price(from: WindowState | null, texts: readonly (string | null | undefined)[], scope: string | null = null): Priced | null {
     const own = from === null ? null : (this.know(from), this.entry(from));
     const fresh = [...new Set(texts.filter((t): t is string => t !== null && t !== undefined && t !== "" && own?.texts.has(t) !== true))];
     const adds = new Map<string, Add>();
@@ -626,6 +626,60 @@ export class SnippetLedger {
       }
       if (best !== null) mark(e, a, best.line, best.at, t.length);
     };
+    /**
+     * PV2 re-review, the one span rule for a text no single line of window `wid` holds whole: it reveals the runs of it
+     * (whole words, with what stands between them) that lines show, each marked where it stands in a line, a repeated
+     * run at another occurrence each time, as many as there are; a line's prose share counts what any of them marks. With
+     * `scope` (a derivation's basis, Disclosure.derived), runs are looked for only where the basis stands, case aside,
+     * and the rest of the text is code's, free; without it, the rest is charged in full, as a text no line shows.
+     */
+    const chargeRuns = (wid: string, piece: string, within: string | null): void => {
+      const x = fresh1(wid, within === null ? piece : `${piece}\u0000${within}`);
+      if (x === null) return;
+      const { e, a } = x;
+      const words = [...piece.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({ at: m.index, end: m.index + m[0].length }));
+      const used = new Set<string>();
+      // Where the basis stands, line by line; a basis no line shows (it never should be) is no scope at all, so the text
+      // is then charged as one no line shows whole.
+      const scoped = within === null ? [] : within.split("\n").map((x) => x.trim()).filter((x) => x !== "").flatMap((b) => this.placesOf(wid, b).map((o) => ({ line: o.line, from: o.at, to: o.at + b.length })));
+      const ranges = scoped.length === 0 ? null : scoped;
+      const find = (run: string): { line: string; at: number }[] => {
+        if (ranges === null) return this.placesOf(wid, run);
+        const lower = run.toLowerCase();
+        const out: { line: string; at: number }[] = [];
+        for (const r of ranges) {
+          const hay = r.line.toLowerCase();
+          for (let p = hay.indexOf(lower, r.from); p >= 0 && p + lower.length <= r.to; p = hay.indexOf(lower, p + 1)) out.push({ line: r.line, at: p });
+        }
+        return out;
+      };
+      let found = 0;
+      for (let i = 0; i < words.length; ) {
+        let took = false;
+        for (let j = words.length - 1; j >= i && !took; j--) {
+          const from = (words[i] as { at: number }).at;
+          const to = (words[j] as { end: number }).end;
+          const run = piece.slice(from, to);
+          const occ = find(run).filter((o) => !used.has(`${o.line}\u0000${o.at}`));
+          if (occ.length === 0) continue;
+          let best = occ[0] as { line: string; at: number };
+          let bestMarked = -1;
+          for (const o of occ) {
+            const m = view(e, a, o.line);
+            let marked = 0;
+            if (m !== undefined) for (let k = o.at; k < o.at + run.length; k++) marked += m[k] as number;
+            if (marked > bestMarked || (marked === bestMarked && o.line === run && best.line !== run)) (best = o, (bestMarked = marked));
+          }
+          used.add(`${best.line}\u0000${best.at}`);
+          mark(e, a, best.line, best.at, run.length);
+          found += run.length;
+          i = j + 1;
+          took = true;
+        }
+        if (!took) i++;
+      }
+      if (ranges === null) a.cost += piece.length - found;
+    };
     for (const t of fresh) {
       // A text is matched piece by piece in every window: a line break or a cut's ellipsis ends a piece, so a value
       // cut to length still reveals the line it was cut from, in whichever window shows it (B26 review: a cut line
@@ -633,26 +687,19 @@ export class SnippetLedger {
       const pieces = t.split("\n").map((raw) => flat(raw).replace(/^…|…$/gu, "")).filter((x) => x !== "");
       for (const piece of pieces) {
         const r = this.revealed(piece);
+        // Every line the piece holds, in whichever window shows it; first, so a run below that is one of these lines
+        // stands where it is already marked.
+        for (const [l, ids] of r.lines) for (const wid of ids) chargeLine(wid, l);
         if (from !== null) {
           const wid = from.window.windowId;
           const table = windowText(from);
-          // Taken from this window: a whole line, a text inside lines, or neither, which is charged what of it the
-          // lines it holds do not cover.
-          if (table.isLine(piece)) chargeLine(wid, piece);
+          // Taken from this window: a whole line, a text inside lines, or neither, whose runs that lines show are
+          // marked where they stand and the rest charged in full (chargeRuns).
+          if (scope !== null) chargeRuns(wid, piece, scope);
+          else if (table.isLine(piece)) chargeLine(wid, piece);
           else if (piece.length >= CONTAINED_MIN && table.holds(piece)) chargeInside(wid, piece);
-          else {
-            const x = fresh1(wid, piece);
-            if (x !== null) {
-              const held = new Set<string>();
-              table.linesIn(piece, held);
-              const cover = new Uint8Array(piece.length);
-              for (const l of held) for (let p = piece.indexOf(l); p >= 0; p = piece.indexOf(l, p + 1)) cover.fill(1, p, p + l.length);
-              x.a.cost += piece.length - cover.reduce((n, b) => n + b, 0);
-            }
-          }
+          else chargeRuns(wid, piece, null);
         }
-        // Every line the piece holds, in whichever window shows it.
-        for (const [l, ids] of r.lines) for (const wid of ids) chargeLine(wid, l);
         // And every other window that shows the piece inside a line: a value taken from a card that a chat
         // message also quotes reveals that much of the chat.
         for (const wid of r.shownBy) if (wid !== from?.window.windowId) chargeInside(wid, piece);
@@ -687,20 +734,14 @@ export class SnippetLedger {
   }
 
   /**
-   * Charges window `w` `chars` characters of its line `line` that a text derived from that line reveals (privacy/
-   * disclosure.ts Disclosure.derived), and declares the derived text under the window: every character the derived text
-   * shows of the line, repeats included, with no credit for what was taken before. Prose when the line is. False,
-   * charging nothing, when it would take the window over its budget or its prose share.
+   * Takes a text code derived from `basis`, a text of window `w` (privacy/disclosure.ts Disclosure.derived): charged by
+   * the one span rule (price's chargeRuns), what of it stands in the lines where the basis stands, and declared under
+   * the window. False, taking nothing, when a window would go over its budget or prose share.
    */
-  protected chargeDerived(w: WindowState, line: string, chars: number, text: string): boolean {
-    this.know(w);
-    const e = this.entry(w);
-    const prose = e.share.prose !== null && line.length > CARD_LINE_CHARS ? chars : 0;
-    if (e.chars + chars > e.share.budget) return false;
-    if (e.share.prose !== null && e.prose + prose > e.share.prose) return false;
-    e.chars += chars;
-    e.prose += prose;
-    this.snippets.push({ windowId: w.window.windowId, kind: "candidate", text });
+  protected takeDerived(w: WindowState, basis: string, text: string): boolean {
+    const p = this.price(w, [text], basis);
+    if (p === null) return false;
+    this.commit(p, w.window.windowId, "candidate", this.entry(w));
     return true;
   }
 
