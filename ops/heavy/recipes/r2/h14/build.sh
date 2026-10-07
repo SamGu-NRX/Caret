@@ -26,7 +26,12 @@ echo "== $(date -u +%FT%TZ) $(free) GiB free"
 
 full=$(git -C "$W" rev-parse "$want^{commit}")
 echo "== export $full (fresh)"
-/bin/bash "$(dirname "$0")/../export.sh" "$W" "$full" "$S" packages/keytype
+/bin/bash "$(dirname "$0")/../export.sh" "$W" "$full" "$S"
+# keytype from the job's sealed archive of the pin's gitlinked commit (caret_heavy.keytype_inputs): the pinned worktree
+# need not have the submodule checked out.
+rm -rf "$S/packages/keytype"; mkdir -p "$S/packages"
+cp -cR "$IN/keytype" "$S/packages/keytype"
+chmod -R u+w "$S/packages/keytype"
 # The attach rows this run checks must be in the commit: the host's file types and the debug state's pageTask.
 for f in apps/caret/Sources/CaretHostCore/GoalFiles.swift fixtures/web-form/public/tasks/wizard-3.html; do
   [ -f "$S/$f" ] || { echo "build.sh: $full has no $f (H14's host half is not committed there)"; exit 1; }
@@ -38,7 +43,8 @@ grep -q 'public var lastAcceptFileStep: Int?' "$S/apps/caret/Sources/CaretHostCo
 mkdir -p "$S/packages/keytype/Packages/ModelRuntime/Vendor"
 cp -cR "$IN/llama.xcframework" "$S/packages/keytype/Packages/ModelRuntime/Vendor/llama.xcframework"
 mkdir -p "$S/apps/caret/.build/node-dist"
-cp -c "$IN/node-dist/node-v26.5.0-darwin-arm64.tar.gz" "$S/apps/caret/.build/node-dist/"
+# The tarball build-app.sh pins at this commit, sealed against its SHA-256 (caret_heavy.node_pin); build-app.sh checks it again.
+cp -c "$IN"/node-dist/node-v*-darwin-arm64.tar.gz "$S/apps/caret/.build/node-dist/"
 for d in helper extension; do
   cmp -s "$W/$d/pnpm-lock.yaml" "$S/$d/pnpm-lock.yaml" || { echo "$d/pnpm-lock.yaml differs from the worktree's; run pnpm install --offline in $S/$d"; exit 1; }
   cp -cR "$IN/$d-node_modules" "$S/$d/node_modules"

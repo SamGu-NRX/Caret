@@ -69,6 +69,8 @@ def default_paths(state_dir=None):
         "rig_stop": os.path.join(HOME, ".long-run/rig/bin/rig-stop"),
         "rig_run": os.path.join(HOME, ".long-run/rig/bin/rig-run"),
         "lume_clones": os.path.join(HOME, ".lume"),
+        # Node tarballs fetched by `caret-heavy fetch-node`, each kept only when it matches its pin (fetch_node).
+        "node_cache": os.path.join(HOME, ".caret-run/inputs/node-dist"),
         "ios_qa_lock": os.path.join(HOME, ".codex/local-ios-qa.lock"),
     }
 
@@ -165,11 +167,14 @@ BROWSERS = "fixtures/web-form/.browsers"
 W4 = os.path.join(HOME, ".caret-run/evidence/browser/w4")
 
 
-def spec(name, kind, path, dest, rev=None):
-    """One input to seal: cloned to <job>/inputs/<dest> at enqueue, and only that copy is used and checked."""
+def spec(name, kind, path, dest, rev=None, expect_sha256=None):
+    """One input to seal: cloned to <job>/inputs/<dest> at enqueue, and only that copy is used and checked. With
+    expect_sha256, a file is sealed only when its content has that hash."""
     out = {"name": name, "kind": kind, "path": os.path.realpath(path), "dest": dest}
     if rev is not None:
         out["rev"] = rev
+    if expect_sha256 is not None:
+        out["expect_sha256"] = expect_sha256
     return out
 
 
@@ -243,6 +248,10 @@ def _list_of(allowed):
 
 def _r2_prepare_options(parser):
     parser.add_argument("--harness", choices=("h11", "h14"), required=True)
+    parser.add_argument("--inputs-from", metavar="WORKTREE",
+                        help="seal keytype's llama.xcframework and helper and extension node_modules from this "
+                             "worktree (its keytype checkout at the pin's gitlink, its lockfiles the pin's) instead "
+                             "of the pinned one's")
     parser.add_argument("--work", required=True, metavar="DIR", help="export, logs and vm/ go here")
     parser.add_argument("--pages", type=_list_of(H11_PAGES), default="wizard-1", help="H11 only")
     parser.add_argument("--sources", choices=H11_SOURCES, default="note", help="H11 only")
@@ -251,17 +260,82 @@ def _r2_prepare_options(parser):
 
 
 CFT_APP = os.path.join(HOME, "Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app")
-NODE_DIST = "node-v26.5.0-darwin-arm64.tar.gz"
+NODE_BASE_URL = "https://nodejs.org/dist"
+BUILD_APP = "apps/caret/scripts/build-app.sh"
+
+
+def node_tarball(version):
+    return "node-v{}-darwin-arm64.tar.gz".format(version)
+
+
+def node_pin(worktree, rev):
+    """(version, SHA-256) of the Node tarball build-app.sh pins at *rev*: its NODE_VERSION and NODE_SHA256, which
+    build-app.sh's comment traces to nodejs.org's signed SHASUMS256.txt. D1 and H11 got the tarball the same way:
+    build-app.sh downloaded it into apps/caret/.build/node-dist and checked this hash."""
+    shown = _git(worktree, "show", "{}:{}".format(rev, BUILD_APP))
+    if shown.returncode != 0:
+        raise manifest.ManifestError("{} has no {}".format(rev, BUILD_APP))
+    text = shown.stdout.decode()
+    version = re.search(r"^NODE_VERSION=([0-9][0-9.]*)$", text, re.M)
+    digest = re.search(r"^NODE_SHA256=([0-9a-f]{64})$", text, re.M)
+    if not (version and digest):
+        raise manifest.ManifestError("{} at {} pins no NODE_VERSION and NODE_SHA256".format(BUILD_APP, rev))
+    return version.group(1), digest.group(1)
+
+
+def fetch_node(worktree, rev, cache, base_url=NODE_BASE_URL):
+    """The pinned Node tarball in *cache*, downloading it if absent; a file is kept only when its SHA-256 is the
+    pin's, and a cached one is checked again. Returns its path."""
+    version, digest = node_pin(worktree, rev)
+    name = node_tarball(version)
+    path = os.path.join(cache, name)
+    if os.path.isfile(path):
+        if manifest.file_sha256(path) == digest:
+            return path
+        raise manifest.ManifestError("{} does not match the pinned SHA-256 {}; remove it and fetch again".format(path, digest))
+    os.makedirs(cache, mode=0o700, exist_ok=True)
+    part = path + ".part"
+    try:
+        done = subprocess.run(["curl", "-fsSL", "--proto", "=https,file", "-o", part,
+                               "{}/v{}/{}".format(base_url, version, name)], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=900)
+        if done.returncode != 0:
+            raise manifest.ManifestError("downloading {} failed: {}".format(name, done.stdout.strip()[-300:]))
+        got = manifest.file_sha256(part)
+        if got != digest:
+            raise manifest.ManifestError("downloaded {} has SHA-256 {}; it does not match the pinned SHA-256 {}".format(
+                name, got, digest))
+        os.replace(part, path)
+    finally:
+        if os.path.exists(part):
+            os.unlink(part)
+    return path
 
 
 def _r2_prepare_plan(args, worktree, rev, paths):
-    # The gitignored inputs build.sh clones into its export (recipes/r2/<harness>/build.sh, INPUTS).
-    inputs = [
-        spec("llama.xcframework", "tree",
-             os.path.join(worktree, "packages/keytype/Packages/ModelRuntime/Vendor/llama.xcframework"), "llama.xcframework"),
-        spec("node-dist", "file", os.path.join(worktree, "apps/caret/.build/node-dist", NODE_DIST), "node-dist/" + NODE_DIST),
-        spec("helper-node_modules", "tree", os.path.join(worktree, "helper/node_modules"), "helper-node_modules"),
-        spec("extension-node_modules", "tree", os.path.join(worktree, "extension/node_modules"), "extension-node_modules"),
+    # The inputs build.sh puts into its export (recipes/r2/<harness>/build.sh, INPUTS): keytype as an archive of the
+    # pin's gitlinked commit with its llama.xcframework, the Node tarball checked against build-app.sh's pin, and
+    # node_modules from a worktree whose lockfiles are the pin's.
+    source = os.path.realpath(getattr(args, "inputs_from", None) or worktree)
+    for d in ("helper", "extension"):
+        pinned = _git(worktree, "show", "{}:{}/pnpm-lock.yaml".format(rev, d)).stdout
+        try:
+            with open(os.path.join(source, d, "pnpm-lock.yaml"), "rb") as fh:
+                theirs = fh.read()
+        except OSError:
+            theirs = None
+        if not pinned or theirs != pinned:
+            raise manifest.ManifestError("{}/pnpm-lock.yaml in {} is not {}'s, so its node_modules may not be that "
+                                         "commit's".format(d, source, rev))
+    version, digest = node_pin(worktree, rev)
+    tarball = os.path.join(paths["node_cache"], node_tarball(version))
+    if not os.path.isfile(tarball):
+        raise manifest.ManifestError("no {} in {}: run `caret-heavy fetch-node --worktree {} --rev {}` first".format(
+            node_tarball(version), paths["node_cache"], worktree, rev))
+    inputs = keytype_inputs(worktree, rev, source) + [
+        spec("node-dist", "file", tarball, "node-dist/" + node_tarball(version), expect_sha256=digest),
+        spec("helper-node_modules", "tree", os.path.join(source, "helper/node_modules"), "helper-node_modules"),
+        spec("extension-node_modules", "tree", os.path.join(source, "extension/node_modules"), "extension-node_modules"),
         spec("chrome-for-testing-app", "tree", CFT_APP, "Google Chrome for Testing.app"),
     ]
     argv = [args.harness, os.path.realpath(args.work), rev]
@@ -494,6 +568,9 @@ def seal_inputs(specs, inputs_dir):
             entries.append(dict(_seal_git_archive(item, dest), source=item["path"], dest=item["dest"]))
             continue
         source = manifest.record(item["name"], item["kind"], item["path"], rev=item.get("rev"))
+        if item.get("expect_sha256") and source.get("sha256") != item["expect_sha256"]:
+            raise manifest.ManifestError("input {} ({}) has SHA-256 {}, not the pinned SHA-256 {}".format(
+                item["name"], item["path"], source.get("sha256"), item["expect_sha256"]))
         done = subprocess.run(["/bin/cp", "-c", "-R", "-p", item["path"], dest], stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if done.returncode != 0:
@@ -769,6 +846,10 @@ def main(argv=None):
         p.add_argument("--rev", required=True, help="full commit SHA the worktree must be at")
         p.add_argument("--env-file", help="path of the .env holding the key (default: $CARET_ENV_FILE)")
         recipe.add_options(p)
+    fetch = sub.add_parser("fetch-node", help="download the Node tarball build-app.sh pins at REV, kept only if its "
+                                             "SHA-256 matches, into the cache r2-prepare seals it from")
+    fetch.add_argument("--worktree", required=True)
+    fetch.add_argument("--rev", required=True, help="full commit SHA whose build-app.sh pins the tarball")
     sub.add_parser("status")
     show = sub.add_parser("show")
     show.add_argument("job_id")
@@ -785,6 +866,11 @@ def main(argv=None):
             plan_path, digest, out = enqueue(args.recipe, args.job_id, args.worktree, args.rev, args, paths,
                                              env_file=env_file)
             print(json.dumps({"plan": plan_path, "plan_sha256": digest, "queue": json.loads(out)}))
+            return 0
+        if args.action == "fetch-node":
+            if not SHA_PATTERN.match(args.rev):
+                raise manifest.ManifestError("--rev must be a full 40-character commit SHA")
+            print(fetch_node(os.path.realpath(args.worktree), args.rev, paths["node_cache"]))
             return 0
         if args.action == "status":
             code, text = status(paths)

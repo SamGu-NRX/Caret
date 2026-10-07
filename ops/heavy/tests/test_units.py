@@ -670,10 +670,9 @@ if __name__ == "__main__":
     unittest.main(verbosity=2)
 
 
-class SwiftInputsTest(Temp):
-    """swift-tests and r2-prepare at a commit whose keytype submodule is not checked out: keytype is sealed as an
-    archive of the gitlink's commit from another worktree's checkout, with that checkout's llama.xcframework, only
-    when that checkout is at the gitlink."""
+class KeytypeWorld(Temp):
+    """A main repository whose packages/keytype is a gitlink with no checkout, and a source worktree whose keytype
+    checkout is at that commit with its gitignored llama.xcframework."""
 
     def make(self):
         sub = os.path.join(self.root, "keytype-src")
@@ -697,6 +696,13 @@ class SwiftInputsTest(Temp):
         os.makedirs(os.path.join(source, "packages"))
         shutil.copytree(sub, os.path.join(source, "packages/keytype"), symlinks=True)
         return main, rev, source, gitlink
+
+
+
+class SwiftInputsTest(KeytypeWorld):
+    """swift-tests and r2-prepare at a commit whose keytype submodule is not checked out: keytype is sealed as an
+    archive of the gitlink's commit from another worktree's checkout, with that checkout's llama.xcframework, only
+    when that checkout is at the gitlink."""
 
     def test_keytype_is_the_gitlinks_commit_and_llama_comes_with_it(self):
         main, rev, source, gitlink = self.make()
@@ -757,3 +763,76 @@ class BinariesFromTest(Temp):
         done = subprocess.run([sys.executable, os.path.join(HEAVY, "caret_heavy.py"), "enqueue", "live-tasks", "--help"],
                               capture_output=True, text=True)
         self.assertIn("--binaries-from", done.stdout)
+
+
+class NodeDistTest(KeytypeWorld):
+    """The Node tarball r2-prepare seals: fetched once into a cache and kept only when its SHA-256 is the one
+    build-app.sh pins at the pinned commit; sealed against that same hash."""
+
+    TARBALL = b"synthetic node tarball, not node\n"
+
+    def repo_with_pin(self, data):
+        import hashlib
+        main, rev, source, gitlink = self.make()
+        self.write("main/apps/caret/scripts/build-app.sh",
+                   "NODE_VERSION=26.5.0\nNODE_SHA256={}\n".format(hashlib.sha256(data).hexdigest()))
+        for d in ("helper", "extension"):
+            self.write("main/{}/pnpm-lock.yaml".format(d), "lock {}\n".format(d))
+            self.write("source/{}/pnpm-lock.yaml".format(d), "lock {}\n".format(d))
+            self.write("source/{}/node_modules/x/index.js".format(d), "x\n")
+        git(main, "add", "apps", "helper", "extension")  # not -A: that would stage the gitlink's deletion
+        git(main, "commit", "-q", "-m", "pin")
+        rev = git(main, "rev-parse", "HEAD").stdout.strip()
+        dist = os.path.join(self.root, "dist/v26.5.0")
+        os.makedirs(dist)
+        with open(os.path.join(dist, "node-v26.5.0-darwin-arm64.tar.gz"), "wb") as fh:
+            fh.write(self.TARBALL)
+        return main, rev, source
+
+    def test_the_pin_is_read_at_the_commit_and_only_a_matching_download_is_kept(self):
+        import hashlib
+        main, rev, source = self.repo_with_pin(self.TARBALL)
+        self.assertEqual(caret_heavy.node_pin(main, rev), ("26.5.0", hashlib.sha256(self.TARBALL).hexdigest()))
+        cache = os.path.join(self.root, "cache")
+        base = "file://" + os.path.join(self.root, "dist")
+        path = caret_heavy.fetch_node(main, rev, cache, base_url=base)
+        self.assertEqual(path, os.path.join(cache, "node-v26.5.0-darwin-arm64.tar.gz"))
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), self.TARBALL)
+        shutil.rmtree(os.path.join(self.root, "dist"))
+        self.assertEqual(caret_heavy.fetch_node(main, rev, cache, base_url=base), path)  # verified cache, no download
+        # A download whose hash is not the pin's is refused and nothing is kept.
+        self.write("main/apps/caret/scripts/build-app.sh", "NODE_VERSION=26.5.0\nNODE_SHA256={}\n".format("0" * 64))
+        git(main, "commit", "-q", "-am", "other pin")
+        rev2 = git(main, "rev-parse", "HEAD").stdout.strip()
+        os.makedirs(os.path.join(self.root, "dist/v26.5.0"))
+        with open(os.path.join(self.root, "dist/v26.5.0/node-v26.5.0-darwin-arm64.tar.gz"), "wb") as fh:
+            fh.write(self.TARBALL)
+        other = os.path.join(self.root, "cache2")
+        with self.assertRaisesRegex(manifest.ManifestError, "does not match the pinned SHA-256"):
+            caret_heavy.fetch_node(main, rev2, other, base_url=base)
+        self.assertEqual(os.listdir(other), [])
+        # Sealing checks the hash again.
+        spec = caret_heavy.spec("node-dist", "file", path, "node-dist/n.tar.gz", expect_sha256="0" * 64)
+        with self.assertRaisesRegex(manifest.ManifestError, "pinned SHA-256"):
+            caret_heavy.seal_inputs([spec], os.path.join(self.root, "inputs"))
+
+    def test_r2_prepare_seals_keytype_node_and_modules_from_the_matching_worktree(self):
+        main, rev, source = self.repo_with_pin(self.TARBALL)
+        paths = dict(caret_heavy.default_paths(os.path.join(self.root, "state")), node_cache=os.path.join(self.root, "cache"))
+        args = argparse.Namespace(harness="h11", work=os.path.join(self.root, "work"), pages="wizard-1", sources="note",
+                                  next_page="0", scenarios="page_task", inputs_from=source)
+        with self.assertRaisesRegex(manifest.ManifestError, "fetch-node"):
+            caret_heavy.RECIPES["r2-prepare"].plan_args(args, main, rev, paths)
+        caret_heavy.fetch_node(main, rev, paths["node_cache"], base_url="file://" + os.path.join(self.root, "dist"))
+        argv, specs, _env = caret_heavy.RECIPES["r2-prepare"].plan_args(args, main, rev, paths)
+        by = {s["name"]: s for s in specs}
+        self.assertEqual(sorted(by), sorted(["keytype", "llama.xcframework", "node-dist", "helper-node_modules",
+                                             "extension-node_modules", "chrome-for-testing-app"]))
+        self.assertEqual(by["keytype"]["kind"], "git-archive")
+        self.assertTrue(by["node-dist"]["expect_sha256"])
+        self.assertTrue(by["helper-node_modules"]["path"].startswith(os.path.realpath(source)))
+        # A worktree whose lockfile is not the pin's cannot supply node_modules.
+        self.write("source/extension/pnpm-lock.yaml", "lock extension, another version\n")
+        with self.assertRaisesRegex(manifest.ManifestError, "extension/pnpm-lock.yaml"):
+            caret_heavy.RECIPES["r2-prepare"].plan_args(args, main, rev, paths)
