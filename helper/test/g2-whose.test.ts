@@ -84,9 +84,12 @@ describe("Greenhouse task page: the Location step's source check (G1 fix 1, froz
 
   it("still refuses a line that no longer gives the city, a line that gained a label, and a sentence with no place", () => {
     const sw = (text: string) => pageModel([location], text).windows.get("w4-note")!;
-    expect(sourceHolds(sw("I live in Bangor now. Recruiters keep mixing that up."), NOTE_KEY, "Portland", null, "combobox")).toBe(false);
-    expect(sourceHolds(sw("Not this one: Portland, Maine"), NOTE_KEY, "Portland", null, "combobox")).toBe(false);
-    expect(sourceHolds(sw("I flew through Portland once."), NOTE_KEY, "Portland", null, "combobox")).toBe(false);
+    // What fill recorded when it read the city from the note (FillField.basis): each refusal compares against it.
+    const basis = { from: ["Portland, Maine"], how: "address:city", lines: lineDigests(note, "Portland, Maine") };
+    expect(sourceHolds(sw(note), NOTE_KEY, "Portland", null, "combobox", basis)).toBe(true);
+    expect(sourceHolds(sw("I live in Bangor now. Recruiters keep mixing that up."), NOTE_KEY, "Portland", null, "combobox", basis)).toBe(false);
+    expect(sourceHolds(sw("Not this one: Portland, Maine"), NOTE_KEY, "Portland", null, "combobox", basis)).toBe(false);
+    expect(sourceHolds(sw("I flew through Portland once."), NOTE_KEY, "Portland", null, "combobox", basis)).toBe(false);
   });
 });
 

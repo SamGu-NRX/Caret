@@ -53,7 +53,8 @@ describe("sourceHolds: a span inside a longer source line (P2 decision)", () => 
 
   it("holds a text field's value to the node's text, as before", () => {
     expect(sourceHolds(source(LOCATION), "te/n", "Oakland", null, "text", read(LOCATION, "Oakland"))).toBe(true);
-    expect(sourceHolds(source(LOCATION), "te/n", "Berkeley", null, "text", read(LOCATION, "Berkeley"))).toBe(false);
+    // Read from "Oakland" on the same lines: the lines hold, and the value is not what they give.
+    expect(sourceHolds(source(LOCATION), "te/n", "Berkeley", null, "text", { ...read(LOCATION, "Oakland"), from: ["Oakland"] })).toBe(false);
   });
 });
 

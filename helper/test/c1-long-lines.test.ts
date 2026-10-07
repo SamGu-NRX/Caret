@@ -129,7 +129,9 @@ describe("the recheck reads a line the way fill read it", () => {
   it("checks a value from a long labelled line by its label", () => {
     const line = "School: Lakeshore Polytechnic Institute, B.S. Electrical Engineering, September 2016 to May 2020.";
     expect(sourceHolds(src(line), key, "Lakeshore Polytechnic Institute", "School", "combobox", read(line, "Lakeshore Polytechnic Institute"))).toBe(true);
-    expect(sourceHolds(src(line.replace("School:", "Not my school:")), key, "Lakeshore Polytechnic Institute", "School", "combobox", read(line, "Lakeshore Polytechnic Institute"))).toBe(false);
+    // Its lines read as recorded, so the label is what refuses it.
+    const relabelled = line.replace("School:", "Not my school:");
+    expect(sourceHolds(src(relabelled), key, "Lakeshore Polytechnic Institute", "School", "combobox", read(relabelled, "Lakeshore Polytechnic Institute"))).toBe(false);
   });
 });
 

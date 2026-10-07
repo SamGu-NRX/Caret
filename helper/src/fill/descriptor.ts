@@ -141,10 +141,12 @@ export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean):
   const all = allTexts(w);
   const hits = all.filter((e) => marked(e.t));
   if (hits.length === 0) return out;
-  for (const e of hits) out.add(e.key);
+  // A one-line text that names a secret is a label, and goes; a text of several lines is a document, whose own lines the
+  // redacted view drops one by one (G2 round 6: "Name: Kenji Watanabe\nPassword: …\nPhone: …" lost its name and phone).
+  for (const e of hits) if (!e.document) out.add(e.key);
   for (const n of w.nodes.values()) {
     const f = n.frame;
-    if (f === undefined || out.has(n.key)) continue;
+    if (f === undefined || out.has(n.key) || hits.some((e) => e.key === n.key)) continue;
     const [fx, fy, , fh] = f;
     const near = hits.some((e) => {
       const [x, y, wd, h] = e.frame;
@@ -161,19 +163,23 @@ export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean):
 }
 
 /** Every static text with a frame, in full and cleaned of runs of white space: what admission reads (nodesLabelledBy). */
-function allTexts(w: WindowState): LabelText[] {
+function allTexts(w: WindowState): FullText[] {
   let out = fullIndex.get(w);
   if (out !== undefined) return out;
   out = [];
   for (const n of w.nodes.values()) {
     if (n.role !== "AXStaticText" || n.frame === undefined) continue;
-    const t = clean(n.label ?? n.value);
-    if (t !== null) out.push({ key: n.key, frame: n.frame, t, labelLike: false });
+    const raw = n.label ?? n.value;
+    const t = clean(raw);
+    if (t === null) continue;
+    out.push({ key: n.key, frame: n.frame, t, labelLike: false, document: /\S\s*\n\s*\S/u.test(raw ?? "") });
   }
   fullIndex.set(w, out);
   return out;
 }
-const fullIndex = new WeakMap<WindowState, LabelText[]>();
+const fullIndex = new WeakMap<WindowState, FullText[]>();
+/** A static text as admission reads it: in full, and whether it is a document of several lines rather than a label. */
+type FullText = LabelText & { document: boolean };
 
 /** nearestLabel's rule over a given list of texts. */
 function nearestIn(texts: readonly LabelText[], target: Node): LabelText | null {

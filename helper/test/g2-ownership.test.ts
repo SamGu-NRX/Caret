@@ -16,6 +16,7 @@ import { EngineSession } from "../src/engines/session.ts";
 import { buildFillPopup, fillPlan, recheckFields, recheckFill, sourceHolds, writtenFields } from "../src/offers/fill-popup.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
 import { assertNoSecrets, SecretInRequest } from "../src/privacy.ts";
+import { redactWindow } from "../src/fill/redact.ts";
 import "../src/planner/intent-heads.ts";
 import { bareLine, lineDigests } from "../src/fill/line-values.ts";
 import { secretText as holdsSecret } from "../src/memory/sensitive.ts";
@@ -723,5 +724,37 @@ describe("G2 round 5", () => {
     expect(() => assertNoSecrets({ state: { task: "t" }, questions: { scope: { type: "choice", instructions: "Which?", criteria: { refuse } } } })).not.toThrow();
     expect(() => assertNoSecrets({ state: { screenText: refuse }, questions: {} })).toThrow(SecretInRequest);
     expect(() => assertNoSecrets({ state: { task: "t" }, questions: { scope: { type: "choice", instructions: refuse, criteria: { none: "None." } } } })).toThrow(SecretInRequest);
+  });
+});
+
+describe("G2 round 6: what the view keeps", () => {
+  const view = (nodes: Snapshot["nodes"], values: Snapshot["values"] = []) => {
+    const m = new ScreenModel();
+    m.apply({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 600, 300] }, focused: false, root: null, nodes, values, focusedKey: null, stats: { walkMs: 0, visited: nodes.length, truncated: false } } as Snapshot);
+    return redactWindow(m.windows.get("other")!);
+  };
+
+  it("a: a static document with one secret line keeps its other lines", () => {
+    const v = view([{ key: "o/d", parent: null, role: "AXStaticText", label: "Name: Kenji Watanabe\nPassword: violet-orchard-seven\nPhone: 555-0164", frame: [20, 40, 300, 60] }]);
+    expect(nodeText(v.nodes.get("o/d")!)).toBe("Name: Kenji Watanabe\nPhone: 555-0164");
+    // A one-line label that names a secret still keeps the field beside it out.
+    const f = view([
+      { key: "o/l", parent: null, role: "AXStaticText", value: "PIN", frame: [20, 40, 60, 20] },
+      { key: "o/f", parent: null, role: "AXTextField", editable: true, value: "7319", frame: [90, 40, 120, 20] },
+    ]);
+    expect([...f.nodes.keys()]).toEqual([]);
+  });
+
+  it("b: a typed value goes only when a line it stands on was dropped, never for a dropped line's text", () => {
+    // The opener drops the line "Austin" below it; the address on the next two lines stands on neither dropped line.
+    const text = "Password:\nAustin\n4410 Speedway\napt 2, Austin, TX 78751";
+    const v = view([{ key: "o/t", parent: null, role: "AXTextArea", editable: true, value: text, frame: [0, 0, 400, 200] }], [{ kind: "address", text: "4410 Speedway\napt 2, Austin, TX 78751", nodeKey: "o/t" }]);
+    expect(v.values.map((x) => x.text)).toEqual(["4410 Speedway\napt 2, Austin, TX 78751"]);
+    const opened = view([{ key: "o/t", parent: null, role: "AXTextArea", editable: true, value: "Password:\n4410 Speedway\napt 2, Austin, TX 78751", frame: [0, 0, 400, 200] }], [{ kind: "address", text: "4410 Speedway\napt 2, Austin, TX 78751", nodeKey: "o/t" }]);
+    expect(opened.values).toEqual([]);
+  });
+
+  it("c: a span with a blank line inside it has its digests", () => {
+    expect(lineDigests("Home\n4410 Speedway\n\napt 2, Austin\nPhone", "4410 Speedway\n\napt 2, Austin")).toHaveLength(1);
   });
 });

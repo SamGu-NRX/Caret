@@ -478,7 +478,11 @@ export function partAround(line: string, at: number, text: string): string | nul
 export function lineDigests(text: string, span: string): string[] {
   // G2 round 5: a span over several lines ("4410 Speedway\napt 2") covers each of them; its digest is of all of them and
   // the line before and after. Each of its lines is read as the generator reads a line (bareLine).
-  const want = span.split(/\r?\n/u).map(bareLine).filter((l) => l !== "");
+  // Blank lines at either end of the span are no part of it; one inside it is (G2 round 6: "4410 Speedway\n\napt 2"
+  // found no lines, so its unchanged offer failed the recheck).
+  const want = span.split(/\r?\n/u).map(bareLine);
+  while (want.length > 0 && want[0] === "") want.shift();
+  while (want.length > 0 && want[want.length - 1] === "") want.pop();
   if (want.length === 0) return [];
   const lines = text.split(/\r?\n/u).map((l) => l.replace(/\s+$/u, ""));
   const bare = lines.map(bareLine);

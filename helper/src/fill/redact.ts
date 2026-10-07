@@ -29,31 +29,41 @@ function opensValue(line: string): boolean {
 }
 
 /**
- * A text less the lines it must not give (secretText, and a line a marked opener above it opens), and the lines it
- * dropped; the text unchanged when it gives all.
+ * A text less the lines it must not give (secretText, and a line a marked opener above it opens), and the indexes of the
+ * lines it dropped; the text unchanged when it gives all.
  */
-function keptText(text: string): { kept: string; dropped: string[] } {
-  if (!text.split(/\r?\n/u).some((l) => secretText(l))) return { kept: text, dropped: [] };
+function keptText(text: string): { kept: string; dropped: Set<number> } {
+  if (!text.split(/\r?\n/u).some((l) => secretText(l))) return { kept: text, dropped: new Set() };
   const parts = text.split(/(\r?\n)/u);
   const out: string[] = [];
-  const dropped: string[] = [];
+  const dropped = new Set<number>();
   for (let i = 0; i < parts.length; i += 2) {
     const l = parts[i] as string;
     if (!secretText(l)) {
       out.push(l, parts[i + 1] ?? "");
       continue;
     }
-    dropped.push(l);
+    dropped.add(i / 2);
     // G2 round 5: an opener takes the next line, and a line it takes opens in turn ("Password:" then "PIN:" then
     // "violet-orchard-seven"): each value-opening line drops the one after it.
     for (let open = opensValue(l); open && i + 2 < parts.length; ) {
       i += 2;
-      const next = parts[i] as string;
-      dropped.push(next);
-      open = opensValue(next);
+      dropped.add(i / 2);
+      open = opensValue(parts[i] as string);
     }
   }
   return { kept: out.join("").replace(/\r?\n$/u, ""), dropped };
+}
+
+/** Whether a place where `value` stands in `text` covers one of the line indexes `dropped` (G2 round 6: by line, not text). */
+function coversDropped(text: string, value: string, dropped: ReadonlySet<number>): boolean {
+  if (dropped.size === 0 || value === "") return false;
+  for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
+    const first = text.slice(0, at).split(/\r?\n/u).length - 1;
+    const last = first + value.split(/\r?\n/u).length - 1;
+    for (let i = first; i <= last; i++) if (dropped.has(i)) return true;
+  }
+  return false;
 }
 
 /**
@@ -81,16 +91,18 @@ function build(w: WindowState): WindowState {
   if (secretText(w.window.title)) return { ...w, nodes: new Map(), values: [] };
   const dropped = nodesLabelledBy(w, secretText);
   const nodes = new Map<string, Node>();
-  /** The lines each kept node lost, which no typed value of it may come from. */
-  const lost = new Map<string, string[]>();
+  /** Each kept node's texts, with the lines each lost, which no typed value of it may stand on. */
+  const lost = new Map<string, { text: string; dropped: Set<number> }[]>();
   for (const n of w.nodes.values()) {
-    if (dropped.has(n.key) || secretText(n.label) || secretText(n.placeholder)) continue;
+    // A field's own label or placeholder that names a secret takes the field and its value; any other node's label is
+    // its content, redacted line by line below (G2 round 6).
+    if (dropped.has(n.key) || (n.editable === true && (secretText(n.label) || secretText(n.placeholder)))) continue;
     // The node with its texts' secret lines gone. A node that gives no text, and had some, is gone with them.
     const v = n.value === undefined ? undefined : keptText(n.value);
     const l = n.label === undefined ? undefined : keptText(n.label);
     const value = v?.kept;
     const label = l?.kept;
-    const gone = [...(v?.dropped ?? []), ...(l?.dropped ?? [])];
+    const gone = [...(v === undefined || n.value === undefined ? [] : [{ text: n.value, dropped: v.dropped }]), ...(l === undefined || n.label === undefined ? [] : [{ text: n.label, dropped: l.dropped }])].filter((x) => x.dropped.size > 0);
     if (gone.length > 0) lost.set(n.key, gone);
     const had = (n.value ?? "") !== "" || (n.label ?? "") !== "";
     if (had && (value ?? "") === "" && (label ?? "") === "" && n.editable !== true) continue;
@@ -104,11 +116,10 @@ function build(w: WindowState): WindowState {
       nodes.set(n.key, m);
     }
   }
-  // The reader's typed values, less those of a dropped node or line.
-  // G2 round 5: a value that spans lines goes when any line it covers went ("4410 Speedway\napt 2, Austin" under a dropped
-  // "Password:" opener).
-  const covers = (v: TypedValue, l: string): boolean => l.trim() !== "" && (l.includes(v.text) || v.text.split(/\r?\n/u).some((part) => part.trim() !== "" && (l.includes(part.trim()) || part.includes(l.trim()))));
-  const values: TypedValue[] = w.values.filter((v) => nodes.has(v.nodeKey) && !secretText(v.text) && !(lost.get(v.nodeKey) ?? []).some((l) => covers(v, l)));
+  // The reader's typed values, less those of a dropped node, and those standing on a dropped line: a value over several
+  // lines goes when any line it covers went ("4410 Speedway\napt 2, Austin" under a dropped "Password:" opener), judged
+  // by the lines where it stands, never by a dropped line's text (G2 round 6: a dropped "Austin" took an address).
+  const values: TypedValue[] = w.values.filter((v) => nodes.has(v.nodeKey) && !secretText(v.text) && !(lost.get(v.nodeKey) ?? []).some((x) => coversDropped(x.text, v.text, x.dropped)));
   // A window that gives everything is read as it is: the same state, so every cache keyed by it (windowValues, the
   // ledger's budgets, descriptor.ts's label index) is shared with code that reads it raw.
   if (nodes.size === w.nodes.size && [...nodes].every(([k, n]) => w.nodes.get(k) === n) && values.length === w.values.length) return w;
