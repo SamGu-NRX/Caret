@@ -33,8 +33,10 @@ const EMAIL = "bram.k@example.org";
 const OPENING = ["Signing up for the Thursday pottery class.", "I'm Odile Ferrant, second term."];
 const CONTACTS = ["Copied from the visitor card:", `Phone: ${PHONE}`, `Email: ${EMAIL}`];
 const DISCLAIMED = [...OPENING, ...CONTACTS, "Neither of those lines is mine."].join("\n");
+/** A note line over 80 characters, so the note has prose; LONG_PROSE is enough of them to pass the 2,000-character owner-note allotment (privacy.ts OWNER_NOTE_CHARS). */
 const PROSE = "Reminder to myself: bring the receipt from last term, because the front desk asked about it twice already.";
-const TOO_LONG = [...OPENING, PROSE, ...CONTACTS].join("\n");
+const LONG_PROSE = Array.from({ length: 20 }, (_, i) => `${PROSE} (${i + 1})`).join("\n");
+const TOO_LONG = [...OPENING, LONG_PROSE, ...CONTACTS].join("\n");
 const P = "com.google.Chrome/standard";
 const INSTRUCTION = "fill in my phone and email from my note";
 

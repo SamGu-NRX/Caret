@@ -8,7 +8,7 @@ import type { AboutValue } from "../src/fill/about.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { field, snap } from "./builders.ts";
-import { OWNER_NOTE_CHARS, setOwnerNoteChars } from "../src/privacy.ts";
+import { OWNER_NOTE_CHARS, ownerNoteGate, setOwnerNoteChars } from "../src/privacy.ts";
 import { OwnerVerdicts } from "../src/fill/owner-cache.ts";
 
 const T0 = 1_000_000;
@@ -19,7 +19,9 @@ const USER_EMAIL = "odile.f@example.com";
 const OPENING = ["Signing up for the Thursday pottery class.", "I'm Odile Ferrant, second term."];
 const CONTACTS = ["Copied from the visitor card:", `Phone: ${PHONE}`, `Email: ${EMAIL}`];
 /** A line over the 80 characters of a card's line, so the note has prose and only under half of it may be sent. */
+/** A note line over 80 characters, so the note has prose; LONG_PROSE is enough of them to pass the 2,000-character owner-note allotment (privacy.ts OWNER_NOTE_CHARS). */
 const PROSE = "Reminder to myself: bring the receipt from last term, because the front desk asked about it twice already.";
+const LONG_PROSE = Array.from({ length: 20 }, (_, i) => `${PROSE} (${i + 1})`).join("\n");
 
 /** A note the user just left, and a form asking for the user's own details in front of it. */
 function desk(note: string, labels: readonly string[] = ["Phone", "Email"]): ScreenModel {
@@ -104,7 +106,7 @@ describe("HA2 rule 2: the owner questions show the whole note", () => {
   });
 
   it("withholds a value from a note too long to show whole, even with 'user' and 'exact' at confidence 1", async () => {
-    const { by } = await fill([...OPENING, PROSE, ...CONTACTS].join("\n"), theirs, { owner: () => "user" });
+    const { by } = await fill([...OPENING, LONG_PROSE, ...CONTACTS].join("\n"), theirs, { owner: () => "user" });
     for (const label of ["Phone", "Email"]) {
       const f = by(label);
       expect(f?.value ?? null, label).toBeNull();
@@ -114,7 +116,7 @@ describe("HA2 rule 2: the owner questions show the whole note", () => {
   });
 
   it("withholds a part derived from an address in a note too long to show whole", async () => {
-    const note = [...OPENING, PROSE, "Copied from the visitor card:", "Address: 41 Quarry Lane, Dover, DE 19901"].join("\n");
+    const note = [...OPENING, LONG_PROSE, "Copied from the visitor card:", "Address: 41 Quarry Lane, Dover, DE 19901"].join("\n");
     const labels = ["Street address", "City"];
     const pick = (l: string): string | null => (l === "City" ? "Dover" : l === "Street address" ? "41 Quarry Lane" : null);
     const { by } = await fill(note, pick, { labels, owner: () => "user" });
@@ -126,7 +128,7 @@ describe("HA2 rule 2: the owner questions show the whole note", () => {
   });
 
   it("keeps its exceptions: the user's exact identity from memory, and a value the instruction spells out", async () => {
-    const note = [...OPENING, PROSE, `Email: ${USER_EMAIL}`, `Phone: ${PHONE}`].join("\n");
+    const note = [...OPENING, LONG_PROSE, `Email: ${USER_EMAIL}`, `Phone: ${PHONE}`].join("\n");
     const about: AboutValue[] = [{ id: "a-email", label: "Email", kind: "email", value: USER_EMAIL }];
     const mine = await fill(note, (l) => (l === "Email" ? USER_EMAIL : null), { about, owner: () => "user" });
     expect(mine.by("Email")?.value).toBe(USER_EMAIL);
@@ -154,7 +156,7 @@ describe("HA2 rule 2 for address parts (lead decision): a lone city, ZIP or coun
   });
 
   it("withholds a lone ZIP line from a note too long to show whole, even with 'user' and 'exact' at confidence 1", async () => {
-    const { by } = await fill([...OPENING, PROSE, "19901"].join("\n"), parts, { labels: ["ZIP code"], owner: () => "user" });
+    const { by } = await fill([...OPENING, LONG_PROSE, "19901"].join("\n"), parts, { labels: ["ZIP code"], owner: () => "user" });
     const f = by("ZIP code");
     expect(f?.value ?? null).toBeNull();
     expect(f === undefined ? null : heldReason(f)).toBe(`Caret left ZIP code: ${NOTE_UNSHOWN}.`);
@@ -198,19 +200,19 @@ describe("HA2 rule 1: the exactness check makes no ownership claim", () => {
   });
 });
 
-describe("HA2 recall lever 1: the owner-note allotment (privacy.ts OWNER_NOTE_CHARS, off in the product)", () => {
+describe("HA2 recall lever 1: the owner-note allotment (privacy.ts OWNER_NOTE_CHARS, 2,000 since Sam's approval)", () => {
   afterEach(() => setOwnerNoteChars(null));
   const LONG_MINE = [...OPENING, PROSE, `Phone: ${USER_PHONE}`, `Email: ${USER_EMAIL}`].join("\n");
   const mine = (l: string): string | null => (l === "Phone" ? USER_PHONE : l === "Email" ? USER_EMAIL : null);
 
-  it("is off by default: a note with a prose line is withheld as too long", async () => {
-    expect(OWNER_NOTE_CHARS).toBe(0);
+  it("is 2,000 in the product; off, a note with a prose line is withheld as too long", async () => {
+    expect(OWNER_NOTE_CHARS).toBe(2000);
+    setOwnerNoteChars(0);
     const { by } = await fill(LONG_MINE, mine);
     expect(by("Phone")?.value ?? null).toBeNull();
   });
 
-  it("with an allotment the note fits, shows the whole note in both owner questions and fills the user's own values", async () => {
-    setOwnerNoteChars(4000);
+  it("with the product's allotment the note fits, shows the whole note in both owner questions and fills the user's own values", async () => {
     const { by, j } = await fill(LONG_MINE, mine);
     expect([by("Phone")?.value, by("Email")?.value]).toEqual([USER_PHONE, USER_EMAIL]);
     const whose = j.reqs.filter((r) => r.purpose === "fill.whose");
@@ -271,5 +273,17 @@ describe("HA2 recall lever 2: the session's owner verdicts (fill/owner-cache.ts)
     expect([cache.get("k1"), cache.get("k2") !== undefined]).toEqual([undefined, true]);
     cache.clear();
     expect(cache.size).toBe(0);
+  });
+});
+
+describe("the packaging gate (privacy.ts ownerNoteGate)", () => {
+  it("refuses the product as configured: an allotment above 0 and a promise that names no disclosure", () => {
+    expect(ownerNoteGate()).toMatch(/OWNER_NOTE_DISCLOSURE/u);
+  });
+  it("passes with the allotment off, and with a promise that includes the disclosure's words; refuses one that does not", () => {
+    expect(ownerNoteGate(0, "anything", null)).toBeNull();
+    expect(ownerNoteGate(2000, "Caret may send the whole note to check whose a value is.", "the whole note")).toBeNull();
+    expect(ownerNoteGate(2000, "Never a whole document.", "the whole note")).toMatch(/does not include/u);
+    expect(ownerNoteGate(2000, "Never a whole document.", " ")).toMatch(/names no words/u);
   });
 });

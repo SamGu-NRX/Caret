@@ -41,16 +41,45 @@ export const CARD_LINE_CHARS = 80;
 export const CONVERSATION_CHARS = 600;
 
 /**
- * HA2 recall lever 1, unmeasured: the longest whole note an owner question may show beyond its window's budget and
- * prose share, in characters; 0 turns the lever off, and a note goes only within those budgets, as before. Why it exists:
- * an owner judgement counts only when it saw every note that holds the value whole (fill/note-unit.ts), and a note with
- * a line over CARD_LINE_CHARS never fits a fill on focus's prose share, so its user values are withheld. What it sends
- * when on: the whole note, as the redacted view shows it, in the owner questions only (the value questions keep the
- * window's budget), charged to the window and declared like any other text; nothing redaction cut, and no window the
- * model does not hold (Sites rules act before the model), is ever sent. Shipping a value above 0 is a privacy decision
- * for Sam and the coordinator; evidence/screen/ha2 measures 2,000, 4,000 and 8,000.
+ * HA2 recall lever 1: the longest whole note an owner question may show beyond its window's budget and prose share, in
+ * characters; 0 turns the lever off. Why it exists: an owner judgement counts only when it saw every note that holds the
+ * value whole (fill/note-unit.ts), and a note with a line over CARD_LINE_CHARS never fits a fill on focus's prose share,
+ * so its user values were withheld. What it sends: the whole note, as the redacted view shows it, in the owner questions
+ * only (the value questions keep the window's budget), charged to the window and declared like any other text; nothing
+ * redaction cut, no conversation (it keeps more than half of itself back, as ever), and no window the model does not
+ * hold (Sites rules act before the model), is ever sent.
+ * Why 2,000: Sam approved it on 2026-10-07, on condition of latency, from an offline measurement of canned right 352
+ * against 353 before HA2 (243 with the lever off), wrong 0. That measurement also let a conversation's owner note past its
+ * conversation share, which test/privacy.test.ts refuses once the lever is on; with conversations kept out, as here, it
+ * measures canned right 306, page oracle 132 (130 off), reader oracle 122 (120 off), wrong 0 on both oracles and the
+ * refuse-mode adversary (evidence/screen/ha2, tag lever1). Live B31 (evidence/screen/ha2/live-cap0, live-cap2000), measured
+ * with conversations allowed, which sent at least as much as this does: the owner (fill.whose) requests' p95 went from 385.07 ms to
+ * 398.80 ms, +3.6% against a 20% budget, and p50 rose 8.2 ms; ten requests per run, a small sample. It sends more than
+ * the onboarding promise above says ("never a whole document"), so the app is not packaged until the promise discloses it
+ * (ownerNoteGate).
  */
-export const OWNER_NOTE_CHARS = 0;
+export const OWNER_NOTE_CHARS = 2000;
+
+/**
+ * The user-facing privacy promise the host's onboarding shows, as this helper keeps it for the packaging gate. The
+ * verified text that discloses the owner note is the coordinator's to write; until it is here, with
+ * OWNER_NOTE_DISCLOSURE naming the words of it that disclose the note, ownerNoteGate refuses to package.
+ */
+export const PRIVACY_PROMISE = "To decide what to offer, Caret sends short snippets to a cloud model, such as a field's label and the values it might fill. Never a whole document or conversation.";
+/** The words of PRIVACY_PROMISE that disclose the owner note (OWNER_NOTE_CHARS); null until the verified promise names them. */
+export const OWNER_NOTE_DISCLOSURE: string | null = null;
+
+/**
+ * Why the app may not be packaged as configured, or null: OWNER_NOTE_CHARS above 0 needs a promise that discloses the
+ * owner note, by OWNER_NOTE_DISCLOSURE's words. scripts/package_mac.py runs helper/scripts/privacy-gate.ts before it
+ * builds, and stops on a refusal.
+ */
+export function ownerNoteGate(chars: number = OWNER_NOTE_CHARS, promise: string = PRIVACY_PROMISE, disclosure: string | null = OWNER_NOTE_DISCLOSURE): string | null {
+  if (chars <= 0) return null;
+  if (disclosure === null || disclosure.trim() === "") return `OWNER_NOTE_CHARS is ${chars}, and OWNER_NOTE_DISCLOSURE names no words of the privacy promise that disclose the owner note`;
+  if (!promise.includes(disclosure)) return `OWNER_NOTE_CHARS is ${chars}, and the privacy promise does not include OWNER_NOTE_DISCLOSURE`;
+  return null;
+}
 let ownerNoteChars = OWNER_NOTE_CHARS;
 /** Tests only: the owner-note allotment for this vitest worker; refused outside vitest, so the product reads OWNER_NOTE_CHARS. */
 export function setOwnerNoteChars(n: number | null): void {
@@ -728,7 +757,8 @@ export class SnippetLedger {
   takeOwnerNote(windowId: string, text: string): boolean {
     if (this.takeFrom(windowId, "candidate", [text])) return true;
     const w = this.known.get(windowId);
-    if (w === undefined || ownerNoteChars <= 0 || text.length > ownerNoteChars) return false;
+    // Never a conversation's: one keeps more than half of itself back from every request, whatever asks (CONVERSATION_CHARS).
+    if (w === undefined || ownerNoteChars <= 0 || text.length > ownerNoteChars || heldAsConversation(w)) return false;
     const p = this.price(w, [text], false);
     if (p === null) return false;
     this.commit(p, w.window.windowId, "candidate", this.entry(w), true);

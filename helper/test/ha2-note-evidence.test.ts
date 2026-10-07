@@ -15,7 +15,9 @@ import { field, node, snap, text } from "./builders.ts";
 const T0 = 1_000_000;
 const PHONE = "555-0388";
 const OPENING = ["Signing up for the Thursday pottery class.", "I'm Odile Ferrant, second term."];
+/** A note line over 80 characters, so the note has prose; LONG_PROSE is enough of them to pass the 2,000-character owner-note allotment (privacy.ts OWNER_NOTE_CHARS). */
 const PROSE = "Reminder to myself: bring the receipt from last term, because the front desk asked about it twice already.";
+const LONG_PROSE = Array.from({ length: 20 }, (_, i) => `${PROSE} (${i + 1})`).join("\n");
 /** Lines between the phone and the note's last sentence, so a change there is outside the phone's own neighbourhood. */
 const BETWEEN = ["Class starts at six.", "Bring an apron.", "Parking is behind the hall."];
 const MINE = [...OPENING, `Phone: ${PHONE}`, ...BETWEEN, "Contact lines are mine."];
@@ -90,7 +92,7 @@ describe("P1: the note an owner judgement saw is rechecked before the write", ()
 
 describe("P2: a value the instruction spells out keeps its instruction provenance", () => {
   it("fills 'put 555-0388 in Phone' though the same phone sits in a note too long to show, minted as the instruction's", async () => {
-    const m = desk([{ windowId: "note", nodes: [noteNode("note/body", [...OPENING, PROSE, `Phone: ${PHONE}`].join("\n"))] }]);
+    const m = desk([{ windowId: "note", nodes: [noteNode("note/body", [...OPENING, LONG_PROSE, `Phone: ${PHONE}`].join("\n"))] }]);
     const scope: FillScope = { fields: ["form/0"], windows: null, memory: false, instruction: `put ${PHONE} in Phone`, person: null, literals: new Map([["form/0", PHONE]]) };
     const { f } = await phoneOf(m, jev(() => "user"), scope);
     expect(f?.value).toBe(PHONE);
@@ -113,7 +115,7 @@ describe("incomplete evidence fails closed (lead decision)", () => {
   it("(a) withholds it when the other note holding it is too long to show, even with 'user' at confidence 1", async () => {
     const m = desk([
       { windowId: "note", nodes: [noteNode("note/body", MINE.join("\n"))] },
-      { windowId: "note2", nodes: [noteNode("note2/body", [PROSE, `Phone: ${PHONE}`].join("\n"))] },
+      { windowId: "note2", nodes: [noteNode("note2/body", [LONG_PROSE, `Phone: ${PHONE}`].join("\n"))] },
     ]);
     const { f } = await phoneOf(m, jev(() => "user"));
     expect(f?.value ?? null).toBeNull();
