@@ -200,15 +200,6 @@ export function dateOrderHint(text: string | null): DateOrder | null {
   return md ? "md" : "dm";
 }
 
-/**
- * V3: whether a span is a date written only in numbers ("04/12/1990", "4.12.", "04-12-90"), whose month and day order the
- * resolver would otherwise take from a locale or a convention. readDate gives such a date only in the order dateParts
- * settles from evidence (V3 review B9: the resolver read every dotted date day-first).
- */
-export function numericDate(text: string): boolean {
-  return /^\d{1,2}[/.-]\d{1,2}(?:[/.-](?:\d{2}|\d{4}))?\.?$/u.test(text.trim());
-}
-
 const NUMERIC_DATE = /^(\d{1,2})([/.-])(\d{1,2})\2((?:1[89]|2\d)\d{2})$/u;
 
 /** Whether month `m` of `year` has a day `d`. */

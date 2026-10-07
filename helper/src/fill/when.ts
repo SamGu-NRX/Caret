@@ -6,37 +6,48 @@
 import { Temporal } from "@js-temporal/polyfill";
 import { ValueResolver, type ResolveContext } from "../values/resolve.ts";
 import { sayDate, sayMoment } from "../values/date-time.ts";
-import { dateParts, monthYear, numericDate, type DateOrder } from "./derive.ts";
+import { monthYear, type DateOrder } from "./derive.ts";
 
 const resolver = new ValueResolver();
 
 /**
- * The one civil date a span names, as YYYY-MM-DD with how the host says it; null when it names none or several. V3 review
- * B9: a date written only in numbers is read in the order `order` (derive.ts dateOrderHint) or its own numbers settle
- * (derive.ts dateParts), never in a locale's or a convention's: the resolver read every dotted date day-first.
+ * V3 review: a value read from a span, with every assumption the reading made (values/date-time.ts: a year counted from a
+ * reference, a month and day order from a stated format or a locale, AM or PM from a word; when.ts: a century, a send
+ * line). An empty list is a plain conversion of what the span says; any other is code's choice, which the verifier must
+ * judge with the list said (contract.ts Provenance.says), never an exemption.
  */
-export function readDate(text: string, ctx: ResolveContext, order: DateOrder | null = null): { value: string; display: string } | null {
-  const numeric = numericDate(splitMoment(text)?.date ?? text) ? (splitMoment(text)?.date ?? text).trim().replace(/\.$/u, "") : null;
-  if (numeric !== null) {
-    const p = dateParts(numeric, order);
-    if (p === null || p.month === null || p.day === null) return null;
-    const day = Temporal.PlainDate.from({ year: Number(p.year), month: Number(p.month), day: Number(p.day) });
-    return { value: day.toString(), display: sayDate(day) };
-  }
+export interface Reading {
+  value: string;
+  display: string;
+  assumptions: readonly string[];
+}
+
+/** The resolver context with a format the source states beside a numeric date (derive.ts dateOrderHint). */
+function withOrder(ctx: ResolveContext, order: DateOrder | null): ResolveContext {
+  return order === null ? ctx : { ...ctx, sourceDateOrder: order === "md" ? "mdy" : "dmy" };
+}
+
+/**
+ * The one civil date a span names, as YYYY-MM-DD with how the host says it, and what the reading assumed; null when it
+ * names none or several. `order` is a format the source states beside it; a numeric date with no order evidence asks
+ * (values/date-time.ts, V3 review B9: dotted dates were read day first by convention).
+ */
+export function readDate(text: string, ctx0: ResolveContext, order: DateOrder | null = null): Reading | null {
+  const ctx = withOrder(ctx0, order);
   const d = resolver.date(text, ctx);
-  if (d.kind === "resolved") return { value: d.value, display: d.display };
+  if (d.kind === "resolved") return { value: d.value, display: d.display, assumptions: d.assumptions };
   if (d.kind === "ask") return null;
   // A span with a time as well ("Saturday, October 17 at 8:45am") names its date through the moment it names.
   const m = resolver.moment(text, ctx);
   if (m.kind === "resolved") {
     const day = Temporal.PlainDate.from(m.value.local.slice(0, 10));
-    return { value: day.toString(), display: sayDate(day) };
+    return { value: day.toString(), display: sayDate(day), assumptions: m.assumptions };
   }
   // V3 (B24 ask-19): or through its date part alone, read as any date is, so a time the moment cannot settle ("at 8:45",
   // no am or pm) does not take the date with it. A weekday that is not that date's still asks.
   const split = splitMoment(text);
   const part = split === null ? null : resolver.date(split.date, ctx);
-  return part?.kind === "resolved" ? { value: part.value, display: part.display } : null;
+  return part?.kind === "resolved" ? { value: part.value, display: part.display, assumptions: part.assumptions } : null;
 }
 
 const TIME_AT_END = /^(.*?\S)(?:,?\s+at\s+|,\s*|\s+@\s*|\s+)((?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s*[ap]\.?\s*m\.?|(?:[01]?\d|2[0-3]):[0-5]\d)$/iu;
@@ -106,7 +117,7 @@ const RELATIVE = /\b(?:today|tonight|tomorrow|yesterday|next|this|last|coming|ag
  * side gives another date: the zone the send line was shown in is not known, and it can move the send day by one (review
  * A8: a Tokyo send at 11:30 PM on December 31 read as Denver's gave the next year).
  */
-export function datedBySent(text: string, sent: SentLine, ctx: ResolveContext): { value: string; display: string; ctx: ResolveContext; says: string } | null {
+export function datedBySent(text: string, sent: SentLine, ctx: ResolveContext): { value: string; display: string; ctx: ResolveContext; says: string; assumptions: readonly string[] } | null {
   if (ctx.referenceInstant !== null || ctx.sourceTimeZone === null) return null;
   const date = splitMoment(text)?.date ?? text;
   if (!MONTH_AND_DAY.test(date) || RELATIVE.test(text) || /(?<!\d)\d{4}(?!\d)/u.test(date)) return null;
@@ -115,11 +126,11 @@ export function datedBySent(text: string, sent: SentLine, ctx: ResolveContext): 
   const read = [-1, 0, 1].map((k) => {
     const c: ResolveContext = { ...ctx, referenceInstant: sentDay.add({ days: k }).toZonedDateTime({ timeZone: zone, plainTime: "12:00" }).toInstant().toString() };
     const r = resolver.date(date, c);
-    return r.kind === "resolved" ? { c, value: r.value, display: r.display } : null;
+    return r.kind === "resolved" ? { c, value: r.value, display: r.display, assumptions: r.assumptions } : null;
   });
   if (read.some((r) => r === null) || new Set(read.map((r) => r?.value)).size !== 1) return null;
   const r = read[1]!;
-  return { value: r.value, display: r.display, ctx: r.c, says: `the year ${r.value.slice(0, 4)} is assumed: Caret took the first ${sayDate(Temporal.PlainDate.from(r.value)).replace(/, \d{4}$/u, "")} on or after ${sent.day}, the day the message was sent` };
+  return { value: r.value, display: r.display, ctx: r.c, assumptions: r.assumptions, says: `the year ${r.value.slice(0, 4)} is assumed: Caret took the first ${sayDate(Temporal.PlainDate.from(r.value)).replace(/, \d{4}$/u, "")} on or after ${sent.day}, the day the message was sent` };
 }
 
 const MONTH_SAYS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -128,9 +139,13 @@ const MONTH_SAYS = ["January", "February", "March", "April", "May", "June", "Jul
  * C2 (lead decision 1): the one month and year a span names (derive.ts monthYear), as an HTML month input holds it
  * (YYYY-MM) with how the host says it ("August 2022"); null when it names none or could name two.
  */
-export function readMonth(text: string, refYear?: number): { value: string; display: string } | null {
+export function readMonth(text: string, refYear: number = new Date().getUTCFullYear()): Reading | null {
   const m = monthYear(text, refYear);
-  return m === null ? null : { value: `${m.year}-${String(m.month).padStart(2, "0")}`, display: `${MONTH_SAYS[m.month - 1]} ${m.year}` };
+  if (m === null) return null;
+  // V3 review: a two-digit year ("Aug '30") is read in a window of years around now, which is code's choice.
+  const short = /['’](\d{2})\s*$/u.exec(text.trim());
+  const assumptions = short === null ? [] : [`year ${m.year}: '${short[1]} read as the one year ending in ${short[1]} from ${refYear - 50} to ${refYear + 10}`];
+  return { value: `${m.year}-${String(m.month).padStart(2, "0")}`, display: `${MONTH_SAYS[m.month - 1]} ${m.year}`, assumptions };
 }
 
 const MERIDIEM =/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*([ap])\.?\s*m\b\.?/giu;
@@ -156,12 +171,12 @@ export function clockTime(text: string): { value: string; display: string } | nu
 }
 
 /** The one time of day a span names, as HH:MM (HH:MM:SS with seconds), read by the resolver; null when it asks or cannot read it, or the span or its source is in another zone. */
-export function readClock(text: string, ctx: ResolveContext): { value: string; display: string } | null {
+export function readClock(text: string, ctx: ResolveContext): Reading | null {
   // A span that names its day gives its time only once that day is known: Daylight Saving can skip or repeat the time on
   // that day (D2-04). So a date with a time is not split here, as readDate splits it (V3); its day is placed through
   // datedBySent.
   const t = resolver.clock(text, ctx);
-  return t.kind === "resolved" ? { value: t.value, display: t.display } : null;
+  return t.kind === "resolved" ? { value: t.value, display: t.display, assumptions: t.assumptions } : null;
 }
 
 /**
@@ -169,8 +184,20 @@ export function readClock(text: string, ctx: ResolveContext): { value: string; d
  * time in the user's own zone: the span names none, or names that zone ("3pm PT" for a user in Los Angeles). A time
  * in another zone is null: the field holds no zone and the form does not say which it means, so Caret converts none.
  */
-export function readDateTime(text: string, ctx: ResolveContext): { value: string; display: string } | null {
+export function readDateTime(text: string, ctx0: ResolveContext, order: DateOrder | null = null): Reading | null {
+  const ctx = withOrder(ctx0, order);
   const m = resolver.moment(text, ctx);
   if (m.kind !== "resolved" || m.value.zone !== ctx.timeZone) return null;
-  return { value: m.value.local, display: sayMoment(m.value) };
+  return { value: m.value.local, display: sayMoment(m.value), assumptions: m.assumptions };
+}
+
+/**
+ * V3 review (contract.ts mintExempt): whether `written` is what `span` says, read with no assumption at all (no reference
+ * instant, no locale, no stated order, no century window): the only reading a date or time input's exemption
+ * (resolverFormat) may write.
+ */
+export function readsPlainly(span: string, written: string): boolean {
+  const ctx: ResolveContext = { locale: "en-US", timeZone: "UTC", referenceInstant: null };
+  const r = /^\d{4}-\d{2}-\d{2}$/u.test(written) ? readDate(span, ctx) : /^\d{2}:\d{2}(?::\d{2})?$/u.test(written) ? readClock(span, ctx) : /^\d{4}-\d{2}-\d{2}T/u.test(written) ? readDateTime(span, ctx) : /^\d{4}-\d{2}$/u.test(written) ? readMonth(span) : null;
+  return r !== null && r.assumptions.length === 0 && r.value === written;
 }

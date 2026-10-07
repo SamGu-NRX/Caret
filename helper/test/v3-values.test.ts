@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { mintOf, proposeFill, type FillScope } from "../src/fill/fill.ts";
-import { mintExempt, provenanceStale, setTestVerifier } from "../src/fill/contract.ts";
+import { makeFieldContract, mintExempt, provenanceStale, setTestVerifier, type Provenance } from "../src/fill/contract.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { dateOrderHint, datePart, dateParts, partFits } from "../src/fill/derive.ts";
 import { datedBySent, readClock, readDate, sentLineFor, splitMoment } from "../src/fill/when.ts";
@@ -216,8 +216,10 @@ describe("a slot offered as a date with a time (B24 ask-19)", () => {
     return m;
   };
   const MAIL = ["From: Chris Delgado <cdelgado@example.com>", "To: Jamie Torres <jamie@example.net>", "Date: Thu, Oct 15, 2026, 10:22 AM", "", "I have Saturday, October 17 at 8:45am open."];
-  const run = async (lines: string[], slot = "Saturday, October 17 at 8:45am") => {
-    const p = await proposeFill(scene(lines), jevPickingText((_id, ins) => (ins.includes("'Preferred date'") || ins.includes("'Preferred time'") ? slot : null)), WIN, "f0/form[svc]/text:mileage~0", Date.UTC(2026, 9, 15, 18), { resolve: DENVER });
+  // V3 review round 2: a year code assumes is offered as its own candidate ("2026-10-17", its choice said), which the value
+  // asks must pick; the raw span reads no year.
+  const run = async (lines: string[], date = "2026-10-17", time = "08:45") => {
+    const p = await proposeFill(scene(lines), jevPickingText((_id, ins) => (ins.includes("'Preferred date'") ? date : ins.includes("'Preferred time'") ? time : null)), WIN, "f0/form[svc]/text:mileage~0", Date.UTC(2026, 9, 15, 18), { resolve: DENVER });
     const at = (k: string) => p.fields.find((f) => f.key.includes(k)) as (typeof p.fields)[number];
     return { date: at("date:preferred date"), time: at("time:preferred time") };
   };
@@ -233,10 +235,12 @@ describe("a slot offered as a date with a time (B24 ask-19)", () => {
 
   it("withholds the date when nothing on screen says the year, and a time with no am or pm", async () => {
     const noHeader = await run(MAIL.filter((l) => !l.startsWith("Date:")));
-    expect([noHeader.date.handoff, noHeader.date.withheld]).toEqual([null, "ambiguous"]);
-    const bare = await run(MAIL.map((l) => l.replace("8:45am", "8:45")), "Saturday, October 17 at 8:45");
+    expect(noHeader.date.handoff).toBeNull();
+    // The raw span, picked instead, reads no year either.
+    expect((await run(MAIL.filter((l) => !l.startsWith("Date:")), "Saturday, October 17 at 8:45am")).date.handoff).toBeNull();
+    const bare = await run(MAIL.map((l) => l.replace("8:45am", "8:45")));
     expect(bare.date.handoff?.value).toBe("2026-10-17");
-    expect([bare.time.handoff, bare.time.withheld]).toEqual([null, "ambiguous"]);
+    expect(bare.time.handoff).toBeNull();
   });
 });
 
@@ -334,10 +338,13 @@ describe("review round 1: code that chose a value", () => {
 
   it("B9: a dotted or slashed date is read whole only in the order evidence gives", () => {
     expect(readDate("04.12.1990", DENVER)).toBeNull();
-    expect(readDate("04/12/1990", { ...DENVER, sourceLocale: "en-US" })).toBeNull();
-    expect(readDate("04.12.1990", DENVER, "md")?.value).toBe("1990-04-12");
-    expect(readDate("22.04.1990", DENVER)?.value).toBe("1990-04-22");
+    expect(readDate("04.12.1990 at 8:45am", DENVER)).toBeNull();
+    // An order from a locale or a stated format is read, and said as an assumption; the numbers alone assume nothing.
+    expect(readDate("04/12/1990", { ...DENVER, sourceLocale: "en-US" })).toMatchObject({ value: "1990-04-12", assumptions: [expect.stringContaining("locale")] });
+    expect(readDate("04.12.1990", DENVER, "md")).toMatchObject({ value: "1990-04-12", assumptions: [expect.stringContaining("format")] });
+    expect(readDate("22.04.1990", DENVER, "dm")).toMatchObject({ value: "1990-04-22", assumptions: [] });
     expect(readDate("04.22.1990", DENVER, "dm")).toBeNull();
+    expect(readDate("04/12/1990", { ...DENVER, sourceLocale: "en-US" }, "dm")).toBeNull();
   });
 
   it("a month menu's option settled by a format hint goes to the verifier, which reads how it was chosen", async () => {
@@ -380,15 +387,15 @@ describe("review round 1: a year read from when a message was sent", () => {
     m.apply(toWindowSnapshot({ type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Book", frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: ORIGIN, path: "/b", navGen: 1, title: "Book", headings: [], iframes: [], excluded: {}, truncated: false, controls: [control("e1", "text", "Mileage"), control("e2", "date", label)] }], missing: [], focused: { frameId: 0, id: "e1", selection: [0, 0] } }, session, 1));
     return m;
   };
-  const dateOf = async (m: ScreenModel, span: string, field = "Preferred date", resolve = DENVER) => {
-    const p = await proposeFill(m, jevPickingText((_id, ins) => (ins.includes(`'${field}'`) ? span : null)), WIN, "f0/form[svc]/text:mileage~0", Date.UTC(2026, 9, 18, 18), { resolve });
+  const dateOf = async (m: ScreenModel, pick: string, field = "Preferred date", resolve = DENVER) => {
+    const p = await proposeFill(m, jevPickingText((_id, ins) => (ins.includes(`'${field}'`) ? pick : null)), WIN, "f0/form[svc]/text:mileage~0", Date.UTC(2026, 9, 18, 18), { resolve });
     return p.fields.find((f) => f.key.includes(`date:${field.toLowerCase()}`)) as (typeof p.fields)[number];
   };
   const SPAN = "October 17 at 8:45am";
 
   it("A6: the send line is part of the value's provenance, so a changed send line stops the write", async () => {
     const m = scene(["From: Chris", "Sent: October 15, 2026, 10:22 AM"], [`Appointment: ${SPAN}`], SPAN);
-    const f = await dateOf(m, SPAN);
+    const f = await dateOf(m, "2026-10-17");
     expect(f.handoff?.value).toBe("2026-10-17");
     const mint = mintOf(f);
     expect(mint?.verdict.by).toBe("verifier");
@@ -399,14 +406,15 @@ describe("review round 1: a year read from when a message was sent", () => {
 
   it("A7: no year from a send line the span cannot be shown to sit under", async () => {
     const m = scene(["From: Chris", "Sent: October 15, 2026, 10:22 AM"], ["Original message from 2025", `Appointment: ${SPAN}`], SPAN);
+    expect((await dateOf(m, "2026-10-17")).handoff).toBeNull();
     expect((await dateOf(m, SPAN)).handoff).toBeNull();
   });
 
   it("A8: no year when the source's zone could move the send day across it", async () => {
     const span = "December 31 at 11:45pm";
     const m = scene(["From: Chris", "Sent: December 31, 2026, 11:30 PM"], [`Appointment: ${span}`], span);
-    expect((await dateOf(m, span, "Preferred date", { ...DENVER, sourceTimeZone: "Asia/Tokyo" })).handoff).toBeNull();
-    expect((await dateOf(scene(["From: Chris", "Sent: October 15, 2026, 10:22 AM"], [`Appointment: ${SPAN}`], SPAN), SPAN, "Preferred date", { ...DENVER, sourceTimeZone: null })).handoff).toBeNull();
+    for (const pick of ["2026-12-31", "2027-12-31", span]) expect((await dateOf(m, pick, "Preferred date", { ...DENVER, sourceTimeZone: "Asia/Tokyo" })).handoff).toBeNull();
+    expect((await dateOf(scene(["From: Chris", "Sent: October 15, 2026, 10:22 AM"], [`Appointment: ${SPAN}`], SPAN), "2026-10-17", "Preferred date", { ...DENVER, sourceTimeZone: null })).handoff).toBeNull();
   });
 
   it("B10: the verifier is told the year was assumed, and its refusal withholds the date", async () => {
@@ -418,12 +426,12 @@ describe("review round 1: a year read from when a message was sent", () => {
     try {
       // Sent three days after October 17, so a day's doubt about the zone gives the same assumed year, 2027.
       const m = scene(["From: Chris", "Sent: October 20, 2026, 10:22 AM"], [`Service completed: ${SPAN}`], SPAN, "Last service date");
-      const f = await dateOf(m, SPAN, "Last service date");
+      const f = await dateOf(m, "2027-10-17", "Last service date");
       expect([f.handoff, f.withheld]).toEqual([null, "notExact"]);
       expect(asked.some((q) => q.includes("2027") && /year/u.test(q) && /sent/u.test(q))).toBe(true);
       // The reviewer's own input, sent the day after: a day's doubt about the zone gives 2026 or 2027, so no year at all.
-      const next = await dateOf(scene(["From: Chris", "Sent: October 18, 2026, 10:22 AM"], [`Service completed: ${SPAN}`], SPAN, "Last service date"), SPAN, "Last service date");
-      expect([next.handoff, next.withheld]).toEqual([null, "ambiguous"]);
+      const next = scene(["From: Chris", "Sent: October 18, 2026, 10:22 AM"], [`Service completed: ${SPAN}`], SPAN, "Last service date");
+      for (const pick of ["2026-10-17", "2027-10-17", SPAN]) expect((await dateOf(next, pick, "Last service date")).handoff).toBeNull();
     } finally {
       setTestVerifier(STAND_IN);
     }
@@ -435,11 +443,11 @@ describe("lead conditions on the contract change", () => {
   const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
   const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
   const control = (id: string, kind: PageControl["kind"], name: string): PageControl => ({ id, key: `form[svc]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#svc", rect: [0, 0, 100, 20], value: "" });
-  const fill = async (lines: string[], span: string) => {
+  const fill = async (lines: string[], span: string, date = "2026-10-17", time = "08:45") => {
     const m = new ScreenModel();
     m.apply(snap([field("mail/body", lines.join("\n"), { role: "AXTextArea" })], { at: 900, windowId: "mail", title: "Re", app: { pid: 7002, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true, values: [value("date", span, "mail/body")] }));
     m.apply(toWindowSnapshot({ type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Book", frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: ORIGIN, path: "/b", navGen: 1, title: "Book", headings: [], iframes: [], excluded: {}, truncated: false, controls: [control("e1", "text", "Mileage"), control("e2", "date", "Preferred date"), control("e3", "time", "Preferred time")] }], missing: [], focused: { frameId: 0, id: "e1", selection: [0, 0] } }, session, 1));
-    const p = await proposeFill(m, jevPickingText((_id, ins) => (ins.includes("'Preferred date'") || ins.includes("'Preferred time'") ? span : null)), "page:eng1:7", "f0/form[svc]/text:mileage~0", Date.UTC(2026, 9, 15, 18), { resolve: DENVER });
+    const p = await proposeFill(m, jevPickingText((_id, ins) => (ins.includes("'Preferred date'") ? date : ins.includes("'Preferred time'") ? time : null)), "page:eng1:7", "f0/form[svc]/text:mileage~0", Date.UTC(2026, 9, 15, 18), { resolve: DENVER });
     const at = (k: string) => p.fields.find((f) => f.key.includes(k)) as (typeof p.fields)[number];
     return { date: at("date:preferred date"), time: at("time:preferred time") };
   };
@@ -456,7 +464,111 @@ describe("lead conditions on the contract change", () => {
     const parts = await fill(MAIL("Saturday, October 17 at 8:45am"), "Saturday, October 17 at 8:45am");
     expect([(mintOf(parts.date)?.provenance as { how?: string }).how, (mintOf(parts.time)?.provenance as { how?: string }).how]).toEqual(["datePart", "timePart"]);
     // A whole date with its year: a plain conversion, minted under resolverFormat as "resolved".
-    const whole = await fill(MAIL("October 17, 2026"), "October 17, 2026");
+    const whole = await fill(MAIL("October 17, 2026"), "October 17, 2026", "October 17, 2026");
     expect(mintOf(whole.date)).toMatchObject({ verdict: { by: "exempt", rule: "resolverFormat" }, provenance: { kind: "derived", how: "resolved" } });
+  });
+});
+
+// ---- review round 2 (re-review of f43a813): a choice that escaped the marker, each the reviewer's input -------------
+
+describe("review round 2: every assumption is a choice", () => {
+  const ORIGIN = "http://127.0.0.1:4310";
+  const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+  const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+  const control = (id: string, kind: PageControl["kind"], name: string, extra: Partial<PageControl> = {}): PageControl => ({ id, key: `form[a]/${kind}:${name.toLowerCase()}~0`, strongKey: null, kind, role: kind, name, form: "form#a", rect: [0, 0, 100, 20], value: "", ...extra });
+  const page = (controls: PageControl[]): PageSnapshot => ({
+    type: "pageSnapshot", v: PROTOCOL_VERSION, id: "w1", at: 1000, tabId: 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Form",
+    frames: [{ frameId: 0, parentFrameId: -1, documentId: "D0", origin: ORIGIN, path: "/f", navGen: 1, title: "Form", headings: [], iframes: [], excluded: {}, truncated: false, controls }],
+    missing: [], focused: { frameId: 0, id: "e1", selection: [0, 0] },
+  });
+  /** A note (separate nodes, so a line can be put in between) and a page form; the reader types `typed` as dates. */
+  const desk2 = (lines: string[], typed: string[], controls: PageControl[]): ScreenModel => {
+    const m = new ScreenModel();
+    m.apply(snap(lines.map((l, i): Node => ({ key: `n/${i}`, parent: null, role: "AXStaticText", value: l })), { at: 900, windowId: "src", title: "Source", app: { pid: 7002, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true, values: typed.map((t) => value("date", t, `n/${lines.findIndex((l) => l.includes(t))}`)) }));
+    m.apply(toWindowSnapshot(page([control("e1", "text", "Notes"), ...controls]), session, 1));
+    return m;
+  };
+  const fillDesk = async (m: ScreenModel, picks: Record<string, string>, resolve: ResolveContext = DENVER) => {
+    const p = await proposeFill(m, jevPickingText((_id, ins) => Object.entries(picks).find(([k]) => ins.includes(`'${k}'`))?.[1] ?? null), "page:eng1:7", "f0/form[a]/text:notes~0", Date.UTC(2026, 9, 20, 18), { resolve });
+    return (name: string) => p.fields.find((f) => f.descriptor.includes(`'${name}'`)) as (typeof p.fields)[number];
+  };
+  const refusing = <T,>(run: (asked: string[]) => Promise<T>): Promise<T> => {
+    const asked: string[] = [];
+    setTestVerifier(async (req) => {
+      for (const q of Object.values(req.questions)) asked.push(String(q.instructions));
+      return { model: "verify-other", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "other", confidence: 0.95 }])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
+    });
+    return run(asked).finally(() => setTestVerifier(STAND_IN));
+  };
+
+  it("a dotted date inside a longer span is read only on evidence, and a hinted one is the value asks' and the verifier's", async () => {
+    const plain = desk2(["Appointment: 04.12.1990 at 8:45am"], ["04.12.1990 at 8:45am"], [control("e2", "date", "Appointment date")]);
+    expect((await fillDesk(plain, { "Appointment date": "04.12.1990 at 8:45am" }))("Appointment date").handoff).toBeNull();
+    const hinted = desk2(["Appointment (MM/DD/YYYY): on 04.12.1990"], ["on 04.12.1990"], [control("e2", "date", "Appointment date")]);
+    expect((await fillDesk(hinted, { "Appointment date": "on 04.12.1990" }))("Appointment date").handoff).toBeNull();
+    const f = (await fillDesk(hinted, { "Appointment date": "1990-04-12" }))("Appointment date");
+    expect([f.handoff?.value, mintOf(f)?.verdict.by]).toEqual(["1990-04-12", "verifier"]);
+  });
+
+  it("a date and time input meets the same order evidence: a stated format the locale contradicts reads nothing", async () => {
+    const m = desk2(["Appointment (DD/MM/YYYY): 04/12/1990 at 8:45am"], ["04/12/1990 at 8:45am"], [control("e2", "datetime", "Appointment")]);
+    const at = await fillDesk(m, { Appointment: "04/12/1990 at 8:45am" }, { ...DENVER, sourceLocale: "en-US" });
+    expect(at("Appointment").handoff).toBeNull();
+  });
+
+  it("a year counted from a known reference is an assumption the verifier judges, not an exemption", async () => {
+    const m = desk2(["Service completed: October 17 at 8:45am"], ["October 17 at 8:45am"], [control("e2", "date", "Last service date")]);
+    const ref = { ...DENVER, referenceInstant: "2026-10-20T16:22:00Z" };
+    const ok = (await fillDesk(m, { "Last service date": "October 17 at 8:45am" }, ref))("Last service date");
+    expect([ok.handoff?.value, mintOf(ok)?.verdict.by]).toEqual(["2027-10-17", "verifier"]);
+    await refusing(async (asked) => {
+      const no = (await fillDesk(m, { "Last service date": "October 17 at 8:45am" }, ref))("Last service date");
+      expect([no.handoff, no.withheld]).toEqual([null, "notExact"]);
+      expect(asked.some((q) => /year 2027/u.test(q))).toBe(true);
+    });
+  });
+
+  it("a century read from a two-digit year is a choice, for a month input and for a year menu", async () => {
+    const m = desk2(["Started: Aug '30"], ["Aug '30"], [control("e2", "month", "Start month"), control("e3", "select", "Start date year", { options: [{ value: "", label: "Select...", selected: true }, { value: "1930", label: "1930", selected: false }, { value: "2030", label: "2030", selected: false }] })]);
+    await refusing(async () => {
+      const at = await fillDesk(m, { "Start month": "Aug '30", "Start date year": "Aug '30" });
+      expect([at("Start month").handoff, at("Start date year").handoff]).toEqual([null, null]);
+    });
+    const at = await fillDesk(m, { "Start month": "Aug '30", "Start date year": "Aug '30" });
+    expect([mintOf(at("Start month"))?.verdict.by, mintOf(at("Start date year"))?.verdict.by]).toEqual(["verifier", "verifier"]);
+  });
+
+  it("an option a picked span names among other words: vetoed by a negating line, else the verifier's", async () => {
+    const opts = { options: [{ value: "", label: "Select...", selected: true }, { value: "sat", label: "Saturday", selected: false }, { value: "sun", label: "Sunday", selected: false }] };
+    const no = desk2(["Days I cannot attend: Saturday mornings"], [], [control("e2", "select", "Section", opts)]);
+    expect((await fillDesk(no, { Section: "Saturday mornings" }))("Section").handoff).toBeNull();
+    const yes = desk2(["Best days: Saturday mornings"], [], [control("e2", "select", "Section", opts)]);
+    await refusing(async (asked) => {
+      expect((await fillDesk(yes, { Section: "Saturday mornings" }))("Section").handoff).toBeNull();
+      expect(asked.some((q) => q.includes("to name the option 'Saturday'"))).toBe(true);
+    });
+  });
+
+  it("offers a send-line year to the value asks, and pairs the send line with its message again at the recheck", async () => {
+    const lines = ["From: Chris", "Sent: October 15, 2026, 10:22 AM", "Appointment: October 17 at 8:45am"];
+    const m = desk2(lines, ["October 17 at 8:45am"], [control("e2", "date", "Preferred date")]);
+    const { jev, offered } = recording((ins) => (ins.includes("'Preferred date'") ? "2026-10-17" : null));
+    const p = await proposeFill(m, jev, "page:eng1:7", "f0/form[a]/text:notes~0", Date.UTC(2026, 9, 15, 18), { resolve: DENVER });
+    expect(offered.some((o) => o.startsWith('Preferred date <- "2026-10-17"') && o.includes("the year 2026 is assumed"))).toBe(true);
+    const f = p.fields.find((x) => x.descriptor.includes("'Preferred date'")) as (typeof p.fields)[number];
+    const mint = mintOf(f)!;
+    expect(provenanceStale(m, mint.provenance)).toBeNull();
+    // A quoted older message put in between, as its own node, unpairs them.
+    m.apply(snap([...[lines[0], lines[1], "Original message from 2025", lines[2]].map((l, i): Node => ({ key: i < 2 ? `n/${i}` : i === 2 ? "n/q" : "n/2", parent: null, role: "AXStaticText", value: l as string }))], { at: 1100, windowId: "src", title: "Source", app: { pid: 7002, bundleId: "com.apple.TextEdit", name: "TextEdit" }, values: [value("date", "October 17 at 8:45am", "n/2")] }));
+    expect(provenanceStale(m, mint.provenance)).not.toBeNull();
+  });
+
+  it("refuses an exemption for a date that only reads with an assumption, stated or not", () => {
+    const contract = makeFieldContract({ windowId: "w", node: { key: "d", parent: null, role: "AXDateField" }, descriptor: "Date field. Label: 'Date'.", name: "Date", labelWords: ["Date"], control: "date", kinds: new Set(["date"]), part: null });
+    const window = (span: string): Provenance => ({ kind: "window", windowId: "src", nodeKey: "n", app: "TextEdit", title: "t", span, label: null, line: null, partOf: null, context: null, lines: [], sentences: [] });
+    const p = (span: string, text: string) => ({ field: contract, text, display: text, provenance: window(span), owner: null });
+    expect(() => mintExempt(p("October 17", "2026-10-17"), "resolverFormat", 1)).toThrow(expect.objectContaining({ code: "chosen" }));
+    expect(() => mintExempt(p("04/12/1990", "1990-04-12"), "resolverFormat", 1)).toThrow(expect.objectContaining({ code: "chosen" }));
+    expect(mintExempt(p("October 17, 2026", "2026-10-17"), "resolverFormat", 1).verdict).toEqual({ by: "exempt", rule: "resolverFormat" });
   });
 });

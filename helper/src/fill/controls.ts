@@ -164,6 +164,11 @@ const WEEKDAYS: readonly (readonly string[])[] = [
   ["saturday", "sat"],
   ["sunday", "sun"],
 ];
+/** V3 review: whether a text negates, excludes, conditions or offers an alternative, so it picks no option ("except", "not", "only if", "or"). */
+export function leavesChoiceOpen(text: string): boolean {
+  return negates("", text) || tokens(text).some((w) => NOT_A_CHOICE.has(w) || OPEN_CHOICE.has(w));
+}
+
 /** Words that leave a choice open beside NOT_A_CHOICE's: an alternative or a restriction ("only if"). */
 const OPEN_CHOICE: ReadonlySet<string> = new Set(["or", "either", "only", "whichever", "any"]);
 /**
@@ -210,7 +215,7 @@ function weekdayOf(word: string): number | null {
 export function optionNamedBy(options: readonly string[], text: string, asked: readonly (string | null)[] = []): { option: string; word: string } | "several" | null {
   // V3 review A1: a negation, an exclusion, a condition or an alternative ("except Saturday", "only if it is online",
   // "Thursday or Saturday") leaves the choice open, so no word of such a text names an option.
-  if (negates("", text) || tokens(text).some((w) => NOT_A_CHOICE.has(w) || OPEN_CHOICE.has(w))) return null;
+  if (leavesChoiceOpen(text)) return null;
   const question = new Set(asked.flatMap((t) => (t === null ? [] : wordsOf(t))));
   const allWords = options.map((o) => (o.includes(",") ? [] : o.normalize("NFKC").split(/[^\p{L}\p{N}.]+/u).map((w) => w.replace(/\.$/u, "")).filter((w) => w !== "")));
   const optionWords = allWords.map((ws) => ws.slice(0, 1));

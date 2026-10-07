@@ -22,6 +22,7 @@ import { redactWindow } from "./redact.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
+import { readsPlainly, sentLineFor } from "./when.ts";
 import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind } from "./kinds.ts";
 import { writeMisfit, type ShapeSource } from "./writable.ts";
 import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
@@ -148,6 +149,11 @@ export type Provenance =
        * month first, as …"). Such a value is never minted under an exemption: the verifier judges it with this sentence.
        */
       says?: string;
+      /**
+       * V3 review: "sentLine" when `also` is the send line of the message `base` sits in (when.ts sentLineFor), a pairing
+       * provenanceStale makes again on the window as it is now.
+       */
+      via?: "sentLine";
     }
   | { kind: "transfer"; srcWindowId: string; srcKey: string; rounds: number; reshaped: "memory" | null; /** The source element's whole value when read. */ value?: string };
 
@@ -745,6 +751,11 @@ export function exemptRefusal(p: Proposed, rule: ExemptRule, instruction = ""): 
  * Mints without the verifier for a value whose exactness code settles (ExemptRule). Throws ContractError on a value
  * exemptRefusal refuses: a caller that may meet one asks exemptRefusal first; one that reaches here with it has a bug.
  */
+/** V3: the text a value was read from, through any derivation; null for memory, a saved answer or a transfer, which carry none. */
+function sourceSpan(pr: Provenance): string | null {
+  return pr.kind === "window" || pr.kind === "instruction" ? pr.span : pr.kind === "derived" ? sourceSpan(pr.base) : null;
+}
+
 /** V3: the first choice a provenance states (Provenance.says), in it or in any source it was derived from; null when none. */
 export function statedChoice(pr: Provenance): string | null {
   if (pr.kind !== "derived") return null;
@@ -758,6 +769,10 @@ export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, in
   // the verifier, never minted as a plain conversion; reaching here is a bug in the caller.
   const chose = statedChoice(p.provenance);
   if (chose !== null) throw new ContractError("chosen", `'${clip(p.text)}' was derived by a choice code made (${clip(chose)}), so only the verifier may check it, not the ${rule} exemption`);
+  // V3 review: a date or time input's exemption writes only what its span says with no assumption (when.ts readsPlainly):
+  // a year counted from a reference, an order from a format or a locale, a century window are all choices.
+  const span = sourceSpan(p.provenance);
+  if (rule === "resolverFormat" && span !== null && !readsPlainly(span, p.text)) throw new ContractError("chosen", `'${clip(p.text)}' is not what '${clip(span)}' says without an assumption, so only the verifier may check it, not the ${rule} exemption`);
   const why = exemptRefusal(p, rule, instruction);
   if (why !== null) throw new ContractError(neverTypedRefusal(p, instruction) === null ? "shape" : "neverTyped", why);
   return mint(p, { by: "exempt", rule }, now);
@@ -869,8 +884,15 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
       if (pr.context !== null && !spanContexts(view, seen as Node, pr.span).includes(pr.context)) return "the label it was read beside changed";
       return null;
     }
-    case "derived":
-      return provenanceStale(model, pr.base) ?? (pr.also === null ? null : provenanceStale(model, pr.also));
+    case "derived": {
+      const stale = provenanceStale(model, pr.base) ?? (pr.also === null ? null : provenanceStale(model, pr.also));
+      if (stale !== null || pr.via !== "sentLine" || pr.base.kind !== "window" || pr.also?.kind !== "window") return stale;
+      // V3 review: the send line must still be the one of the message the value sits in, on the window as it is now (a
+      // quoted "Original message" put in between, or a second sender, unpairs them).
+      const w = model.windows.get(pr.base.windowId);
+      const now = w === undefined ? null : sentLineFor([...w.nodes.values()].map((n) => ({ key: n.key, text: nodeText(n) })), pr.base.nodeKey, pr.base.span);
+      return now !== null && now.nodeKey === pr.also.nodeKey && now.value === pr.also.span ? null : "the message its date's year was read from no longer reads as one";
+    }
     case "transfer": {
       // A routine's cell: the element it copies must still be there, and still hold the value unless a memory rule
       // reshaped it (W2 review: patterns runs recheck their sources at dispatch too).

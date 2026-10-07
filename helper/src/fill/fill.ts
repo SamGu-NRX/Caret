@@ -17,12 +17,12 @@ import { assertNoSecrets, SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
-import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, optionNamedBy, namesField, statesFact, type Control, type FormControl } from "./controls.ts";
-import { asksCountry, asksPlace, dateOrderHint, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl } from "./controls.ts";
+import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { secretText } from "../memory/sensitive.ts";
-import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type SentLine } from "./when.ts";
+import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type Reading } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 import type { SavedAnswer } from "../memory/answers.ts";
@@ -655,14 +655,19 @@ function scopedInputs(w: WindowState, keys: readonly string[]): FormInput[] {
 }
 
 /** V3: a choice code made in deriving a value, and the extra source it read for it (a message's send line), for the verifier. */
-type Chosen = { says: string; also: Provenance | null };
+type Chosen = { says: string; also: Provenance | null; via?: "sentLine" };
+
+/** V3 review: a reading's assumptions as a stated choice, or undefined for a plain reading (when.ts Reading). */
+function stated(r: Reading | null): Chosen | undefined {
+  return r === null || r.assumptions.length === 0 ? undefined : { says: `Caret assumed: ${r.assumptions.join("; ")}`, also: null };
+}
 
 /** What a field's answer came from: a window's candidate, a value the user told Caret, or a part code derived from either. */
 type Pick =
   | { from: "window"; c: Candidate }
   | { from: "memory"; a: AboutValue }
   | { from: "instruction"; text: string }
-  | { from: "derived"; text: string; base: { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue } | { from: "instruction"; text: string }; also: Candidate | null; chose?: string };
+  | { from: "derived"; text: string; base: { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue } | { from: "instruction"; text: string }; also: Candidate | null; chose?: Chosen };
 
 /** Words of a label that say its value is a person's: "Name:", "Traveler:", "To:", "Emergency contact:". Written for common labels, not measured. */
 const PERSON_LABEL = /\b(?:name|traveler|traveller|passenger|patient|guest|applicant|student|attendee|from|to|cc|reference|landlord|contact|recipient|sender|tenant|driver|member|employee|candidate|spouse|partner|roommate|manager|advisor)\b/i;
@@ -962,7 +967,7 @@ export async function proposeFill(
   // for it, a full name joined from labelled first and last names, and an address's parts. Each is offered only
   // in its field's question, beside the shared candidates, and keeps the candidate or memory entry it came from.
   /** V3: `chose` says a choice code made in deriving it; such a value goes to the verifier with that sentence (contract.ts Provenance.says). */
-  type Derived = { key: string; text: string; describe: string; base: Extract<Pick, { from: "derived" }>["base"]; also: Candidate | null; chose?: string };
+  type Derived = { key: string; text: string; describe: string; base: Extract<Pick, { from: "derived" }>["base"]; also: Candidate | null; chose?: Chosen };
   const derived = new Map<string, Derived[]>();
   const memoryNames = scope !== undefined && !scope.memory ? [] : (opts.about ?? []).filter((a) => a.kind === "name");
   // C2 (lead decision 5): one address or date entry gives a part to each field that asks for that part of it.
@@ -971,7 +976,7 @@ export async function proposeFill(
     for (const f of fields) {
       if (f.part === null) continue;
       const list: Derived[] = [];
-      const add = (text: string | null, describe: string, base: Derived["base"], also: Candidate | null = null, chose?: string): void => {
+      const add = (text: string | null, describe: string, base: Derived["base"], also: Candidate | null = null, chose?: Chosen): void => {
         if (text === null || text === "" || candidates.some((c) => c.text === text) || list.some((x) => x.text === text)) return;
         list.push({ key: `${f.id}:${list.length}`, text, describe, base, also, ...(chose === undefined ? {} : { chose }) });
       };
@@ -1030,7 +1035,7 @@ export async function proposeFill(
           const shown = v !== null && part === "month" && f.control === "select" && options !== null && /^\d{1,2}$/u.test(v) ? monthOption(options, Number(v)) : v;
           // V3 review: an order the source's format hint settled, where the numbers alone did not, is code's choice.
           const hinted = part !== "year" && order !== null && datePartOf(part as "month" | "day", c.text, null) === null;
-          if (shown !== null) add(shown, `"${shown}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c }, null, hinted ? `Caret read the date ${order === "md" ? "month first" : "day first"}, as the format beside it in the source says` : undefined);
+          if (shown !== null) add(shown, `"${shown}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c }, null, hinted ? { says: `Caret read the date ${order === "md" ? "month first" : "day first"}, as the format beside it in the source says`, also: null } : undefined);
         }
         for (const a of memoryWhole) {
           if (!fieldAsksForPart(a, f.name, part as "month" | "day" | "year", w.window.title)) continue;
@@ -1056,6 +1061,47 @@ export async function proposeFill(
       if (list.length > 0) derived.set(f.id, list);
     }
   }
+  // V3 review (B24 ask-19, ask-04): a date or time input's reading that needs a choice code makes from evidence on screen
+  // is offered as its own candidate, its choice said, so the value asks judge it as well as the verifier (AC1): a year
+  // from the send line of the message the span sits in (when.ts sentLineFor, datedBySent), or a month and day order from
+  // a format the source states beside a numeric date (derive.ts dateOrderHint). The send line is read now, before the
+  // asks, and rides in the value's provenance as `also`, paired again at every recheck (contract.ts provenanceStale). A
+  // span that reads plainly, or with the resolver's own assumptions, is not offered again here (controlValue reads it).
+  if (derive) {
+    const refYearNow = new Date(now).getUTCFullYear();
+    const readFor = (f: Field, text: string, ctx: ResolveContext, order: DateOrder | null): Reading | null => {
+      const format = f.form?.format ?? "date";
+      if (f.control === "time") return readClock(text, ctx);
+      return format === "month" ? readMonth(text, refYearNow) : format === "datetime" ? readDateTime(text, ctx, order) : readDate(text, ctx, order);
+    };
+    for (const f of fields) {
+      if (f.control !== "date" && f.control !== "time") continue;
+      const list = derived.get(f.id) ?? [];
+      const offer = (value: string, c: Candidate, chose: Chosen): void => {
+        if (candidates.some((x) => x.text === value) || list.some((x) => x.text === value)) return;
+        list.push({ key: `${f.id}:${list.length}`, text: value, describe: `"${value}" (${describeCandidate(c)}, as the field takes it; ${chose.says})`, base: { from: "window", c }, also: null, chose });
+      };
+      for (const c of candidates) {
+        const kinds = candidateKinds(model, c);
+        if ((!kinds.has("date") && !kinds.has("time")) || readFor(f, c.text, resolveCtx, null) !== null) continue;
+        const order = dateOrderHint(c.context);
+        const hinted = order === null || f.control === "time" ? null : readFor(f, c.text, resolveCtx, order);
+        if (hinted !== null) {
+          offer(hinted.value, c, { says: `Caret assumed: ${hinted.assumptions.join("; ")}`, also: null });
+          continue;
+        }
+        const sw = model.windows.get(c.source.windowId);
+        const sent = sw === undefined ? null : sentLineFor([...sw.nodes.values()].map((n) => ({ key: n.key, text: nodeText(n) })), c.source.nodeKey, c.text);
+        const dated = sent === null ? null : datedBySent(c.text, sent, resolveCtx);
+        const read = dated === null ? null : readFor(f, c.text, dated.ctx, null);
+        if (sw === undefined || sent === null || dated === null || read === null) continue;
+        const also = windowProvenance(sw, { text: sent.value, context: null, source: { windowId: c.source.windowId, nodeKey: sent.nodeKey, appName: c.source.appName, windowTitle: c.source.windowTitle } }, sent.text);
+        const others = read.assumptions.filter((a) => !/^year \d{4}:/u.test(a));
+        offer(read.value, c, { says: [dated.says, ...others].join("; "), also, via: "sentLine" });
+      }
+      if (list.length > 0) derived.set(f.id, list);
+    }
+  }
   // V3 (B24 ask-17): a menu's or a choice's option that one word of the user's instruction names (controls.ts
   // optionNamedBy: "saturday" names "Sat 9:00 AM-12:30 PM") is offered as that option's own label, in that field's
   // question only, when the instruction also names the field by a word of its label or heading ("the saturday section").
@@ -1073,7 +1119,7 @@ export async function proposeFill(
       if (named === null || named === "several" || candidates.some((c) => c.text === named.option)) continue;
       const list = derived.get(f.id) ?? [];
       if (list.some((x) => x.text === named.option)) continue;
-      const chose = `Caret took the word '${named.word}' in the user's instruction to name the option '${named.option}', the only option it names`;
+      const chose: Chosen = { says: `Caret took the word '${named.word}' in the user's instruction to name the option '${named.option}', the only option it names`, also: null };
       list.push({ key: `${f.id}:${list.length}`, text: named.option, describe: `"${named.option}" (the option the word '${named.word}' in the user's instruction names)`, base: { from: "instruction", text: named.word }, also: null, chose });
       derived.set(f.id, list);
     }
@@ -1144,13 +1190,10 @@ export async function proposeFill(
   // while the asks are out, and the recheck's sentence digests must be of what Jev judged.
   const judged = new Map<string, string>();
   const nodeKeyOf = (c: Candidate): string => `${c.source.windowId}\u0000${c.source.nodeKey}`;
-  /** V3 review A6: each candidate's window's nodes as Jev was shown them, for its message's send line (when.ts sentLineFor). */
-  const shot = new Map<string, { key: string; text: string }[]>();
   const snapshotOf = (c: Candidate): void => {
     const sw = model.windows.get(c.source.windowId);
     const n = sw?.nodes.get(c.source.nodeKey);
     if (n !== undefined && !judged.has(nodeKeyOf(c))) judged.set(nodeKeyOf(c), nodeText(n));
-    if (sw !== undefined && !shot.has(c.source.windowId)) shot.set(c.source.windowId, [...sw.nodes.values()].map((x) => ({ key: x.key, text: nodeText(x) })));
   };
   const memoryRead = scope === undefined || scope.memory;
   const ids = memoryRead ? identitiesOf(opts.about ?? []) : [];
@@ -1513,20 +1556,6 @@ export async function proposeFill(
    * A control whose label, nearest label or section reads as consent, certification or a sign-up gets no value at all.
    * A Yes/No question built from toggle buttons (W4) is never written: its press cannot be undone with the rest.
    */
-  /**
-   * V3 (B24 ask-19): a date with no year, read against when its message was sent (when.ts datedBySent), from the send line
-   * as the window showed it before the asks (`shot`), which the value's provenance carries so the recheck reads it again
-   * (review A6). Null when the span's message has no send line shown to be its own (review A7).
-   */
-  const viaSent = (p: Pick, text: string): (ReturnType<typeof datedBySent> & { chose: Chosen }) | null => {
-    const c = windowOf(p);
-    const nodes = c === null ? undefined : shot.get(c.source.windowId);
-    const sent: SentLine | null = c === null || nodes === undefined ? null : sentLineFor(nodes, c.source.nodeKey, c.text);
-    const dated = sent === null ? null : datedBySent(text, sent, resolveCtx);
-    if (c === null || sent === null || dated === null) return null;
-    const also = windowProvenance(model.windows.get(c.source.windowId), { text: sent.value, context: null, source: { windowId: c.source.windowId, nodeKey: sent.nodeKey, appName: c.source.appName, windowTitle: c.source.windowTitle } }, sent.text);
-    return { ...dated, chose: { says: dated.says, also } };
-  };
   const controlValue = (f: Field, p: Pick): { value: string; display: string; writes: boolean; chose?: Chosen } | { why: FillWithheld } => {
     const text = pickText(p);
     const page = pageOwned;
@@ -1547,10 +1576,19 @@ export async function proposeFill(
         // ("Portland, Maine, United States").
         const placed = asksPlace(f.name) ? placeWithCountry(text) : null;
         // A month number only as split from a remembered date (dateParts), never one the instruction spells out (fix-check).
-        const exact = whole ?? (piece === null ? null : matchOption(options, piece)) ?? (f.part === "month" || f.part === "year" ? dateOption(f.part, options, text, refYear, p.from === "derived" && p.base.from === "memory") : null) ?? (placed === null ? null : matchOption(options, placed));
-        if (exact !== null) return { value: exact, display: exact, writes: page && !press };
+        const byPiece = whole ?? (piece === null ? null : matchOption(options, piece));
+        const byDate = byPiece === null && (f.part === "month" || f.part === "year") ? dateOption(f.part, options, text, refYear, p.from === "derived" && p.base.from === "memory") : null;
+        const exact = byPiece ?? byDate ?? (placed === null ? null : matchOption(options, placed));
+        // V3 review: a year menu's or a month menu's option read through a two-digit year's century ("Aug '30") is a choice.
+        const century = byPiece === null && byDate !== null ? stated(readMonth(text, refYear)) : undefined;
+        if (exact !== null) return { value: exact, display: exact, writes: page && !press, ...(century === undefined ? {} : { chose: century }) };
+        // V3 review: an option the pick only names among other words is code's mapping, never the pick itself. A pick or a
+        // line around it that negates, excludes, conditions or offers an alternative names none ("Days I cannot attend:
+        // Saturday mornings"); any other mapping goes to the verifier with the mapping said.
         const o = optionInText(options, text);
-        return o === null ? { why: "ambiguous" } : { value: o, display: o, writes: false };
+        const c = windowOf(p);
+        if (o === null || [text, c?.context ?? null, c?.line ?? null].some((t) => t !== null && leavesChoiceOpen(t))) return { why: "ambiguous" };
+        return { value: o, display: o, writes: false, chose: { says: `Caret took "${text}" to name the option '${o}'`, also: null } };
       }
       case "checkbox": {
         const label = f.form?.label ?? null;
@@ -1572,36 +1610,24 @@ export async function proposeFill(
       }
       case "date": {
         const format = f.form?.format ?? "date";
-        // V3 review B9: a date written only in numbers is read in the order its source's own format hint gives, if its
-        // numbers do not settle it; an order the hint settled is code's choice, so the verifier judges it (`chose`).
+        // V3 review: what the resolver read the span as, and every assumption it made. A plain reading is the exemption's
+        // (resolverFormat); any assumption (a year counted from a reference, an order from a locale, a century, AM or PM
+        // from a word) is code's choice and goes to the verifier with the list said. A year from a message's send line and
+        // an order from a format the source states are offered as their own candidates instead (dateReadings), so the
+        // value asks judge them too; a raw pick never takes them.
+        // A format the source states beside the span counts here too, so a locale it contradicts reads nothing; an order
+        // only that format settles is its derived candidate's, not a raw pick's.
         const order = dateOrderHint(windowOf(p)?.context ?? null);
-        const hinted = order !== null && readDate(text, resolveCtx) === null && readDate(text, resolveCtx, order) !== null;
-        const byHint: Chosen | undefined = hinted ? { says: `Caret read the date ${order === "md" ? "month first" : "day first"}, as the format beside it in the source says`, also: null } : undefined;
-        // C2 (lead decision 1): a month input takes the month and year the user wrote, converted to its own format.
-        if (format === "month") {
-          const m = readMonth(text, refYear);
-          return m === null ? { why: "ambiguous" } : { ...m, writes: page };
-        }
-        if (format === "datetime") {
-          const dt = readDateTime(text, resolveCtx);
-          if (dt !== null) return { ...dt, writes: page };
-          const sent = viaSent(p, text);
-          const at = sent === null ? null : readDateTime(text, sent.ctx);
-          return sent === null || at === null ? { why: "ambiguous" } : { ...at, writes: page, chose: sent.chose };
-        }
-        const d = readDate(text, resolveCtx, order);
-        if (d !== null) return { ...d, writes: page && format === "date", ...(byHint === undefined ? {} : { chose: byHint }) };
-        // V3 (B24 ask-19): a date with no year, with the year its message's send line gives (viaSent): code's choice.
-        const sent = viaSent(p, text);
-        return sent === null ? { why: "ambiguous" } : { value: sent.value, display: sent.display, writes: page && format === "date", chose: sent.chose };
+        const readAs = (o: DateOrder | null): Reading | null => (format === "month" ? readMonth(text, refYear) : format === "datetime" ? readDateTime(text, resolveCtx, o) : readDate(text, resolveCtx, o));
+        const r = readAs(order);
+        if (r === null || (order !== null && readAs(null) === null)) return { why: "ambiguous" };
+        const chose = stated(r);
+        return { value: r.value, display: r.display, writes: page && (format === "date" || format === "month" || format === "datetime"), ...(chose === undefined ? {} : { chose }) };
       }
       case "time": {
         const t = page ? readClock(text, resolveCtx) : null;
-        if (t !== null) return { ...t, writes: true };
-        // V3: a time on a day named without a year, read once that day is known (viaSent), so Daylight Saving is checked.
-        const sent = page ? viaSent(p, text) : null;
-        const at = sent === null ? null : readClock(text, sent.ctx);
-        if (sent !== null && at !== null) return { ...at, writes: true, chose: sent.chose };
+        const chose = t === null ? undefined : stated(t);
+        if (t !== null) return { value: t.value, display: t.display, writes: true, ...(chose === undefined ? {} : { chose }) };
         const loose = clockTime(text);
         return loose === null ? { why: "ambiguous" } : { ...loose, writes: false };
       }
@@ -1720,7 +1746,7 @@ export async function proposeFill(
         : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f), ...(context === null ? {} : { context }), ...(got.writes ? { writes: true as const } : {}) };
     const text = f.control === "text" && p !== undefined && got !== null;
     // V3: a choice code made (controlValue's, or a derived pick's) travels with the pick to the verifier.
-    const chose = got?.chose ?? (p?.from === "derived" && p.chose !== undefined ? { says: p.chose, also: null } : undefined);
+    const chose = got?.chose ?? (p?.from === "derived" ? p.chose : undefined);
     if (p !== undefined && got !== null) picksOf.set(i, { p, text: got.value, ...(chose === undefined ? {} : { chose }) });
     // G2: the identity code decided the value was the user's by (FillField.basis.identity), of the window value it is or
     // was split from. A part code split from an identity (a first name from the user's full name) names its part, so the
@@ -1909,7 +1935,7 @@ function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, writte
     // V3: the value as derived, with the choice code made said, and the extra source it read (a send line) as `also`.
     const own = provenanceOf(model, p, part, written, judged, control);
     const d: Extract<Provenance, { kind: "derived" }> = own.kind === "derived" ? own : { kind: "derived", how: control === "date" || control === "time" ? controlHow(control, written, pickSpan(p)) : "optionFromPart", base: own, also: null };
-    return { ...d, also: chose.also ?? d.also, says: chose.says };
+    return { ...d, also: chose.also ?? d.also, says: chose.says, ...(chose.via === undefined ? {} : { via: chose.via }) };
   }
   const cand = (c: Candidate): Provenance => candidateProvenance(model, c, judged(c) ?? "");
   const base = (b: Exclude<Pick, { from: "derived" }>): Provenance =>

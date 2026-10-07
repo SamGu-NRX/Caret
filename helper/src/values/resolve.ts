@@ -40,6 +40,11 @@ export interface ResolveContext {
   /** The locale the source text was written in. Absent: unknown, so locale-dependent forms ask or refuse. */
   sourceLocale?: string;
   /**
+   * V3: the order of a numeric date's month and day that a format the source states beside it gives ("DOB (MM/DD/YYYY)",
+   * fill/derive.ts dateOrderHint). Read before the locale, and said as an assumption.
+   */
+  sourceDateOrder?: "mdy" | "dmy";
+  /**
    * The zone the source's times are read in when the text names none, and the zone its relative days are
    * counted in: an IANA id or a fixed offset such as "+02:00". Absent: `timeZone` (text the user is
    * typing). Null: the source's zone cannot be established, so an unzoned time or a relative day asks.
