@@ -1,6 +1,5 @@
-import { Disclosure } from "../privacy/disclosure.ts";
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
 import { redactWindow } from "../fill/redact.ts";
-import { assertNoSecrets } from "../privacy.ts";
 // The event card (Fable plan section 2, pop-up A). A sentence that names a time and a person, finished
 // in the field the user is typing in or arriving in a conversation window, becomes an offer to add the
 // event to a calendar: "Calendar  Coffee with Dana, Thu 3:00 to 3:30 PM  Tab", and the down arrow opens
@@ -159,7 +158,7 @@ export function eventCandidate(sentence: string, spans: readonly string[], peopl
  */
 export type SentenceSource = "typed" | "conversation";
 
-const WORDINGS: Record<SentenceSource, readonly [string, string]> = {
+const WORDINGS = {
   typed: [
     "The user is writing this sentence. Is the user arranging something that they will attend at the time it names? Answer no for something already over, cancelled, declined, only wondered about, or planned by other people without the user.",
     "This sentence is being typed by the user. Does it set up a future meeting or appointment that the user is going to? Choose no if it is past, called off, turned down, hypothetical, or about other people only.",
@@ -168,25 +167,27 @@ const WORDINGS: Record<SentenceSource, readonly [string, string]> = {
     "This line is from a conversation the user is reading; the user may or may not have written it. Does it arrange something that the user of this computer will attend at the time it names? Answer no if it is over, cancelled, declined, only wondered about, or for other people without the user.",
     "A message in a conversation the user is reading, perhaps written by someone else. Is the user themselves going to a future meeting or appointment it sets up? Choose no if it is past, called off, turned down, hypothetical, or not something the user attends.",
   ],
-};
+} as const satisfies Record<SentenceSource, readonly [string, string]>;
 
 /**
  * When the user wants a card offered, for Router 1's task question (routing/judge.ts): the same cases the attend asks
  * answer no to, which the router's question needs too or it cannot tell them apart (evidence/screen/r3/task-wording).
  */
-export const OFFER_WHEN: Record<SentenceSource, string> = {
+export const OFFER_WHEN = {
   typed: "Offer it when the user is arranging something they will attend. Do not offer it for something over, cancelled, declined, only wondered about, or for other people without the user.",
   conversation: "Offer it when the line arranges something the user of this computer will attend; someone else may have written it. Do not offer it for something over, cancelled, declined, only wondered about, or for other people without the user.",
-};
+} as const satisfies Record<SentenceSource, string>;
 
-/** One of the two asks. `declared` is the sentence as its window's ledger took it. */
-export function buildAttendRequest(sentence: string, wording: 0 | 1, declared: { snippets: JevRequest["snippets"]; charged: JevRequest["charged"] }, source: SentenceSource = "typed"): JevRequest {
-  return new Disclosure([]).legacy({
+/** One of the two asks: `sentence` as the request's Disclosure minted it from the window's redacted view. */
+export function buildAttendRequest(d: Disclosure, sentence: ModelText, wording: 0 | 1, source: SentenceSource = "typed"): JevRequest {
+  return d.seal({
     purpose: "event.card",
-    state: { sentence, task: source === "typed" ? "The user is typing this sentence. Caret is deciding whether to offer adding an event to the user's calendar." : "The user is reading this line in a conversation. Caret is deciding whether to offer adding an event to the user's calendar." },
-    questions: { attend: { type: "choice", instructions: WORDINGS[source][wording], criteria: { yes: "Yes: a future event the user will attend.", no: "No." } } },
-    snippets: declared.snippets,
-    charged: declared.charged,
+    state: {
+      sentence,
+      task: source === "typed" ? d.own("The user is typing this sentence. Caret is deciding whether to offer adding an event to the user's calendar.") : d.own("The user is reading this line in a conversation. Caret is deciding whether to offer adding an event to the user's calendar."),
+    },
+    questions: { attend: { type: "choice", instructions: d.own(WORDINGS[source][wording]), criteria: d.ownRecord({ yes: "Yes: a future event the user will attend.", no: "No." } as const) } },
+    ...d.declared(),
   });
 }
 
@@ -201,10 +202,10 @@ export async function askAttend(ask: AskJev, model: ScreenModel, w: WindowState,
   // Changed-node events may supply raw sentence text. Admit it only when the redacted view retains it.
   w = redactWindow(w);
   if (![...w.nodes.values()].some((n) => nodeText(n).includes(sentence))) return null;
-  const ledger = new Disclosure(model.windows.values());
-  if (!ledger.take(w, "candidate", [sentence])) return null;
-  const declared = ledger.declared();
-  const [r1, r2] = await Promise.all([ask(buildAttendRequest(sentence, 0, declared, source)), ask(buildAttendRequest(sentence, 1, declared, source))]);
+  const d = new Disclosure(model.windows.values());
+  const minted = d.candidate(w, sentence);
+  if (minted === null) return null;
+  const [r1, r2] = await Promise.all([ask(buildAttendRequest(d, minted, 0, source)), ask(buildAttendRequest(d, minted, 1, source))]);
   const a1 = r1.answers.attend;
   const a2 = r2.answers.attend;
   if (a1 === undefined || a2 === undefined) throw new Error("Jev gave no answer to the attend question");

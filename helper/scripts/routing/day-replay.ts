@@ -142,7 +142,7 @@ try {
   const answers: (() => void)[] = [];
   const askJev: AskJev = () =>
     new Promise((res) => answers.push(() => res({ model: "replay", answers: { outcome: { choice: "abstain", confidence: 0.9 } }, inputTokens: 0, latencyMs: latency, costUsd: 0 })));
-  const cand: RouteCandidate = { id: "fillAll", kind: "fillAll", says: "Fill", plain: "Fill", quotes: [], relevance: 0, run: () => undefined };
+  const cand: RouteCandidate = { id: "fillAll", kind: "fillAll", says: "Fill", plain: "Fill", say: (d) => ({ says: d.own("Fill"), plain: d.own("Fill") }), quotes: [], relevance: 0, run: () => undefined };
   const coord = new RoutingCoordinator({
     model,
     askJev,

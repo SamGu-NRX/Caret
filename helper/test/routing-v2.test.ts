@@ -3,7 +3,7 @@
 // start per two seconds, stale replies dropped, a waiting context replaced rather than queued, no retry, no Router 2
 // outside act, and every forged or weak answer abstaining. Then the helper end to end: routed fills and event cards
 // make the same offers, with the same spans, as the producers make on their own. Everything is invented.
-import { minted } from "./minted.ts";
+import { fixtureSay, minted } from "./minted.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,6 +113,7 @@ function candidate(id: string, extra: Partial<RouteCandidate> = {}): TestCandida
       c.dropped++;
     },
     ...extra,
+    say: extra.say ?? ((d) => fixtureSay(c)(d)),
   };
   return c;
 }

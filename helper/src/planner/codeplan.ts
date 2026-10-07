@@ -206,7 +206,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   }
   const use: WriterUse = { model: written.model, latencyMs: written.latencyMs, costUsd: written.costUsd, inputTokens: written.inputTokens, outputTokens: written.outputTokens, program: written.output.program, disclosed: writerDisclosure };
   if (written.output.program === null) throw new PlannerError("unsure", "the plan writer wrote no program");
-  const ran = await runCodePlan(written.output.program, snapshots, jevChooser(o.askJev, instruction), o.signal === undefined ? {} : { signal: o.signal });
+  const ran = await runCodePlan(written.output.program, snapshots, jevChooser(o.askJev, instruction, ledger), o.signal === undefined ? {} : { signal: o.signal });
   if (!ran.ok) throw new PlannerError("unsure", `the plan program was refused (${ran.kind}): ${ran.detail.slice(0, 200)}`);
   const other = ran.plan.steps.filter((s) => s.kind !== "fill");
   if (other.length > 0) throw new PlannerError("unsupportedStep", `the plan program asked to ${other[0]?.kind}, and a written plan only fills fields`);

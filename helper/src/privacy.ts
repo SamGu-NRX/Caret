@@ -469,7 +469,7 @@ interface Entry {
  */
 export class SnippetLedger {
   private readonly entries = new Map<string, Entry>();
-  private readonly known = new Map<string, WindowState>();
+  protected readonly known = new Map<string, WindowState>();
   /**
    * What each text reveals, worked out once per ledger: the lines it holds, with their windows, and the
    * windows that show it inside a line. The generator prices each kind of a conversation again after every

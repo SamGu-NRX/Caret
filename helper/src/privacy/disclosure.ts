@@ -63,9 +63,12 @@ export type ModelValue = ModelText | number | boolean | null | readonly ModelVal
  * - instruction: the user's instruction as instructionForModel gives it;
  * - memory: an About or saved-answer entry the user told Caret, that sensitiveKind passes;
  * - held: a string computed locally that the redacted view holds (a program's output, a derivation);
+ * - plan: a step's goal or target as a plan Caret wrote says it (executor/target.ts), priced as plan text: the plan was
+ *   built from minted text when it was proposed, and its values may quote any window, so every line it shows is charged;
+ * - drafted: a sentence Caret's local model drafted (goals/drafts.ts), checked by Jev before it is offered;
  * - legacy: SC1 migration step 1 only. A builder that has not yet minted its text declares the whole request legacy.
  */
-export type MintReason = "ownWording" | "descriptor" | "candidate" | "instruction" | "memory" | "held" | "legacy";
+export type MintReason = "ownWording" | "descriptor" | "candidate" | "instruction" | "memory" | "held" | "plan" | "drafted" | "legacy";
 
 /** A request body carried a string its Disclosure never minted, or it had no Disclosure. Never names the text. */
 export class UnmintedText extends Error {
@@ -93,6 +96,18 @@ interface Sealable {
  * option name is Caret's own short identifier. A key holding a space or longer than this is refused as unminted.
  */
 const KEY = /^[A-Za-z0-9_.:~#+-]{1,64}$/u;
+/**
+ * Words code writes when it derives a text from screen text (Disclosure.derived): the calendar's words, as times and
+ * dates are said (offers/event-time.ts, fill/derive.ts), and the joining words between their parts.
+ */
+const DERIVED_WORDS: ReadonlySet<string> = new Set([
+  "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
+  "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+  "am", "pm", "a", "p", "m", "utc", "noon", "midnight", "today", "tomorrow", "yesterday", "at", "to", "from", "on", "until", "and", "or", "of", "the", "in",
+]);
+/** What Disclosure.id takes: a code-made identifier. */
+const ID = /^[A-Za-z0-9_.:~#+/-]{1,96}$/u;
 
 /** Paths in a Jev wire body that the client itself writes and are never screen text, each with the only values allowed. */
 const EXEMPT_EXACT: readonly { path: RegExp; values: ReadonlySet<string> | null }[] = [
@@ -190,6 +205,24 @@ export class Disclosure extends SnippetLedger {
     return text === null || text === undefined ? null : this.fromView(view, text, "held");
   }
 
+  /**
+   * A plan's own text, a step's goal or target (MintReason plan), priced as plan text (SnippetLedger.plan): every line of
+   * a window it shows is charged to that window. Null when one would go over its budget.
+   */
+  planText(text: string): ModelText | null {
+    if (!this.plan([text])) return null;
+    return this.record(text, ["plan"]);
+  }
+
+  /**
+   * A sentence the local model drafted (MintReason drafted), priced as plan text: a draft quotes the windows it was
+   * drafted from. Null when one would go over its budget.
+   */
+  draftedText(text: string): ModelText | null {
+    if (!this.plan([text])) return null;
+    return this.record(text, ["drafted"]);
+  }
+
   /** The app a window belongs to, by the name the reader gives it: not screen text the window shows, but a descriptor of it. */
   app(view: RedactedWindow): ModelText {
     if (!isRedacted(view)) throw new UnmintedText("an app name was read from a window that is not a redacted view");
@@ -218,6 +251,54 @@ export class Disclosure extends SnippetLedger {
    */
   own<S extends string>(s: string extends S ? never : S): ModelText {
     return this.record(s, ["ownWording"]);
+  }
+
+  /**
+   * An identifier code made (a question or option id, a ref like "v3", a window id, a digest): no spaces, at most 96
+   * characters. It is Caret's own wording; screen text goes through descriptor, candidate or held.
+   */
+  id(s: string): ModelText {
+    if (!ID.test(s)) throw new UnmintedText("id() takes a code-made identifier: no spaces, at most 96 characters");
+    return this.record(s, ["ownWording"]);
+  }
+
+  /** A text this Disclosure minted before, for another request that shares the ledger; null when it never minted it. */
+  again(text: string): ModelText | null {
+    return this.mints.has(text) ? (text as ModelText) : null;
+  }
+
+  /**
+   * A text code derived from minted ones (a time read from a sentence, a part of a name, a date in a field's format, a
+   * name composed of labels), minted when each of its words is a word of some `base`, a number, one of DERIVED_WORDS
+   * (calendar words code writes), or one of `codeWords`, the caller's own literal vocabulary. Null otherwise: a
+   * derivation never brings in a word the screen did not show. It carries the bases' reasons and held.
+   */
+  derived<W extends string = never>(base: ModelText | readonly ModelText[], text: string, codeWords: readonly (string extends W ? never : W)[] = []): ModelText | null {
+    const bases = typeof base === "string" ? [base] : base;
+    const reasons = new Set<MintReason>(["held"]);
+    const shown = new Set<string>(codeWords.map((w) => w.toLowerCase()));
+    for (const b of bases) {
+      for (const r of this.reasons(b, "derived")) reasons.add(r);
+      for (const w of b.toLowerCase().split(/[^\p{L}\p{N}]+/u)) if (w !== "") shown.add(w);
+    }
+    const ws = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x !== "");
+    if (ws.length === 0 && text.trim() !== "") return null;
+    for (const w of ws) if (!shown.has(w) && !/^\d+(?:st|nd|rd|th|am|pm|h)?$/u.test(w) && !DERIVED_WORDS.has(w)) return null;
+    return this.record(text, reasons);
+  }
+
+  /**
+   * An app's name as the reader gives it, minted when some window this Disclosure was built over belongs to that app:
+   * reader metadata that describes a window, not text the window shows.
+   */
+  appNamed(name: string): ModelText | null {
+    for (const w of this.known.values()) if (w.app.name === name) return this.record(name, ["descriptor"]);
+    return null;
+  }
+
+  /** Caret's own wording for each option of a question: a record whose values are string literals (`as const`). */
+  ownRecord<R extends Readonly<Record<string, string>>>(r: string extends R[keyof R] ? never : R): { readonly [K in keyof R]: ModelText } {
+    return Object.fromEntries(Object.entries(r).map(([k, v]) => [k, this.record(v, ["ownWording"])])) as { readonly [K in keyof R]: ModelText };
   }
 
   /** A number code computed (a count, a position, a size) written as Caret writes it. */

@@ -202,7 +202,11 @@ describe("PV1 outbound redaction", () => {
     const w = model.windows.get("form")!;
     const ctx = contextNow({ model, focus: null, host: null, readerSession: 1, memoryRevision: 0, settingsRevision: 0, hostBreaks: 0, candidates: ["event"] });
     expect(ctx).not.toBeNull();
-    const reg = freeze(1, [{ id: "event", kind: "workflow", says: sentence, plain: "Add an event", quotes: [{ window: w, kind: "candidate", texts: [sentence] }], relevance: 1, evidence: { task: "Add an event", sentence, found: "A person and a time", offerWhen: "An upcoming meeting" }, run: () => {} }], new Set());
+    const reg = freeze(1, [{ id: "event", kind: "workflow", says: sentence, plain: "Add an event", quotes: [{ window: w, kind: "candidate", texts: [sentence] }], relevance: 1, evidence: { task: "Add an event", sentence, found: "A person and a time", offerWhen: "An upcoming meeting" }, say: (d) => {
+      // As the event producer mints it: the sentence from the window's redacted view, which removed it.
+      const m = d.candidate(redactWindow(w), sentence);
+      return { says: m, plain: d.own("Add an event"), offer: m === null ? null : { task: d.own("Add an event"), sentence: m, found: d.own("A person and a time"), offerWhen: d.own("An upcoming meeting") } };
+    }, run: () => {} }], new Set());
     const built = router1Request(model, ctx!, ["abstain", "act"], reg);
     expect(built.task).toBeNull();
     expect(built.taskPrivacy).toBe(true);

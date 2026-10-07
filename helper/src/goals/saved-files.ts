@@ -1,6 +1,5 @@
-import { Disclosure } from "../privacy/disclosure.ts";
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
 import { redactWindow } from "../fill/redact.ts";
-import { assertNoSecrets } from "../privacy.ts";
 // Saved files (P3): a file the user attached once, kept for the same question next time ("Use this file for résumés
 // next time?"), and offered again only in a goal preview's attach row, never attached without that preview's
 // acceptance naming it (goalAccept.confirmedFile). Caret never looks for a file on disk: the only paths here are ones
@@ -39,14 +38,21 @@ const SAYS_QUOTE_CHARS = 100;
 
 /** The two wordings of the match question; each ask uses one. */
 export const FILE_WORDINGS = [
-  (where: string, d: string): string =>
-    `A form in the ${where} has a file upload field: ${d} The user attached files to upload fields on earlier forms and kept each for the question it answered. Which saved file is the one this field asks for? Choose none unless the file was kept for a question that asks for the same document.`,
-  (where: string, d: string): string =>
-    `File upload field: ${d} It is in a form in the ${where}. Below are files the user kept from upload fields on other forms, each with the question it was kept for. Which one belongs in this field? Answer none if no file was kept for a question asking for the same document.`,
+  (m: Disclosure, where: ModelText, d: ModelText): ModelText =>
+    m.t`A form in the ${where} has a file upload field: ${d} The user attached files to upload fields on earlier forms and kept each for the question it answered. Which saved file is the one this field asks for? Choose none unless the file was kept for a question that asks for the same document.`,
+  (m: Disclosure, where: ModelText, d: ModelText): ModelText =>
+    m.t`File upload field: ${d} It is in a form in the ${where}. Below are files the user kept from upload fields on other forms, each with the question it was kept for. Which one belongs in this field? Answer none if no file was kept for a question asking for the same document.`,
 ] as const;
 
-/** The criterion for one saved file: the question it was kept for and its name. Never its path. */
-export const describeSavedFile = (f: SavedFile): string => `The file "${basename(f.fields.path)}", which the user kept for the question "${questionExcerpt(f.fields.question)}"`;
+/**
+ * The criterion for one saved file: the question it was kept for and its name, never its path, each minted as memory;
+ * null when either may not go (privacy/disclosure.ts memoryText).
+ */
+function mintSavedFile(m: Disclosure, f: SavedFile): ModelText | null {
+  const name = m.memoryText(null, basename(f.fields.path));
+  const question = m.memoryText(null, questionExcerpt(f.fields.question));
+  return name === null || question === null ? null : m.t`The file "${name}", which the user kept for the question "${question}"`;
+}
 
 /** What the saved-file offers read and write through; the helper supplies each (helper.ts). */
 export interface SavedFilesDeps {
@@ -144,26 +150,31 @@ export class SavedFiles {
     // The control's label and the page's title are screen text, held to the window's budget; a saved file's question
     // and name are memory, declared as memory and charged to any window that shows them (privacy.ts).
     const ledger = new Disclosure(this.deps.model.windows.values());
-    const d = `"${questionExcerpt(question)}"`;
-    if (!ledger.take(w, "descriptor", [questionExcerpt(question)])) return null;
-    const title = w.window.title.trim() !== "" && ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
-    const where = title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`;
-    const asked = ranked.filter((c) => ledger.memory([questionExcerpt(c.file.fields.question), basename(c.file.fields.path)]));
+    const field = ledger.descriptor(w, questionExcerpt(question));
+    if (field === null) return null;
+    const d = ledger.t`"${field}"`;
+    const title = w.window.title.trim() === "" ? null : ledger.descriptor(w, w.window.title);
+    const where = title === null ? ledger.t`${ledger.app(w)} window` : ledger.t`${ledger.app(w)} window '${title}'`;
+    const asked = ranked.flatMap((c) => {
+      if (!ledger.memory([questionExcerpt(c.file.fields.question), basename(c.file.fields.path)])) return [];
+      const said = mintSavedFile(ledger, c.file);
+      return said === null ? [] : [{ ...c, said }];
+    });
     if (asked.length === 0) return null;
     const declared = ledger.declared();
 
     // f1... in the first ask, g1..., shuffled, in the second: neither position nor id carries a choice across.
     const first = new Map(asked.map((c, i) => [`f${i + 1}`, c]));
     const second = new Map(shuffled(asked).map((c, i) => [`g${i + 1}`, c]));
-    const request = (ids: Map<string, (typeof asked)[number]>, wording: 0 | 1): JevRequest => (ledger.legacy({
+    const request = (ids: Map<string, (typeof asked)[number]>, wording: 0 | 1): JevRequest => (ledger.seal({
       purpose: "savedFile.match",
       state: {
         destination_window: where,
         form_fields: d,
-        task: "The user is filling in this form. The candidates are files the user attached to forms before and kept for the question each answered; one fits only when this field asks for the same document.",
+        task: ledger.own("The user is filling in this form. The candidates are files the user attached to forms before and kept for the question each answered; one fits only when this field asks for the same document."),
       },
       questions: {
-        [QUESTION_ID]: { type: "choice", instructions: FILE_WORDINGS[wording](where, d), criteria: { ...Object.fromEntries([...ids].map(([id, c]) => [id, describeSavedFile(c.file)])), [NONE]: FILE_NONE } },
+        [QUESTION_ID]: { type: "choice", instructions: FILE_WORDINGS[wording](ledger, where, d), criteria: { ...Object.fromEntries([...ids].map(([id, c]) => [id, c.said])), [NONE]: ledger.own(FILE_NONE) } },
       },
       snippets: declared.snippets,
       charged: declared.charged,

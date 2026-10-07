@@ -3,7 +3,8 @@
 // grounded fill proposals. server.ts connects it to the socket; tests drive it directly.
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
-import { Disclosure } from "./privacy/disclosure.ts";
+import { Disclosure, type ModelText } from "./privacy/disclosure.ts";
+import { redactWindow } from "./fill/redact.ts";
 import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
@@ -123,7 +124,7 @@ import type { MemoryValue } from "./planner/trace.ts";
 import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskGoal, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
 import { intentSnapshot, type AskFixed } from "./planner/intent.ts";
 import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
-import { ASK_ROUTES, type RouteCandidate, type TaskEvidence } from "./routing/routes.ts";
+import { ASK_ROUTES, type MintedSay, type RouteCandidate, type TaskEvidence } from "./routing/routes.ts";
 import { ConsentLedger, type Consent } from "./routing/consent.ts";
 import type { RoutingContext } from "./routing/context.ts";
 import { FILLABLE_ROLES, neverTypedNode } from "./fill/fill.ts";
@@ -3006,6 +3007,16 @@ export class Helper {
               plain: "Add to Calendar the event in the sentence the user just finished",
               quotes: [{ window: w, kind: "candidate", texts: [last, c.person] }],
               evidence: eventEvidence(c, "typed", "the user typed it in this field"),
+              say: (d) => {
+                const v = redactWindow(w);
+                const s = d.candidate(v, last);
+                return {
+                  says: s === null ? null : d.t`Add to Calendar the event this sentence the user just finished arranges: "${s}"`,
+                  plain: d.own("Add to Calendar the event in the sentence the user just finished"),
+                  ...(startOpen(c) ? { question: d.own("which time the sentence means, since it leaves the start open") } : {}),
+                  offer: s === null ? null : eventOffer(d, v, s, c, "typed", d.own("the user typed it in this field")),
+                };
+              },
               relevance: 2,
               ...(startOpen(c) ? { question: { fact: "eventStart", says: "which time the sentence means, since it leaves the start open" } } : {}),
               run: () => this.startRouted(this.events.judge(w, key, last, offerField(w, key), "typed")),
@@ -3031,6 +3042,17 @@ export class Helper {
           plain: `Add to Calendar the event in a line just heard in ${l.w.app.name}`,
           quotes: [{ window: l.w, kind: "candidate", texts: [l.sentence, c.person] }],
           evidence: eventEvidence(c, "conversation", `it is a new line in a ${l.w.app.name} conversation the user is in, perhaps written by someone else`),
+          say: (d) => {
+            const v = redactWindow(l.w);
+            const app = d.app(v);
+            const s = d.candidate(v, l.sentence);
+            return {
+              says: s === null ? null : d.t`Add to Calendar the event this line just heard in ${app} arranges: "${s}"`,
+              plain: d.t`Add to Calendar the event in a line just heard in ${app}`,
+              ...(startOpen(c) ? { question: d.own("which time the line means, since it leaves the start open") } : {}),
+              offer: s === null ? null : eventOffer(d, v, s, c, "conversation", d.t`it is a new line in a ${app} conversation the user is in, perhaps written by someone else`),
+            };
+          },
           relevance: 1,
           ...(startOpen(c) ? { question: { fact: "eventStart", says: "which time the line means, since it leaves the start open" } } : {}),
           run: () => {
@@ -3059,6 +3081,14 @@ export class Helper {
         says: `Open ${h.app}, whose window the user was waiting on now says "${h.status}"`,
         plain: `Open ${h.app}, whose window the user was waiting on changed`,
         quotes: [{ window: watched, kind: "candidate", texts: [h.status] }],
+        say: (d) => {
+          const app = d.appNamed(h.app);
+          const status = d.candidate(redactWindow(watched), h.status);
+          return {
+            says: app === null || status === null ? null : d.t`Open ${app}, whose window the user was waiting on now says "${status}"`,
+            plain: app === null ? d.own("Open the app whose window the user was waiting on, which changed") : d.t`Open ${app}, whose window the user was waiting on changed`,
+          };
+        },
         relevance: 0,
         run: () => this.openApp.showHeld(h.offerKey, offerField(w, key)),
       };
@@ -3076,12 +3106,28 @@ export class Helper {
         : h.kind === "loopFinish"
           ? `Finish the rest of what the user is copying from ${from} (${h.values} values)`
           : `Fill ${h.values} fields from ${from} the way the user did before`;
+    const say = (d: Disclosure): MintedSay => {
+      const apps = h.from.map((a) => d.appNamed(a));
+      const fromM = apps.every((a) => a !== null) && apps.length > 0 ? d.join(apps as ModelText[], " and ") : d.own("another window");
+      const name = h.skill ? d.memoryText(null, h.says) : null;
+      const m = h.skill
+        ? name === null
+          ? d.own("Run one of the user's saved skills here")
+          : d.t`Run the user's saved skill "${name}" here`
+        : h.kind === "loopNext"
+          ? d.t`Offer the next row of what the user is copying from ${fromM}`
+          : h.kind === "loopFinish"
+            ? d.t`Finish the rest of what the user is copying from ${fromM} (${d.count(h.values)} values)`
+            : d.t`Fill ${d.count(h.values)} fields from ${fromM} the way the user did before`;
+      return { says: m, plain: m };
+    };
     return {
       id: `pattern:${h.id}`,
       kind: "workflow",
       workflow: h.skill ? "skill" : h.kind === "routine" ? "routine" : "loop",
       says: plain,
       plain,
+      say,
       quotes: [],
       // A kept skill first, then the pattern that matched most often.
       relevance: 10 + (h.skill ? 1000 : 0) + h.hits,
@@ -3149,11 +3195,23 @@ export class Helper {
       e.fields === 0
         ? `Fill this form's ${fillable} empty field${fillable === 1 ? "" : "s"}, though no open window shows a value that clearly fits ${fillable === 1 ? "it" : "them"}`
         : `Fill this form: values that fit ${e.fields} of its ${fillable} empty field${fillable === 1 ? "" : "s"} are ${andList(where)}`;
+    const say = (d: Disclosure): MintedSay => {
+      const n = d.count(fillable);
+      const fields = fillable === 1 ? d.own("field") : d.own("fields");
+      const apps = e.apps.map((a) => d.appNamed(a)).filter((a): a is ModelText => a !== null);
+      const wheres = [...(apps.length === 0 ? [] : [d.t`on screen in ${andListMinted(d, apps)}`]), ...(e.told > 0 ? [d.own("in what the user told Caret")] : [])];
+      const m =
+        e.fields === 0
+          ? d.t`Fill this form's ${n} empty ${fields}, though no open window shows a value that clearly fits ${fillable === 1 ? d.own("it") : d.own("them")}`
+          : d.t`Fill this form: values that fit ${d.count(e.fields)} of its ${n} empty ${fields} are ${andListMinted(d, wheres)}`;
+      return { says: m, plain: m };
+    };
     return {
       id: "fillAll",
       kind: "fillAll",
       says,
       plain: says,
+      say,
       quotes: [],
       relevance: 0,
       run: () => this.startRouted(this.fill(w.window.windowId, key, false)),
@@ -3507,6 +3565,24 @@ function eventEvidence(c: EventCandidate, source: SentenceSource, where: string)
     found: `Code found in it the person "${c.person}" and the time ${when}; ${where}.`,
     offerWhen: OFFER_WHEN[source],
   };
+}
+
+/**
+ * The task evidence a router's request carries for an event card, minted: the sentence as the view showed it, the person
+ * and time code read in it (each a word of the sentence, a number or a calendar word), and the producer's own rule.
+ */
+function eventOffer(d: Disclosure, v: WindowState, sentence: ModelText, c: EventCandidate, source: SentenceSource, where: ModelText): MintedSay["offer"] {
+  const person = d.candidate(v, c.person) ?? d.derived(sentence, c.person);
+  const when = c.time.kind === "resolved" ? d.derived(sentence, c.time.time.says) : d.derived(sentence, c.time.choices.map((t) => t.says).join(" or "));
+  if (person === null || when === null) return null;
+  const said = c.time.kind === "resolved" ? when : d.t`${when}, the sentence giving no end`;
+  return { task: d.own("Add an event to the user's calendar"), sentence, found: d.t`Code found in it the person "${person}" and the time ${said}; ${where}.`, offerWhen: d.own(OFFER_WHEN[source]) };
+}
+
+/** "A", "A and B", "A, B and C", of minted texts. */
+function andListMinted(d: Disclosure, xs: readonly ModelText[]): ModelText {
+  if (xs.length <= 1) return xs[0] ?? d.own("");
+  return d.t`${d.join(xs.slice(0, -1), ", ")} and ${xs.at(-1) as ModelText}`;
 }
 
 function startOpen(c: EventCandidate): boolean {

@@ -1,6 +1,4 @@
-import { Disclosure } from "../privacy/disclosure.ts";
-import { instructionForModel } from "../fill/redact.ts";
-import { assertNoSecrets } from "../privacy.ts";
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
 // Text a goal plan writes in Caret's own words (B30): a short reply, message or description. The writer composes it;
 // code decides whether it may be offered. A draft must add no fact: every number, date, time, money amount, email
 // address, phone, URL, code and name in it must be one the instruction, a window the plan names as the draft's
@@ -730,8 +728,8 @@ export function eventsAsked(instruction: string): number {
 }
 
 const CONFIRM_WORDS = [
-  (instr: string, s: string): string => `The user asked: "${instr}". Caret drafted this sentence for the user to send: "${s}". Does the sentence say only what the user asked to say, with no promise, commitment, refusal, apology, date or condition the user did not ask for?`,
-  (instr: string, s: string): string => `Sentence Caret drafted: "${s}". The user's request: "${instr}". Is every promise, commitment, refusal, date and condition in this sentence one the user asked for?`,
+  (d: Disclosure, instr: ModelText, s: ModelText): ModelText => d.t`The user asked: "${instr}". Caret drafted this sentence for the user to send: "${s}". Does the sentence say only what the user asked to say, with no promise, commitment, refusal, apology, date or condition the user did not ask for?`,
+  (d: Disclosure, instr: ModelText, s: ModelText): ModelText => d.t`Sentence Caret drafted: "${s}". The user's request: "${instr}". Is every promise, commitment, refusal, date and condition in this sentence one the user asked for?`,
 ] as const;
 
 /**
@@ -744,14 +742,22 @@ export async function confirmClaims(instruction: string, drafts: readonly { text
   const claims = [...new Set(drafts.flatMap((d) => sentencesOf(d.text).filter((s) => !noClaim(s, d.basis) && !restates(s, instruction, d.basis))))];
   if (claims.length === 0) return { calls: 0, costUsd: 0 };
   if (askJev === null) throw new DraftRefused("unchecked", `Caret can't check the draft's sentence ${q(claims[0] as string)} right now`, claims[0] as string);
-  const safeInstruction = instructionForModel(instruction);
+  // The claims are the local model's draft (MintReason drafted); what they carry of windows is declared by `snippets`.
+  const d = new Disclosure([]);
+  const safeInstruction = d.instruction(instruction);
+  const minted: ModelText[] = [];
+  for (const s of claims) {
+    const m = d.draftedText(s);
+    if (m === null) throw new DraftRefused("unchecked", `Caret can't check the draft's sentence ${q(s)} within what one request may carry`, s);
+    minted.push(m);
+  }
   const req = (wording: 0 | 1): JevRequest => {
-    const nouls = Object.fromEntries(claims.map((s, i) => [`c${i + 1}`, { type: "noul" as const, instructions: CONFIRM_WORDS[wording](safeInstruction, s) }]));
+    const nouls = Object.fromEntries(minted.map((s, i) => [`c${i + 1}`, { type: "noul" as const, instructions: CONFIRM_WORDS[wording](d, safeInstruction, s) }]));
     const sent = JSON.stringify([safeInstruction, nouls]);
     const carried = snippets.filter((x) => sent.includes(x.text));
     const charged: Record<string, number> = {};
     for (const x of carried) charged[x.windowId] = (charged[x.windowId] ?? 0) + x.text.length;
-    return new Disclosure([]).legacy({ purpose: "draft.check", state: { instruction: safeInstruction, task: "Caret checks that a short text it drafted for the user adds nothing the user did not ask to say." }, questions: {}, nouls, snippets: carried, charged });
+    return d.seal({ purpose: "draft.check", state: { instruction: safeInstruction, task: d.own("Caret checks that a short text it drafted for the user adds nothing the user did not ask to say.") }, questions: {}, nouls, snippets: carried, charged });
   };
   let r: Awaited<ReturnType<AskJev>>[];
   try {

@@ -1,6 +1,5 @@
-import { Disclosure } from "../privacy/disclosure.ts";
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
 import { redactWindow } from "../fill/redact.ts";
-import { assertNoSecrets } from "../privacy.ts";
 // Finding the element a step names. An exact key wins. Otherwise role and label filter the window;
 // one match is used as is. Several matches go to Jev as the executor-step question (deep plan
 // section 5): the goal as an end-state sentence, at most 40 candidate elements one line each, asked
@@ -8,7 +7,7 @@ import { assertNoSecrets } from "../privacy.ts";
 import type { Node } from "../protocol.ts";
 import { nodeText, type WindowState } from "../model.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
-import { cut, type Declared } from "../privacy.ts";
+import { cut } from "../privacy.ts";
 import { shuffled } from "../fill/fill.ts";
 import type { Target } from "./schema.ts";
 
@@ -69,7 +68,7 @@ export function resolveLocally(w: WindowState, t: Target): { node: Node; how: "k
   return { ambiguous: m.slice(0, MAX_TARGET_CANDIDATES) };
 }
 
-/** The screen text describeElement quotes for an element: its label, value, container and placeholder, each clipped. */
+/** The screen text an element's line (mintElement) quotes: its label, value, container and placeholder, each clipped. */
 function elementTexts(w: WindowState, n: Node): { label: string | null; value: string | null; inside: string | null; placeholder: string | null } {
   w = redactWindow(w);
   const kept = w.nodes.get(n.key);
@@ -94,16 +93,6 @@ function elementTexts(w: WindowState, n: Node): { label: string | null; value: s
   };
 }
 
-/** One line per candidate element: label, role, value, the named container it sits in, and the nearest text. */
-export function describeElement(w: WindowState, n: Node): string {
-  const t = elementTexts(w, n);
-  const facts: string[] = [n.role.replace(/^AX/, "")];
-  if (n.editable === true) facts.push(t.value === null ? "empty" : `holds '${t.value}'`);
-  if (t.inside !== null) facts.push(`inside '${t.inside}'`);
-  if (t.placeholder !== null) facts.push(`placeholder '${t.placeholder}'`);
-  return `${t.label === null ? "(no label)" : `'${t.label}'`} (${facts.join("; ")})`;
-}
-
 /** A slot value a plan copied from a window, with that window as it is now or as the task found it; undefined when no state of it is known. */
 export interface SourcedValue {
   text: string;
@@ -126,31 +115,62 @@ export function quotedPart(sent: string, value: string): string | null {
 }
 
 /**
- * The screen text of a target question: the window's title and every candidate element, held to the
- * window's budget (privacy.ts), and the step's goal and target, which the plan wrote (SnippetLedger.plan),
- * each cut to SNIPPET_CHARS since a plan's values were copied from windows the question does not name.
- * A value the plan says it copied from a window (Plan.sources), and that the cut goal or target quotes,
- * is charged to that window first, as it is now or as the task found it; plan text also pays for any
- * window line it holds. Null when a quoted value's window is unknown, or a quoted value or the candidates
- * do not all fit: the question is then not asked, since leaving one out could leave out the right one.
+ * The screen text of a target question, minted: the window's title and every candidate element, held to the window's
+ * budget (privacy.ts), and the step's goal and target, which the plan wrote (Disclosure.planText), each cut to
+ * SNIPPET_CHARS since a plan's values were copied from windows the question does not name. A value the plan says it
+ * copied from a window (Plan.sources), and that the cut goal or target quotes, is charged to that window first, as it is
+ * now or as the task found it; plan text also pays for any window line it holds. Null when a quoted value's window is
+ * unknown, or a quoted value or the candidates do not all fit: the question is then not asked, since leaving one out
+ * could leave out the right one.
  */
-export function targetSnippets(w: WindowState, screen: Iterable<WindowState>, goal: string, t: Target, cands: readonly { node: Node }[], sourced: readonly SourcedValue[] = []): Declared | null {
+export function targetSnippets(w: WindowState, screen: Iterable<WindowState>, goal: string, t: Target, cands: readonly { node: Node }[], sourced: readonly SourcedValue[] = []): TargetText | null {
   w = redactWindow(w);
-  const ledger = new Disclosure(screen);
+  const d = new Disclosure(screen);
   const sent = [cut(goal), cut(t.describe)];
   for (const v of sourced) {
     const shown = sent.map((s) => quotedPart(s, v.text)).filter((p): p is string => p !== null);
     if (shown.length === 0) continue;
     // A value whose window is not known cannot be held to that window's budget, so it is not sent.
-    if (v.window === undefined || !ledger.take(v.window, "candidate", shown)) return null;
+    if (v.window === undefined || !d.take(v.window, "candidate", shown)) return null;
   }
-  if (!ledger.plan(sent)) return null;
-  if (!ledger.take(w, "descriptor", [w.window.title])) return null;
+  const goalText = d.planText(sent[0] as string);
+  const what = d.planText(sent[1] as string);
+  if (goalText === null || what === null) return null;
+  const title = d.descriptor(w, w.window.title);
+  if (title === null) return null;
+  const elements = new Map<string, ModelText>();
   for (const c of cands) {
     const e = elementTexts(w, c.node);
-    if (!ledger.take(w, "candidate", [e.label, e.value, e.inside, e.placeholder])) return null;
+    if (!d.take(w, "candidate", [e.label, e.value, e.inside, e.placeholder])) return null;
+    const m = mintElement(d, w, c.node, e);
+    if (m === null) return null;
+    elements.set(c.node.key, m);
   }
-  return ledger.declared();
+  return { d, goal: goalText, what, title, elements };
+}
+
+/** A target question's text, minted by one Disclosure: the plan's goal and target, the window's title, each element. */
+export interface TargetText {
+  d: Disclosure;
+  goal: ModelText;
+  what: ModelText;
+  title: ModelText;
+  /** Each candidate's line, by node key: its label, role, value, the named container it sits in, and its placeholder. */
+  elements: ReadonlyMap<string, ModelText>;
+}
+
+/** One candidate element's line, minted from the redacted view: the role in the reader's words, each text as the view shows it. */
+function mintElement(d: Disclosure, w: WindowState, n: Node, t: ReturnType<typeof elementTexts>): ModelText | null {
+  const facts: ModelText[] = [d.id(n.role.replace(/^AX/, ""))];
+  const value = t.value === null ? null : d.candidate(w, t.value);
+  const inside = t.inside === null ? null : d.descriptor(w, t.inside);
+  const placeholder = t.placeholder === null ? null : d.descriptor(w, t.placeholder);
+  const label = t.label === null ? null : d.descriptor(w, t.label);
+  if ((t.value !== null && value === null) || (t.inside !== null && inside === null) || (t.placeholder !== null && placeholder === null) || (t.label !== null && label === null)) return null;
+  if (n.editable === true) facts.push(value === null ? d.own("empty") : d.t`holds '${value}'`);
+  if (inside !== null) facts.push(d.t`inside '${inside}'`);
+  if (placeholder !== null) facts.push(d.t`placeholder '${placeholder}'`);
+  return d.t`${label === null ? d.own("(no label)") : d.t`'${label}'`} (${d.join(facts, "; ")})`;
 }
 
 function clip(s: string): string {
@@ -159,22 +179,26 @@ function clip(s: string): string {
 }
 
 const WORDINGS = [
-  (goal: string, what: string) => `Goal: ${goal} Which element is ${what}? Choose none if no element is.`,
-  (goal: string, what: string) => `To reach this end state: ${goal} the executor must act on ${what}. Pick that element, or none if it is not listed.`,
+  (d: Disclosure, goal: ModelText, what: ModelText) => d.t`Goal: ${goal} Which element is ${what}? Choose none if no element is.`,
+  (d: Disclosure, goal: ModelText, what: ModelText) => d.t`To reach this end state: ${goal} the executor must act on ${what}. Pick that element, or none if it is not listed.`,
 ] as const;
 
-export function buildTargetRequest(w: WindowState, goal: string, t: Target, cands: { id: string; node: Node }[], wording: 0 | 1, declared: Declared = { snippets: [], charged: {} }): JevRequest {
+export function buildTargetRequest(w: WindowState, text: TargetText, cands: { id: string; node: Node }[], wording: 0 | 1): JevRequest {
   w = redactWindow(w);
-  const criteria: Record<string, string> = {};
-  for (const c of cands) criteria[c.id] = describeElement(w, c.node);
-  criteria[NONE] = "None of these elements.";
-  return new Disclosure([]).legacy({
+  const d = text.d;
+  const criteria: Record<string, ModelText> = {};
+  for (const c of cands) {
+    const e = text.elements.get(c.node.key);
+    if (e === undefined) throw new Error(`target question: element ${c.node.key} was not minted`);
+    criteria[c.id] = e;
+  }
+  criteria[NONE] = d.own("None of these elements.");
+  return d.seal({
     purpose: "executor.target",
-    state: { window: `${w.app.name} window '${w.window.title}'`, task: "Choose the element an automated step should act on." },
+    state: { window: d.t`${d.app(w)} window '${text.title}'`, task: d.own("Choose the element an automated step should act on.") },
     // The goal and target are plan text, which can quote a value copied from any window: each goes out cut to SNIPPET_CHARS.
-    questions: { target: { type: "choice", instructions: WORDINGS[wording](cut(goal), cut(t.describe)), criteria } },
-    snippets: declared.snippets,
-    charged: declared.charged,
+    questions: { target: { type: "choice", instructions: WORDINGS[wording](d, text.goal, text.what), criteria } },
+    ...d.declared(),
   });
 }
 
@@ -195,10 +219,10 @@ export async function resolveTarget(
   if (askJev === null) return { ok: false, reason: `${local.ambiguous.length} elements match and Jev is off`, jev: null };
 
   const first = local.ambiguous.map((node, i) => ({ id: `e${i + 1}`, node }));
-  const declared = targetSnippets(w, screen, goal, t, first, sourced);
-  if (declared === null) return { ok: false, reason: `${first.length} elements match, and asking would take more of a window than one question may`, jev: null };
+  const text = targetSnippets(w, screen, goal, t, first, sourced);
+  if (text === null) return { ok: false, reason: `${first.length} elements match, and asking would take more of a window than one question may`, jev: null };
   const second = shuffled(first, rand).map((c, i) => ({ id: `k${i + 1}`, node: c.node }));
-  const [r1, r2] = await Promise.all([askJev(buildTargetRequest(w, goal, t, first, 0, declared)), askJev(buildTargetRequest(w, goal, t, second, 1, declared))]);
+  const [r1, r2] = await Promise.all([askJev(buildTargetRequest(w, text, first, 0)), askJev(buildTargetRequest(w, text, second, 1))]);
   const pick = (r: typeof r1, list: typeof first): { key: string | null; confidence: number } => {
     const a = r.answers.target;
     if (a === undefined) throw new Error("Jev returned no answer for the target question");

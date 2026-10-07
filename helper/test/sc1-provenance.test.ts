@@ -38,6 +38,7 @@ import { freeze } from "../src/routing/routes.ts";
 import { contextNow } from "../src/routing/context.ts";
 import { buildLookRequest, buildPendingRequest } from "../src/tasks/pending.ts";
 import { Disclosure } from "../src/privacy/disclosure.ts";
+import { redactWindow } from "../src/fill/redact.ts";
 import { buildDesk, loadCorpus } from "../scripts/realfill-corpus.ts";
 import { MAIL_APP, field, node, snap, text, value } from "./builders.ts";
 import { executorWindow, TITLE as EXEC_TITLE, WIN as EXEC_WIN } from "./fake-app.ts";
@@ -194,9 +195,15 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     expect(ctx).not.toBeNull();
     const base = { kind: "workflow" as const, relevance: 1, run: () => {} };
     const reg = freeze(1, [
-      { ...base, id: "event", says: `Add "${sentence}" to the calendar`, plain: "Add an event", quotes: [{ window: w, kind: "candidate" as const, texts: [sentence] }], evidence: { task: "Add an event", sentence, found: "A time", offerWhen: "An upcoming meeting" } },
-      { ...base, id: "a", says: "Fill the form", plain: "Fill the form", quotes: [] },
-      { ...base, id: "b", says: "Fill the other form", plain: "Fill the other form", quotes: [] },
+      {
+        ...base, id: "event", says: `Add "${sentence}" to the calendar`, plain: "Add an event", quotes: [{ window: w, kind: "candidate" as const, texts: [sentence] }], evidence: { task: "Add an event", sentence, found: "A time", offerWhen: "An upcoming meeting" },
+        say: (d) => {
+          const s = d.candidate(redactWindow(w), sentence);
+          return { says: s === null ? null : d.t`Add "${s}" to the calendar`, plain: d.own("Add an event"), offer: s === null ? null : { task: d.own("Add an event"), sentence: s, found: d.own("A time"), offerWhen: d.own("An upcoming meeting") } };
+        },
+      },
+      { ...base, id: "a", says: "Fill the form", plain: "Fill the form", quotes: [], say: (d) => ({ says: d.own("Fill the form"), plain: d.own("Fill the form") }) },
+      { ...base, id: "b", says: "Fill the other form", plain: "Fill the other form", quotes: [], say: (d) => ({ says: d.own("Fill the other form"), plain: d.own("Fill the other form") }) },
     ], new Set());
     const built = router1Request(model, ctx!, ["abstain", "write", "act"], reg);
     if (built.outcome !== null) await swallow(ask(built.outcome.request));
@@ -235,7 +242,9 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     t.apply(notesWindow(500) as Snapshot);
     t.apply(snap([...city("Shipping"), ...city("Billing")], { at: 1000, windowId: "5150-9", title: "Addresses" }));
     await swallow(resolveTarget(t.windows.get("5150-9") as WindowState, t.windows.values(), { role: "AXTextField", label: "City", describe: "the City field" }, "The shipping City field holds Austin", ask));
-    await swallow(jevChooser(ask, "sign me up")({ window: "win:form", question: { ref: "q", text: "Which session time does the email confirm?" }, options: [{ ref: "o1", label: "Tue Oct 20, 3:00 PM" }, { ref: "o2", label: "Wed Oct 21, 10:00 AM" }], signal: new AbortController().signal }));
+    const snaps = new Disclosure([]);
+    for (const x of ["Which session time does the email confirm?", "Tue Oct 20, 3:00 PM", "Wed Oct 21, 10:00 AM"]) snaps.own(x as never);
+    await swallow(jevChooser(ask, "sign me up", snaps)({ window: "win:form", question: { ref: "q", text: "Which session time does the email confirm?" }, options: [{ ref: "o1", label: "Tue Oct 20, 3:00 PM" }, { ref: "o2", label: "Wed Oct 21, 10:00 AM" }], signal: new AbortController().signal }));
     await swallow(confirmClaims("draft a reply that accepts", [{ text: "Hi Priya, I'm in! See you then.", basis: { instruction: "reply to Priya Raman", windows: [], memory: [] } as never }], ask, []));
   });
 
