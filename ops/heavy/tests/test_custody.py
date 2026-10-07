@@ -375,6 +375,89 @@ class OwnerSurvivesCleanupFailures(unittest.TestCase):
         self.assertEqual(owner.fds, {"slot": 99})
 
 
+class WireDescriptorsAndDeadlines(unittest.TestCase):
+    """Received descriptors are owned by the connection and closed on every failure path; framing never blocks the
+    owner; the supervisor's side has an I/O deadline."""
+
+    def owner(self):
+        import tempfile
+        d = tempfile.mkdtemp(prefix="caret-wire-")
+        self.addCleanup(subprocess.run, ["rm", "-rf", d])
+        owner = recovery.Owner.__new__(recovery.Owner)
+        owner.journal = recovery.Journal(os.path.join(d, "journal.ndjson"))
+        owner.supervisor, owner.watches, owner.clients, owner.fds = None, {}, {}, {}
+        owner.plan, owner.paths = {"job_id": "caret-x", "test": {}}, {}
+        return owner
+
+    def copies(self, target):
+        """How many of this process's descriptors refer to *target*'s file."""
+        want = os.fstat(target)
+        n = 0
+        for name in os.listdir("/dev/fd"):
+            try:
+                st = os.fstat(int(name))
+            except OSError:
+                continue
+            n += (st.st_dev, st.st_ino) == (want.st_dev, want.st_ino)
+        return n
+
+    def serve(self, owner, payload, fds=(), close=False):
+        import socket
+        a, b = socket.socketpair()
+        self.addCleanup(a.close)
+        owner.clients[b] = recovery.Conn(b)
+        if fds:
+            socket.send_fds(a, [payload], list(fds))
+        else:
+            a.sendall(payload)
+        if close:
+            a.shutdown(socket.SHUT_WR)
+        before = time.monotonic()
+        owner._serve(b)
+        self.assertLess(time.monotonic() - before, 1.0)  # never waits for the rest of a frame
+        return a, b
+
+    def test_rejected_frames_close_every_received_descriptor(self):
+        import tempfile
+        owner = self.owner()
+        f = tempfile.TemporaryFile()
+        self.addCleanup(f.close)
+        for payload, close in ((b"not json\n", False), (b'{"op": "sta', True), (b'{"op": "status"}\n', False)):
+            with self.subTest(payload):
+                a, b = self.serve(owner, payload, fds=[f.fileno()], close=close)
+                if close:
+                    self.assertEqual(self.copies(f.fileno()), 2)  # an unfinished frame holds it until its end...
+                    owner._serve(b)  # ...which the owner's loop reads next
+                    self.assertNotIn(b, owner.clients)
+                self.assertEqual(self.copies(f.fileno()), 1)  # only the test's own: the received copy was closed
+                if b in owner.clients:
+                    owner.clients.pop(b).discard()
+                b.close()
+
+    def test_a_partial_frame_waits_for_more_without_blocking(self):
+        owner = self.owner()
+        a, b = self.serve(owner, b'{"op": "sta')
+        self.assertIn(b, owner.clients)  # kept, still waiting for the rest
+        a.sendall(b'tus"}\n')
+        owner._serve(b)
+        reply = recovery.Reader(a).read()[0]
+        self.assertEqual(reply["ok"], False)  # status from a stranger is refused, but it was parsed and answered
+        b.close()
+
+    def test_a_stalled_owner_times_the_supervisor_out(self):
+        import socket
+        a, b = socket.socketpair()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        c = recovery.Custody.__new__(recovery.Custody)
+        c.io_timeout = 1.0
+        c._attach(a)
+        started = time.monotonic()
+        with self.assertRaises(OSError):
+            c._exchange({"op": "status"})  # b never answers
+        self.assertLess(time.monotonic() - started, 5)
+
+
 class AdoptionIsAllOrNothing(unittest.TestCase):
     def test_a_refused_descriptor_leaves_none_of_the_others_kept(self):
         import fcntl

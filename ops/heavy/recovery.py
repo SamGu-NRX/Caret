@@ -123,6 +123,65 @@ class Reader:
         return json.loads(line), fds
 
 
+def close_all(fds):
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+class Conn:
+    """The owner's side of one connection: non-blocking, bounded, and the owner of every descriptor it receives.
+
+    Descriptors arrive with the first byte of the message that carries them (one sendmsg per message) and belong to
+    the first complete message in the buffer. Whatever a message does not claim, and everything on a malformed,
+    oversized, truncated or unfinished frame, is closed.
+    """
+
+    MAX_FRAME = 65536
+
+    def __init__(self, sock):
+        sock.setblocking(False)
+        self.sock, self.buf, self.fds = sock, b"", []
+
+    def pump(self):
+        """Complete messages now readable, as [(message or None if malformed, descriptors)]. Raises EOFError at end
+        of file and ValueError on a frame that cannot be accepted; both after closing every held descriptor."""
+        try:
+            data, fds, flags, _addr = socket.recv_fds(self.sock, self.MAX_FRAME, 8)
+        except BlockingIOError:
+            return []
+        self.fds += fds
+        if flags & getattr(socket, "MSG_CTRUNC", 0):
+            self.discard()
+            raise ValueError("truncated descriptor data")
+        if not data:
+            self.discard()
+            raise EOFError("connection closed")
+        self.buf += data
+        if len(self.buf) > self.MAX_FRAME:
+            self.discard()
+            raise ValueError("frame too long")
+        out = []
+        while b"\n" in self.buf:
+            line, self.buf = self.buf.split(b"\n", 1)
+            fds, self.fds = self.fds, []
+            try:
+                msg = json.loads(line)
+                if not isinstance(msg, dict):
+                    raise ValueError("not an object")
+            except ValueError:
+                close_all(fds)
+                msg, fds = None, []
+            out.append((msg, fds))
+        return out
+
+    def discard(self):
+        close_all(self.fds)
+        self.fds = []
+
+
 def peer(sock):
     """(uid, pid) of the process at the other end of a local socket, from the kernel."""
     pid = struct.unpack("i", sock.getsockopt(SOL_LOCAL, LOCAL_PEERPID, 4))[0]
@@ -348,7 +407,7 @@ class Owner:
                 for sock in readable:
                     if sock is listener:
                         conn, _ = listener.accept()
-                        self.clients[conn] = Reader(conn)
+                        self.clients[conn] = Conn(conn)
                     else:
                         self._serve(sock)
                 self._tick()
@@ -377,26 +436,36 @@ class Owner:
     # Requests
 
     def _serve(self, sock):
+        conn = self.clients[sock]
         try:
-            got = self.clients[sock].read()
-        except (OSError, ValueError) as ex:
-            got = None
-            self.log("dropped a connection: {!r}".format(ex))
-        if got is None:
+            messages = conn.pump()
+        except (OSError, ValueError, EOFError) as ex:
+            if not isinstance(ex, EOFError):
+                self.log("dropped a connection: {!r}".format(ex))
+            conn.discard()
             del self.clients[sock]
             sock.close()
             return
-        msg, fds = got
-        try:
-            reply = self._handle(sock, msg, fds)
-        except (ValueError, KeyError, TypeError, OSError, procs.Refusal) as ex:
-            for fd in fds:
-                os.close(fd)
-            reply = {"ok": False, "error": str(ex)[:500]}
-        try:
-            send(sock, reply)
-        except OSError:
-            pass
+        for msg, fds in messages:
+            claimed = []
+            try:
+                if msg is None:
+                    raise ValueError("malformed message")
+                if fds and msg.get("op") not in ("adopt", "lock"):
+                    raise ValueError("{} takes no descriptors".format(msg.get("op")))
+                reply = self._handle(sock, msg, fds)
+                claimed = fds
+            except (ValueError, KeyError, TypeError, OSError, procs.Refusal) as ex:
+                reply = {"ok": False, "error": str(ex)[:500]}
+            close_all([fd for fd in fds if fd not in claimed])
+            try:
+                sock.setblocking(True)
+                sock.settimeout(5)
+                send(sock, reply)
+            except OSError:
+                pass
+            finally:
+                sock.setblocking(False)
 
     def _from_supervisor(self, sock):
         uid, pid = peer(sock)
@@ -629,6 +698,7 @@ class Custody:
         self.sock_dir = tempfile.mkdtemp(prefix="chr.", dir="/tmp")
         self.sock_path = os.path.join(self.sock_dir, "s")
         self.sock = self.reader = None
+        self.io_timeout = 10.0  # a stalled owner is UNKNOWN, never a hang of the supervisor's watch
         self.locks = {}  # name -> fd, resent on every adoption
         self.me = identity(probes, os.getpid())
 
@@ -673,7 +743,7 @@ class Custody:
                 if uid != os.getuid() or pid != self._agent_pid():
                     sock.close()
                     raise CustodyError("the socket's peer {} is not the {} agent".format(pid, self.label))
-                self.sock, self.reader = sock, Reader(sock)
+                self._attach(sock)
                 names = sorted(self.locks)
                 reply = self._exchange({"op": "adopt", "attempt": self.attempt, "token": self.token,
                                         "supervisor": self.me, "locks": names}, [self.locks[n] for n in names])
@@ -685,6 +755,10 @@ class Custody:
                 self.sock = self.reader = None
                 time.sleep(0.2)
         raise CustodyError("no adoption by {} within {} s: {!r}".format(self.label, deadline, last))
+
+    def _attach(self, sock):
+        sock.settimeout(self.io_timeout)
+        self.sock, self.reader = sock, Reader(sock)
 
     def _exchange(self, msg, fds=()):
         send(self.sock, msg, fds)
