@@ -10,7 +10,8 @@ import { PAGE_SUBROLE, PROTOCOL_VERSION, type FillField, type FillMemory, type F
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
-import { labelledLines, lineGives } from "../fill/candidates.ts";
+import { labelledLines, lineGives, lineSpans } from "../fill/candidates.ts";
+import { bareLine, LABELLED } from "../fill/line-values.ts";
 import { splitAddress, splitPlace } from "../fill/derive.ts";
 import { conversionOf, describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
@@ -215,11 +216,19 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
 function derivesSpan(line: string, span: string): boolean {
   // C1: a span, typed value or date part fill's generator reads in the line (fill/candidates.ts lineGives).
   if (lineGives(line, span)) return true;
+  // G2: fill splits a part from a candidate, and on an unlabelled line a candidate can be a span the line bounds
+  // (fill/line-values.ts lineTexts: "Portland, Maine" in "I live in Portland, Maine, not Oregon."), so the part is made
+  // again from each of the line's spans as well as from the whole line. Reading only the whole line refused Greenhouse's
+  // derived 'Location (City)' "Portland" on every segment of LV1's pass 1, before School and the education end date
+  // were written (test/g2-whose.test.ts). A labelled line still passes nothing here: sourceHolds checks it by its label.
   const t = line.trim();
-  const place = splitPlace(t);
-  if (place !== null && (place.city === span || place.state === span || place.country === span)) return true;
-  const address = splitAddress(t);
-  return address !== null && Object.values(address).includes(span);
+  const wholes = LABELLED.exec(bareLine(line)) === null ? [t, ...lineSpans(line).map((s) => s.text)] : [t];
+  return wholes.some((x) => {
+    const place = splitPlace(x);
+    if (place !== null && (place.city === span || place.state === span || place.country === span)) return true;
+    const address = splitAddress(x);
+    return address !== null && Object.values(address).includes(span);
+  });
 }
 
 /**
