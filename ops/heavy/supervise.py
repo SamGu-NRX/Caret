@@ -42,6 +42,7 @@ import json
 import os
 import pwd
 import secrets
+import shutil
 import signal
 import subprocess
 import sys
@@ -184,25 +185,72 @@ def relay(plan_path, plan_digest, plan):
 # lease ID cannot make another run's lease cleanup-required.
 QUEUE_LEASE_RUN = "heavy-job-queue"
 
-def vm_admission(lr_lease, profile, owner_pid, env=None):
-    """None when lr-lease would grant a vm lease of the profile's estimates now, else why not. lr-lease answers, not a
-    floor of ours: it takes that lease and releases it at once, so its whole vm decision applies (lease-policy.json's
-    vm floor, the estimates charged to disk under normal pressure, pressure, count, quiet). rig-run takes the real vm
-    lease right after, and waits for it if the machine changed in between."""
-    est = [str(profile["est_mem_gib"]), str(profile["est_disk_gib"])]
-    got = subprocess.run([lr_lease, "acquire", "--run", "caret-vm-admission", "--kind", "vm", "--est-mem", est[0],
-                          "--est-disk", est[1], "--ttl", "1", "--owner-pid", str(owner_pid)], stdin=subprocess.DEVNULL,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env, timeout=60)
-    if got.returncode != 0:
-        return "lr-lease would not grant vm ({} + {} GiB): {}".format(est[0], est[1], got.stdout.strip()[:300])
-    lease_id = got.stdout.strip()
-    for _ in range(3):
-        done = subprocess.run([lr_lease, "release", lease_id], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, env=env, timeout=60)
-        if done.returncode == 0:
-            return None
-    # Held by this live supervisor, it would keep rig-run's own vm lease out (count 1): never admit with it held.
-    return "the vm admission lease {} could not be released: {}".format(lease_id, done.stdout.strip()[:300])
+# lr-lease's own vm decision, read-only: no lease is taken. It runs the lr-lease-core.mjs beside the lr-lease the plan
+# names, with the readers, policy, leases, snapshot and decision() its `status` uses, for kind vm and the profile's
+# estimates. The only leases left out are those rig-run's own `lr-reap --run rig` removes before it asks: run "rig",
+# not quarantined, not cleanup-required, owner dead or its pid reused, by reap()'s own test, which lr-lease-core does
+# not export, so it is mirrored here and the source is checked to still say it. Any missing export, other arity or
+# changed test fails loudly (exit 3), and the caller treats that as "admission unknown".
+VM_CHECK_JS = r"""
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [core, root, mem, disk] = process.argv.slice(1);
+const fail = (why) => { console.log(JSON.stringify({ error: why })); process.exit(3); };
+const m = await import(pathToFileURL(core).href);
+const arity = { machineReaders: 1, readPolicy: 1, readLeases: 1, snapshot: 1, decision: 6 };
+for (const [name, n] of Object.entries(arity)) {
+  if (typeof m[name] !== 'function' || m[name].length !== n) fail(`lr-lease-core.mjs: ${name} is not a function of ${n} arguments`);
+}
+const src = readFileSync(core, 'utf8');
+const tolerance = /^const START_TOLERANCE_MS = (\d+);$/m.exec(src);
+const reapTest = ["if (!readers.pidAlive(lease.ownerPid)) reason = 'owner dead';",
+  "if (started !== null && started > lease.createdAt + START_TOLERANCE_MS) reason = 'owner pid reused';",
+  "if (run !== undefined && lease.run !== run) continue;", "if (lease.state === 'quarantined') continue;",
+  "if (reason && lease.cleanupRequired) {"];
+if (!tolerance || !reapTest.every((line) => src.includes(line))) fail("lr-lease-core.mjs: reap's owner test is not the one this check mirrors");
+const readers = m.machineReaders(root);
+if (typeof readers.pidAlive !== 'function' || typeof readers.pidStartedAt !== 'function') fail('lr-lease-core.mjs: readers lack pidAlive or pidStartedAt');
+const policy = m.readPolicy(path.join(root, 'lease-policy.json'));
+const leases = m.readLeases(path.join(root, 'leases'));
+const readings = m.snapshot(readers);
+const reapedFirst = (l) => {
+  if (l.run !== 'rig' || l.state === 'quarantined' || l.cleanupRequired) return false;
+  if (!readers.pidAlive(l.ownerPid)) return true;
+  const started = readers.pidStartedAt(l.ownerPid);
+  return started !== null && started > l.createdAt + Number(tolerance[1]);
+};
+const excluded = leases.filter(reapedFirst).map((l) => l.id);
+const reason = m.decision('vm', Number(mem), Number(disk), leases.filter((l) => !excluded.includes(l.id)), policy, readings);
+console.log(JSON.stringify({ grant: !reason, reason: reason || null, excluded }));
+"""
+
+
+def vm_check(lr_lease, profile, env=None, timeout=60):
+    """None when lr-lease's vm decision would grant the profile's estimates now, else why not, without taking any
+    lease (VM_CHECK_JS). A timeout or any failure is an explicit "admission unknown" refusal, never an exception."""
+    env = dict(os.environ if env is None else env)
+    node = shutil.which("node", path=env.get("PATH", "") + ":/opt/homebrew/bin:/usr/local/bin")
+    core = os.path.join(os.path.dirname(lr_lease), "lr-lease-core.mjs")
+    root = os.path.join(env.get("HOME", os.path.expanduser("~")), ".long-run")
+    if node is None:
+        return "admission unknown: no node to run lr-lease's vm decision"
+    try:
+        got = subprocess.run([node, "--input-type=module", "-e", VM_CHECK_JS, core, root, str(profile["est_mem_gib"]),
+                              str(profile["est_disk_gib"])], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, env=env, timeout=timeout)
+        answer = json.loads(got.stdout.strip().splitlines()[-1]) if got.stdout.strip() else {}
+    except subprocess.TimeoutExpired:
+        return "admission unknown: lr-lease's vm decision did not answer within {} s".format(timeout)
+    except (OSError, ValueError) as ex:
+        return "admission unknown: lr-lease's vm decision failed: {!r}".format(ex)
+    if got.returncode != 0 or "grant" not in answer:
+        return "admission unknown: lr-lease's vm decision exited {}: {}".format(
+            got.returncode, answer.get("error") or got.stdout.strip()[-300:])
+    if answer["grant"]:
+        return None
+    return "lr-lease would not grant vm ({} + {} GiB): {}".format(profile["est_mem_gib"], profile["est_disk_gib"],
+                                                                answer["reason"])
 
 
 # outcome.json's "cleanup" when the supervisor left before the cleanup was confirmed; also sent to the relay.
@@ -444,15 +492,35 @@ class Supervisor:
 
     # Admission under the lease
 
+    def _admission_lost(self):
+        """Why a just-made admission no longer holds (HOLD, cancellation, the runner's death), or None. Checked after the
+        admission checks and again immediately before the workload is released."""
+        if os.path.lexists(self.paths["hold"]):
+            return "HOLD {} appeared".format(self.paths["hold"])
+        if self.cancel.is_set():
+            return "cancelled: {}".format(self.cancel_reason)
+        if self._runner_gone():
+            return "the queue runner {} died".format(self.runner)
+        return None
+
     def _admit(self):
         deadline = time.monotonic() + self.profile["lease_wait_s"]
         delay, last = 2.0, None
         while True:
             if self.cancel.is_set():
                 return self.cancel_code, "cancelled before start: {}".format(self.cancel_reason)
+            if self._runner_gone():
+                return EXIT_CANCELLED, "the queue runner {} died before admission".format(self.runner)
             why = self._try_admit()
+            if why is None and self.profile["lease_wait_s"] > 0 and time.monotonic() > deadline:
+                self._release()
+                why = "admitted only after the lease wait of {:.0f} s ran out".format(self.profile["lease_wait_s"])
             if why is None:
                 return True
+            if self.cancel.is_set():
+                return self.cancel_code, "cancelled before start: {}".format(self.cancel_reason)
+            if self._runner_gone():
+                return EXIT_CANCELLED, "the queue runner {} died during admission".format(self.runner)
             if why != last:
                 self.log("waiting: {}".format(why))
                 last = why
@@ -505,7 +573,9 @@ class Supervisor:
         if problem is None and os.path.lexists(self.paths["hold"]):
             problem = "HOLD {} exists".format(self.paths["hold"])
         if problem is None and self.profile.get("admit_kind") == "vm":
-            problem = vm_admission(self.paths["lr_lease"], self.profile, self.pid)
+            problem = vm_check(self.paths["lr_lease"], self.profile)
+        if problem is None:
+            problem = self._admission_lost()
         if problem:
             self._release()
             return problem
@@ -701,6 +771,10 @@ class Supervisor:
                 self.custody.must({"op": "register", "resource": {"id": "launchd-prefix", "type": "launchd-prefix",
                                                                   "prefix": self.launchd_prefix}})
                 recovery.test_point(self.plan, "supervisor:after-register")
+                lost = self._admission_lost()
+                if lost is not None and not self.cancel.is_set():
+                    # Denied for good; the watch loop stops what was started (only the held trampoline).
+                    self._request_cancel("not released: " + lost, EXIT_CANCELLED if "runner" in lost else EXIT_NOT_ADMITTED)
                 if not self.cancel.is_set():
                     os.write(go_w, b"G")
                     released = True

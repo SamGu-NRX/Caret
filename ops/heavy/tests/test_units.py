@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HEAVY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HEAVY)
@@ -600,7 +601,8 @@ class ProfileAndEnqueueTest(Temp):
                 head = argv[:argv.index("--")]
                 self.assertNotIn("--unpinned", argv)
                 self.assertEqual(head[head.index("--wait-absent") + 1], os.path.expanduser("~/.caret-run/HOLD"))
-                self.assertEqual(head[head.index("--min-free-gib") + 1], str(prof.floor_gib))
+                want = caret_heavy._plain(plan["admission"]["queue_min_free_gib"]) if name == "caret-vm" else str(prof.floor_gib)
+                self.assertEqual(head[head.index("--min-free-gib") + 1], want)
                 if name == "caret-swift":
                     self.assertEqual((head[head.index("--est-mem-gib") + 1], head[head.index("--est-disk-gib") + 1]),
                                      ("6", "2"))
@@ -855,10 +857,13 @@ class NodeDistTest(KeytypeWorld):
             caret_heavy.RECIPES["r2-prepare"].plan_args(args, main, rev, paths)
 
 
+
 class VmAdmissionTest(Temp):
-    """A caret-vm job is admitted exactly when lr-lease would grant a vm lease of rig-run's estimates (6 + 2 GiB), and
-    waits exactly when it would refuse one. The stub lr-lease is lr-lease-core.mjs's own decision on the real
-    lease-policy.json, with a fixed free-disk reading, so the threshold is lr-lease's, not this test's."""
+    """caret-vm admission (coordinator, 2026-10-07): the queue waits at a floor derived from lease-policy.json (vm floor
+    + rig-run's 6 + 2), before heavy exclusion; under the lock the supervisor makes one read-only check, lr-lease-core's
+    own decision() for vm 6/2, with no lease, ignoring only leases `lr-reap --run rig` would remove first. A refusal
+    ends the job with 75; HOLD, cancellation, the runner and the deadline are rechecked after it and before release.
+    The stub core is the real lr-lease-core.mjs with machineReaders reading a fixed free disk."""
 
     POLICY = os.path.expanduser("~/.long-run/lease-policy.json")
     CORE = os.path.expanduser("~/.long-run/bin/lr-lease-core.mjs")
@@ -866,23 +871,21 @@ class VmAdmissionTest(Temp):
     def setUp(self):
         super().setUp()
         self.home = os.path.join(self.root, "home")
+        self.bin = os.path.join(self.home, ".long-run/bin")
+        os.makedirs(self.bin)
         os.makedirs(os.path.join(self.home, ".long-run/leases"))
         shutil.copy2(self.POLICY, os.path.join(self.home, ".long-run/lease-policy.json"))
-        self.write("home/.long-run/shim.mjs", """import path from 'node:path';
-import { acquire, release, readLeases, readPolicy, machineReaders } from '%s';
-const root = path.join(process.env.HOME, '.long-run'), dir = path.join(root, 'leases');
-const readers = { ...machineReaders(root), diskGB: () => Number(process.env.STUB_FREE_GIB), swapGB: () => 1000,
-  pressure: () => 'normal', quietUntil: () => 0 };
-const [verb, ...rest] = process.argv.slice(2);
-const opt = (n) => rest[rest.indexOf(n) + 1];
-if (verb === 'release') { release(dir, rest[0]); process.exit(0); }
-if (verb === 'status') { const l = readLeases(dir); console.log('Readings (stub)'); console.log('Leases: ' + l.length); for (const x of l) console.log(JSON.stringify(x)); process.exit(0); }
-const r = acquire(dir, readPolicy(path.join(root, 'lease-policy.json')), readers, { run: opt('--run'), kind: opt('--kind'),
-  estMemGB: Number(opt('--est-mem')), estDiskGB: Number(opt('--est-disk')), ttlMinutes: Number(opt('--ttl')), ownerPid: Number(opt('--owner-pid')) });
-if (r.reason) { console.log('refused: ' + r.reason); process.exit(75); }
-console.log(r.lease.id);
-""" % self.CORE)
-        self.lr_lease = self.write("home/.long-run/lr-lease", '#!/bin/sh\nexec node "$HOME/.long-run/shim.mjs" "$@"\n')
+        with open(self.CORE) as fh:
+            core = fh.read()
+        self.assertEqual(core.count("export function machineReaders(root) {"), 1)
+        core = core.replace("export function machineReaders(root) {", "function realMachineReaders(root) {")
+        core += ("\nexport function machineReaders(root) {\n  return { ...realMachineReaders(root), "
+                 "diskGB: () => Number(process.env.STUB_FREE_GIB), swapGB: () => 1000, pressure: () => 'normal', "
+                 "quietUntil: () => 0 };\n}\n")
+        self.write("home/.long-run/bin/lr-lease-core.mjs", core)
+        # lr-lease itself is never run by the check: this one records any call.
+        self.calls = os.path.join(self.root, "lr-lease-calls")
+        self.lr_lease = self.write("home/.long-run/bin/lr-lease", "#!/bin/sh\necho \"$*\" >> {}\nexit 1\n".format(self.calls))
         os.chmod(self.lr_lease, 0o755)
         with open(self.POLICY) as fh:
             vm = json.load(fh)["kinds"]["vm"]
@@ -890,32 +893,76 @@ console.log(r.lease.id);
         # lr-lease charges the estimates against free disk on top of the vm floor under normal pressure.
         self.threshold = vm["diskFloorGB"] + prof.est_mem_gib + prof.est_disk_gib
 
-    def admission(self, free_gib):
-        env = dict(os.environ, HOME=self.home, STUB_FREE_GIB=str(free_gib))
+    def check(self, free_gib, timeout=60):
         import supervise
-        return supervise.vm_admission(self.lr_lease, caret_heavy.dataclasses.asdict(caret_heavy.PROFILES["caret-vm"]),
-                                      os.getpid(), env=env)
+        env = dict(os.environ, HOME=self.home, STUB_FREE_GIB=str(free_gib))
+        return supervise.vm_check(self.lr_lease, caret_heavy.dataclasses.asdict(caret_heavy.PROFILES["caret-vm"]),
+                                  env=env, timeout=timeout)
 
     def leases(self):
-        return [n for n in os.listdir(os.path.join(self.home, ".long-run/leases")) if n.endswith(".json")]
+        return sorted(n for n in os.listdir(os.path.join(self.home, ".long-run/leases")) if n.endswith(".json"))
 
-    def test_admitted_exactly_when_lr_lease_grants_vm(self):
+    def lease(self, run, owner, cleanup=False):
+        import uuid
+        lid = str(uuid.uuid4())
+        now = int(time.time() * 1000)
+        record = {"id": lid, "kind": "vm", "run": run, "ownerPid": owner, "estMemGB": 6, "estDiskGB": 2,
+                  "createdAt": now, "expiresAt": now + 600000}  # after its owner started: not a reused pid
+        if cleanup:
+            record.update(cleanupRequired=True, attempt="attempt-1", tokenSha256="a" * 64)
+        self.write("home/.long-run/leases/{}.json".format(lid), json.dumps(record))
+        return lid
+
+    def dead_pid(self):
+        child = subprocess.Popen(["/usr/bin/true"])
+        child.wait()
+        return child.pid
+
+    def test_admitted_iff_lr_leases_read_only_decision_grants_and_no_lease_is_made(self):
         self.assertLessEqual(self.threshold, 12.9)
-        self.assertIsNone(self.admission(12.9))
-        self.assertIsNone(self.admission(self.threshold))
-        self.assertEqual(self.leases(), [])  # the question leaves no lease behind
-        refused = self.admission(self.threshold - 0.05)
+        self.assertIsNone(self.check(12.9))
+        self.assertIsNone(self.check(self.threshold))
+        refused = self.check(self.threshold - 0.05)
         self.assertIn("lr-lease would not grant vm", refused)
         self.assertEqual(self.leases(), [])
+        self.assertFalse(os.path.exists(self.calls))  # lr-lease never ran: nothing acquired, nothing to release
 
-    def test_a_vm_lease_held_elsewhere_refuses_too(self):
-        env = dict(os.environ, HOME=self.home, STUB_FREE_GIB="100")
-        held = subprocess.run([self.lr_lease, "acquire", "--run", "rig", "--kind", "vm", "--est-mem", "6", "--est-disk", "2",
-                               "--ttl", "5", "--owner-pid", str(os.getpid())], env=env, capture_output=True, text=True, check=True)
-        self.assertIn("count limit", self.admission(100))
-        self.assertEqual(self.leases(), [held.stdout.strip() + ".json"])
+    def test_a_dead_unmanaged_rig_lease_does_not_block_but_a_live_or_cleanup_required_one_does(self):
+        dead = self.lease("rig", self.dead_pid())
+        self.assertIsNone(self.check(100))  # rig-run's own `lr-reap --run rig` removes it first
+        self.assertEqual(self.leases(), [dead + ".json"])  # left for rig-run, not removed by the check
+        os.unlink(os.path.join(self.home, ".long-run/leases", dead + ".json"))
+        self.lease("rig", os.getpid())
+        self.assertIn("count limit", self.check(100))
+        for name in self.leases():
+            os.unlink(os.path.join(self.home, ".long-run/leases", name))
+        self.lease("rig", self.dead_pid(), cleanup=True)  # reaped into quarantine, never removed: it blocks
+        self.assertIn("lr-lease would not grant vm", self.check(100))
+        for name in self.leases():
+            os.unlink(os.path.join(self.home, ".long-run/leases", name))
+        self.lease("someone-else", self.dead_pid())  # another run's: lr-reap --run rig does not touch it
+        self.assertIn("count limit", self.check(100))
 
-    def test_the_supervisor_admits_on_the_grant_and_waits_on_the_refusal(self):
+    def test_a_timeout_or_a_changed_core_is_an_explicit_refusal(self):
+        self.write("home/.long-run/bin/lr-lease-core.mjs", "await new Promise(() => setTimeout(() => {}, 60000));\n")
+        started = time.monotonic()
+        why = self.check(100, timeout=2)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertIn("admission unknown", why)
+        self.write("home/.long-run/bin/lr-lease-core.mjs", "export function decision(a, b) { return null; }\n")
+        why = self.check(100)
+        self.assertIn("admission unknown", why)
+        self.assertIn("decision", why)
+
+    def test_exactly_at_the_threshold_lr_lease_grants_and_rig_runs_clone_gate_does_not(self):
+        # Known, kept visible (coordinator, 2026-10-07): lr-lease grants vm at exactly floor + 6 + 2 = 12.0 GiB free,
+        # while rig-run's own clone gate needs strictly more than 12 GiB. Changing that gate is a separate decision.
+        self.assertEqual(self.threshold, 12)
+        self.assertIsNone(self.check(12.0))
+        with open(os.path.expanduser("~/.long-run/rig/bin/rig-run")) as fh:
+            self.assertIn('[ "$FREE_BEFORE_CLONE" -gt $(( 12 * 1048576 )) ]', fh.read())
+
+    def supervisor(self):
         import procs
         import supervise
 
@@ -924,35 +971,77 @@ console.log(r.lease.id);
                 return procs.PRESSURE_NORMAL
 
             def free_bytes(self, path):
-                return 0  # far under any floor: a vm job has none of its own, so this must not matter
+                return 0  # no floor of its own: this must not matter
+
+            def usage(self, pid):
+                return procs.DarwinProbes().usage(pid)  # the runner's identity, read for real
 
         sup = supervise.Supervisor.__new__(supervise.Supervisor)
         sup.plan = {"job_id": "caret-x", "worktree": self.root}
         sup.run_root = os.path.join(self.root, "runs", "caret-x")
-        sup.paths = {"hold": os.path.join(self.root, "no-hold"), "lr_lease": self.lr_lease,
+        sup.paths = {"hold": os.path.join(self.root, "HOLD"), "lr_lease": self.lr_lease,
                      "queue_state": os.path.join(self.root, "queue")}
         sup.profile = caret_heavy.dataclasses.asdict(caret_heavy.PROFILES["caret-vm"])
         sup.probes, sup.pid, sup.heavy_fd, sup.lock_fd, sup.lease_id = Probes(), os.getpid(), None, None, None
         sup.lease_cleanup = sup.lease_oblige = sup.lease_obliged = False
-        sup.custody, sup.record, sup.log = None, {}, lambda *a, **k: None
+        sup.custody, sup.record, sup.log, sup.runner = None, {}, lambda *a, **k: None, None
+        import threading
+        sup.cancel, sup.cancel_reason, sup.cancel_code = threading.Event(), None, None
         old = os.environ.get("HOME")
         self.addCleanup(lambda: os.environ.__setitem__("HOME", old))
         os.environ["HOME"] = self.home
-        for free, admitted in ((12.9, True), (self.threshold - 0.05, False)):
-            with self.subTest(free):
-                os.environ["STUB_FREE_GIB"] = str(free)
-                why = sup._try_admit()
-                self.assertEqual(why is None, admitted, why)
-                if not admitted:
-                    self.assertIn("lr-lease would not grant vm", why)
-        os.environ.pop("STUB_FREE_GIB", None)
+        return sup
+
+    def test_the_supervisor_admits_on_the_grant_and_ends_75_on_the_refusal_without_waiting(self):
+        sup = self.supervisor()
+        os.environ["STUB_FREE_GIB"] = "12.9"
+        self.addCleanup(os.environ.pop, "STUB_FREE_GIB", None)
+        self.assertIs(sup._admit(), True)
+        os.environ["STUB_FREE_GIB"] = str(self.threshold - 0.05)
+        started = time.monotonic()
+        code, why = sup._admit()
+        self.assertEqual(code, 75)
+        self.assertIn("lr-lease would not grant vm", why)
+        self.assertLess(time.monotonic() - started, 15)  # no wait under heavy.lock
         self.assertEqual(self.leases(), [])
 
-    def test_the_queue_gets_no_floor_of_its_own_for_vm_jobs(self):
-        paths = caret_heavy.default_paths("/tmp/state-for-argv-only")
-        recipe = caret_heavy.RECIPES["vm-cancel-proof"]
-        plan = caret_heavy.build_plan(recipe, "caret-x", "/w", "a" * 40, [], [], {}, None, paths,
-                                      ("/snap", {}, "/ops", "b" * 40))
-        head = caret_heavy.queue_enqueue_argv(plan, "/plans/caret-x.json", "c" * 64)
-        head = head[:head.index("--")]
-        self.assertEqual(head[head.index("--min-free-gib") + 1], "0")  # without it the queue applies its own 12 GiB
+    def test_hold_or_runner_death_during_the_check_refuses(self):
+        import supervise
+        real = supervise.vm_check
+        for what in ("hold", "runner"):
+            with self.subTest(what):
+                sup = self.supervisor()
+                os.environ["STUB_FREE_GIB"] = "100"
+                self.addCleanup(os.environ.pop, "STUB_FREE_GIB", None)
+
+                def during(*args, **kwargs):
+                    if what == "hold":
+                        self.write("HOLD", "test\n")
+                    else:
+                        sup.runner = [999999, 1]  # a runner identity that is not alive
+                    return real(*args, **kwargs)
+                with mock.patch.object(supervise, "vm_check", side_effect=during):
+                    code, why = sup._admit()
+                self.assertEqual(code, 75 if what == "hold" else supervise.EXIT_CANCELLED, why)
+                self.assertIn("HOLD" if what == "hold" else "runner", why)
+                if os.path.exists(os.path.join(self.root, "HOLD")):
+                    os.unlink(os.path.join(self.root, "HOLD"))
+
+    def test_the_derived_queue_floor_follows_the_policy_file(self):
+        policy = os.path.join(self.root, "policy.json")
+        with open(self.POLICY) as fh:
+            data = json.load(fh)
+        for vm_floor in (4, 5.5):
+            with self.subTest(vm_floor):
+                data["kinds"]["vm"]["diskFloorGB"] = vm_floor
+                with open(policy, "w") as fh:
+                    json.dump(data, fh)
+                paths = dict(caret_heavy.default_paths("/tmp/state-for-argv-only"), lease_policy=policy)
+                plan = caret_heavy.build_plan(caret_heavy.RECIPES["vm-cancel-proof"], "caret-x", "/w", "a" * 40, [], [],
+                                              {}, None, paths, ("/snap", {}, "/ops", "b" * 40))
+                head = caret_heavy.queue_enqueue_argv(plan, "/plans/caret-x.json", "c" * 64)
+                head = head[:head.index("--")]
+                self.assertEqual(float(head[head.index("--min-free-gib") + 1]), vm_floor + 6 + 2)
+                self.assertEqual(plan["admission"], {"kind": "vm", "queue_min_free_gib": vm_floor + 6 + 2,
+                                                     "vm_floor_gib": vm_floor, "est_mem_gib": 6, "est_disk_gib": 2,
+                                                     "source": policy})

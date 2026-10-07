@@ -69,6 +69,8 @@ def default_paths(state_dir=None):
         "rig_stop": os.path.join(HOME, ".long-run/rig/bin/rig-stop"),
         "rig_run": os.path.join(HOME, ".long-run/rig/bin/rig-run"),
         "lume_clones": os.path.join(HOME, ".lume"),
+        # Owns the vm floor a caret-vm job's queue wait is derived from (vm_admission).
+        "lease_policy": os.path.join(HOME, ".long-run/lease-policy.json"),
         # Node tarballs fetched by `caret-heavy fetch-node`, each kept only when it matches its pin (fetch_node).
         "node_cache": os.path.join(HOME, ".caret-run/inputs/node-dist"),
         "ios_qa_lock": os.path.join(HOME, ".codex/local-ios-qa.lock"),
@@ -95,8 +97,9 @@ class Profile:
     # 0: no cap. Otherwise the supervisor stops the job (exit 76) once the summed physical footprint of its processes
     # goes over this many GiB. Every job's peak is recorded either way (outcome.json "memory").
     mem_cap_gib: float = 0.0
-    # "vm": the job has no disk floor of its own; the supervisor admits it exactly when lr-lease would grant a vm lease
-    # of est_mem_gib + est_disk_gib (supervise.vm_admission), and the queue is given none (--min-free-gib 0).
+    # "vm": no disk floor of its own. The queue waits at lease-policy.json's vm floor + est_mem_gib + est_disk_gib
+    # (vm_admission, recorded in the plan); under the lock the supervisor checks lr-lease's vm decision read-only
+    # (supervise.vm_check) and ends the job with 75 if it would refuse.
     admit_kind: str = ""
 
     @property
@@ -136,11 +139,15 @@ PROFILES = {
     # No floor of its own (coordinator, 2026-10-07). The 15 GiB that was here was stale: ~/.long-run/lease-policy.json's
     # vm entry records that Sam said on 2026-10-05 to run the VM at about 14.9 GiB free, and the vm floor came down the
     # same day, 15 -> 7 -> 4 GiB, over the measured worst case (VM peak 5.65 GiB charged to disk as swap, clone at most
-    # 0.51 GiB, rig-run's estimates 6 + 2). Two thresholds owned one fact; now lr-lease's vm decision is the only one.
-    # The lease wait lets the supervisor wait for that grant; it is unmeasured, like the other profiles'.
+    # 0.51 GiB, rig-run's estimates 6 + 2). Two thresholds owned one fact. Now: the queue waits, before heavy.lock, at a
+    # floor derived at enqueue from that file (vm_admission); under the lock the supervisor makes one read-only check of
+    # lr-lease's vm decision (supervise.vm_check) and ends the job with 75 if it would refuse, never waiting there; and
+    # rig-run keeps its own clone gate (free > 12 GiB, strict), so at exactly 12.0 GiB lr-lease grants and rig-run does
+    # not (VmAdmissionTest pins it).
     "caret-vm": Profile(
-        "caret-vm", 0, 6, 2, False, 1800, 10800, 60,
-        "No floor of its own: admitted when lr-lease would grant vm for 6 + 2 GiB (lease-policy.json's vm floor). "
+        "caret-vm", 0, 6, 2, False, 0, 10800, 60,
+        "No floor of its own: admission is lr-lease's vm decision for 6 + 2 GiB (lease-policy.json's vm floor) plus "
+        "rig-run's clone gate (free > 12 GiB, strict). "
         "rig-run takes the vm 6/2 lease (measured: VM peak RSS 5.65 GiB "
         "over 54 runs, clone at most 0.51 GiB). The job's one heavy lease is 0/0: the queue's, obliged and handed to "
         "rig-run (RIG_HEAVY_LEASE_ID, managed mode) on a queue that leases per job, else rig-run's own. Execution 10800 s covers the feeder's 3600 s rig-run wait and H11's 3500 s guest limit; "
@@ -681,6 +688,7 @@ def build_plan(recipe, job_id, worktree, rev, recipe_argv, inputs, recorded_env,
         "run_root": os.path.join(paths["evidence_root"], job_id),
         "paths": dict(paths), "python": python,
         "lease": {"run": "caret", "ttl_min": lease_ttl_min, "renew_s": lease_renew_s},
+        **({"admission": vm_admission(paths, profile)} if profile.admit_kind == "vm" else {}),
         # Tests only (recovery.test_point); the CLI never sets it.
         **({"test": dict(test)} if test else {}),
     }
@@ -705,6 +713,21 @@ def rig_run_takes_lease(rig_run):
     return "RIG_HEAVY_LEASE_ID" in text and "RIG_RUN_MANAGED" in text
 
 
+def vm_admission(paths, profile):
+    """The queue's wait for a vm-admitted profile: lease-policy.json's vm floor plus the profile's estimates, the free
+    disk lr-lease's vm decision needs under normal pressure, read now from the file that owns it."""
+    try:
+        with open(paths["lease_policy"], encoding="utf-8") as fh:
+            vm_floor = json.load(fh)["kinds"]["vm"]["diskFloorGB"]
+    except (OSError, ValueError, KeyError, TypeError) as ex:
+        raise manifest.ManifestError("cannot read the vm floor from {}: {!r}".format(paths["lease_policy"], ex)) from None
+    if not isinstance(vm_floor, (int, float)) or vm_floor < 0:
+        raise manifest.ManifestError("{} has no usable vm diskFloorGB".format(paths["lease_policy"]))
+    return {"kind": "vm", "queue_min_free_gib": vm_floor + profile.est_mem_gib + profile.est_disk_gib,
+            "vm_floor_gib": vm_floor, "est_mem_gib": profile.est_mem_gib, "est_disk_gib": profile.est_disk_gib,
+            "source": paths["lease_policy"]}
+
+
 def queue_takes_leases(queue_script):
     """Whether this queue takes an lr-lease per job (heavy-job-queue 401c4d1 and later): it then needs estimates."""
     with open(queue_script, encoding="utf-8") as fh:
@@ -721,8 +744,9 @@ def queue_enqueue_argv(plan, plan_path, plan_digest):
     argv = [plan["python"], paths["queue_script"], "--state-dir", paths["queue_state"], "enqueue",
             "--id", plan["job_id"], "--timeout", str(profile["queue_timeout_s"]),
             "--cwd", plan["worktree"], "--repo", plan["worktree"], "--expect-rev", plan["rev"],
-            # A vm-admitted profile gives the queue no floor: left out, the queue would apply its own 12 GiB default.
-            "--min-free-gib", str(profile["floor_gib"]), "--wait-absent", paths["hold"]]
+            # A vm-admitted profile waits at the floor derived from lease-policy.json, recorded in the plan.
+            "--min-free-gib", _plain(plan["admission"]["queue_min_free_gib"]) if "admission" in plan
+            else str(profile["floor_gib"]), "--wait-absent", paths["hold"]]
     for key in profile["wait_flock"]:
         argv += ["--wait-flock", paths[key]]
     if queue_takes_leases(paths["queue_script"]):
