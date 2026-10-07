@@ -305,3 +305,41 @@ describe("last round: questions carry and offer only the settled scope", () => {
     expect(titles.some((t) => t.includes("Phone note"))).toBe(false);
   });
 });
+
+describe("final rulings", () => {
+  const page = (): ScreenModel => {
+    const m = new ScreenModel();
+    m.apply(snap([node("pg/web", "AXWebArea", { label: "Apply" }), field("pg/name", "", { parent: "pg/web", label: "Name", frame: [10, 10, 200, 20] }), field("pg/email", "", { parent: "pg/web", label: "Email", frame: [10, 40, 200, 20] })], { at: 1000, windowId: "page:i2:f", kind: "page", title: "Apply", focused: true, focusedKey: "pg/name" }));
+    return m;
+  };
+
+  it("ruling 2: a fresh Ask whose page became another document while it planned hands off no goal (the attach rule settled doc-1)", async () => {
+    let doc = "doc-1";
+    const log: JevRequest[] = [];
+    const ask = jev("some", ["Name", "Email"], log);
+    const heads = headsIntentMaker(ask);
+    const flipping = { name: heads.name, make: async (s: Parameters<typeof heads.make>[0], sig?: AbortSignal, settled?: Parameters<typeof heads.make>[2]) => ((doc = "doc-2"), heads.make(s, sig, settled)) };
+    const m = page();
+    const settled = { askId: "ask-attach", windowId: "page:i2:f", document: "doc-1", seen: {}, asks: ["pg/name", "pg/email"], unclear: [] };
+    const r = await planAsk("fill this in", m, { values: () => MEMORY }, ABOUT, { askJev: ask, maker: flipping as never, writer: null, offerKey: "f1", windowId: "page:i2:f", now: 2000, goals: true, documentOf: () => doc, settled }).catch((e: unknown) => e);
+    expect(r).toBeInstanceOf(AskRefused);
+    expect(log.filter((q) => q.purpose === "ask.scope")).toHaveLength(0);
+  });
+
+  it("ruling 3: a field Jev answered \"asks\" below the cutoff is offered, and the user's pick puts it in the scope, recorded as theirs", async () => {
+    const low: AskJev = async (req) => {
+      const r = await jev("some", [])(req);
+      if (req.purpose === "ask.scope") for (const [id, q] of Object.entries(req.questions)) if (/field 'Email'/u.test(String(q.instructions))) r.answers[id] = { choice: "asks", confidence: 0.3 };
+      return r;
+    };
+    const e = await planAsk("my email", desk(), { values: () => MEMORY }, ABOUT, { askJev: low, maker: headsIntentMaker(low), writer: null, offerKey: "lo", windowId: WIN, now: 2000 }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(AskAsks);
+    const q = (e as AskAsks).question;
+    const email = q.options.find((c) => c.option.kind === "field" && c.option.label === "Email");
+    expect(email).toBeDefined();
+    const d = await planAsk("my email", desk(), { values: () => MEMORY }, ABOUT, { askJev: low, maker: headsIntentMaker(low), writer: null, offerKey: "lo", windowId: WIN, now: 3000, resume: { ...q.resume, fixed: { ...q.resume.fixed, ...(email?.fixes ?? {}) } } });
+    const origin = (d as { checked: { origin: Origin; writes: { node: { key: string } }[] } }).checked;
+    expect(origin.writes.map((w) => w.node.key)).toEqual(["sf/email"]);
+    expect(origin.origin.kind === "ask" && [...origin.origin.scope.picked]).toEqual(["sf/email"]);
+  });
+});

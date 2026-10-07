@@ -625,7 +625,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   let scope: AskScope;
   try {
     // A window with no field gives a scope of no field: it authorizes nothing (a goal settles each window it writes in).
-    scope = askScope(w.window.windowId, document, scopeKeys, resume?.seen.fields ?? { ...seenOf(snap, undefined).fields, ...(presettled?.seen ?? {}) }, fixed.person?.kind === "person" ? fixed.person.name : null, askId);
+    scope = askScope(w.window.windowId, document, scopeKeys, resume?.seen.fields ?? { ...seenOf(snap, undefined).fields, ...(presettled?.seen ?? {}) }, fixed.person?.kind === "person" ? fixed.person.name : null, askId, fixed.fields ?? []);
   } catch (e) {
     return refused(new SaidError("unknownWindow", SAYS.windowChanged, e instanceof Error ? e.message : String(e)));
   }
@@ -636,6 +636,10 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // H11: a plan intent is a goal only when a writer can plan it. Since L1 there is none by default, and without one a
   // goal refuses every native plan ("no plan writer") that planTask below would still make; a page fill is a goal
   // (planPage, below) and needs no writer.
+  // I2 ruling: no goal is handed off for a page that became another document since the Ask's scope was settled, fresh
+  // Ask or continued: the goal would settle again on the new one.
+  const movedOn = (): boolean => documentOf !== null && documentOf(w.window.windowId) !== document;
+  if (checked.route === "plan" && o.goals === true && o.writer !== null && movedOn()) return refused(new SaidError("unknownWindow", SAYS.windowChanged, "the page became another document while Caret planned"));
   if (checked.route === "plan" && o.goals === true && o.writer !== null) return { route: "goal", intent, maker: use, windowId: w.window.windowId, askId, resumed: resume !== undefined, ...(snap.fields.length === 0 ? {} : { askScope: scope }) };
   if (checked.route === "plan") {
     try {
@@ -662,6 +666,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       return refused(e);
     }
   }
+  if (pageGoal && checked.route === "fill" && movedOn()) return refused(new SaidError("unknownWindow", SAYS.windowChanged, "the page became another document while Caret planned"));
   if (pageGoal && checked.route === "fill") {
     const whole = fixed.fields === undefined && !bySection && (inferredAll || listsAll || intent.scope === "all");
     const section = bySection ? sectionName : intent.scope === "section" && fixed.fields === undefined ? (snap.sections.find((x) => x.ref === intent.section)?.name ?? null) : null;

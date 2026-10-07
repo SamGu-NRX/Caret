@@ -281,8 +281,11 @@ const inOrder = (snap: IntentSnapshot, fs: Iterable<IntentField>): IntentField[]
 export function readHeads(snap: IntentSnapshot, heads: JevResult, scope: readonly [JevResult, JevResult] | null): AskIntent {
   // I2 ruling: what the scope question settled travels with every intent, refusals included, so no question an Ask then
   // saves is without it (planner/ask.ts settledKeys): the fields and upload fields Jev chose or left unclear.
-  const settledRefs = scope === null ? [] : scopeFields(snap).filter((f) => scopeVerdict(scope, f.ref) !== "not").map((f) => f.ref);
-  return { ...readHeadsIntent(snap, heads, scope), settled: settledRefs };
+  // A field Jev answered "asks" below the cutoff, or in one wording only, is offered for the user to pick (A3's
+  // fallback, readHeadsIntent): it is settled as pickable, and only the user's pick puts it in the Ask's scope.
+  const intent = readHeadsIntent(snap, heads, scope);
+  const settledRefs = scope === null ? [] : scopeFields(snap).filter((f) => scopeVerdict(scope, f.ref) !== "not" || (intent.options ?? []).includes(f.ref)).map((f) => f.ref);
+  return { ...intent, settled: settledRefs };
 }
 
 function readHeadsIntent(snap: IntentSnapshot, heads: JevResult, scope: readonly [JevResult, JevResult] | null): AskIntent {

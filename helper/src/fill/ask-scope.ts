@@ -50,9 +50,14 @@ export interface AskScope {
   readonly seen: Readonly<Record<string, string>>;
   /** The person the user picked; null when they picked none, or picked themselves. */
   readonly person: string | null;
+  /**
+   * The fields in `fields` that are there by the user's own pick in the Ask's question (a field Jev offered but did not
+   * choose: "asks" below the cutoff, or in one wording only): user-authorized, recorded apart from Jev's choices.
+   */
+  readonly picked: ReadonlySet<string>;
 }
 
-export function askScope(windowId: string, document: string | null, keys: Iterable<string>, seen: Readonly<Record<string, string>>, person: string | null, askId: string): AskScope {
+export function askScope(windowId: string, document: string | null, keys: Iterable<string>, seen: Readonly<Record<string, string>>, person: string | null, askId: string, picked: Iterable<string> = []): AskScope {
   const fields = new Set(keys);
   const own: Record<string, string> = {};
   for (const k of fields) {
@@ -61,7 +66,8 @@ export function askScope(windowId: string, document: string | null, keys: Iterab
     if (s === undefined) throw new Error(`the Ask's scope names field ${k}, which its record of the form lacks`);
     own[k] = s;
   }
-  return Object.freeze({ askId, windowId, document, fields, seen: Object.freeze(own), person });
+  const byUser = new Set([...picked].filter((k) => fields.has(k)));
+  return Object.freeze({ askId, windowId, document, fields, seen: Object.freeze(own), person, picked: byUser });
 }
 
 /**
@@ -175,7 +181,8 @@ export type Origin = Authority | { readonly kind: "askGoal"; readonly scopes: Sc
 /** Whether two scopes are the same settled scope, by content: a goal plan is cloned when it is offered. */
 export function sameScope(a: AskScope, b: AskScope): boolean {
   if (a === b) return true;
-  if (a.askId !== b.askId || a.windowId !== b.windowId || a.document !== b.document || a.person !== b.person || a.fields.size !== b.fields.size) return false;
+  if (a.askId !== b.askId || a.windowId !== b.windowId || a.document !== b.document || a.person !== b.person || a.fields.size !== b.fields.size || a.picked.size !== b.picked.size) return false;
+  for (const k of a.picked) if (!b.picked.has(k)) return false;
   for (const k of a.fields) if (!b.fields.has(k) || a.seen[k] !== b.seen[k]) return false;
   return true;
 }

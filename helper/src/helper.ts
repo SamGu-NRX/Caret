@@ -137,6 +137,16 @@ import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
 import { TabSource, TabTextExpired, type DocsApp, type TabReader } from "./engines/tab-source.ts";
 
+/** The origin of a page address ("https://host:port"), or null when there is none or it does not parse. */
+function originOf(site: string | null): string | null {
+  if (site === null) return null;
+  try {
+    return new URL(site).origin;
+  } catch {
+    return null;
+  }
+}
+
 declare const settleMark: unique symbol;
 /**
  * I2 lead ruling: the capability to settle an Ask's scope by its per-field question. Only two entry points hold one: a
@@ -642,6 +652,8 @@ export class Helper {
     this.goals = new GoalRuns({
       executor: this.executor,
       model: this.model,
+      // I2: a carry's origin check reads the page's top frame (scheme, host and port).
+      pageOrigin: (id) => originOf(opts.pageContext?.(id)?.site ?? null),
       ...(opts.pageDocument === undefined ? {} : { documentOf: opts.pageDocument }),
       publish: (m) => {
         if (this.mode === "live") this.opts.publish(m);
@@ -1026,8 +1038,6 @@ export class Helper {
         return null;
       case "userPress":
         this.patterns.onUserPress(m);
-        // I2 ruling: the user's press a carry needs before it plans the next page (goals/runs.ts onChanges).
-        this.goals.onPress(m.windowId, m.label, m.at);
         return null;
     }
   }

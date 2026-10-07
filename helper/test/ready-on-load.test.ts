@@ -182,8 +182,6 @@ describe("a page load in the helper (P3)", () => {
     await r.helper.goals.idle();
     await new Promise((x) => setTimeout(x, 0));
     await r.helper.goals.idle();
-    // The user's Next, which the reader saw (I2 ruling: a carry needs an observed Next), then the next page loads.
-    await r.helper.handleReader({ type: "userPress", v: PROTOCOL_VERSION, at: Date.now(), pid: chrome.pid, windowId: WIN, key: null, role: "AXButton", label: "Next", via: "click" });
     await load(r, () => [c("n1", "text", "Full name", { value: "" }), c("n2", "email", "Email", { value: "" })], "Apply: step 2", "/two");
     await r.helper.goals.idle();
     expect(popups(r)).toEqual([]);

@@ -51,11 +51,7 @@ export interface Rig {
   ask(instruction: string): Promise<GoalProgress>;
   accept(s: Segment, more?: Pick<GoalAccept, "confirmedFile">): ReturnType<Helper["handleGoalAccept"]>;
   /** The user's own Next: the tab shows another form as a new document, and the page engine walks it. */
-  /**
-   * The user's Next: the press the reader reports on the page's forward control (I2 ruling: a carry needs an observed
-   * Next), then the new document. `pressed` false is a navigation with no press seen (a reload, a redirect).
-   */
-  next(make: () => PageControl[], title: string, path: string, pressed?: boolean): Promise<void>;
+  next(make: () => PageControl[], title: string, path: string): Promise<void>;
   close(): void;
 }
 
@@ -141,8 +137,7 @@ export async function rig(o: RigOptions = {}): Promise<Rig> {
     },
     ask: (instruction) => helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "a1", at: Date.now(), instruction, windowId: WIN }, undefined, true, true) as Promise<GoalProgress>,
     accept: (s, more = {}) => helper.handleGoalAccept({ type: "goalAccept", v: PROTOCOL_VERSION, goalId: s.goalId, segment: s.segment, digest: s.digest, at: Date.now(), ...more }),
-    next: async (make, title, path, pressed = true) => {
-      if (pressed) await helper.handleReader({ type: "userPress", v: PROTOCOL_VERSION, at: Date.now(), pid: chrome.pid, windowId: WIN, key: null, role: "AXButton", label: "Next", via: "click" });
+    next: async (make, title, path) => {
       page.goTo(make, title, path);
       expect((await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");
     },
