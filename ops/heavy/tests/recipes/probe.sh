@@ -8,6 +8,7 @@
 #   leftover                     start tracked processes, then ok and exit 0 with them still running
 #   slow-cleanup SECONDS         on TERM, take SECONDS to clean up, write OUT/cleanup-done, exit 143
 #   env-dump                     write this recipe's environment to OUT/env.txt, then ok
+#   cat-input NAME               copy the sealed input NAME to OUT/seen.txt, then ok
 #   lock-proof                   run rig-run's proof that RIG_HEAVY_LOCK_FD holds heavy.lock (HEAVY_LOCK_PATH),
 #                                write the answer to OUT/lock-proof.txt, then ok
 #   rig RIG-RUN ARGS...          run RIG-RUN (tests/fake-rig-run.sh, or the real rig-run) with ARGS, forwarding TERM,
@@ -69,6 +70,7 @@ case "$MODE" in
     trap 'sleep "$ARG"; date +%s > "$OUT/cleanup-done"; exit 143' TERM
     touch "$OUT/ready"; sleep 600 & wait $! ;;
   env-dump) env > "$OUT/env.txt"; evidence set 0; check page-loop set --exit 0; finish ;;
+  cat-input) cp "$CARET_HEAVY_INPUTS/$ARG" "$OUT/seen.txt"; evidence set 0; check page-loop set --exit 0; finish ;;
   lock-proof)
     # The same check rig-run's take_heavy_lock makes before using an inherited descriptor.
     py -c 'import fcntl, os, sys

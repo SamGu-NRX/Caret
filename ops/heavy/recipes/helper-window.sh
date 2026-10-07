@@ -6,6 +6,7 @@
 set -u
 . "$CARET_HEAVY_RECIPES/lib.sh"
 TAG=${1:?usage: helper-window.sh TAG}
+REQUIRED=(dependencies "helper-$TAG" "extension-$TAG" "fixtures-tsc-$TAG" "fixtures-test-$TAG")
 install_deps helper extension fixtures/web-form || finish
 run_suite "helper-$TAG" vitest helper pnpm test
 run_suite "extension-$TAG" vitest extension pnpm test

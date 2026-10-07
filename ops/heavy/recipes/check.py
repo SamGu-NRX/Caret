@@ -6,12 +6,17 @@ and exits with the step's code, so the recipe can stop early (canned sets stop a
 value). The recipe ends with `check.py finish`, which writes result.json and exits with the
 recipe's code. The codes and their precedence are in ops/heavy/README.md.
 
-  check.py page-loop NAME --exit N [--wrong-seen]   NAME's page-loop.json and NAME.log under OUT
+  check.py page-loop NAME --exit N [--wrong-seen] [--expect-ids FILE] [--goal]
+                                       NAME's page-loop.json and NAME.log under OUT
   check.py suite NAME --log FILE --exit N --kind vitest|node-test|tsc
   check.py prepare NAME --log FILE --exit N [--fail-code 12|14]
   check.py spend --day YYYY-MM-DD --from-line N --limit USD [--ledger-dir DIR]
   check.py r2 --harness h11|h14 --run DIR --rev SHA --exit N --spend-limit USD [--options JSON]
-  check.py finish
+  check.py finish [--require STEP...]
+
+Evidence that is present but malformed is 12 whatever the step exited. A step named in --require
+that never recorded, or a checker failure the recipe logged in OUT/checker-errors.txt (recipes/lib.sh),
+also makes finish 12.
 """
 
 import argparse
@@ -48,35 +53,78 @@ def existing(*paths):
     return [rel(p) for p in paths if os.path.isfile(p)]
 
 
-def page_loop(name, exit_code, wrong_seen):
+class Malformed(Exception):
+    pass
+
+
+def _rows(data):
+    """The report's rows, checked for the fields acceptance reads. Malformed on any other shape."""
+    if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
+        raise Malformed("page-loop.json has no rows list")
+    for r in data["rows"]:
+        if not (isinstance(r, dict) and isinstance(r.get("id"), str) and isinstance(r.get("wrong"), list)
+                and (r.get("walk") is None or isinstance(r.get("walk"), dict))
+                and (r.get("error") is None or isinstance(r.get("error"), str))):
+            raise Malformed("a row lacks id, wrong, walk or error of the right type: {!r}".format(r)[:300])
+    for key in ("presses", "posts"):
+        if data.get(key) is not None and not isinstance(data.get(key), int):
+            raise Malformed("{} is not a count".format(key))
+    return data["rows"]
+
+
+def page_loop(name, exit_code, wrong_seen, expect_ids=None, goal=False):
+    """One eval set. Acceptance: no wrong value, every expected page present and walked, no page error, no press or
+    POST, and on the goal path a goal result for every page that had something to fill."""
     base = os.path.join(out_dir(), name)
     report, log = os.path.join(base, "page-loop.json"), base + ".log"
     step = {"kind": "page-loop", "name": name, "exit": exit_code, "evidence": existing(report, log)}
+    data = rows = None
     try:
         with open(report, encoding="utf-8") as fh:
             data = json.load(fh)
-        rows = data["rows"]
-        wrong = sum(len(r["wrong"]) for r in rows)
-        step.update(pages=len(rows), walked=sum(1 for r in rows if r.get("walk") is not None), wrong=wrong,
-                    errors=sum(1 for r in rows if r.get("error")), presses=data.get("presses"),
-                    posts=data.get("posts"), spent=data.get("spent"))
+        rows = _rows(data)
     except FileNotFoundError:
-        data = None
         step["why"] = "no page-loop.json"
-    except (OSError, ValueError, KeyError, TypeError) as ex:
-        data = None
-        step["why"] = "malformed page-loop.json: {!r}".format(ex)
-    if data is not None and step["wrong"] > 0:
+    except (OSError, ValueError, Malformed) as ex:
+        step["malformed"] = True
+        step["why"] = "malformed page-loop.json: {}".format(ex)
+    if rows is not None:
+        ids = [r["id"] for r in rows]
+        step.update(pages=len(rows), walked=sum(1 for r in rows if r["walk"] is not None),
+                    wrong=sum(len(r["wrong"]) for r in rows), errors=[r["id"] for r in rows if r["error"]],
+                    presses=data.get("presses") or 0, posts=data.get("posts") or 0, spent=data.get("spent"))
+    problems, failures = [], []
+    if rows is not None:
+        if expect_ids is not None:
+            with open(expect_ids, encoding="utf-8") as fh:
+                want = {line.strip() for line in fh if line.strip()}
+            missing, extra = sorted(want - set(ids)), sorted(set(ids) - want)
+            if missing or extra or len(ids) != len(set(ids)):
+                problems.append("pages differ from the expected list (missing {}, unexpected {}, {} rows)".format(
+                    missing, extra, len(ids)))
+        if not rows or step["walked"] < len(rows):
+            problems.append("{} of {} pages walked".format(step["walked"], len(rows)))
+        if goal:
+            for r in rows:
+                task = r.get("task")
+                if task is not None and (not isinstance(task, dict) or task.get("scored") is not True):
+                    problems.append("{}: the task page was not scored".format(r["id"]))
+                elif r.get("goal") is None and not (isinstance(task, dict) and task.get("eligible") == 0):
+                    problems.append("{}: no goal result".format(r["id"]))
+        if step["errors"]:
+            failures.append("page errors on {}".format(step["errors"]))
+        if step["presses"] or step["posts"]:
+            failures.append("{} presses, {} POSTs".format(step["presses"], step["posts"]))
+    if rows is not None and step["wrong"] > 0:
         step.update(code=WRONG, why="{} wrong value(s) in page-loop.json".format(step["wrong"]))
     elif wrong_seen:
         step.update(code=WRONG, why="a wrong value was seen in the log, and the eval was stopped")
-    elif exit_code != 0:
-        step["code"] = FAILED
-        step["why"] = step.get("why") or "the eval exited {}".format(exit_code)
-    elif data is None:
+    elif step.get("malformed") or problems:
+        step.update(code=EVIDENCE, why=step.get("why") or "; ".join(problems))
+    elif exit_code != 0 or failures:
+        step.update(code=FAILED, why=step.get("why") or "; ".join(failures) or "the eval exited {}".format(exit_code))
+    elif rows is None:
         step["code"] = EVIDENCE
-    elif step["pages"] == 0 or step["walked"] < step["pages"]:
-        step["code"], step["why"] = EVIDENCE, "{} of {} pages walked".format(step["walked"], step["pages"])
     else:
         step["code"] = OK
     return record(step)
@@ -126,7 +174,7 @@ def prepare(name, log, exit_code, fail_code=PREPARE):
 
 def spend(day, from_line, limit, ledger_dir):
     ledger = os.path.join(ledger_dir, day + ".ndjson")
-    step = {"kind": "spend", "name": day, "limit": limit, "from_line": from_line, "evidence": []}
+    step = {"kind": "spend", "name": "spend", "day": day, "limit": limit, "from_line": from_line, "evidence": []}
     try:
         with open(ledger, encoding="utf-8") as fh:
             rows = [json.loads(line) for line in fh if line.strip()]
@@ -157,8 +205,63 @@ def guest_spend(run):
     return total
 
 
+H14_ROWS = ("attach-input", "attach-dropzone", "tab-never-confirms", "save-line", "switches", "zero-submits",
+            "attach-input-undo", "attach-dropzone-undo")
+H14_CHECKS = ("fixture", "caret-up", "page", "window-id")
+
+
+def h11_acceptance(data, options):
+    """(problems, failures) for H11: every page's own rows present and completed. From q2.py's page_task rows."""
+    problems, failures = [], []
+    rows = {r.get("id"): r for r in data["rows"]}
+    for note in data.get("notes") or []:
+        if isinstance(note, str) and ((note.startswith("harness: ") and " crashed" in note)
+                                      or (note.startswith("phase P: ") and " not run" in note)):
+            failures.append(note[:200])
+    needs = []  # (row id, column, value)
+    if "page_task" in options.get("scenarios", []):
+        for page in options.get("pages", []):
+            sid = "h11-" + page
+            needs += [(sid + "-ask-at-form", "offered", "yes"), (sid + "-ask-at-form", "right", "yes"),
+                      (sid + "-tab", "right", "yes"), (sid + "-tab", "verified", "yes"),
+                      (sid + "-no-submit", "verified", "yes")]
+            # With the next page on, page 1's undo is checked on wizard-2 (q2.py page_task, H11_NEXT_PAGE).
+            undo = "h11-wizard-2-undo" if page == "wizard-1" and options.get("nextPage") else sid + "-undo"
+            needs.append((undo, "undone", "yes"))
+    if "h10" in options.get("scenarios", []):
+        for prefix in ("fill-", "ask-"):
+            if not any(str(i).startswith(prefix) for i in rows):
+                problems.append("no {}* row for the h10 scenario".format(prefix))
+    for rid, column, value in needs:
+        if rid not in rows:
+            problems.append("row {} is missing".format(rid))
+        elif rows[rid].get(column) != value:
+            failures.append("{} {}={} ({})".format(rid, column, rows[rid].get(column), str(rows[rid].get("note"))[:120]))
+    return sorted(set(problems)), failures
+
+
+def h14_acceptance(data):
+    problems, failures = [], []
+    rows = {r.get("id"): r for r in data["rows"]}
+    checks = {c.get("id"): c for c in data.get("checks") or [] if isinstance(c, dict)}
+    for rid in H14_ROWS + (("click-opens",) if "click-opens-ungated" not in rows else ("click-opens-ungated",)):
+        if rid not in rows:
+            problems.append("row {} is missing".format(rid))
+        elif rows[rid].get("pass") is not True:
+            failures.append("row {} failed".format(rid))
+    for cid in H14_CHECKS:
+        if cid not in checks:
+            problems.append("check {} is missing".format(cid))
+        elif checks[cid].get("pass") is not True:
+            failures.append("check {} failed".format(cid))
+    if data.get("pass") is not True and not failures:
+        failures.append("H14 result says pass={}".format(data.get("pass")))
+    return problems, failures
+
+
 def r2(harness, run, rev, exit_code, options, spend_limit):
-    """A rig run's copied-back evidence: rig.json, the guest's results, its leak check and its spend."""
+    """A rig run's copied-back evidence: rig.json, the guest's results, its leak check and its spend, then the
+    harness's acceptance rows."""
     step = {"kind": "r2", "name": harness, "exit": exit_code, "evidence": []}
     if exit_code in (LEAK_FOUND, LEAK_UNSCANNED):
         step.update(code=exit_code, why="host leak check {}".format("found a key" if exit_code == LEAK_FOUND
@@ -167,13 +270,16 @@ def r2(harness, run, rev, exit_code, options, spend_limit):
     results = os.path.join(run, "out", "results.json" if harness == "h11" else "result.json")
     leak = os.path.join(run, "out", "leak-check.txt")
     step["evidence"] = existing(os.path.join(run, "rig.json"), os.path.join(run, "rig.log"), results, leak)
-    problems = []
+    problems, failures = [], []
     try:
         with open(results, encoding="utf-8") as fh:
             data = json.load(fh)
+        if not isinstance(data, dict) or not isinstance(data.get("rows"), list) or \
+                not all(isinstance(r, dict) for r in data["rows"]):
+            raise ValueError("results have no list of row objects")
     except (OSError, ValueError) as ex:
         data = None
-        problems.append("no readable guest results: {!r}".format(ex))
+        problems.append("no readable guest results: {}".format(ex))
     try:
         with open(leak, encoding="utf-8") as fh:
             clean = fh.read().strip().startswith("CLEAN")
@@ -181,40 +287,67 @@ def r2(harness, run, rev, exit_code, options, spend_limit):
         clean = False
     if not clean:
         problems.append("the guest's leak check did not say CLEAN")
+    want_options = json.loads(options) if options else None
     if data is not None:
         if data.get("rev") != rev:
             problems.append("results are for {}, not the pinned {}".format(data.get("rev"), rev))
-        if harness == "h11" and options is not None and data.get("options") != json.loads(options):
-            problems.append("results ran with options {}, not the plan's {}".format(data.get("options"), options))
+        if harness == "h11":
+            if want_options is None or data.get("options") != want_options:
+                problems.append("results ran with options {}, not the plan's {}".format(data.get("options"), options))
+            else:
+                p, f = h11_acceptance(data, want_options)
+                problems += p
+                failures += f
+        else:
+            p, f = h14_acceptance(data)
+            problems += p
+            failures += f
     try:
         step["usd"] = round(guest_spend(run), 6)
     except (OSError, ValueError, KeyError, TypeError) as ex:
         step["usd"] = None
         problems.append("guest spend ledger unreadable: {!r}".format(ex))
     wrong_rows = [r.get("id") for r in (data or {}).get("rows", []) if r.get("wrong") == "yes"]
-    step["wrong_rows"] = wrong_rows
+    step.update(wrong_rows=wrong_rows, problems=problems, failures=failures)
     if wrong_rows:
         step.update(code=WRONG, why="wrong value in rows {}".format(wrong_rows))
     elif step["usd"] is not None and step["usd"] > spend_limit + 1e-9:
         step.update(code=SPEND, why="guest spent ${:.4f}, limit ${:.4f}".format(step["usd"], spend_limit))
-    elif exit_code != 0:
-        step.update(code=FAILED, why="rig run exited {}".format(exit_code) + ("; " + "; ".join(problems) if problems else ""))
     elif problems:
-        step.update(code=EVIDENCE, why="; ".join(problems))
-    elif harness == "h14" and data.get("pass") is not True:
-        step.update(code=FAILED, why="H14 result says pass={}".format(data.get("pass")))
+        step.update(code=EVIDENCE, why="; ".join(problems)[:1500])
+    elif exit_code != 0 or failures:
+        step.update(code=FAILED, why="; ".join(["rig run exited {}".format(exit_code)] * (exit_code != 0) + failures)[:1500])
     else:
         step["code"] = OK
     return record(step)
 
 
-def finish():
+def finish(required=()):
     steps = []
     try:
         with open(os.path.join(out_dir(), "steps.ndjson"), encoding="utf-8") as fh:
             steps = [json.loads(line) for line in fh if line.strip()]
     except FileNotFoundError:
         pass
+    except (OSError, ValueError) as ex:
+        steps = [{"kind": "finish", "name": "steps.ndjson", "code": EVIDENCE, "why": "unreadable: {!r}".format(ex)}]
+    seen = {s.get("name") for s in steps}
+    # A required step that never recorded is missing evidence (12), unless an earlier step already failed and the
+    # recipe stopped there: then it is a consequence, listed but not allowed to hide the real cause.
+    failed_first = any(s.get("code") for s in steps)
+    for name in required:
+        if name not in seen:
+            steps.append({"kind": "required", "name": name, "code": 0 if failed_first else EVIDENCE,
+                          "skipped": failed_first,
+                          "why": "not run after an earlier failure" if failed_first else "required step never recorded"})
+    try:
+        with open(os.path.join(out_dir(), "checker-errors.txt"), encoding="utf-8") as fh:
+            errors = [line.strip() for line in fh if line.strip()]
+    except FileNotFoundError:
+        errors = []
+    if errors:
+        steps.append({"kind": "checker", "name": "checker-errors.txt", "code": EVIDENCE,
+                      "why": "the checker failed: {}".format("; ".join(errors))[:1500], "evidence": ["checker-errors.txt"]})
     codes = {s["code"] for s in steps}
     code = next((c for c in PRECEDENCE if c in codes), OK) if steps else EVIDENCE
     evidence = sorted({e for s in steps for e in s.get("evidence", [])} | ({"steps.ndjson"} if steps else set()))
@@ -236,6 +369,8 @@ def main(argv=None):
     p.add_argument("name")
     p.add_argument("--exit", type=int, required=True)
     p.add_argument("--wrong-seen", action="store_true")
+    p.add_argument("--expect-ids", help="file listing every page id the set must report, one per line")
+    p.add_argument("--goal", action="store_true", help="goal path: every page needs a goal result")
     s = sub.add_parser("suite")
     s.add_argument("name")
     s.add_argument("--log", required=True)
@@ -258,10 +393,11 @@ def main(argv=None):
     r.add_argument("--exit", type=int, required=True)
     r.add_argument("--options")
     r.add_argument("--spend-limit", type=float, required=True)
-    sub.add_parser("finish")
+    f = sub.add_parser("finish")
+    f.add_argument("--require", nargs="*", default=[], help="step names that must have been recorded")
     args = parser.parse_args(argv)
     if args.cmd == "page-loop":
-        return page_loop(args.name, args.exit, args.wrong_seen)
+        return page_loop(args.name, args.exit, args.wrong_seen, args.expect_ids, args.goal)
     if args.cmd == "suite":
         return suite(args.name, args.log, args.exit, args.kind)
     if args.cmd == "prepare":
@@ -270,7 +406,7 @@ def main(argv=None):
         return spend(args.day, args.from_line, args.limit, args.ledger_dir)
     if args.cmd == "r2":
         return r2(args.harness, args.run, args.rev, args.exit, args.options, args.spend_limit)
-    return finish()
+    return finish(args.require)
 
 
 if __name__ == "__main__":

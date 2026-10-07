@@ -328,34 +328,66 @@ class Pins(World):
         self.assertEqual(job["exit_code"], 65)
         self.assertIn("changed since enqueue", self.queue_log(job_id))
 
-    def test_a_changed_input_is_refused_before_any_lease(self):
+    def sources(self):
         fixture = os.path.join(self.root, "fixture-binary")
         tree = os.path.join(self.root, "browsers")
-        os.makedirs(tree)
+        os.makedirs(tree, exist_ok=True)
         for path, text in ((fixture, "v1\n"), (os.path.join(tree, "chrome"), "c1\n")):
             with open(path, "w") as fh:
                 fh.write(text)
-        inputs = [manifest.record("bridge", "file", fixture), manifest.record("browsers", "tree", tree)]
-        def append_fixture():
-            with open(fixture, "a") as fh:
-                fh.write("v2\n")
+        specs = [{"name": "bridge", "kind": "file", "path": fixture, "dest": "bridge"},
+                 {"name": "browsers", "kind": "tree", "path": tree, "dest": "browsers"}]
+        return fixture, tree, specs
 
-        def add_to_tree():
-            with open(os.path.join(tree, "extra"), "w"):
-                pass
+    def test_a_shared_source_changed_after_enqueue_does_not_reach_the_job(self):
+        fixture, tree, specs = self.sources()
+        job_id, plan_path = self.enqueue(["cat-input", "bridge"], extra_inputs=specs)
+        with open(fixture, "w") as fh:
+            fh.write("changed after enqueue\n")
+        with open(os.path.join(tree, "extra"), "w"):
+            pass
+        job = self.run_once(job_id)
+        self.assertEqual((job["state"], self.outcome(job_id)["exit"]), ("succeeded", 0), self.queue_log(job_id))
+        with open(os.path.join(self.run_root(job_id), "out", "seen.txt")) as fh:
+            self.assertEqual(fh.read(), "v1\n")  # the sealed copy, not the shared path
+        with open(plan_path) as fh:
+            inputs = json.load(fh)["inputs"]
+        self.assertTrue(all(e["path"].startswith(os.path.dirname(plan_path)) for e in inputs))
 
-        for mutate, expected in ((append_fixture, "bridge ({}) changed since enqueue".format(fixture)),
-                                 (add_to_tree, "tree browsers changed")):
-            with self.subTest(expected):
-                inputs = [manifest.record("bridge", "file", fixture), manifest.record("browsers", "tree", tree)]
-                job_id, _ = self.enqueue(["ok"], extra_inputs=inputs)
-                mutate()
-                job = self.run_once(job_id)
-                self.assertEqual(job["exit_code"], 65)
+    def test_a_sealed_input_changed_before_start_is_refused(self):
+        fixture, tree, specs = self.sources()
+        job_id, plan_path = self.enqueue(["ok"], extra_inputs=specs)
+        sealed = os.path.join(os.path.dirname(plan_path), "inputs", "bridge")
+        self.make_writable(sealed)
+        with open(sealed, "a") as fh:
+            fh.write("v2\n")
+        job = self.run_once(job_id)
+        self.assertEqual(job["exit_code"], 65)
+        self.assertIn("bridge", self.outcome(job_id)["reason"])
+        self.assertFalse(os.path.exists(os.path.join(self.run_root(job_id), "recipe.log")))
+        self.assertEqual(self.leases(), [])
+
+    def test_a_change_during_the_lease_wait_is_refused_right_before_spawn(self):
+        fixture, tree, specs = self.sources()
+        for target in ("ops/heavy/tests/recipes/probe.sh", "inputs/bridge"):
+            with self.subTest(target):
+                holder = subprocess.run([self.paths["lr_lease"], "acquire", "--run", "rig", "--kind", "heavy",
+                                         "--est-mem", "0", "--est-disk", "0", "--owner-pid", str(os.getpid())],
+                                        env=self.env, capture_output=True, text=True, check=True).stdout.strip()
+                job_id, plan_path = self.enqueue(["ok"], extra_inputs=specs, profile=profile(lease_wait=90))
+                runner = self.run_queue("--once", "--max-wait", "120")
+                self.assertTrue(self.wait_for(lambda: "waiting: heavy lease" in self.queue_log(job_id), 60),
+                                self.queue_log(job_id))
+                path = os.path.join(os.path.dirname(plan_path), target)
+                self.make_writable(path)
+                with open(path, "a") as fh:
+                    fh.write("\n# changed while the job waited for its lease\n")
+                subprocess.run([self.paths["lr_lease"], "release", holder], env=self.env, check=True)
+                runner.wait(timeout=300)
                 outcome = self.outcome(job_id)
-                self.assertIn("inputs changed since enqueue", outcome["reason"])
-                self.assertIn(expected, outcome["reason"])
-                self.assertFalse(any(e["event"] == "admitted" for e in outcome["events"]))
+                self.assertEqual(outcome["exit"], 65, outcome["reason"])
+                self.assertIn("changed", outcome["reason"])
+                self.assertTrue(any(e["event"] == "admitted" for e in outcome["events"]))
                 self.assertFalse(os.path.exists(os.path.join(self.run_root(job_id), "recipe.log")))
                 self.assertEqual(self.leases(), [])
 

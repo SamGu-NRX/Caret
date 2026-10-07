@@ -231,18 +231,37 @@ class Supervisor:
         os.mkdir(self.out, 0o700)
         self._write_json("supervisor.json", {k: self.record[k] for k in (
             "job_id", "supervisor_pid", "mark", "launchd_prefix", "started_utc")})
-        problems = manifest.check(self.plan["inputs"])
-        try:
-            manifest.record("worktree", "git", self.plan["worktree"], rev=self.plan["rev"])
-        except manifest.ManifestError as ex:
-            problems.append(str(ex))
+        problems = self._sealed_problems()
         if problems:
             return EXIT_REFUSED, "inputs changed since enqueue: " + "; ".join(problems)
         self.log("inputs match the plan's manifest ({} entries)".format(len(self.plan["inputs"])))
         admitted = self._admit()
         if admitted is not True:
             return admitted
+        # Again, immediately before the spawn: the lease wait can take up to the profile's lease_wait_s.
+        problems = self._sealed_problems()
+        if problems:
+            return EXIT_REFUSED, "inputs changed since enqueue (found after admission): " + "; ".join(problems)
         return self._run_recipe()
+
+    def _sealed_problems(self):
+        """What no longer matches the plan: the job's sealed ops/heavy files, its sealed inputs, the pinned worktree."""
+        import caret_heavy
+        problems = []
+        try:
+            files = caret_heavy.snapshot_files(self.plan["ops"]["snapshot"])
+        except manifest.ManifestError as ex:
+            files, problems = None, [str(ex)]
+        if files is not None and files != self.plan["ops"]["files"]:
+            changed = sorted(k for k in set(files) | set(self.plan["ops"]["files"])
+                             if files.get(k) != self.plan["ops"]["files"].get(k))
+            problems.append("sealed ops/heavy files changed: {}".format(changed[:5]))
+        problems += manifest.check(self.plan["inputs"])
+        try:
+            manifest.record("worktree", "git", self.plan["worktree"], rev=self.plan["rev"])
+        except manifest.ManifestError as ex:
+            problems.append(str(ex))
+        return problems
 
     # Admission under the lease
 
@@ -343,6 +362,7 @@ class Supervisor:
             "CARET_HEAVY_RECIPE": self.plan["recipe"]["name"], "CARET_HEAVY_OUT": self.out,
             "CARET_HEAVY_PY": self.plan["python"], "CARET_HEAVY_REV": self.plan["rev"],
             "CARET_HEAVY_RECIPES": os.path.join(self.plan["ops"]["snapshot"], "ops/heavy/recipes"),
+            "CARET_HEAVY_INPUTS": self.plan["inputs_dir"],
         }
         held = self._held_heavy_fd()
         if held is not None:

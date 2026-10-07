@@ -15,8 +15,9 @@ case "$WORK" in /?*) ;; *) echo "prepare: WORK must be an absolute directory" >&
 [ "$WORK" != "$HOME" ] || { echo "prepare: WORK must not be HOME" >&2; exit 64; }
 [ "$REV" = "$CARET_HEAVY_REV" ] || { echo "prepare: $REV is not the job's pinned $CARET_HEAVY_REV" >&2; exit 64; }
 HD="$CARET_HEAVY_RECIPES/r2/$H"
+REQUIRED=(build stage payload)
 mkdir -p "$WORK"
-/bin/bash "$HD/build.sh" "$REV" "$WORK" > "$OUT/build.log" 2>&1
+/bin/bash "$HD/build.sh" "$REV" "$WORK" "$IN" > "$OUT/build.log" 2>&1
 check prepare build --log "$OUT/build.log" --exit $? || finish
 if [ "$H" = h11 ]; then /bin/bash "$HD/stage.sh" "$WORK" "$@"; else /bin/bash "$HD/stage.sh" "$WORK"; fi > "$OUT/stage.log" 2>&1
 check prepare stage --log "$OUT/stage.log" --exit $? || finish

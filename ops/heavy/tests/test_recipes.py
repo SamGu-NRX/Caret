@@ -1,14 +1,14 @@
 """The recipe scripts' own control flow, run directly with stub tools (tests/stubs) in place of pnpm, node, npx,
-rig-run and Lume. Checks the exit codes, stopping at the first wrong value, the live watcher, the spend check, and
-R2's feeder with its spend control and leak scan. The real tools run only in real heavy jobs; build.sh and stage.sh
-(r2-prepare) are not covered here."""
+rig-run and Lume, and a temporary sealed-inputs directory like the one enqueue makes. Checks the exit codes, the
+required steps and expected pages, stopping at the first wrong value, the live watcher, the spend check, R2's feeder
+with its spend control, exact run directory and leak scan (also on cancellation), and R2's fresh export. The real tools
+run only in real heavy jobs; build.sh and stage.sh past the export are not covered here."""
 
-import datetime
 import json
 import os
 import shutil
+import signal
 import subprocess
-import sys
 import tempfile
 import time
 import unittest
@@ -18,67 +18,117 @@ STUBS = os.path.join(HEAVY, "tests/stubs")
 RECIPES = os.path.join(HEAVY, "recipes")
 PY = "/opt/homebrew/opt/python@3.14/bin/python3.14"
 REV = "c" * 40
+KEY = "synthetic-key-not-a-credential-0123"
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(text)
 
 
 class Recipes(unittest.TestCase):
     def setUp(self):
         self.root = os.path.realpath(tempfile.mkdtemp(prefix="caret-heavy-recipes-"))
-        self.addCleanup(shutil.rmtree, self.root, True)
+        self.addCleanup(lambda: (subprocess.run(["chmod", "-R", "u+w", self.root]), shutil.rmtree(self.root, True)))
         self.home = os.path.join(self.root, "home")
         self.worktree = os.path.join(self.root, "worktree")
-        for d in ("helper", "extension", "fixtures/web-form", "bridge/.build/release"):
+        self.inputs = os.path.join(self.root, "inputs")
+        for d in ("helper", "extension", "fixtures/web-form/tasks/expect", "bridge/.build/release"):
             os.makedirs(os.path.join(self.worktree, d))
+        for page in ("wizard-1", "reveal"):
+            write(os.path.join(self.worktree, "fixtures/web-form/tasks/expect", page + ".json"), "{}")
+        write(os.path.join(self.worktree, "fixtures/web-form/page-loop-eval.ts"), '// "w4-owners"\n')
+        write(os.path.join(self.worktree, "fixtures/realfill/corpus.json"),
+              json.dumps({"forms": [{"id": "httpbin-pizza"}, {"id": "clinic-intake"}]}))
+        # The sealed inputs, as enqueue clones them.
+        write(os.path.join(self.inputs, "bridge/caret-bridge"), "bridge\n")
+        write(os.path.join(self.inputs, "bridge/caret-bridge-testhost"), "testhost\n")
+        write(os.path.join(self.inputs, "browsers/chrome/Chrome"), "chrome\n")
+        for site in ("greenhouse-discord", "ashby-ramp-application"):
+            write(os.path.join(self.inputs, "w4/real", site + ".html"), "<form></form>")
+        for name in ("key.json", "note.txt", "owners.json"):
+            write(os.path.join(self.inputs, "w4/replay", name), "{}")
+        write(os.path.join(self.inputs, "heldout/manifest.json"), json.dumps([{"name": "heldout-zh"}, {"name": "heldout-ar"}]))
         os.makedirs(self.home)
         self.out = os.path.join(self.root, "out")
+        self.env_file = os.path.join(self.root, "synthetic.env")
+        write(self.env_file, "TYPESAFE_API_KEY={}\n".format(KEY))
+
+    def env(self, script, extra=None):
+        base = {"PATH": STUBS + ":/usr/bin:/bin", "HOME": self.home, "CARET_HEAVY_RECIPES": RECIPES,
+                "CARET_HEAVY_PY": PY, "CARET_HEAVY_OUT": self.out, "CARET_HEAVY_JOB_ID": "caret-recipe-test",
+                "CARET_HEAVY_PLAN_SHA256": "e" * 64, "CARET_HEAVY_RECIPE": os.path.basename(script)[:-3],
+                "CARET_HEAVY_REV": REV, "CARET_HEAVY_INPUTS": self.inputs}
+        return dict(base, **(extra or {}))
 
     def run_recipe(self, script, *args, env=None):
         shutil.rmtree(self.out, ignore_errors=True)
         os.makedirs(self.out)
-        base = {"PATH": STUBS + ":/usr/bin:/bin", "HOME": self.home, "CARET_HEAVY_RECIPES": RECIPES,
-                "CARET_HEAVY_PY": PY, "CARET_HEAVY_OUT": self.out, "CARET_HEAVY_JOB_ID": "caret-recipe-test",
-                "CARET_HEAVY_PLAN_SHA256": "e" * 64, "CARET_HEAVY_RECIPE": os.path.basename(script)[:-3],
-                "CARET_HEAVY_REV": REV}
         done = subprocess.run(["/bin/bash", os.path.join(RECIPES, script), *args], cwd=self.worktree,
-                              env=dict(base, **(env or {})), capture_output=True, text=True, timeout=120)
+                              env=self.env(script, env), capture_output=True, text=True, timeout=120)
+        return done, self.result()
+
+    def result(self):
         try:
             with open(os.path.join(self.out, "result.json")) as fh:
-                result = json.load(fh)
+                return json.load(fh)
         except FileNotFoundError:
-            result = None
-        return done, result
+            return None
 
     def steps(self, result):
         return [(s["kind"], s["name"], s["code"]) for s in result["steps"]]
 
+    # Browser and helper recipes
+
+    def test_canned_sets_pass_with_every_expected_page_and_sealed_binaries(self):
+        with open(os.path.join(self.worktree, "bridge/.build/release/caret-bridge"), "w") as fh:
+            fh.write("stale build\n")
+        done, result = self.run_recipe("canned-sets.sh", "t")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual([s[2] for s in self.steps(result)], [0] * 7)
+        with open(os.path.join(self.worktree, "bridge/.build/release/caret-bridge")) as fh:
+            self.assertEqual(fh.read(), "bridge\n")  # replaced by the sealed copy
+        with open(os.path.join(self.out, "ids-corpus.txt")) as fh:
+            self.assertEqual(fh.read().split(), ["ashby-ramp-application", "clinic-intake", "greenhouse-discord",
+                                                 "httpbin-pizza"])
+
     def test_canned_sets_stop_at_the_first_wrong_value(self):
         done, result = self.run_recipe("canned-sets.sh", "t", env={"STUB_WRONG": "tasks-labelled"})
         self.assertEqual(done.returncode, 10, done.stdout + done.stderr)
-        self.assertEqual(self.steps(result), [("prepare", "dependencies", 0), ("page-loop", "tasks-blind-t", 0),
-                                              ("page-loop", "tasks-labelled-t", 10)])
+        self.assertEqual(self.steps(result)[-2:], [("page-loop", "tasks-labelled-t", 10),
+                                                   ("required", "corpus-goal-t", 0)])
+        self.assertTrue(result["steps"][-1]["skipped"])
         self.assertFalse(os.path.exists(os.path.join(self.out, "corpus-goal-t")))
-        self.assertEqual(result["exit"], 10)
 
-    def test_canned_sets_clone_binaries_from_a_source_and_pass(self):
-        source = os.path.join(self.root, "source")
-        os.makedirs(os.path.join(source, "bridge/.build/release"))
-        os.makedirs(os.path.join(source, "fixtures/web-form/.browsers/chrome"))
-        for rel in ("bridge/.build/release/caret-bridge", "bridge/.build/release/caret-bridge-testhost",
-                    "fixtures/web-form/.browsers/chrome/Chrome"):
-            with open(os.path.join(source, rel), "w") as fh:
-                fh.write(rel + "\n")
-        with open(os.path.join(self.worktree, "bridge/.build/release/caret-bridge"), "w") as fh:
-            fh.write("stale build\n")
-        done, result = self.run_recipe("canned-sets.sh", "t", source)
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertEqual([s[2] for s in self.steps(result)], [0, 0, 0, 0, 0])
-        with open(os.path.join(self.worktree, "bridge/.build/release/caret-bridge")) as fh:
-            self.assertEqual(fh.read(), "bridge/.build/release/caret-bridge\n")  # replaced, not kept
-        self.assertTrue(os.path.exists(os.path.join(self.worktree, "fixtures/web-form/.browsers/chrome/Chrome")))
+    def test_a_missing_page_or_a_page_error_fails_the_set(self):
+        os.unlink(os.path.join(self.inputs, "w4/real/ashby-ramp-application.html"))
+        write(os.path.join(self.worktree, "fixtures/realfill/corpus.json"),
+              json.dumps({"forms": [{"id": "httpbin-pizza"}, {"id": "clinic-intake"}, {"id": "never-run"}]}))
+        os.chmod(os.path.join(STUBS, "node"), 0o755)
+        # The stub runs the corpus.json it finds, so make it drop never-run as a broken eval would.
+        done, result = self.run_recipe("canned-sets.sh", "t", env={"STUB_ROW_ERROR": "tasks-blind"})
+        self.assertEqual(done.returncode, 11, done.stdout + done.stderr)
+        self.assertEqual(self.steps(result)[4], ("page-loop", "tasks-blind-t", 11))
+
+    def test_a_checker_that_crashes_mid_recipe_fails_the_recipe(self):
+        recipes = os.path.join(self.root, "recipes")
+        shutil.copytree(RECIPES, recipes)
+        real = os.path.join(recipes, "check_real.py")
+        os.rename(os.path.join(recipes, "check.py"), real)
+        with open(os.path.join(recipes, "check.py"), "w") as fh:
+            fh.write("import runpy, sys\n"
+                     "if sys.argv[1:3] == ['page-loop', 'tasks-labelled-t']: raise SystemExit(1)\n"
+                     "sys.argv[0] = {!r}; runpy.run_path({!r}, run_name='__main__')\n".format(real, real))
+        done, result = self.run_recipe("canned-sets.sh", "t", env={"CARET_HEAVY_RECIPES": recipes})
+        self.assertEqual(done.returncode, 12, done.stdout + done.stderr)
+        self.assertEqual(result["exit"], 12)
 
     def test_a_failed_offline_install_stops_before_any_set(self):
         done, result = self.run_recipe("canned-sets.sh", "t", env={"STUB_INSTALL_EXIT": "1"})
         self.assertEqual(done.returncode, 14)
-        self.assertEqual(self.steps(result), [("prepare", "dependencies", 14)])
+        self.assertEqual(self.steps(result)[0], ("prepare", "dependencies", 14))
+        self.assertTrue(all(s[0] == "required" and r["skipped"] for s, r in zip(self.steps(result)[1:], result["steps"][1:])))
 
     def test_helper_window_runs_every_suite_and_fails_on_one(self):
         done, result = self.run_recipe("helper-window.sh", "t", env={"STUB_FAIL_SUITE": "extension"})
@@ -89,11 +139,8 @@ class Recipes(unittest.TestCase):
         done, result = self.run_recipe("helper-window.sh", "t")
         self.assertEqual(done.returncode, 0)
 
-    def live(self, **env):
-        env_file = os.path.join(self.root, "synthetic.env")
-        with open(env_file, "w") as fh:
-            fh.write("TYPESAFE_API_KEY=synthetic-not-a-credential\n")
-        return self.run_recipe("live-tasks.sh", "t", "0.10", env=dict({"CARET_ENV_FILE": env_file}, **env))
+    def live(self, *extra, **env):
+        return self.run_recipe("live-tasks.sh", "t", "0.10", *extra, env=dict({"CARET_ENV_FILE": self.env_file}, **env))
 
     def test_live_stops_the_eval_at_the_first_wrong_value(self):
         started = time.monotonic()
@@ -101,39 +148,47 @@ class Recipes(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 30)  # the stub would hang 120 s
         self.assertEqual(done.returncode, 10, done.stdout + done.stderr)
         self.assertIn("wrong value seen, stopping pid", done.stdout)
-        self.assertEqual(self.steps(result)[1:], [("page-loop", "live-tasks-blind-t", 10),
-                                                  ("spend", datetime.date.today().isoformat(), 0)])
+        self.assertEqual(self.steps(result)[-2:], [("page-loop", "live-tasks-blind-t", 10), ("spend", "spend", 0)])
 
     def test_live_spend_over_the_limit_fails(self):
         done, result = self.live(STUB_SPEND="0.15")
         self.assertEqual(done.returncode, 13, done.stdout + done.stderr)
         done, result = self.live()
-        self.assertEqual(done.returncode, 0)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+    def test_live_heldout_runs_the_sealed_pages(self):
+        done, result = self.live("heldout")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        with open(os.path.join(self.out, "heldout-t/page-loop.json")) as fh:
+            self.assertEqual(sorted(r["id"] for r in json.load(fh)["rows"]), ["heldout-ar", "heldout-zh"])
 
     def test_live_without_a_key_path_refuses(self):
         done, _ = self.run_recipe("live-tasks.sh", "t", "0.10")
         self.assertEqual(done.returncode, 64)
 
-    def r2(self, **env):
-        job = os.path.join(self.root, "vm")
-        shutil.rmtree(job, ignore_errors=True)
+    # R2
+
+    def vm_inputs(self):
+        job = os.path.join(self.inputs, "vm-job")
         os.makedirs(os.path.join(job, "payload/tools"))
-        with open(os.path.join(job, "job.sh"), "w") as fh:
-            fh.write("#!/bin/bash\n")
-        options = {"pages": ["wizard-1"], "sources": "note", "nextPage": False, "scenarios": ["page_task"]}
-        with open(os.path.join(job, "payload/REV"), "w") as fh:
-            fh.write(REV + "\n")
-        with open(os.path.join(job, "payload/h11-options.json"), "w") as fh:
-            json.dump(options, fh)
+        os.makedirs(os.path.join(job, "runs"))
+        write(os.path.join(job, "job.sh"), "#!/bin/bash\n")
+        write(os.path.join(job, "payload/REV"), REV + "\n")
+        self.options = {"pages": ["wizard-1"], "sources": "note", "nextPage": False, "scenarios": ["page_task"]}
+        write(os.path.join(job, "payload/h11-options.json"), json.dumps(self.options))
+        os.chmod(os.path.join(job, "payload"), 0o555)  # sealed, as enqueue leaves it
         rig = os.path.join(self.home, ".long-run/rig/bin")
         os.makedirs(rig, exist_ok=True)
         shutil.copy2(os.path.join(STUBS, "rig-run"), os.path.join(rig, "rig-run"))
-        env_file = os.path.join(self.root, "synthetic.env")
-        with open(env_file, "w") as fh:
-            fh.write("TYPESAFE_API_KEY=synthetic-key-not-a-credential-0123\n")
-        done, result = self.run_recipe("r2/vm.sh", "h11", job, "30", "0.2000", "0.0500", "off", env=dict({
-            "CARET_ENV_FILE": env_file, "CARET_HEAVY_TEST_LUME": os.path.join(STUBS, "lume"),
-            "H11_OPTIONS": json.dumps(options, sort_keys=True, separators=(",", ":"))}, **env))
+        return job
+
+    def vm_env(self, **extra):
+        return dict({"CARET_ENV_FILE": self.env_file, "CARET_HEAVY_TEST_LUME": os.path.join(STUBS, "lume"),
+                     "H11_OPTIONS": json.dumps(self.options, sort_keys=True, separators=(",", ":"))}, **extra)
+
+    def r2(self, **env):
+        job = self.vm_inputs()
+        done, result = self.run_recipe("r2/vm.sh", "h11", "30", "0.2000", "0.0500", "off", env=self.vm_env(**env))
         return done, result, job
 
     def test_r2_vm_writes_spend_control_runs_the_feeder_and_checks_the_run(self):
@@ -144,28 +199,95 @@ class Recipes(unittest.TestCase):
             control = json.load(fh)
         for key, want in (("capUsd", 0.2), ("remainingUsd", 0.15), ("priorR2SpendUsd", 0.05), ("seedUsd", 0.05)):
             self.assertAlmostEqual(control[key], want)
-        self.assertFalse(os.path.exists(os.path.join(job, "payload/spend-control.json")))
         [run] = os.listdir(os.path.join(job, "runs"))
         with open(os.path.join(job, "runs", run, "cap-seen.txt")) as fh:
             self.assertEqual(float(fh.read()), 0.2)
         with open(os.path.join(job, "payload/CONFIG")) as fh:
             self.assertEqual(fh.read().strip(), "off")
+        with open(os.path.join(self.out, "rig-run-dir")) as fh:
+            self.assertEqual(fh.read().strip(), os.path.join(job, "runs", run))
         self.assertTrue(os.path.exists(os.path.join(self.out, "rig-run/out/results.json")))
+
+    def test_r2_vm_takes_rig_runs_own_run_directory_not_an_older_one_with_its_pid(self):
+        job = self.vm_inputs()
+        # A stale run directory for every pid this test could see, as an earlier rig-run with a reused pid leaves.
+        old = os.path.join(job, "runs", "20260101T000000Z-stale")
+        write(os.path.join(old, "out/results.json"), "{}")
+        done, result = self.run_recipe("r2/vm.sh", "h11", "30", "0.2000", "0.0000", "off", env=self.vm_env())
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        with open(os.path.join(self.out, "rig-run-dir")) as fh:
+            self.assertNotEqual(fh.read().strip(), old)
 
     def test_r2_vm_codes(self):
         for env, code in (({"STUB_WRONG_ROW": "yes"}, 10), ({"STUB_RESULT_REV": "d" * 40}, 12), ({"STUB_RIG_EXIT": "70"}, 11)):
             with self.subTest(env):
+                if os.path.exists(os.path.join(self.inputs, "vm-job")):
+                    subprocess.run(["chmod", "-R", "u+w", self.inputs])
+                    shutil.rmtree(os.path.join(self.inputs, "vm-job"))
                 done, result, _ = self.r2(**env)
                 self.assertEqual(done.returncode, code, done.stdout + done.stderr)
 
+    def assert_key_nowhere(self):
+        hits = []
+        for root, _, names in os.walk(self.root):
+            for name in names:
+                path = os.path.join(root, name)
+                if path != self.env_file and not os.path.islink(path):
+                    with open(path, "rb") as fh:
+                        if KEY.encode() in fh.read():
+                            hits.append(path)
+        self.assertEqual(hits, [])
+
     def test_r2_vm_key_found_in_the_copied_back_run_fails_and_is_deleted(self):
-        env_file = os.path.join(self.root, "synthetic.env")
-        done, result, job = self.r2(STUB_LEAK_KEY_FROM=env_file)
+        done, result, job = self.r2(STUB_LEAK_KEY_FROM=self.env_file)
         self.assertEqual(done.returncode, 99, done.stdout + done.stderr)
         [run] = os.listdir(os.path.join(job, "runs"))
-        self.assertFalse(os.path.exists(os.path.join(job, "runs", run, "out/job.log")))
         self.assertTrue(os.path.exists(os.path.join(job, "runs", run, "KEY-LEAK.txt")))
-        self.assertNotIn("synthetic-key-not-a-credential-0123", done.stdout + done.stderr)
+        self.assert_key_nowhere()
+        self.assertFalse(os.path.exists(os.path.join(self.out, "rig-run/out/results.json")))  # nothing published
+
+    def test_cancelling_r2_vm_still_runs_the_leak_scan_and_publishes_nothing_unscanned(self):
+        job = self.vm_inputs()
+        os.makedirs(self.out, exist_ok=True)
+        shutil.rmtree(self.out)
+        os.makedirs(self.out)
+        proc = subprocess.Popen(["/bin/bash", os.path.join(RECIPES, "r2/vm.sh"), "h11", "30", "0.2000", "0.0000", "off"],
+                                cwd=self.worktree, env=self.env("r2/vm.sh", self.vm_env(STUB_HANG="1",
+                                STUB_LEAK_KEY_FROM=self.env_file)), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, start_new_session=True)
+        deadline = time.monotonic() + 30
+        while not os.path.exists(os.path.join(self.inputs, "rig-started")) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertTrue(os.path.exists(os.path.join(self.inputs, "rig-started")))
+        os.killpg(proc.pid, signal.SIGTERM)  # the recipe's own group, started by this test: rig-run, feeder, vm.sh
+        out, _ = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 99, out)  # the scan ran and found the key the stopped rig-run left
+        self.assertIn("KEY LEAK on the host", out)
+        self.assert_key_nowhere()
+        self.assertFalse(os.path.exists(os.path.join(self.out, "rig-run/out/job.log")))
+
+    def test_r2_export_is_fresh_every_time(self):
+        repo = os.path.join(self.root, "repo")
+        os.makedirs(repo)
+        git = lambda *a: subprocess.run(["git", "-C", repo, "-c", "user.name=T", "-c", "user.email=t@example.invalid",
+                                         "-c", "commit.gpgsign=false", *a], capture_output=True, text=True, check=True)
+        git("init", "-q")
+        write(os.path.join(repo, "app.txt"), "v1\n")
+        git("add", "app.txt")
+        git("commit", "-q", "-m", "one")
+        rev = git("rev-parse", "HEAD").stdout.strip()
+        dest = os.path.join(self.root, "work/src")
+        write(os.path.join(dest, ".REV"), rev + "\n")  # an export of the same commit, with a file no commit has
+        write(os.path.join(dest, "planted.txt"), "left by an earlier build\n")
+        done = subprocess.run(["/bin/bash", os.path.join(RECIPES, "r2/export.sh"), repo, rev, dest],
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(sorted(os.listdir(dest)), [".REV", "app.txt"])
+        for harness in ("h11", "h14"):
+            with open(os.path.join(RECIPES, "r2", harness, "build.sh")) as fh:
+                text = fh.read()
+            self.assertNotIn('.REV" 2>/dev/null)" != ', text)  # no reuse of an export by its .REV
+            self.assertIn("export.sh", text)
 
 
 if __name__ == "__main__":

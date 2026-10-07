@@ -221,8 +221,13 @@ class CheckTest(Temp):
         shutil.rmtree(run, ignore_errors=True)
         self.write("out/rig-run/rig.json", '{"exit": 0}')
         name = "results.json" if harness == "h11" else "result.json"
-        data = {"rev": rev, "options": {"pages": ["wizard-1"]}, "rows": rows or [{"id": "r1", "wrong": "no"}],
-                "pass": passed}
+        if harness == "h11":
+            data = {"rev": rev, "options": self.H11_OPTS, "rows": rows or self.good_h11_rows(), "notes": []}
+        else:
+            ids = ["attach-input", "attach-dropzone", "tab-never-confirms", "click-opens", "save-line", "switches",
+                   "zero-submits", "attach-input-undo", "attach-dropzone-undo"]
+            data = {"rev": rev, "rows": [{"id": i, "pass": passed} for i in ids], "pass": passed,
+                    "checks": [{"id": i, "pass": True} for i in ("fixture", "caret-up", "page", "window-id")]}
         self.write("out/rig-run/out/" + name, json.dumps(data))
         if leak is not None:
             self.write("out/rig-run/out/leak-check.txt", leak)
@@ -230,9 +235,11 @@ class CheckTest(Temp):
                    '{"usd": 1.0, "r2Seed": true}\n{"usd": %s}\n' % spend)
         return run
 
+    H11_OPTS = {"pages": ["wizard-1"], "sources": "note", "nextPage": False, "scenarios": ["page_task"]}
+
     def test_r2_codes(self):
         pin = "c" * 40
-        opts = json.dumps({"pages": ["wizard-1"]})
+        opts = json.dumps(self.H11_OPTS)
         base = ["--rev", pin, "--exit", "0", "--spend-limit", "0.20"]
         self.assertEqual(self.run_check("r2", "--harness", "h11", "--run", self.r2_run(), "--options", opts, *base), 0)
         self.assertEqual(self.run_check("r2", "--harness", "h11", "--run",
@@ -244,11 +251,112 @@ class CheckTest(Temp):
         self.assertEqual(self.run_check("r2", "--harness", "h11", "--run", self.r2_run(spend=0.25), *base), check.SPEND)
         self.assertEqual(self.run_check("r2", "--harness", "h14", "--run", self.r2_run("h14", passed=False), *base),
                          check.FAILED)
-        self.assertEqual(self.run_check("r2", "--harness", "h11", "--run", self.r2_run(),
+        self.assertEqual(self.run_check("r2", "--harness", "h11", "--run", self.r2_run(), "--options", opts,
                                         "--rev", pin, "--exit", "70", "--spend-limit", "0.20"), check.FAILED)
+        # H11 without the plan's options cannot be checked against them.
+        self.assertEqual(self.run_check("r2", "--harness", "h11", "--run", self.r2_run(), *base), check.EVIDENCE)
         for leak_code in (98, 99):
             self.assertEqual(self.run_check("r2", "--harness", "h11", "--run", self.r2_run(),
                                             "--rev", pin, "--exit", str(leak_code), "--spend-limit", "0.20"), leak_code)
+
+    def test_malformed_evidence_is_12_whatever_the_eval_exited(self):
+        self.write("out/garbled/page-loop.json", "{not json")
+        self.assertEqual(self.run_check("page-loop", "garbled", "--exit", "1"), check.EVIDENCE)
+        self.write("out/shape/page-loop.json", json.dumps({"rows": "not a list", "presses": 0}))
+        self.assertEqual(self.run_check("page-loop", "shape", "--exit", "1"), check.EVIDENCE)
+        self.write("out/rowshape/page-loop.json", json.dumps({"rows": [{"id": "a", "wrong": "x", "walk": {}}], "presses": 0}))
+        self.assertEqual(self.run_check("page-loop", "rowshape", "--exit", "0"), check.EVIDENCE)
+
+    def test_page_loop_acceptance_needs_every_expected_page_no_error_and_goal_results(self):
+        ids = self.write("ids.txt", "a\nb\n")
+        self.page_loop("good")
+        self.assertEqual(self.run_check("page-loop", "good", "--exit", "0", "--expect-ids", ids), 0)
+        missing = self.write("ids2.txt", "a\nb\nc\n")
+        self.assertEqual(self.run_check("page-loop", "good", "--exit", "0", "--expect-ids", missing), check.EVIDENCE)
+        rows = [{"id": "a", "walk": {"x": 1}, "wrong": [], "error": "page crashed"},
+                {"id": "b", "walk": {"x": 1}, "wrong": [], "error": None}]
+        self.write("out/err/page-loop.json", json.dumps({"rows": rows, "presses": 0, "posts": 0}))
+        self.assertEqual(self.run_check("page-loop", "err", "--exit", "0", "--expect-ids", ids), check.FAILED)
+        # Goal path: every row needs a goal result, except a task page with nothing eligible to fill.
+        rows = [{"id": "a", "walk": {"x": 1}, "wrong": [], "error": None, "goal": {"outcome": "done"},
+                 "task": {"scored": True, "eligible": 3}},
+                {"id": "b", "walk": {"x": 1}, "wrong": [], "error": None, "goal": None, "task": {"scored": True, "eligible": 0}}]
+        self.write("out/goal/page-loop.json", json.dumps({"rows": rows, "presses": 0}))
+        self.assertEqual(self.run_check("page-loop", "goal", "--exit", "0", "--goal"), 0)
+        rows[1]["task"]["eligible"] = 2
+        self.write("out/goal/page-loop.json", json.dumps({"rows": rows, "presses": 0}))
+        self.assertEqual(self.run_check("page-loop", "goal", "--exit", "0", "--goal"), check.EVIDENCE)
+        rows[1]["goal"] = {"outcome": "done"}
+        rows[1]["task"]["scored"] = False
+        self.write("out/goal/page-loop.json", json.dumps({"rows": rows, "presses": 0}))
+        self.assertEqual(self.run_check("page-loop", "goal", "--exit", "0", "--goal"), check.EVIDENCE)
+
+    def test_finish_requires_named_steps_and_fails_on_a_checker_error(self):
+        self.page_loop("one")
+        self.run_check("page-loop", "one", "--exit", "0")
+        self.assertEqual(self.run_check("finish", "--require", "one", "two"), check.EVIDENCE)
+        with open(os.path.join(self.out, "result.json")) as fh:
+            self.assertIn("two", json.dumps(json.load(fh)["steps"]))
+        self.assertEqual(self.run_check("finish", "--require", "one"), 0)
+        self.write("out/checker-errors.txt", "page-loop two --exit 0 (exit 1)\n")
+        self.assertEqual(self.run_check("finish", "--require", "one"), check.EVIDENCE)
+
+    def h11(self, rows, notes=(), pages=("wizard-1",), next_page=False):
+        opts = {"pages": list(pages), "sources": "note", "nextPage": next_page, "scenarios": ["page_task"]}
+        run = os.path.join(self.out, "rig-run")
+        shutil.rmtree(run, ignore_errors=True)
+        self.write("out/rig-run/out/results.json", json.dumps({"rev": "c" * 40, "options": opts, "rows": rows,
+                                                               "notes": list(notes)}))
+        self.write("out/rig-run/out/leak-check.txt", "CLEAN\n")
+        return self.run_check("r2", "--harness", "h11", "--run", run, "--rev", "c" * 40, "--exit", "0",
+                              "--spend-limit", "0.2", "--options", json.dumps(opts))
+
+    def good_h11_rows(self, page="wizard-1"):
+        sid = "h11-" + page
+        return [{"id": sid + "-ask-at-form", "offered": "yes", "right": "yes", "wrong": "no", "note": ""},
+                {"id": sid + "-tab", "right": "yes", "verified": "yes", "wrong": "no", "note": ""},
+                {"id": sid + "-no-submit", "verified": "yes", "wrong": "n/a", "note": ""},
+                {"id": sid + "-undo", "undone": "yes", "wrong": "n/a", "note": ""}]
+
+    def test_h11_acceptance_needs_every_page_row_completed(self):
+        self.assertEqual(self.h11(self.good_h11_rows()), 0)
+        self.assertEqual(self.h11([]), check.EVIDENCE)  # no rows at all
+        self.assertEqual(self.h11(self.good_h11_rows()[:2]), check.EVIDENCE)  # no-submit and undo missing
+        self.assertEqual(self.h11(self.good_h11_rows(), pages=("wizard-1", "reveal")), check.EVIDENCE)
+        rows = self.good_h11_rows()
+        rows[0] = dict(rows[0], offered="no", right="n/a", note="desk did not open")
+        self.assertEqual(self.h11(rows), check.FAILED)
+        rows = self.good_h11_rows()
+        rows[3] = dict(rows[3], undone="n/a", note="not run: the goal never ended")
+        self.assertEqual(self.h11(rows), check.FAILED)
+        self.assertEqual(self.h11(self.good_h11_rows(), notes=["harness: page_task reveal crashed: KeyError()"]),
+                         check.FAILED)
+        self.assertEqual(self.h11(self.good_h11_rows(), notes=["phase P: page_task wizard-1 not run (time budget)"]),
+                         check.FAILED)
+        # With the next page on, page 1's undo moves to wizard-2's row.
+        rows = self.good_h11_rows()[:3] + [{"id": "h11-wizard-1-undo", "note": "not run: H11_NEXT_PAGE=1 pressed Next first"}]
+        self.assertEqual(self.h11(rows, next_page=True), check.EVIDENCE)
+        rows.append({"id": "h11-wizard-2-undo", "undone": "yes", "wrong": "n/a", "note": ""})
+        self.assertEqual(self.h11(rows, next_page=True), 0)
+
+    def h14(self, drop=None, fail=None, check_fail=None):
+        ids = ["attach-input", "attach-dropzone", "tab-never-confirms", "click-opens", "save-line", "switches",
+               "zero-submits", "attach-input-undo", "attach-dropzone-undo"]
+        rows = [{"id": i, "pass": i != fail} for i in ids if i != drop]
+        checks = [{"id": i, "pass": i != check_fail} for i in ("fixture", "caret-up", "page", "window-id")]
+        run = os.path.join(self.out, "rig-run")
+        shutil.rmtree(run, ignore_errors=True)
+        self.write("out/rig-run/out/result.json", json.dumps({"rev": "c" * 40, "rows": rows, "checks": checks,
+                                                              "pass": all(r["pass"] for r in rows + checks)}))
+        self.write("out/rig-run/out/leak-check.txt", "CLEAN\n")
+        return self.run_check("r2", "--harness", "h14", "--run", run, "--rev", "c" * 40, "--exit", "0",
+                              "--spend-limit", "0.2")
+
+    def test_h14_acceptance_needs_every_row_and_check(self):
+        self.assertEqual(self.h14(), 0)
+        self.assertEqual(self.h14(drop="save-line"), check.EVIDENCE)
+        self.assertEqual(self.h14(fail="switches"), check.FAILED)
+        self.assertEqual(self.h14(check_fail="caret-up"), check.FAILED)
 
     def test_finish_precedence_and_result(self):
         self.assertEqual(self.run_check("finish"), check.EVIDENCE)  # no steps recorded
@@ -428,7 +536,7 @@ class ProfileAndEnqueueTest(Temp):
         with self.assertRaisesRegex(manifest.ManifestError, "full 40-character"):
             caret_heavy.enqueue("helper-window", "caret-x", repo, "HEAD", argparse.Namespace(tag="t"), paths)
 
-    def test_r2_vm_plan_refuses_a_payload_not_at_the_pin_and_records_options(self):
+    def test_r2_vm_payload_is_sealed_only_at_the_pin_and_options_are_recorded(self):
         pin = "a" * 40
         job = os.path.join(self.root, "vm")
         self.write("vm/job.sh", "#!/bin/bash\n")
@@ -436,13 +544,17 @@ class ProfileAndEnqueueTest(Temp):
         self.write("vm/payload/REV", "b" * 40 + "\n")
         self.write("vm/payload/h11-options.json", '{"pages": ["wizard-1"], "sources": "note"}')
         args = argparse.Namespace(harness="h11", job_dir=job, config="off", rig_wait=3600, allowance=0.2, prior_spend=0.0)
-        with self.assertRaisesRegex(manifest.ManifestError, "not the pinned"):
-            caret_heavy._r2_vm_plan(args, "/w", pin, {})
-        self.write("vm/payload/REV", pin + "\n")
-        argv, inputs, recorded = caret_heavy._r2_vm_plan(args, "/w", pin, {})
-        self.assertEqual(argv, ["h11", job, "3600", "0.2000", "0.0000", "off"])
-        self.assertEqual([e["name"] for e in inputs], ["payload", "job.sh", "tcc.txt"])
+        argv, specs, recorded = caret_heavy._r2_vm_plan(args, "/w", pin, {})
+        self.assertEqual(argv, ["h11", "3600", "0.2000", "0.0000", "off"])
+        self.assertEqual([(e["name"], e["dest"]) for e in specs],
+                         [("payload", "vm-job/payload"), ("job.sh", "vm-job/job.sh"), ("tcc.txt", "vm-job/tcc.txt")])
         self.assertEqual(recorded, {"H11_OPTIONS": '{"pages":["wizard-1"],"sources":"note"}'})
+        with self.assertRaisesRegex(manifest.ManifestError, "not the pinned"):
+            caret_heavy.seal_inputs(specs, os.path.join(self.root, "sealed-1"))
+        self.write("vm/payload/REV", pin + "\n")
+        entries = caret_heavy.seal_inputs(specs, os.path.join(self.root, "sealed-2"))
+        self.assertEqual(entries[0]["path"], os.path.join(self.root, "sealed-2/vm-job/payload"))
+        self.assertEqual(entries[0]["source"], os.path.join(job, "payload"))
         for bad in (dict(allowance=0.25), dict(prior_spend=0.2), dict(config=None)):
             with self.subTest(bad):
                 with self.assertRaises(manifest.ManifestError):

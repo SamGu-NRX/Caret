@@ -1,23 +1,35 @@
 #!/opt/homebrew/opt/python@3.14/bin/python3.14 -I
 """Stub node for tests/test_recipes.py. `node --test ...` passes. `node [--import HOOK] .../page-loop-eval.ts ...`
-writes the eval's report for its --out set: STUB_WRONG names sets (comma-separated name prefixes) that get one wrong
-value and exit 1. A live run (--engine jev) appends STUB_SPEND USD to today's ledger under HOME, and a live run with a
-wrong value prints the page line, then hangs, so the recipe's watcher must stop it."""
-import datetime, json, os, sys, time
+writes the eval's report for its --out set, one row per page the real eval would run: the task suite's expect files,
+the held-out manifest (CARET_HELDOUT_ROOT), or the corpus forms plus the W4 sites under --w4-dir. STUB_WRONG names
+sets (comma-separated name prefixes) that get one wrong value and exit 1; STUB_ROW_ERROR likewise gets a page error.
+A live run (--engine jev) appends STUB_SPEND USD to today's ledger under HOME, and a live run with a wrong value prints
+the page line, then hangs, so the recipe's watcher must stop it."""
+import datetime, glob, json, os, sys, time
 args = sys.argv[1:]
 if args[:1] == ["--test"]:
     print("ℹ tests 2\nℹ pass 2\nℹ fail 0")
     sys.exit(0)
 if args[:1] == ["--import"]:
-    print("hook", args[1], flush=True)
     args = args[2:]
 assert args[0].endswith("page-loop-eval.ts"), args
-out = args[args.index("--out") + 1]
+opt = lambda name: args[args.index(name) + 1] if name in args else None
+out = opt("--out")
 name = os.path.basename(out)
 live = "--engine" in args
 if live and not os.environ.get("CARET_ENV_FILE"):
     sys.exit("stub node: live run without CARET_ENV_FILE")
-wrong = 1 if any(name.startswith(p) for p in os.environ.get("STUB_WRONG", "").split(",") if p) else 0
+if opt("--suite") == "tasks":
+    if os.environ.get("CARET_HELDOUT_ROOT"):
+        ids = [m["name"] for m in json.load(open(os.path.join(os.environ["CARET_HELDOUT_ROOT"], "manifest.json")))]
+    else:
+        ids = [os.path.basename(p)[:-5] for p in glob.glob("fixtures/web-form/tasks/expect/*.json")]
+else:
+    ids = [f["id"] for f in json.load(open("fixtures/realfill/corpus.json"))["forms"]]
+    w4 = opt("--w4-dir")
+    ids += [s for s in ("greenhouse-discord", "ashby-ramp-application") if w4 and os.path.exists(os.path.join(w4, s + ".html"))]
+pick = lambda var: any(name.startswith(p) for p in os.environ.get(var, "").split(",") if p)
+wrong, error = (1 if pick("STUB_WRONG") else 0), pick("STUB_ROW_ERROR")
 if live:
     ledger = os.path.join(os.environ["HOME"], "Library/Application Support/CaretV2/jev-spend",
                           datetime.date.today().isoformat() + ".ndjson")
@@ -27,8 +39,11 @@ if live:
     print("[page-loop +1s] p1: walk 1 ms; wrong {}".format(wrong), flush=True)
     if wrong:
         time.sleep(120)
-rows = [{"id": "p1", "walk": {"commandMs": 1}, "wrong": ["Email: 'x' (key: y)"] * wrong, "error": None}]
+goal = opt("--path") == "goal"
+rows = [{"id": i, "walk": {"commandMs": 1}, "wrong": ["Email: 'x' (key: y)"] * (wrong if n == 0 else 0),
+         "error": "stub page error" if error and n == 0 else None, "goal": {"outcome": "done"} if goal else None,
+         "task": {"scored": True, "eligible": 2} if opt("--suite") == "tasks" else None} for n, i in enumerate(sorted(ids))]
 with open(os.path.join(out, "page-loop.json"), "w") as fh:
     json.dump({"rows": rows, "presses": 0, "posts": 0, "spent": 0}, fh)
-print("[page-loop] pages 1, walked 1, wrong {}".format(wrong))
-sys.exit(1 if wrong else 0)
+print("[page-loop] pages {}, walked {}, wrong {}".format(len(rows), len(rows), wrong))
+sys.exit(1 if wrong or error else 0)

@@ -2,8 +2,10 @@
 # R2's feeder for H11 and H14: submits the staged VM job to rig-run once and hands the guest the Jev key at run time.
 # From ~/.caret-run/evidence/host/r2/h11/harness/run.sh and h14/harness/run.sh, which differed only in H11's --config
 # and their log paths. Changed for ops/heavy: the key file is $CARET_ENV_FILE (the path the job's plan recorded) instead
-# of a fixed .env, so the recorded path is the one used; logs go to $CARET_HEAVY_OUT; the rig run directory is written to
-# $CARET_HEAVY_OUT/rig-run-dir for recipes/r2/vm.sh.
+# of a fixed .env, so the recorded path is the one used; logs go to $CARET_HEAVY_OUT; the run directory is the exact one
+# rig-run reports (RIG_RUN_ID_FILE), never a glob by pid, and is written to $CARET_HEAVY_OUT/rig-run-dir; a clean host
+# leak scan of it is recorded in $CARET_HEAVY_OUT/rig-run-scanned, and vm.sh publishes nothing without that. A TERM stops
+# rig-run, waits for it, and still runs the leak scan before exiting.
 #
 #   run.sh --job DIR --harness h11|h14 [--config off|on] [--wait SECONDS]   (--config is required for h11)
 #
@@ -40,7 +42,8 @@ case "$HARNESS" in h11) case "$CONFIG" in off|on) ;; *) echo "run.sh: h11 needs 
 ENVF=${CARET_ENV_FILE:-}
 [ -n "$ENVF" ] && [ -f "$ENVF" ] || { echo "run.sh: CARET_ENV_FILE must name the .env holding TYPESAFE_API_KEY" >&2; exit 64; }
 LOGDIR=${CARET_HEAVY_OUT:-$JOB}
-[ -z "$CONFIG" ] || printf '%s\n' "$CONFIG" > "$JOB/payload/CONFIG"
+# vm.sh writes CONFIG into the sealed payload before this starts; write it only when it differs.
+[ -z "$CONFIG" ] || [ "$(cat "$JOB/payload/CONFIG" 2>/dev/null)" = "$CONFIG" ] || printf '%s\n' "$CONFIG" > "$JOB/payload/CONFIG"
 
 envval() { sed -n "s/^$1=//p" "$ENVF" | head -1 | sed -e 's/^["'\'']//' -e 's/["'\'']$//' | tr -d '\r'; }
 K_JEV=$(envval TYPESAFE_API_KEY)
@@ -53,17 +56,21 @@ gssh() {
       -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o LogLevel=ERROR "lume@$IP" "$@"
 }
 wait_ack() { local i; for i in $(seq 1 10); do gssh 'test -e ~/rig/job/keys.ok' 2>/dev/null && return 0; sleep 1; done; return 1; }
-trap '[ -n "${RP:-}" ] && kill -TERM "$RP" 2>/dev/null; [ -n "${RP:-}" ] && wait "$RP"; exit 143' TERM INT HUP
+# A stop request stops rig-run (its trap stops the VM and copies nothing more back) and falls through to the leak scan.
+CANCELLED=""
+trap 'CANCELLED=1; [ -n "${RP:-}" ] && kill -TERM "$RP" 2>/dev/null' TERM INT HUP
 
 say "submit $(cat "$JOB/payload/REV" 2>/dev/null) harness $HARNESS${CONFIG:+ config $CONFIG} wait $WAIT"
 # One rig attempt after rig-run's own bounded lease wait (R2's rule). Started by its absolute path, so rig-run does not
 # re-exec and its pid names the clone (rig-run-<pid>).
-"$R/bin/rig-run" "$JOB" --wait "$WAIT" >> "$LOGDIR/run.log" 2>&1 &
+ID_FILE="$LOGDIR/.rig-run-id.$$"
+rm -f "$ID_FILE"
+RIG_RUN_ID_FILE="$ID_FILE" "$R/bin/rig-run" "$JOB" --wait "$WAIT" >> "$LOGDIR/run.log" 2>&1 &
 RP=$!
 VM="rig-run-$RP"
 fed=0
 while kill -0 "$RP" 2>/dev/null; do
-  if [ $fed = 0 ]; then
+  if [ $fed = 0 ] && [ -z "$CANCELLED" ]; then
     IP=$("$LUME" get "$VM" --format json 2>/dev/null | python3 -c 'import json,sys
 d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d.get("ipAddress") or "")' 2>/dev/null)
     if [ -n "$IP" ] && gssh 'test -p ~/rig/job/secret.fifo && ! test -e ~/rig/job/keys.ok' 2>/dev/null; then
@@ -75,10 +82,11 @@ d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d.get("ipAddr
   sleep 3
 done
 wait "$RP"; rc=$?
-say "rig-run exit $rc"
+while kill -0 "$RP" 2>/dev/null; do wait "$RP"; rc=$?; done
+say "rig-run exit $rc${CANCELLED:+ (stop requested)}"
 
-RUN=$(ls -d "$JOB"/runs/*-"$RP" 2>/dev/null | head -1)
-[ -n "$RUN" ] || { say "no run directory for rig-run $RP"; K_JEV=""; exit "$rc"; }
+RUN=$(cat "$ID_FILE" 2>/dev/null); rm -f "$ID_FILE"
+[ -n "$RUN" ] && [ -d "$RUN" ] || { say "rig-run reported no run directory"; K_JEV=""; exit "$rc"; }
 [ -z "${CARET_HEAVY_OUT:-}" ] || printf '%s\n' "$RUN" > "$CARET_HEAVY_OUT/rig-run-dir"
 say "run directory $RUN"
 # The leak check (leakscan.py): the key on stdin, never argv; a scanner failure fails the run.
@@ -94,5 +102,7 @@ if [ -n "$leaks" ]; then
   exit 99
 fi
 say "host leak check: clean ($(printf '%s\n' "$scan" | head -1))"
+[ -z "${CARET_HEAVY_OUT:-}" ] || printf '%s\n' "$RUN" > "$CARET_HEAVY_OUT/rig-run-scanned"
 [ "$fed" = 1 ] || say "the key was never handed over (the job ran without live models)"
+[ -z "$CANCELLED" ] || exit 143
 exit "$rc"

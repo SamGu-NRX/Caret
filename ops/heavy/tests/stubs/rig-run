@@ -1,9 +1,12 @@
 #!/bin/bash
-# Stub rig-run for tests/test_recipes.py: makes the run directory rig-run would copy back, from STUB_* settings, and
-# records the CARET_JEV_DAILY_CAP it was started with.
+# Stub rig-run for tests/test_recipes.py: makes the run directory rig-run would copy back, from STUB_* settings,
+# reports it through RIG_RUN_ID_FILE as rig-run does, and records the CARET_JEV_DAILY_CAP it was started with.
+# STUB_HANG=1: after making the run directory, wait for TERM; on TERM leave whatever STUB_LEAK_KEY_FROM asks for and
+# exit 143, like a rig-run stopped mid-job whose guest log was already copied back.
 JOB=$1
 RUN="$JOB/runs/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 mkdir -p "$RUN/out/jev-spend"
+[ -z "${RIG_RUN_ID_FILE:-}" ] || echo "$RUN" > "$RIG_RUN_ID_FILE"
 echo "{\"exit\": ${STUB_RIG_EXIT:-0}}" > "$RUN/rig.json"
 echo "stub rig-run" > "$RUN/rig.log"
 echo "${CARET_JEV_DAILY_CAP:-unset}" > "$RUN/cap-seen.txt"
@@ -12,9 +15,22 @@ import json, os, sys
 payload, out, wrong, rev = sys.argv[1:]
 options = json.load(open(os.path.join(payload, "h11-options.json")))
 rev = rev or open(os.path.join(payload, "REV")).read().strip()
-json.dump({"rev": rev, "options": options, "rows": [{"id": "r1", "wrong": wrong}]}, open(os.path.join(out, "results.json"), "w"))
+rows = []
+for page in options["pages"]:
+    sid = "h11-" + page
+    rows += [{"id": sid + "-ask-at-form", "offered": "yes", "right": "yes", "wrong": wrong},
+             {"id": sid + "-tab", "right": "yes", "verified": "yes", "wrong": "no"},
+             {"id": sid + "-no-submit", "verified": "yes", "wrong": "n/a"},
+             {"id": sid + "-undo", "undone": "yes", "wrong": "n/a"}]
+json.dump({"rev": rev, "options": options, "rows": rows, "notes": []}, open(os.path.join(out, "results.json"), "w"))
 open(os.path.join(out, "leak-check.txt"), "w").write("CLEAN (stub)\n")
 open(os.path.join(out, "jev-spend", "day.ndjson"), "w").write('{"usd": 5, "r2Seed": true}\n{"usd": 0.03}\n')
 PY
-[ -z "${STUB_LEAK_KEY_FROM:-}" ] || sed -n 's/^TYPESAFE_API_KEY=//p' "$STUB_LEAK_KEY_FROM" > "$RUN/out/job.log"
+leak() { [ -z "${STUB_LEAK_KEY_FROM:-}" ] || sed -n 's/^TYPESAFE_API_KEY=//p' "$STUB_LEAK_KEY_FROM" > "$RUN/out/job.log"; }
+if [ -n "${STUB_HANG:-}" ]; then
+  trap 'leak; exit 143' TERM
+  touch "$JOB/../rig-started"
+  sleep 120 & wait $!
+fi
+leak
 exit "${STUB_RIG_EXIT:-0}"

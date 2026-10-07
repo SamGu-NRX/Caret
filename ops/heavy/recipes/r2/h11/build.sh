@@ -3,28 +3,25 @@
 # read: git archive, and APFS clones (cp -c) of its gitignored inputs (llama.xcframework, the pinned Node tarball,
 # helper and extension node_modules), so nothing there changes. Ported to ops/heavy (recipes/r2/prepare.sh runs it
 # under the supervisor's lease): the worktree is the pinned one it runs in, and WORK replaces the fixed evidence path.
-#   build.sh <full commit> WORK
+#   build.sh <full commit> WORK INPUTS
+# INPUTS: the job's sealed copies of the gitignored inputs (caret_heavy._r2_prepare_plan); nothing is cloned from the
+# worktree's own ignored files, and the export is made fresh every time (export.sh).
 set -euo pipefail
 W=$PWD
 Q=${2:?usage: build.sh <commit> WORK}
 S="$Q/src"            # the export; stage.sh copies the task pages and their oracle from it
 P="$Q/vm/payload"
 TEAM=472BDE15DB7ADCB740F9E2508F0916EE1671FD75
-CFT="$HOME/Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app"
+IN=${3:?usage: build.sh <commit> WORK INPUTS}
+CFT="$IN/Google Chrome for Testing.app"
 want=${1:?usage: build.sh <commit>}
 free() { df -k / | awk 'NR==2{printf "%.1f", $4/1048576}'; }
 echo "== $(date -u +%FT%TZ) $(free) GiB free"
 [ "$(df -k / | awk 'NR==2{print $4}')" -ge 8000000 ] || { echo "blocked: disk"; exit 75; }
 
 full=$(git -C "$W" rev-parse "$want^{commit}")
-if [ "$(cat "$S/.REV" 2>/dev/null)" != "$full" ]; then
-  echo "== export $full"
-  rm -rf "$S"; mkdir -p "$S"
-  git -C "$W" archive "$full" | tar -x -C "$S"
-  kt=$(git -C "$W" ls-tree "$full" packages/keytype | awk '{print $3}')
-  git -C "$W/packages/keytype" archive "$kt" | tar -x -C "$S/packages/keytype"
-  echo "$full" > "$S/.REV"
-fi
+echo "== export $full (fresh)"
+/bin/bash "$(dirname "$0")/../export.sh" "$W" "$full" "$S" packages/keytype
 # H11: no Groq. Since the L1 merge, Ask makes its intent with Jev in one request ("heads"), and ASK_MAKER is a
 # compile-time constant with no runtime switch, so the export is checked, not edited: any other value fails the build.
 ASK_LINE='export const ASK_MAKER: "writer" | "jev" | "heads" = "heads";'
@@ -36,12 +33,12 @@ fi
 grep -n '^export const ASK_MAKER' "$S/helper/src/writer/config.ts"
 # Gitignored inputs, as clones. Lockfiles must match, or the cloned node_modules may not be this commit's.
 mkdir -p "$S/packages/keytype/Packages/ModelRuntime/Vendor"
-[ -d "$S/packages/keytype/Packages/ModelRuntime/Vendor/llama.xcframework" ] || cp -cR "$W/packages/keytype/Packages/ModelRuntime/Vendor/llama.xcframework" "$S/packages/keytype/Packages/ModelRuntime/Vendor/llama.xcframework"
+cp -cR "$IN/llama.xcframework" "$S/packages/keytype/Packages/ModelRuntime/Vendor/llama.xcframework"
 mkdir -p "$S/apps/caret/.build/node-dist"
-cp -c "$W/apps/caret/.build/node-dist/node-v26.5.0-darwin-arm64.tar.gz" "$S/apps/caret/.build/node-dist/"
+cp -c "$IN/node-dist/node-v26.5.0-darwin-arm64.tar.gz" "$S/apps/caret/.build/node-dist/"
 for d in helper extension; do
   cmp -s "$W/$d/pnpm-lock.yaml" "$S/$d/pnpm-lock.yaml" || { echo "$d/pnpm-lock.yaml differs from the worktree's; run pnpm install --offline in $S/$d"; exit 1; }
-  [ -d "$S/$d/node_modules" ] || cp -cR "$W/$d/node_modules" "$S/$d/node_modules"
+  cp -cR "$IN/$d-node_modules" "$S/$d/node_modules"
 done
 
 echo "== acceptance bundle (team-signed; the page bridge needs a team-signed agent)"
@@ -60,7 +57,7 @@ mv "$Q/vm/CaretFixture.app" "$P/apps/CaretFixture.app"
 cp -cR "$CFT" "$P/apps/Google Chrome for Testing.app"
 echo "$full" > "$P/REV"
 
-echo "== drop build intermediates (disk); the export stays: stage.sh copies fixtures/web-form from it"
+echo "== drop build intermediates (disk); the export stays for stage.sh, and the next build exports afresh anyway"
 rm -rf "$S/apps/caret/.build" "$S/apps/screen-reader/.build" "$S/bridge/.build" "$S/helper/node_modules" "$S/extension/node_modules" "$S/extension/dist"
 du -sh "$P"
 echo "== $(date -u +%FT%TZ) $(free) GiB free"

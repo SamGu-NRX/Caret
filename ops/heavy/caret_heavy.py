@@ -32,7 +32,6 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -146,26 +145,45 @@ def _helper_window_plan(args, worktree, rev, paths):
 
 BRIDGE = "bridge/.build/release"
 BROWSERS = "fixtures/web-form/.browsers"
+W4 = os.path.join(HOME, ".caret-run/evidence/browser/w4")
 
 
-def _browser_inputs(source):
-    # The ignored binaries the eval loads: the signed bridge and its test host, and Chrome for Testing.
-    return [manifest.record("bridge", "file", os.path.join(source, BRIDGE, "caret-bridge")),
-            manifest.record("bridge-testhost", "file", os.path.join(source, BRIDGE, "caret-bridge-testhost")),
-            manifest.record("chrome-for-testing", "tree", os.path.join(source, BROWSERS))]
+def spec(name, kind, path, dest, rev=None):
+    """One input to seal: cloned to <job>/inputs/<dest> at enqueue, and only that copy is used and checked."""
+    out = {"name": name, "kind": kind, "path": os.path.realpath(path), "dest": dest}
+    if rev is not None:
+        out["rev"] = rev
+    return out
+
+
+def _browser_inputs(source, w4=False):
+    # The ignored binaries the eval loads: the signed bridge and its test host, and Chrome for Testing. The recipe
+    # clones the sealed copies into the pinned worktree, where the eval looks for them.
+    specs = [spec("bridge", "file", os.path.join(source, BRIDGE, "caret-bridge"), "bridge/caret-bridge"),
+             spec("bridge-testhost", "file", os.path.join(source, BRIDGE, "caret-bridge-testhost"),
+                  "bridge/caret-bridge-testhost"),
+             spec("chrome-for-testing", "tree", os.path.join(source, BROWSERS), "browsers")]
+    if w4:
+        # The corpus set also reads W4's saved pages, answer key, note and owners from ~/.caret-run (page-loop-eval.ts
+        # --w4-*); the recipe passes the sealed copies explicitly.
+        specs += [spec("w4-pages", "tree", os.path.join(W4, "real"), "w4/real"),
+                  spec("w4-key", "file", os.path.join(W4, "replay/key.json"), "w4/replay/key.json"),
+                  spec("w4-note", "file", os.path.join(W4, "replay/note.txt"), "w4/replay/note.txt")]
+        if os.path.exists(os.path.join(W4, "replay/owners.json")):
+            specs.append(spec("w4-owners", "file", os.path.join(W4, "replay/owners.json"), "w4/replay/owners.json"))
+    return specs
 
 
 def _canned_options(parser):
     _tag(parser)
     parser.add_argument("--binaries-from", metavar="WORKTREE",
-                        help="clone the bridge and Chrome for Testing from this worktree into the pinned one "
-                             "(W1's baseline has none of its own); default: the pinned worktree's own")
+                        help="seal the bridge and Chrome for Testing from this worktree instead of the pinned one "
+                             "(W1's baseline has none of its own)")
 
 
 def _canned_plan(args, worktree, rev, paths):
     source = os.path.realpath(args.binaries_from) if args.binaries_from else worktree
-    argv = [args.tag] + ([source] if args.binaries_from else [])
-    return argv, _browser_inputs(source), {}
+    return [args.tag], _browser_inputs(source, w4=True), {}
 
 
 def _live_options(parser):
@@ -182,9 +200,8 @@ def _live_plan(args, worktree, rev, paths):
     inputs = _browser_inputs(worktree)
     argv = [args.tag, "{:.4f}".format(args.spend_limit)]
     if args.heldout:
-        heldout = os.path.realpath(args.heldout)
-        inputs.append(manifest.record("heldout-pages", "sealed", heldout))
-        argv.append(heldout)
+        inputs.append(spec("heldout-pages", "sealed", args.heldout, "heldout"))
+        argv.append("heldout")
     return argv, inputs, {}
 
 
@@ -212,17 +229,18 @@ def _r2_prepare_options(parser):
 
 
 CFT_APP = os.path.join(HOME, "Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app")
+NODE_DIST = "node-v26.5.0-darwin-arm64.tar.gz"
 
 
 def _r2_prepare_plan(args, worktree, rev, paths):
+    # The gitignored inputs build.sh clones into its export (recipes/r2/<harness>/build.sh, INPUTS).
     inputs = [
-        manifest.record("llama.xcframework", "tree",
-                        os.path.join(worktree, "packages/keytype/Packages/ModelRuntime/Vendor/llama.xcframework")),
-        manifest.record("node-dist", "file",
-                        os.path.join(worktree, "apps/caret/.build/node-dist/node-v26.5.0-darwin-arm64.tar.gz")),
-        manifest.record("helper-node_modules", "tree", os.path.join(worktree, "helper/node_modules")),
-        manifest.record("extension-node_modules", "tree", os.path.join(worktree, "extension/node_modules")),
-        manifest.record("chrome-for-testing-app", "tree", CFT_APP),
+        spec("llama.xcframework", "tree",
+             os.path.join(worktree, "packages/keytype/Packages/ModelRuntime/Vendor/llama.xcframework"), "llama.xcframework"),
+        spec("node-dist", "file", os.path.join(worktree, "apps/caret/.build/node-dist", NODE_DIST), "node-dist/" + NODE_DIST),
+        spec("helper-node_modules", "tree", os.path.join(worktree, "helper/node_modules"), "helper-node_modules"),
+        spec("extension-node_modules", "tree", os.path.join(worktree, "extension/node_modules"), "extension-node_modules"),
+        spec("chrome-for-testing-app", "tree", CFT_APP, "Google Chrome for Testing.app"),
     ]
     argv = [args.harness, os.path.realpath(args.work), rev]
     if args.harness == "h11":
@@ -251,11 +269,12 @@ def _r2_vm_plan(args, worktree, rev, paths):
         raise manifest.ManifestError("--rig-wait must be 0..7200 seconds")
     if not 0 < args.allowance <= 0.20 or not 0 <= args.prior_spend < args.allowance:
         raise manifest.ManifestError("--allowance must be above 0 and at most $0.20, and --prior-spend below it")
-    inputs = [manifest.record("payload", "payload", os.path.join(job, "payload"), rev=rev),
-              manifest.record("job.sh", "file", os.path.join(job, "job.sh")),
-              manifest.record("tcc.txt", "file", os.path.join(job, "tcc.txt"))]
+    # The rig job runs from its sealed copy, <job>/inputs/vm-job; rig-run writes its runs/ there.
+    inputs = [spec("payload", "payload", os.path.join(job, "payload"), "vm-job/payload", rev=rev),
+              spec("job.sh", "file", os.path.join(job, "job.sh"), "vm-job/job.sh"),
+              spec("tcc.txt", "file", os.path.join(job, "tcc.txt"), "vm-job/tcc.txt")]
     if os.path.exists(os.path.join(job, "display")):
-        inputs.append(manifest.record("display", "file", os.path.join(job, "display")))
+        inputs.append(spec("display", "file", os.path.join(job, "display"), "vm-job/display"))
     recorded = {}
     if args.harness == "h11":
         # The stage options the payload was built with, recorded in the plan; the payload digest pins the file.
@@ -264,7 +283,7 @@ def _r2_vm_plan(args, worktree, rev, paths):
                 recorded["H11_OPTIONS"] = json.dumps(json.load(fh), sort_keys=True, separators=(",", ":"))
         except (OSError, ValueError) as ex:
             raise manifest.ManifestError("payload has no readable h11-options.json: {}".format(ex)) from None
-    argv = [args.harness, job, str(args.rig_wait), "{:.4f}".format(args.allowance), "{:.4f}".format(args.prior_spend),
+    argv = [args.harness, str(args.rig_wait), "{:.4f}".format(args.allowance), "{:.4f}".format(args.prior_spend),
             args.config or "-"]
     return argv, inputs, recorded
 
@@ -315,41 +334,50 @@ def snapshot_files(root):
     return files
 
 
-def make_snapshot(repo, commit, ops_root):
-    """A read-only copy of ops/heavy at *commit*, made once and reused. Returns (dir, files)."""
-    final = os.path.join(ops_root, "snapshots", commit)
-    os.makedirs(os.path.dirname(final), mode=0o700, exist_ok=True)
-    tmp = tempfile.mkdtemp(prefix=".snapshot-", dir=os.path.dirname(final))
-    try:
-        archive = _git(repo, "archive", "--format=tar", commit, "ops/heavy")
-        if archive.returncode != 0:
-            raise manifest.ManifestError("git archive failed: {}".format(archive.stderr.decode().strip()))
-        tar_path = os.path.join(tmp, ".archive.tar")
-        with open(tar_path, "wb") as fh:
-            fh.write(archive.stdout)
-        with tarfile.open(tar_path) as tar:
-            tar.extractall(tmp, filter="data")
-        os.unlink(tar_path)
-        files = snapshot_files(tmp)
-        if os.path.isdir(final):
-            if snapshot_files(final) != files:
-                raise manifest.ManifestError("snapshot {} no longer matches commit {}; it was modified".format(final, commit))
-            return final, files
-        _read_only(tmp)
-        os.rename(tmp, final)
-        tmp = None
-        return final, files
-    finally:
-        if tmp is not None:
-            _writable(tmp)
-            shutil.rmtree(tmp, ignore_errors=True)
+def extract_ops(repo, commit, job_dir):
+    """ops/heavy at *commit*, extracted into this job's own directory. Returns its files' digests."""
+    archive = _git(repo, "archive", "--format=tar", commit, "ops/heavy")
+    if archive.returncode != 0:
+        raise manifest.ManifestError("git archive failed: {}".format(archive.stderr.decode().strip()))
+    tar_path = os.path.join(job_dir, ".archive.tar")
+    with open(tar_path, "wb") as fh:
+        fh.write(archive.stdout)
+    with tarfile.open(tar_path) as tar:
+        tar.extractall(job_dir, filter="data")
+    os.unlink(tar_path)
+    return snapshot_files(job_dir)
+
+
+def seal_inputs(specs, inputs_dir):
+    """Clone each input into *inputs_dir* (APFS clonefile: no extra disk until a source changes) and record the copy.
+
+    The copy's digest must equal the source's, read just before cloning, so the job's record is of exactly what it
+    will use. The job then never reads the shared source again."""
+    entries = []
+    for item in specs:
+        source = manifest.record(item["name"], item["kind"], item["path"], rev=item.get("rev"))
+        dest = os.path.join(inputs_dir, item["dest"])
+        if os.path.lexists(dest):
+            raise manifest.ManifestError("two inputs seal to {}".format(item["dest"]))
+        os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+        done = subprocess.run(["/bin/cp", "-c", "-R", "-p", item["path"], dest], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if done.returncode != 0:
+            raise manifest.ManifestError("cannot clone input {}: {}".format(
+                item["name"], done.stdout.strip() if item["kind"] != "sealed" else "cp exited {}".format(done.returncode)))
+        sealed = manifest.record(item["name"], item["kind"], dest, rev=item.get("rev"))
+        if sealed.get("sha256") != source.get("sha256"):
+            raise manifest.ManifestError("input {} changed while it was being sealed".format(item["name"]))
+        entries.append(dict(sealed, source=item["path"], dest=item["dest"]))
+    return entries
 
 
 def _read_only(root):
     for dirpath, dirnames, filenames in os.walk(root, topdown=False):
         for name in filenames:
             path = os.path.join(dirpath, name)
-            os.chmod(path, 0o555 if os.stat(path).st_mode & 0o111 else 0o444)
+            if not os.path.islink(path):
+                os.chmod(path, 0o555 if os.stat(path).st_mode & 0o111 else 0o444)
         os.chmod(dirpath, 0o555)
 
 
@@ -402,22 +430,18 @@ def build_plan(recipe, job_id, worktree, rev, recipe_argv, inputs, recorded_env,
                    "args": list(recipe_argv), "live": recipe.live},
         "worktree": worktree, "rev": rev,
         "ops": {"repo": ops_repo, "commit": ops_commit, "snapshot": snapshot, "files": files},
-        "inputs": inputs, "env": dict(recorded_env), "env_file": env_file,
+        "inputs": inputs, "inputs_dir": os.path.join(snapshot, "inputs"), "env": dict(recorded_env),
+        "env_file": env_file,
         "run_root": os.path.join(paths["evidence_root"], job_id),
         "paths": dict(paths), "python": python,
         "lease": {"run": "caret", "ttl_min": lease_ttl_min, "renew_s": lease_renew_s},
     }
 
 
-def write_plan(plan, plans_dir):
-    os.makedirs(plans_dir, mode=0o700, exist_ok=True)
-    path = os.path.join(plans_dir, plan["job_id"] + ".json")
+def write_plan(plan, job_dir):
+    path = os.path.join(job_dir, "plan.json")
     data = (json.dumps(plan, indent=1, sort_keys=True) + "\n").encode()
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
-    except FileExistsError:
-        raise manifest.ManifestError("job {} already has a plan ({}); choose a new job ID".format(
-            plan["job_id"], path)) from None
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
     return path, hashlib.sha256(data).hexdigest()
@@ -458,23 +482,60 @@ def enqueue(recipe_name, job_id, worktree, rev, recipe_args, paths, env_file=Non
             raise manifest.ManifestError("CARET_ENV_FILE must name an existing absolute file")
     else:
         env_file = None  # an offline recipe gets no key path at all
-    recipe_argv, inputs, recorded = recipe.plan_args(recipe_args, worktree, rev, paths)
+    recipe_argv, specs, recorded = recipe.plan_args(recipe_args, worktree, rev, paths)
     repo, commit = ops_repo_and_commit(ops_repo)
-    snapshot, files = make_snapshot(repo, commit, paths["ops_root"])
-    plan = build_plan(recipe, job_id, worktree, rev, recipe_argv, inputs, recorded, env_file, paths,
-                      (snapshot, files, repo, commit), profile=profile, python=python,
-                      lease_renew_s=lease_renew_s, lease_ttl_min=lease_ttl_min)
-    if os.path.exists(plan["run_root"]):
-        raise manifest.ManifestError("evidence directory {} already exists; choose a new job ID".format(plan["run_root"]))
-    plan_path, digest = write_plan(plan, os.path.join(paths["ops_root"], "plans"))
-    argv = queue_enqueue_argv(plan, plan_path, digest)
-    if "--unpinned" in argv:
-        raise AssertionError("--unpinned is never passed")
-    done = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if done.returncode != 0:
-        os.unlink(plan_path)  # nothing was enqueued; the ID stays free
-        raise QueueRefused(done.returncode, done.stderr.strip())
+    run_root = os.path.join(paths["evidence_root"], job_id)
+    if os.path.exists(run_root):
+        raise manifest.ManifestError("evidence directory {} already exists; choose a new job ID".format(run_root))
+    # Everything the job runs and reads is sealed in its own directory: the ops/heavy files, the input copies and the
+    # plan. Its existence also reserves the job ID.
+    job_dir = os.path.join(paths["ops_root"], "jobs", job_id)
+    os.makedirs(os.path.dirname(job_dir), mode=0o700, exist_ok=True)
+    try:
+        os.mkdir(job_dir, 0o700)
+    except FileExistsError:
+        raise manifest.ManifestError("job {} already exists ({}); choose a new job ID".format(job_id, job_dir)) from None
+    try:
+        files = extract_ops(repo, commit, job_dir)
+        inputs = seal_inputs(specs, os.path.join(job_dir, "inputs"))
+        plan = build_plan(recipe, job_id, worktree, rev, recipe_argv, inputs, recorded, env_file, paths,
+                          (job_dir, files, repo, commit), profile=profile, python=python,
+                          lease_renew_s=lease_renew_s, lease_ttl_min=lease_ttl_min)
+        plan_path, digest = write_plan(plan, job_dir)
+        _read_only(job_dir)
+        vm_job = os.path.join(job_dir, "inputs", "vm-job")
+        if os.path.isdir(vm_job):
+            # rig-run writes runs/<id>/ into its job directory; only that subdirectory is writable.
+            os.chmod(vm_job, 0o755)
+            os.mkdir(os.path.join(vm_job, "runs"), 0o700)
+            os.chmod(vm_job, 0o555)
+        argv = queue_enqueue_argv(plan, plan_path, digest)
+        if "--unpinned" in argv:
+            raise AssertionError("--unpinned is never passed")
+        done = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if done.returncode != 0:
+            raise QueueRefused(done.returncode, done.stderr.strip())
+    except BaseException:
+        _writable(job_dir)
+        shutil.rmtree(job_dir, ignore_errors=True)  # nothing was enqueued; the ID stays free
+        raise
     return plan_path, digest, done.stdout.strip()
+
+
+def prune(paths, job_id):
+    """Remove a finished job's sealed input copies (clones share blocks with their sources until those change)."""
+    done = subprocess.run([PYTHON, paths["queue_script"], "--state-dir", paths["queue_state"], "show", "--id", job_id],
+                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if done.returncode != 0:
+        raise manifest.ManifestError("the queue has no job {}: {}".format(job_id, done.stderr.strip()))
+    state = json.loads(done.stdout)["state"]
+    if state in ("queued", "launching", "running", "blocked"):
+        raise manifest.ManifestError("job {} is {}; prune only a finished job".format(job_id, state))
+    inputs = os.path.join(paths["ops_root"], "jobs", job_id, "inputs")
+    if os.path.isdir(inputs):
+        _writable(inputs)
+        shutil.rmtree(inputs)
+    return inputs
 
 
 # Reports
@@ -542,6 +603,8 @@ def main(argv=None):
     sub.add_parser("status")
     show = sub.add_parser("show")
     show.add_argument("job_id")
+    pr = sub.add_parser("prune", help="remove a finished job's sealed input copies")
+    pr.add_argument("job_id")
     acc = sub.add_parser("accept")
     acc.add_argument("job_id")
     acc.add_argument("--note", required=True)
@@ -561,6 +624,9 @@ def main(argv=None):
         if args.action == "show":
             shown = outcome_of(paths, args.job_id) | {"evidence": os.path.join(paths["evidence_root"], args.job_id)}
             print(json.dumps(shown, indent=1))
+            return 0
+        if args.action == "prune":
+            print(prune(paths, args.job_id))
             return 0
         if args.action == "accept":
             print(accept(paths, args.job_id, args.note))

@@ -29,6 +29,10 @@ import procs  # noqa: E402
 
 PY = caret_heavy.PYTHON
 REAL_LONG_RUN = os.path.expanduser("~/.long-run")
+# The shared queue at a fixed commit, so the tests do not follow its owner's uncommitted work. 7ef4ccb: the runner holds
+# heavy.lock and passes it to each job. Raise this deliberately when the queue's interface changes.
+QUEUE_REPO = os.path.dirname(os.path.dirname(caret_heavy.QUEUE))
+QUEUE_TEST_REV = "7ef4ccba3f71704bd8ca065c92b4beeb03c640cf"
 GIT_ENV = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
 
 
@@ -39,7 +43,8 @@ def git(repo, *args):
 
 
 def probe_recipe(live=False, extra_inputs=None):
-    """The test recipe: tests/recipes/probe.sh with the test's arguments, run from the snapshot."""
+    """The test recipe: tests/recipes/probe.sh with the test's arguments, run from the snapshot. extra_inputs are
+    caret_heavy.spec() dicts, sealed into the job like a real recipe's."""
     def plan_args(args, worktree, rev, paths):
         return list(args), list(extra_inputs or []), {}
     return caret_heavy.Recipe("probe", "test", "tests/recipes/probe.sh", live, None, plan_args)
@@ -76,8 +81,13 @@ class World(unittest.TestCase):
             json.dump(policy, fh)
         os.makedirs(os.path.join(self.home, ".long-run/leases"))
         os.makedirs(os.path.join(self.home, ".long-run/locks"))
+        queue_script = os.path.join(self.root, "queue", "heavy-job-queue.py")
+        os.makedirs(os.path.dirname(queue_script))
+        with open(queue_script, "wb") as fh:
+            fh.write(subprocess.run(["git", "-C", QUEUE_REPO, "show", QUEUE_TEST_REV + ":scripts/heavy-job-queue.py"],
+                                    capture_output=True, check=True).stdout)
         self.paths = {
-            "queue_script": caret_heavy.QUEUE,
+            "queue_script": queue_script,
             "queue_state": os.path.join(self.root, "queue-state"),
             "slot_lock": os.path.join(self.root, "queue-state", "slot.lock"),
             "ops_root": os.path.join(self.root, "ops"),
@@ -152,7 +162,7 @@ class World(unittest.TestCase):
         """
         log = open(os.path.join(self.root, "runner-{}.log".format(len(self.runners))), "ab")
         lock = self.paths["heavy_lock"] if runner_holds_heavy_lock else os.path.join(self.root, "unrelated.lock")
-        runner = subprocess.Popen([PY, caret_heavy.QUEUE, "--state-dir", self.paths["queue_state"],
+        runner = subprocess.Popen([PY, self.paths["queue_script"], "--state-dir", self.paths["queue_state"],
                                    "--heavy-lock", lock, "run", *args],
                                   env=dict(self.env, **(env or {})), stdin=subprocess.DEVNULL, stdout=log,
                                   stderr=subprocess.STDOUT, start_new_session=True)
@@ -161,7 +171,7 @@ class World(unittest.TestCase):
         return runner
 
     def queue(self, *args):
-        return subprocess.run([PY, caret_heavy.QUEUE, "--state-dir", self.paths["queue_state"], *args],
+        return subprocess.run([PY, self.paths["queue_script"], "--state-dir", self.paths["queue_state"], *args],
                               env=self.env, capture_output=True, text=True)
 
     def job(self, job_id):
