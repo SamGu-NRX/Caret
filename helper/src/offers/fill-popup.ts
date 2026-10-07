@@ -11,7 +11,7 @@ import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
 import { labelledLines, lineGives, lineSpans } from "../fill/candidates.ts";
-import { bareLine, LABELLED, logicalLines, sentenceDigests } from "../fill/line-values.ts";
+import { bareLine, LABELLED, lineDigests, logicalLines } from "../fill/line-values.ts";
 import { splitAddress, splitPlace } from "../fill/derive.ts";
 import { conversionOf, derivePart, describeInput, emptyInput, identityRefOf, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import { identityKey } from "../fill/whose.ts";
@@ -257,26 +257,26 @@ export function sourceHolds(sw: WindowState, nodeKey: string, span: string, cont
   const src = sw.nodes.get(nodeKey);
   if (src === undefined) return false;
   const text = nodeText(src);
-  // Text compared as the generator reads it: each line's white space made single (bareLine), lines joined by a space.
+  // Source texts are found as the generator reads lines (bareLine), a wrapped sentence joined (logicalLines).
   const norm = (t: string): string => t.replace(/\s+/gu, " ").trim();
   const joined = logicalLines(text).join("\n");
   const typedIs = (t: string): boolean => sw.values.some((v) => v.nodeKey === nodeKey && norm(v.text) === norm(t));
   // G2 review: what the value was read from as Jev was shown it (FillField.basis). Each source text must be in the
   // source again, the value must derive from them again by the same code (fill.ts derivePart: a first name from "Robin
-  // Vale", a full name joined from two lines), and the sentences that held them must be the same sentences, none changed
-  // and none new ("Mobile 555-0164 is my old number", "Do not use: 555-0164"), whatever an unchanged one says (a "but" in
-  // a name's line, a field's own label). A value with no basis (from memory, or a helper before this) meets the rules
-  // below alone.
+  // Vale", a full name joined from two lines), and the lines that held them, with the line before and after each, must
+  // read exactly as they did (line-values.ts lineDigests): any edit there refuses the value, whatever an unchanged line
+  // says (a "but" in a name's line, a field's own label). A value with no basis (from memory, or a helper before this)
+  // meets the rules below alone.
   const from = basis?.from;
   if (from !== undefined) {
     if (!from.every((t) => joined.includes(norm(t)) || typedIs(t))) return false;
     const got = basis?.how === undefined ? (from[0] ?? null) : derivePart(basis.how, from);
     if (got === null || norm(got) !== norm(span)) return false;
   }
-  if (basis?.sentences !== undefined) {
-    const now = (from ?? [span]).flatMap((t) => sentenceDigests(text, t));
-    const was = new Set(basis.sentences);
-    if (now.length === 0 || now.some((d) => !was.has(d)) || basis.sentences.some((d) => !now.includes(d))) return false;
+  if (basis?.lines !== undefined) {
+    const now = (from ?? [span]).flatMap((t) => lineDigests(text, t));
+    const was = new Set(basis.lines);
+    if (now.length === 0 || now.some((d) => !was.has(d)) || basis.lines.some((d) => !now.includes(d))) return false;
   }
   const base = from?.[0] ?? span;
   // The reader's own typed values only: one code finds in a line (fill/candidates.ts windowValues) is checked by the line
@@ -292,9 +292,9 @@ export function sourceHolds(sw: WindowState, nodeKey: string, span: string, cont
   return joined.includes(norm(span)) || typed;
 }
 
-/** G2 review: what a recheck holds a value's source to (FillField.basis): its source texts, their derivation, their sentences. */
+/** G2 review: what a recheck holds a value's source to (FillField.basis): its source texts, their derivation, their lines. */
 export interface SourceBasis {
-  sentences?: readonly string[];
+  lines?: readonly string[];
   from?: readonly string[];
   how?: string;
 }

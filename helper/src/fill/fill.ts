@@ -11,7 +11,7 @@
 import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
-import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, PLACEMENT_SAYS, type Candidate } from "./candidates.ts";
+import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, PLACEMENT_SAYS, viewOf, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import { assertNoSecrets, SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
@@ -21,7 +21,8 @@ import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, in
 import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { takesOneValue, writeMisfit } from "./writable.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
-import { holdsSecret, sentenceDigests } from "./line-values.ts";
+import { lineDigests } from "./line-values.ts";
+import { secretText } from "../memory/sensitive.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -796,8 +797,8 @@ export async function proposeFill(
   const plainAsk = scope !== undefined && scope.wholeForm === true && scope.windows === null && scope.memory && scope.person === null && scope.literals.size === 0 && (scope.consented?.size ?? 0) === 0;
   // An Ask's instruction is in every question; it may quote a window, which pays for what it quotes.
   if (scope !== undefined && !plainAsk && !ledger.plan([scope.instruction])) throw new FillError("instructionTooLong", "the instruction quotes more of an open window than one question to Jev may carry");
-  // G2 review: a title or a field's texts that hold a secret marker are never sent (line-values.ts holdsSecret).
-  const title = !holdsSecret(w.window.title) && ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
+  // G2: the form's own title and fields' texts meet the redacted view's rule too (memory/sensitive.ts secretText).
+  const title = !secretText(w.window.title) && ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   type Field = {
     id: string;
     node: Node;
@@ -843,7 +844,7 @@ export async function proposeFill(
     const c = x.form;
     const label = c === null ? d.label : c.label;
     const texts = c === null ? [d.label, d.nearest, d.placeholder, d.section] : [c.label, label === null ? d.nearest : null, d.section, ...(c.options ?? [])];
-    if (texts.some(holdsSecret) || !ledger.take(w, "descriptor", texts)) {
+    if (texts.some(secretText) || !ledger.take(w, "descriptor", texts)) {
       if (n.key === triggerKey && scope === undefined) throw new FillError("labelTooLong", `the descriptor of the focused field in window ${windowId} is longer than the window's share of a question`);
       continue;
     }
@@ -925,7 +926,7 @@ export async function proposeFill(
   const justLeft = model.windowBefore(windowId);
   // A window the generator did not read (excluded, or outside an Ask's named sources) is no anchor: it would move a
   // value's description there and send its title and label (B25 review).
-  const anchorWindow = opts.anchor !== false && opts.cutRule !== false && justLeft !== null && !cut.includes(justLeft) && unread?.has(justLeft) !== true ? (model.windows.get(justLeft) ?? null) : null;
+  const anchorWindow = opts.anchor !== false && opts.cutRule !== false && justLeft !== null && !cut.includes(justLeft) && unread?.has(justLeft) !== true ? (viewOf(model, justLeft) ?? null) : null;
   const anchorLines = anchorWindow === null ? [] : labelledLines(anchorWindow);
   const anchored = (f: Field): boolean => anchorWindow !== null && !isCut(f.kinds) && candidates.some((c) => c.source.windowId === anchorWindow.window.windowId);
   const fromAnchor = (f: Field, p: Pick): boolean => {
@@ -1092,7 +1093,7 @@ export async function proposeFill(
   // are what tells a start date from an end date and a reference's phone from an emergency contact's (G1 fix 3).
   const clauseRank = (c: Candidate): number => (c.kind === "date" || c.kind === "email" || c.kind === "phone" ? 0 : isNameLike(c.text, c.context) ? 1 : 2);
   for (const [c, clause] of [...clauses].sort(([a], [b]) => clauseRank(a) - clauseRank(b))) {
-    const sw = model.windows.get(c.source.windowId);
+    const sw = viewOf(model, c.source.windowId);
     // A candidate the anchor replaced (labelledCandidate above) is not sent, so neither is its clause.
     if (sw !== undefined && candidates.includes(c) && ledger.take(sw, "candidate", [clause])) c.line = clause;
   }
@@ -1665,18 +1666,18 @@ export async function proposeFill(
     const idPart = p?.from === "derived" && f.part !== null && NAME_PARTS.has(f.part) ? (f.part as "first" | "middle" | "last") : undefined;
     // What the value was read from, as Jev was shown it (`judged`, taken before the asks): the source texts and how code
     // derived the value from them (Derivation), and digests of the sentences that held those texts (line-values.ts
-    // sentenceDigests), which the recheck takes again (offers/fill-popup.ts sourceHolds).
+    // lineDigests), which the recheck takes again (offers/fill-popup.ts sourceHolds).
     const how = p !== undefined && p.from === "derived" && p.base.from === "window" ? p.how : undefined;
     const from: string[] = p === undefined || line === null ? [] : how !== undefined ? [...how.from] : p.from === "window" ? [p.c.text] : [];
     const srcText = line === null ? undefined : judged.get(nodeKeyOf(line));
-    const sentences = srcText === undefined ? [] : from.flatMap((t) => sentenceDigests(srcText, t));
+    const lines = srcText === undefined ? [] : from.flatMap((t) => lineDigests(srcText, t));
     const basis =
       p === undefined || got === null
         ? undefined
         : {
             ...(basisOf === undefined ? {} : { identity: { memoryId: basisOf.memoryId, kind: basisOf.kind, key: basisOf.key, ...(idPart === undefined ? {} : { part: idPart }) } }),
             ...(line?.line == null ? {} : { clause: line.line }),
-            ...(sentences.length === 0 ? {} : { sentences }),
+            ...(lines.length === 0 ? {} : { lines }),
             ...(from.length === 0 ? {} : { from, ...(how === undefined ? {} : { how: how.how }) }),
           };
     return {

@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import type { ValueKind } from "../protocol.ts";
 import { dateShaped, isNameLike, NAME_JOINERS, namesIn, ORG_SUFFIX, textKind, timeShaped } from "./kinds.ts";
 import { splitName, splitPlace } from "./derive.ts";
-import { labelKind, markedSecret, statedSecret, valueKind } from "../memory/sensitive.ts";
+import { labelKind, valueKind } from "../memory/sensitive.ts";
 
 /** A typed value found in a line: its text as written and where it starts. */
 export interface LineValue {
@@ -78,29 +78,6 @@ export function secretLine(line: string): boolean {
   return valueKind(line) !== null || (m?.[1] !== undefined && labelKind(m[1]) !== null);
 }
 
-/**
- * G2 review: whether a text holds a secret marker: a line secretLine refuses (a value Caret never types, by its shape or
- * its label), or a stated secret ("password: hunter2", "my PIN is 7319", memory/sensitive.ts statedSecret). One rule for
- * every text that could reach Jev: a line or a label that holds one contributes nothing to a request (candidates.ts),
- * and a request that still carries one is refused before it is sent (privacy.ts assertNoSecrets).
- */
-export function holdsSecret(text: string | null | undefined): boolean {
-  if (text === null || text === undefined || text === "") return false;
-  const hit = secretMemo.get(text);
-  if (hit !== undefined) return hit;
-  const found = secretLine(text) || statedSecret(text) !== null || markedSecret(text) !== null;
-  if (secretMemo.size >= MEMO_LINES) secretMemo.clear();
-  secretMemo.set(text, found);
-  return found;
-}
-/**
- * holdsSecret's answers by text: the generator, the facts and the request check read the same lines many times.
- * scripts/generator-bench.ts, 20 focuses per scene (evidence/screen/g2/whose/genbench-*): with this memo and the
- * patterns compiled once, generator p50 1.0-2.5 ms as at 0ea0077, and 1 focus of 20 over GENERATOR_BUDGET_MS on the
- * 5,500-span scene (0ea0077: 0); with neither, 19 of 20 on every scene. A focus over budget stops early and reports the
- * window cut, so its fields withhold rather than guess.
- */
-const secretMemo = new Map<string, boolean>();
 
 /** Lower wins when two values overlap, as the reader decides (TypedValues.swift priority). */
 const PRIORITY: Record<string, number> = { email: 0, url: 1, phone: 2, address: 3, date: 4 };
@@ -134,9 +111,7 @@ function scanValues(line: string): readonly LineValue[] {
 }
 
 function scan(line: string): LineValue[] {
-  // G2 review: a line that states a secret contributes nothing, not even its other typed values ("Email: robin@example.test
-  // password: secret@example.test" offered secret@example.test as an email).
-  if (holdsSecret(line)) return [];
+  if (secretLine(line)) return [];
   const hits: { text: string; kind: ValueKind; at: number }[] = [];
   const scan = (re: RegExp, kind: ValueKind, trim = false): void => {
     for (const m of line.matchAll(re)) {
@@ -387,8 +362,7 @@ const PERSON_LABEL = /\b(?:name|contact|reference|referee|landlord|manager|spous
  * never broken into items.
  */
 export function lineTexts(line: string): LineText[] {
-  // G2 review: a line that states a secret gives no free text: each bounded span could carry it.
-  if (holdsSecret(line)) return [];
+  if (secretLine(line)) return [];
   const out: LineText[] = [];
   const add = (text: string, label: string | null, quote?: string, partOf?: string): void => {
     const t = text.trim().replace(/[.,;:!?]+$/u, "");
@@ -493,20 +467,24 @@ export function partAround(line: string, at: number, text: string): string | nul
 }
 
 /**
- * G2 review: a short digest of each sentence of `text` that holds `span`, in order: the text's lines as the generator reads
- * them (bareLine) joined by a space, so a sentence a line break wraps reads as one. A fill records them for the value it
- * proposes (FillField.basis.sentences) and the recheck before a write takes them again (offers/fill-popup.ts
- * sourceHolds): a sentence that changed around a value that stayed ("Mobile 555-0164 is my old number", "Do not use:
- * 555-0164") or a new sentence that holds it no longer reads as what the value was read from. The digests, not the
- * sentences, travel with the proposal, so no more screen text reaches a consumer.
+ * G2 round 4: a short digest of the neighbourhood of each line of `text` that holds `span` (as the generator reads a line,
+ * bareLine): that line, the one before it and the one after it, each as written but for trailing white space. A fill
+ * records them for the value it proposes (FillField.basis.lines) and the recheck before a write takes them again
+ * (offers/fill-popup.ts sourceHolds): any edit there refuses the value, a changed sentence around a value that stayed
+ * ("Mobile 555-0164 is my old number"), a line added beside it ("Do not use this old number"), a line put between two it
+ * was joined from ("Landlord" between a first and a last name). Refusing after a nearby edit is the accepted cost. The
+ * digests, not the lines, travel with the proposal, so no more screen text reaches a consumer.
  */
-export function sentenceDigests(text: string, span: string): string[] {
+export function lineDigests(text: string, span: string): string[] {
   const want = span.replace(/\s+/gu, " ").trim();
   if (want === "") return [];
+  const lines = text.split(/\r?\n/u).map((l) => l.replace(/\s+$/u, ""));
   const out: string[] = [];
-  for (const line of logicalLines(text)) {
-    for (let at = line.indexOf(want); at >= 0; at = line.indexOf(want, at + 1)) out.push(createHash("sha256").update(sentenceAround(line, at, want)).digest("hex").slice(0, 16));
-  }
+  lines.forEach((l, i) => {
+    if (!bareLine(l).includes(want)) return;
+    const hood = [lines[i - 1] ?? "", l, lines[i + 1] ?? ""].join("\n");
+    out.push(createHash("sha256").update(hood).digest("hex").slice(0, 16));
+  });
   return out;
 }
 
@@ -514,7 +492,7 @@ export function sentenceDigests(text: string, span: string): string[] {
  * A text's lines as the generator reads them (bareLine), a line joined to the one before when it goes on with that one's
  * sentence (the one before ends with no ".", "!", "?", ";" or ":" and this one starts in lowercase), as candidates.ts
  * lineFact reads a wrapped sentence. A note's lines that end with no stop stay apart: joined, every line of a list read
- * as one sentence, and an edit to any line changed them all (G2 round-3: a changed Email line refused the Name line too).
+ * as one sentence. The recheck finds a value's source texts in these (offers/fill-popup.ts sourceHolds).
  */
 export function logicalLines(text: string): string[] {
   const out: string[] = [];

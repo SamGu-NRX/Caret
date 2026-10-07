@@ -79,8 +79,8 @@ export interface ValueBinding {
     memoryLabel?: string;
     /** G2: the source words Jev read the value with (FillField.basis.clause), which the source must still show. */
     clause?: string;
-    /** G2 review: digests of the source sentences that held the value (FillField.basis.sentences), taken again before a write. */
-    sentences?: readonly string[];
+    /** G2: digests of the source lines around the value (FillField.basis.lines), taken again before a write. */
+    lines?: readonly string[];
     /** G2 review: the source texts the value was read from and how it was derived (FillField.basis.from, .how). */
     from?: readonly string[];
     how?: string;

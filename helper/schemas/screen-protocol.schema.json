@@ -2713,7 +2713,7 @@
                         "type": "string",
                         "minLength": 1
                       },
-                      "sentences": {
+                      "lines": {
                         "type": "array",
                         "items": {
                           "type": "string",

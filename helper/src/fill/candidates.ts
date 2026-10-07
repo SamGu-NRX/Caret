@@ -8,7 +8,8 @@ import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
-import { bareLine, clauseAround, holdsSecret, LABELLED, lineTexts, lineValues, partAround, sentenceAround, WARNS } from "./line-values.ts";
+import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, sentenceAround, WARNS } from "./line-values.ts";
+import { redactWindow } from "./redact.ts";
 import { splitDate } from "./derive.ts";
 
 /**
@@ -16,25 +17,10 @@ import { splitDate } from "./derive.ts";
  * never keeps. A page checkbox is editable too since D2-04 (engines/page-link.ts), but what it holds, "checked", is its
  * state, not text anyone typed.
  */
-function sourceField(w: WindowState, node: Node): boolean {
-  return node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null && node.role !== "AXCheckBox" && !secretSourceField(w, node);
+function sourceField(node: Node): boolean {
+  return node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null && node.role !== "AXCheckBox";
 }
 
-/**
- * G2 review: an editable field whose label, nearest label or placeholder holds a secret marker (line-values.ts
- * holdsSecret: "My password is hunter2") gives nothing at all, before any extraction reads it: not its value, not a line
- * of it, not a typed value in it.
- */
-function secretSourceField(w: WindowState, node: Node): boolean {
-  if (node.editable !== true) return false;
-  const hit = secretFields.get(node);
-  if (hit !== undefined) return hit;
-  const found = holdsSecret(node.label) || holdsSecret(node.placeholder) || holdsSecret(nearestText(w, node, true));
-  secretFields.set(node, found);
-  return found;
-}
-/** secretSourceField's answer per node: nodes are replaced with each snapshot, so a node's answer never goes stale. */
-const secretFields = new WeakMap<Node, boolean>();
 
 export interface Candidate {
   id: string;
@@ -269,8 +255,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   };
 
   const windows = [...model.windows.values()]
-    // G2 review: a window whose title holds a secret marker gives nothing: every candidate of it names its title.
-    .filter((w) => w.window.windowId !== targetWindowId && o.exclude?.has(w.window.windowId) !== true && !holdsSecret(w.window.title))
+    .filter((w) => w.window.windowId !== targetWindowId && o.exclude?.has(w.window.windowId) !== true)
+    // G2 round 4: every source window is read through its redacted view (redact.ts), the one place secrets are decided.
+    .map(redactWindow)
     .sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
   const justLeft = model.windowBefore(targetWindowId);
   const recency = (w: WindowState): Recency =>
@@ -296,15 +283,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const missed = new Set<string>();
   /** The candidate for a span, with every fact about it worked out. */
   const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string): Candidate => {
-    // G2 review: a label or nearby text that holds a secret marker is no context (line-values.ts holdsSecret).
-    const ctx = unlessSecret(timed("context", context));
+    const ctx = timed("context", context);
     const labelled = labelledSpan(node, text, ctx);
     // A span that must go with its line's words (line-values.ts LineText.with, or a clause its line warns in) carries them
     // from the start, charged with it; any other clause waits until every span is in.
     const fact = quote !== undefined ? null : timed("context", () => lineFact(w, node, text, labelled));
     const required = quote ?? (fact?.required === true ? fact.clause : undefined);
-    // G2 review: a clause that holds a secret is not sent; the span goes alone (holdsSecret).
-    const clause = fact === null || fact.required || holdsSecret(fact.clause) ? null : fact.clause;
+    const clause = fact === null || fact.required ? null : fact.clause;
     const c: Candidate = {
     id: `c${out.length + 1}`,
     text,
@@ -313,8 +298,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     labelled,
     line: required ?? null,
     ...(partOf === undefined ? {} : { partOf }),
-    section: timed("section", () => unlessSecret(sectionAround(w, node))),
-    blockHead: timed("blockHead", () => unlessSecret(blockHead(w, node, text))),
+    section: timed("section", () => sectionAround(w, node)),
+    blockHead: timed("blockHead", () => blockHead(w, node, text)),
     recency: recency(w),
     source: {
       pid: w.app.pid,
@@ -328,21 +313,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     };
     if (clause !== null) clauses.set(c, clause);
     if (required !== undefined) quoted.add(c);
-    if (required !== undefined && holdsSecret(required)) secretQuoted.add(c);
     return c;
   };
   /** Spans that go only with their clause (Candidate.line set at build). */
   const quoted = new WeakSet<Candidate>();
-  /**
-   * G2 review: spans that go only with a clause that holds a secret (holdsSecret). They are not offered, as one whose clause
-   * does not fit: the window counts as cut, so the cut rules withhold their kind.
-   */
-  const secretQuoted = new WeakSet<Candidate>();
-  const leaveOut = (w: WindowState, text: string): void => {
-    missed.add(w.window.windowId);
-    unwarned.add(text);
-    if (!ranked.has(w.window.windowId)) leftOutOf.add(w.window.windowId);
-  };
   /**
    * Texts left out because their warning did not fit: the same text found later with no warning beside it is left out
    * too, so it cannot stand in for the warned one, and the cut rules still count it as kept out (C1 review).
@@ -363,7 +337,6 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string): void => {
     if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId)) return;
     const c = build(w, node, text, kind, context, quote, partOf);
-    if (secretQuoted.has(c)) return leaveOut(w, text);
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       missed.add(w.window.windowId);
       // A span that goes only with its line (a warning, a remark) and does not fit with it is left out alone: the window
@@ -389,13 +362,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     const pending = new Map<Candidate, string>();
     for (const c of out) {
       const clause = clauses.get(c);
-      const sw = model.windows.get(c.source.windowId);
+      const sw = viewOf(model, c.source.windowId);
       if (clause === undefined || sw === undefined) continue;
       if (o.deferClauses === true) pending.set(c, clause);
       else if (o.ledger === undefined || o.ledger.take(sw, "candidate", [clause])) c.line = clause;
     }
     for (const id of leftOutOf) {
-      const lw = model.windows.get(id);
+      const lw = viewOf(model, id);
       if (lw !== undefined) leftOut(lw);
     }
     leftOutOf.clear();
@@ -455,7 +428,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (node !== undefined && !note(node, v.text, lineHolding(nodeText(node), v.text), valueKinds(v), null)) return;
     }
     for (const node of w.nodes.values()) {
-      const isSourceField = sourceField(w, node);
+      const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       for (const raw of nodeText(node).split(/\r?\n/)) {
         for (const sp of lineSpans(raw)) {
@@ -531,7 +504,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const node of w.nodes.values()) {
       if (outOfTime()) return false;
       stats.nodes++;
-      const isSourceField = sourceField(w, node);
+      const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
@@ -607,9 +580,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         const sp = spans[i] as (typeof spans)[number];
         if (sp.group !== k || seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
-        const c = build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf);
-        if (secretQuoted.has(c)) leaveOut(w, sp.text);
-        else group.push(c);
+        group.push(build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf));
       }
       if (group.length > 0) groups.set(k, group);
     }
@@ -681,7 +652,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const node of w.nodes.values()) {
       if (full() || outOfTime()) return stop();
       stats.nodes++;
-      const isSourceField = sourceField(w, node);
+      const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
@@ -694,8 +665,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   return finish();
 }
 
-/** G2 review: a fact sent beside a span, unless it holds a secret (line-values.ts holdsSecret). */
-const unlessSecret = (t: string | null): string | null => (holdsSecret(t) ? null : t);
+/** G2 round 4: a window as fill may read it (redact.ts), by id, or undefined. */
+export function viewOf(model: ScreenModel, windowId: string): WindowState | undefined {
+  const w = model.windows.get(windowId);
+  return w === undefined ? undefined : redactWindow(w);
+}
 
 const constant =
   <T>(x: T): (() => T) =>
@@ -707,10 +681,7 @@ const constant =
  * one ("Password" holding "hunter2"; B25 review).
  */
 function secretValue(w: WindowState, v: TypedValue): boolean {
-  const node = w.nodes.get(v.nodeKey);
-  // G2 review: nor a reader's typed value on a line that holds a secret marker, or in a field whose label, nearest label
-  // or placeholder holds one (holdsSecret, secretSourceField).
-  return valueKind(v.text) !== null || labelKind(node?.label) !== null || (node !== undefined && (secretSourceField(w, node) || holdsSecret(node.label) || holdsSecret(lineHolding(nodeText(node), v.text))));
+  return valueKind(v.text) !== null || labelKind(w.nodes.get(v.nodeKey)?.label) !== null;
 }
 
 /**
@@ -725,9 +696,6 @@ function spanOfLine(raw: string): { line: string; text: string; label: string | 
   // A value Caret never types (a password, a card or account number, a government ID, a one-time code or an API
   // key, by its label or its shape: memory/sensitive.ts) is no span: it is never offered, so no fill or plan can
   // choose it, and it never goes out in a question (B25 lead decision 2).
-  // G2 review: nor is a line that states one ("Email: robin@example.test password: hunter2 …", line-values.ts
-  // holdsSecret): its typed values (the email) are still offered alone, as the window's typed values.
-  if (holdsSecret(line)) return null;
   if (m !== null && m[1] !== undefined && m[2] !== undefined) return sensitiveKind(m[1], m[2]) === null ? { line, text: m[2].trim(), label: m[1].trim() } : null;
   return valueKind(line) === null ? { line, text: line, label: null } : null;
 }
@@ -760,7 +728,7 @@ export function windowValues(w: WindowState): readonly TypedValue[] {
   const byNode = new Map<string, TypedValue[]>();
   for (const v of w.values) byNode.set(v.nodeKey, [...(byNode.get(v.nodeKey) ?? []), v]);
   for (const node of w.nodes.values()) {
-    if (!LINE_ROLES.has(node.role) && !sourceField(w, node)) continue;
+    if (!LINE_ROLES.has(node.role) && !sourceField(node)) continue;
     const reader = byNode.get(node.key) ?? [];
     const seen = new Set(reader.map((v) => v.text));
     for (const raw of nodeText(node).slice(0, MAX_SCAN).split(/\r?\n/)) {
@@ -867,14 +835,14 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
 export function labelledLines(w: WindowState): { label: string; value: string; node: Node }[] {
   const out: { label: string; value: string; node: Node }[] = [];
   for (const node of w.nodes.values()) {
-    const isSourceField = sourceField(w, node);
+    const isSourceField = sourceField(node);
     if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
     for (const raw of nodeText(node).split(/\r?\n/)) {
       // C1: a labelled line of any length, so a value read from a long one ("School: …, September 2016 to May 2020.")
       // is checked by its label as one from a short one is (offers/fill-popup.ts sourceHolds).
       const line = bareLine(raw);
       const m = LABELLED.exec(line);
-      if (m?.[1] === undefined || m[2] === undefined || !/[\p{L}\p{N}]/u.test(m[2]) || sensitiveKind(m[1], m[2]) !== null || holdsSecret(line)) continue;
+      if (m?.[1] === undefined || m[2] === undefined || !/[\p{L}\p{N}]/u.test(m[2]) || sensitiveKind(m[1], m[2]) !== null) continue;
       out.push({ label: m[1].trim(), value: m[2].trim(), node });
     }
   }
@@ -892,8 +860,8 @@ export function labelledCandidate(w: WindowState, node: Node, text: string, labe
     kind,
     context: label,
     labelled: true,
-    section: unlessSecret(sectionAround(w, node)),
-    blockHead: unlessSecret(blockHead(w, node, text)),
+    section: sectionAround(w, node),
+    blockHead: blockHead(w, node, text),
     recency,
     source: { pid: w.app.pid, windowId: w.window.windowId, bundleId: w.app.bundleId, appName: w.app.name, windowTitle: w.window.title, nodeKey: node.key, kind },
   };
@@ -944,7 +912,7 @@ export function cutKinds(model: ScreenModel, cut: readonly string[], offered: re
   // One string, so each value is one search; NUL appears in no screen text, so a match never spans two spans.
   const taken = offered.map((c) => c.text).join("\u0000");
   for (const id of cut) {
-    const w = model.windows.get(id);
+    const w = viewOf(model, id);
     if (w === undefined) continue;
     for (const v of windowValues(w)) if (w.nodes.has(v.nodeKey) && !holdsWhole(taken, v.text)) for (const k of valueKinds(v)) out.add(k);
   }
@@ -989,7 +957,7 @@ function holdsWhole(text: string, value: string): boolean {
 /** The kinds of the reader's typed values a candidate's text holds, its own kind included. */
 export function candidateKinds(model: ScreenModel, c: Candidate): Set<ValueKind> {
   const out = new Set<ValueKind>(c.kind === null ? [] : valueKinds({ kind: c.kind, text: c.text }));
-  const sw = model.windows.get(c.source.windowId);
+  const sw = viewOf(model, c.source.windowId);
   for (const v of sw === undefined ? [] : windowValues(sw)) {
     if (c.text.includes(v.text) || (v.nodeKey === c.source.nodeKey && v.text.includes(c.text))) for (const k of valueKinds(v)) out.add(k);
   }
@@ -1019,7 +987,7 @@ export function countSpans(model: ScreenModel, targetWindowId: string): { spans:
   for (const w of model.windows.values()) {
     if (w.window.windowId === targetWindowId) continue;
     for (const node of w.nodes.values()) {
-      const isSourceField = sourceField(w, node);
+      const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       for (const raw of nodeText(node).split(/\r?\n/)) for (const s of lineSpans(raw)) seen.add(s.text);
     }

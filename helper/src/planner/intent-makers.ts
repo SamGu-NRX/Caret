@@ -5,6 +5,8 @@
 //     value's field, asked twice with the options reordered; then Noul questions that confirm each field of a list
 //     and each value's field. A part both asks do not agree on, at the floors below, is not taken.
 // Neither makes values. checkIntent checks whatever a maker returns.
+import { ownWording, sendable } from "../privacy.ts";
+import { secretText } from "../memory/sensitive.ts";
 import * as z from "zod";
 import { randomInt } from "node:crypto";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
@@ -50,7 +52,7 @@ export function intentInput(snap: IntentSnapshot): IntentInput {
   return {
     instruction: snap.instruction.slice(0, 500),
     form: snap.title === null ? snap.window.app.name : `${snap.window.app.name} window '${snap.title.slice(0, 150)}'`,
-    fields: snap.fields.map((f) => ({ ref: f.ref, name: f.name, section: f.section, control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled })),
+    fields: snap.fields.map((f) => ({ ref: f.ref, name: sendable(f.name, "a field Caret leaves to the user"), section: f.section, control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled })),
     sections: snap.sections,
     windows: snap.windows.map((w) => ({ ref: w.ref, app: w.app, title: w.title.slice(0, 300), from: w.from })),
     memory: snap.memory,
@@ -91,6 +93,7 @@ const ROUTE_CRITERIA: Record<string, string> = {
   refuse: "Something Caret must not or cannot do here: pay or give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.",
   ask: "The instruction is too unclear to act on.",
 };
+ownWording(...Object.values(ROUTE_CRITERIA));
 const REFUSE_REASONS: Record<string, string> = {
   neverTyped: "It asks for a card number, a password, a one-time code, or a Social Security or other government ID number.",
   payment: "It asks to pay.",
@@ -98,6 +101,7 @@ const REFUSE_REASONS: Record<string, string> = {
   noSuchField: "It asks for a field this form does not have.",
   nothingToFill: "Something else Caret should not do.",
 };
+ownWording(...Object.values(REFUSE_REASONS));
 
 /** Stage one's two wordings of each question; the second reorders every option list. */
 const WORDS = {
@@ -136,24 +140,25 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
         return r;
       };
       const declared = snap.ledger.declared();
-      const form = snap.title === null ? `${snap.window.app.name} window` : `${snap.window.app.name} window '${snap.title}'`;
+      // G2 round 4: a name or title that holds a secret marker word is sent as what it is, never as its words.
+      const form = snap.title === null || secretText(snap.title) ? `${snap.window.app.name} window` : `${snap.window.app.name} window '${snap.title}'`;
       const state = {
         instruction: snap.instruction,
         form,
-        form_fields: snap.fields.map((f) => f.name).join("; "),
-        open_windows: snap.windows.map((w) => `${w.app}: ${w.title}${w.from === null ? "" : ` (from ${w.from})`}`).join("; "),
+        form_fields: snap.fields.map((f) => sendable(f.name, "a field Caret leaves to the user")).join("; "),
+        open_windows: snap.windows.map((w) => `${w.app}: ${sendable(w.title, "a window")}${w.from === null ? "" : ` (from ${w.from})`}`).join("; "),
         task: "Caret reads the user's instruction about the form on screen: what to do, which fields, from where, and for whom. Answer from the instruction; Caret finds the values itself.",
       };
       // Stage one: Choice questions.
       const scopeCriteria: Record<string, string> = { all: "Every empty field of the form.", list: "Only particular fields that the instruction names or describes." };
-      for (const s of snap.sections) scopeCriteria[s.ref] = `The fields under '${s.name}'.`;
+      for (const s of snap.sections) scopeCriteria[s.ref] = `The fields under '${sendable(s.name, "a section")}'.`;
       const sourceCriteria: Record<string, string> = { any: "The instruction does not say where the values come from.", ...(snap.memory.length > 0 ? { memory: "What the user told Caret about themselves (their own name and email)." } : {}), instruction: "Only values the instruction itself spells out." };
-      for (const w of snap.windows) sourceCriteria[w.ref] = `The ${w.app} window '${w.title}'${w.from === null ? "" : `, from ${w.from}`}.`;
+      for (const w of snap.windows) sourceCriteria[w.ref] = `The ${w.app} window '${sendable(w.title, "a window")}'${w.from === null ? "" : `, from ${w.from}`}.`;
       sourceCriteria.missing = "A window, file or app that is not among the open windows listed.";
       const whoseCriteria: Record<string, string> = { user: "The user's own details, or each field's own: the instruction names no one else whose details go in." };
       for (const p of snap.persons) whoseCriteria[p.ref] = `The details of ${p.span}, whom the instruction names.`;
       whoseCriteria.unnamed = "Someone else's details, but the instruction does not say whose.";
-      const fieldCriteria: Record<string, string> = Object.fromEntries(snap.fields.map((f) => [f.ref, `The field '${f.name}'.`]));
+      const fieldCriteria: Record<string, string> = Object.fromEntries(snap.fields.map((f) => [f.ref, `The field '${sendable(f.name, "a field Caret leaves to the user")}'.`]));
       fieldCriteria.none = "None of the form's fields.";
       const stage1 = (wording: 0 | 1): JevRequest => {
         const order = <T extends Record<string, string>>(c: T): Record<string, string> => (wording === 0 ? c : ordered(c, shuffled(Object.keys(c), rand)));
@@ -199,7 +204,7 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
       const listed = scope === "list" && !routeOpen ? snap.fields : [];
       const stage2 = (wording: 0 | 1): JevRequest => {
         const nouls: NonNullable<JevRequest["nouls"]> = {};
-        for (const f of listed) nouls[`n_${f.ref}`] = { type: "noul", instructions: WORDS.field[wording](f.name) };
+        for (const f of listed) nouls[`n_${f.ref}`] = { type: "noul", instructions: WORDS.field[wording](sendable(f.name, "a field Caret leaves to the user")) };
         ties.forEach((t, i) => {
           nouls[`t${i + 1}`] = { type: "noul", instructions: WORDS.tie[wording](t.span, t.field.name) };
         });

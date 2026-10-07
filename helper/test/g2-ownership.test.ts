@@ -2,7 +2,7 @@
 // page-loop-eval.ts replays them (a Mail window, then the note the user just left). Jev is a script that answers each
 // question by rule and records every request. Imports nothing G2 added, so the same file runs on the code before G2,
 // where the tests marked "G2" fail (evidence/screen/g2/whose/ownership-before.txt). Every value is synthetic.
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -13,10 +13,11 @@ import { aboutKind } from "../src/fill/about.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
-import { buildFillPopup, fillPlan, recheckFill, sourceHolds, writtenFields } from "../src/offers/fill-popup.ts";
+import { buildFillPopup, fillPlan, recheckFields, recheckFill, sourceHolds, writtenFields } from "../src/offers/fill-popup.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
 import { assertNoSecrets, SecretInRequest } from "../src/privacy.ts";
-import { bareLine, holdsSecret, sentenceDigests } from "../src/fill/line-values.ts";
+import { bareLine, lineDigests } from "../src/fill/line-values.ts";
+import { secretText as holdsSecret } from "../src/memory/sensitive.ts";
 import { nodeText } from "../src/model.ts";
 import { buildDesk, loadCorpus } from "../scripts/realfill-corpus.ts";
 
@@ -322,29 +323,45 @@ describe("G2 review findings", () => {
     const sw = (text: string) => desk([control("e1", "City")], [noteWindow(text)]).windows.get("w4-note")!;
     const KEY = "com.apple.TextEdit/standard/textarea:~0";
     const was = "I live in Portland, Maine, not Oregon. Recruiters keep mixing that up.";
-    const read = sentenceDigests(was, "Portland");
-    expect(sourceHolds(sw(was), KEY, "Portland", null, "combobox", { sentences: read })).toBe(true);
-    expect(sourceHolds(sw("I no longer live in Portland, Maine, not Oregon. Recruiters keep mixing that up."), KEY, "Portland", null, "combobox", { sentences: read })).toBe(false);
+    const read = lineDigests(was, "Portland");
+    expect(sourceHolds(sw(was), KEY, "Portland", null, "combobox", { lines: read })).toBe(true);
+    expect(sourceHolds(sw("I no longer live in Portland, Maine, not Oregon. Recruiters keep mixing that up."), KEY, "Portland", null, "combobox", { lines: read })).toBe(false);
   });
 });
 
 describe("G2 review round 2: one disclosure rule", () => {
   const forty = expectation("forty").sources;
 
-  it("1: an editable source field whose label, nearest label or placeholder states a secret gives nothing", async () => {
-    const pw = control("e1", "Password hint");
-    const field = (extra: Record<string, string>, value: string): Snapshot => ({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 900, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 500, 300] }, focused: true, root: null, nodes: [{ key: "other/standard/textfield:~0", parent: null, role: "AXTextField", value, editable: true, ...extra }], values: [], focusedKey: null, stats: { walkMs: 0, visited: 1, truncated: false } }) as Snapshot;
-    for (const [extra, value] of [[{ label: "My password is hunter2" }, "hunter2"], [{ label: "My password is hunter2" }, "Robin Vale"], [{ placeholder: "token: hunter2" }, "hunter2"]] as const) {
-      const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
-      try {
-        await proposeFill(desk([pw], [field(extra, value), noteWindow("Name: Kenji Watanabe")]), ask, WIN, keyOf(pw), 2000);
-      } catch (err) {
-        if (!(err instanceof Error && "why" in err)) throw err;
-      }
-      const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.snippets]));
-      expect(sent, JSON.stringify(extra)).not.toContain("hunter2");
-      expect(sent, JSON.stringify(extra)).not.toContain(value);
+  /** A source window of static texts and fields, each with a frame, as a reader shows a form left open in another app. */
+  const sourceWindow = (nodes: Snapshot["nodes"]): Snapshot => ({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 900, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 500, 300] }, focused: true, root: null, nodes, values: [], focusedKey: null, stats: { walkMs: 0, visited: nodes.length, truncated: false } }) as Snapshot;
+  /** Every request a fill of a harmless "Full name" makes beside `source`; there must be some, so a miss cannot pass vacuously. */
+  const requestsBeside = async (source: Snapshot): Promise<string> => {
+    const name = control("e1", "Full name");
+    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+    await proposeFill(desk([name], [source, noteWindow("Name: Kenji Watanabe")]), ask, WIN, keyOf(name), 2000);
+    expect(requests.length).toBeGreaterThan(0);
+    const sent = JSON.stringify(requests.map((r) => [r.state, r.questions, r.snippets]));
+    expect(sent).toContain("Kenji Watanabe");
+    return sent;
+  };
+
+  it("1: a source field whose own label, placeholder or nearest label names a secret gives nothing, its value included", async () => {
+    const f = (extra: Record<string, unknown>, value: string) => ({ key: "other/standard/textfield:~0", parent: null, role: "AXTextField", value, editable: true as const, frame: [200, 40, 160, 20] as [number, number, number, number], ...extra });
+    for (const node of [f({ label: "My password is hunter2" }, "hunter2"), f({ label: "My password is hunter2" }, "Robin Vale"), f({ placeholder: "token: hunter2" }, "hunter2")]) {
+      const sent = await requestsBeside(sourceWindow([node]));
+      expect(sent, JSON.stringify(node)).not.toContain("hunter2");
+      expect(sent, JSON.stringify(node)).not.toContain(node.value);
     }
+    // A real nearest label: a static text "My PIN is" to the left of an unlabelled field holding the number, and a static
+    // "PIN" above a static "7319" (no shape filter: the label holds a digit, or the value is not a field).
+    const pinField = sourceWindow([
+      { key: "other/standard/statictext:~0", parent: null, role: "AXStaticText", value: "My PIN is", frame: [20, 40, 120, 20] },
+      { key: "other/standard/textfield:~1", parent: null, role: "AXTextField", value: "7319", editable: true, frame: [150, 40, 120, 20] },
+      { key: "other/standard/statictext:~2", parent: null, role: "AXStaticText", value: "PIN 2", frame: [20, 80, 120, 20] },
+      { key: "other/standard/statictext:~3", parent: null, role: "AXStaticText", value: "8462", frame: [20, 104, 120, 20] },
+    ]);
+    const sent = await requestsBeside(pinField);
+    for (const t of ["7319", "8462", "PIN"]) expect(sent, t).not.toContain(t);
   });
 
   it("1: a value the anchor moves to the note the user just left never takes a block head that states a secret", async () => {
@@ -369,7 +386,9 @@ describe("G2 review round 2: one disclosure rule", () => {
     } catch (e) {
       expect(String(e)).not.toContain("hunter2");
     }
-    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field: 'Password'.", criteria: { none: "None." } } } })).not.toThrow();
+    // The same word rule as the redacted view (round 4): a marker word anywhere in any text throws, a plain field does not.
+    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field: 'Password'.", criteria: { none: "None." } } } })).toThrow(SecretInRequest);
+    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field: 'Email'.", criteria: { none: "None." } } } })).not.toThrow();
   });
 
   // G2 round-3 review: lines that name a secret anywhere, not only as their leading label, each beside an ordinary value.
@@ -476,7 +495,7 @@ describe("G2 review round 2: provenance", () => {
   });
 
   /** Whether `now` still gives `span` as fill read it from `was` (the digests fill records, then sourceHolds). */
-  const holds = (was: string, now: string, span: string): boolean => sourceHolds(sw(now), KEY, span, null, "text", { sentences: sentenceDigests(was, span) });
+  const holds = (was: string, now: string, span: string): boolean => sourceHolds(sw(now), KEY, span, null, "text", { lines: lineDigests(was, span) });
 
   it("6: a new warning in the value's sentence, or a new sentence that holds it, refuses it", () => {
     const was = "Mobile 555-0164 (no landline anymore).";
@@ -498,8 +517,8 @@ describe("G2 review round 2: provenance", () => {
       ["Work authorization: authorized to work in the United States. I do not need visa sponsorship.\nLocation: Oakland, California, United States", "United States"],
     ] as const) {
       expect(holds(was, was, span), was).toBe(true);
-      // The same text as the reader reads it again with its line breaks and spacing changed reads the same.
-      expect(holds(was, was.replace(/\n/gu, "\n  ").replace(/ {2}/gu, " "), span), was).toBe(true);
+      // Trailing white space is not an edit; anything else on the lines is (lead, round 4).
+      expect(holds(was, was.replace(/\n/gu, "  \n"), span), was).toBe(true);
     }
   });
 
@@ -537,7 +556,7 @@ describe("G2 review round 3: what the recheck compares", () => {
     };
     const p = await proposeFill(m, racing, WIN, keyOf(email), 2000);
     const f = writtenFields(p).fields.find((x) => x.key === keyOf(email));
-    expect(f?.basis?.sentences).toEqual(sentenceDigests("Email: robin@example.test", "robin@example.test"));
+    expect(f?.basis?.lines).toEqual(lineDigests("Email: robin@example.test", "robin@example.test"));
     // So the recheck, on the note as it reads now, refuses it.
     expect(recheckFill(m, writtenFields(p), () => null)).not.toBeNull();
   });
@@ -557,5 +576,86 @@ describe("G2 review round 3: what the recheck compares", () => {
       m.apply({ ...noteWindow(after), at: 2500 });
       expect(recheckFill(m, g, () => null), after).not.toBeNull();
     }
+  });
+});
+
+describe("G2 round 4: the redacted view, generated", () => {
+  /** A small seeded generator, so a failure names its case and reruns it. */
+  const rng = (seed: number) => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const MARKERS = ["password", "Passcode", "PIN", "pin#", "token", "Secret", "API key", "api_key", "private key", "SSN", "security code", "CVV", "routing number", "Access-Token", "OTP"];
+  const SEPS = [": ", " is ", " = ", " ", ":", " - ", " -> ", "\t", "\n"];
+  const QUOTES = [["", ""], ['"', '"'], ["'", "'"], ["(", ")"], ["[", "]"], ["<", ">"], ["`", "`"]];
+
+  it("no request carries a value planted beside a marker word, whatever the separator, quoting or role", async () => {
+    const r = rng(7);
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(r() * xs.length)] as T;
+    for (let i = 0; i < 120; i++) {
+      const planted = `Qv${i}x${Math.floor(r() * 9000 + 1000)}`;
+      const m = pick(MARKERS);
+      const [o, c] = pick(QUOTES) as [string, string];
+      const line = `${pick(["", "my ", "Staging ", "Email: robin@example.test "])}${m}${pick(SEPS)}${o}${planted}${c}`;
+      const role = pick(["note", "mail", "label", "placeholder", "nearest", "cell"] as const);
+      const at = [20, 40, 120, 20] as [number, number, number, number];
+      const source: Snapshot =
+        role === "note" ? noteWindow(`Notes\n${line}\nName: Kenji Watanabe`)
+        : role === "mail" ? mailWindow({ from: "Dana Park <dana@example.org>", to: "Kenji Watanabe <kenji@example.org>", subject: "Hi", body: `Hi Kenji,\n${line}\nDana` })
+        : ({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 500, 300] }, focused: false, root: null, values: [], focusedKey: null, stats: { walkMs: 0, visited: 2, truncated: false },
+            nodes:
+              role === "label" ? [{ key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, label: `${m}${pick(SEPS)}`, frame: at }]
+              : role === "placeholder" ? [{ key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, placeholder: m, frame: at }]
+              : role === "nearest" ? [{ key: "o/l", parent: null, role: "AXStaticText", value: `${o}${m}${c}`, frame: at }, { key: "o/f", parent: null, role: pick(["AXTextField", "AXStaticText", "AXCell"]), ...(r() < 0.5 ? { editable: true as const } : {}), value: planted, frame: [150, 40, 120, 20] }]
+              : [{ key: "o/c", parent: null, role: "AXCell", value: line, frame: at }],
+          } as Snapshot);
+      const name = control("e1", "Full name");
+      const others = role === "note" ? [source] : [source, noteWindow("Name: Kenji Watanabe")];
+      const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+      await proposeFill(desk([name, control("e2", "Notes", "textarea")], others), ask, WIN, keyOf(name), 2000);
+      expect(requests.length, `case ${i}`).toBeGreaterThan(0);
+      const sent = JSON.stringify(requests.map((x) => [x.state, x.questions, x.nouls ?? {}, x.snippets]));
+      expect(sent.includes(planted), `case ${i} (${role}): ${JSON.stringify(line)}`).toBe(false);
+    }
+  });
+
+  it("the redacted view's cost on the corpora: the lines it drops, and the right values they held", () => {
+    const REAL = join(REALFILL, "sources");
+    const texts: [string, string][] = [];
+    for (const f of readdirSync(REAL)) {
+      const raw = readFileSync(join(REAL, f), "utf8");
+      texts.push([f, f.endsWith(".json") ? Object.values(JSON.parse(raw) as Record<string, string>).join("\n") : raw]);
+    }
+    const keys: string[] = [];
+    for (const page of ["wizard-1", "wizard-2", "wizard-3", "reveal", "forty", "greenhouse", "ashby"]) {
+      const e = JSON.parse(readFileSync(join(TASKS, `${page}.json`), "utf8")) as { sources: { note: string; email: Mail; memory: { value: string }[] }; expected: Record<string, string> };
+      texts.push([page, [e.sources.note, e.sources.email.from, e.sources.email.to, e.sources.email.body, ...e.sources.memory.map((m) => m.value)].join("\n")]);
+      keys.push(...Object.values(e.expected).filter((v) => v !== "none" && v !== "true" && v !== "false"));
+    }
+    for (const f of loadCorpus(REALFILL).forms) keys.push(...f.fields.map((x) => x.expected).filter((v) => !["none", "handoff", "checked", "unchecked"].includes(v)));
+    const lines = texts.flatMap(([f, t]) => t.split("\n").map((l) => [f, l] as const)).filter(([, l]) => l.trim() !== "");
+    const dropped = lines.filter(([, l]) => holdsSecret(l));
+    expect(lines.length).toBe(276);
+    expect(dropped.map(([f, l]) => `${f}: ${l}`)).toEqual(["ashby: Incident question: use the token-leak story, write it fresh."]);
+    expect(keys.filter((k) => dropped.some(([, l]) => l.includes(k)))).toEqual([]);
+  });
+});
+
+describe("G2 round 4: recheck by neighbourhood", () => {
+  it("refuses a joined name once a line goes between its parts, and a phone once a warning line is added beside it", async () => {
+    const full = control("e1", "Full name");
+    const phone = control("e2", "Phone");
+    const note = "First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin";
+    const m = desk([full, phone], [noteWindow(note)]);
+    const { ask } = scripted({ "Full name": "Kenji Watanabe", Phone: "555-0164" }, () => ({ choice: "user", confidence: 0.95 }));
+    const g = writtenFields(await proposeFill(m, ask, WIN, keyOf(full), 2000));
+    expect(g.fields.map((f) => f.value)).toEqual(["Kenji Watanabe", "555-0164"]);
+    expect(recheckFields(m, g, () => null)).toMatchObject({ dropped: [] });
+    const after = (text: string): string[] => {
+      m.apply({ ...noteWindow(text), at: 2500 + text.length });
+      const r = recheckFields(m, g, () => null);
+      return "stale" in r ? ["stale"] : r.dropped.map((d) => d.key);
+    };
+    expect(after("First name: Kenji\nLandlord\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin")).toContain(keyOf(full));
+    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nDo not use this old number\nCity: Austin")).toEqual([keyOf(phone)]);
+    // An edit two lines away touches neither.
+    expect(after("First name: Kenji\nLast name: Watanabe\nPhone: 555-0164\nCity: Austin\nZIP: 78751")).toEqual([]);
   });
 });

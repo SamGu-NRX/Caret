@@ -122,26 +122,20 @@ export function mentionedKind(text: string): { kind: SensitiveKind; ssn: boolean
  */
 export function statedSecret(text: string): SensitiveKind | null {
   const t = text.toLowerCase();
-  for (const [kind, owned, bare] of STATED) if (owned.test(t) || (bare !== null && bare.test(t))) return kind;
+  for (const [kind, phrases] of LABEL_PHRASES) {
+    for (const p of phrases) {
+      const common = COMMON_IN_SENTENCES.has(p.join(" "));
+      const phrase = p.map((w) => w.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("[\\s-]+");
+      // "Passport number", "password for the demo": a trailing kind word, and a short phrase saying what it is for.
+      const tail = "s?(?:\\s+(?:number|no|num|nr|code|id))?(?:\\s+(?:for|of|to|on|at)(?:\\s+[\\w'-]+){1,3})?";
+      const value = common ? "\\S*\\d" : "\\S";
+      const owned = new RegExp(`\\b(?:my|our${common ? "" : "|the"})\\s+(?:[\\w'-]+\\s+)?${phrase}${tail}\\s*(?:is|was|:|=)\\s*${value}`, "u");
+      const bare = new RegExp(`(?:^|[\\n.;!?(]\\s*|\\s)${phrase}${tail}\\s*[:=]\\s*${value}`, "u");
+      if (owned.test(t) || (!common && bare.test(t))) return kind;
+    }
+  }
   return null;
 }
-
-/**
- * statedSecret's patterns, per phrase in LABEL_PHRASES's order, compiled once (G2: the candidate generator now checks
- * every line it reads, within its time budget; compiled per call, a cold desk went over it).
- */
-const STATED: readonly [SensitiveKind, RegExp, RegExp | null][] = LABEL_PHRASES.flatMap(([kind, phrases]) =>
-  phrases.map((p): [SensitiveKind, RegExp, RegExp | null] => {
-    const common = COMMON_IN_SENTENCES.has(p.join(" "));
-    const phrase = p.map((w) => w.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("[\\s-]+");
-    // "Passport number", "password for the demo": a trailing kind word, and a short phrase saying what it is for.
-    const tail = "s?(?:\\s+(?:number|no|num|nr|code|id))?(?:\\s+(?:for|of|to|on|at)(?:\\s+[\\w'-]+){1,3})?";
-    const value = common ? "\\S*\\d" : "\\S";
-    const owned = new RegExp(`\\b(?:my|our${common ? "" : "|the"})\\s+(?:[\\w'-]+\\s+)?${phrase}${tail}\\s*(?:is|was|:|=)\\s*${value}`, "u");
-    const bare = common ? null : new RegExp(`(?:^|[\\n.;!?(]\\s*|\\s)${phrase}${tail}\\s*[:=]\\s*${value}`, "u");
-    return [kind, owned, bare];
-  }),
-);
 
 /** The refusal's wording: "Caret doesn't keep card numbers in memory". */
 export const refusal = (kind: SensitiveKind): string => `Caret doesn't keep ${SENSITIVE_SAYS[kind]} in memory`;
@@ -168,24 +162,71 @@ function luhn(digits: string): boolean {
 }
 
 /**
- * G2 review: whether a text names a secret anywhere and gives something after the name (a value): any phrase of
- * LABEL_PHRASES ("PIN", "token", "password", "security code", "API key", "SSN", …), wherever it stands, followed by an
- * optional kind word ("number", "code", "id"), an optional ":", "=", "is" or "was", then a word or a number. A label
- * names a kind only at its end (labelKind), and a leading label is all secretLine reads, so "Email: robin@example.test
- * staging authentication PIN: 7319" went out whole (G2 round-3 review). This leans towards refusing: a line it takes
- * offers nothing to a fill (fill/line-values.ts holdsSecret), and "Pin it to the board" is one. Of the corpora's 370
- * source lines (fixtures/realfill/sources, F1's task notes, mails and memory, W4's note) it takes 1, Ashby's "Incident
- * question: use the token-leak story, write it fresh.", whose key is none: 0 right values lost (evidence/screen/g2/whose,
- * round 3).
+ * G2 round 4: whether a text holds a secret marker word: any phrase of LABEL_PHRASES ("password", "PIN", "token",
+ * "security code", "API key", "SSN", "routing", …) as whole words, a plural "s" allowed, case-insensitive, anywhere,
+ * whatever follows it (a separator, a quote, a bracket, or nothing at all). The one rule for what may reach Jev: the
+ * redacted view (fill/redact.ts) drops a line or a node that holds one, and a request that still carries one is refused
+ * (privacy.ts assertNoSecrets). It drops some innocent lines ("Pin it to the board", "routing the call"); the lead
+ * accepted that cost (G2 round 4), counted in fill/redact.ts.
  */
-export function markedSecret(text: string): SensitiveKind | null {
-  const t = text.toLowerCase();
-  for (const [kind, re] of MARKED) if (re.test(t)) return kind;
-  return null;
+export function markerWord(text: string | null | undefined): boolean {
+  return markerAt(text, false);
 }
 
-/** markedSecret's patterns, one per kind, compiled once: the candidate generator reads every line within its budget. */
-const MARKED: readonly [SensitiveKind, RegExp][] = LABEL_PHRASES.map(([kind, phrases]) => {
-  const any = phrases.map((p) => p.map((w) => w.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("[\\s_-]+")).join("|");
-  return [kind, new RegExp(`(?<![\\p{L}\\p{N}])(?:${any})s?(?:\\s+(?:number|no|num|nr|code|id))?(?![\\p{L}\\p{N}])\\s*(?:[:=]|\\bis\\b|\\bwas\\b|-)?\\s*[\\p{L}\\p{N}]`, "u")];
-});
+/**
+ * G2 round 4: whether a text ends in a marker phrase, maybe followed by "is", "was", "are" or a separator ("my private
+ * key", "Password:", "PIN is"): its value may be on the next line (fill/redact.ts).
+ */
+export function markerEnds(text: string | null | undefined): boolean {
+  return markerAt(text?.replace(/(?:\s*(?:\bis\b|\bwas\b|\bare\b|[:=\-–—>]))+\s*$/iu, ""), true);
+}
+
+function markerAt(text: string | null | undefined, atEnd: boolean): boolean {
+  if (text === null || text === undefined || text === "") return false;
+  const memo = atEnd ? ENDS_MEMO : WORD_MEMO;
+  const hit = memo.get(text);
+  if (hit !== undefined) return hit;
+  const found = scanMarker(text, atEnd);
+  if (memo.size >= MARKER_MEMO) memo.clear();
+  memo.set(text, found);
+  return found;
+}
+
+function scanMarker(text: string, atEnd: boolean): boolean {
+  const ws = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "");
+  for (let i = 0; i < ws.length; i++) {
+    const first = ws[i] as string;
+    const ps = BY_FIRST.get(first) ?? (first.endsWith("s") ? BY_FIRST.get(first.slice(0, -1)) : undefined);
+    if (ps === undefined) continue;
+    for (const p of ps) {
+      if (i + p.length > ws.length) continue;
+      let ok = true;
+      for (let j = 0; j < p.length && ok; j++) {
+        const w = ws[i + j] as string;
+        const want = p[j] as string;
+        ok = w === want || (j === p.length - 1 && w === `${want}s`);
+      }
+      if (ok && (!atEnd || i + p.length === ws.length)) return true;
+    }
+  }
+  return false;
+}
+/** The marker phrases by their first word: a line is read once, each word looked up, not every phrase tried at it. */
+const BY_FIRST = new Map<string, string[][]>();
+for (const [, phrases] of LABEL_PHRASES) for (const p of phrases) BY_FIRST.set(p[0] as string, [...(BY_FIRST.get(p[0] as string) ?? []), p]);
+/** markerWord's and markerEnds's answers by text: the redacted view reads every line of a window it builds. Bounded. */
+const MARKER_MEMO = 8000;
+const WORD_MEMO = new Map<string, boolean>();
+const ENDS_MEMO = new Map<string, boolean>();
+
+/** G2 round 4: whether a text is one fill must never send: it holds a marker word or a value Caret never types. */
+export function secretText(text: string | null | undefined): boolean {
+  if (text === null || text === undefined || text === "") return false;
+  const hit = SECRET_MEMO.get(text);
+  if (hit !== undefined) return hit;
+  const found = markerWord(text) || valueKind(text) !== null;
+  if (SECRET_MEMO.size >= MARKER_MEMO) SECRET_MEMO.clear();
+  SECRET_MEMO.set(text, found);
+  return found;
+}
+const SECRET_MEMO = new Map<string, boolean>();

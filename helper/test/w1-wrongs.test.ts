@@ -126,8 +126,8 @@ describe("LV1 wrong 3: the Ashby task's incident question took a note-to-self in
       for (const scope of [undefined, wholeForm(["form/phone", "form/incident"], "fill out this form")]) {
         const seen: JevRequest[] = [];
         const p = await proposeFill(m, picking(INCIDENT, "use the token-leak story, write it fresh", seen), "form", "form/phone", T0, { rand: () => 0, ...(scope === undefined ? {} : { scope }) });
-        // G2 round 3: "token-leak" names a secret marker word followed by a value (memory/sensitive.ts markedSecret), so
-        // the line is no longer offered at all; never written either way.
+        // G2 round 4: "token-leak" holds a secret marker word (memory/sensitive.ts markerWord), so the redacted view
+        // (fill/redact.ts) drops the line and it is no longer offered at all; never written either way.
         expect(offered(seen, INCIDENT).some((t) => t.startsWith("use the token-leak story"))).toBe(false);
         expect(fieldOf(p, "form/incident").value).toBeNull();
       }
@@ -150,9 +150,7 @@ describe("W1 review: parts keep what their line says about them", () => {
     expect(lineSpans("Address: PO Box 12, Austin, TX 78701").map((s) => s.text)).toContain("PO Box 12, Austin, TX 78701");
     expect(lineSpans("work: Brightline Dental Labs, lab technician, $5,200/mo gross").map((s) => s.text)).toEqual(["Brightline Dental Labs, lab technician, $5,200/mo gross", "Brightline Dental Labs", "lab technician"]);
     expect(lineSpans("Currently: Junior Analyst at Ridgeline Outdoor Co (since 2024)").map((s) => s.text)).toEqual(["Junior Analyst at Ridgeline Outdoor Co (since 2024)", "Junior Analyst at Ridgeline Outdoor Co", "Junior Analyst", "Ridgeline Outdoor Co"]);
-    // G2 round 3: a line naming a secret marker word ("token") followed by a value gives no span (markedSecret).
-    expect(lineSpans("Incident question: use the token-leak story, write it fresh.").map((s) => s.text)).toEqual([]);
-    expect(lineSpans("Incident question: use the leak story, write it fresh.").map((s) => s.text)).toEqual(["use the leak story, write it fresh."]);
+    expect(lineSpans("Incident question: use the token-leak story, write it fresh.").map((s) => s.text)).toEqual(["use the token-leak story, write it fresh."]);
   });
 
   it("writes a part only into a field that takes one value: never 'ring twice' into Delivery instructions (review 3)", async () => {

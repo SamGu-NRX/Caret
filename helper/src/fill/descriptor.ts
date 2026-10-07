@@ -94,12 +94,20 @@ function labelTexts(w: WindowState): LabelText[] {
 
 /** Nearest short static text to the left on the same row, else directly above. `labelOnly` keeps texts that pass isLabelLike. */
 export function nearestText(w: WindowState, target: Node, labelOnly = false): string | null {
+  return stripColon(nearestLabel(w, target, labelOnly)?.t ?? null);
+}
+
+/**
+ * The static text nearestText reads for `target`: its node key and text, or null. G2: the redacted view (fill/redact.ts)
+ * drops a node whose nearest label names a secret, and that label's own node with it.
+ */
+export function nearestLabel(w: WindowState, target: Node, labelOnly = false): { key: string; t: string } | null {
   const f = target.frame;
   if (f === undefined) return null;
   const [fx, fy, , fh] = f;
   const cy = fy + fh / 2;
-  let left: { d: number; t: string } | null = null;
-  let above: { d: number; t: string } | null = null;
+  let left: { d: number; e: LabelText } | null = null;
+  let above: { d: number; e: LabelText } | null = null;
   for (const e of labelTexts(w)) {
     if (e.key === target.key || (labelOnly && !e.labelLike)) continue;
     const [x, y, wd, h] = e.frame;
@@ -107,16 +115,45 @@ export function nearestText(w: WindowState, target: Node, labelOnly = false): st
     const textCy = y + h / 2;
     if (Math.abs(textCy - cy) <= Math.max(fh, h) / 2 && right <= fx + 4) {
       const d = fx - right;
-      if (d <= MAX_LEFT_GAP && (left === null || d < left.d)) left = { d, t: e.t };
+      if (d <= MAX_LEFT_GAP && (left === null || d < left.d)) left = { d, e };
       continue;
     }
     const bottom = y + h;
     if (bottom <= fy + 4 && overlapsHorizontally(e.frame, f)) {
       const d = fy - bottom;
-      if (d <= MAX_ABOVE_GAP && (above === null || d < above.d)) above = { d, t: e.t };
+      if (d <= MAX_ABOVE_GAP && (above === null || d < above.d)) above = { d, e };
     }
   }
-  return stripColon((left ?? above)?.t ?? null);
+  const hit = (left ?? above)?.e;
+  return hit === undefined ? null : { key: hit.key, t: hit.t };
+}
+
+/**
+ * G2: the keys of the nodes whose nearest text (nearestLabel, no shape filter) `marked` says names a secret, and of
+ * those texts' own nodes. Marked texts are few, so this looks only at the nodes each one could be nearest to (to its
+ * right on its row, or below it) and asks nearestLabel for those alone: about one pass over the window, not one per field
+ * (G2 round 4: asking every field cost about 30 ms on 2,000 fields).
+ */
+export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean): Set<string> {
+  const out = new Set<string>();
+  const hits = labelTexts(w).filter((e) => marked(e.t));
+  if (hits.length === 0) return out;
+  for (const e of hits) out.add(e.key);
+  for (const n of w.nodes.values()) {
+    const f = n.frame;
+    if (f === undefined || out.has(n.key)) continue;
+    const [fx, fy, , fh] = f;
+    const near = hits.some((e) => {
+      const [x, y, wd, h] = e.frame;
+      const sameRow = Math.abs(y + h / 2 - (fy + fh / 2)) <= Math.max(fh, h) / 2 && x + wd <= fx + 4 && fx - (x + wd) <= MAX_LEFT_GAP;
+      const below = y + h <= fy + 4 && overlapsHorizontally(e.frame, f) && fy - (y + h) <= MAX_ABOVE_GAP;
+      return sameRow || below;
+    });
+    if (!near) continue;
+    const l = nearestLabel(w, n, false);
+    if (l !== null && marked(l.t)) out.add(n.key);
+  }
+  return out;
 }
 
 function overlapsHorizontally(a: Frame, b: Frame): boolean {

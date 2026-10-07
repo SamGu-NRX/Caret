@@ -8,7 +8,7 @@
 import type { WindowState } from "./model.ts";
 import type { Node } from "./protocol.ts";
 import { isConversation } from "./conversation.ts";
-import { holdsSecret } from "./fill/line-values.ts";
+import { secretText } from "./memory/sensitive.ts";
 
 /**
  * Distinct characters of one window's text that one request may carry. The bound comes from the
@@ -746,7 +746,8 @@ export class SecretInRequest extends Error {}
 
 /**
  * G2 review: the one disclosure rule every request meets before it is sent: no text in its state, questions or yes/no
- * questions holds a secret marker (fill/line-values.ts holdsSecret), neither a whole string nor any text quoted inside
+ * questions holds a secret marker word or a value Caret never types (memory/sensitive.ts secretText, the redacted view's
+ * rule, fill/redact.ts), neither a whole string nor any text quoted inside
  * one (a candidate's description quotes its label, line and block head as 'text'). The candidate generator, fill and the
  * planner drop such lines and labels where they read them; this is the guarantee behind those filters, so a text one of
  * them misses stops the request loudly instead of reaching Jev. Throws SecretInRequest naming the question, never the
@@ -755,7 +756,7 @@ export class SecretInRequest extends Error {}
 export function assertNoSecrets(req: { state: unknown; questions: Record<string, unknown>; nouls?: Record<string, unknown> }): void {
   const check = (where: string, v: unknown): void => {
     if (typeof v === "string") {
-      if (holdsSecret(v) || [...v.matchAll(/'([^']{2,})'|"([^"]{2,})"/gu)].some((m) => holdsSecret(m[1] ?? m[2]))) throw new SecretInRequest(`a Jev request's ${where} holds a secret marker; it was not sent`);
+      if (secretText(v) && !OWN_WORDING.has(v)) throw new SecretInRequest(`a Jev request's ${where} holds a secret marker; it was not sent`);
       return;
     }
     if (Array.isArray(v)) v.forEach((x, i) => check(`${where}[${i}]`, x));
@@ -764,4 +765,19 @@ export function assertNoSecrets(req: { state: unknown; questions: Record<string,
   check("state", req.state);
   check("questions", req.questions);
   check("nouls", req.nouls ?? {});
+}
+
+/**
+ * G2 round 4: Caret's own fixed wording a request carries, which may name a kind of secret to say what Caret refuses
+ * ("…give a card number, a password, a one-time code…"): assertNoSecrets passes these strings, matched exactly, and no
+ * other. A builder registers its constants once, at load (ownWording).
+ */
+const OWN_WORDING = new Set<string>();
+export function ownWording(...texts: readonly string[]): void {
+  for (const t of texts) OWN_WORDING.add(t);
+}
+
+/** G2 round 4: a screen text a request names something by (a field, a section, a window), or `instead` when it holds a marker. */
+export function sendable(text: string, instead: string): string {
+  return secretText(text) ? instead : text;
 }

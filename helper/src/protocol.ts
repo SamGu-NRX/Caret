@@ -1512,10 +1512,10 @@ export const FillField = z.object({
       identity: z.object({ memoryId: z.string().min(1), kind: z.enum(["email", "phone", "name"]), key: z.string().min(1), part: z.enum(["first", "middle", "last"]).optional() }).optional(),
       clause: z.string().min(1).optional(),
       /**
-       * G2 review: a digest of each sentence of the source node that held the value when it was proposed (fill/line-
-       * values.ts sentenceDigests), which the recheck takes again: a changed or new sentence around the value refuses it.
+       * G2 round 4: a digest of each source line that held the value's source texts when it was proposed, with the line
+       * before and after it (fill/line-values.ts lineDigests), which the recheck takes again: any edit there refuses it.
        */
-      sentences: z.array(z.string().min(1)).optional(),
+      lines: z.array(z.string().min(1)).optional(),
       /**
        * G2 review: the source texts the value was read from as Jev was shown them, and how code derived the value from
        * them (fill.ts Derivation: "name:first", "join", "address:city", …); absent `how`, the value is `from`'s one text.

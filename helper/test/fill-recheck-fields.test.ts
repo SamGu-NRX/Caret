@@ -56,7 +56,9 @@ describe("sourceHolds: a span inside a longer source line (P2 decision)", () => 
 
 /** A short apply form: two text fields and a country dropdown named only by its label, as W4's Greenhouse pages show it. */
 const form = (): PageControl[] => [c("e1", "text", "Full name", { value: "" }), c("e2", "email", "Email", { value: "" }), c("e3", "combobox", "Country", { value: "" })];
-const NOTE = ["Full name: Robin Vale", "Email: robin@example.test", "Location: Oakland, California, United States (in the Bay Area)"].join("\n");
+// G2 round 4: a value's recheck reads its line and the lines either side (fill/line-values.ts lineDigests), so a line
+// between the values keeps an edit to one from touching another's neighbourhood.
+const NOTE = ["Full name: Robin Vale", "", "Phone: none on file", "", "Email: robin@example.test", "", "Notes: none", "", "Location: Oakland, California, United States (in the Bay Area)"].join("\n");
 const PICKS: Record<string, string> = { "Full name": "Robin Vale", Email: "robin@example.test", Country: "United States" };
 
 const cleanups: (() => void)[] = [];
