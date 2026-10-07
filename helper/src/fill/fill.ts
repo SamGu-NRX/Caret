@@ -19,7 +19,7 @@ import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNameP
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
-import { checkValues, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Proposed, type Provenance } from "./contract.ts";
+import { autocompletePart, checkValues, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Proposed, type Provenance } from "./contract.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -657,6 +657,9 @@ const PLACE_PARTS: ReadonlySet<FillPart> = new Set(["city", "state", "country"])
 /** C1: parts of a date, for a field or a menu that asks only for its month or year (derive.ts splitDate); C2 adds its day. */
 const DATE_PARTS: ReadonlySet<FillPart> = new Set(["month", "day", "year"]);
 /** C1: the part a menu asks for, if any: a date's month or year, a state, or a country. */
+/** The parts a menu's autocomplete field name may give it: those menuPart reads from a label. */
+const MENU_AUTOCOMPLETE: ReadonlySet<string> = new Set(["month", "day", "year", "state", "country"]);
+
 function menuPart(name: string | null): FillPart | null {
   const d = datePart(name);
   if (d !== null) return d;
@@ -820,7 +823,8 @@ export async function proposeFill(
     // C1: a field or a menu that asks for a date's month or year takes that part of a date (derive.ts datePart).
     // A menu that asks for a date's month or year, a state or a country takes that part of a date, an address or a place:
     // its options are names, which a whole date or address is not (C1, MENU_PARTS).
-    const part = !derive ? null : typed ? (datePart(name) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : x.control === "select" ? menuPart(name) : null;
+    // W2: the page's own autocomplete field name, when it names a part, outranks the label (fill/contract.ts).
+    const part = !derive ? null : typed ? (autocompletePart(n.autocomplete) ?? datePart(name) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : x.control === "select" ? (MENU_AUTOCOMPLETE.has(autocompletePart(n.autocomplete) ?? "none") ? autocompletePart(n.autocomplete) : menuPart(name)) : null;
     // A country is no one's detail, so it asks no whose question. A dropdown that takes a person's details meets the owner
     // veto and the whose gate as a text field does (B27 review: "Your full name" took another person's name otherwise).
     // So does a list of options, read by its label alone: a "Your full name" pop-up menu listing two people was handed

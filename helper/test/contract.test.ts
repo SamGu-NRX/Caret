@@ -2,7 +2,7 @@
 // shape checks, the mint's identity, the compilers' refusals of a missing or mismatched mint. All text is synthetic.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { checkValues, ContractError, fieldContract, isChecked, makeFieldContract, mintExempt, provenanceSays, requireChecked, setTestVerifier, shapeRefusal, sourceLabel, VERDICTS, VerifierUnavailable, VERIFY_BATCH, type FieldContract, type Proposed, type Provenance } from "../src/fill/contract.ts";
+import { checkValues, ContractError, fieldContract, isChecked, makeFieldContract, mintExempt, provenanceSays, requireChecked, setTestVerifier, takesSays, shapeRefusal, sourceLabel, VERDICTS, VerifierUnavailable, VERIFY_BATCH, type FieldContract, type Proposed, type Provenance } from "../src/fill/contract.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { fieldKinds } from "../src/fill/kinds.ts";
 import { fieldPart } from "../src/fill/derive.ts";
@@ -234,5 +234,31 @@ describe("the verifier (AC1 section 4)", () => {
       const sent = JSON.stringify([q.state, q.questions]);
       for (const sn of q.snippets) expect(sent.includes(sn.text)).toBe(true);
     }
+  });
+});
+
+describe("the page's autocomplete field name (AC1 step 7)", () => {
+  const withAc = (label: string, autocomplete: NonNullable<Node["autocomplete"]>): FieldContract =>
+    makeFieldContract({ windowId: WIN, node: { key: `k:${label}`, parent: null, role: "AXTextField", label, autocomplete }, descriptor: label, name: label, labelWords: [label], control: "text", kinds: fieldKinds([label]), part: fieldPart(label) });
+
+  it.each([
+    ["Name", "given-name", "first"],
+    ["Name", "family-name", "last"],
+    ["Address", "street-address", "street"],
+    ["Line 2", "address-line2", "unit"],
+    ["Town", "address-level2", "city"],
+    ["Code", "postal-code", "zip"],
+    ["Day", "bday-day", "day"],
+    ["Company", "organization", null],
+  ] as const)("a '%s' field marked %s takes the part %s", (label, ac, part) => {
+    expect(withAc(label, ac).part).toBe(part);
+  });
+
+  it("adds the kind the page names and says it to the verifier", () => {
+    const f = withAc("Contact", "email");
+    expect([...f.kinds]).toContain("email");
+    expect(shapeRefusal(prop(f, "Dana Whitfield"))).not.toBeNull();
+    expect(takesSays(withAc("Employer", "organization"))).toBe(" The field takes an organization's name.");
+    expect(takesSays(withAc("Name", "given-name"))).toBe(" The field takes only a person's first name.");
   });
 });

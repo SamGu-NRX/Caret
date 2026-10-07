@@ -47,6 +47,10 @@ export type NodeState = z.infer<typeof NodeState>;
 export const PageEntry = z.enum(["typed", "pasted", "other"]);
 export type PageEntry = z.infer<typeof PageEntry>;
 
+/** W2: the autocomplete field names a page control may carry (extension walker.ts AUTOCOMPLETE_TOKENS), one value's meaning each. */
+export const AutocompleteToken = z.enum(["name", "given-name", "additional-name", "family-name", "nickname", "organization", "organization-title", "street-address", "address-line1", "address-line2", "address-level1", "address-level2", "country", "country-name", "postal-code", "email", "tel", "tel-national", "url", "bday", "bday-day", "bday-month", "bday-year"]);
+export type AutocompleteToken = z.infer<typeof AutocompleteToken>;
+
 export const Node = z.object({
   /** Caret's element key: app, window kind, named ancestors, role, normalized label, ordinal. */
   key: z.string(),
@@ -73,6 +77,8 @@ export const Node = z.object({
    * TEXT_KINDS), which the write contract checks a value's shape against (fill/contract.ts FieldContract.inputKind).
    */
   inputKind: z.enum(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea"]).optional(),
+  /** W2, page controls only: the autocomplete field name the page gives it (PageControl.autocomplete). */
+  autocomplete: AutocompleteToken.optional(),
 });
 export type Node = z.infer<typeof Node>;
 
@@ -2739,6 +2745,8 @@ export const PageControl = z.object({
   entry: PageEntry.optional(),
   /** H14, page file controls only: the accept attribute's tokens, lowercased. */
   accept: z.array(z.string().min(1).max(100)).max(20).optional(),
+  /** W2: the autocomplete attribute's field name (extension walker.ts autocompleteOf), which the write contract reads. */
+  autocomplete: AutocompleteToken.optional(),
 });
 export type PageControl = z.infer<typeof PageControl>;
 

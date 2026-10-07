@@ -13,7 +13,7 @@
 // (writeMisfit with the carried provenance) until the verifier replaces it family by family (AC1 section 6). Values
 // whose exactness code settles (an option's own label, a resolved date, the user's saved answer, a user transfer, a
 // draft) are minted under a named exemption instead (ExemptRule); only the never-typed check runs on them.
-import type { FillMemory, FillWithheld, Node, ValueKind } from "../protocol.ts";
+import type { AutocompleteToken, FillMemory, FillWithheld, Node, ValueKind } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
@@ -52,6 +52,40 @@ export interface FieldContract {
   /** "MM/YYYY" when the label spells a format (kinds.ts DATE_FORMAT); null otherwise. */
   readonly dateFormat: string | null;
   readonly currencyShown: boolean;
+  /** W2 step 7: the page's own autocomplete field name for the control (Node.autocomplete); null when it gives none. */
+  readonly autocomplete: AutocompleteToken | null;
+}
+
+/** The part of a name, an address or a date an autocomplete field name asks for (HTML autofill), or none. */
+const AUTOCOMPLETE_PART: Partial<Record<AutocompleteToken, FillPart>> = {
+  name: "full",
+  "given-name": "first",
+  "additional-name": "middle",
+  "family-name": "last",
+  "street-address": "street",
+  "address-line1": "street",
+  "address-line2": "unit",
+  "address-level1": "state",
+  "address-level2": "city",
+  "postal-code": "zip",
+  country: "country",
+  "country-name": "country",
+  "bday-day": "day",
+  "bday-month": "month",
+  "bday-year": "year",
+};
+/** The input kind whose shape an autocomplete field name asks for, checked as the input's own kind is (shapeRefusal). */
+const AUTOCOMPLETE_INPUT: Partial<Record<AutocompleteToken, InputKind>> = { email: "email", tel: "tel", "tel-national": "tel", url: "url" };
+/** The kind of value an autocomplete field name asks for, beside the label's kinds (kinds.ts fieldKinds). */
+const AUTOCOMPLETE_KIND: Partial<Record<AutocompleteToken, ValueKind>> = { email: "email", tel: "phone", "tel-national": "phone", url: "url", bday: "date" };
+
+/**
+ * The part of a value a field takes by its page's autocomplete field name, or null. The page's own word for what the
+ * control holds outranks Caret's reading of its label: a "Name" field marked given-name takes the first name. Fill
+ * reads it too (fill.ts), so a part code derives for the field is the one the page asks for.
+ */
+export function autocompletePart(token: AutocompleteToken | null | undefined): FillPart | null {
+  return token == null ? null : (AUTOCOMPLETE_PART[token] ?? null);
 }
 
 export type DeriveHow = "namePart" | "addressPart" | "placePart" | "datePart" | "placeWithCountry" | "optionFromPart";
@@ -230,6 +264,8 @@ export function makeFieldContract(x: {
 }): FieldContract {
   const words = x.labelWords.filter((w): w is string => typeof w === "string").join(" ");
   const inputKind = (x.node.inputKind ?? null) as InputKind;
+  const autocomplete = x.node.autocomplete ?? null;
+  const acKind = autocomplete === null ? undefined : AUTOCOMPLETE_KIND[autocomplete];
   return Object.freeze({
     windowId: x.windowId,
     key: x.node.key,
@@ -240,10 +276,11 @@ export function makeFieldContract(x: {
     inputKind,
     numeric: inputKind === "number",
     maxLength: x.node.maxLength ?? null,
-    kinds: x.kinds,
-    part: x.part,
+    kinds: acKind === undefined || x.kinds.has(acKind) ? x.kinds : new Set([...x.kinds, acKind]),
+    part: autocompletePart(autocomplete) ?? x.part,
     dateFormat: DATE_FORMAT.exec(words.toLowerCase())?.[0]?.toUpperCase() ?? null,
     currencyShown: CURRENCY_SHOWN.test(words),
+    autocomplete,
   });
 }
 
@@ -264,7 +301,7 @@ export function fieldContract(w: WindowState, node: Node, form: FormControl | nu
   const typed = control === "text" || control === "combobox";
   const kinds = control === "date" ? new Set<ValueKind>(["date"]) : control === "time" ? new Set<ValueKind>(["time"]) : typed ? fieldKinds(labelWords) : new Set<ValueKind>();
   const formHasCity = [...w.nodes.values()].some((n) => n.editable === true && (n.role === "AXTextField" || n.role === "AXComboBox") && fieldPart(describeField(w, n).label, false) === "city");
-  const part = typed ? (datePart(name) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : null;
+  const part = typed ? (autocompletePart(node.autocomplete) ?? datePart(name) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : null;
   // fill.ts describeInput, which the helper compares again before a proposal is shown.
   const descriptor = form === null ? d.text : describeControl(form, d.section, form.label === null ? d.nearest : null);
   return makeFieldContract({ windowId: w.window.windowId, node, descriptor, name: name ?? "unnamed field", labelWords, control, kinds, part });
@@ -307,7 +344,7 @@ export function shapeRefusal(p: Proposed): string | null {
   const v = p.text.trim();
   const secret = secretIn(v, "");
   if (secret !== null) return `Caret never types ${SENSITIVE_SAYS[secret]}; that is yours to enter`;
-  const input = inputKindRefusal(p.field.inputKind, v);
+  const input = inputKindRefusal(p.field.inputKind, v) ?? (p.field.autocomplete === null ? null : inputKindRefusal(AUTOCOMPLETE_INPUT[p.field.autocomplete] ?? null, v));
   if (input !== null) return input;
   const kind = misfit(v, p.field.labelWords);
   if (kind !== null) return kind;
@@ -435,12 +472,16 @@ const INPUT_TAKES: Partial<Record<NonNullable<InputKind>, string>> = { email: "o
 
 /**
  * What the field takes, in words, from what code read of it (FieldContract): the part of a name, an address or a date,
- * the input's kind, a spelled date format, a shown currency. Empty when code read none of these. W2 dev-set evidence: the
+ * what the page's autocomplete field name says, the input's kind, a spelled date format, a shown currency. Empty when code read none of these. W2 dev-set evidence: the
  * verifier called "455 Congress Ave, Austin, TX 78701" exact for an Address beside a City field when told only the label
  * (evidence/screen/w2/verify-eval-1).
  */
+/** What a page's autocomplete field name says a field takes, beyond a part (AUTOCOMPLETE_PART) or a kind the input states. */
+const AUTOCOMPLETE_TAKES: Partial<Record<AutocompleteToken, string>> = { organization: "an organization's name", "organization-title": "a job title", nickname: "the name a person goes by", bday: "a date of birth", email: "one email address", tel: "one phone number", "tel-national": "one phone number", url: "one web address" };
+
 export function takesSays(f: FieldContract): string {
-  const takes = [f.part === null ? null : PART_TAKES[f.part], f.inputKind === null ? null : (INPUT_TAKES[f.inputKind] ?? null), f.dateFormat === null ? null : `a date written as ${f.dateFormat}`, f.currencyShown ? "the number alone, since the field shows its currency" : null].filter((t): t is string => t !== null);
+  const fromPage = f.autocomplete === null ? null : (AUTOCOMPLETE_TAKES[f.autocomplete] ?? null);
+  const takes = [f.part === null ? null : PART_TAKES[f.part], fromPage !== null && !(f.inputKind !== null && INPUT_TAKES[f.inputKind] === fromPage) ? fromPage : null, f.inputKind === null ? null : (INPUT_TAKES[f.inputKind] ?? null), f.dateFormat === null ? null : `a date written as ${f.dateFormat}`, f.currencyShown ? "the number alone, since the field shows its currency" : null].filter((t): t is string => t !== null);
   return takes.length === 0 ? "" : ` The field takes ${takes.join("; ")}.`;
 }
 

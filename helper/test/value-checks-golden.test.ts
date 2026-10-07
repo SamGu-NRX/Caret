@@ -1,5 +1,6 @@
 // W2: the lines in fixtures/golden/value-checks.ndjson are the contract a host decodes for the write contract's protocol
-// additions: a hello with VALUE_CHECKS_CAPABILITY; a page walk whose text inputs carry their kind (Node.inputKind); a
+// additions: a hello with VALUE_CHECKS_CAPABILITY; a page walk whose text inputs carry their kind and the page's
+// autocomplete field name (Node.inputKind, Node.autocomplete); a
 // fill proposal that withholds one field as "notExact" and one as "unverified"; and the same proposal as a host without
 // the capability is sent it, both reasons read as "wrongKind". On the socket only a host that declared the capability
 // gets the new reasons. The values are synthetic.
@@ -24,7 +25,7 @@ describe("the value-check protocol lines (W2)", () => {
     expect(JSON.stringify(HelperMessage.parse(at(2)))).toBe(lines[2]);
     expect(JSON.stringify(HelperMessage.parse(at(3)))).toBe(lines[3]);
     expect((at(0).capabilities as string[]).includes(VALUE_CHECKS_CAPABILITY)).toBe(true);
-    expect((at(1).nodes as { inputKind?: string }[]).map((n) => n.inputKind)).toEqual(["email", "text"]);
+    expect((at(1).nodes as { inputKind?: string; autocomplete?: string }[]).map((n) => [n.inputKind, n.autocomplete])).toEqual([["email", "email"], ["text", "organization-title"]]);
   });
 
   it("is the old line, reasons mapped to wrongKind, for a host without the capability", () => {
