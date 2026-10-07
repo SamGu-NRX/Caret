@@ -707,6 +707,8 @@ export class SnippetLedger {
         if (from === null) for (const [run, ids] of this.partialRuns(piece)) for (const wid of ids) chargeInside(wid, run);
       }
     }
+    // The budget check every path meets: the window's budget, and its prose share, per window, as SC1 defines it (just
+    // under half the window's prose, windowShare; not a share per line), whatever revealed the characters.
     for (const [wid, a] of adds) {
       const e = this.entries.get(wid) as Entry;
       if (e.chars + a.cost > e.share.budget) return null;
