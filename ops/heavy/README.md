@@ -139,12 +139,13 @@ Every job is enqueued with `--wait-absent ~/.caret-run/HOLD`. While HOLD exists 
 
 ```sh
 cd '/Users/samgu/Programming Projects/caret-ops-heavy/ops/heavy/tests'
-/opt/homebrew/opt/python@3.14/bin/python3.14 -B -m unittest -v test_units test_recipes test_supervisor test_custody test_queue_lease   # about seven minutes
+/opt/homebrew/opt/python@3.14/bin/python3.14 -B -m unittest -v test_units test_recipes test_supervisor test_custody test_queue_lease test_rig_ts   # about nine minutes
 ~/.long-run/rig/bin/test-rig-run-heavy-lock.sh
 cd ~/.long-run/bin && node --test lr-lease.test.mjs
+cd '/Users/samgu/Programming Projects/caret-ops-heavy/ops/heavy/vendor/long-run/bin' && node --test lr-lease.test.mjs mem-guard.test.mjs   # the uninstalled copy
 ```
 
-The tests run the shared queue at a fixed commit, copied into each test's temporary world, so they do not follow its owner's uncommitted work: `QUEUE_TEST_REV` in `tests/support.py` is the live queue (401c4d1); classes about the supervisor's own lease and VM jobs set `QUEUE_LEGACY_REV` (7ef4ccb). `test_custody` holds Astra's design tests 1 to 6 and 8 to 10 against a real launchd recovery agent; exclusion is checked by a separate contender that tries the locks. Test 10 runs the vendored lr-lease.
+The tests run the shared queue at a fixed commit, copied into each test's temporary world, so they do not follow its owner's uncommitted work: `QUEUE_TEST_REV` in `tests/support.py` is the live queue (401c4d1); classes about the supervisor's own lease and VM jobs set `QUEUE_LEGACY_REV` (7ef4ccb). `test_custody` holds Astra's design tests 1 to 6 and 8 to 10 against a real launchd recovery agent; exclusion is checked by a separate contender that tries the locks. Test 10, `QueueLeaseObliged` and `LeaseAcquiredButNotYetRegisteredCleanupRequired` run the vendored lr-lease.
 
 `test_supervisor` runs the real queue runner, relay, supervisor, lr-lease, lr-reap, rig-stop and launchd, with real processes, against a temporary queue state, HOLD path, lease directory, zero-floor lease policy, heavy.lock and scratch repositories. The profile and the evidence are synthetic. The runner holds the test's heavy.lock (`--heavy-lock`), as it holds the real one in production; `RunnerHeavyLock` also points it at an unrelated file to cover an older runner. `test_recipes` runs the recipe scripts directly with stub `pnpm`, `node`, `npx`, `rig-run` and Lume (`tests/stubs`); r2-prepare's build and staging have no test beyond `bash -n`. Each test waits up to 90 s for normal memory pressure and skips if it never comes. `RealVm` is written but skipped: it boots and cancels a real rig VM, and runs only with `CARET_HEAVY_VM_TEST=1`, HOLD released and 15 GiB free.
 

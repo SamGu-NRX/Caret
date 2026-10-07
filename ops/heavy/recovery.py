@@ -213,8 +213,10 @@ class Journal:
     that makes a new journal's name durable) is not acknowledged, so it cuts the file back to where it started. If
     that cut fails too, this Journal refuses every later append until the cut succeeds, so no record ever lands
     behind one that was refused. (A crash before the cut leaves the refused record for the restarted owner, which
-    then knows of a change the supervisor was told failed; each such record only makes the owner hold or clean up
-    more.) An unreadable line anywhere else raises JournalCorrupt.
+    then knows of a change the supervisor was told failed. An adoption, lock, lease, registration or member record
+    only makes the owner hold or clean up more; a CLEAN is appended only after a fresh inventory and the lease were
+    ABSENT, so replaying one releases nothing that was still there.) An unreadable line anywhere else raises
+    JournalCorrupt.
     """
 
     def __init__(self, path):
