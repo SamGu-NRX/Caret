@@ -98,6 +98,22 @@ export type WhoseReading =
 const FORM_NOUN = "form|application|app|order|registration|enrollment|enrolment|request|ticket|booking|reservation|rsvp|signup|survey|questionnaire|checkout|paperwork";
 
 const RELATION_SPAN = /^(?:my|our)\s+(\S+)$/iu;
+/** A third-person pronoun for someone other than the user: "his cell", "she wants", "add them". */
+const THIRD_PERSON = /\b(?:he|him|his|she|her|hers|they|them|their|theirs)\b/iu;
+
+/**
+ * I3 lead ruling (B26 heldout2-11, "add his cell number too"): whether the request points at someone other than the user,
+ * by a third-person pronoun, a relation ("my sister") or a name it gives as a person, and does not name the user beside
+ * them ("me and Bea"). Such a request never offers the user as the person it means (choices.ts personChoices): "you"
+ * cannot be what "his" means. Words only in its source phrases ("from Morgan's email") point at no one.
+ */
+export function pointsAtOther(snap: IntentSnapshot): boolean {
+  const instruction = snap.instruction;
+  const fw = fieldWords(instruction);
+  if (USER_TOO.test(fw)) return false;
+  return THIRD_PERSON.test(fw) || snap.persons.some((p) => !onlyInSources(instruction, p.span));
+}
+
 /** The user named beside someone else: "for me and Bea", "Bea and I", "both of us". */
 const USER_TOO = /\b(?:me|myself|i)\s+(?:and|&|\+)\s+\S|\S\s+(?:and|&|\+)\s+(?:me|myself|i)\b|\bboth of us\b|\bthe two of us\b|\bus both\b/iu;
 

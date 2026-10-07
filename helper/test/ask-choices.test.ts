@@ -402,6 +402,7 @@ describe("second re-check: what a continued Ask compares, and when (B29)", () =>
   });
 });
 
+// I3 lead ruling: a request that points at someone else ("his cell", "Gary's cell") never offers the user ("you").
 describe("Ask asks whose details, with the user and the people on screen (B29)", () => {
   const instruction = "add his cell number in the landlord phone";
 
@@ -410,23 +411,23 @@ describe("Ask asks whose details, with the user and the people on screen (B29)",
     expect(e.message).toBe(SAYS.whichPerson);
     const q = questionOf(e) as Q;
     expect(q).toMatchObject({ part: "person", text: "Whose details go in?", pick: "one" });
-    expect(q.options.map((c) => c.option)).toEqual([{ kind: "you", id: "o1" }, { kind: "person", id: "o2", name: "Gary Pruitt" }]);
+    expect(q.options.map((c) => c.option)).toEqual([{ kind: "person", id: "o1", name: "Gary Pruitt" }]);
     const j = jevBy((s) => (s.includes("'Landlord phone'") ? "(512) 555-0177" : null), (c) => (c.includes("(512) 555-0177") ? "person" : "unclear"));
-    const d = await answer(q, ["o2"], { model: desk({ mail: true }), ask: j.ask, instruction });
+    const d = await answer(q, ["o1"], { model: desk({ mail: true }), ask: j.ask, instruction });
     expect(d.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[KEY("landlord phone"), "(512) 555-0177"]]);
     expect(JSON.stringify(j.seen.map((r) => r.state))).toContain("Gary Pruitt");
   });
 
   it("lists a person once, by the longest name: 'Gary' in the instruction and 'Gary Pruitt' on a mail", async () => {
     const e = await fail(planAsk("put Gary's cell in the landlord phone", desk({ mail: true }), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ route: "ask", why: "whichPerson", fields: [s.fields.find((f) => f.name === "Landlord phone")?.ref ?? "?"] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
-    expect(questionOf(e)?.options.map((c) => c.option)).toEqual([{ kind: "you", id: "o1" }, { kind: "person", id: "o2", name: "Gary Pruitt" }]);
+    expect(questionOf(e)?.options.map((c) => c.option)).toEqual([{ kind: "person", id: "o1", name: "Gary Pruitt" }]);
   });
 
   // A1 decision 2: a note's line that names someone beside a role ("Landlord: Gary Pruitt") puts them among the options.
   it("asks with the person a note names beside a role, when no mail names anyone (A1)", async () => {
     const e = await fail(planAsk(instruction, desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ fields: [s.fields.find((f) => f.name === "Landlord phone")?.ref ?? "?"] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
     expect(e.message).toBe(SAYS.whichPerson);
-    expect(questionOf(e)?.options.map((c) => c.option)).toEqual([{ kind: "you", id: "o1" }, { kind: "person", id: "o2", name: "Gary Pruitt" }]);
+    expect(questionOf(e)?.options.map((c) => c.option)).toEqual([{ kind: "person", id: "o1", name: "Gary Pruitt" }]);
   });
 
   it("refuses as before when no one is named in the instruction or on screen", async () => {

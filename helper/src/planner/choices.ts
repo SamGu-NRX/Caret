@@ -16,6 +16,7 @@
 // Nothing is listed past MAX_ASK_OPTIONS. A fields question that does not fit is not asked: the Ask fills the fields Jev
 // chose and leaves the rest to the user (I3 lead ruling, intent-heads.ts); a source or person question that does not
 // fit lists its first candidates.
+import { pointsAtOther } from "./people.ts";
 import type { ScreenModel } from "../model.ts";
 import { MAX_ASK_OPTIONS, type AskOption } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
@@ -180,7 +181,7 @@ function sourceChoices(snap: IntentSnapshot, model: ScreenModel, scoped: readonl
 }
 
 /**
- * The user, then each person the instruction names, then each sender an open mail shows, then (A1) each person a note
+ * The user (unless the request points at someone else, people.ts pointsAtOther), then each person the instruction names, then each sender an open mail shows, then (A1) each person a note
  * names beside a role or a relation and each person the user told Caret about (people.ts), once each.
  */
 function personChoices(snap: IntentSnapshot): ChoicesResult {
@@ -191,7 +192,9 @@ function personChoices(snap: IntentSnapshot): ChoicesResult {
   const names: string[] = [];
   for (const t of all) if (!all.some((o) => within(t, o)) && !names.some((x) => x.toLowerCase() === t.toLowerCase())) names.push(t);
   if (names.length === 0) return no("no one is named in the instruction or on screen");
-  const options: Choice[] = [{ option: { kind: "you", id: "o1" }, fixes: { person: { kind: "user" } } }];
-  for (const name of names.slice(0, MAX_ASK_OPTIONS - 1)) options.push({ option: { kind: "person", id: `o${options.length + 1}`, name }, fixes: { person: { kind: "person", name } } });
+  // I3 lead ruling: a request that points at someone else ("add his cell number too") never offers the user, who
+  // cannot be what "his" means; after B26 heldout2-11's pick of "you", the user's own cell was written.
+  const options: Choice[] = pointsAtOther(snap) ? [] : [{ option: { kind: "you", id: "o1" }, fixes: { person: { kind: "user" } } }];
+  for (const name of names.slice(0, MAX_ASK_OPTIONS - options.length)) options.push({ option: { kind: "person", id: `o${options.length + 1}`, name }, fixes: { person: { kind: "person", name } } });
   return { choices: { part: "person", text: ASKS.person, pick: "one", options }, why: null };
 }
