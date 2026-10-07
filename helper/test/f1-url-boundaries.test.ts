@@ -3,6 +3,7 @@ import { ScreenModel } from "../src/model.ts";
 import { mintOf, proposeFill } from "../src/fill/fill.ts";
 import { fieldContract, setTestVerifier } from "../src/fill/contract.ts";
 import { formatForField } from "../src/fill/field-format.ts";
+import { rawURLToken } from "../src/fill/line-values.ts";
 import { lowerGoal } from "../src/goals/lower.ts";
 import type { GoalInventory, TargetBinding, ValueBinding } from "../src/goals/plan.ts";
 import type { DraftPlan } from "../src/codemode/types.ts";
@@ -30,7 +31,7 @@ async function throughGoal(token: string, wanted = WRONG, typed: boolean | strin
   const offered: string[] = [];
   const verify: string[] = [];
   setTestVerifier(async (req) => {
-    const text = requestText(req);
+    const text = requestText(req.questions);
     if (text.includes(wanted)) verify.push(text);
     if (options.refuse) return { model: "part", answers: Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: requestText(q).includes(wanted) ? "part" : "exact", confidence: 0.95 }])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
     return STAND_IN(req);
@@ -73,7 +74,6 @@ const reviewed = [
   ["github.com/harperq-data?next=x", "github.com/harperq-data?next=x"],
   ["github.com/harperq-data#bio", "github.com/harperq-data#bio"],
   ["github.com/harperq-data/repository", "github.com/harperq-data/repository"],
-  ["https://user@github.com/harperq-data", "https://user@github.com/harperq-data"],
   ["https://[::1]/profile", "https://[::1]/profile"],
 ] as const;
 
@@ -107,6 +107,18 @@ describe("reviewed URL spans carry raw evidence instead of new extraction rules"
     expect(r.writes.some((s) => s.writes === extracted)).toBe(false);
   });
 
+  it("keeps userinfo evidence in the offer and refuses it at the existing shape gate", async () => {
+    const raw = "https://user@github.com/harperq-data";
+    const r = await throughGoal(raw, raw, false, { refuse: true });
+    const offers = r.offered.filter((s) => s.startsWith(`"${raw}"`));
+    expect(offers).toHaveLength(2);
+    expect(formatForField(raw, ["GitHub URL"], "url", `GitHub: ${raw}`)).toBeNull();
+    expect(r.p.fields.find((f) => f.key === KEY)).toMatchObject({ value: null, withheld: "wrongKind" });
+    expect(r.verify).toHaveLength(0);
+    expect(r.writes.some((s) => s.writes === raw || s.writes === WRONG)).toBe(false);
+    expect(r.writes.some((s) => s.writes === "REF-42")).toBe(true);
+  });
+
   it("keeps the raw token in base provenance when the verifier approves an extracted span", async () => {
     const raw = "evil.example?next=https://github.com/harperq-data";
     const r = await throughGoal(raw, WRONG, false, { label: "Notes" });
@@ -132,6 +144,91 @@ describe("1872a37 URL coverage", () => {
     expect(r.verify).toHaveLength(2);
     for (const request of r.verify) expect(request).toContain(raw);
     expect(r.writes.find((s) => s.writes === extracted)?.checked?.provenance).toMatchObject({ kind: "window", line: raw });
+  });
+});
+
+describe("URL occurrence evidence", () => {
+  const homepage = "https://example.com";
+  const portfolio = `${homepage}/projects`;
+
+  it("resolves the supplied offset even when a longer URL precedes the exact span", () => {
+    const source = `Portfolio: ${portfolio}\nWebsite: ${homepage}`;
+    expect(rawURLToken(source, homepage, 4000, source.lastIndexOf(homepage))).toBe(homepage);
+    expect(rawURLToken(source, homepage, 4000)).toBe(`${portfolio}\nWebsite: ${homepage}`);
+  });
+
+  it("does not extend a reader's evidence excerpt for later identical raw tokens", () => {
+    const evidence = `${homepage}\nOther: "${homepage}"`;
+    const source = `${evidence}\n${"unrelated ".repeat(200)}${homepage}`;
+    expect(rawURLToken(source, homepage, 4000)).toBe(evidence);
+  });
+
+  it.each([-1, 1, 0.5, Number.NaN])("refuses an invalid extraction offset %s", (offset) => {
+    expect(rawURLToken(homepage, homepage, 4000, offset)).toBeNull();
+  });
+
+  it("refuses a scan-cut reader occurrence without withholding a separate complete code occurrence", () => {
+    const source = `${homepage} other: ${homepage}/projects`;
+    const limit = source.length - 2;
+    expect(rawURLToken(source, homepage, limit)).toBeNull();
+    expect(rawURLToken(source, homepage, limit, source.lastIndexOf(homepage))).toBeNull();
+    expect(rawURLToken(source, homepage, limit, 0)).toBe(homepage);
+  });
+
+  it("offers both homepage and portfolio, resolving each code span at its extraction offset", async () => {
+    const source = `Website: ${homepage}\nPortfolio: ${portfolio}`;
+    for (const wanted of [homepage, portfolio]) {
+      const r = await throughGoal(wanted, wanted, false, { source, label: wanted === portfolio ? "Portfolio" : "Notes" });
+      for (const value of [homepage, portfolio]) expect(r.offered.some((s) => s.startsWith(`"${value}"`))).toBe(true);
+      expect(r.p.fields.find((f) => f.key === KEY)?.value).toBe(wanted);
+      expect(r.verify).toHaveLength(2);
+      for (const request of r.verify) expect(request).toContain(wanted);
+      expect(r.writes.find((s) => s.writes === wanted)?.checked?.provenance).toMatchObject({ kind: "window", line: wanted });
+    }
+  });
+
+  it.each([`${homepage}.`, `"${homepage}"`])("keeps a code-extracted homepage when another occurrence is %s", async (other) => {
+    // Tabs, indentation and CRLF must not shift the extraction offset into the wrong source token.
+    const source = `  Website:\t ${homepage}\r\nOther: ${other}`;
+    const r = await throughGoal(homepage, homepage, false, { source, label: "Notes" });
+    expect(r.p.fields.find((f) => f.key === KEY)?.value).toBe(homepage);
+    expect(r.verify).toHaveLength(2);
+    for (const request of r.verify) expect(request).toContain(homepage);
+    expect(r.writes.find((s) => s.writes === homepage)?.checked?.provenance).toMatchObject({ kind: "window", line: homepage });
+  });
+
+  it.each([portfolio, `${homepage}.`, `"${homepage}"`])("keeps all raw evidence for an offset-free reader span also found in %s", async (other) => {
+    const source = `Website: ${homepage}\nOther: ${other}`;
+    const r = await throughGoal(homepage, homepage, homepage, { source, label: "Notes", role: "AXButton" });
+    expect(r.p.fields.find((f) => f.key === KEY)?.value).toBe(homepage);
+    expect(r.verify).toHaveLength(2);
+    for (const request of r.verify) {
+      expect(request).toContain(homepage);
+      expect(request).toContain(other);
+    }
+    const provenance = r.writes.find((s) => s.writes === homepage)?.checked?.provenance;
+    expect(provenance?.kind).toBe("window");
+    if (provenance?.kind !== "window") throw new Error("expected the reader URL's window provenance");
+    expect(provenance.line).toContain(homepage);
+    expect(provenance.line).toContain(other);
+  });
+
+  it.each(["github.com/harperq-data.", '"github.com/harperq-data"'])("formats the code-selected GitHub occurrence when another occurrence is %s", async (other) => {
+    const profile = "github.com/harperq-data";
+    const r = await throughGoal(profile, WRONG, false, { source: `GitHub: ${profile}\nOther: ${other}` });
+    expect(r.p.fields.find((f) => f.key === KEY)?.value).toBe(WRONG);
+    expect(r.verify).toHaveLength(2);
+    for (const request of r.verify) expect(request).toContain(profile);
+    expect(r.writes.find((s) => s.writes === WRONG)?.checked?.provenance).toMatchObject({ kind: "derived", how: "fieldFormat", base: { kind: "window", span: profile, line: profile } });
+  });
+
+  it("withholds an offset-free reader span if its distinct raw tokens cannot fit the evidence budget", async () => {
+    const other = `${"x".repeat(1500)}/${homepage}`;
+    const source = `Website: ${homepage}\nOther: ${other}`;
+    const r = await throughGoal(homepage, homepage, homepage, { source, label: "Notes", role: "AXButton" });
+    expect(r.offered.some((s) => s.startsWith(`"${homepage}"`))).toBe(false);
+    expect(r.verify).toHaveLength(0);
+    expect(r.writes.some((s) => s.writes === homepage)).toBe(false);
   });
 });
 

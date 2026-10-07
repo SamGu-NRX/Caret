@@ -53,11 +53,14 @@ export function autolinkText(token: string): string {
   }
 }
 
-/** The maximal non-whitespace source run containing a URL span. Ambiguous or scan-cut runs give no evidence. */
-export function rawURLToken(source: string, span: string, scanLimit = Number.POSITIVE_INFINITY): string | null {
+/** Raw source evidence at a code extraction's offset, or an excerpt containing every distinct token for a reader span. */
+export function rawURLToken(source: string, span: string, scanLimit = Number.POSITIVE_INFINITY, sourceOffset?: number): string | null {
   if (span === "" || /\s/u.test(span)) return null;
-  let token: string | null = null;
-  for (let at = source.indexOf(span); at >= 0; at = source.indexOf(span, at + span.length)) {
+  if (sourceOffset !== undefined && (!Number.isInteger(sourceOffset) || sourceOffset < 0 || source.slice(sourceOffset, sourceOffset + span.length) !== span)) return null;
+  let first = source.length;
+  let last = 0;
+  const tokens = new Set<string>();
+  for (let at = sourceOffset ?? source.indexOf(span); at >= 0; at = sourceOffset === undefined ? source.indexOf(span, at + span.length) : -1) {
     let start = at;
     let end = at + span.length;
     while (start > 0 && !/\s/u.test(source[start - 1]!)) start--;
@@ -65,10 +68,14 @@ export function rawURLToken(source: string, span: string, scanLimit = Number.POS
     // A reader span or code fallback at the slice edge may omit the rest of this very same token.
     if (source.length >= scanLimit && end >= scanLimit) return null;
     const raw = source.slice(start, end);
-    if (token !== null && token !== raw) return null;
-    token = raw;
+    if (tokens.has(raw)) continue;
+    tokens.add(raw);
+    first = Math.min(first, start);
+    last = Math.max(last, end);
   }
-  return token;
+  // An actual source excerpt keeps all tokens verbatim and can use the existing disclosure/provenance path.
+  // The caller must admit the entire excerpt within its evidence budget, or withhold the candidate.
+  return tokens.size > 1 ? source.slice(first, last) : tokens.values().next().value ?? null;
 }
 /**
  * Phone numbers: international with a "+", ten digits in the North American groups, and seven digits joined by a

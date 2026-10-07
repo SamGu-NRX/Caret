@@ -284,9 +284,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   /** Windows a span of which did not fit their budget, closed or not. */
   const missed = new Set<string>();
   /** The candidate for a span, with every fact about it worked out. */
-  const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string): Candidate | null => {
+  const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string, sourceOffset?: number): Candidate | null => {
     const url = kind === "url" || textKind(text) === "url";
-    const raw = url ? rawURLToken(nodeText(node), text, MAX_SCAN) : null;
+    const raw = url ? rawURLToken(nodeText(node), text, MAX_SCAN, sourceOffset) : null;
     if (url && raw === null) return null;
     const ctx = timed("context", context);
     const labelled = labelledSpan(node, text, ctx);
@@ -296,7 +296,14 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     let required = quote ?? (fact?.required === true ? fact.clause : undefined);
     // The verifier must read the maximal raw token, not just the URL substring the extractor picked.
     // It is required context, so a budget cut withholds the URL instead of silently omitting its evidence.
-    if (raw !== null && required?.includes(raw) !== true) required = required === undefined ? raw : lineHolding(nodeText(node), text);
+    if (raw !== null && required?.includes(raw) !== true) {
+      const source = nodeText(node);
+      const line = lineHolding(source, text);
+      // Keep any required clause and all raw tokens in one verbatim excerpt, not just the first occurrence's line.
+      const start = Math.min(source.indexOf(line), source.indexOf(raw));
+      const end = Math.max(source.indexOf(line) + line.length, source.indexOf(raw) + raw.length);
+      required = required === undefined ? raw : source.slice(start, end);
+    }
     const clause = required !== undefined || fact === null || fact.required ? null : fact.clause;
     const c: Candidate = {
     id: `c${out.length + 1}`,
@@ -342,10 +349,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * Adds a span unless the cap is reached, its text is already in, or its window is closed. A span that
    * does not fit its window's budget closes the window.
    */
-  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string): void => {
+  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string, sourceOffset?: number): void => {
     // SC1 2a: a span holding a value the model withheld is never a candidate; its line may still be another's context.
     if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId) || text.includes(WITHHELD)) return;
-    const c = build(w, node, text, kind, context, quote, partOf);
+    const c = build(w, node, text, kind, context, quote, partOf, sourceOffset);
     if (c === null) return;
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       // W2: a part of a labelled value (line-values.ts valueParts) is an extra beside the whole value: one that does not
@@ -468,7 +475,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * them in relevance order. False when the cap or the clock ran out. A span's group is the term of the
    * whole-or-nothing set it goes in with: its kind's for a typed value, NAME_TERM for a name-like line.
    */
-  type Span = { node: Node; text: string; kind: ValueKind | null; group: string | null; context: () => string | null; terms: Set<string>; names: string[]; quote?: string; partOf?: string };
+  type Span = { node: Node; text: string; kind: ValueKind | null; group: string | null; context: () => string | null; terms: Set<string>; names: string[]; quote?: string; partOf?: string; sourceOffset?: number };
   const byRelevance = (w: WindowState, fields: readonly ReadonlySet<string>[]): boolean => {
     const spans: Span[] = [];
     const built = { done: false };
@@ -513,7 +520,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const terms = termsOf(node, line, [v.kind]);
       const names = wantsNames ? namesOutside(line, valuesOf.get(node.key)) : [];
       if (names.length > 0) terms.add(NAME_TERM);
-      spans.push({ node, text: v.text, kind: v.kind, group: kindTerm(v.kind), context: () => contextFor(w, node, v.text), terms, names });
+      spans.push({ node, text: v.text, kind: v.kind, group: kindTerm(v.kind), context: () => contextFor(w, node, v.text), terms, names, sourceOffset: sourceOffsets.get(v) });
     }
     for (const node of w.nodes.values()) {
       if (outOfTime()) return false;
@@ -596,7 +603,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         const sp = spans[i] as (typeof spans)[number];
         if (sp.group !== k || seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
-        const c = build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf);
+        const c = build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf, sp.sourceOffset);
         if (c !== null) group.push(c);
       }
       if (group.length > 0) groups.set(k, group);
@@ -635,7 +642,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (closed.has(w.window.windowId)) break;
       const sp = spans[i] as (typeof spans)[number];
       if ([...sp.terms].some((t) => leftOut.has(t))) continue;
-      add(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf);
+      add(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf, sp.sourceOffset);
     }
     return true;
   };
@@ -658,7 +665,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
       if (node === undefined || secretValue(w, v)) continue;
-      add(w, node, v.text, v.kind, () => contextFor(w, node, v.text));
+      add(w, node, v.text, v.kind, () => contextFor(w, node, v.text), undefined, undefined, sourceOffsets.get(v));
     }
   }
   for (const w of windows) {
@@ -738,6 +745,8 @@ export function lineSpans(raw: string): { line: string; text: string; label: str
  * recheck read the same list.
  */
 const valuesCache = new WeakMap<WindowState, readonly TypedValue[]>();
+/** Code extraction offsets stay local; reader TypedValues have no source offsets. */
+const sourceOffsets = new WeakMap<TypedValue, number>();
 export function windowValues(w: WindowState): readonly TypedValue[] {
   const cached = valuesCache.get(w);
   if (cached !== undefined) return cached;
@@ -752,14 +761,23 @@ export function windowValues(w: WindowState): readonly TypedValue[] {
     if (!LINE_ROLES.has(node.role) && !sourceField(node)) continue;
     const reader = byNode.get(node.key) ?? [];
     const seen = new Set(reader.map((v) => v.text));
-    for (const raw of nodeText(node).slice(0, MAX_SCAN).split(/\r?\n/)) {
+    for (const match of nodeText(node).slice(0, MAX_SCAN).matchAll(/([^\n]*)(?:\n|$)/gu)) {
+      const raw = match[1]!;
       const line = bareLine(raw);
       if (line.length < 3) continue;
       for (const v of lineValues(line)) {
         if (seen.has(v.text) || reader.some((r) => r.text.includes(v.text) || v.text.includes(r.text))) continue;
-        if (v.kind === "url" && rawURLToken(nodeText(node), v.text, MAX_SCAN) === null) continue;
+        const value: TypedValue = { kind: v.kind, text: v.text, nodeKey: node.key };
+        if (v.kind === "url") {
+          // Normalizing a line changes offsets. Locate the URL in the original line, retaining normalized extraction for other kinds.
+          const extracted = lineValues(raw).find((r) => r.kind === "url" && r.text === v.text);
+          if (extracted === undefined) continue;
+          const offset = match.index + extracted.at;
+          if (rawURLToken(nodeText(node), v.text, MAX_SCAN, offset) === null) continue;
+          sourceOffsets.set(value, offset);
+        }
         seen.add(v.text);
-        out.push({ kind: v.kind, text: v.text, nodeKey: node.key });
+        out.push(value);
       }
     }
   }

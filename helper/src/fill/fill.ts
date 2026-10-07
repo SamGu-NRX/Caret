@@ -1168,7 +1168,8 @@ export async function proposeFill(
       for (const c of candidates) {
         const source = viewOf(model, c.source.windowId)?.nodes.get(c.source.nodeKey);
         if (source === undefined) continue;
-        const r = formatForField(c.text, f.labelWords, f.node.inputKind, nodeText(source));
+        // URL candidates already carry required raw evidence from their extraction occurrence.
+        const r = formatForField(c.text, f.labelWords, f.node.inputKind, c.line ?? nodeText(source));
         if (r === null || candidates.some((x) => x.text === r.value) || list.some((x) => x.text === r.value)) continue;
         // GFM strips link punctuation from the value, but both verifier wordings must read the complete source token.
         const original = r.sourceToken === undefined || r.sourceToken === c.text ? c : { ...c, text: r.sourceToken };
