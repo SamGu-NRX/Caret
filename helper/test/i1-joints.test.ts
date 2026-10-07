@@ -147,7 +147,8 @@ describe("I1 joint 3: an owner-vetoed pick reaches no verifier question", () => 
     // whose cutoff, so stage one does not take it out of the value question and the value asks pick it. The veto then
     // withholds it (fill.ts otherPerson), before checkValues.
     const note = "Hi Jo, thanks for helping out.\nTamsin Reyes, Riverside Shelter\n555-0139\nCity: Austin";
-    const j = scripted({ pick: (l) => (l === "Phone" ? "555-0139" : l === "City" ? "Austin" : null), owner: (t) => (t.includes("555-0139") ? { choice: "other", confidence: 0.45 } : { choice: "unclear", confidence: 0.45 }) });
+    // HA2: a city is a person's detail and is asked whose it is too; the note's own City line is the user's.
+    const j = scripted({ pick: (l) => (l === "Phone" ? "555-0139" : l === "City" ? "Austin" : null), owner: (t) => (t.includes("555-0139") ? { choice: "other", confidence: 0.45 } : t === "Austin" ? { choice: "user", confidence: 0.95 } : { choice: "unclear", confidence: 0.45 }) });
     const p = await proposeFill(desk(["Phone", "City"], note), j.ask, "form", keyOf("Phone"), T0, { rand: () => 0 });
     expect(p.fields.find((f) => f.key === keyOf("Phone"))).toMatchObject({ value: null, withheld: "otherPerson" });
     expect(p.fields.find((f) => f.key === keyOf("City"))?.value).toBe("Austin");

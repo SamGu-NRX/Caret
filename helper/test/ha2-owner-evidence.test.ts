@@ -134,6 +134,36 @@ describe("HA2 rule 2: the owner questions show the whole note", () => {
   });
 });
 
+describe("HA2 rule 2 for address parts (lead decision): a lone city, ZIP or country line is a person's detail too", () => {
+  const ADDRESS = ["Street address", "City", "State", "ZIP code", "Country"];
+  const card = ["Copied from the visitor card:", "41 Quarry Lane", "Dover", "Delaware", "19901", "United States"];
+  const parts = (l: string): string | null => ({ "Street address": "41 Quarry Lane", City: "Dover", State: "Delaware", "ZIP code": "19901", Country: "United States" })[l] ?? null;
+
+  it.each([
+    ["after the lines", [...OPENING, ...card, "Neither of those lines is mine."]],
+    ["before the lines", [...OPENING, "The next lines are not mine.", ...card]],
+  ])("writes no part of another person's address, disclaimer %s", async (_, lines) => {
+    const { by } = await fill(lines.join("\n"), parts, { labels: ADDRESS });
+    for (const label of ADDRESS) {
+      const f = by(label);
+      expect(f?.value ?? f?.handoff?.value ?? null, label).toBeNull();
+      expect(f === undefined ? undefined : mintOf(f), label).toBeUndefined();
+    }
+  });
+
+  it("withholds a lone ZIP line from a note too long to show whole, even with 'user' and 'exact' at confidence 1", async () => {
+    const { by } = await fill([...OPENING, PROSE, "19901"].join("\n"), parts, { labels: ["ZIP code"], owner: () => "user" });
+    const f = by("ZIP code");
+    expect(f?.value ?? null).toBeNull();
+    expect(f === undefined ? null : heldReason(f)).toBe(`Caret left ZIP code: ${NOTE_UNSHOWN}.`);
+  });
+
+  it("fills the user's own lone city and ZIP lines from a note that fits, once Jev saw it and said 'user'", async () => {
+    const { by } = await fill([...OPENING, "Dover", "19901"].join("\n"), parts, { labels: ["City", "ZIP code"] });
+    expect([by("City")?.value, by("ZIP code")?.value]).toEqual(["Dover", "19901"]);
+  });
+});
+
 describe("HA2's cost: notes that fit still fill", () => {
   it("fills the user's own phone and email from a note that names no other person", async () => {
     const note = [...OPENING, `Phone: ${USER_PHONE}`, `Email: ${USER_EMAIL}`].join("\n");

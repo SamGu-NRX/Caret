@@ -62,7 +62,11 @@ describe("Greenhouse task page: the Location step's source check (G1 fix 1, froz
   const location = control("e1", "combobox", "Location (City)", { value: "" });
 
   it("reads Location's value as LV1's asks did: the city of 'Portland, Maine', from an unlabelled sentence", async () => {
-    const m = pageModel([location], note);
+    // HA2: a city is a person's detail, admitted only by owner questions that showed its whole note, and this note has
+    // lines over 80 characters, of which a fill on focus sends under half; its city would be withheld. The source check
+    // under test reads the sentence and its neighbours, so the note's short lines alone stand in for it here.
+    const card = note.split("\n").filter((l) => l.length <= 80).join("\n");
+    const m = pageModel([location], card);
     const p = await proposeFill(m, jevPickingText((_, ins) => (ins.includes("Location (City)") ? "Portland" : null), 0.93), WIN, keyOf(location), 2000);
     const f = p.fields.find((x) => x.key === keyOf(location));
     expect(f).toMatchObject({ control: "combobox", handoff: { value: "Portland", writes: true, source: { windowId: "w4-note", nodeKey: NOTE_KEY } } });
@@ -72,7 +76,7 @@ describe("Greenhouse task page: the Location step's source check (G1 fix 1, froz
     // G2 review: the sentence Jev read the span with (it warns, "not Oregon", so it went whole) rides with the value, and
     // digests of the lines that held it. I1: in the write contract's provenance, the record the one recheck reads: the
     // city was split from the span "Portland, Maine" of that sentence.
-    expect(g?.checked.provenance).toMatchObject({ kind: "derived", how: "addressPart", base: { kind: "window", span: "Portland, Maine", line: SENTENCE, lines: lineDigests(note, "Portland, Maine") } });
+    expect(g?.checked.provenance).toMatchObject({ kind: "derived", how: "addressPart", base: { kind: "window", span: "Portland, Maine", line: SENTENCE, lines: lineDigests(card, "Portland, Maine") } });
   });
 
   const SENTENCE = "I live in Portland, Maine, not Oregon. Recruiters keep mixing that up.";

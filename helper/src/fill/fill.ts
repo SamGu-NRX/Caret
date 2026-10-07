@@ -21,7 +21,7 @@ import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
-import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
+import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { alternateVetoes, readableFields, setAlternateReason, type AlternateWrite, type PartPicks } from "./alternate.ts";
@@ -728,6 +728,10 @@ const ADDRESS_PARTS: ReadonlySet<FillPart> = new Set(["street", "unit", "city", 
 const PLACE_PARTS: ReadonlySet<FillPart> = new Set(["city", "state", "country"]);
 /** C1: parts of a date, for a field or a menu that asks only for its month or year (derive.ts splitDate); C2 adds its day. */
 const DATE_PARTS: ReadonlySet<FillPart> = new Set(["month", "day", "year"]);
+/** HA2: the parts of a person's address and place (derive.ts FillPart): a field asking one of these takes a person's detail. */
+const PERSON_PLACE_PARTS: ReadonlySet<FillPart> = new Set([...ADDRESS_PARTS, ...PLACE_PARTS]);
+/** HA2: kinds of value that are no person's address part (an event's date or time, an amount, a link, a reference). */
+const NOT_ADDRESS_KINDS: ReadonlySet<ValueKind> = new Set(["date", "time", "amount", "url", "id", "email", "phone"]);
 /** C1: the part a menu asks for, if any: a date's month or year, a state, or a country. */
 /** The parts a menu's autocomplete field name may give it: those menuPart reads from a label. */
 const MENU_AUTOCOMPLETE: ReadonlySet<string> = new Set(["month", "day", "year", "state", "country"]);
@@ -805,6 +809,8 @@ function describeOwned(c: Candidate, line?: string, note?: string): string {
 
 /** HA2: why a value is withheld when the owner questions could not show the whole text it was read from (ownerNotes). */
 export const NOTE_UNSHOWN = "the note is too long for Caret to show Jev whose this value is";
+/** HA2: why an address part is withheld when its value was asked no owner question (past MAX_OWNERS). */
+export const OWNER_UNASKED = "Caret couldn't ask Jev whose this value is";
 
 /** The person's name a candidate holds, when it is a person's: the display name of "Name <email>", the head of "Name, more", or the whole span. */
 function personName(c: Candidate): string | null {
@@ -927,7 +933,9 @@ export async function proposeFill(
     // its options are names, which a whole date or address is not (C1, MENU_PARTS).
     // W2: the page's own autocomplete field name, when it names a part, outranks the label (fill/contract.ts).
     const part = !derive ? null : typed ? (autocompletePart(n.autocomplete) ?? datePart(name, d.section) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : x.control === "select" ? (MENU_AUTOCOMPLETE.has(autocompletePart(n.autocomplete) ?? "none") ? autocompletePart(n.autocomplete) : menuPart(name, d.section)) : null;
-    // A country is no one's detail, so it asks no whose question. A dropdown that takes a person's details meets the owner
+    // HA2 (lead decision 2): every part of an address is a person's detail, a country included: someone else's address in
+    // the user's note is the same failure as their phone. Before HA2 a country asked no whose question, as no one's detail.
+    // A dropdown that takes a person's details meets the owner
     // veto and the whose gate as a text field does (B27 review: "Your full name" took another person's name otherwise).
     // So does a list of options, read by its label alone: a "Your full name" pop-up menu listing two people was handed
     // the other one's name (B27 second review).
@@ -935,7 +943,7 @@ export async function proposeFill(
     const personKinds = typed ? kinds : listed ? fieldKinds(labelWords) : new Set<ValueKind>();
     const personal =
       (typed || listed) &&
-      ((part !== null && part !== "country" && !DATE_PARTS.has(part)) || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
+      ((part !== null && !DATE_PARTS.has(part)) || [...personKinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
     // An Ask that names no memory, or names another person for a personal field, is not offered the user's own.
     const memoryOk = scope === undefined || (scope.memory && (scope.person === null || !personal));
     const about = memoryOk ? (opts.about ?? []).filter((a) => aboutFits(a, x.control) && fieldAsksFor(a, name, w.window.title)) : [];
@@ -1323,7 +1331,15 @@ export async function proposeFill(
   const personalCand = (c: Candidate): boolean => [...candidateKinds(model, c)].some((k) => PERSONAL_KINDS.has(k)) || personName(c) !== null || isNameLike(c.text, c.context);
   // G2: a candidate that is the user's own identity (whose.ts) is the user's without asking; it is "asked" in every
   // sense below (ownerKnown), its answer "user" from both asks.
-  const ownerCands = owners && personal.size > 0 ? candidates.filter((c) => personalCand(c) && c.identity === undefined).slice(0, MAX_OWNERS) : [];
+  // HA2 (lead decision 2): a field asking an address part takes a person's detail, and a lone city, ZIP or country line is
+  // no person's kind of value by its shape. Each window value that could be one of the asked parts (derive.ts partFits,
+  // never a date, time, amount, link or reference) is asked whose it is too, after the person's values, within MAX_OWNERS;
+  // one past the cap is withheld from those fields (noteUnshown).
+  const addressAsked = asked.filter((f) => f.personal && f.part !== null && PERSON_PLACE_PARTS.has(f.part));
+  // A value a part is derived from for such a field ("Oakland, California, United States" for Country) counts too.
+  const derivedFrom = (f: Field, c: Candidate): boolean => (derived.get(f.id) ?? []).some((d) => (d.base.from === "window" && d.base.c.id === c.id) || d.also?.id === c.id);
+  const addressCand = (c: Candidate): boolean => addressAsked.some((f) => partFits(f.part as FillPart, c.text) || derivedFrom(f, c)) && ![...candidateKinds(model, c)].some((k) => NOT_ADDRESS_KINDS.has(k));
+  const ownerCands = owners && personal.size > 0 ? [...candidates.filter((c) => personalCand(c)), ...candidates.filter((c) => !personalCand(c) && addressCand(c))].filter((c) => c.identity === undefined).slice(0, MAX_OWNERS) : [];
   // I3 (N1): for an Ask that names a person, both owner questions show each value's whole source line, read from the
   // redacted view and charged to its window's budget after every span and clause, before the asks' declaration is taken
   // (review: taken after, the line went out undeclared). The clause alone can lose the name
@@ -1655,10 +1671,14 @@ export async function proposeFill(
   const noteUnshown = (f: Field, p: Pick): string | null => {
     if (!owners || !f.personal || namedPerson !== null || sameChoice(whoseId(f.id)) !== "user") return null;
     const sources = p.from === "window" ? [p.c] : p.from === "derived" ? [...(p.base.from === "window" ? [p.base.c] : []), ...(p.also === null ? [] : [p.also])] : [];
-    // Only a value an owner judgement admits: one whose owner was asked (ownerCands). A value of no person's kind (a city,
-    // a place) is asked no owner question and is admitted on no judgement, as before HA2 (otherPerson); widening the rule
-    // to those is a separate decision, flagged to the lead (it cost 2 of the scripted oracle's ZIP codes when tried).
-    return sources.some((c) => c.identity === undefined && ownerCands.some((x) => x.id === c.id) && !noteShown(c)) ? NOTE_UNSHOWN : null;
+    // A value whose owner was asked counts only when its note was shown (noteShown). A field asking an address part also
+    // takes no value whose owner was never asked (lead decision 2: one past MAX_OWNERS); any other field's unasked value
+    // is no person's kind (a date, an amount) and stays as before HA2.
+    const asked1 = (c: Candidate): boolean => ownerCands.some((x) => x.id === c.id);
+    const address = f.part !== null && PERSON_PLACE_PARTS.has(f.part);
+    const open = sources.filter((c) => c.identity === undefined);
+    if (open.some((c) => asked1(c) && !noteShown(c))) return NOTE_UNSHOWN;
+    return address && open.some((c) => !asked1(c)) ? OWNER_UNASKED : null;
   };
   /** Whether the named person has several values of the pick's kind and nothing on the pick's line names the field. */
   const personHasSeveral = (f: Field, p: Pick): boolean => {

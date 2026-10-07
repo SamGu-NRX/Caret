@@ -175,7 +175,9 @@ describe("structural evidence in whose-value questions (G2)", () => {
   it("gives a mail with several recipients, or a Cc:, no structural evidence", async () => {
     const several = await ownerAsk({ ...forty.email, to: "Jo Abernathy-Cole <jo.abernathycole@example.com>, Tamsin Reyes <tamsin.reyes@example.org>" });
     for (const t of ["jo.abernathycole@example.com", "tamsin.reyes@example.org"]) expect(ownerQuestionOf(several, t), t).toBeDefined();
-    for (const q of ownerQuestions(several).filter((x) => x.includes("Mail window"))) expect(q).not.toContain("Where it sits");
+    // HA2: the form's address fields also ask whose the mail's other lines are (its Subject included); only the To: line's
+    // values are about recipients here.
+    for (const q of ownerQuestions(several).filter((x) => x.includes("Mail window") && x.includes("labelled 'To'"))) expect(q).not.toContain("Where it sits");
     const cc = await ownerAsk(forty.email, ["Cc: Tamsin Reyes <tamsin.reyes@example.org>"]);
     for (const q of ownerQuestions(cc).filter((x) => x.includes("labelled 'To'"))) expect(q).not.toContain("only recipient");
   });
