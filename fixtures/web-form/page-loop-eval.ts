@@ -506,7 +506,11 @@ const canned: AskJev = async (req: JevRequest): Promise<JevResult> => {
   const answers = Object.fromEntries(
     entries.map(([k, q], i) => {
       if (k.endsWith("_whose")) return [k, fieldWhoseAnswer(keys[i]?.label ?? null, owners, sameField)];
-      if (k.endsWith("_owner")) return [k, valueOwnerAnswer(instructionsOf(q), q.criteria, owners)];
+      if (k.endsWith("_owner")) {
+        const text = req.subjects?.[k];
+        if (text === undefined) throw new Error(`whose-value question ${k} came with no subject (JevRequest.subjects)`);
+        return [k, valueOwnerAnswer(text, q.criteria, owners)];
+      }
       // The goal gate's own ownership questions (planner/codeplan.ts verifyWrites) name a field only by its name, which
       // the harness does not map to a key.
       if (ownershipAnswers(q.criteria)) return [k, { ...UNCLEAR }];

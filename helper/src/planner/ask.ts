@@ -16,6 +16,7 @@ import type { AskOption, FillField, FillProposal, Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
 import { conversionOf, FillError, memoryRefOf, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { identityKey } from "../fill/whose.ts";
 import { describeField, fieldLabelText, sectionNode } from "../fill/descriptor.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
@@ -558,6 +559,8 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       end: { kind: "valueEquals", window: sel, target: { key: f.key, describe: `the ${name(f)} field` }, value: `{{${slot}}}` },
       // A value copied from memory names its entry, so the executor checks it is still there before writing (B17).
       ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory, conversionOf(f.control)) }),
+      // G2: a window's value that is exactly the user's identity is checked against its entry right before it is written.
+      ...(f.memory === null && f.basis?.identity !== undefined && f.value !== null && identityKey(f.basis.identity.kind, f.value) === f.basis.identity.key ? { memory: memoryRefOf({ id: f.basis.identity.memoryId }, "identity") } : {}),
     };
   });
   // A plan needs a step; with only controls to set, it is one hand-off that names the first of them.

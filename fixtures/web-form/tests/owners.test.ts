@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { TASK_PAGES, loadExpectation } from "../tasks/site.ts";
 import { loadCorpus } from "../../../helper/scripts/realfill-corpus.ts";
-import { fieldWhoseAnswer, loadOwners, ownerOfText, ownersOf, ownerQuestionText, sameValue, valueOwnerAnswer } from "../owners.ts";
+import { fieldWhoseAnswer, loadOwners, ownerOfText, ownersOf, sameValue, valueOwnerAnswer } from "../owners.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const REALFILL = join(HERE, "..", "..", "realfill");
@@ -84,17 +84,18 @@ test("forty: whose each value is, by the page's truth and its memory", () => {
   for (const [text, want] of cases) assert.equal(ownerOfText(text, o), want, text);
 });
 
-test("an owner question is answered from its value's quoted text; a named person's question gets the user's only", () => {
+test("an owner question is answered from its value's own text; a named person's question gets the user's only", () => {
   const o = ownersOf(truth, "forty", []);
-  const ask = (t: string): string => `A value on the user's screen: "${t}" (email; labelled 'To'; in Mail window 'Re: Reference'). Whose details is it?`;
   const owner = { user: "u", other: "o", unclear: "?" };
-  assert.deepEqual(valueOwnerAnswer(ask("jo.abernathycole@example.com"), owner, o), { choice: "user", confidence: 0.95 });
-  assert.deepEqual(valueOwnerAnswer(ask("marcus.cole@example.net"), owner, o), { choice: "other", confidence: 0.95 });
-  assert.deepEqual(valueOwnerAnswer(ask("Riverside Food Bank"), owner, o), { choice: "unclear", confidence: 0.5 });
-  assert.deepEqual(valueOwnerAnswer(ask("marcus.cole@example.net"), { ...owner, person: "p" }, o), { choice: "unclear", confidence: 0.5 });
-  assert.deepEqual(valueOwnerAnswer(ask("jo.abernathycole@example.com"), { ...owner, person: "p" }, o), { choice: "user", confidence: 0.95 });
-  assert.deepEqual(valueOwnerAnswer(ask("jo.abernathycole@example.com"), owner, null), { choice: "unclear", confidence: 0.5 });
-  assert.equal(ownerQuestionText(`Whose details is this value, the user's or someone else's? "Dima (legal name Dmitri Halvorsen)." (labelled 'Preferred first name')`), "Dima (legal name Dmitri Halvorsen).");
+  assert.deepEqual(valueOwnerAnswer("jo.abernathycole@example.com", owner, o), { choice: "user", confidence: 0.95 });
+  assert.deepEqual(valueOwnerAnswer("marcus.cole@example.net", owner, o), { choice: "other", confidence: 0.95 });
+  assert.deepEqual(valueOwnerAnswer("Riverside Food Bank", owner, o), { choice: "unclear", confidence: 0.5 });
+  assert.deepEqual(valueOwnerAnswer("marcus.cole@example.net", { ...owner, person: "p" }, o), { choice: "unclear", confidence: 0.5 });
+  assert.deepEqual(valueOwnerAnswer("jo.abernathycole@example.com", { ...owner, person: "p" }, o), { choice: "user", confidence: 0.95 });
+  assert.deepEqual(valueOwnerAnswer("jo.abernathycole@example.com", owner, null), { choice: "unclear", confidence: 0.5 });
+  // G2 review: a value holding quotes is taken whole, as the request's subject gives it, not cut at its first quote.
+  const reveal = ownersOf(truth, "reveal", []);
+  assert.deepEqual(valueOwnerAnswer('"Priya Castellanos" (delegate for Dan Mbeki)', owner, reveal), { choice: "unclear", confidence: 0.5 });
 });
 
 test("a field question is answered from the page's other fields; a field the harness found no key for is unclear", () => {

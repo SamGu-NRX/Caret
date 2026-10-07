@@ -12,7 +12,7 @@
 import type { ValueKind } from "../protocol.ts";
 import { dateShaped, isNameLike, NAME_JOINERS, namesIn, ORG_SUFFIX, textKind, timeShaped } from "./kinds.ts";
 import { splitName, splitPlace } from "./derive.ts";
-import { labelKind, valueKind } from "../memory/sensitive.ts";
+import { labelKind, statedSecret, valueKind } from "../memory/sensitive.ts";
 
 /** A typed value found in a line: its text as written and where it starts. */
 export interface LineValue {
@@ -75,6 +75,16 @@ export const LABELLED = /^([^:]{1,32}):\s+(.+)$/;
 export function secretLine(line: string): boolean {
   const m = LABELLED.exec(line);
   return valueKind(line) !== null || (m?.[1] !== undefined && labelKind(m[1]) !== null);
+}
+
+/**
+ * G2 review: whether a text code would send beside a span (a clause, a block's head, a section) holds a secret: a line
+ * secretLine refuses, or a stated one ("password: hunter2", "my PIN is 7319", memory/sensitive.ts statedSecret). A
+ * clause can reach past what a line offered whole: "Email: robin@example.test password: hunter2 for the staging …"
+ * is too long to be a span, and its email's clause sent the password.
+ */
+export function holdsSecret(text: string | null | undefined): boolean {
+  return text !== null && text !== undefined && (secretLine(text) || statedSecret(text) !== null);
 }
 
 /** Lower wins when two values overlap, as the reader decides (TypedValues.swift priority). */
@@ -360,7 +370,8 @@ const PERSON_LABEL = /\b(?:name|contact|reference|referee|landlord|manager|spous
  * never broken into items.
  */
 export function lineTexts(line: string): LineText[] {
-  if (secretLine(line)) return [];
+  // G2 review: a line that states a secret gives no free text: each bounded span could carry it.
+  if (holdsSecret(line)) return [];
   const out: LineText[] = [];
   const add = (text: string, label: string | null, quote?: string, partOf?: string): void => {
     const t = text.trim().replace(/[.,;:!?]+$/u, "");

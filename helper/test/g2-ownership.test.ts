@@ -13,7 +13,7 @@ import { aboutKind } from "../src/fill/about.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
-import { writtenFields } from "../src/offers/fill-popup.ts";
+import { buildFillPopup, fillPlan, recheckFill, sourceHolds, writtenFields } from "../src/offers/fill-popup.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
 
 const TASKS = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "fixtures", "web-form", "tasks", "expect");
@@ -203,7 +203,7 @@ describe("a date's or a contact's clause (G2)", () => {
     expect(sept).toMatch(/in the line '[^']*September 2016 to May 2020/u);
   });
 
-  it("G2: shows 'August 2022' with the sentence that says it is when the job started, where the note's prose share has room", async () => {
+  it("G2: shows 'August 2022' with the sentence that says it is when the job started, where budget is left after every span", async () => {
     const w = expectation("wizard-2").sources;
     const ask = async (note: string): Promise<string | undefined> => {
       const { ask: jev, requests } = scripted({}, () => ({ choice: "user", confidence: 0.95 }));
@@ -211,12 +211,11 @@ describe("a date's or a contact's clause (G2)", () => {
       await proposeFill(desk([control("e0", "Employer"), start], [mailWindow(w.email), noteWindow(note)]), jev, WIN, keyOf(start), 2000, { about: memoryOf("wizard-2") });
       return descriptions(requests).find((d) => d.startsWith(`"August 2022" (`));
     };
-    // Without the degree line, the clause fits the note's prose share (privacy.ts windowBudget) and goes out.
-    const short = w.note.split("\n").filter((l) => !l.includes("B.S.")).join("\n");
-    expect(await ask(short)).toContain("in the line 'Started at Tallgrass Mechatronics in August 2022'");
-    // On F1's whole note it does not: the degree line's sentence holds a warning ("Not Northfield College"), so it goes
-    // out whole beside "May 2021" and spends the prose share first. The share is a privacy rule and stays; wizard-2's
-    // Start date gets no clause from this change.
+    // A note of the job line alone leaves budget once its spans are in, and the clause part goes out.
+    const job = w.note.split("\n").filter((l) => l.includes("Tallgrass")).join("\n");
+    expect(await ask(job)).toContain("in the line 'Started at Tallgrass Mechatronics in August 2022'");
+    // On F1's whole note the spans spend the budget first, and the clause, optional context, does not go (G2 review:
+    // charged earlier, clauses pushed values out). wizard-2's Start date gets no clause from this change.
     expect(await ask(w.note)).not.toContain("Started at Tallgrass");
   });
 });
@@ -230,5 +229,97 @@ describe("a field that asks for no person's details, offered memory (G2)", () =>
     const q = requests.flatMap((r) => Object.entries(r.questions)).find(([id]) => id.endsWith("_whose"));
     expect(q?.[1].instructions).toContain("the user's own job title");
     expect(q?.[1].instructions).not.toContain("name or email");
+  });
+});
+
+describe("G2 review findings", () => {
+  const forty = expectation("forty").sources;
+  const SAM: AboutValue = { id: "about-email", label: "Email", value: "sam.rivera@example.com", kind: "email" };
+
+  it("1: a just-left note's 'Email:' label never stands in for its owner, in a field that wants the user's email", async () => {
+    const email = control("e1", "Email");
+    const note = noteWindow("Contact details\nEmail: marcus.cole@example.net");
+    for (const scoped of [false, true]) {
+      const run = async (owner: Answer): Promise<string | null> => {
+        const { ask } = scripted({ Email: "marcus.cole@example.net" }, () => owner);
+        const scope = scoped ? { fields: [keyOf(email)], windows: null, memory: true, instruction: "fill out this form", person: null, literals: new Map(), wholeForm: true } : undefined;
+        const p = await proposeFill(desk([email], [note]), ask, WIN, keyOf(email), 2000, { about: [SAM], ...(scope === undefined ? {} : { scope }) });
+        return written(p, keyOf(email));
+      };
+      expect(await run({ choice: "unclear", confidence: 0.95 }), `scoped ${scoped}`).toBeNull();
+      expect(await run({ choice: "user", confidence: 0.3 }), `scoped ${scoped}`).toBeNull();
+      // Both asks calling it the user's at the cutoff still writes it: the owner is settled, by Jev.
+      expect(await run({ choice: "user", confidence: 0.95 }), `scoped ${scoped}`).toBe("marcus.cole@example.net");
+    }
+  });
+
+  it("2: a clause that holds a secret is not sent; the span goes alone", async () => {
+    const email = control("e1", "Email");
+    // Short enough to go out whole as a "Label: value" span, as the review's repro is.
+    const line = "Email: robin@example.test password: hunter2 for the staging service";
+    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+    await proposeFill(desk([email], [noteWindow(`Notes\n${line}`)]), ask, WIN, keyOf(email), 2000);
+    const sent = requests.flatMap((r) => Object.values(r.questions).flatMap((q) => [String(q.instructions), ...Object.values(q.criteria).map(String)]));
+    expect(sent.some((t) => t.includes('"robin@example.test" ('))).toBe(true);
+    expect(sent.filter((t) => t.includes("hunter2"))).toEqual([]);
+    expect(requests.flatMap((r) => r.snippets.map((x) => x.text)).filter((t) => t.includes("hunter2"))).toEqual([]);
+  });
+
+  it("3: a value that is the user's identity keeps its memory entry: the recheck, the pop-up's ref and the write all name it", async () => {
+    const email = control("e1", "Email");
+    const about = memoryOf("forty");
+    const entry = about.find((a) => a.value === "jo.abernathycole@example.com") as AboutValue;
+    const { ask } = scripted({ Email: "jo.abernathycole@example.com" }, () => ({ choice: "unclear", confidence: 0.5 }));
+    const m = desk([email], [mailWindow(forty.email), noteWindow(forty.note)]);
+    const p = await proposeFill(m, ask, WIN, keyOf(email), 2000, { about });
+    const f = p.fields.find((x) => x.key === keyOf(email));
+    expect(f?.basis?.identity).toEqual({ memoryId: entry.id, kind: "email", key: "jo.abernathycole@example.com" });
+    const g = writtenFields(p);
+    expect(recheckFill(m, g, (id) => (id === entry.id ? entry : null))).toBeNull();
+    expect(recheckFill(m, g, () => null)).toContain(entry.id);
+    expect(recheckFill(m, g, (id) => (id === entry.id ? { ...entry, value: "jo.cole@example.com" } : null))).toContain(entry.id);
+    expect(JSON.stringify(buildFillPopup(m, g))).toContain(`{"memory":"${entry.id}"}`);
+    expect(fillPlan(m, g).plan.steps[0]).toMatchObject({ memory: `${entry.id}~identity` });
+  });
+
+  it("4: neither To: fact for several recipients, a Cc: or a mail the user sent, with the user's email in memory", async () => {
+    const fields = [control("e1", "Email"), control("e2", "Full name")];
+    const ownerAsk = async (mail: Mail, extra: string[] = []): Promise<JevRequest[]> => {
+      const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+      await proposeFill(desk(fields, [mailWindow(mail, extra), noteWindow(forty.note)]), ask, WIN, keyOf(fields[0] as PageControl), 2000, { about: memoryOf("forty") });
+      return requests;
+    };
+    const cases = [
+      await ownerAsk({ ...forty.email, to: "Jo Abernathy-Cole <jo.abernathycole@example.com>, Tamsin Reyes <tamsin.reyes@example.org>" }),
+      await ownerAsk(forty.email, ["Cc: Tamsin Reyes <tamsin.reyes@example.org>"]),
+      await ownerAsk(forty.email, ["Bcc: Tamsin Reyes <tamsin.reyes@example.org>"]),
+      await ownerAsk({ ...forty.email, from: "Jo Abernathy-Cole <jo.abernathycole@example.com>" }),
+    ];
+    for (const r of cases) {
+      const mailQs = ownerQuestions(r).filter((q) => q.includes("Mail window"));
+      expect(mailQs.length).toBeGreaterThan(0);
+      for (const q of mailQs) expect(q).not.toContain("Where it sits");
+    }
+  });
+
+  it("5: a window that shows a quoted message's headers too gives no To: evidence", async () => {
+    const fields = [control("e1", "Email"), control("e2", "Full name")];
+    const quoted = { ...forty.email, body: `${forty.email.body}\n\nFrom: Tamsin Reyes <tamsin.reyes@example.org>\nTo: Elena Varga <elena.varga@example.org>\nSubject: Riverside\n\nCould you vouch for Jo?` };
+    const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
+    await proposeFill(desk(fields, [mailWindow(quoted), noteWindow(forty.note)]), ask, WIN, keyOf(fields[0] as PageControl), 2000, { about: memoryOf("forty") });
+    const mailQs = ownerQuestions(requests).filter((q) => q.includes("Mail window"));
+    expect(mailQs.length).toBeGreaterThan(0);
+    for (const q of mailQs) expect(q).not.toContain("To: line");
+  });
+
+  it("7: a source sentence that changed around a kept span no longer gives it", () => {
+    const sw = (text: string) => desk([control("e1", "City")], [noteWindow(text)]).windows.get("w4-note")!;
+    const KEY = "com.apple.TextEdit/standard/textarea:~0";
+    const was = "I live in Portland, Maine, not Oregon.";
+    expect(sourceHolds(sw(`${was} Recruiters keep mixing that up.`), KEY, "Portland", null, "combobox", was)).toBe(true);
+    expect(sourceHolds(sw("I no longer live in Portland, Maine, not Oregon."), KEY, "Portland", null, "combobox", was)).toBe(false);
+    // Read with no clause: a sentence that now warns about the span no longer gives it.
+    expect(sourceHolds(sw("Mobile 555-0164."), KEY, "555-0164", null, "text")).toBe(true);
+    expect(sourceHolds(sw("Mobile 555-0164 is my old number."), KEY, "555-0164", null, "text")).toBe(false);
   });
 });

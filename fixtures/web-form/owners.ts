@@ -79,23 +79,18 @@ export function ownerOfText(text: string, o: Owners): "user" | "other" | "unclea
   return user && !other ? "user" : other && !user ? "other" : "unclear";
 }
 
-/** The value an owner question is about: the first quoted text of its description (helper fill.ts describeCandidate, OWNER_WORDINGS). */
-export function ownerQuestionText(instructions: string): string | null {
-  return /"(.*?)" \(/su.exec(instructions)?.[1] ?? null;
-}
-
 /** Whether a question's answers are fill's ownership answers (helper fill.ts WHOSE_CRITERIA, OWNER_CRITERIA, personOwnerCriteria). */
 export function ownershipAnswers(criteria: Readonly<Record<string, string | null>>): boolean {
   return "user" in criteria && "other" in criteria && "unclear" in criteria;
 }
 
 /**
- * Canned Jev's answer to whose a value is. An Ask that names a person asks whether the value is that person's;
- * owners.json does not say who that is, so only the user's own is answered there.
+ * Canned Jev's answer to whose a value is, by the value's text (the request's JevRequest.subjects, never parsed from the
+ * question). An Ask that names a person asks whether the value is that person's; owners.json does not say who that is,
+ * so only the user's own is answered there.
  */
-export function valueOwnerAnswer(instructions: string, criteria: Readonly<Record<string, string | null>>, o: Owners | null): { choice: string; confidence: number } {
-  const text = ownerQuestionText(instructions);
-  const whose = text === null || o === null ? "unclear" : ownerOfText(text, o);
+export function valueOwnerAnswer(text: string, criteria: Readonly<Record<string, string | null>>, o: Owners | null): { choice: string; confidence: number } {
+  const whose = o === null ? "unclear" : ownerOfText(text, o);
   if (whose === "unclear" || ("person" in criteria && whose === "other")) return { ...UNCLEAR };
   return { choice: whose, confidence: KNOWN_CONFIDENCE };
 }

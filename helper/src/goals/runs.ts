@@ -26,6 +26,7 @@ import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
 import { isDerived, isFilled } from "./gates.ts";
 import { sourceHolds } from "../offers/fill-popup.ts";
 import { memoryWrites, parseMemoryRef } from "../fill/fill.ts";
+import { identityKey } from "../fill/whose.ts";
 import { continuationScope, pageInputKeys } from "./page-planner.ts";
 import { pageView } from "./page-view.ts";
 import { describeField } from "../fill/descriptor.ts";
@@ -489,6 +490,13 @@ export class GoalRuns {
         const now = this.deps.aboutNow?.(ref.id) ?? null;
         if (now === null || !memoryWrites(now.value, ref.part, v.text, ref.conv) || now.label !== v.fill.memoryLabel) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
       }
+      // G2: a value code decided was the user's by their identity in memory, a part split from one included, holds only
+      // while the entry is still that identity (no way to read the entry is no entry).
+      const id = v.fill?.identity;
+      if (id !== undefined) {
+        const now = this.deps.aboutNow?.(id.memoryId) ?? null;
+        if (now === null || identityKey(id.kind, now.value) !== id.key) return { reason: "sourceChanged", says: `what you told Caret about yourself, which '${s.target.label}' rests on, changed or is gone` };
+      }
       if (v.source === null) continue;
       if (!this.sourceShows(run, v)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
     }
@@ -505,7 +513,7 @@ export class GoalRuns {
     // I6: a value from the tab the user left is shown only while this goal still holds that tab's text.
     const sw = (this.deps.sourceModel?.(run.plan.goalId) ?? this.deps.model).windows.get(src.windowId);
     if (sw === undefined) return false;
-    if (v.fill !== undefined) return sourceHolds(sw, src.key, v.fill.span, v.fill.context, v.fill.control);
+    if (v.fill !== undefined) return sourceHolds(sw, src.key, v.fill.span, v.fill.context, v.fill.control, v.fill.clause);
     const node = sw.nodes.get(src.key);
     const want = v.event?.sentence ?? v.text;
     const typed = sw.values.some((x) => x.nodeKey === src.key && x.text === want);

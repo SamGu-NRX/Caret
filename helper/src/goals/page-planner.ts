@@ -12,6 +12,7 @@ import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { AboutValue } from "../fill/about.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { conversionOf, FILLABLE_ROLES, FillError, MAX_FIELDS, memoryRefOf, neverTypedNode, PAGE_WINDOW_KIND, proposeFill, type FillOptions, type FillScope } from "../fill/fill.ts";
+import { identityKey } from "../fill/whose.ts";
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { isAnswerField } from "../fill/answers.ts";
@@ -129,7 +130,7 @@ export interface PlanPageOptions {
 }
 
 /** A value fill would write, with what it was read from: a Fill all's GroundedField, or a value the instruction spells out. */
-type Written = Pick<ReturnType<typeof writtenFields>["fields"][number], "key" | "control" | "value" | "display" | "span" | "context" | "source" | "memory">;
+type Written = Pick<ReturnType<typeof writtenFields>["fields"][number], "key" | "control" | "value" | "display" | "span" | "context" | "source" | "memory" | "basis">;
 
 /** An empty control of a page fill can ask about, in document order: what a page goal may fill. */
 interface PageInput {
@@ -395,11 +396,21 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
             ? { kind: "derived", inputs: [], resolver: "fill/when", version: RESOLVER_VERSION, parametersDigest: shortDigest(f.span) }
             : { kind: "span", snapshot: "s1", source: f.source?.windowId ?? "instruction", startUTF16: 0, endUTF16: f.span.length, digest: shortDigest(f.span) },
       source: f.source === null || src === undefined ? null : { windowId: f.source.windowId, key: f.source.nodeKey, revision: windowRevision(src) },
-      memory: f.memory === null ? null : memoryRefOf(f.memory, conversionOf(f.control)),
+      // G2: a window's value that is exactly the user's identity names its entry too (FillField.basis), so the write is
+      // checked against the entry again (executor memoryHolds, conversion "identity"); a part split from one is checked
+      // before each segment instead (runs.ts precheck, fill.identity).
+      memory: f.memory !== null ? memoryRefOf(f.memory, conversionOf(f.control)) : f.basis?.identity !== undefined && identityKey(f.basis.identity.kind, f.span) === f.basis.identity.key ? memoryRefOf({ id: f.basis.identity.memoryId }, "identity") : null,
       event: null,
       draft: null,
-      owner: f.memory !== null ? "user" : null,
-      fill: { span: f.span, context: f.context, control: f.control, ...(f.memory === null ? {} : { memoryLabel: f.memory.label }) },
+      owner: f.memory !== null || f.basis?.identity !== undefined ? "user" : null,
+      fill: {
+        span: f.span,
+        context: f.context,
+        control: f.control,
+        ...(f.memory === null ? {} : { memoryLabel: f.memory.label }),
+        ...(f.basis?.clause === undefined ? {} : { clause: f.basis.clause }),
+        ...(f.basis?.identity === undefined ? {} : { identity: f.basis.identity }),
+      },
     };
     targets.set(t.ref, t);
     values.set(v.ref, v);

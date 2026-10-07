@@ -11,9 +11,10 @@ import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
 import { labelledLines, lineGives, lineSpans } from "../fill/candidates.ts";
-import { bareLine, LABELLED } from "../fill/line-values.ts";
+import { bareLine, LABELLED, sentenceAround, WARNS } from "../fill/line-values.ts";
 import { splitAddress, splitPlace } from "../fill/derive.ts";
 import { conversionOf, describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
+import { identityKey } from "../fill/whose.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import { offerField } from "./field.ts";
@@ -119,8 +120,15 @@ export function fillPopupEligible(p: FillProposal): boolean {
 
 /** Where a field's value came from, as a pop-up ref. */
 function valueRef(f: GroundedField): PopupRef {
-  return sourceRef(f.source, f.memory, f.span) as PopupRef;
+  const ref = sourceRef(f.source, f.memory, f.span) as PopupRef;
+  // G2: a value that is the user's identity rests on its memory entry too, so editing or forgetting the entry withdraws
+  // the offer (helper.ts refersToMemory).
+  const id = f.basis?.identity;
+  return id === undefined ? ref : { rule: IDENTITY_RULE, derived: [ref, { memory: id.memoryId }] };
 }
+
+/** G2: the rule a value names when it is the window's text that is exactly the user's own identity in memory. */
+export const IDENTITY_RULE = "identity";
 
 const nodeRef = (windowId: string, key: string): { node: string } => ({ node: `${windowId}/${key}` });
 
@@ -242,9 +250,16 @@ function derivesSpan(line: string, span: string): boolean {
  *     "No" but says otherwise, and is still refused: a span inside a longer line passes only by that same derivation.
  *   - A text field's value: the node's text holds the span, or one of its typed values is it.
  */
-export function sourceHolds(sw: WindowState, nodeKey: string, span: string, context: string | null, control: string): boolean {
+export function sourceHolds(sw: WindowState, nodeKey: string, span: string, context: string | null, control: string, clause?: string): boolean {
   const src = sw.nodes.get(nodeKey);
   if (src === undefined) return false;
+  // G2 review: the words Jev read the value with must still be there, so a sentence that changed around a span that
+  // stayed ("I no longer live in Portland, Maine") no longer gives it. A value read with no clause was read from a
+  // sentence that warned of nothing (a warning sends its sentence whole, candidates.ts lineFact): one whose sentence
+  // now warns is no longer read the same way.
+  const lines = nodeText(src).split(/\r?\n/u).map(bareLine);
+  if (clause !== undefined && !lines.some((l) => l.includes(clause))) return false;
+  if (clause === undefined && !lines.some((l) => sentenceGives(l, span))) return false;
   // The reader's own typed values only: one code finds in a line (fill/candidates.ts windowValues) is checked by the line
   // as it reads now (lineGives in derivesSpan), so a line that gained a label naming it passes nothing (C1 review).
   const typed = sw.values.some((v) => v.nodeKey === nodeKey && v.text === span);
@@ -254,6 +269,12 @@ export function sourceHolds(sw: WindowState, nodeKey: string, span: string, cont
   }
   if (control !== "text") return typed || nodeText(src).split(/\r?\n/).some((l) => l.trim() === span.trim() || derivesSpan(l, span));
   return nodeText(src).includes(span) || typed;
+}
+
+/** Whether a line holds `span` in a sentence that warns of nothing but the span itself (line-values.ts WARNS). */
+function sentenceGives(line: string, span: string): boolean {
+  for (let at = line.indexOf(span); at >= 0; at = line.indexOf(span, at + 1)) if (!WARNS.test(sentenceAround(line, at, span).replace(span, " "))) return true;
+  return false;
 }
 
 /** Why one field of a proposal can no longer be filled as shown: `log` names keys for the log, `says` is the user's sentence. */
@@ -288,7 +309,13 @@ function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, abou
   const sw = model.windows.get(f.source.windowId);
   const key = f.source.nodeKey;
   if (sw === undefined || sw.nodes.get(key) === undefined) return { log: `the source ${key} is gone`, says: "where Caret read its value is gone" };
-  return sourceHolds(sw, key, f.span, f.context, f.control) ? null : { log: `the source ${key} changed`, says: "where Caret read its value changed" };
+  // G2: a value code decided was the user's by their identity in memory holds only while the entry is still that identity.
+  const id = f.basis?.identity;
+  if (id !== undefined) {
+    const now = about(id.memoryId);
+    if (now === null || identityKey(id.kind, now.value) !== id.key) return { log: `memory entry ${id.memoryId} is no longer this identity`, says: "what you told Caret about yourself changed" };
+  }
+  return sourceHolds(sw, key, f.span, f.context, f.control, f.basis?.clause) ? null : { log: `the source ${key} changed`, says: "where Caret read its value changed" };
 }
 
 /**
@@ -368,6 +395,9 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       // A part of a remembered name names its part ("about-1#first"), so the check splits the entry the same way.
       // C2 review: a control's value names the conversion it went through ("~option", "~date"), which the check reads too.
       ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory, conversionOf(f.control)) }),
+      // G2: a value that is the user's identity is checked against its entry again right before it is written too; a
+      // part split from one is checked before the run (recheckFill), as no entry text is that part.
+      ...(f.memory === null && f.basis?.identity !== undefined && identityKey(f.basis.identity.kind, f.span) === f.basis.identity.key ? { memory: memoryRefOf({ id: f.basis.identity.memoryId }, "identity") } : {}),
       end: {
         kind: "valueEquals" as const,
         window: { bundleId: p.bundleId, title: "{{title}}", ...(w?.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: p.windowId } : {}) },

@@ -152,6 +152,12 @@ export interface JevRequest {
    * CONSENTED). Never sent; privacy.test.ts holds every other window to its usual rules.
    */
   consented?: readonly string[];
+  /**
+   * G2: for each whose-value question (fill.ts ownerId), the text of the value it asks about, so an evaluation harness
+   * answers from the value itself and never parses it back out of the question (page-loop-eval.ts canned Jev). Never
+   * sent: the text is already in the question, through the ledger.
+   */
+  subjects?: Readonly<Record<string, string>>;
 }
 
 const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number(), probabilities: z.record(z.string(), z.number()).optional() }).loose();

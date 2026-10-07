@@ -8,7 +8,7 @@ import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
-import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, sentenceAround, WARNS } from "./line-values.ts";
+import { bareLine, clauseAround, holdsSecret, LABELLED, lineTexts, lineValues, partAround, sentenceAround, WARNS } from "./line-values.ts";
 import { splitDate } from "./derive.ts";
 
 /**
@@ -67,6 +67,8 @@ export interface CandidateIdentity {
   kind: "email" | "phone" | "name";
   /** The memory entry's label ("primary email"), which the value question quotes. */
   label: string;
+  /** The identity as fill compared it (whose.ts identityKey), which a recheck compares the entry with again. */
+  key: string;
 }
 
 /**
@@ -283,7 +285,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     // from the start, charged with it; any other clause waits until every span is in.
     const fact = quote !== undefined ? null : timed("context", () => lineFact(w, node, text, labelled));
     const required = quote ?? (fact?.required === true ? fact.clause : undefined);
-    const clause = fact === null || fact.required ? null : fact.clause;
+    // G2 review: a clause that holds a secret is not sent; the span goes alone (holdsSecret).
+    const clause = fact === null || fact.required || holdsSecret(fact.clause) ? null : fact.clause;
     const c: Candidate = {
     id: `c${out.length + 1}`,
     text,
@@ -292,8 +295,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     labelled,
     line: required ?? null,
     ...(partOf === undefined ? {} : { partOf }),
-    section: timed("section", () => sectionAround(w, node)),
-    blockHead: timed("blockHead", () => blockHead(w, node, text)),
+    section: timed("section", () => unlessSecret(sectionAround(w, node))),
+    blockHead: timed("blockHead", () => unlessSecret(blockHead(w, node, text))),
     recency: recency(w),
     source: {
       pid: w.app.pid,
@@ -307,10 +310,21 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     };
     if (clause !== null) clauses.set(c, clause);
     if (required !== undefined) quoted.add(c);
+    if (required !== undefined && holdsSecret(required)) secretQuoted.add(c);
     return c;
   };
   /** Spans that go only with their clause (Candidate.line set at build). */
   const quoted = new WeakSet<Candidate>();
+  /**
+   * G2 review: spans that go only with a clause that holds a secret (holdsSecret). They are not offered, as one whose clause
+   * does not fit: the window counts as cut, so the cut rules withhold their kind.
+   */
+  const secretQuoted = new WeakSet<Candidate>();
+  const leaveOut = (w: WindowState, text: string): void => {
+    missed.add(w.window.windowId);
+    unwarned.add(text);
+    if (!ranked.has(w.window.windowId)) leftOutOf.add(w.window.windowId);
+  };
   /**
    * Texts left out because their warning did not fit: the same text found later with no warning beside it is left out
    * too, so it cannot stand in for the warned one, and the cut rules still count it as kept out (C1 review).
@@ -325,33 +339,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    */
   const clauses = new Map<Candidate, string>();
   /**
-   * G2: a date's, email's or phone number's clause part (lineFact, line-values.ts partAround) is charged once every typed
-   * value of its window is in and before the window's other lines, when it fits; any other clause waits for finish.
-   * Charged after every span, none of these fit F1's task notes, whose short lines each go out whole and spend the budget
-   * first (evidence/screen/g2/whose/probe-head.json). Charged right after each span, they cost later kinds their place:
-   * the guard adversary's canned writes fell from 316 to 308, emails cut on forty and on corpus forms (adversary-eager).
-   * Charged before a conversation's other lines (a mail), they still cut a contact line there, which counts the window's
-   * names as kept out and withheld clinic-intake's City and Emergency contact name (314 of 316); so a conversation's wait
-   * for finish, as before. With that, canned writes on the same desks are 316 of 316 (adversary-head). The cost: on
-   * forty, the reference's "my cell, 555-0139" and the start date's sentence, both in the mail, still go out bare.
-   */
-  const eagerClauses = (w: WindowState): void => {
-    if (heldAsConversation(w)) return;
-    for (const c of out) {
-      const clause = clauses.get(c);
-      if (clause === undefined || c.source.windowId !== w.window.windowId || (c.kind !== "date" && c.kind !== "email" && c.kind !== "phone")) continue;
-      if (o.ledger !== undefined && !o.ledger.take(w, "candidate", [clause])) continue;
-      c.line = clause;
-      clauses.delete(c);
-    }
-  };
-  /**
    * Adds a span unless the cap is reached, its text is already in, or its window is closed. A span that
    * does not fit its window's budget closes the window.
    */
   const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string): void => {
     if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId)) return;
     const c = build(w, node, text, kind, context, quote, partOf);
+    if (secretQuoted.has(c)) return leaveOut(w, text);
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       missed.add(w.window.windowId);
       // A span that goes only with its line (a warning, a remark) and does not fit with it is left out alone: the window
@@ -595,7 +589,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         const sp = spans[i] as (typeof spans)[number];
         if (sp.group !== k || seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
-        group.push(build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf));
+        const c = build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf);
+        if (secretQuoted.has(c)) leaveOut(w, sp.text);
+        else group.push(c);
       }
       if (group.length > 0) groups.set(k, group);
     }
@@ -627,7 +623,6 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     const leftOut = new Set(groups.keys());
     for (const g of groups.values()) for (const c of g) if (quoted.has(c)) unwarned.add(c.text);
     if (leftOut.size > 0) missed.add(w.window.windowId);
-    eagerClauses(w);
     // Then the rest, nearest the fields first, with their facts, until one does not fit.
     for (const i of order.filter((x) => !takesKind(x))) {
       if (full() || outOfTime()) return false;
@@ -659,7 +654,6 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (node === undefined || secretValue(w, v)) continue;
       add(w, node, v.text, v.kind, () => contextFor(w, node, v.text));
     }
-    eagerClauses(w);
   }
   for (const w of windows) {
     if (full()) break;
@@ -681,6 +675,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   }
   return finish();
 }
+
+/** G2 review: a fact sent beside a span, unless it holds a secret (line-values.ts holdsSecret). */
+const unlessSecret = (t: string | null): string | null => (holdsSecret(t) ? null : t);
 
 const constant =
   <T>(x: T): (() => T) =>
@@ -707,6 +704,9 @@ function spanOfLine(raw: string): { line: string; text: string; label: string | 
   // A value Caret never types (a password, a card or account number, a government ID, a one-time code or an API
   // key, by its label or its shape: memory/sensitive.ts) is no span: it is never offered, so no fill or plan can
   // choose it, and it never goes out in a question (B25 lead decision 2).
+  // G2 review: nor is a line that states one ("Email: robin@example.test password: hunter2 …", line-values.ts
+  // holdsSecret): its typed values (the email) are still offered alone, as the window's typed values.
+  if (holdsSecret(line)) return null;
   if (m !== null && m[1] !== undefined && m[2] !== undefined) return sensitiveKind(m[1], m[2]) === null ? { line, text: m[2].trim(), label: m[1].trim() } : null;
   return valueKind(line) === null ? { line, text: line, label: null } : null;
 }
@@ -822,9 +822,11 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
   // partAround) whenever that says more than "Label: value", on a short line and under a label too. A label alone does
   // not say which of two dates is which: "School: …, September 2016 to May 2020." offered both as labelled 'School', and
   // live Jev put May 2020 in the education Start date (evidence/screen/g1 fix 3: start dates on wizard-2 and Greenhouse,
-  // the reference's phone and email on forty). collectCandidates charges it before the window's other lines outside a
-  // conversation (eagerClauses), else after every span. It can carry a second value of the line that Jev then reads
-  // beside the first; both are spans of the line, and agreement and the cutoff still decide.
+  // the reference's phone and email on forty). It is optional context: charged only after every span and memory value
+  // (fill.ts, dates' and contacts' first among clauses), so it never keeps a value out and dropping it marks nothing
+  // cut (G2 review: charged earlier, it pushed values out). On F1's task notes the budget is spent by then, and the
+  // School line's dates go out without it (evidence/screen/g2/whose/probe-head.json). It can carry a second value of the
+  // line that Jev then reads beside the first; both are spans of the line, and agreement and the cutoff still decide.
   if (kind === "date" || kind === "email" || kind === "phone") {
     const clause = partAround(line, pos, text);
     const said = clause === null ? null : (LABELLED.exec(clause)?.[2] ?? clause).trim().replace(/[.!?;,]+$/u, "");

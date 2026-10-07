@@ -1498,6 +1498,20 @@ export const FillField = z.object({
    * that has one; absent everywhere else.
    */
   answer: FillAnswer.optional(),
+  /**
+   * G2: what a proposed value's reading rests on besides its source, which a recheck holds it to again (offers/
+   * fill-popup.ts recheckField, goals/runs.ts precheck). `identity`: the value (or, for a part, the value it was split
+   * from) is exactly the user's own email, phone or full name in memory entry `memoryId`, which made it the user's
+   * without asking Jev (fill/whose.ts); `key` is that identity as fill compared it (identityKey). Editing or forgetting
+   * the entry withdraws the offer, and the write is checked against it. `clause`: the words of the source line Jev read
+   * the value with (fill/candidates.ts Candidate.line); the source must still show them. Absent from a helper before G2.
+   */
+  basis: z
+    .object({
+      identity: z.object({ memoryId: z.string().min(1), kind: z.enum(["email", "phone", "name"]), key: z.string().min(1) }).optional(),
+      clause: z.string().min(1).optional(),
+    })
+    .optional(),
 })
   .refine((f) => f.answer === undefined || (f.answer.withheld === null ? f.control === "text" && f.value !== null && f.memory?.id === f.answer.id : f.value === null), {
     message: "an offered answer is a text field's value from that answer's memory entry, and a withheld one gives no value",

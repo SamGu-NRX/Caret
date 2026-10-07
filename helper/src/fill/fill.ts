@@ -20,7 +20,7 @@ import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, asksPlace, dateParts, datePart, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { takesOneValue, writeMisfit } from "./writable.ts";
-import { identitiesOf, identityOf, placementsOf } from "./whose.ts";
+import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { clockTime, readClock, readDate, readDateTime, readMonth } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -337,6 +337,8 @@ export function describeAbout(a: AboutValue): string {
 export interface AskExtra {
   id: string;
   describe: string;
+  /** G2: for a candidate whose owner is asked, its text (JevRequest.subjects). */
+  text?: string;
 }
 
 /** What one ask carries beyond the shared candidates and memory (B24). */
@@ -454,7 +456,13 @@ export function buildFillRequest(
     for (const a of more.answers ?? []) questions[answerQuestionId(a.id)] = { type: "choice", instructions: ANSWER_WORDINGS[wording](where, a.descriptor), criteria: { ...a.criteria, [NONE]: ANSWER_NONE } };
   }
   const ownerCriteria = more.person === null || more.person === undefined ? { ...OWNER_CRITERIA } : personOwnerCriteria(more.person);
-  if (more.stage !== "values") for (const o of more.owners ?? []) questions[ownerId(o.id)] = { type: "choice", instructions: OWNER_WORDINGS[wording](o.describe), criteria: { ...ownerCriteria } };
+  const subjects: Record<string, string> = {};
+  if (more.stage !== "values") {
+    for (const o of more.owners ?? []) {
+      questions[ownerId(o.id)] = { type: "choice", instructions: OWNER_WORDINGS[wording](o.describe), criteria: { ...ownerCriteria } };
+      if (o.text !== undefined) subjects[ownerId(o.id)] = o.text;
+    }
+  }
   const anyAbout = fields.some((f) => (about.get(f.id)?.length ?? 0) > 0);
   const anyDerived = fields.some((f) => (more.derived?.get(f.id)?.length ?? 0) > 0);
   const req: JevRequest = {
@@ -475,6 +483,7 @@ export function buildFillRequest(
     snippets: declared.snippets,
     charged: declared.charged,
     ...(declared.consented === undefined ? {} : { consented: declared.consented }),
+    ...(Object.keys(subjects).length === 0 ? {} : { subjects }),
   };
   // A staged request (B24) carries only some of the asked text: it declares only the snippets it sends, as the
   // planner's requests do (privacy.test.ts fails a request that declares text it does not send). The ledger
@@ -726,8 +735,6 @@ const PERSONAL_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "addre
  * the entry too, as it does an email (pickCut). Kinds with no typed screen value (a school, a yes or no) have none.
  */
 const ABOUT_VALUE_KIND: Partial<Record<AboutKind, ValueKind>> = { email: "email", phone: "phone", address: "address", street: "address", gradDate: "date", linkedin: "url", github: "url", website: "url", birthDate: "date", salary: "amount" };
-/** Labels of a message header's sender. */
-const SENDER = /^(?:from|sender|reply-to)$/i;
 /**
  * G2: what a memory entry of each kind is, as MEMORY_WHOSE_WORDINGS asks "the user's own …"; a kind not listed is said as
  * ABOUT_KIND_SAYS says it. These name a thing; ABOUT_KIND_SAYS's "whether the user may work there, yes or no" does not.
@@ -1198,7 +1205,7 @@ export async function proposeFill(
     derived: askDerived(dIds),
     personal: whose ? whoseAsked : new Set(),
     memoryWhose,
-    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c) })),
+    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c), text: c.text })),
     controls: new Map(asked.map((f) => [f.id, f.control])),
   });
   // Two stages when some field wants a person's details (B24). First, both asks say whose details each such
@@ -1367,28 +1374,20 @@ export async function proposeFill(
     // Someone else's value goes only in a field both asks say wants someone else's: an RSVP's Phone, its whose
     // answer split at 0.48 and 0.60, took the sender's signature phone, which both asks called hers (dev-10).
     if (is === "other") return true;
-    // Unsettled, for a field that wants the user's details, when the user's own value of that kind is in memory:
-    // a window's value goes in only when both asks also say it is the user's, or when the window the user just
-    // left labels it for the field ("Email: …" in their own note; a mail's "From:" names the sender, dev-9). Live,
-    // a contact form's Email took a colleague's address from an open mail beside the user's own from memory, the
-    // owner question split (dev-8). Without such a memory value, Jev cannot know who the user is, and requiring
-    // the owner to be settled blanked B13's fill desk, an order confirmation's details on a checkout form (final
-    // live replay, evidence/screen/b24/adv-live-replay-final): there the unsettled owner vetoes nothing.
-    const labelsField = c.labelled === true && c.recency === "justLeft" && c.context !== null && overlap(fieldTerms([c.context]), f.terms) > 0;
-    // C1: a phone the user told Caret counts as their own value of that kind, as an email does.
-    const ck = candidateKinds(model, c);
-    const kind = ck.has("email") ? "email" : ck.has("phone") ? "phone" : personName(c) !== null || isNameLike(c.text, c.context) ? "name" : null;
-    if (wants === "user" && is !== "user" && kind !== null && memoryKinds.has(kind) && !labelsField) return true;
-    // An Ask that names no source reads every window, as fill on focus does, but its questions quote the
-    // instruction instead of where users copy from, and Jev picks more boldly: "fill in whatever you know about me"
-    // took a colleague's signature phone for a demo request's Phone number at 0.87 and 0.92, the owner asks
-    // calling it someone else's at 0.37 and 0.44 (evidence/screen/b25/asks-dev-1-jev, ask-20; tuned on the B24
-    // corpus). So there a window value goes in a field that wants the user's details only when both asks say it is
-    // the user's, or the window the user just left labels it for the field.
-    if (scope !== undefined && scope.windows === null && wants === "user" && is !== "user" && !labelsField) return true;
-    // A message header's sender is the one who wrote to the user: "From: Bea <bea@…>" is not the user's email
-    // though the owner question split on it (an RSVP's Email, final scoreboard; a rule tuned on the B24 corpus).
-    return wants === "user" && is !== "user" && c.labelled === true && c.context !== null && SENDER.test(c.context.trim());
+    // G2 review: a field both asks say wants the user's details takes a window's value only when code knows it is the
+    // user's own (identity, whose.ts) or both asks say so at WHOSE_CUTOFF (`is` above: either makes it "user", and
+    // returned already). A label never stands in for that. Before, the window the user just left labelling the value
+    // for the field ("Email: …" in a note) let it through with the owner unsettled, so with the user's email in memory
+    // a note's "Email: marcus.cole@example.net" went into Email with the owner "unclear" at 0.95 (review repro,
+    // test/g2-ownership.test.ts). It replaces three narrower rules, which each let an unsettled owner through in some
+    // case: one for a kind memory holds, one for an Ask that reads every window, one for a header's sender (dev-8, B25
+    // ask-20, the RSVP's Email). Measured offline with honest ownership (evidence/screen/g2/whose/canned-offline-*.json,
+    // the guard adversary's desks): right values corpus 71 -> 71, task pages blind 46 -> 46, labelled 66 -> 66, W4
+    // 34 -> 34, wrong 0 -> 0; canned answers are certain, so live Jev's unsure owner answers are where it costs (the
+    // live pass measures it). A field whose details are unsettled is unchanged: without
+    // the user's identity Jev cannot know who the user is, and requiring a settled owner there blanked B13's fill desk
+    // (evidence/screen/b24/adv-live-replay-final).
+    return wants === "user";
   };
   /** Whether the named person has several values of the pick's kind and nothing on the pick's line names the field. */
   const personHasSeveral = (f: Field, p: Pick): boolean => {
@@ -1429,8 +1428,6 @@ export async function proposeFill(
     const c = p.c;
     return c.labelled === true || candidateKinds(model, c).size > 0 || (f.terms.has(NAME_TERM) && isNameLike(c.text, c.context));
   };
-  /** Kinds of the user's own values in memory ("email", "name"). */
-  const memoryKinds = new Set<string>((opts.about ?? []).map((a) => a.kind));
   /** C2: the year a two-digit year is read around (derive.ts monthYear). */
   const refYear = new Date(now).getUTCFullYear();
 
@@ -1641,8 +1638,13 @@ export async function proposeFill(
         ? null
         : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f), ...(context === null ? {} : { context }), ...(got.writes ? { writes: true as const } : {}) };
     const text = f.control === "text" && p !== undefined && got !== null;
+    // G2: what the value rests on besides its source (FillField.basis): the identity code decided it by, of the window
+    // value it is or was split from, and the line Jev read that value with.
+    const basisOf = line?.identity ?? (p?.from === "derived" ? (p.also?.identity ?? undefined) : undefined);
+    const basis = p === undefined || got === null ? undefined : { ...(basisOf === undefined ? {} : { identity: { memoryId: basisOf.memoryId, kind: basisOf.kind, key: basisOf.key } }), ...(line?.line == null ? {} : { clause: line.line }) };
     return {
       ...empty,
+      ...(basis === undefined || Object.keys(basis).length === 0 ? {} : { basis }),
       handoff,
       choice: p === undefined ? NONE : a1.choice,
       confidence,
@@ -1696,6 +1698,8 @@ export function memoryValue(value: string, part: FillMemory["part"]): string | n
  * step from memory had to write the entry's text as typed, so a page goal stopped at Tab on any of these.
  */
 export function memoryWrites(value: string, part: FillMemory["part"], written: string, conv: MemoryConversion = "exact"): boolean {
+  // G2: a window's value that is the user's identity (whose.ts) holds while the entry is still that identity.
+  if (conv === "identity") return sameIdentity(value, written);
   const gives = memoryValue(value, part);
   if (gives === null) return false;
   if (gives === written) return true;
@@ -1720,7 +1724,7 @@ export function memoryWrites(value: string, part: FillMemory["part"], written: s
  * C2 review: how a step from memory writes the entry, which says how memoryWrites checks it again: "exact" for a text
  * field, "option" for a menu, choice or dropdown (its option's name), "date" for a date or month input (its format).
  */
-export type MemoryConversion = "exact" | "option" | "date";
+export type MemoryConversion = "exact" | "option" | "date" | "identity";
 /** The conversion a control's write from memory goes through (memoryWrites). */
 export function conversionOf(control: string): MemoryConversion {
   return control === "text" ? "exact" : control === "date" || control === "time" ? "date" : "option";
@@ -1753,7 +1757,7 @@ export function memoryRefOf(m: { id: string; part?: FillMemory["part"] }, conv: 
 
 /** The entry id and the part a step's memory reference names (memoryRefOf). */
 export function parseMemoryRef(ref: string): { id: string; part: FillMemory["part"]; conv: MemoryConversion } {
-  const tail = /~(option|date)$/u.exec(ref);
+  const tail = /~(option|date|identity)$/u.exec(ref);
   const conv: MemoryConversion = tail === null ? "exact" : (tail[1] as MemoryConversion);
   const rest = tail === null ? ref : ref.slice(0, tail.index);
   const at = rest.lastIndexOf("#");

@@ -2670,6 +2670,43 @@
                       "withheld"
                     ],
                     "additionalProperties": false
+                  },
+                  "basis": {
+                    "type": "object",
+                    "properties": {
+                      "identity": {
+                        "type": "object",
+                        "properties": {
+                          "memoryId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "email",
+                              "phone",
+                              "name"
+                            ]
+                          },
+                          "key": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "memoryId",
+                          "kind",
+                          "key"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "clause": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "required": [

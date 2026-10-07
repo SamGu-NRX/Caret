@@ -72,7 +72,16 @@ export interface ValueBinding {
    * the user told Caret, the entry's label then, which decided the fields it was offered to (fill/about.ts), so a
    * renamed entry no longer stands behind it (P2 review). Absent for every other value.
    */
-  fill?: { span: string; context: string | null; control: string; memoryLabel?: string };
+  fill?: {
+    span: string;
+    context: string | null;
+    control: string;
+    memoryLabel?: string;
+    /** G2: the source words Jev read the value with (FillField.basis.clause), which the source must still show. */
+    clause?: string;
+    /** G2: the memory identity that made the value the user's (FillField.basis.identity), which must still hold. */
+    identity?: { memoryId: string; kind: "email" | "phone" | "name"; key: string };
+  };
 }
 
 /** A value code read or derived for a planning snapshot: never the user's edit, so its origin is one the sandbox knows. */
