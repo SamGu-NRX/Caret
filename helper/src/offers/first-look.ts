@@ -8,6 +8,7 @@
 // the host's offerAccept with that key runs it as the task with that id. Errors carry window ids, family
 // names and outcome codes only: never a reader detail, a Jev error body or an element key, all of which
 // can hold screen text.
+import type { OwnerVerdicts } from "../fill/owner-cache.ts";
 import { performance } from "node:perf_hooks";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { FirstLookReply, PROTOCOL_VERSION, type FillProposal, type FirstLook, type FirstLookFound, type OfferPopup, type PatternOffer, type VerbResult } from "../protocol.ts";
@@ -75,6 +76,8 @@ export interface FirstLookDeps {
   /** What an About entry holds now, for the recheck before a fill from memory (fill-popup.ts). */
   aboutNow: AboutNow;
   now: () => number;
+  /** HA2 recall lever 2: the session's owner verdicts (fill/owner-cache.ts); absent, every owner question is asked. */
+  ownerCache?: OwnerVerdicts;
 }
 
 /** A generator's offer before it has a key: how good it is, and how to build and take it under a key. */
@@ -267,7 +270,7 @@ export class FirstLookRunner {
     const results = await Promise.allSettled(
       forms.map(({ w, empty }, i) => {
         const trigger = w.focusedKey !== null && empty.includes(w.focusedKey) ? w.focusedKey : (empty[0] as string);
-        return proposeFill(model, ask, w.window.windowId, trigger, now, { newId: () => `${requestId}.form${i}`, exclude, about: this.deps.about() });
+        return proposeFill(model, ask, w.window.windowId, trigger, now, { newId: () => `${requestId}.form${i}`, exclude, about: this.deps.about(), ...(this.deps.ownerCache === undefined ? {} : { ownerCache: this.deps.ownerCache }) });
       }),
     );
     const out: Candidate[] = [];

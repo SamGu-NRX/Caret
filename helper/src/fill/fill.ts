@@ -25,6 +25,7 @@ import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, dateP
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { ownedOf, unitKey, unitsHolding, type NoteUnit } from "./note-unit.ts";
+import { OwnerVerdicts, type OwnerAnswer } from "./owner-cache.ts";
 import { alternateVetoes, readableFields, setAlternateReason, type AlternateWrite, type PartPicks } from "./alternate.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type Reading } from "./when.ts";
@@ -575,6 +576,11 @@ export interface FillOptions {
    * waits for every part's proposals on `board` and reads them all. Absent, the fill's own proposals are the form's.
    */
   peers?: { board: PartPicks; part: number };
+  /**
+   * HA2 recall lever 2: the session's owner verdicts (owner-cache.ts). A candidate whose owner question, notes and all,
+   * was answered before in this session is not asked again; its earlier answers stand. Absent, every one is asked.
+   */
+  ownerCache?: OwnerVerdicts;
   cutoff?: number;
   rand?: (n: number) => number;
   /** Makes the proposal id; tests pass a counter. */
@@ -1378,6 +1384,10 @@ export async function proposeFill(
   const notes = new Map<string, string>();
   const noteIds = new Map<string, string>();
   const ownerNotes = new Map<string, { units: NoteUnit[]; ids: string[] | null; why: "private" | "unshown" | null }>();
+  /** Lever 2: by candidate id, its owner question's cache key, and the session's earlier answers when it has them. */
+  const ownerKeys = new Map<string, string>();
+  const cachedOwners = new Map<string, readonly [OwnerAnswer, OwnerAnswer]>();
+  const criteriaNow = scope?.person === null || scope?.person === undefined ? { ...OWNER_CRITERIA } : personOwnerCriteria(scope.person);
   for (const c of ownerCands) {
     const units = unitsHolding(model, c.text, windowId, { windowId: c.source.windowId, nodeKey: c.source.nodeKey });
     if (units === null || units.length === 0) {
@@ -1387,6 +1397,17 @@ export async function proposeFill(
     if (units.some((u) => !u.complete)) {
       ownerNotes.set(c.id, { units, ids: null, why: "private" });
       continue;
+    }
+    if (opts.ownerCache !== undefined) {
+      const key = OwnerVerdicts.key(OWNER_WORDINGS[0](describeOwned(c, ownerLines.get(c.id))), c.text, units.map((u) => u.digest), criteriaNow);
+      ownerKeys.set(c.id, key);
+      const hit = opts.ownerCache.get(key);
+      if (hit !== undefined) {
+        // Asked before in this session over the same notes, by digest: nothing is sent again.
+        cachedOwners.set(c.id, hit);
+        ownerNotes.set(c.id, { units, ids: [], why: null });
+        continue;
+      }
     }
     const ids: string[] = [];
     for (const u of units) {
@@ -1487,7 +1508,7 @@ export async function proposeFill(
     derived: askDerived(dIds),
     personal: whose ? whoseAsked : new Set(),
     memoryWhose,
-    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c, ownerLines.get(c.id), ownerNotes.get(c.id)?.ids ?? undefined), text: c.text })),
+    owners: ownerCands.filter((c) => !cachedOwners.has(c.id)).map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c, ownerLines.get(c.id), ownerNotes.get(c.id)?.ids ?? undefined), text: c.text })),
     notes,
     controls: new Map(asked.map((f) => [f.id, f.control])),
   });
@@ -1500,11 +1521,21 @@ export async function proposeFill(
   const staged = whose && personal.size > 0;
   const whoseAsks = asked.length === 0 || !staged ? null : ([buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" }), buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" })] as const);
   const [w1, w2] = whoseAsks === null ? [null, null] : await Promise.all([asking(whoseAsks[0]), asking(whoseAsks[1])]);
+  // Lever 2: the session's earlier answers stand in for the questions not asked again; each new answer to a question that
+  // showed its notes whole is kept for the rest of the session.
+  if (w1 !== null && w2 !== null) {
+    for (const [cid, [a, b]] of cachedOwners) {
+      w1.answers[ownerId(cid)] = { ...a };
+      w2.answers[ownerId(secondId.get(cid) ?? "")] = { ...b };
+    }
+  }
   /**
    * HA2: whether both owner questions about `c` showed the whole text it was read from: each request's question names
    * its note, and each request's state carries that note whole. Read from the requests as sent, not from what was meant.
    */
   const noteShown = (c: Candidate): boolean => {
+    // Lever 2: a cached verdict was given by questions that showed these very notes, by digest (ownerKeys).
+    if (cachedOwners.has(c.id)) return true;
     const ids = ownerNotes.get(c.id)?.ids ?? null;
     if (whoseAsks === null || ids === null || ids.length === 0) return false;
     return ([[whoseAsks[0], c.id], [whoseAsks[1], secondId.get(c.id) ?? ""]] as const).every(([req, cid]) => {
@@ -1513,6 +1544,15 @@ export async function proposeFill(
       return q !== undefined && String(q.instructions).includes(notesSay(ids)) && ids.every((id) => sent[id] === notes.get(id));
     });
   };
+  if (opts.ownerCache !== undefined && w1 !== null && w2 !== null) {
+    for (const c of ownerCands) {
+      const key = ownerKeys.get(c.id);
+      const a = w1.answers[ownerId(c.id)];
+      const b = w2.answers[ownerId(secondId.get(c.id) ?? "")];
+      if (key === undefined || cachedOwners.has(c.id) || a === undefined || b === undefined || !noteShown(c)) continue;
+      opts.ownerCache.set(key, [{ choice: a.choice, confidence: a.confidence }, { choice: b.choice, confidence: b.confidence }], (ownerNotes.get(c.id)?.units ?? []).map((u) => u.windowId));
+    }
+  }
   /** Both stage-one asks' answer to a whose or owner question, agreed at the whose cutoff, or null. */
   const stageOne = (q: string, q2: string = q): string | null => {
     const a1 = w1?.answers[q];

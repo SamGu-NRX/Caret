@@ -3,6 +3,7 @@
 // grounded fill proposals. server.ts connects it to the socket; tests drive it directly.
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
+import { OwnerVerdicts } from "./fill/owner-cache.ts";
 import { askScope, fieldFingerprint, scopeKey, scopeSet, withScope, type AskScope, type DocumentReader, type ScopeSet, type Settled } from "./fill/ask-scope.ts";
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
@@ -461,6 +462,12 @@ export class Helper {
    */
   private readonly tabWindows = new Set<string>();
   /**
+   * HA2 recall lever 2: this session's owner verdicts (fill/owner-cache.ts), in memory only: cleared when the reader
+   * restarts, Sites change or the helper shuts down, and a window's entries dropped when it closes. A fill that reads the
+   * tab the user left does not use it, so nothing from that tab outlives the fill.
+   */
+  private readonly ownerVerdicts = new OwnerVerdicts();
+  /**
    * Each fill request in flight, with every focus in an editable field of the app the user is in since
    * it began, so a pop-up whose Jev answer arrives late can see whether one of them left the form.
    */
@@ -773,6 +780,7 @@ export class Helper {
       withdraw: (offerKey, reason) => this.withdrawFirstLook(offerKey, reason),
       about: () => this.aboutValues(),
       aboutNow: this.aboutNow,
+      ownerCache: this.ownerVerdicts,
       now: this.now,
     });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
@@ -898,6 +906,7 @@ export class Helper {
         this.model.reset();
         this.tabSource?.drop();
         forgetWindows();
+        this.ownerVerdicts.clear();
         this.text.clear();
         this.executor.readerRestarted(m.session);
         this.patterns.readerRestarted();
@@ -1021,6 +1030,7 @@ export class Helper {
         this.audit?.onWindowClosed(m.windowId, m.at);
         this.model.close(m.windowId, m.at);
         forgetWindow(m.windowId);
+        this.ownerVerdicts.forget(new Set([m.windowId]));
         // A goal segment that copies from this window, or acts in it, stops now (D2-06).
         this.goals.onChanges([]);
         this.checkFills(m.windowId);
@@ -1121,6 +1131,7 @@ export class Helper {
     // engine hello. A host before H5 sends no list, and the helper's stays as it was.
     if (m.sitesOff !== undefined) {
       this.sitesOffList = [...new Set(m.sitesOff)];
+      this.ownerVerdicts.clear();
       this.opts.store.count("settings.sitesOff", 1);
       for (const l of this.sitesOffListeners) l(this.sitesOffList);
     }
@@ -2673,6 +2684,7 @@ export class Helper {
     // First, so nothing a late reply or a producer's answer starts reaches the router after the stores close (R2).
     this.routing?.stop();
     this.tabSource?.drop();
+    this.ownerVerdicts.clear();
     this.record(this.transfers.flush());
     this.patterns.shutdown();
     this.pending.shutdown();
@@ -2828,6 +2840,7 @@ export class Helper {
       const saved = this.answersForFill(windowId);
       const asked = await proposeFill(this.fillModel(reading), askHere, windowId, key, now, {
         about: this.aboutValues(),
+        ...(fromTab ? {} : { ownerCache: this.ownerVerdicts }),
         ...(saved === null ? {} : saved),
         ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
         ...(this.opts.newId === undefined ? {} : { newId: this.opts.newId }),

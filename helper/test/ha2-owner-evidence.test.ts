@@ -9,6 +9,7 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { field, snap } from "./builders.ts";
 import { OWNER_NOTE_CHARS, setOwnerNoteChars } from "../src/privacy.ts";
+import { OwnerVerdicts } from "../src/fill/owner-cache.ts";
 
 const T0 = 1_000_000;
 const PHONE = "555-0388";
@@ -227,5 +228,48 @@ describe("HA2 recall lever 1: the owner-note allotment (privacy.ts OWNER_NOTE_CH
     const { by, j } = await fill(LONG_MINE, mine);
     expect(by("Phone")?.value ?? null).toBeNull();
     expect(JSON.stringify(j.reqs)).not.toContain(PROSE);
+  });
+});
+
+describe("HA2 recall lever 2: the session's owner verdicts (fill/owner-cache.ts)", () => {
+  const note = [...OPENING, `Phone: ${USER_PHONE}`, `Email: ${USER_EMAIL}`].join("\n");
+  const mine = (l: string): string | null => (l === "Phone" ? USER_PHONE : l === "Email" ? USER_EMAIL : null);
+  const focus = async (m: ScreenModel, cache: OwnerVerdicts) => {
+    const j = jev(mine);
+    const p = await proposeFill(m, j, "form", "form/0", T0, { about: [], rand: () => 0, ownerCache: cache });
+    const owner = j.reqs.filter((r) => r.purpose === "fill.whose").flatMap((r) => Object.keys(r.questions).filter((k) => k.endsWith("_owner")));
+    return { values: p.fields.map((f) => f.value), owner, whose: j.reqs.filter((r) => r.purpose === "fill.whose").length };
+  };
+
+  it("asks a repeat focus on the same note no owner question again, and fills the same", async () => {
+    const m = desk(note);
+    const cache = new OwnerVerdicts();
+    const first = await focus(m, cache);
+    const second = await focus(m, cache);
+    expect(first.values).toEqual([USER_PHONE, USER_EMAIL]);
+    expect(second.values).toEqual(first.values);
+    expect(first.owner.length).toBeGreaterThan(0);
+    expect(second.owner).toEqual([]);
+  });
+
+  it("asks again once the note changes, since its digest is part of the key", async () => {
+    const m = desk(note);
+    const cache = new OwnerVerdicts();
+    await focus(m, cache);
+    m.apply(snap([field("note/body", `${note}\nNeither of those lines is mine.`, { role: "AXTextArea" })], { at: T0 - 10_000, windowId: "note", title: "Class signup.txt", focused: true }));
+    m.apply(snap(["Phone", "Email"].map((l, i) => field(`form/${i}`, "", { label: l, frame: [100, 40 + 40 * i, 200, 24] })), { at: T0, windowId: "form", title: "Studio registration", focused: true, focusedKey: "form/0" }));
+    const again = await focus(m, cache);
+    expect(again.owner.length).toBeGreaterThan(0);
+    expect(again.values).toEqual([null, null]);
+  });
+
+  it("forgets a window's entries and clears", () => {
+    const cache = new OwnerVerdicts();
+    cache.set("k1", [{ choice: "user", confidence: 1 }, { choice: "user", confidence: 1 }], ["note"]);
+    cache.set("k2", [{ choice: "user", confidence: 1 }, { choice: "user", confidence: 1 }], ["mail"]);
+    cache.forget(new Set(["note"]));
+    expect([cache.get("k1"), cache.get("k2") !== undefined]).toEqual([undefined, true]);
+    cache.clear();
+    expect(cache.size).toBe(0);
   });
 });
