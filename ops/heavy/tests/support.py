@@ -143,13 +143,17 @@ class World(unittest.TestCase):
             env_file=env_file, ops_repo=self.ops_repo, profile=kw.pop("profile", profile()), **kw)
         return job_id, plan_path
 
-    def run_queue(self, *args, env=None, holding_heavy_lock=False):
-        """Starts the real queue runner in its own session; returns the Popen. With holding_heavy_lock, the runner
-        holds heavy.lock and passes it to each job (tests/run_queue_holding_heavy_lock.py)."""
+    def run_queue(self, *args, env=None, runner_holds_heavy_lock=True):
+        """Starts the real queue runner in its own session; returns the Popen.
+
+        Since the queue's 366e9c2 the runner takes heavy.lock as its last admission step and passes the locked
+        descriptor to the job. runner_holds_heavy_lock=False points it at an unrelated lock file instead, which is
+        how an older runner (one that never held Caret's heavy.lock) looks to the job.
+        """
         log = open(os.path.join(self.root, "runner-{}.log".format(len(self.runners))), "ab")
-        head = [PY, os.path.join(HEAVY, "tests/run_queue_holding_heavy_lock.py"), caret_heavy.QUEUE,
-                self.paths["heavy_lock"]] if holding_heavy_lock else [PY, caret_heavy.QUEUE]
-        runner = subprocess.Popen([*head, "--state-dir", self.paths["queue_state"], "run", *args],
+        lock = self.paths["heavy_lock"] if runner_holds_heavy_lock else os.path.join(self.root, "unrelated.lock")
+        runner = subprocess.Popen([PY, caret_heavy.QUEUE, "--state-dir", self.paths["queue_state"],
+                                   "--heavy-lock", lock, "run", *args],
                                   env=dict(self.env, **(env or {})), stdin=subprocess.DEVNULL, stdout=log,
                                   stderr=subprocess.STDOUT, start_new_session=True)
         log.close()

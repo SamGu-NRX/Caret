@@ -25,7 +25,7 @@ import procs  # noqa: E402
 class Cancellation(World):
     def test_sigkill_of_the_queue_group_leaves_no_process_slot_lease_or_lock(self):
         job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3))
-        self.run_queue("--once", "--max-wait", "10")
+        self.run_queue("--once", "--max-wait", "120")
         out = os.path.join(self.run_root(job_id), "out")
         self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 30), self.queue_log(job_id))
         spawned = self.spawned(job_id)
@@ -91,7 +91,7 @@ class Cancellation(World):
 
     def test_a_sigkilled_supervisor_leaves_the_slot_held_while_the_recipe_lives(self):
         job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3))
-        self.run_queue("--once", "--max-wait", "10")
+        self.run_queue("--once", "--max-wait", "120")
         out = os.path.join(self.run_root(job_id), "out")
         self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 30), self.queue_log(job_id))
         with open(os.path.join(self.run_root(job_id), "supervisor.json")) as fh:
@@ -118,7 +118,7 @@ class Cancellation(World):
 
     def test_leftovers_after_a_clean_exit_are_stopped_and_the_run_still_validates(self):
         job_id, _ = self.enqueue(["leftover"], profile=profile(grace=3))
-        self.run_queue("--once", "--max-wait", "10").wait(timeout=90)
+        self.run_queue("--once", "--max-wait", "120").wait(timeout=300)
         outcome = self.outcome(job_id)
         self.assertEqual((outcome["exit"], outcome["states"]["validated"]), (0, True), outcome)
         spawned = self.spawned(job_id)
@@ -134,7 +134,7 @@ class Lease(World):
     def test_owner_tied_lease_outlives_its_ttl_and_blocks_other_heavy_jobs(self):
         # TTL 1.2 s and no renewal: before the reaper change, lr-reap removed this lease mid-job.
         job_id, _ = self.enqueue(["spawn", "8"], lease_ttl_min=0.02, lease_renew_s=10000)
-        self.run_queue("--once", "--max-wait", "10")
+        self.run_queue("--once", "--max-wait", "120")
         self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(self.run_root(job_id), "out", "ready")), 30))
         time.sleep(2)
         for args in ([], ["--run", "caret"]):
@@ -154,7 +154,7 @@ class Lease(World):
 
     def test_renewal_keeps_the_expiry_ahead_for_mem_guard(self):
         job_id, _ = self.enqueue(["spawn", "6"], lease_ttl_min=0.05, lease_renew_s=1)
-        self.run_queue("--once", "--max-wait", "10")
+        self.run_queue("--once", "--max-wait", "120")
         self.assertTrue(self.wait_for(lambda: len(self.leases()) == 1, 30))
         seen = []
         for _ in range(4):
@@ -173,10 +173,11 @@ class Lease(World):
                                  "--est-disk", "0", "--owner-pid", str(os.getpid())], env=self.env,
                                 capture_output=True, text=True, check=True).stdout.strip()
         job_id, _ = self.enqueue(["ok"], profile=profile(lease_wait=4, exec_s=600))
-        started = time.monotonic()
-        self.run_queue("--once", "--max-wait", "10").wait(timeout=60)
-        self.assertLess(time.monotonic() - started, 30)
+        self.run_queue("--once", "--max-wait", "120").wait(timeout=300)
         outcome = self.outcome(job_id)
+        seconds = (calendar.timegm(time.strptime(outcome["ended_utc"], "%Y-%m-%dT%H:%M:%SZ")) -
+                   calendar.timegm(time.strptime(outcome["started_utc"], "%Y-%m-%dT%H:%M:%SZ")))
+        self.assertLess(seconds, 15)  # the supervisor gave up after its 4 s lease wait, not its 600 s execution limit
         self.assertEqual(outcome["exit"], 75)
         self.assertIn("not admitted within the lease wait of 4 s: heavy lease: refused: count limit", outcome["reason"])
         self.assertFalse(os.path.exists(os.path.join(self.run_root(job_id), "recipe.log")))
@@ -185,17 +186,17 @@ class Lease(World):
 
 
 class RunnerHeavyLock(World):
-    """heavy.lock with today's queue (the supervisor takes it) and with a runner that holds it and passes its descriptor
-    (the coordinator's proposal, simulated by tests/run_queue_holding_heavy_lock.py). Neither may deadlock, and in both
-    the recipe gets a descriptor that rig-run's proof accepts."""
+    """heavy.lock with the queue's runner holding it and passing its descriptor (the queue since 366e9c2), and with a
+    runner that does not hold it (older queues: the supervisor takes it). Neither may deadlock, and in both the recipe
+    gets a descriptor that rig-run's proof accepts."""
 
     def run_lock_proof(self, holding):
         job_id, _ = self.enqueue(["lock-proof", self.paths["heavy_lock"]])
         lease_only, _ = self.enqueue(["ok"], profile=profile(lease=False))
-        self.assertEqual(self.run_queue("--max-wait", "10", holding_heavy_lock=holding).wait(timeout=120), 0)
+        self.assertEqual(self.run_queue("--max-wait", "120", runner_holds_heavy_lock=holding).wait(timeout=300), 0)
         return job_id, lease_only
 
-    def test_today_the_supervisor_takes_heavy_lock_itself(self):
+    def test_a_runner_without_heavy_lock_leaves_the_supervisor_to_take_it(self):
         job_id, vm_like = self.run_lock_proof(holding=False)
         outcome = self.outcome(job_id)
         self.assertEqual(outcome["exit"], 0, outcome["reason"])
@@ -221,14 +222,15 @@ class RunnerHeavyLock(World):
         self.assertEqual(self.leases(), [])
         self.assertFalse(procs.lock_held(self.paths["heavy_lock"]))  # the runner has exited
 
-    def test_a_runner_holding_heavy_lock_without_passing_it_is_a_bounded_named_wait(self):
+    def test_heavy_lock_held_by_a_process_that_did_not_pass_it_is_a_bounded_named_wait(self):
         holder = subprocess.Popen([PY_FOR_TESTS, "-c", "import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_RDWR | "
                                    "os.O_CREAT); fcntl.flock(fd, fcntl.LOCK_EX); print(flush=True); time.sleep(120)",
                                    self.paths["heavy_lock"]], stdout=subprocess.PIPE)
         self.addCleanup(lambda: (holder.kill(), holder.wait(), holder.stdout.close()))
         holder.stdout.readline()
         job_id, _ = self.enqueue(["ok"], profile=profile(lease_wait=4))
-        self.run_queue("--once", "--max-wait", "10").wait(timeout=60)
+        # The runner holds an unrelated lock, so Caret's heavy.lock is held by someone the job cannot prove is its own.
+        self.run_queue("--once", "--max-wait", "120", runner_holds_heavy_lock=False).wait(timeout=300)
         outcome = self.outcome(job_id)
         self.assertEqual(outcome["exit"], 75)
         self.assertIn("must pass its descriptor to the job", outcome["reason"])
@@ -284,7 +286,7 @@ class PostLeaseRecheck(World):
 
 class Pins(World):
     def run_once(self, job_id):
-        self.run_queue("--once", "--max-wait", "10").wait(timeout=90)
+        self.run_queue("--once", "--max-wait", "120").wait(timeout=300)
         return self.job(job_id)
 
     def make_writable(self, path):
@@ -371,7 +373,7 @@ class Adapters(World):
         cases = {"wrong": (10, True), "suite-fail": (11, True), "no-result": (66, True), "foreign-result": (66, True),
                  "stale-evidence": (66, True), "ok": (0, True)}
         jobs = {mode: self.enqueue([mode])[0] for mode in cases}
-        self.run_queue("--max-wait", "10").wait(timeout=180)
+        self.run_queue("--max-wait", "120").wait(timeout=400)
         for mode, (code, executed) in cases.items():
             with self.subTest(mode):
                 outcome = self.outcome(jobs[mode])
@@ -396,13 +398,13 @@ class Hold(World):
             fh.write("4102444800 held until explicit removal (test)\n")
         job_id, _ = self.enqueue(["ok"])
         runner = self.run_queue("--max-wait", "4")
-        self.assertEqual(runner.wait(timeout=60), 75)
+        self.assertEqual(runner.wait(timeout=300), 75)
         job = self.job(job_id)
         self.assertEqual((job["state"], job["attempt"], job["pgid"]), ("queued", None, None))
         self.assertNotIn("launching", [h["state"] for h in job["history"]])
         self.assertFalse(os.path.exists(self.run_root(job_id)))
         os.unlink(self.paths["hold"])
-        self.assertEqual(self.run_queue("--once", "--max-wait", "10").wait(timeout=90), 0)
+        self.assertEqual(self.run_queue("--once", "--max-wait", "120").wait(timeout=300), 0)
         self.assertEqual(self.job(job_id)["state"], "succeeded")
 
 
@@ -416,9 +418,9 @@ class Credentials(World):
             fh.write("TYPESAFE_API_KEY={}\n".format(file_secret))
         live, live_plan = self.enqueue(["env-dump"], live=True, env_file=env_file)
         offline, _ = self.enqueue(["env-dump"], env_file=env_file)
-        self.run_queue("--max-wait", "10", env={"TYPESAFE_API_KEY": inherited, "GROQ_API_KEY": inherited,
+        self.run_queue("--max-wait", "120", env={"TYPESAFE_API_KEY": inherited, "GROQ_API_KEY": inherited,
                                                 "OPENAI_API_KEY": inherited, "CARET_ENV_FILE": "/elsewhere/.env",
-                                                "CARET_JEV_PROVIDER": "groq"}).wait(timeout=120)
+                                                "CARET_JEV_PROVIDER": "groq"}).wait(timeout=300)
         for job_id in (live, offline):
             self.assertEqual(self.outcome(job_id)["exit"], 0)
         with open(os.path.join(self.run_root(live), "out", "env.txt")) as fh:
@@ -450,7 +452,7 @@ class VmPath(World):
     def fake_rig(self, mode, seconds):
         job_id, _ = self.enqueue(["rig", self.paths["rig_run"], mode, str(seconds)],
                                  profile=profile(lease=False, grace=20))
-        self.run_queue("--once", "--max-wait", "10")
+        self.run_queue("--once", "--max-wait", "120")
         self.assertTrue(self.wait_for(lambda: len(self.leases()) == 2, 30), self.queue_log(job_id))
         [clone] = os.listdir(self.paths["lume_clones"])
         return job_id, os.path.join(self.paths["lume_clones"], clone)

@@ -513,7 +513,7 @@ def status(paths):
     lines = []
     for line in done.stdout.splitlines():
         fields = line.split()
-        if line.startswith(("runner: ", "slot: ", "next: caret-")):
+        if line.startswith(("runner: ", "slot: ", "heavy lock: ", "next: caret-")):
             lines.append(line)
         elif len(fields) >= 3 and fields[0].isdigit() and fields[2].startswith("caret-"):
             state = outcome_of(paths, fields[2])
