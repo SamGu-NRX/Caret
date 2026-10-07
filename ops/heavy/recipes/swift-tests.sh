@@ -1,0 +1,44 @@
+#!/bin/bash
+# `swift test` in each named Swift package of a fresh export of the pinned commit (profile caret-swift). The export
+# and the build directories live under TMPDIR and are deleted however the recipe ends. packages/keytype and its
+# llama.xcframework come from the job's sealed inputs (caret_heavy.keytype_inputs) when the plan has them. Every
+# package runs; the recipe exits 11 when any test fails and 14 when a package does not build. The supervisor records
+# the job's peak memory (outcome.json "memory"); swift-times.ndjson says when each package ran, to read it against
+# memory.ndjson.
+#   swift-tests.sh TAG PACKAGE...
+set -u
+. "$CARET_HEAVY_RECIPES/lib.sh"
+TAG=${1:?usage: swift-tests.sh TAG PACKAGE...}
+shift
+[ $# -gt 0 ] || { echo "swift-tests: no packages" >&2; exit 64; }
+WORK="${TMPDIR:-/tmp}/caret-swift-tests.$CARET_HEAVY_JOB_ID"
+[ ! -e "$WORK" ] || { echo "swift-tests: $WORK already exists" >&2; exit 64; }
+mkdir -p "$WORK"
+trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'exit 143' TERM INT HUP
+REQUIRED=(export)
+/bin/bash "$CARET_HEAVY_RECIPES/r2/export.sh" "$PWD" "$CARET_HEAVY_REV" "$WORK/src" > "$OUT/export.log" 2>&1
+check prepare export --log "$OUT/export.log" --exit $? || finish
+if [ -d "$IN/keytype" ]; then
+  REQUIRED+=(inputs)
+  (
+    set -e
+    K="$WORK/src/packages/keytype"
+    rm -rf "$K"
+    mkdir -p "$WORK/src/packages"
+    cp -c -R "$IN/keytype" "$K"
+    mkdir -p "$K/Packages/ModelRuntime/Vendor"
+    cp -c -R "$IN/llama.xcframework" "$K/Packages/ModelRuntime/Vendor/llama.xcframework"
+    chmod -R u+w "$K"
+  ) > "$OUT/inputs.log" 2>&1
+  check prepare inputs --log "$OUT/inputs.log" --exit $? || finish
+fi
+for pkg in "$@"; do
+  slug=$(printf '%s' "$pkg" | tr '/' '-')
+  REQUIRED+=("swift-$slug-$TAG")
+  started=$(date +%s)
+  run_suite "swift-$slug-$TAG" swift "$WORK/src/$pkg" swift test --disable-automatic-resolution --scratch-path "$WORK/build/$slug"
+  code=$?
+  printf '{"package": "%s", "started": %s, "ended": %s, "code": %s}\n' "$pkg" "$started" "$(date +%s)" "$code" >> "$OUT/swift-times.ndjson"
+done
+finish

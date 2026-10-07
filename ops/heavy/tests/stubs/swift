@@ -1,0 +1,13 @@
+#!/bin/bash
+# Stub swift for tests/test_recipes.py: `swift test` prints XCTest and Swift Testing summaries; it fails the tests of the
+# package directory named by STUB_SWIFT_FAIL and the build of the one named by STUB_SWIFT_BUILD_ERROR. Each call is
+# logged to $CARET_HEAVY_OUT/swift-calls.txt with whether the sealed keytype and llama copies sit in the export.
+[ "$1" = test ] || { echo "stub swift: unexpected $*" >&2; exit 2; }
+pkg=$(basename "$PWD")
+root=$(cd ../.. 2>/dev/null && pwd)
+[ "$pkg" = bridge ] && root=$(cd .. && pwd)
+kt=no; [ -f "$root/packages/keytype/Packages/A/Package.swift" ] && [ -f "$root/packages/keytype/Packages/ModelRuntime/Vendor/llama.xcframework/Info.plist" ] && kt=yes
+echo "$PWD keytype=$kt $*" >> "$CARET_HEAVY_OUT/swift-calls.txt"
+if [ "${STUB_SWIFT_BUILD_ERROR:-}" = "$pkg" ]; then echo "$PWD/Sources/x.swift:1:1: error: cannot find 'y' in scope"; echo "error: fatalError"; exit 1; fi
+if [ "${STUB_SWIFT_FAIL:-}" = "$pkg" ]; then printf '\t Executed 5 tests, with 1 failure (0 unexpected) in 0.1 (0.1) seconds\n'; exit 1; fi
+printf '\t Executed 5 tests, with 0 failures (0 unexpected) in 0.1 (0.1) seconds\n\xe2\x9c\x94 Test run with 2 tests passed after 0.001 seconds.\n'

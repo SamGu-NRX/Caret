@@ -206,6 +206,37 @@ class CheckTest(Temp):
         self.assertEqual(self.run_check("suite", "gone", "--log", os.path.join(self.out, "none.txt"),
                                         "--exit", "0", "--kind", "vitest"), check.EVIDENCE)
 
+    def test_swift_test_output_xctest_swift_testing_and_build_errors(self):
+        xc_ok = ("Test Suite 'All tests' started at 2026-10-07 21:00:00.000.\n"
+                 "Test Suite 'CaretHostTests.xctest' passed at 2026-10-07 21:00:01.234.\n"
+                 "\t Executed 40 tests, with 0 failures (0 unexpected) in 1.200 (1.230) seconds\n"
+                 "Test Suite 'All tests' passed at 2026-10-07 21:00:01.240.\n"
+                 "\t Executed 42 tests, with 0 failures (0 unexpected) in 1.234 (1.240) seconds\n"
+                 "\u2714 Test run with 12 tests in 3 suites passed after 0.004 seconds.\n")
+        xc_fail = ("Test Suite 'All tests' failed at 2026-10-07 21:00:01.240.\n"
+                   "\t Executed 42 tests, with 2 failures (0 unexpected) in 1.234 (1.240) seconds\n"
+                   "\u2714 Test run with 0 tests passed after 0.001 seconds.\n")
+        st_fail = ("\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds\n"
+                   "\u2718 Test run with 12 tests in 3 suites failed after 0.010 seconds with 2 issues.\n")
+        build = ("Building for debugging...\n/x/Sources/A.swift:3:5: error: cannot find 'foo' in scope\n"
+                 "error: fatalError\n")
+        none = "\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds\n"
+        cases = [("ok", xc_ok, "0", 0, (0, 54)), ("xc-fail", xc_fail, "1", check.FAILED, (2, 40)),
+                 ("xc-fail-exit0", xc_fail, "0", check.FAILED, (2, 40)), ("st-fail", st_fail, "1", check.FAILED, (2, 0)),
+                 ("build", build, "1", check.PREPARE, (None, None)), ("none", none, "0", check.EVIDENCE, (0, 0))]
+        for name, text, exit_code, want, counts in cases:
+            with self.subTest(name):
+                log = self.write("out/{}.txt".format(name), text)
+                self.assertEqual(self.run_check("suite", name, "--log", log, "--exit", exit_code, "--kind", "swift"), want)
+                with open(os.path.join(self.out, name + ".summary.json")) as fh:
+                    summary = json.load(fh)
+                self.assertEqual((summary["failed"], summary["passed"]), counts)
+                self.assertEqual(summary["build_failed"], name == "build")
+        with open(os.path.join(self.out, "ok.summary.json")) as fh:
+            summary = json.load(fh)
+        self.assertEqual((summary["xctest"], summary["swift_testing"]),
+                         ({"executed": 42, "failures": 0}, {"tests": 12, "verdict": "passed", "issues": 0}))
+
     def test_spend_limit(self):
         ledger = os.path.join(self.root, "ledger")
         self.write("ledger/2026-10-07.ndjson", '{"usd": 0.05}\n{"usd": 0.04}\n{"usd": 0.07}\n')
@@ -637,3 +668,54 @@ class ProfileAndEnqueueTest(Temp):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class SwiftInputsTest(Temp):
+    """swift-tests and r2-prepare at a commit whose keytype submodule is not checked out: keytype is sealed as an
+    archive of the gitlink's commit from another worktree's checkout, with that checkout's llama.xcframework, only
+    when that checkout is at the gitlink."""
+
+    def make(self):
+        sub = os.path.join(self.root, "keytype-src")
+        os.makedirs(os.path.join(sub, "Packages/ModelRuntime/Vendor/llama.xcframework"))
+        self.write("keytype-src/Packages/A/Package.swift", "// a\n")
+        self.write("keytype-src/Packages/ModelRuntime/Vendor/llama.xcframework/Info.plist", "plist\n")
+        self.write("keytype-src/.gitignore", "Packages/ModelRuntime/Vendor/\n")
+        git(sub, "init", "-q")
+        git(sub, "add", "-A")
+        git(sub, "commit", "-q", "-m", "keytype")
+        gitlink = git(sub, "rev-parse", "HEAD").stdout.strip()
+        main = os.path.join(self.root, "main")
+        os.makedirs(main)
+        git(main, "init", "-q")
+        self.write("main/apps/caret/Package.swift", "// caret\n")
+        git(main, "add", "-A")
+        git(main, "update-index", "--add", "--cacheinfo", "160000,{},packages/keytype".format(gitlink))
+        git(main, "commit", "-q", "-m", "main")
+        rev = git(main, "rev-parse", "HEAD").stdout.strip()
+        source = os.path.join(self.root, "source")
+        os.makedirs(os.path.join(source, "packages"))
+        shutil.copytree(sub, os.path.join(source, "packages/keytype"), symlinks=True)
+        return main, rev, source, gitlink
+
+    def test_keytype_is_the_gitlinks_commit_and_llama_comes_with_it(self):
+        main, rev, source, gitlink = self.make()
+        specs = caret_heavy.keytype_inputs(main, rev, source)
+        self.assertEqual([(s["name"], s["kind"], s.get("rev")) for s in specs],
+                         [("keytype", "git-archive", gitlink), ("llama.xcframework", "tree", None)])
+        sealed = caret_heavy.seal_inputs(specs, os.path.join(self.root, "inputs"))
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "inputs/keytype/Packages/A/Package.swift")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "inputs/keytype/Packages/ModelRuntime/Vendor")))
+        self.assertEqual(sealed[0]["git_rev"], gitlink)
+        self.assertEqual(manifest.check(sealed), [])
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "inputs/llama.xcframework/Info.plist")))
+
+    def test_a_source_checkout_off_the_gitlink_or_without_it_is_refused(self):
+        main, rev, source, gitlink = self.make()
+        repo = os.path.join(source, "packages/keytype")
+        self.write("source/packages/keytype/Packages/A/Package.swift", "// moved on\n")
+        git(repo, "commit", "-q", "-am", "later")
+        with self.assertRaisesRegex(manifest.ManifestError, "is at .*, not the gitlink"):
+            caret_heavy.keytype_inputs(main, rev, source)
+        with self.assertRaisesRegex(manifest.ManifestError, "no keytype checkout"):
+            caret_heavy.keytype_inputs(main, rev, os.path.join(self.root, "nowhere"))

@@ -27,7 +27,9 @@ def write(path, text):
         fh.write(text)
 
 
-class Recipes(unittest.TestCase):
+class RecipeWorld(unittest.TestCase):
+    """A temporary worktree, sealed-inputs directory and HOME, and running one recipe in them."""
+
     def setUp(self):
         self.root = os.path.realpath(tempfile.mkdtemp(prefix="caret-heavy-recipes-"))
         self.addCleanup(lambda: (subprocess.run(["chmod", "-R", "u+w", self.root]), shutil.rmtree(self.root, True)))
@@ -78,6 +80,9 @@ class Recipes(unittest.TestCase):
 
     def steps(self, result):
         return [(s["kind"], s["name"], s["code"]) for s in result["steps"]]
+
+
+class Recipes(RecipeWorld):
 
     # Browser and helper recipes
 
@@ -334,6 +339,60 @@ else:
                 text = fh.read()
             self.assertNotIn('.REV" 2>/dev/null)" != ', text)  # no reuse of an export by its .REV
             self.assertIn("export.sh", text)
+
+
+class SwiftTests(RecipeWorld):
+    """swift-tests.sh: `swift test` in each package of a fresh export of the pinned commit, with keytype and
+    llama.xcframework from the sealed inputs; every package runs; 11 on a test failure, 14 on a build error."""
+
+    def setUp(self):
+        super().setUp()
+        for pkg in ("apps/caret", "apps/screen-reader", "bridge"):
+            write(os.path.join(self.worktree, pkg, "Package.swift"), "// {}\n".format(pkg))
+        subprocess.run(["git", "-C", self.worktree, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", self.worktree, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.worktree, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "-q", "-m", "pin"], check=True)
+        self.rev = subprocess.run(["git", "-C", self.worktree, "rev-parse", "HEAD"], capture_output=True, text=True,
+                                  check=True).stdout.strip()
+        write(os.path.join(self.inputs, "keytype/Packages/A/Package.swift"), "// keytype at the gitlink\n")
+        write(os.path.join(self.inputs, "llama.xcframework/Info.plist"), "plist\n")
+        self.tmp = os.path.join(self.root, "tmp")
+        os.makedirs(self.tmp)
+
+    def swift(self, extra=None):
+        env = dict({"CARET_HEAVY_REV": self.rev, "TMPDIR": self.tmp}, **(extra or {}))
+        done, result = self.run_recipe("swift-tests.sh", "t", "apps/caret", "apps/screen-reader", "bridge", env=env)
+        with open(os.path.join(self.out, "swift-calls.txt")) as fh:
+            calls = fh.read().splitlines()
+        self.assertEqual(os.listdir(self.tmp), [])  # the export and the builds are gone, whatever happened
+        return done, result, calls
+
+    def test_every_package_passes(self):
+        done, result, calls = self.swift()
+        self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
+        self.assertEqual(self.steps(result), [("prepare", "export", 0), ("prepare", "inputs", 0),
+                                              ("suite", "swift-apps-caret-t", 0), ("suite", "swift-apps-screen-reader-t", 0),
+                                              ("suite", "swift-bridge-t", 0)])
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(calls[0].split()[0].endswith("/src/apps/caret") and "keytype=yes" in calls[0], calls[0])
+        for call in calls:
+            self.assertIn("test --disable-automatic-resolution --scratch-path", call)
+        for pkg in ("apps-caret", "apps-screen-reader", "bridge"):
+            with open(os.path.join(self.out, "swift-{}-t.summary.json".format(pkg))) as fh:
+                self.assertEqual(json.load(fh)["passed"], 7)
+        with open(os.path.join(self.out, "swift-times.ndjson")) as fh:
+            self.assertEqual([json.loads(line)["package"] for line in fh], ["apps/caret", "apps/screen-reader", "bridge"])
+
+    def test_a_test_failure_is_11_and_every_package_still_runs(self):
+        done, result, calls = self.swift({"STUB_SWIFT_FAIL": "screen-reader"})
+        self.assertEqual(done.returncode, 11)
+        self.assertEqual(len(calls), 3)
+
+    def test_a_build_error_is_14(self):
+        done, result, calls = self.swift({"STUB_SWIFT_BUILD_ERROR": "bridge"})
+        self.assertEqual(done.returncode, 14)
+        self.assertIn(("suite", "swift-bridge-t", 14), self.steps(result))
 
 
 if __name__ == "__main__":

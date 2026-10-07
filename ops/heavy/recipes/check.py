@@ -150,6 +150,34 @@ def page_loop(name, exit_code, wrong_seen, expect_ids=None, goal=False):
 _VITEST = re.compile(r"^\s*Tests\s+(?:(\d+) failed)?(?:\s*\|\s*)?(?:(\d+) passed)?", re.M)
 _NODE = re.compile(r"^\S*\s*(pass|fail) (\d+)\s*$", re.M)
 _TSC = re.compile(r"error TS\d+", re.M)
+# swift test's two frameworks: XCTest's last "Executed" line is the whole run's; Swift Testing's run line follows it.
+_XCTEST = re.compile(r"Executed (\d+) tests?, with (\d+) failures?")
+_SWIFT_TESTING = re.compile(r"Test run with (\d+) tests?(?: in \d+ suites?)? (passed|failed) after [\d.]+ seconds?"
+                            r"(?: with (\d+) issues?)?")
+
+
+def _swift_summary(name, text, exit_code):
+    """Counts from swift test's output, written to OUT/<name>.summary.json. A nonzero exit with no test summary at all
+    is a build error: nothing ran."""
+    xc, st = _XCTEST.findall(text), _SWIFT_TESTING.findall(text)
+    summary = {"name": name, "exit": exit_code, "xctest": None, "swift_testing": None, "build_failed": False,
+               "failed": None, "passed": None}
+    if xc:
+        executed, failures = (int(x) for x in xc[-1])
+        summary["xctest"] = {"executed": executed, "failures": failures}
+    if st:
+        tests, verdict, issues = st[-1]
+        summary["swift_testing"] = {"tests": int(tests), "verdict": verdict, "issues": int(issues or 0)}
+    if xc or st:
+        x, s = summary["xctest"], summary["swift_testing"]
+        summary["failed"] = (x["failures"] if x else 0) + ((s["issues"] or 1) if s and s["verdict"] == "failed" else 0)
+        summary["passed"] = ((x["executed"] - x["failures"]) if x else 0) + (s["tests"] if s and s["verdict"] == "passed" else 0)
+    else:
+        summary["build_failed"] = exit_code != 0
+    path = os.path.join(out_dir(), name + ".summary.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=1)
+    return summary, path
 
 
 def suite(name, log, exit_code, kind):
@@ -171,6 +199,14 @@ def suite(name, log, exit_code, kind):
             failed, passed = counts.get("fail", 0), counts.get("pass", 0)
     elif kind == "tsc":
         failed, passed = len(_TSC.findall(text)), None
+    elif kind == "swift":
+        summary, path = _swift_summary(name, text, exit_code)
+        step["evidence"] = step["evidence"] + existing(path)
+        if summary["build_failed"]:
+            step.update(failed=None, passed=None, code=PREPARE,
+                        why="swift test exited {} before any test ran (a build error)".format(exit_code))
+            return record(step)
+        failed, passed = summary["failed"], summary["passed"]
     step.update(failed=failed, passed=passed)
     if exit_code != 0 or (failed or 0) > 0:
         step.update(code=FAILED, why="exit {}, {} failed".format(exit_code, failed))
@@ -450,7 +486,7 @@ def main(argv=None):
     s.add_argument("name")
     s.add_argument("--log", required=True)
     s.add_argument("--exit", type=int, required=True)
-    s.add_argument("--kind", choices=("vitest", "node-test", "tsc"), required=True)
+    s.add_argument("--kind", choices=("vitest", "node-test", "tsc", "swift"), required=True)
     pr = sub.add_parser("prepare")
     pr.add_argument("name")
     pr.add_argument("--log", required=True)

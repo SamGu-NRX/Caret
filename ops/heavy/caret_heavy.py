@@ -316,6 +316,52 @@ LAYA_SRC = os.path.join(HOME, ".caret-run/models/laya/src")
 LAYA_DATA = os.path.join(HOME, ".caret-run/evidence/screen/ly1")
 
 
+def keytype_inputs(worktree, rev, source):
+    """Sealed inputs for a build of *rev* that needs packages/keytype: an archive of the submodule's gitlinked commit,
+    and llama.xcframework (gitignored) from *source*'s keytype checkout, which must be at that commit. The pinned
+    worktree need not have the submodule checked out (caret-v2-hostint does not)."""
+    listing = _git(worktree, "ls-tree", rev, "packages/keytype").stdout.decode().split()
+    if len(listing) < 3 or listing[1] != "commit":
+        raise manifest.ManifestError("packages/keytype is not a submodule at {}".format(rev))
+    gitlink = listing[2]
+    repo = os.path.join(os.path.realpath(source), "packages/keytype")
+    head = _git(repo, "rev-parse", "HEAD") if os.path.isdir(repo) else None
+    if head is None or head.returncode != 0:
+        raise manifest.ManifestError("no keytype checkout at {}".format(repo))
+    head = head.stdout.decode().strip()
+    if head != gitlink:
+        raise manifest.ManifestError("{} is at {}, not the gitlink {} of {}: its llama.xcframework may not be that "
+                                     "commit's".format(repo, head, gitlink, rev))
+    return [spec("keytype", "git-archive", repo, "keytype", rev=gitlink),
+            spec("llama.xcframework", "tree", os.path.join(repo, "Packages/ModelRuntime/Vendor/llama.xcframework"),
+                 "llama.xcframework")]
+
+
+SWIFT_PACKAGES = ("apps/caret", "apps/screen-reader", "bridge")
+
+
+def _swift_tests_options(parser):
+    _tag(parser)
+    parser.add_argument("--packages", default=",".join(SWIFT_PACKAGES),
+                        help="comma-separated Swift package directories of the pinned commit (default: %(default)s)")
+    parser.add_argument("--inputs-from", metavar="WORKTREE",
+                        help="seal keytype (at the pinned gitlink) and llama.xcframework from this worktree's keytype "
+                             "checkout instead of the pinned one's; apps/caret needs them")
+
+
+def _swift_tests_plan(args, worktree, rev, paths):
+    packages = [p for p in args.packages.split(",") if p]
+    if not packages or len(set(packages)) != len(packages):
+        raise manifest.ManifestError("--packages needs distinct package directories")
+    for pkg in packages:
+        if os.path.isabs(pkg) or os.path.normpath(pkg) != pkg or pkg.startswith(".."):
+            raise manifest.ManifestError("--packages: {} is not a plain path inside the worktree".format(pkg))
+        if _git(worktree, "cat-file", "-e", "{}:{}/Package.swift".format(rev, pkg)).returncode != 0:
+            raise manifest.ManifestError("{} has no Package.swift at {}".format(pkg, rev))
+    inputs = keytype_inputs(worktree, rev, args.inputs_from or worktree) if "apps/caret" in packages else []
+    return [args.tag, *packages], inputs, {}
+
+
 def _laya_options(parser):
     # Required, with no default: Laya's peak has never been measured, and the 17:31Z near-miss on 2026-10-07 (0.40 GiB
     # free, swap 22.19 of 22.28 GB) stopped its first run. Whoever commissions it chooses the cap.
@@ -361,6 +407,8 @@ RECIPES = {
                          _r2_prepare_options, _r2_prepare_plan),
     "r2-vm": Recipe("r2-vm", "caret-vm", "recipes/r2/vm.sh", True, _r2_vm_options, _r2_vm_plan),
     "laya": Recipe("laya", "caret-laya", "recipes/laya.sh", False, _laya_options, _laya_plan),
+    "swift-tests": Recipe("swift-tests", "caret-swift", "recipes/swift-tests.sh", False, _swift_tests_options,
+                          _swift_tests_plan),
 }
 
 
@@ -411,6 +459,21 @@ def extract_ops(repo, commit, job_dir):
     return snapshot_files(job_dir)
 
 
+def _seal_git_archive(item, dest):
+    """A git-archive input: the tree of one commit of a repository, extracted into *dest* (its ignored files, such as
+    llama.xcframework, are not in it). Recorded as a tree with the commit it came from."""
+    os.makedirs(dest, mode=0o700)
+    archive = subprocess.Popen(["git", "-C", item["path"], "archive", item["rev"]], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    untar = subprocess.run(["tar", "-x", "-C", dest], stdin=archive.stdout, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True)
+    archive.stdout.close()
+    err = archive.stderr.read().decode(errors="replace")
+    if archive.wait() != 0 or untar.returncode != 0:
+        raise manifest.ManifestError("cannot archive {} at {}: {}".format(item["name"], item["rev"], (err or untar.stdout).strip()[:300]))
+    return dict(manifest.record(item["name"], "tree", dest), git_rev=item["rev"])
+
+
 def seal_inputs(specs, inputs_dir):
     """Clone each input into *inputs_dir* (APFS clonefile: no extra disk until a source changes) and record the copy.
 
@@ -418,11 +481,14 @@ def seal_inputs(specs, inputs_dir):
     will use. The job then never reads the shared source again."""
     entries = []
     for item in specs:
-        source = manifest.record(item["name"], item["kind"], item["path"], rev=item.get("rev"))
         dest = os.path.join(inputs_dir, item["dest"])
         if os.path.lexists(dest):
             raise manifest.ManifestError("two inputs seal to {}".format(item["dest"]))
         os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+        if item["kind"] == "git-archive":
+            entries.append(dict(_seal_git_archive(item, dest), source=item["path"], dest=item["dest"]))
+            continue
+        source = manifest.record(item["name"], item["kind"], item["path"], rev=item.get("rev"))
         done = subprocess.run(["/bin/cp", "-c", "-R", "-p", item["path"], dest], stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if done.returncode != 0:
