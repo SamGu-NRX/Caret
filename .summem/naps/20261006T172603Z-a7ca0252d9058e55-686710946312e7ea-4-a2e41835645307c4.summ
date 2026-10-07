@@ -1,1 +1,0 @@
-Chrome ignores native AX writes once web AX is on (HostCoordinator yields via PageInline.nativeYields); PageTaskMachine.publish invalidates its live offer first. H14 rig: no guest Jev, use 'pagetask start'; banners cover top-right panels.

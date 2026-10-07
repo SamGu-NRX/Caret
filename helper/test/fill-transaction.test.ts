@@ -233,7 +233,6 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     it.each([
       ["an input of type number", "number", {}, "ok"],
       ["a text input with a numeric inputmode", "text", { numeric: true as const }, "ok"],
-      ["an input of type number, answered failed", "number", {}, "failed"],
     ] as const)("undoes the write in %s: 1 and 1.00 are the same number", async (_, kind, extra, answer) => {
       page.onAct = reformatting(["n"], answer);
       const { key } = await written("n", kind, extra);
@@ -243,6 +242,17 @@ describe("one Fill all over a mixed form (D2-04)", () => {
       const u = await helper.executor.undo("n1");
       expect(u).toMatchObject({ restored: 1, notRestored: [] });
       expect(page.find("n").value).toBe("");
+    });
+
+    it("leaves an unconfirmed number's reformatted value outside S1's exact recognized states", async () => {
+      page.onAct = reformatting(["n"], "failed");
+      await written("n", "number");
+      expect(helper.executor.ledger("n1")).toMatchObject([{ before: "", after: "1", unconfirmed: true }]);
+      expect(await helper.executor.undo("n1")).toMatchObject({
+        restored: 0,
+        notRestored: [{ reason: 'the field does not hold what Caret was writing, so Caret left it as it is; the field now holds "1.00"; before the write it held ""' }],
+      });
+      expect(page.find("n").value).toBe("1.00");
     });
 
     it("never compares a text field as a number: the same reformat leaves an undo that refuses", async () => {

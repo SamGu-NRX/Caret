@@ -1,1 +1,0 @@
-Any path that writes a chosen value into a field checks fill/writable.ts writeMisfit (fill, planner validate, codeplan, offer filter, goal gate); add new value rules there, not beside one caller. Candidates are only added, never swapped out.
