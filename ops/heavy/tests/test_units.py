@@ -893,11 +893,16 @@ class VmAdmissionTest(Temp):
         # lr-lease charges the estimates against free disk on top of the vm floor under normal pressure.
         self.threshold = vm["diskFloorGB"] + prof.est_mem_gib + prof.est_disk_gib
 
-    def check(self, free_gib, timeout=60):
+    def admission(self, policy=None):
+        paths = dict(caret_heavy.default_paths("/tmp/state-for-argv-only"),
+                     lease_policy=policy or os.path.join(self.home, ".long-run/lease-policy.json"))
+        return caret_heavy.vm_admission(paths, caret_heavy.PROFILES["caret-vm"])
+
+    def check(self, free_gib, timeout=60, admission=None):
         import supervise
         env = dict(os.environ, HOME=self.home, STUB_FREE_GIB=str(free_gib))
         return supervise.vm_check(self.lr_lease, caret_heavy.dataclasses.asdict(caret_heavy.PROFILES["caret-vm"]),
-                                  env=env, timeout=timeout)
+                                  admission or self.admission(), env=env, timeout=timeout)
 
     def leases(self):
         return sorted(n for n in os.listdir(os.path.join(self.home, ".long-run/leases")) if n.endswith(".json"))
@@ -954,6 +959,59 @@ class VmAdmissionTest(Temp):
         self.assertIn("admission unknown", why)
         self.assertIn("decision", why)
 
+    def policy_copy(self, change):
+        with open(self.POLICY) as fh:
+            data = json.load(fh)
+        change(data)
+        return self.write("policy-{}.json".format(len(os.listdir(self.root))), json.dumps(data))
+
+    def test_the_policy_is_the_one_recorded_at_enqueue_and_a_change_refuses(self):
+        # The recorded file is the one read, not the one under HOME: here its vm floor needs 20 + 6 + 2 GiB.
+        recorded = self.policy_copy(lambda d: d["kinds"]["vm"].__setitem__("diskFloorGB", 20))
+        admission = self.admission(recorded)
+        self.assertIn("low disk", self.check(12.9, admission=admission))
+        with open(recorded, "a") as fh:
+            fh.write("\n")
+        self.assertEqual(self.check(100, admission=admission), "lease-policy.json changed since enqueue; re-enqueue")
+
+    def test_a_dead_owners_cleanup_required_lease_counts_as_quarantined(self):
+        # maxCount 2 (the review's case): counted as one active lease it would leave room, but reap quarantines it,
+        # and a quarantined lease blocks its kind.
+        recorded = self.policy_copy(lambda d: d["kinds"]["vm"].__setitem__("maxCount", 2))
+        admission = self.admission(recorded)
+        self.assertIsNone(self.check(100, admission=admission))
+        self.lease("someone-else", self.dead_pid(), cleanup=True)
+        self.assertIn("quarantined", self.check(100, admission=admission))
+
+    def test_reaps_source_must_be_a_pinned_one(self):
+        with open(os.path.join(self.bin, "lr-lease-core.mjs")) as fh:
+            core = fh.read()
+        line = "      const started = readers.pidStartedAt(lease.ownerPid);"
+        self.assertEqual(core.count(line), 1)
+        self.write("home/.long-run/bin/lr-lease-core.mjs", core.replace(line, "      const started = 0;"))
+        why = self.check(100)
+        self.assertIn("admission unknown", why)
+        self.assertIn("reap", why)
+
+    def test_the_stop_target_patched_core_passes(self):
+        patch = os.path.join(os.path.dirname(caret_heavy.QUEUE), "../docs/proposals/lr-lease-stop-target/lr-lease.patch")
+        if not os.path.isfile(patch):
+            self.skipTest("the stop-target proposal is not in the queue checkout")
+        work = os.path.join(self.root, "patched")
+        os.makedirs(work)
+        for name in ("lr-lease-core.mjs", "lr-lease-cli.mjs", "lr-lease.test.mjs"):
+            shutil.copy2(os.path.join(os.path.dirname(self.CORE), name), work)
+        done = subprocess.run(["patch", "-p1", "-s", "-d", work], stdin=open(patch), capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        with open(os.path.join(work, "lr-lease-core.mjs")) as fh:
+            core = fh.read().replace("export function machineReaders(root) {", "function realMachineReaders(root) {")
+        with open(os.path.join(self.bin, "lr-lease-core.mjs")) as fh:
+            stub_tail = fh.read().split("function realMachineReaders(root) {", 1)[1]
+        self.write("home/.long-run/bin/lr-lease-core.mjs",
+                   core + "\nexport function machineReaders(root) {" + stub_tail.split("\nexport function machineReaders(root) {", 1)[1])
+        self.assertIsNone(self.check(12.9))
+        self.assertIn("lr-lease would not grant vm", self.check(self.threshold - 0.05))
+
     def test_exactly_at_the_threshold_lr_lease_grants_and_rig_runs_clone_gate_does_not(self):
         # Known, kept visible (coordinator, 2026-10-07): lr-lease grants vm at exactly floor + 6 + 2 = 12.0 GiB free,
         # while rig-run's own clone gate needs strictly more than 12 GiB. Changing that gate is a separate decision.
@@ -977,7 +1035,7 @@ class VmAdmissionTest(Temp):
                 return procs.DarwinProbes().usage(pid)  # the runner's identity, read for real
 
         sup = supervise.Supervisor.__new__(supervise.Supervisor)
-        sup.plan = {"job_id": "caret-x", "worktree": self.root}
+        sup.plan = {"job_id": "caret-x", "worktree": self.root, "admission": self.admission()}
         sup.run_root = os.path.join(self.root, "runs", "caret-x")
         sup.paths = {"hold": os.path.join(self.root, "HOLD"), "lr_lease": self.lr_lease,
                      "queue_state": os.path.join(self.root, "queue")}
@@ -1042,6 +1100,9 @@ class VmAdmissionTest(Temp):
                 head = caret_heavy.queue_enqueue_argv(plan, "/plans/caret-x.json", "c" * 64)
                 head = head[:head.index("--")]
                 self.assertEqual(float(head[head.index("--min-free-gib") + 1]), vm_floor + 6 + 2)
+                import hashlib
+                with open(policy, "rb") as fh:
+                    digest = hashlib.sha256(fh.read()).hexdigest()
                 self.assertEqual(plan["admission"], {"kind": "vm", "queue_min_free_gib": vm_floor + 6 + 2,
                                                      "vm_floor_gib": vm_floor, "est_mem_gib": 6, "est_disk_gib": 2,
-                                                     "source": policy})
+                                                     "source": policy, "policy_sha256": digest})

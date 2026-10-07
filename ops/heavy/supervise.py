@@ -38,6 +38,7 @@ cancelled by the queue, the relay's death or the runner's.
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import pwd
@@ -186,16 +187,24 @@ def relay(plan_path, plan_digest, plan):
 QUEUE_LEASE_RUN = "heavy-job-queue"
 
 # lr-lease's own vm decision, read-only: no lease is taken. It runs the lr-lease-core.mjs beside the lr-lease the plan
-# names, with the readers, policy, leases, snapshot and decision() its `status` uses, for kind vm and the profile's
-# estimates. The only leases left out are those rig-run's own `lr-reap --run rig` removes before it asks: run "rig",
-# not quarantined, not cleanup-required, owner dead or its pid reused, by reap()'s own test, which lr-lease-core does
-# not export, so it is mirrored here and the source is checked to still say it. Any missing export, other arity or
-# changed test fails loudly (exit 3), and the caller treats that as "admission unknown".
+# names, with the readers, leases, snapshot and decision() its `status` uses, on the lease-policy.json recorded at
+# enqueue, for kind vm and the profile's estimates. Before decision() the leases are put in the state reap() would
+# leave them in, by reap()'s own test (not exported by lr-lease-core, so mirrored here): a lease rig-run's own
+# `lr-reap --run rig` removes first (run "rig", not quarantined, not cleanup-required, owner dead or its pid reused) is
+# left out, and a cleanup-required lease whose owner is dead or reused counts as quarantined, which blocks its kind.
+# reap()'s complete source, with its START_TOLERANCE_MS line, must hash to a pinned digest, so any change to the test
+# mirrored here is "admission unknown". A missing export or another arity fails loudly too (exit 3).
+REAP_SOURCE_SHA256 = (
+    # ~/.long-run/bin/lr-lease-core.mjs as installed 2026-10-07 (and ops/heavy/vendor/long-run), and the same with the
+    # proposed stop-target patch (agent-heavy-job-queue docs/proposals/lr-lease-stop-target), which leaves reap alone.
+    "bcab31fcaeb7e954572248320bc88bdf4b6d05ce3a5003d0d6daf9c5ae51f1c9",
+)
 VM_CHECK_JS = r"""
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-const [core, root, mem, disk] = process.argv.slice(1);
+const [core, root, policyFile, mem, disk, pinned] = process.argv.slice(1);
 const fail = (why) => { console.log(JSON.stringify({ error: why })); process.exit(3); };
 const m = await import(pathToFileURL(core).href);
 const arity = { machineReaders: 1, readPolicy: 1, readLeases: 1, snapshot: 1, decision: 6 };
@@ -204,31 +213,49 @@ for (const [name, n] of Object.entries(arity)) {
 }
 const src = readFileSync(core, 'utf8');
 const tolerance = /^const START_TOLERANCE_MS = (\d+);$/m.exec(src);
-const reapTest = ["if (!readers.pidAlive(lease.ownerPid)) reason = 'owner dead';",
-  "if (started !== null && started > lease.createdAt + START_TOLERANCE_MS) reason = 'owner pid reused';",
-  "if (run !== undefined && lease.run !== run) continue;", "if (lease.state === 'quarantined') continue;",
-  "if (reason && lease.cleanupRequired) {"];
-if (!tolerance || !reapTest.every((line) => src.includes(line))) fail("lr-lease-core.mjs: reap's owner test is not the one this check mirrors");
+const start = src.indexOf('\nexport function reap(');
+const end = start < 0 ? -1 : src.indexOf('\n}\n', start + 1);
+if (!tolerance || start < 0 || end < 0) fail("lr-lease-core.mjs: no reap() or START_TOLERANCE_MS to check");
+const digest = createHash('sha256').update(tolerance[0] + '\n' + src.slice(start + 1, end + 2)).digest('hex');
+if (!pinned.split(',').includes(digest)) fail(`lr-lease-core.mjs: reap() is not a pinned version (sha256 ${digest}), so its owner test cannot be mirrored`);
 const readers = m.machineReaders(root);
 if (typeof readers.pidAlive !== 'function' || typeof readers.pidStartedAt !== 'function') fail('lr-lease-core.mjs: readers lack pidAlive or pidStartedAt');
-const policy = m.readPolicy(path.join(root, 'lease-policy.json'));
+const policy = m.readPolicy(policyFile);
 const leases = m.readLeases(path.join(root, 'leases'));
 const readings = m.snapshot(readers);
-const reapedFirst = (l) => {
-  if (l.run !== 'rig' || l.state === 'quarantined' || l.cleanupRequired) return false;
+const ownerGone = (l) => {
   if (!readers.pidAlive(l.ownerPid)) return true;
   const started = readers.pidStartedAt(l.ownerPid);
   return started !== null && started > l.createdAt + Number(tolerance[1]);
 };
-const excluded = leases.filter(reapedFirst).map((l) => l.id);
-const reason = m.decision('vm', Number(mem), Number(disk), leases.filter((l) => !excluded.includes(l.id)), policy, readings);
+const removedFirst = (l) => l.run === 'rig' && l.state !== 'quarantined' && !l.cleanupRequired && ownerGone(l);
+const excluded = leases.filter(removedFirst).map((l) => l.id);
+const asReaped = leases.filter((l) => !excluded.includes(l.id))
+  .map((l) => (l.cleanupRequired && l.state !== 'quarantined' && ownerGone(l) ? { ...l, state: 'quarantined' } : l));
+const reason = m.decision('vm', Number(mem), Number(disk), asReaped, policy, readings);
 console.log(JSON.stringify({ grant: !reason, reason: reason || null, excluded }));
 """
+POLICY_CHANGED = "lease-policy.json changed since enqueue; re-enqueue"
 
 
-def vm_check(lr_lease, profile, env=None, timeout=60):
-    """None when lr-lease's vm decision would grant the profile's estimates now, else why not, without taking any
-    lease (VM_CHECK_JS). A timeout or any failure is an explicit "admission unknown" refusal, never an exception."""
+def _file_sha256(path):
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def vm_check(lr_lease, profile, admission, env=None, timeout=60):
+    """None when lr-lease's vm decision would grant the profile's estimates now, on the lease-policy.json the plan
+    recorded at enqueue, else why not, without taking any lease (VM_CHECK_JS). A policy file whose digest is no longer
+    the recorded one refuses (POLICY_CHANGED); a timeout or any failure is an explicit "admission unknown" refusal,
+    never an exception."""
+    if not isinstance(admission, dict) or not admission.get("source") or not admission.get("policy_sha256"):
+        return "admission unknown: the plan records no lease-policy.json and digest; re-enqueue"
+    policy = admission["source"]
+    if _file_sha256(policy) != admission["policy_sha256"]:
+        return POLICY_CHANGED
     env = dict(os.environ if env is None else env)
     node = shutil.which("node", path=env.get("PATH", "") + ":/opt/homebrew/bin:/usr/local/bin")
     core = os.path.join(os.path.dirname(lr_lease), "lr-lease-core.mjs")
@@ -236,14 +263,17 @@ def vm_check(lr_lease, profile, env=None, timeout=60):
     if node is None:
         return "admission unknown: no node to run lr-lease's vm decision"
     try:
-        got = subprocess.run([node, "--input-type=module", "-e", VM_CHECK_JS, core, root, str(profile["est_mem_gib"]),
-                              str(profile["est_disk_gib"])], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True, env=env, timeout=timeout)
+        got = subprocess.run([node, "--input-type=module", "-e", VM_CHECK_JS, core, root, policy,
+                              str(profile["est_mem_gib"]), str(profile["est_disk_gib"]), ",".join(REAP_SOURCE_SHA256)],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             env=env, timeout=timeout)
         answer = json.loads(got.stdout.strip().splitlines()[-1]) if got.stdout.strip() else {}
     except subprocess.TimeoutExpired:
         return "admission unknown: lr-lease's vm decision did not answer within {} s".format(timeout)
     except (OSError, ValueError) as ex:
         return "admission unknown: lr-lease's vm decision failed: {!r}".format(ex)
+    if _file_sha256(policy) != admission["policy_sha256"]:
+        return POLICY_CHANGED  # changed while it was being read
     if got.returncode != 0 or "grant" not in answer:
         return "admission unknown: lr-lease's vm decision exited {}: {}".format(
             got.returncode, answer.get("error") or got.stdout.strip()[-300:])
@@ -573,7 +603,7 @@ class Supervisor:
         if problem is None and os.path.lexists(self.paths["hold"]):
             problem = "HOLD {} exists".format(self.paths["hold"])
         if problem is None and self.profile.get("admit_kind") == "vm":
-            problem = vm_check(self.paths["lr_lease"], self.profile)
+            problem = vm_check(self.paths["lr_lease"], self.profile, self.plan.get("admission"))
         if problem is None:
             problem = self._admission_lost()
         if problem:

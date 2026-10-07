@@ -717,15 +717,17 @@ def vm_admission(paths, profile):
     """The queue's wait for a vm-admitted profile: lease-policy.json's vm floor plus the profile's estimates, the free
     disk lr-lease's vm decision needs under normal pressure, read now from the file that owns it."""
     try:
-        with open(paths["lease_policy"], encoding="utf-8") as fh:
-            vm_floor = json.load(fh)["kinds"]["vm"]["diskFloorGB"]
+        with open(paths["lease_policy"], "rb") as fh:
+            data = fh.read()
+        vm_floor = json.loads(data)["kinds"]["vm"]["diskFloorGB"]
     except (OSError, ValueError, KeyError, TypeError) as ex:
         raise manifest.ManifestError("cannot read the vm floor from {}: {!r}".format(paths["lease_policy"], ex)) from None
     if not isinstance(vm_floor, (int, float)) or vm_floor < 0:
         raise manifest.ManifestError("{} has no usable vm diskFloorGB".format(paths["lease_policy"]))
     return {"kind": "vm", "queue_min_free_gib": vm_floor + profile.est_mem_gib + profile.est_disk_gib,
             "vm_floor_gib": vm_floor, "est_mem_gib": profile.est_mem_gib, "est_disk_gib": profile.est_disk_gib,
-            "source": paths["lease_policy"]}
+            # The supervisor's check reads this file and refuses if its digest has changed (supervise.vm_check).
+            "source": paths["lease_policy"], "policy_sha256": hashlib.sha256(data).hexdigest()}
 
 
 def queue_takes_leases(queue_script):
