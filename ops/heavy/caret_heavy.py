@@ -419,7 +419,7 @@ def boot_argv(python, plan_path, plan_digest, *rest):
 
 
 def build_plan(recipe, job_id, worktree, rev, recipe_argv, inputs, recorded_env, env_file, paths,
-               ops, profile=None, python=PYTHON, lease_renew_s=300, lease_ttl_min=15):
+               ops, profile=None, python=PYTHON, lease_renew_s=300, lease_ttl_min=15, test=None):
     """The plan dict. *profile* defaults to the recipe's; tests pass synthetic profiles."""
     profile = profile or PROFILES[recipe.profile]
     snapshot, files, ops_repo, ops_commit = ops
@@ -435,6 +435,8 @@ def build_plan(recipe, job_id, worktree, rev, recipe_argv, inputs, recorded_env,
         "run_root": os.path.join(paths["evidence_root"], job_id),
         "paths": dict(paths), "python": python,
         "lease": {"run": "caret", "ttl_min": lease_ttl_min, "renew_s": lease_renew_s},
+        # Tests only (recovery.test_point); the CLI never sets it.
+        **({"test": dict(test)} if test else {}),
     }
 
 
@@ -465,7 +467,7 @@ class QueueRefused(Exception):
 
 
 def enqueue(recipe_name, job_id, worktree, rev, recipe_args, paths, env_file=None, ops_repo=None,
-            profile=None, lease_renew_s=300, lease_ttl_min=15, python=PYTHON):
+            profile=None, lease_renew_s=300, lease_ttl_min=15, python=PYTHON, test=None):
     """Snapshot, record and enqueue one job. Returns (plan path, digest, queue stdout)."""
     recipe = RECIPES[recipe_name] if isinstance(recipe_name, str) else recipe_name
     if not ID_PATTERN.match(job_id):
@@ -500,7 +502,7 @@ def enqueue(recipe_name, job_id, worktree, rev, recipe_args, paths, env_file=Non
         inputs = seal_inputs(specs, os.path.join(job_dir, "inputs"))
         plan = build_plan(recipe, job_id, worktree, rev, recipe_argv, inputs, recorded, env_file, paths,
                           (job_dir, files, repo, commit), profile=profile, python=python,
-                          lease_renew_s=lease_renew_s, lease_ttl_min=lease_ttl_min)
+                          lease_renew_s=lease_renew_s, lease_ttl_min=lease_ttl_min, test=test)
         plan_path, digest = write_plan(plan, job_dir)
         _read_only(job_dir)
         vm_job = os.path.join(job_dir, "inputs", "vm-job")

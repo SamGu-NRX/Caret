@@ -123,6 +123,7 @@ class World(unittest.TestCase):
         self.env.pop("HEAVY_JOB_QUEUE_DIR", None)
         self.runners = []
         self.jobs = []
+        self.leftover_agents = []
 
     def _teardown(self):
         for runner in self.runners:
@@ -136,6 +137,9 @@ class World(unittest.TestCase):
             for label in self.labels(job_id):
                 procs.launchd_bootout(label)
             outcome = self.outcome(job_id)
+            for label, _ in procs.launchd_jobs("caret-heavy-recovery.{}.".format(job_id)):
+                self.leftover_agents.append(label)
+                procs.launchd_bootout(label)  # this test's own recovery agent, by its exact job prefix
             if outcome:
                 pid = outcome.get("supervisor_pid")
                 self.wait_for(lambda: pid is None or procs.DarwinProbes().usage(pid) is None, 30)
@@ -213,8 +217,11 @@ class World(unittest.TestCase):
         prefix = "{}={}.".format(procs.MARK_VAR, job_id)
         found = []
         for pid in probes.all_pids():
-            if pid == os.getpid() or probes.usage(pid) is None:
-                continue
+            try:
+                if pid == os.getpid() or probes.usage(pid) is None:
+                    continue
+            except PermissionError:
+                continue  # another user's process
             got = probes.procargs(pid)
             if got and any(e.startswith(prefix) for e in got[1]):
                 found.append(pid)
@@ -223,6 +230,24 @@ class World(unittest.TestCase):
     @staticmethod
     def labels(job_id):
         return [label for label, _ in procs.launchd_jobs("caret-heavy.{}.".format(job_id))]
+
+    def journal(self, job_id):
+        import recovery
+        return recovery.Journal(os.path.join(self.run_root(job_id), "recovery", "journal.ndjson")).load()
+
+    def recovery_agents(self, job_id):
+        return [label for label, _ in procs.launchd_jobs("caret-heavy-recovery.{}.".format(job_id))]
+
+    def contender_blocked(self):
+        """True while a separate process cannot take the slot or heavy.lock: exclusion checked by contention,
+        not by a recorded status (design section 4)."""
+        code = ("import fcntl, os, sys\n"
+                "for p in sys.argv[1:]:\n"
+                "    fd = os.open(p, os.O_RDONLY | os.O_CREAT, 0o644)\n"
+                "    try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                "    except BlockingIOError: sys.exit(1)\n"
+                "sys.exit(0)\n")
+        return subprocess.run([PY, "-c", code, self.paths["slot_lock"], self.paths["heavy_lock"]]).returncode == 1
 
     def leases(self):
         folder = os.path.join(self.home, ".long-run/leases")
@@ -234,7 +259,7 @@ class World(unittest.TestCase):
         return out
 
     def alive(self, pid):
-        return procs.DarwinProbes().usage(pid) is not None
+        return procs.alive(procs.DarwinProbes(), pid)
 
     def spawned(self, job_id):
         """{kind: pid or label} the probe recorded."""

@@ -18,6 +18,7 @@ A recorded pid only counts while its start time is unchanged, so a reused pid is
 import ctypes
 import errno
 import fcntl
+import json
 import os
 import re
 import shutil
@@ -118,12 +119,19 @@ class DarwinProbes:
         return self._list(self.PROC_PPID_ONLY, pid)
 
     def usage(self, pid):
-        """(resident bytes, start time) of a live process; None once it has exited or is a zombie."""
+        """(resident bytes, start time) of a live process; None once it has exited or is a zombie.
+
+        Only "no such process" means gone. A permission error raises PermissionError: a process this user
+        cannot inspect is not known to be dead (Astra's design, section 2: a permission error never means dead).
+        """
         info = _RUsageInfoV0()
         ctypes.set_errno(0)
         if self._rusage(pid, self.RUSAGE_INFO_V0, ctypes.byref(info)) != 0:
-            if ctypes.get_errno() in (errno.ESRCH, errno.EPERM):
+            err = ctypes.get_errno()
+            if err == errno.ESRCH:
                 return None
+            if err == errno.EPERM:
+                raise PermissionError(err, "proc_pid_rusage({}): {}".format(pid, os.strerror(err)))
             raise _errno_error("proc_pid_rusage({})".format(pid))
         if info.proc_exit_abstime:
             return None
@@ -235,16 +243,146 @@ def inherited_lock_fd_if_any(path):
     return None
 
 
+# Inventory: every probe answers ABSENT, PRESENT or UNKNOWN. A failed, slow or unreadable probe is UNKNOWN, never
+# an empty answer, and only a fresh ABSENT for every registered resource lets a job release its locks.
+
+ABSENT, PRESENT, UNKNOWN = "ABSENT", "PRESENT", "UNKNOWN"
+
+
+class GroupWatch:
+    """The processes of one registered process group, known by identity (pid and start time).
+
+    The leader's identity is registered before it is released, so every later process descends from
+    something known. Each tick records the known identities still alive and every descendant reachable
+    from them. A group member nobody can trace (orphaned before a tick saw it) is unverified: never
+    signalled, and reported UNKNOWN. A recorded pid whose start time changed is a reused pid and is not
+    ours. The group's id is never signalled as a whole (no killpg): each verified identity, by pid.
+    """
+
+    def __init__(self, probes, pgid, leader, identities=()):
+        self.probes = probes
+        self.pgid = int(pgid)
+        self.identities = {int(leader[0]): leader[1]}
+        self.identities.update({int(p): s for p, s in identities})
+        self.unverified = []
+        self.live_verified = []
+
+    def tick(self):
+        """Walk the group and known descendants. Returns newly recorded identities. A failed probe raises OSError
+        (PermissionError included), which the caller reports as UNKNOWN."""
+        added = []
+        members = self.probes.group(self.pgid)
+        verified = set()
+        for pid in set(members) | set(self.identities):
+            usage = self.probes.usage(pid)
+            if usage is not None and self.identities.get(pid) == usage[1]:
+                verified.add(pid)
+        frontier = list(verified)
+        while frontier:
+            for child in self.probes.children(frontier.pop()):
+                if child in verified:
+                    continue
+                usage = self.probes.usage(child)
+                if usage is None:
+                    continue
+                self.identities[child] = usage[1]  # a child of a verified identity is ours
+                added.append((child, usage[1]))
+                verified.add(child)
+                frontier.append(child)
+        unverified = []
+        for pid in members:
+            if pid not in verified and self.probes.usage(pid) is not None:
+                unverified.append(pid)
+        self.unverified = sorted(unverified)
+        self.live_verified = sorted(verified)
+        return added
+
+    def inventory(self):
+        """(ABSENT|PRESENT|UNKNOWN, detail)."""
+        try:
+            self.tick()
+        except OSError as ex:
+            return UNKNOWN, "probe failed: {}".format(ex)
+        if self.unverified:
+            return UNKNOWN, "group {} has members of unverified identity {}".format(self.pgid, self.unverified)
+        if self.live_verified:
+            return PRESENT, "pids {}".format(self.live_verified)
+        return ABSENT, "group {} and its descendants are gone".format(self.pgid)
+
+    def signal(self, sig):
+        """Signal each verified identity by pid, rechecking its start time first. Returns the pids signalled."""
+        sent = []
+        for pid in self.live_verified:
+            try:
+                usage = self.probes.usage(pid)
+            except PermissionError:
+                continue
+            if usage is None or self.identities.get(pid) != usage[1]:
+                continue
+            try:
+                os.kill(pid, sig)
+                sent.append(pid)
+            except OSError:
+                continue
+        return sent
+
+
+def launchd_state(label, uid=None, launchctl="/bin/launchctl", timeout=20):
+    """(ABSENT|PRESENT|UNKNOWN, detail) of one gui-domain launchd job. launchctl print exits 113 for no such job."""
+    uid = os.getuid() if uid is None else uid
+    try:
+        done = subprocess.run([launchctl, "print", "gui/{}/{}".format(uid, label)], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as ex:
+        return UNKNOWN, "launchctl print failed: {!r}".format(ex)
+    if done.returncode == 0:
+        return PRESENT, "loaded"
+    if done.returncode == 113:
+        return ABSENT, "no such job"
+    return UNKNOWN, "launchctl print exited {}: {}".format(done.returncode, done.stderr.strip()[:200])
+
+
+def lease_state(lr_lease, lease_id, env=None, timeout=60):
+    """(ABSENT|PRESENT|UNKNOWN, detail) of one lr-lease record, from `lr-lease status`."""
+    try:
+        done = subprocess.run([lr_lease, "status"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, timeout=timeout, env=env)
+    except (OSError, subprocess.TimeoutExpired) as ex:
+        return UNKNOWN, "lr-lease status failed: {!r}".format(ex)
+    if done.returncode != 0:
+        return UNKNOWN, "lr-lease status exited {}: {}".format(done.returncode, done.stdout.strip()[:200])
+    if not done.stdout.startswith("Readings ") or "\nLeases: " not in done.stdout:
+        return UNKNOWN, "lr-lease status output is not the expected report"
+    found = None
+    for line in done.stdout.splitlines():
+        if line.startswith("{"):
+            try:
+                record = json.loads(line)
+            except ValueError:
+                return UNKNOWN, "lr-lease status printed a malformed lease line"
+            if not isinstance(record, dict) or "id" not in record:
+                return UNKNOWN, "lr-lease status printed a lease without an id"
+            if record["id"] == lease_id:
+                found = record
+    if found is None:
+        return ABSENT, "no lease {}".format(lease_id)
+    return PRESENT, "lease {} is {}".format(lease_id, found.get("state", "active"))
+
+
 # launchd
 
-_SERVICE =re.compile(r"^\s+(-|\d+)\s+(\S+)\s+(\S+)\s*$")
+_SERVICE = re.compile(r"^\s+(-|\d+)\s+(\S+)\s+(\S+)\s*$")
 
 
 def launchd_jobs(prefix, uid=None):
     """[(label, pid or None)] of the user's gui-domain launchd jobs whose label starts with *prefix*."""
     uid = os.getuid() if uid is None else uid
-    out = subprocess.run(["/bin/launchctl", "print", "gui/{}".format(uid)], stdin=subprocess.DEVNULL,
-                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=20).stdout
+    done = subprocess.run(["/bin/launchctl", "print", "gui/{}".format(uid)], stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=20)
+    out = done.stdout
+    # A failed or unrecognised listing is not an empty one.
+    if done.returncode != 0 or "\tservices = {" not in out:
+        raise OSError("launchctl print gui/{} exited {} or listed no services block".format(uid, done.returncode))
     jobs, inside = [], False
     for line in out.splitlines():
         if line.strip() == "services = {":
@@ -282,6 +420,8 @@ class Tracker:
         self.tracked = {}        # pid -> start time of every owned process seen
         self.argv_seen = {}      # pid -> argv, for postconditions (rig-run pids)
         self.labels = set()      # launchd labels seen with the job's prefix
+        self.uninspectable = set()  # owned pids whose state a permission error hid
+        self.found_last = None      # the last complete owned() answer, for when a probe fails
         self.me = os.getpid()
 
     def add_leader(self, pid):
@@ -317,7 +457,13 @@ class Tracker:
             pid, related = frontier.pop()
             if pid in found or pid == self.me:
                 continue
-            usage = self.probes.usage(pid)
+            try:
+                usage = self.probes.usage(pid)
+            except PermissionError:
+                if related:
+                    found[pid] = 0  # ours by group or parentage, but not inspectable: still present, never assumed dead
+                    self.uninspectable.add(pid)
+                continue
             if usage is None:
                 continue
             rss, started = usage
@@ -333,7 +479,10 @@ class Tracker:
         for pid in self.probes.all_pids():
             if pid == self.me:
                 continue
-            usage = self.probes.usage(pid)
+            try:
+                usage = self.probes.usage(pid)
+            except PermissionError:
+                continue  # another user's process: it cannot carry this job's marker in an environment we set
             if usage is None or usage[1] < self.started_abstime:
                 continue
             if self.tracked.get(pid) == usage[1]:
@@ -355,7 +504,10 @@ class Tracker:
         for pid in sorted(owned):
             if pid == self.me:
                 continue
-            usage = self.probes.usage(pid)
+            try:
+                usage = self.probes.usage(pid)
+            except PermissionError:
+                continue
             if usage is None or self.tracked.get(pid) not in (None, usage[1]):
                 continue
             try:
@@ -371,6 +523,14 @@ class Tracker:
         for label in labels:
             launchd_bootout(label)
         return labels
+
+
+def alive(probes, pid):
+    """True while *pid* exists; a process hidden by a permission error counts as alive."""
+    try:
+        return probes.usage(pid) is not None
+    except PermissionError:
+        return True
 
 
 def signal_name(sig):

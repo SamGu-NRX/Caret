@@ -23,9 +23,17 @@ profile's lease wait (75 if not admitted); the recipe, bounded by the profile's 
 (124); cleanup; VM postconditions for rig-run jobs; the evidence adapter (results.py, 66 when a
 recipe that exited 0 left missing, stale or foreign evidence); lease release; outcome.json.
 
+Custody (Astra's design, recovery.py). Before any lease or workload, the supervisor starts a
+launchd recovery owner and hands it copies of the locked descriptors and the attempt's token. It
+registers the recipe's process group with the owner before releasing the recipe (the queue's own
+trampoline pattern), and releases its locks and lease only after a fresh inventory says every
+registered resource is ABSENT. Otherwise the job is QUARANTINED: the descriptors stay held and the
+stop and inventory are retried until they succeed. If the supervisor dies, the recovery owner
+finishes the cleanup. If the queue's runner dies, the supervisor cancels the workload.
+
 Exit status (the relay exits with the supervisor's): the recipe's own (ops/heavy/README.md), 65
-refused, 66 evidence rejected, 75 not admitted, 124 execution limit, 125 supervisor error or a
-cleanup that could not be confirmed, 143 cancelled by the queue or the relay's death.
+refused, 66 evidence rejected, 75 not admitted, 124 execution limit, 125 supervisor error, 143
+cancelled by the queue, the relay's death or the runner's.
 """
 
 import argparse
@@ -33,6 +41,7 @@ import fcntl
 import json
 import os
 import pwd
+import secrets
 import signal
 import subprocess
 import sys
@@ -43,6 +52,7 @@ import uuid
 
 import manifest
 import procs
+import recovery
 import results
 
 EXIT_REFUSED, EXIT_EVIDENCE, EXIT_NOT_ADMITTED = 65, 66, 75
@@ -50,6 +60,19 @@ EXIT_TIMEOUT, EXIT_ERROR, EXIT_CANCELLED = 124, 125, 143
 POLL = 0.25
 FULL_SCAN_EVERY = 1.0
 KILL_EVERY = 1.0
+CUSTODY_PING_S = 5.0
+QUARANTINE_AFTER_S = 60.0
+# Retries while quarantined: every second for the first minute, then every 15 s.
+QUARANTINE_RETRY = (1.0, 15.0)
+TRAMPOLINE = """\
+import os, sys
+go = int(sys.argv[1])
+byte = os.read(go, 1)
+os.close(go)
+if byte != b"G":
+    os._exit(97)
+os.execv(sys.argv[2], sys.argv[2:])
+"""
 VZ_PATTERN = "com.apple.Virtualization.VirtualMachine"
 
 
@@ -64,14 +87,16 @@ def say(role, message):
 def main(plan_path, plan_digest, plan, argv):
     if argv[:1] == ["relay"]:
         return relay(plan_path, plan_digest, plan)
+    if argv[:1] == ["recover"]:
+        return recovery.main(plan, argv[1:])
     if argv[:1] == ["supervise"]:
         parser = argparse.ArgumentParser(prog="supervise")
-        for name in ("--slot-fd", "--life-fd", "--status-fd"):
+        for name in ("--slot-fd", "--life-fd", "--status-fd", "--runner-pid", "--runner-start"):
             parser.add_argument(name, type=int, required=True)
         parser.add_argument("--heavy-fd", type=int)
         args = parser.parse_args(argv[1:])
         return Supervisor(plan_path, plan_digest, plan, args.slot_fd, args.life_fd, args.status_fd,
-                          heavy_fd=args.heavy_fd).run()
+                          heavy_fd=args.heavy_fd, runner=[args.runner_pid, args.runner_start]).run()
     say("boot", "expected relay or supervise, got {}".format(argv[:1]))
     return 2
 
@@ -90,8 +115,15 @@ def relay(plan_path, plan_digest, plan):
         return EXIT_REFUSED
     life_r, life_w = os.pipe()       # relay -> supervisor: b"C" to cancel; end-of-file when the relay dies
     status_r, status_w = os.pipe()   # supervisor -> relay: the final exit status, after all cleanup
+    # The queue's runner is this relay's parent. The supervisor watches its identity, because the relay can outlive
+    # it: a runner killed while the job runs leaves the relay waiting, with nothing to deliver a cancellation.
+    runner = recovery.identity(procs.DarwinProbes(), os.getppid())
+    if runner is None:
+        say("relay", "refused: the queue runner that started this job is gone")
+        return EXIT_REFUSED
     argv = caret_heavy.boot_argv(plan["python"], plan_path, plan_digest, "supervise", "--slot-fd", str(slot_fd),
-                                 "--life-fd", str(life_r), "--status-fd", str(status_w))
+                                 "--life-fd", str(life_r), "--status-fd", str(status_w),
+                                 "--runner-pid", str(runner[0]), "--runner-start", str(runner[1]))
     passed = (slot_fd, life_r, status_w)
     if heavy_fd is not None:
         argv += ["--heavy-fd", str(heavy_fd)]
@@ -142,8 +174,17 @@ def relay(plan_path, plan_digest, plan):
 
 
 class Supervisor:
-    def __init__(self, plan_path, plan_digest, plan, slot_fd, life_fd, status_fd, probes=None, heavy_fd=None):
+    def __init__(self, plan_path, plan_digest, plan, slot_fd, life_fd, status_fd, probes=None, heavy_fd=None,
+                 runner=None):
         self.plan_path, self.plan_digest, self.plan = plan_path, plan_digest, plan
+        self.runner = runner
+        self.attempt = uuid.uuid4().hex
+        # The secret that acknowledges a clean (lr-lease ack, recovery adoption). Memory only: never argv, logs,
+        # journal, plan or outcome.
+        self.token = secrets.token_hex(32)
+        self.custody = None
+        self.launched = False
+        self.concluded = False
         self.slot_fd, self.life_fd, self.status_fd = slot_fd, life_fd, status_fd
         # heavy.lock held through the queue runner's descriptor, or None (today's queue): then the supervisor
         # takes heavy.lock itself, and for VM jobs rig-run does.
@@ -159,6 +200,7 @@ class Supervisor:
         self.cancel = threading.Event()
         self.cancel_reason, self.cancel_code = None, None
         self.lease_id, self.lock_fd = None, None
+        self.lease_cleanup = self._lease_supports_cleanup()
         self.record = {"job_id": plan["job_id"], "plan": plan_path, "plan_sha256": plan_digest,
                        "supervisor_pid": self.pid, "mark": self.mark, "launchd_prefix": self.launchd_prefix,
                        "started_utc": utc_now(), "events": [], "states": {"executed": False, "validated": False,
@@ -169,6 +211,14 @@ class Supervisor:
         self.record["events"].append(dict({"at": utc_now(), "event": message}, **fields))
 
     # Entry
+
+    def _lease_supports_cleanup(self):
+        """Whether this lr-lease takes --cleanup-attempt (the vendored version, pending install)."""
+        try:
+            with open(os.path.join(os.path.dirname(self.paths["lr_lease"]), "lr-lease-cli.mjs"), encoding="utf-8") as fh:
+                return "--cleanup-token-sha256" in fh.read()
+        except OSError:
+            return False
 
     def run(self):
         code, reason = EXIT_ERROR, "supervisor error"
@@ -188,14 +238,16 @@ class Supervisor:
         except Exception as ex:
             code, reason = EXIT_ERROR, "supervisor error: {!r}".format(ex)
             traceback.print_exc()
-            try:
-                if self.tracker is not None:
-                    self._stop_all("supervisor error")
-            except Exception:
-                traceback.print_exc()
-                code, reason = EXIT_ERROR, reason + "; cleanup could not be confirmed"
         finally:
-            self._release()
+            if self.launched and not self.concluded:
+                # Something was started and its absence is not confirmed: keep the lease and locks, which the
+                # recovery owner holds too; it finishes the cleanup once this process is gone.
+                reason += "; cleanup left to the recovery owner {}".format(self.custody.label if self.custody else "")
+                self.record["cleanup"] = "left to the recovery owner"
+            else:
+                self._release()
+                if self.custody is not None and not self.concluded:
+                    self._conclude_unlaunched()
             self.record.update(exit=code, reason=reason, ended_utc=utc_now())
             self._write_outcome()
             self._send_status(code)
@@ -235,6 +287,7 @@ class Supervisor:
         if problems:
             return EXIT_REFUSED, "inputs changed since enqueue: " + "; ".join(problems)
         self.log("inputs match the plan's manifest ({} entries)".format(len(self.plan["inputs"])))
+        self._start_custody()
         admitted = self._admit()
         if admitted is not True:
             return admitted
@@ -263,6 +316,28 @@ class Supervisor:
             problems.append(str(ex))
         return problems
 
+    # Custody
+
+    def _start_custody(self):
+        locks = {"slot": self.slot_fd}
+        if self.heavy_fd is not None:
+            locks["heavy"] = self.heavy_fd
+        self.custody = recovery.Custody(self.plan, self.plan_path, self.plan_digest, self.attempt, self.token,
+                                        self.probes, self.log)
+        self.record["recovery"] = {"label": self.custody.label, "attempt": self.attempt}
+        self.custody.start(locks)
+        self.log("the recovery owner {} holds copies of {}".format(self.custody.label, sorted(locks)))
+        recovery.test_point(self.plan, "supervisor:after-adopt")
+
+    def _conclude_unlaunched(self):
+        """Nothing was started: the owner's inventory is empty, so it can be told clean at once."""
+        try:
+            self.custody.must({"op": "clean"})
+            self.custody.finish()
+            self.concluded = True
+        except recovery.CustodyError as ex:
+            self.log("the recovery owner could not be released: {}".format(ex))
+
     # Admission under the lease
 
     def _admit(self):
@@ -290,10 +365,12 @@ class Supervisor:
         if self.profile["lease"]:
             subprocess.run([self.paths["lr_reap"], "--run", self.plan["lease"]["run"]], stdin=subprocess.DEVNULL,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cleanup = ["--cleanup-attempt", self.attempt, "--cleanup-token-sha256",
+                       recovery.token_sha256(self.token)] if self.lease_cleanup else []
             got = self._lease_cmd("acquire", "--run", self.plan["lease"]["run"], "--kind", "heavy",
                                   "--est-mem", str(self.profile["est_mem_gib"]),
                                   "--est-disk", str(self.profile["est_disk_gib"]),
-                                  "--ttl", str(self.plan["lease"]["ttl_min"]), "--owner-pid", str(self.pid))
+                                  "--ttl", str(self.plan["lease"]["ttl_min"]), "--owner-pid", str(self.pid), *cleanup)
             if got.returncode != 0:
                 return "heavy lease: {}".format(got.stdout.strip() or got.returncode)
             self.lease_id = got.stdout.strip()
@@ -323,9 +400,20 @@ class Supervisor:
         if problem:
             self._release()
             return problem
-        self.log("admitted", lease=self.lease_id, heavy_lock="inherited from the queue runner" if self.heavy_fd is not None
+        # The recovery owner holds the lock and knows the lease before anything starts.
+        try:
+            if self.lock_fd is not None:
+                self.custody.add_lock("heavy", self.lock_fd)
+            if self.lease_id:
+                self.custody.must({"op": "lease", "id": self.lease_id, "cleanup": self.lease_cleanup})
+        except recovery.CustodyError:
+            self._release()
+            raise
+        self.log("admitted", lease=self.lease_id, lease_cleanup_required=self.lease_cleanup,
+                 heavy_lock="inherited from the queue runner" if self.heavy_fd is not None
                  else "taken" if self.lock_fd is not None else "left to rig-run")
-        self.record["lease"] = {"id": self.lease_id, "renewals": 0, "renew_failures": []}
+        self.record["lease"] = {"id": self.lease_id, "cleanup_required": self.lease_cleanup, "renewals": 0,
+                                "renew_failures": []}
         return None
 
     def _lease_cmd(self, *args):
@@ -363,6 +451,10 @@ class Supervisor:
             "CARET_HEAVY_PY": self.plan["python"], "CARET_HEAVY_REV": self.plan["rev"],
             "CARET_HEAVY_RECIPES": os.path.join(self.plan["ops"]["snapshot"], "ops/heavy/recipes"),
             "CARET_HEAVY_INPUTS": self.plan["inputs_dir"],
+            # A recipe registers any launchd job it starts, before starting it (register.py).
+            "CARET_HEAVY_RECOVERY_SOCKET": self.custody.sock_path,
+            "CARET_HEAVY_REGISTER": " ".join([self.plan["python"], *("-I", "-B", "-X", "pycache_prefix=/var/empty"),
+                                              os.path.join(self.plan["ops"]["snapshot"], "ops/heavy/register.py")]),
         }
         held = self._held_heavy_fd()
         if held is not None:
@@ -389,16 +481,47 @@ class Supervisor:
         # The recipe inherits the slot and heavy.lock descriptors as the queue intends: if this supervisor is
         # SIGKILLed, the slot and lock stay held while a recipe process that kept them is alive.
         held = tuple(fd for fd in (self.slot_fd, self._held_heavy_fd()) if fd is not None)
+        go_r, go_w = os.pipe()
         try:
-            proc = subprocess.Popen(["/bin/bash", self.plan["recipe"]["script"], *self.plan["recipe"]["args"]],
+            # Held back by the trampoline until its group is registered with the recovery owner (the queue's own
+            # pattern): a cancellation that arrives first denies the release for good.
+            proc = subprocess.Popen([self.plan["python"], "-I", "-S", "-c", TRAMPOLINE, str(go_r), "/bin/bash",
+                                     self.plan["recipe"]["script"], *self.plan["recipe"]["args"]],
                                     cwd=self.plan["worktree"], env=self._recipe_env(), stdin=subprocess.DEVNULL,
-                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True, pass_fds=held)
+                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                                    pass_fds=(go_r, *held))
         finally:
             log.close()
+            os.close(go_r)
+        self.launched = True
         self.tracker.add_leader(proc.pid)
-        self.log("recipe started", pid=proc.pid, pgid=proc.pid)
+        leader = recovery.identity(self.probes, proc.pid)
+        released = False
+        try:
+            if leader is not None and not self.cancel.is_set():
+                self.custody.must({"op": "register", "resource": {"id": "recipe", "type": "group", "pgid": proc.pid,
+                                                                  "leader": leader}})
+                self.custody.must({"op": "register", "resource": {"id": "marker", "type": "marker", "mark": self.mark,
+                                                                  "since": started_abstime}})
+                self.custody.must({"op": "register", "resource": {"id": "launchd-prefix", "type": "launchd-prefix",
+                                                                  "prefix": self.launchd_prefix}})
+                recovery.test_point(self.plan, "supervisor:after-register")
+                if not self.cancel.is_set():
+                    os.write(go_w, b"G")
+                    released = True
+        except recovery.CustodyError as ex:
+            self.log("the recipe was not registered, so it is never released: {}".format(ex))
+        finally:
+            os.close(go_w)
+        if released:
+            recovery.test_point(self.plan, "supervisor:after-release")
+            self.log("recipe started", pid=proc.pid, pgid=proc.pid)
+        else:
+            self.log("recipe never released", pid=proc.pid)
+            self._request_cancel(self.cancel_reason or "the recipe could not be registered", self.cancel_code or EXIT_ERROR)
         stop = self._watch(proc)
         proc.wait()
+        self._conclude()
         recipe_exit = proc.returncode if proc.returncode >= 0 else 128 - proc.returncode
         self.record["recipe"] = {"pid": proc.pid, "exit": recipe_exit, "owned_seen": sorted(self.tracker.tracked),
                                  "launchd_labels_seen": sorted(self.tracker.labels)}
@@ -421,19 +544,40 @@ class Supervisor:
         self.record["states"]["validated"] = True
         return 0, "recipe exited 0 and its evidence matches this job"
 
+    def _runner_gone(self):
+        return self.runner is not None and recovery.same_process(self.probes, self.runner) is False
+
+    def _ping_custody(self, now):
+        if now - getattr(self, "custody_pinged", 0) < CUSTODY_PING_S:
+            return
+        self.custody_pinged = now
+        try:
+            self.custody.must({"op": "status"})  # re-adopts a restarted owner
+        except recovery.CustodyError as ex:
+            self.log("recovery owner unavailable: {}".format(ex))
+
     def _watch(self, proc):
         """Run until the recipe and everything it owns are gone. Returns None, or (kind, code, reason) of a stop."""
         start = last_full = time.monotonic()
         stop = None
         while True:
             now = time.monotonic()
+            if self._runner_gone():
+                self._request_cancel("the queue runner {} died".format(self.runner), EXIT_CANCELLED)
+            self._ping_custody(now)
             leader_done = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
             full = leader_done or now - last_full >= FULL_SCAN_EVERY
             if full:
                 last_full = now
-            owned = self.tracker.owned(full=full)
-            if leader_done and not owned and not self.tracker.live_labels():
+            try:
+                owned = self.tracker.owned(full=full)
+                labels = self.tracker.live_labels() if leader_done else []
+            except OSError as ex:
+                self.log("process or launchd probe failed: {}".format(ex))
+                owned, labels = None, None
+            if leader_done and owned == {} and labels == []:
                 return stop
+            owned = owned or {}
             if stop is None:
                 if self.cancel.is_set():
                     stop = ("cancel", self.cancel_code, self.cancel_reason)
@@ -459,19 +603,24 @@ class Supervisor:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             self._renew_if_due()
-            if all(self.probes.usage(p) is None for p in pids):
+            if not any(procs.alive(self.probes, p) for p in pids):
                 return True
             time.sleep(POLL)
         return False
 
     def _stop_all(self, why, owned=None):
-        """SIGTERM and bootout, the grace, then SIGKILL every second until nothing owned is left.
+        """SIGTERM and bootout, the grace, then SIGKILL every second until nothing owned is left, or until a further
+        minute has passed: what is left then is the quarantine's (see _conclude), which keeps everything held.
 
         A rig-run is asked first and alone, as rig-stop and mem-guard do: its trap stops the VM, deletes
         the clone and releases its leases. Then the recipe gets the same grace to finish by itself (R2's
         feeder leak-scans the copied-back run), and only then is everything else signalled.
         """
-        owned = self.tracker.owned(full=True) if owned is None else owned
+        if owned is None:
+            try:
+                owned = self.tracker.owned(full=True)
+            except OSError:
+                owned = {}
         grace = self.profile["term_grace_s"]
         rig = [p for p in owned if self._is_rig_run(p)]
         if rig:
@@ -481,21 +630,38 @@ class Supervisor:
             self._wait_gone(sorted(self.tracker.leaders), grace)
             owned = self.tracker.owned(full=True)
         sent = self.tracker.signal_all(signal.SIGTERM, owned)
-        labels = self.tracker.bootout_all()
+        try:
+            labels = self.tracker.bootout_all()
+        except OSError:
+            labels = None
         self.log("SIGTERM sent", pids=sent, launchd_bootout=labels)
         term_at = time.monotonic()
         killed_logged = 0.0
         while True:
             self._renew_if_due()
-            owned = self.tracker.owned(full=True)
-            labels = self.tracker.live_labels()
-            leaders_alive = [p for p in self.tracker.leaders if self.probes.usage(p) is not None]
+            try:
+                owned = self.tracker.owned(full=True)
+                labels = self.tracker.live_labels()
+            except OSError as ex:
+                # Unknown is not empty: keep escalating against what is known, and let the time limit hand
+                # the rest to the quarantine.
+                self.log("process or launchd probe failed: {}".format(ex))
+                owned, labels = self.tracker.found_last or {}, ["(unknown)"]
+            else:
+                self.tracker.found_last = owned
+            leaders_alive = [p for p in self.tracker.leaders if procs.alive(self.probes, p)]
             if not owned and not labels and not leaders_alive:
                 self.log("nothing owned is left")
                 return
+            if time.monotonic() - term_at >= self.profile["term_grace_s"] + QUARANTINE_AFTER_S:
+                self.log("still present, or unknown, after SIGKILL", pids=sorted(owned), launchd=labels)
+                return
             if time.monotonic() - term_at >= self.profile["term_grace_s"]:
                 sent = self.tracker.signal_all(signal.SIGKILL, owned)
-                labels = self.tracker.bootout_all()
+                try:
+                    labels = self.tracker.bootout_all()
+                except OSError:
+                    labels = None
                 if time.monotonic() - killed_logged >= 30:
                     killed_logged = time.monotonic()
                     self.log("SIGKILL sent", pids=sent, launchd_bootout=labels)
@@ -567,20 +733,78 @@ class Supervisor:
         self.log("VM postconditions", **report)
         return report
 
-    # Release and report
+    # Conclusion: release only on a fresh, complete ABSENT
+
+    def _inventory(self):
+        """{resource: [state, detail]} from the recovery owner, plus this supervisor's own scan."""
+        try:
+            results = self.custody.must({"op": "inventory"})["results"]
+        except recovery.CustodyError as ex:
+            results = {"recovery-owner": [procs.UNKNOWN, str(ex)]}
+        try:
+            owned = self.tracker.owned(full=True)
+            labels = self.tracker.live_labels()
+        except OSError as ex:
+            results["supervisor-scan"] = [procs.UNKNOWN, "probe failed: {}".format(ex)]
+        else:
+            if owned or labels:
+                results["supervisor-scan"] = [procs.PRESENT, "pids {} launchd {}".format(sorted(owned), labels)]
+        return results
+
+    def _conclude(self):
+        """Settle the lease and release custody once every resource is ABSENT; until then, QUARANTINED."""
+        quarantined_at = None
+        while True:
+            results = self._inventory()
+            if all(state == procs.ABSENT for state, _ in results.values()):
+                recovery.test_point(self.plan, "supervisor:before-settle")
+                lease = recovery.settle_lease(self.paths["lr_lease"], {"id": self.lease_id, "cleanup": self.lease_cleanup}
+                                              if self.lease_id else None, self.token, self.attempt)
+                recovery.test_point(self.plan, "supervisor:after-settle")
+                if lease[0] == procs.ABSENT:
+                    self.lease_id = None
+                    try:
+                        self.custody.must({"op": "clean"})
+                    except recovery.CustodyError as ex:
+                        results["recovery-owner"] = [procs.UNKNOWN, str(ex)]
+                    else:
+                        self.custody.finish()
+                        self.concluded = True
+                        self.record["inventory"] = results
+                        self.record["cleanup"] = "clean"
+                        self.log("inventory ABSENT; lease settled; the recovery owner released its copies")
+                        return
+                else:
+                    results["lease"] = list(lease)
+            if quarantined_at is None:
+                quarantined_at = time.monotonic()
+                self.record["cleanup"] = "quarantined"
+                self.record["quarantine"] = results
+                self._write_outcome()
+                self.log("QUARANTINED", results=results)
+                try:
+                    self.custody.must({"op": "quarantine", "results": results})
+                except recovery.CustodyError as ex:
+                    self.log("could not tell the recovery owner: {}".format(ex))
+            try:
+                self.tracker.signal_all(signal.SIGKILL, self.tracker.owned(full=True))
+                self.tracker.bootout_all()
+            except OSError:
+                pass
+            self._renew_if_due()
+            elapsed = time.monotonic() - quarantined_at
+            time.sleep(QUARANTINE_RETRY[0] if elapsed < 60 else QUARANTINE_RETRY[1])
 
     def _release(self):
+        """Before anything was launched (or after a confirmed clean): heavy.lock, then the lease."""
         if self.lock_fd is not None:
             os.close(self.lock_fd)  # heavy.lock first, so a job admitted by the lease never finds it taken
             self.lock_fd = None
         if self.lease_id:
-            for _ in range(3):
-                got = self._lease_cmd("release", self.lease_id)
-                if got.returncode == 0:
-                    break
-                time.sleep(1)
-            else:
-                self.log("lease release failed: {}".format(got.stdout.strip()[:300]))
+            state, detail = recovery.settle_lease(self.paths["lr_lease"], {"id": self.lease_id,
+                                                  "cleanup": self.lease_cleanup}, self.token, self.attempt)
+            if state != procs.ABSENT:
+                self.log("lease settlement not confirmed: {}".format(detail))
             self.lease_id = None
 
     def _write_json(self, name, obj):

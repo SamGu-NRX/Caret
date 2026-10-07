@@ -89,32 +89,32 @@ class Cancellation(World):
         self.assertEqual(self.outcome(second)["exit"], 0)
         self.assertEqual(self.marked(first), [])
 
-    def test_a_sigkilled_supervisor_leaves_the_slot_held_while_the_recipe_lives(self):
+    def test_a_sigkilled_supervisor_is_cleaned_up_by_the_recovery_owner(self):
+        """Design test 3, supervisor death mid-run: the recovery owner holds both locks, stops everything the job
+        started (its group, an orphan that left it, a launchd job), then releases. Nothing here is killed by hand."""
         job_id, _ = self.enqueue(["spawn", "600"], profile=profile(grace=3))
         self.run_queue("--once", "--max-wait", "120")
         out = os.path.join(self.run_root(job_id), "out")
         self.assertTrue(self.wait_for(lambda: os.path.exists(os.path.join(out, "ready")), 30), self.queue_log(job_id))
+        spawned = self.spawned(job_id)
         with open(os.path.join(self.run_root(job_id), "supervisor.json")) as fh:
             supervisor = json.load(fh)["supervisor_pid"]
         os.kill(supervisor, signal.SIGKILL)  # the exact pid of this test's supervisor
         self.assertTrue(self.wait_for(lambda: self.job(job_id)["state"] == "failed", 20))  # the relay saw no status
-        self.assertEqual(self.job(job_id)["exit_code"], 125)
-        # The recipe inherited the slot and heavy.lock descriptors, so neither is free while it runs.
-        self.assertTrue(procs.lock_held(self.paths["slot_lock"]))
-        self.assertTrue(procs.lock_held(self.paths["heavy_lock"]))
-        for pid in self.marked(job_id):
-            os.kill(pid, signal.SIGKILL)
-        for label in self.labels(job_id):
-            procs.launchd_bootout(label)
-        # The child with an empty environment carries no marker; only the dead supervisor's record knew it. It still
-        # holds the inherited descriptors, so the queue stays blocked instead of starting beside it.
-        empty_env_child = self.spawned(job_id)["empty-env-child"]
-        time.sleep(1)
-        self.assertTrue(self.alive(empty_env_child))
-        self.assertTrue(procs.lock_held(self.paths["slot_lock"]))
-        os.kill(empty_env_child, signal.SIGKILL)  # exact pid the probe recorded
-        self.assertTrue(self.wait_for(lambda: not procs.lock_held(self.paths["slot_lock"]), 10))
-        self.assertFalse(procs.lock_held(self.paths["heavy_lock"]))
+        # Exclusion holds while the recovery owner cleans up: a separate contender cannot take either lock.
+        self.assertTrue(self.contender_blocked())
+        journal = self.journal(job_id)
+        self.assertTrue(self.wait_for(lambda: any(r["event"] == "clean" for r in self.journal(job_id)), 60),
+                        self.journal(job_id))
+        journal = self.journal(job_id)
+        self.assertEqual([r["by"] for r in journal if r["event"] == "clean"], ["recovery"])
+        self.assertIn("stopping", [r["event"] for r in journal])
+        for kind in ("detached-group", "empty-env-child", "orphan"):
+            self.assertFalse(self.alive(spawned[kind]), kind)
+        self.assertEqual(self.labels(job_id), [])
+        self.assertTrue(self.wait_for(lambda: not self.contender_blocked(), 15))
+        self.assertTrue(self.wait_for(lambda: not self.recovery_agents(job_id), 15))
+        self.assertEqual(self.leases(), [])
 
     def test_leftovers_after_a_clean_exit_are_stopped_and_the_run_still_validates(self):
         job_id, _ = self.enqueue(["leftover"], profile=profile(grace=3))
@@ -258,7 +258,17 @@ class PostLeaseRecheck(World):
                                       [], [], {}, None, self.paths, ("/snap", {}, "/ops", "b" * 40),
                                       profile=profile(floor=floor))
         os.makedirs(self.paths["evidence_root"], exist_ok=True)
-        return supervise.Supervisor("/plan", "d" * 64, plan, -1, -1, -1, probes=readings)
+        sup = supervise.Supervisor("/plan", "d" * 64, plan, -1, -1, -1, probes=readings)
+
+        class NoCustody:  # admission only: the recovery owner is exercised by the end-to-end tests
+            def add_lock(self, name, fd):
+                pass
+
+            def must(self, msg):
+                return {"ok": True}
+        sup.custody = NoCustody()
+        sup.lease_cleanup = False
+        return sup
 
     def test_low_disk_or_pressure_after_the_lease_releases_it(self):
         old_home = os.environ["HOME"]
