@@ -27,7 +27,7 @@ import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime,
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 import { dateOrder } from "../values/date-time.ts";
-import { sentenceAround } from "./line-values.ts";
+import { bareLine, sentenceAround } from "./line-values.ts";
 import type { SavedAnswer } from "../memory/answers.ts";
 import { ANSWER_NONE, ANSWER_SAYS, ANSWER_WORDINGS, answerQuestionId, describeSaved, answerExcerpt, questionExcerpt, fillAnswer, guardAnswer, isAnswerField, MAX_ANSWERS_ASKED, pageText, type PageContext } from "./answers.ts";
 
@@ -772,9 +772,9 @@ const OWN_SAYS: Partial<Record<AboutKind, string>> = { workAuth: "work authoriza
 /** Owner questions one ask carries at most. Assumed: well above the personal values a few source windows hold. */
 const MAX_OWNERS = 40;
 
-/** G2: a candidate as a whose-value question describes it: its description, then where it sits (Candidate.placements). */
-function describeOwned(c: Candidate): string {
-  const d = describeCandidate({ ...c, id: "" });
+/** G2: a candidate as a whose-value question describes it: its description, then where it sits (Candidate.placements). I3: `line`, its whole source line, in place of its clause. */
+function describeOwned(c: Candidate, line?: string): string {
+  const d = describeCandidate({ ...c, id: "", ...(line === undefined ? {} : { line }) });
   return c.placements === undefined ? d : `${d} Where it sits: ${c.placements.map((p) => PLACEMENT_SAYS[p]).join("; ")}.`;
 }
 
@@ -1287,6 +1287,21 @@ export async function proposeFill(
   // G2: a candidate that is the user's own identity (whose.ts) is the user's without asking; it is "asked" in every
   // sense below (ownerKnown), its answer "user" from both asks.
   const ownerCands = owners && personal.size > 0 ? candidates.filter((c) => personalCand(c) && c.identity === undefined).slice(0, MAX_OWNERS) : [];
+  // I3 (N1): for an Ask that names a person, both owner questions show each value's whole source line, read from the
+  // redacted view and charged to its window's budget after every span and clause. The clause alone can lose the name
+  // ("555-0193, gpruitt@example.net" for Gary's email). The line is evidence for Jev, never proof: code reads no owner
+  // from it, and a line the budget refuses is left out, the owner question asked as before.
+  const ownerLines = new Map<string, string>();
+  if ((scope?.person ?? null) !== null) {
+    for (const c of ownerCands) {
+      const sw = viewOf(model, c.source.windowId);
+      const node = sw?.nodes.get(c.source.nodeKey);
+      if (sw === undefined || node === undefined) continue;
+      const line = nodeText(node).split(/\r?\n/u).map(bareLine).find((l) => l.includes(c.text));
+      if (line === undefined || line === c.text || line === c.line) continue;
+      if (ledger.take(sw, "candidate", [line])) ownerLines.set(c.id, line);
+    }
+  }
   /** Whether fill has an answer to whose this candidate is: code's identity, or its owner questions were asked. */
   const ownerKnown = (c: Candidate): boolean => c.identity !== undefined || ownerCands.some((x) => x.id === c.id);
   const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
@@ -1333,7 +1348,7 @@ export async function proposeFill(
     derived: askDerived(dIds),
     personal: whose ? whoseAsked : new Set(),
     memoryWhose,
-    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c), text: c.text })),
+    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeOwned(c, ownerLines.get(c.id)), text: c.text })),
     controls: new Map(asked.map((f) => [f.id, f.control])),
   });
   // Two stages when some field wants a person's details (B24). First, both asks say whose details each such
