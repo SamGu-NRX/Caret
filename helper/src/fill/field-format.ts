@@ -1,10 +1,10 @@
 import type { Node } from "../protocol.ts";
 import { DATE_FORMAT, fieldKinds } from "./kinds.ts";
 import { readMonth, type Reading } from "./when.ts";
-import { lineValues } from "./line-values.ts";
+import { sourceURL } from "./line-values.ts";
 
 /** F1: format only facts the existing month reader knows or a GitHub host and path the source spells out. */
-export function formatForField(text: string, labelWords: readonly (string | null)[], inputKind: Node["inputKind"], sourceText: string): Reading | null {
+export function formatForField(text: string, labelWords: readonly (string | null)[], inputKind: Node["inputKind"], sourceText: string): (Reading & { sourceToken?: string }) | null {
   const format = DATE_FORMAT.exec(labelWords.filter((s) => s !== null).join(" "))?.[0].replace(/\s+/gu, "").toUpperCase();
   if (format === "MM/YYYY") {
     const month = readMonth(text);
@@ -15,14 +15,13 @@ export function formatForField(text: string, labelWords: readonly (string | null
   }
   // Only the known host and an explicit path qualify, never a username, another host, or a field that asks for plain text.
   if (inputKind !== "url" && !fieldKinds(labelWords).has("url")) return null;
-  if (!/^github\.com\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*\/?$/iu.test(text)) return null;
-  // A reader's typed span can be only a suffix of a hostname or path. Require the same complete token in its source,
-  // including case and trailing punctuation, so both verifier wordings see the address as written.
-  const tokens = lineValues(sourceText).filter((v) => v.kind === "url" && v.text === text);
-  if (tokens.length === 0) return null;
-  for (let at = sourceText.indexOf(text); at >= 0; at = sourceText.indexOf(text, at + text.length)) {
-    if (!tokens.some((v) => v.at === at)) return null;
-  }
-  const value = `https://${text}`;
-  return { value, display: value, assumptions: [`the source's address "${text}" written as a full web address with https:// added; Caret chose HTTPS for the known site github.com`] };
+  if (/^https?:\/\//iu.test(text)) return null;
+  // A reader span must be the entire link text of a source token, not a suffix inside a host, query or fragment.
+  const token = sourceURL(sourceText, text);
+  if (token === null) return null;
+  // WHATWG parsing applies IDNA before this comparison. A visually similar host is not the known site.
+  const { parsed } = token;
+  if (parsed.hostname !== "github.com" || parsed.username !== "" || parsed.password !== "" || parsed.port !== "" || parsed.pathname === "/") return null;
+  const value = `https://${token.text}`;
+  return { value, display: value, sourceToken: token.original, assumptions: [`the source's address "${token.original}" written as a full web address with https:// added; Caret chose HTTPS for the known site github.com${token.original === token.text ? "" : "; trailing punctuation excluded by GFM extended-autolink path validation"}`] };
 }

@@ -1170,14 +1170,16 @@ export async function proposeFill(
         if (source === undefined) continue;
         const r = formatForField(c.text, f.labelWords, f.node.inputKind, nodeText(source));
         if (r === null || candidates.some((x) => x.text === r.value) || list.some((x) => x.text === r.value)) continue;
-        const [whole, base] = [candidateSaid(c), textSaid(c)];
-        list.push({ key: `${f.id}:${list.length}`, text: r.value, describe: `"${r.value}" (the value in the field's format of ${describeCandidate(c)})`, said: () => {
+        // GFM strips link punctuation from the value, but both verifier wordings must read the complete source token.
+        const original = r.sourceToken === undefined || r.sourceToken === c.text ? c : { ...c, text: r.sourceToken };
+        const [whole, base] = [candidateSaid(original), textSaid(original)];
+        list.push({ key: `${f.id}:${list.length}`, text: r.value, describe: `"${r.value}" (the value in the field's format of ${describeCandidate(original)})`, said: () => {
           const wm = whole();
           const b = base();
           // HTTPS is the only word this transform adds; derived already accepts a caller's literal code vocabulary.
           const v = b === null ? null : m.derived(b, r.value, ["https"]);
           return wm === null || v === null ? null : m.t`"${v}" (the value in the field's format of ${wm})`;
-        }, base: { from: "window", c }, also: null, chose: { says: `Caret assumed: ${r.assumptions.join("; ")}`, also: null, how: "fieldFormat" } });
+        }, base: { from: "window", c: original }, also: null, chose: { says: `Caret assumed: ${r.assumptions.join("; ")}`, also: null, how: "fieldFormat" } });
       }
       if (list.length > 0) derived.set(f.id, list);
     }

@@ -35,8 +35,64 @@ const DATE = new RegExp(
   "gu",
 );
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu;
-// A URL never starts inside a hostname or path: gist.github.com and evil.example/github.com are not github.com.
-const URL = /(?<![\p{L}\p{N}_.\/@%+-])(?:https?:\/\/|www\.|(?:linkedin|github)\.com\/)[^\s<>()"'`]+/giu;
+// Read whole source tokens first, never search for a URL inside a hostname, query or fragment.
+// Opening delimiters can introduce a token; parentheses inside it stay for GFM's balance check.
+const TOKEN_DELIMITER = /[\s<>\[\]"'`]/u;
+const URL_START = /^(?:https?:\/\/|www\.|(?:linkedin|github)\.com\/)/iu;
+
+/** GFM extended-autolink path validation, https://github.github.com/gfm/#extended-autolink-path-validation. */
+function autolinkText(token: string): string {
+  let text = token;
+  for (;;) {
+    const before = text;
+    text = text.replace(/[?!.,:*_~]+$/u, "");
+    if (text.endsWith(")")) {
+      const excess = [...text].filter((c) => c === ")").length - [...text].filter((c) => c === "(").length;
+      const closing = /\)+$/u.exec(text)?.[0].length ?? 0;
+      if (excess > 0) text = text.slice(0, -Math.min(excess, closing));
+    }
+    text = text.replace(/&[A-Za-z0-9]+;$/u, "");
+    if (text === before) return text;
+  }
+}
+
+/** Whole source tokens with GFM punctuation removed only from the link text, not its evidence. */
+export function urlTokens(source: string) {
+  const tokens: { original: string; text: string; at: number; parsed: URL }[] = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    if (TOKEN_DELIMITER.test(source[cursor]!) || source[cursor] === "(") {
+      cursor++;
+      continue;
+    }
+    const at = cursor;
+    const link = URL_START.test(source.slice(at));
+    while (cursor < source.length && !TOKEN_DELIMITER.test(source[cursor]!) && (link || source[cursor] !== "(")) cursor++;
+    const original = source.slice(at, cursor);
+    const text = autolinkText(original);
+    // Keep the existing recognized URL forms; parsing a random word with https:// would invent an address.
+    if (!URL_START.test(text)) continue;
+    try {
+      const parsed = new URL(/^https?:\/\//iu.test(text) ? text : `https://${text}`);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") continue;
+      tokens.push({ original, text, at, parsed });
+    } catch {
+      // An unparseable complete token is not a URL candidate.
+    }
+  }
+  return tokens;
+}
+
+/** A reader span may omit GFM punctuation, but every occurrence must start the same complete source token. */
+export function sourceURL(source: string, text: string) {
+  const tokens = urlTokens(source).filter((v) => v.text === text || v.original === text);
+  const token = tokens[0];
+  if (text.length === 0 || token === undefined || tokens.some((v) => v.original !== token.original)) return null;
+  for (let at = source.indexOf(text); at >= 0; at = source.indexOf(text, at + text.length)) {
+    if (!tokens.some((v) => v.at === at)) return null;
+  }
+  return token;
+}
 /**
  * Phone numbers: international with a "+", ten digits in the North American groups, and seven digits joined by a
  * hyphen ("555-0147"). Digits or a joining mark on either side refuse it, so a part of a card number, a ZIP+4, a date
@@ -123,8 +179,7 @@ function scan(line: string): LineValue[] {
     }
   };
   scan(EMAIL, "email", true);
-  // A trailing dot or comma can be part of the path. Preserve the whole token rather than guess it is prose punctuation.
-  scan(URL, "url");
+  for (const token of urlTokens(line)) hits.push({ text: token.text, kind: "url", at: token.at });
   scan(PHONE, "phone");
   scan(POSTAL, "address");
   scan(DATE, "date");

@@ -9,7 +9,7 @@ import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
-import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, sentenceAround, WARNS } from "./line-values.ts";
+import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, sentenceAround, sourceURL, urlTokens, WARNS } from "./line-values.ts";
 import { redactWindow } from "./redact.ts";
 import { WITHHELD } from "../privacy/exclude.ts";
 import { splitDate } from "./derive.ts";
@@ -733,9 +733,15 @@ const valuesCache = new WeakMap<WindowState, readonly TypedValue[]>();
 export function windowValues(w: WindowState): readonly TypedValue[] {
   const cached = valuesCache.get(w);
   if (cached !== undefined) return cached;
-  const out: TypedValue[] = [...w.values];
+  const out: TypedValue[] = w.values.flatMap((v) => {
+    if (v.kind !== "url") return [v];
+    const node = w.nodes.get(v.nodeKey);
+    const token = node === undefined ? null : sourceURL(nodeText(node), v.text);
+    // Reader values obey the same whole-token and GFM rules as code-extracted URLs.
+    return token === null ? [] : [{ ...v, text: token.text }];
+  });
   const byNode = new Map<string, TypedValue[]>();
-  for (const v of w.values) byNode.set(v.nodeKey, [...(byNode.get(v.nodeKey) ?? []), v]);
+  for (const v of out) byNode.set(v.nodeKey, [...(byNode.get(v.nodeKey) ?? []), v]);
   for (const node of w.nodes.values()) {
     if (!LINE_ROLES.has(node.role) && !sourceField(node)) continue;
     const reader = byNode.get(node.key) ?? [];
@@ -816,6 +822,11 @@ export function lineFact(w: WindowState, node: Node, text: string, labelled: boo
   if (WARNS.test(sentence.replace(text, " "))) return sentence === text ? null : { clause: sentence, required: true };
   const values = lineValues(line);
   const kind = values.find((v) => v.text === text)?.kind;
+  if (kind === "url") {
+    const token = urlTokens(line).find((v) => v.at === pos && v.text === text);
+    // A clean link still carries its original punctuation as required source evidence, not optional context.
+    if (token !== undefined && token.original !== text) return { clause: token.original, required: true };
+  }
   // G2: a date, email or phone number goes with the part of its clause that says what it is (line-values.ts
   // partAround) whenever that says more than "Label: value", on a short line and under a label too. A label alone does
   // not say which of two dates is which: "School: …, September 2016 to May 2020." offered both as labelled 'School', and
