@@ -507,6 +507,8 @@ export function shuffledWithinWindows(cands: readonly Candidate[], rand?: (n: nu
  * offers and where that text came from. An explicit record, so a harness never reads ids or texts out of question strings.
  */
 export interface FillTrace {
+  /** Whether a request is one this proposal sent: planPage runs its parts' proposals at once, with one AskJev. */
+  owns: (req: JevRequest) => boolean;
   fields: readonly { id: string; key: string; name: string }[];
   options: ReadonlyMap<string, { text: string; from: "window" | "memory" | "derived"; label: string | null; app: string | null }>;
 }
@@ -1112,6 +1114,12 @@ export async function proposeFill(
   const personalCand = (c: Candidate): boolean => [...candidateKinds(model, c)].some((k) => PERSONAL_KINDS.has(k)) || personName(c) !== null || isNameLike(c.text, c.context);
   const ownerCands = owners && personal.size > 0 ? candidates.filter(personalCand).slice(0, MAX_OWNERS) : [];
   const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
+  /** The requests this proposal sends (FillTrace.owns). */
+  const mine = new WeakSet<JevRequest>();
+  const asking: AskJev = (req) => {
+    mine.add(req);
+    return askJev(req);
+  };
   if (opts.trace !== undefined) {
     const traced = new Map<string, { text: string; from: "window" | "memory" | "derived"; label: string | null; app: string | null }>();
     for (const c of candidates) {
@@ -1131,7 +1139,7 @@ export async function proposeFill(
       traced.set(derivedSecond.get(d.key) ?? "", o);
     }
     traced.delete("");
-    opts.trace({ fields: asked.map((f) => ({ id: f.id, key: f.node.key, name: f.name })), options: traced });
+    opts.trace({ owns: (req) => mine.has(req), fields: asked.map((f) => ({ id: f.id, key: f.node.key, name: f.name })), options: traced });
   }
   // C2: a field offered a part of a memory entry is asked whose details it wants, as one offered the whole entry is
   // (theUsers), a date's month, day or year included, which no other rule makes personal.
@@ -1154,8 +1162,8 @@ export async function proposeFill(
     asked.length === 0 || !staged
       ? [null, null]
       : await Promise.all([
-          askJev(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" })),
-          askJev(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" })),
+          asking(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" })),
+          asking(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" })),
         ]);
   /** Both stage-one asks' answer to a whose or owner question, agreed at the whose cutoff, or null. */
   const stageOne = (q: string, q2: string = q): string | null => {
@@ -1194,8 +1202,8 @@ export async function proposeFill(
     asked.length === 0 && answerAsked.length === 0
       ? [null, null]
       : await Promise.all([
-          askJev(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, valuesMore(derivedIds, true))),
-          askJev(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose, valuesMore(derivedSecond, false))),
+          asking(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, valuesMore(derivedIds, true))),
+          asking(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose, valuesMore(derivedSecond, false))),
         ]);
   const byId = new Map<string, Pick>([
     ...candidates.map((c): [string, Pick] => [c.id, { from: "window", c }]),

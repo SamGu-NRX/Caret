@@ -117,7 +117,7 @@ export interface PlanPageOptions {
   /** The controls a finished page goal's writes revealed (runs.ts afterReveal): this plan's only fields. */
   revealed?: readonly string[];
   /** Test seams of proposeFill (its shuffles' randomness, the proposal id). */
-  fill?: Pick<FillOptions, "rand" | "newId">;
+  fill?: Pick<FillOptions, "rand" | "newId" | "trace">;
   /**
    * P3: what each file control in scope offers in its attach row, for a host that shows attach rows (protocol
    * GOAL_FILES_CAPABILITY): a saved file a Jev choice matched (helper.ts), else "choose". Absent: the host cannot show
