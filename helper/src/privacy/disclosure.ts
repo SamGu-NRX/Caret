@@ -124,6 +124,28 @@ export class OutOfShape extends UnmintedText {
   }
 }
 
+/** A request a shape refused for its length: what a live run needs to measure the limits by, and no text. */
+export interface ShapeLengthRefusal {
+  purpose: string;
+  slot: string;
+  length: number;
+  max: number;
+}
+
+let shapeLengthLog: (r: ShapeLengthRefusal) => void = (r) => {
+  process.stderr.write(`[caret-privacy ${new Date().toISOString()}] shape refused on length: ${JSON.stringify(r)}\n`);
+};
+
+/**
+ * Where a refusal on length is logged (privacy/shapes.ts: the limits are unmeasured): the helper's stderr unless set.
+ * Returns the one it replaced.
+ */
+export function setShapeLengthLog(log: (r: ShapeLengthRefusal) => void): (r: ShapeLengthRefusal) => void {
+  const was = shapeLengthLog;
+  shapeLengthLog = log;
+  return was;
+}
+
 /** How many ways of minting one text a Disclosure keeps, and how many a composition may produce, before it keeps their union. */
 const MAX_WAYS = 8;
 
@@ -614,7 +636,10 @@ export class Disclosure extends SnippetLedger {
       if (this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob);
       const slot: Slot | undefined = shape[glob] ?? shape[ANY_PATH];
       if (slot === undefined) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
-      if (v.length > slot.max) throw new OutOfShape(`${purpose}: ${path} holds ${v.length} characters, more than its shape's ${slot.max}; it was not sent`);
+      if (v.length > slot.max) {
+        shapeLengthLog({ purpose, slot: glob, length: v.length, max: slot.max });
+        throw new OutOfShape(`${purpose}: ${path} holds ${v.length} characters, more than its shape's ${slot.max}; it was not sent`);
+      }
       const ways = this.ways.get(v) ?? [];
       if (!ways.some((w) => w.every((r) => slot.reasons.includes(r)))) throw new OutOfShape(`${purpose}: ${path} carries text minted as ${[...(this.mints.get(v) ?? [])].sort().join(", ")}, which its shape allows only as ${slot.reasons.join(", ")}; it was not sent`);
     };

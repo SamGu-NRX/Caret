@@ -4,7 +4,7 @@
 // builder through the real client, holds each builder to its row. This file checks the rule itself, each part with one
 // correct answer, and that a builder adding a slot without a row fails.
 import { describe, expect, it } from "vitest";
-import { Disclosure, OutOfShape, UnmintedText, verifySent, type MintReason, type ModelText } from "../src/privacy/disclosure.ts";
+import { Disclosure, OutOfShape, setShapeLengthLog, UnmintedText, verifySent, type MintReason, type ModelText, type ShapeLengthRefusal } from "../src/privacy/disclosure.ts";
 import { ANY_PATH, childGlob, SHAPES, UNNAMED } from "../src/privacy/shapes.ts";
 import { OPTION_DESCRIPTIONS, wireBody, type JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
@@ -91,10 +91,30 @@ describe("T-M1: verify holds each text to its slot", () => {
     expect(() => d.seal({ purpose: "route.judge", state: { task: d.t`Pick ${two} of them.` }, questions: {} })).not.toThrow();
   });
 
-  it("refuses a text longer than its slot, naming the lengths, never the text", () => {
+  it("refuses a text longer than its slot, naming the lengths, never the text, and logs the purpose, slot and length", () => {
     const d = new Disclosure([]);
-    const long = d.own("x".repeat(301) as "x");
-    expect(() => d.seal({ purpose: "route.judge", state: { task: long }, questions: {} })).toThrow(/state\.task holds 301 characters, more than its shape's 300/u);
+    const long = d.own(`${"x".repeat(296)}-pw7Q` as "x");
+    const logged: ShapeLengthRefusal[] = [];
+    const was = setShapeLengthLog((r) => logged.push(r));
+    try {
+      expect(() => d.seal({ purpose: "route.judge", state: { task: long }, questions: {} })).toThrow(/state\.task holds 301 characters, more than its shape's 300/u);
+    } finally {
+      setShapeLengthLog(was);
+    }
+    // The limits are unmeasured (privacy/shapes.ts): the log is what a live run measures them by, and holds no text.
+    expect(logged).toEqual([{ purpose: "route.judge", slot: "state.task", length: 301, max: 300 }]);
+    expect(JSON.stringify(logged)).not.toContain("pw7Q");
+  });
+
+  it("gives the intent writer one value from a source window, its sender, by an explicit row, and no other", () => {
+    expect(Object.entries(SHAPES.intent).filter(([, slot]) => slot.reasons.includes("candidate")).map(([glob]) => glob)).toEqual(["input.windows[*].from"]);
+    const { m, view } = desk();
+    const d = new Disclosure(m.windows.values());
+    const sender = d.candidate(view, "Elena Vance") as ModelText;
+    const window = { ref: d.id("w1"), app: d.app(view), title: d.descriptor(view, "Notes") as ModelText, from: sender };
+    expect(() => d.seal({ kind: "intent", input: { windows: [window] } })).not.toThrow();
+    // The same value anywhere else in the intent's input is refused.
+    expect(() => d.seal({ kind: "intent", input: { fields: [{ ref: d.id("f1"), name: sender }] } })).toThrow(/input\.fields\[0\]\.name carries text minted as candidate/u);
   });
 
   it("checks a hoisted option description as the option it came from, and a JSON state as the value it writes", () => {

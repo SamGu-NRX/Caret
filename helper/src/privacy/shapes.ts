@@ -11,11 +11,14 @@
 //
 // Where the rows came from: every path, the union of the reasons and the longest text the builders produced across all
 // 178 helper test files and the scripted oracle and adversary (PV2 step 5 observation, 7 Oct 2026:
-// ~/.caret-run/evidence/screen/pv2/shapes, derive.py). The reasons are what the builders do today; the lengths are
-// backstops, not limits anyone measured. Each `max` is the longest seen, doubled, rounded up to a hundred, and at
-// least 100; a slot that may hold the user's instruction adds the 500 characters an instruction may have
-// (protocol.ts); a slot that may hold screen text allows at least WINDOW_CHARS (privacy.ts, 1,200), what one window
-// may give one request, since the window budgets are what bound screen text. The `seen` comment is that longest.
+// ~/.caret-run/evidence/screen/pv2/shapes, derive.py). The reasons are what the builders do today.
+//
+// The lengths are UNMEASURED: 2x the longest fixture/oracle text, >=1200 for screen-text slots. Each `max` is the
+// longest seen, doubled, rounded up to a hundred, and at least 100; a slot that may hold the user's instruction adds
+// the 500 characters an instruction may have (protocol.ts); a slot that may hold screen text allows at least
+// WINDOW_CHARS (privacy.ts, 1,200), what one window may give one request. No live run measured them. A request over
+// one is refused, which fails closed, and the refusal is logged with its purpose, slot and length, never its text
+// (privacy/disclosure.ts setShapeLengthLog), so a live run can measure them. The `seen` comment is that longest.
 import type { JevPurpose } from "../fill/jev.ts";
 import type { WriterRequest } from "../writer/port.ts";
 import type { MintReason } from "./disclosure.ts";
@@ -153,6 +156,10 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "input.sections[*].name": { reasons: ["descriptor"], max: 1200 }, // seen 8
     "input.sections[*].ref": { reasons: ["ownWording"], max: 100 }, // seen 2
     "input.windows[*].app": { reasons: ["descriptor"], max: 1200 }, // seen 25
+    // The one value from a source window the intent writer gets, by the lead's ruling (PV2, 7 Oct): a window's sender as
+    // its redacted view shows it (planner/intent.ts snapMint source), so an Ask like "fill from Priya's mail" can name
+    // the window. SC1 2c gives the intent writer descriptors and the instruction only; this row is the exception,
+    // tested in test/sc1-shapes.test.ts. G3's sender-versus-subject redesign will revisit it.
     "input.windows[*].from": { reasons: ["candidate"], max: 1200 }, // seen 11
     "input.windows[*].ref": { reasons: ["ownWording"], max: 100 }, // seen 2
     "input.windows[*].title": { reasons: ["descriptor"], max: 1200 }, // seen 40
