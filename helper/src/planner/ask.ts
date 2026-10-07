@@ -167,7 +167,7 @@ const changed = (what: string): never => {
 };
 
 /**
- * What a field is, as a continued Ask compares it: what fill reads of it (its name, section, label, nearest text and
+ * What a field is, as a continued Ask compares it: what fill reads of it (its name, section, heading, label, nearest text and
  * placeholder, control, role and subrole), its exact value and states, and each child's role, label, value and states (a
  * select's options, a radio group's buttons; a disabled radio option is one fill skips, third check). Second re-check: a placeholder, an option's value and a changed value all got past a
  * fingerprint of name, section and "holds text".
@@ -177,7 +177,7 @@ function fieldSeen(w: WindowState, f: IntentField): string {
   if (n === undefined) return "gone";
   const d = describeField(w, n);
   const children = [...w.nodes.values()].filter((c) => c.parent === f.key).map((c) => [c.role, c.label ?? null, c.value ?? null, c.states ?? []]);
-  return JSON.stringify([f.name, f.section, d.label, d.nearest, d.placeholder, f.control, n.role, n.subrole ?? null, n.value ?? "", n.states ?? [], children]);
+  return JSON.stringify([f.name, f.section, f.heading, d.label, d.nearest, d.placeholder, f.control, n.role, n.subrole ?? null, n.value ?? "", n.states ?? [], children]);
 }
 
 /** What a question records of the form; a later question of the same Ask keeps the first one's record of each field. */
@@ -221,6 +221,7 @@ function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot, fi
   return {
     ...intent,
     fields: intent.fields.filter(kept).map(field),
+    ...(intent.options === undefined ? {} : { options: intent.options.filter(kept).map(field) }),
     sources: intent.sources.map(source),
     whose: whose(intent.whose),
     section: section === undefined ? intent.section : (snap.sections.find((x) => x.name === section)?.ref ?? changed(`the section ${intent.section} is gone`)),
@@ -228,7 +229,10 @@ function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot, fi
   };
 }
 
-/** An intent whose scope is no longer code's agreed reading, once planAsk rewrites it. */
+/** Whether the intent's fields are Jev's scope ask's (intent-heads.ts): chosen in both wordings, or offered to ask. */
+const fromJev = (intent: AskIntent): boolean => intent.agreed === true || intent.options !== undefined;
+
+/** An intent whose scope is no longer the fields Jev chose, once planAsk rewrites it. */
 function withoutAgreement(intent: AskIntent): AskIntent {
   const { agreed: _, ...rest } = intent;
   return rest;
@@ -341,16 +345,26 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     throw e;
   }
   const use = made.use;
-  // P2: on a page with fields, for a host that runs goals, a fill or a plan is planned by the page planner; a plan is
-  // read as a fill of the whole form, which Jev must confirm the instruction asks for (confirmScope, as an inferred
-  // whole form), and Caret still presses nothing on the page.
+  // P2: on a page with fields, for a host that runs goals, a fill or a plan is planned by the page planner, and Caret
+  // still presses nothing on the page. Another maker's plan is read as a fill of the whole form, which Jev must confirm
+  // the instruction asks for (confirmScope, as an inferred whole form). A3: a heads-maker plan fills Jev's fields from
+  // the sources and for the person it read, after asking what it left open (intent-heads.ts).
   const pageGoal = o.goals === true && w.window.kind === PAGE_WINDOW_KIND && snap.fields.length > 0;
   const planAsAll = pageGoal && intent.route === "plan";
-  if (planAsAll) intent = { ...withoutAgreement(intent), route: "fill", why: "none", scope: "list", fields: [], literals: [] };
+  if (planAsAll) {
+    const pending = (intent.pageOpen ?? []).filter((p) => fixed[p] === undefined);
+    intent = !fromJev(intent)
+      ? { ...withoutAgreement(intent), route: "fill", why: "none", scope: "list", fields: [], literals: [] }
+      : pending.length > 0
+        ? { ...intent, route: "ask", why: ASKED_WHY[pending[0] as AskPart], open: pending }
+        : { ...intent, route: "fill", why: "none" };
+  }
   /** The question for an unclear part, when it is not one the user already picked and code can list its candidates. */
   const question = (e: Unclear): AskQuestionDraft | string => {
     if (fixed[e.part] !== undefined) return `the user already picked the ${e.part}`;
-    const r = choicesFor(e.part, snap, model, scopeFields(intent, snap), now);
+    // A3: an intent from Jev's scope ask offers exactly the fields Jev left unclear or chose, never fields code picked.
+    const offered = intent.options === undefined ? null : intent.options.map((r) => snap.fields.find((f) => f.ref === r) ?? changed(`the field ${r} is gone`));
+    const r = choicesFor(e.part, snap, model, scopeFields(intent, snap), now, offered);
     if (r.choices === null) return r.why;
     return {
       ...r.choices,
@@ -410,7 +424,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // plain "all", it stood without any confirmation when no field word named a field ("fill only the first box"; B26's
   // second review).
   const empties = snap.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
-  // A1: a scope the model agreed is code's reading (scope-reading.ts) needs no further confirmation, here or below.
+  // A3: fields Jev chose in both wordings of its scope ask (intent-heads.ts) need no further confirmation, here or below.
   const agreed = intent.agreed === true && fixed.fields === undefined;
   const listsAll = oneAnswer && !agreed && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
   let checked: ReturnType<typeof checkIntent>;

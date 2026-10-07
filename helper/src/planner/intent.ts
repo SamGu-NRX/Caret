@@ -11,7 +11,7 @@
 // (fill.ts FillScope). Jev stays the chooser of values: the intent only narrows what fill asks about.
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
-import { describeField } from "../fill/descriptor.ts";
+import { describeField, fieldLabelText } from "../fill/descriptor.ts";
 import { formControls, inWebArea, type Control } from "../fill/controls.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
 import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
@@ -32,7 +32,10 @@ export type Reason = (typeof REASONS)[number];
 export interface AskIntent {
   route: AskRoute;
   why: Reason;
-  /** "none" only for a route that fills nothing (refuse, ask, plan). */
+  /**
+   * "none" only for a route that fills nothing (refuse, ask, plan). A3: a plan from the heads maker carries Jev's
+   * fields as a list, for a page host that fills a plan's form instead (ask.ts planAsAll).
+   */
   scope: "all" | "section" | "list" | "none";
   /** A section ref ("s1") when scope is section; "none" otherwise. */
   section: string;
@@ -49,10 +52,26 @@ export interface AskIntent {
    */
   open?: readonly AskPart[];
   /**
-   * A1: the scope is code's reading of the instruction (scope-reading.ts), which the model chose over the alternatives.
-   * planAsk asks no further confirmation of it. Only the heads maker sets it; the writer's strict schema has no such key.
+   * A3: the fields are Jev's own answers, field by field, in two wordings that both said "asks" at the cutoff
+   * (intent-heads.ts). planAsk asks no further confirmation of them. Only the heads maker sets it; the writer's strict
+   * schema has no such key.
    */
   agreed?: true;
+  /**
+   * A3: the fields (refs) to offer when this intent asks which fields: those Jev left unclear, with those it chose. Only
+   * the heads maker sets it, and choices.ts offers exactly these, never fields code picked itself.
+   */
+  options?: readonly string[];
+  /**
+   * A3: Jev chose every empty field, so fill asks their values as Fill all does (FillScope.wholeForm). The scope is
+   * still the list of those fields. Only the heads maker sets it.
+   */
+  wholeForm?: true;
+  /**
+   * A3: on a plan from the heads maker, the parts its fill would leave open, in the order to ask them. A page host that
+   * fills the plan's form instead asks these first (ask.ts planAsAll); every other consumer plans and ignores them.
+   */
+  pageOpen?: readonly AskPart[];
   /**
    * A1: whose details go in, as code resolved them to a name the instruction does not spell (people.ts): the one other
    * person in its sources, or a memory entry for the relation it names. Takes the place of a person ref in `whose`.
@@ -75,7 +94,10 @@ export interface IntentField {
   ref: string;
   key: string;
   name: string;
+  /** The field's group or fieldset label (describeField's section). */
   section: string | null;
+  /** A3: the nearest heading before the field in document order, when the ledger took its text. */
+  heading: string | null;
   control: Control;
   /** A text field that already holds a value; only a list names it. */
   filled: boolean;
@@ -158,6 +180,26 @@ function formInventory(w: WindowState): { node: Node; control: Control }[] {
   return out;
 }
 
+/** A heading node's text: its label, else its first static text child's. */
+function headingText(nodes: readonly Node[], h: Node): string | null {
+  const own = fieldLabelText(h.label);
+  if (own !== null) return own;
+  const child = nodes.find((n) => n.parent === h.key && n.role === "AXStaticText");
+  return fieldLabelText(child?.label ?? child?.value);
+}
+
+/** Each node's nearest heading before it in document order (the reader sends nodes in that order), by node key. */
+function headingsBefore(w: WindowState): Map<string, string | null> {
+  const nodes = [...w.nodes.values()];
+  const out = new Map<string, string | null>();
+  let current: string | null = null;
+  for (const n of nodes) {
+    if (n.role === "AXHeading") current = headingText(nodes, n);
+    else out.set(n.key, current);
+  }
+  return out;
+}
+
 /**
  * The snapshot an intent maker chooses from, with its text taken through one ledger: the form's title and
  * field names as descriptors, the other windows' titles and memory labels as plan text, and the instruction.
@@ -169,6 +211,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const fields: IntentField[] = [];
   const sections: { ref: string; name: string }[] = [];
+  const headings = headingsBefore(w);
   for (const x of formInventory(w)) {
     if (fields.length >= MAX_INTENT_FIELDS) break;
     const d = describeField(w, x.node);
@@ -176,7 +219,9 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     if (name === null || !ledger.take(w, "descriptor", [name, d.section])) continue;
     if (d.section !== null && !sections.some((s) => s.name === d.section)) sections.push({ ref: `s${sections.length + 1}`, name: d.section });
     const filled = x.control === "text" && (x.node.value ?? "") !== "";
-    fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, section: d.section, control: x.control, filled, neverTyped: x.control === "text" ? neverTypedNode(w, x.node) : null });
+    const h = headings.get(x.node.key) ?? null;
+    const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
+    fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, section: d.section, heading, control: x.control, filled, neverTyped: x.control === "text" ? neverTypedNode(w, x.node) : null });
   }
   // Other windows by title, most recently focused first. A title is what names a source ("Morgan's email"); a
   // window whose title does not fit what the ledger allows is left out.
@@ -386,7 +431,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
     consented: fixed.source === undefined ? new Set(named) : new Set(fixed.source.kind === "window" ? [fixed.source.windowId] : []),
     first: [...new Set(snap.named.flatMap((n) => n.names))],
     // C1: a whole-form Ask that narrows nothing asks values as a Fill all does (fill.ts plainAsk).
-    wholeForm: intent.scope === "all",
+    wholeForm: intent.scope === "all" || (intent.wholeForm === true && fixed.fields === undefined),
   };
   // The fill engine's trigger: the focused field when it is in scope, else the first field in scope.
   const focused = snap.window.focusedKey;

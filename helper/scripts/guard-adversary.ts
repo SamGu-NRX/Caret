@@ -24,7 +24,7 @@
 // Page sets (the corpus, F1's tasks, W4) are asked two ways, and a value counts once if either writes it: a Fill all per
 // part of MAX_FIELDS (no scope), and the page through the goal path as the helper runs it: planAsk with goal plans on
 // gives the page goal's scope, planPage plans and lowers it (lowerGoal), and a fill step's value is what it writes. Ask sets (B24, B25, B26, B31) run each ask's own instruction through planAsk end
-// to end: heads maker with code's reading confirmed, the scoped fill with its literals and person, and the planner's
+// to end: heads maker with every field in Jev's scope (A3), the scoped fill with its literals and person, and the planner's
 // validation of the writes. Which option a question offers is read from fill's own record (FillTrace), never from the
 // question's text. No Jev, no browser, no network. Fixture text only: every window and memory entry comes from fixture
 // files and the evals' saved page walks.
@@ -109,8 +109,8 @@ interface Desk {
   instruction: string;
   /**
    * "page": each part asked as a Fill all (no scope), and the whole page through the goal path as the helper runs it:
-   * planAsk with goal plans on (heads, code's reading) gives the page goal's scope, then planPage plans and lowers it
-   * (lowerGoal). "ask": the ask's instruction through planAsk end to end (heads maker, code's reading confirmed, the
+   * planAsk with goal plans on (heads, every field in scope) gives the page goal's scope, then planPage plans and lowers it
+   * (lowerGoal). "ask": the ask's instruction through planAsk end to end (heads maker, every field in scope, the
    * scoped fill, the planner's validation of its writes).
    */
   mode: "page" | "ask";
@@ -313,11 +313,12 @@ function* askDesks(set: string, file: string): Generator<Desk> {
  * The stand-in for Jev, by kind of question (engines/decide/canned.ts: a kind with no rule throws). Each fill value
  * question of a field in `picks` takes the option whose traced text (FillTrace) is the pick, when the question offers
  * it; every other value question none. Whose and owner questions say the user's, which vetoes least; the goal gate's
- * and the Ask's yes/no confirmations say no; Ask's heads take code's reading from any source for the user (the goal path
- * settles the whole form, as page-loop-eval's canned heads do), and its field yes/no heads say no.
+ * and the Ask's yes/no confirmations say no; Ask's heads read any source for the user, and its scope ask (A3) says every
+ * field is asked for, the widest scope Jev could choose, so every field is attacked. The goal path routes "all" (the
+ * whole form, as page-loop-eval's canned heads do); an Ask routes "some", which narrows nothing that Jev chose.
  */
-function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { traces: FillTrace[]; requests: JevRequest[] }, scopeHead: "all" | "unclear"): { ask: AskJev; trace: (t: FillTrace) => void } {
-  const heads: Record<string, string> = { reading: "code", scope: scopeHead, why: "nothingToFill", source: "any", whose: "user", section: "none" };
+function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { traces: FillTrace[]; requests: JevRequest[] }, route: "all" | "some"): { ask: AskJev; trace: (t: FillTrace) => void } {
+  const heads: Record<string, string> = { route, why: "nothingToFill", source: "any", whose: "user" };
   const user = (): CannedAnswer => "user";
   const no = (): CannedAnswer => "no";
   const value = (q: JevRequest["questions"][string], id: string, req: JevRequest): CannedAnswer => {
@@ -333,6 +334,7 @@ function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { 
     confidence,
     choice: {
       ...Object.fromEntries(Object.entries(heads).map(([k, v]) => [`ask.heads:${k}`, () => v])),
+      "ask.scope:field": () => "asks",
       "ask.confirm:all": no,
       "ask.confirm:field": no,
       "fill.whose:whose": user,
@@ -347,7 +349,7 @@ function engine(picks: ReadonlyMap<string, string>, confidence: number, seen: { 
       "plan.verify:whose": user,
       "plan.verify:owner": user,
     },
-    noul: { "ask.heads:field": () => 0.01 },
+    noul: {},
   };
   return {
     trace: (t) => {
@@ -411,7 +413,7 @@ const goalRuns: string[] = [];
 
 /** One run: a Fill all on a part, the page's goal path (planAsk then planPage), or the ask's own instruction through planAsk. */
 async function run(d: Desk, part: string[], how: "fill" | "goal" | "ask", picks: ReadonlyMap<string, string>, seen: { traces: FillTrace[]; requests: JevRequest[] }): Promise<Run> {
-  const e = engine(picks, how === "fill" ? 0.9 : 0.99, seen, how === "goal" ? "all" : "unclear");
+  const e = engine(picks, how === "fill" ? 0.9 : 0.99, seen, how === "goal" ? "all" : "some");
   const out: Run = { written: new Map(), via: new Map(), shown: new Map(), withheld: new Map(), refusal: null, failure: null };
   fills++;
   const ended = (err: unknown): void => {

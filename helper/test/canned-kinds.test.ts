@@ -46,7 +46,7 @@ describe("page-loop-eval's canned engine", () => {
   // W2: the write contract's verifier asks the canned engine here, not the suite's stand-in, so its rule is met.
   beforeAll(() => setTestVerifier(null));
   afterAll(() => setTestVerifier(STAND_IN));
-  it("confirms code's reading of a whole-form Ask, so it fills instead of asking which fields to fill", async () => {
+  it("reads a whole-form Ask from the heads and both scope wordings, so it fills instead of asking which fields to fill", async () => {
     for (const { form, desk } of desks()) {
       const seen: JevRequest[] = [];
       const ask = canned(form, seen);
@@ -59,7 +59,8 @@ describe("page-loop-eval's canned engine", () => {
       }
       expect({ form: form.id, asked }).toEqual({ form: form.id, asked: null });
       const heads = seen.find((r) => r.purpose === "ask.heads");
-      expect(heads?.questions.reading?.criteria).toHaveProperty(PAGE_LOOP_HEADS.reading as string);
+      expect(heads?.questions.route?.criteria).toHaveProperty(PAGE_LOOP_HEADS.route as string);
+      expect(seen.filter((r) => r.purpose === "ask.scope")).toHaveLength(2);
     }
   }, 120_000);
 
@@ -82,8 +83,9 @@ describe("page-loop-eval's canned engine", () => {
         for (const r of seen) for (const id of [...Object.keys(r.questions), ...Object.keys(r.nouls ?? {})]) kinds.add(questionKind(r, id));
       }
     }
-    // Every kind the page goal path asks was met here, so each rule above is exercised.
-    for (const k of ["ask.heads:scope", "ask.heads:why", "ask.heads:source", "ask.heads:whose", "ask.heads:reading", "ask.heads:field", "ask.confirm:all", "fill.whose:whose", "fill.whose:owner", "fill.values:value", "fill.verify:verdict", "plan.verify:value", "plan.verify:whose"]) expect(kinds).toContain(k);
+    // Every kind the page goal path asks was met here, so each rule above is exercised. A3: the heads maker's scope is
+    // Jev's own, which planAsk does not confirm again, so ask.confirm (another maker's scope) is not among them.
+    for (const k of ["ask.heads:route", "ask.heads:why", "ask.heads:source", "ask.heads:whose", "ask.scope:field", "fill.whose:whose", "fill.whose:owner", "fill.values:value", "fill.verify:verdict", "plan.verify:value", "plan.verify:whose"]) expect(kinds).toContain(k);
   }, 300_000);
 });
 
@@ -112,17 +114,17 @@ describe("every request the planner and fill build says what it asks", () => {
 });
 
 describe("cannedReply", () => {
-  const req: JevRequest = { purpose: "ask.heads", state: {}, questions: { reading: { type: "choice", instructions: "Which?", criteria: { code: "code's reading", none: "Fill no field" } } }, snippets: [], charged: {} };
+  const req: JevRequest = { purpose: "ask.scope", state: {}, questions: { s_f1: { type: "choice", instructions: "Which?", criteria: { asks: "Yes", not: "No", unclear: "Unclear" } } }, snippets: [], charged: {} };
 
   it("throws on a kind it has no rule for, naming the kind and the request", async () => {
-    await expect(cannedReply(req, { confidence: 0.9, choice: {}, noul: {} })).rejects.toThrow(/no rule for question kind 'ask\.heads:reading' \(id 'reading'.*in a ask\.heads request asking reading/u);
+    await expect(cannedReply(req, { confidence: 0.9, choice: {}, noul: {} })).rejects.toThrow(/no rule for question kind 'ask\.scope:field' \(id 's_f1'.*in a ask\.scope request asking s_f1/u);
   });
 
   it("throws on a request with no purpose, on an id its purpose does not ask, and on an answer that is no option", async () => {
     const { purpose: _, ...bare } = req;
-    await expect(cannedReply(bare, { confidence: 0.9, choice: { "ask.heads:reading": () => "code" }, noul: {} })).rejects.toThrow(/no purpose/u);
-    await expect(cannedReply({ ...req, questions: { mystery: req.questions.reading as JevRequest["questions"][string] } }, { confidence: 0.9, choice: {}, noul: {} })).rejects.toThrow(/asks 'mystery'/u);
-    await expect(cannedReply(req, { confidence: 0.9, choice: { "ask.heads:reading": () => "all" }, noul: {} })).rejects.toThrow(/not one of its options/u);
-    await expect(cannedReply(req, { confidence: 0.9, choice: { "ask.heads:reading": () => "code" }, noul: {} })).resolves.toMatchObject({ answers: { reading: { choice: "code", confidence: 0.9 } } });
+    await expect(cannedReply(bare, { confidence: 0.9, choice: { "ask.scope:field": () => "asks" }, noul: {} })).rejects.toThrow(/no purpose/u);
+    await expect(cannedReply({ ...req, questions: { mystery: req.questions.s_f1 as JevRequest["questions"][string] } }, { confidence: 0.9, choice: {}, noul: {} })).rejects.toThrow(/asks 'mystery'/u);
+    await expect(cannedReply(req, { confidence: 0.9, choice: { "ask.scope:field": () => "all" }, noul: {} })).rejects.toThrow(/not one of its options/u);
+    await expect(cannedReply(req, { confidence: 0.9, choice: { "ask.scope:field": () => "asks" }, noul: {} })).resolves.toMatchObject({ answers: { s_f1: { choice: "asks", confidence: 0.9 } } });
   });
 });
