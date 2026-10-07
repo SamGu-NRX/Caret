@@ -2580,7 +2580,8 @@
                           "otherPerson",
                           "ambiguous",
                           "notExact",
-                          "unverified"
+                          "unverified",
+                          "outOfScope"
                         ]
                       },
                       {
@@ -7602,7 +7603,8 @@
                         "privacy",
                         "internal",
                         "unseenWindow",
-                        "questionGone"
+                        "questionGone",
+                        "outOfScope"
                       ]
                     },
                     "detail": {

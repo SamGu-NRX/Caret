@@ -202,6 +202,9 @@ export function saysFor(code: PlanErrorCode): string {
       return SAYS.privacy;
     case "questionGone":
       return SAYS.questionGone;
+    // I2: the plan wrote outside the Ask's fields, or a field changed since Caret asked about it.
+    case "outOfScope":
+      return SAYS.windowChanged;
   }
 }
 

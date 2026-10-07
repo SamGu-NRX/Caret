@@ -17,6 +17,7 @@
 // effect other than the predicted one revokes the task's grant and stops the goal. When a replanner is configured, the
 // goal is then offered again as a fresh plan built from the screen as it is now; it needs its own acceptance. Nothing
 // here persists: a helper that crashes leaves the executor's journal row (B23), and no goal resumes on its own.
+import type { AskScope } from "../fill/ask-scope.ts";
 import type { Change, ScreenModel } from "../model.ts";
 import type { Executor, Revocation, TaskResult } from "../executor/executor.ts";
 import { nodeText } from "../model.ts";
@@ -35,7 +36,7 @@ import type { WindowState } from "../model.ts";
 import { owedFields } from "./left.ts";
 import { executable, goalDigest, segmentDigest, sha256, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem, type PageGoal, type ValueBinding } from "./plan.ts";
 import { effectKey, proposedFor, segmentOf, type DonePress } from "./lower.ts";
-import { contractStale, ContractError, guardFor, mintExempt, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
+import { contractStale, ContractError, exemptRefusal, guardFor, mintExempt, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
 import { codeGate } from "./gates.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
@@ -140,6 +141,8 @@ interface Carry {
   completed: StepReceipt[];
   owed: LeftItem[];
   until: number;
+  /** I2: the carried goal's Ask scope (GoalPlan.askScope). */
+  askScope?: AskScope;
 }
 
 export interface Replan {
@@ -161,6 +164,8 @@ export interface Replan {
    * fresh plan's only fields.
    */
   page?: PageGoal & { revealed?: readonly string[] };
+  /** I2: the stopped plan's Ask scope (GoalPlan.askScope): the fresh plan is held to it too. */
+  askScope?: AskScope;
 }
 
 export interface GoalRunDeps {
@@ -460,7 +465,10 @@ export class GoalRuns {
     if (gated !== null) return { refused: gated };
     const value: ValueBinding = { ...s.value, text, display: text, origin: { kind: "you", digest: sha256(text) }, source: null, memory: null, event: null, draft: null, owner: "user" };
     // W2: the user's own words over a draft, under the draft's exemption: its field rule passed (codeGate above).
-    const checked = mintExempt(proposedFor(s.target, value, text), "userTyped", this.deps.now(), run.plan.instruction);
+    // I2: under the Ask's scope the plan was made under; a field outside it, or changed since, takes no edit.
+    const outside = exemptRefusal(proposedFor(s.target, value, text), "userTyped", run.plan.instruction, run.plan.askScope);
+    if (outside !== null) return { refused: outside };
+    const checked = mintExempt(proposedFor(s.target, value, text), "userTyped", this.deps.now(), run.plan.instruction, run.plan.askScope);
     const step: GoalStep = { ...s, value, writes: text, says: `${s.target.label}: ${text}`, gate: "you", checked };
     run.mints.set(`${seg.index}:${s.ref}`, checked);
     const edited = segmentOf(run.plan.programHash, { index: seg.index, domain: seg.domain, reason: seg.reason, steps: seg.steps.map((x, k) => (k === i ? step : x)) }, run.plan.warnings);
@@ -776,7 +784,7 @@ export class GoalRuns {
     const qualify = (windowId: string | null, key: string): string => (windowId === page.windowId && !key.startsWith("doc(") ? `doc(${doc}):${key}` : key);
     const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")].map((r) => ({ ...r, target: { ...r.target, key: qualify(r.target.windowId, r.target.key) } }));
     const owed = left.map((l): LeftItem => ({ ...l, key: qualify(l.windowId, l.key), why: "dropped", says: l.key.startsWith("doc(") ? l.says : `On an earlier page, ${l.says.charAt(0).toLowerCase()}${l.says.slice(1)}` }));
-    this.carries.set(page.windowId, { goalId: run.plan.goalId, instruction: run.plan.instruction, page: { ...page, scope: continuationScope(page, true), keys: [] }, document: doc, session: run.session, completed, owed, until: this.deps.now() + CARRY_MS });
+    this.carries.set(page.windowId, { goalId: run.plan.goalId, instruction: run.plan.instruction, page: { ...page, scope: continuationScope(page, true), keys: [] }, document: doc, session: run.session, completed, owed, until: this.deps.now() + CARRY_MS, ...(run.plan.askScope === undefined ? {} : { askScope: run.plan.askScope }) });
   }
 
   /**
@@ -812,7 +820,7 @@ export class GoalRuns {
       (async () => {
         let plan: GoalPlan | null;
         try {
-          plan = await replan({ goalId: `${c.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: c.instruction, completed: c.completed, pressed: [], owed: c.owed, why: "nextPage", session: c.session, page: c.page });
+          plan = await replan({ goalId: `${c.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: c.instruction, completed: c.completed, pressed: [], owed: c.owed, why: "nextPage", session: c.session, page: c.page, ...(c.askScope === undefined ? {} : { askScope: c.askScope }) });
         } catch {
           plan = null;
         }
@@ -958,7 +966,7 @@ export class GoalRuns {
     let plan: GoalPlan | null;
     try {
       const page = run.plan.page === undefined ? undefined : { ...run.plan.page, ...(revealed === undefined ? {} : { revealed }) };
-      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why, session: run.session, ...(page === undefined ? {} : { page }) });
+      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], owed: owed.filter((l) => l.why === "dropped" || l.why === "planned"), why, session: run.session, ...(page === undefined ? {} : { page }), ...(run.plan.askScope === undefined ? {} : { askScope: run.plan.askScope }) });
     } catch {
       plan = null;
     }

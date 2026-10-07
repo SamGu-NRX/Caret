@@ -18,6 +18,7 @@
 // Steps are then cut into segments: a new segment starts where the window changes (or the calendar starts or ends),
 // and after a press whose effect changes what the window offers. Each segment is one executor task, under one
 // forward grant for its one window, and needs its own acceptance.
+import { scopeRefusal, type AskScope } from "../fill/ask-scope.ts";
 import type { DraftPlan } from "../codemode/types.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { AskJev } from "../fill/jev.ts";
@@ -215,6 +216,11 @@ export interface LowerOptions {
   parts?: ReadonlyMap<string, number>;
   /** When the write contract's mints are made (fill/contract.ts); now by default. */
   now?: number;
+  /**
+   * I2: the Ask's settled scope (fill/ask-scope.ts). Every value is minted under it, and the goal gate drops any write
+   * whose mint was not, whose field it does not hold, or whose field changed since the Ask was asked.
+   */
+  askScope?: AskScope;
 }
 
 /**
@@ -339,10 +345,10 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       if (lowered.kind === "write" && lowered.writes !== null) {
         const at = `step ${s.ref}`;
         if (byFill) checked = requireChecked(v.checked, lowered.writes, t.key, t.domain.kind === "window" ? t.domain.windowId : "", at);
-        else if (v.draft !== null) checked = mintExempt(proposedFor(t, v, lowered.writes), "draft", now, instruction);
+        else if (v.draft !== null) checked = mintExempt(proposedFor(t, v, lowered.writes), "draft", now, instruction, o.askScope);
         // A resolved date or time is the resolver's (resolverFormat). W2 review: a writer's option goes to the verifier
         // with every copied value, below: matching an option settles its spelling, not that the instruction chose it.
-        else if (t.control === "date" || t.control === "time") checked = mintExempt(proposedFor(t, v, lowered.writes), "resolverFormat", now, instruction);
+        else if (t.control === "date" || t.control === "time") checked = mintExempt(proposedFor(t, v, lowered.writes), "resolverFormat", now, instruction, o.askScope);
       }
       const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered, ...(checked === undefined ? {} : { checked }) };
       steps.push(gate === "derived" ? markDerived(step) : step);
@@ -389,7 +395,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
       }
       recipientCheck(t, sender, inv);
       // W2: the sender is minted under its exemption, whose shape checks still run (fill/contract.ts exemptRefusal).
-      const gated = codeGate(t, sender.text, sender.text, "copy", instruction) ?? exemptRefusal(proposedFor(t, sender, sender.text), "recipientFromFrom", instruction);
+      const gated = codeGate(t, sender.text, sender.text, "copy", instruction) ?? exemptRefusal(proposedFor(t, sender, sender.text), "recipientFromFrom", instruction, o.askScope);
       if (gated !== null) {
         left.push({ windowId, key: f.key, label: f.label, why: "recipient", says: `You add the recipient in '${f.label}': ${gated}` });
         continue;
@@ -410,7 +416,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     const proposed = copies.map((x) => proposedFor(x.target, x.value as ValueBinding, x.writes as string));
     let result: Awaited<ReturnType<typeof checkValues>>;
     try {
-      result = await checkValues(proposed, { askJev: o.askJev, ledger: o.ledger, instruction, now });
+      result = await checkValues(proposed, { askJev: o.askJev, ledger: o.ledger, instruction, now, ...(o.askScope === undefined ? {} : { scope: o.askScope }) });
     } catch (e) {
       if (e instanceof VerifierUnavailable) throw new GoalError("unchecked", "Caret couldn't check the plan's values just now", e.message);
       throw e;
@@ -450,6 +456,18 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     dropAs(x.target, why, x.value);
     return false;
   });
+  // I2: the goal gate for an Ask's scope. Every write's mint was made under it, for a field it holds that read then as
+  // when the Ask was asked; the executor's guard checks the field again right before the write (contract.ts guardFor).
+  if (o.askScope !== undefined) {
+    const scope = o.askScope;
+    steps = steps.filter((x) => {
+      if (x.kind !== "write" || x.writes === null) return true;
+      const why = x.checked === undefined || x.checked.scope !== scope ? `its value was not checked under this Ask's scope` : scopeRefusal(x.checked, scope);
+      if (why === null) return true;
+      dropAs(x.target, why, x.value);
+      return false;
+    });
+  }
   // What the forms the plan writes in still require after its writes (left.ts).
   for (const windowId of writesIn) {
     for (const f of inv.owed.get(windowId) ?? []) {
@@ -510,7 +528,7 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   }
   const segments = cut(draft.programDigest, steps, warnings, o.parts);
   if (segments.length > MAX_SEGMENTS) throw new GoalError("tooManySegments", `the plan needs ${segments.length} separate acceptances; Caret offers at most ${MAX_SEGMENTS}`);
-  return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv };
+  return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv, ...(o.askScope === undefined ? {} : { askScope: o.askScope }) };
 }
 
 /** Why a fill's value may not go in a page field because the field is a message's recipient or subject (B30), or null. */

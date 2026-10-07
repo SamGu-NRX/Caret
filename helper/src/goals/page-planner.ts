@@ -7,6 +7,7 @@
 // run. Caret presses nothing on a page: what the user presses is theirs, and so is every field fill withheld, a kind
 // Caret never types, and a form's fields past what one fill asks about (the size hand-off), each named before Tab.
 // Nothing here acts.
+import type { AskScope } from "../fill/ask-scope.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { AboutValue } from "../fill/about.ts";
@@ -117,6 +118,8 @@ export interface PlanPageOptions {
   carried?: Pick<Replan, "owed">;
   /** The controls a finished page goal's writes revealed (runs.ts afterReveal): this plan's only fields. */
   revealed?: readonly string[];
+  /** I2: the Ask's settled scope, which fill's mints and the goal gate enforce (fill/ask-scope.ts); absent with no Ask. */
+  askScope?: AskScope;
   /** Test seams of proposeFill (its shuffles' randomness, the proposal id). */
   fill?: Pick<FillOptions, "rand" | "newId" | "trace">;
   /**
@@ -318,7 +321,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
         // With no scope, the part's own fields (C2 review: a fill on focus asks about the 20 nearest the trigger, which
         // on a long form of look-alike fields were not the part's).
         const which = scope === undefined ? { only: part.map((x) => x.node.key) } : { scope };
-        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}) }), error: null };
+        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), ...(o.askScope === undefined ? {} : { askScope: o.askScope }) }), error: null };
       } catch (e) {
         if (e instanceof FillError) return { part, scope, proposal: null, error: e };
         throw e;
@@ -441,7 +444,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   // 5. Lowering, with fill's picks gated by fill. 6. The planning's identity.
   const programHash = sha256(canonical({ planner: PAGE_PLANNER, instruction, scopeKind: o.kind, section: o.section, revealed: o.revealed ?? null, revision: windowRevision(w), document, fields: asked.map((x) => x.node.key), parts: parts.map((p) => p.length), files: files.map((n) => n.key) }));
   const draft: DraftPlan = { basedOn: windowRevision(w), window: o.windowId, steps, choices: [], drafts: [], programDigest: programHash };
-  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, carried: [...(o.carried?.owed ?? []), ...left], attach, handoffRow: row, parts: stepParts });
+  const plan = await lowerGoal(o.goalId, instruction, draft, inventory, { askJev: o.askJev, ledger: inv.ledger, carried: [...(o.carried?.owed ?? []), ...left], attach, handoffRow: row, parts: stepParts, ...(o.askScope === undefined ? {} : { askScope: o.askScope }) });
   const page: PageGoal = {
     windowId: o.windowId,
     scope: o.scope ?? { fields: [], windows: null, memory: true, instruction, person: null, literals: new Map() },

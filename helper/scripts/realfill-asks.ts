@@ -145,6 +145,9 @@ const oracle: AskJev = async (req) => {
   const labelIn = (ins: string): string | null => /(?:Label|field): '(.+?)'(?=[.,;:?)]|\s|$)|[Tt]he field '(.+?)'(?=[.,;:?)]|\s|$)|fill or change '(.+?)'(?=[.,;:?)]|\s|$)/u.exec(ins)?.slice(1).find((x) => x !== undefined) ?? null;
   /** The corpus label of the field a fill question (`f3`, `f3_whose`, `f3_answer`) is about, from the trace; else from the text. */
   const labelOf = (id: string, ins: string): string | null => {
+    // A saved-answer question (fill.values `f3_answer`) is only ever fill's: one with no trace is a request the oracle
+    // cannot map, said loudly rather than answered none.
+    if (trace === undefined && id.endsWith("_answer")) throw new Error(`the oracle got saved-answer question ${id} in a request fill's trace does not own`);
     if (trace === undefined) return labelIn(ins);
     const f = trace.fields.find((x) => x.id === id.replace(/_(?:whose|answer)$/u, ""));
     if (f === undefined) throw new Error(`the oracle got fill question ${id}, which fill's trace does not list`);

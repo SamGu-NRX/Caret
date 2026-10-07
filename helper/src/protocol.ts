@@ -1262,7 +1262,7 @@ export type PageInsert = z.infer<typeof PageInsert>;
  * answer: a fill value with `answer`, a pop-up that writes one, an answerSaveOffer; and only it may send answerSave.
  */
 export const SAVED_ANSWERS_CAPABILITY = "savedAnswers";
-/** W2: a consumer that reads FillWithheld's "notExact" and "unverified"; any other is sent "wrongKind" for both. */
+/** W2: a consumer that reads FillWithheld's "notExact", "unverified" and (I2) "outOfScope"; any other is sent "wrongKind" for them. */
 export const VALUE_CHECKS_CAPABILITY = "valueChecks";
 
 /** The longest answer Caret keeps. Its record line must stay under memory/parse.ts MAX_LINE_CHARS once JSON-quoted. */
@@ -1405,7 +1405,8 @@ export type FillMemory = z.infer<typeof FillMemory>;
  * "unverified": that check could not run just now, so nothing was written. A consumer whose hello lacks
  * VALUE_CHECKS_CAPABILITY is sent "wrongKind" for both (server.ts), the nearest of the six it reads.
  */
-export const FillWithheld = z.enum(["disagree", "lowConfidence", "sourceCut", "wrongKind", "otherPerson", "ambiguous", "notExact", "unverified"]);
+// I2: "outOfScope", a value for a field the Ask did not settle, changed since, or not the picked person's (fill/ask-scope.ts).
+export const FillWithheld = z.enum(["disagree", "lowConfidence", "sourceCut", "wrongKind", "otherPerson", "ambiguous", "notExact", "unverified", "outOfScope"]);
 export type FillWithheld = z.infer<typeof FillWithheld>;
 
 /**
@@ -2133,6 +2134,8 @@ export const PlanErrorCode = z.enum([
   "schema", "noWindow", "unsure", "nothingToDo", "unsupportedStep", "multipleWindows", "unknownWindow", "ambiguousWindow",
   "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "wrongKind", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
   "unseenWindow", "questionGone",
+  // I2: a write outside the Ask's settled scope (fill/ask-scope.ts).
+  "outOfScope",
 ]);
 export type PlanErrorCode = z.infer<typeof PlanErrorCode>;
 

@@ -22,6 +22,7 @@ import { redactWindow } from "./redact.ts";
 import { describeControl, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, datePart, fieldPart, partFits, type FillPart } from "./derive.ts";
 import { describeField } from "./descriptor.ts";
+import { fieldFingerprint, scopeRefusal, type AskScope } from "./ask-scope.ts";
 import { CURRENCY_SHOWN, DATE_FORMAT, fieldKinds, misfit, textKind } from "./kinds.ts";
 import { writeMisfit, type ShapeSource } from "./writable.ts";
 import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
@@ -58,6 +59,8 @@ export interface FieldContract {
   readonly currencyShown: boolean;
   /** W2 step 7: the page's own autocomplete field name for the control (Node.autocomplete); null when it gives none. */
   readonly autocomplete: AutocompleteToken | null;
+  /** I2: how the field read when its contract was made (ask-scope.ts fieldFingerprint); null when made without its window. */
+  readonly fingerprint: string | null;
 }
 
 /** The part of a name, an address or a date an autocomplete field name asks for (HTML autofill), or none. */
@@ -199,6 +202,8 @@ export interface CheckedValue extends Proposed {
   readonly [minted]: true;
   readonly verdict: Verdict;
   readonly at: number;
+  /** I2: the Ask's scope the value was minted under (ask-scope.ts); absent outside an Ask. The executor's guard rechecks it. */
+  readonly scope?: AskScope;
 }
 
 export interface Refused {
@@ -238,6 +243,8 @@ export interface CheckOptions {
   /** An abort counts as the verifier being unavailable. */
   signal?: AbortSignal;
   cutoff?: number;
+  /** I2: the Ask's settled scope: a value outside it, for a field that changed since, or not the picked person's, is refused. */
+  scope?: AskScope;
 }
 
 /**
@@ -252,7 +259,7 @@ export class VerifierUnavailable extends Error {
 }
 
 export class ContractError extends Error {
-  readonly code: "unchecked" | "textMismatch" | "targetMismatch" | "shape" | "neverTyped";
+  readonly code: "unchecked" | "textMismatch" | "targetMismatch" | "shape" | "neverTyped" | "outOfScope";
   constructor(code: ContractError["code"], message: string) {
     super(message);
     this.name = "ContractError";
@@ -267,8 +274,8 @@ export function isChecked(x: unknown): x is CheckedValue {
   return typeof x === "object" && x !== null && mints.has(x);
 }
 
-function mint(p: Proposed, verdict: Verdict, now: number): CheckedValue {
-  const c = Object.freeze({ field: p.field, text: p.text, display: p.display, provenance: p.provenance, owner: p.owner, verdict, at: now }) as unknown as CheckedValue;
+function mint(p: Proposed, verdict: Verdict, now: number, scope: AskScope | undefined): CheckedValue {
+  const c = Object.freeze({ field: p.field, text: p.text, display: p.display, provenance: p.provenance, owner: p.owner, verdict, at: now, ...(scope === undefined ? {} : { scope }) }) as unknown as CheckedValue;
   mints.add(c);
   return c;
 }
@@ -291,6 +298,8 @@ export function makeFieldContract(x: {
   control: Control;
   kinds: ReadonlySet<ValueKind>;
   part: FillPart | null;
+  /** fieldFingerprint(w, node.key) by the caller that has the window; absent, null, and an Ask's scope refuses the field. */
+  fingerprint?: string | null;
 }): FieldContract {
   const words = x.labelWords.filter((w): w is string => typeof w === "string").join(" ");
   const inputKind = (x.node.inputKind ?? null) as InputKind;
@@ -311,6 +320,7 @@ export function makeFieldContract(x: {
     dateFormat: DATE_FORMAT.exec(words.toLowerCase())?.[0]?.toUpperCase() ?? null,
     currencyShown: CURRENCY_SHOWN.test(words),
     autocomplete,
+    fingerprint: x.fingerprint ?? null,
   });
 }
 
@@ -334,7 +344,7 @@ export function fieldContract(w: WindowState, node: Node, form: FormControl | nu
   const part = typed ? (autocompletePart(node.autocomplete) ?? datePart(name) ?? fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : null;
   // fill.ts describeInput, which the helper compares again before a proposal is shown.
   const descriptor = form === null ? d.text : describeControl(form, d.section, form.label === null ? d.nearest : null);
-  return makeFieldContract({ windowId: w.window.windowId, node, descriptor, name: name ?? "unnamed field", labelWords, control, kinds, part });
+  return makeFieldContract({ windowId: w.window.windowId, node, descriptor, name: name ?? "unnamed field", labelWords, control, kinds, part, fingerprint: fieldFingerprint(w, node.key) });
 }
 
 /**
@@ -670,6 +680,9 @@ export async function checkValues(proposed: readonly Proposed[], o: CheckOptions
   const snaps = proposed.map(snapshot);
   const survivors: number[] = [];
   snaps.forEach((p, i) => {
+    // I2: outside the Ask's scope first: such a value is refused whatever it is, and never reaches the verifier.
+    const out = scopeRefusal(p, o.scope);
+    if (out !== null) return void (results[i] = { proposed: proposed[i] as Proposed, why: "outOfScope", says: out });
     const why = neverTypedRefusal(p, o.instruction ?? "") ?? shapeRefusal(p) ?? textShapeRefusal(p);
     observer?.(p, why);
     if (why !== null) results[i] = { proposed: proposed[i] as Proposed, why: "wrongKind", says: why };
@@ -682,7 +695,7 @@ export async function checkValues(proposed: readonly Proposed[], o: CheckOptions
     const asks = v.asks[k] ?? null;
     if (asks === null) return void (results[i] = { proposed: original, why: "unverified", says: `Caret couldn't check '${clip(p.text)}' without sending more of its window than it may` });
     const confidence = Math.min(asks[0].confidence, asks[1].confidence);
-    results[i] = asks[0].choice === "exact" && asks[1].choice === "exact" && confidence >= cutoff ? mint(p, { by: "verifier", asks, confidence }, o.now) : { proposed: original, why: "notExact", says: refusalSays(p, asks, cutoff), asks };
+    results[i] = asks[0].choice === "exact" && asks[1].choice === "exact" && confidence >= cutoff ? mint(p, { by: "verifier", asks, confidence }, o.now, o.scope) : { proposed: original, why: "notExact", says: refusalSays(p, asks, cutoff), asks };
   });
   return { ok: results.filter(isChecked), refused: results.filter((r): r is Refused => !isChecked(r)), results, jev: v.jev };
 }
@@ -708,21 +721,23 @@ function deepFrozen<T>(x: T): T {
  */
 const SHAPED: ReadonlySet<ExemptRule> = new Set(["recipientFromFrom"]);
 
-/** Why a value may not be minted under `rule`, or null: the never-typed check, and for SHAPED rules shapeRefusal. */
-export function exemptRefusal(p: Proposed, rule: ExemptRule, instruction = ""): string | null {
-  return neverTypedRefusal(p, instruction) ?? (SHAPED.has(rule) ? shapeRefusal(p) : null);
+/** Why a value may not be minted under `rule`, or null: the Ask's scope (I2), the never-typed check, and for SHAPED rules shapeRefusal. */
+export function exemptRefusal(p: Proposed, rule: ExemptRule, instruction = "", scope?: AskScope): string | null {
+  return scopeRefusal(p, scope) ?? neverTypedRefusal(p, instruction) ?? (SHAPED.has(rule) ? shapeRefusal(p) : null);
 }
 
 /**
  * Mints without the verifier for a value whose exactness code settles (ExemptRule). Throws ContractError on a value
  * exemptRefusal refuses: a caller that may meet one asks exemptRefusal first; one that reaches here with it has a bug.
  */
-export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction = ""): CheckedValue {
+export function mintExempt(proposed: Proposed, rule: ExemptRule, now: number, instruction = "", scope?: AskScope): CheckedValue {
   // Frozen before it is judged, as checkValues does: what is judged is what is minted (W2 review).
   const p = snapshot(proposed);
+  const out = scopeRefusal(p, scope);
+  if (out !== null) throw new ContractError("outOfScope", out);
   const why = exemptRefusal(p, rule, instruction);
   if (why !== null) throw new ContractError(neverTypedRefusal(p, instruction) === null ? "shape" : "neverTyped", why);
-  return mint(p, { by: "exempt", rule }, now);
+  return mint(p, { by: "exempt", rule }, now, scope);
 }
 
 /**
@@ -850,7 +865,7 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
  * in the run's plan, its mint. Right before each dispatch the value must be the mint's text, and its source must still
  * say what it said (provenanceStale, read from `model()`); a value step with no mint is refused.
  */
-export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>): (step: number, value: string, target?: { windowId: string; node: Node }) => string | null {
+export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, CheckedValue>): (step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null {
   return (step, value, target) => {
     const m = mints.get(step);
     if (!isChecked(m)) return "the value has no check from the write contract";
@@ -858,6 +873,12 @@ export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, Ch
     // At dispatch the executor names the element it resolved: it must be the field checked, still asking the same (W2 review).
     if (target !== undefined && (target.node.key !== m.field.key || target.windowId !== m.field.windowId)) return "the field is not the one Caret checked the value for";
     if (target !== undefined && contractStale(target.node, m.field, value) !== null) return "the field now asks for something else than when its value was checked";
+    // I2: a value minted under an Ask's scope is written only into a field that still reads as when the Ask was asked,
+    // read from the window the executor resolved, right before the dispatch.
+    if (m.scope !== undefined && target !== undefined) {
+      if (target.window === undefined) return "Caret can't see the field to check it is still the one the Ask was about";
+      if (fieldFingerprint(target.window, m.field.key) !== m.scope.seen[m.field.key]) return `'${m.field.name}' changed since Caret asked about it`;
+    }
     const stale = provenanceStale(model(), m.provenance);
     return stale === null ? null : `the source of '${clip(m.text)}' changed (${stale})`;
   };

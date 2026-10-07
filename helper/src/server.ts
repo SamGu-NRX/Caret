@@ -112,7 +112,7 @@ export class HelperServer {
     // W2: a fill proposal that withholds a field as "notExact" or "unverified" (fill/contract.ts) goes as it is only to
     // consumers that read those reasons; every other consumer is sent "wrongKind" in their place, as S1 maps an answer's
     // reasons, and a saved answer only to a host that shows it whole (below).
-    if (m.type === "fillProposal" && m.fields.some((f) => f.withheld === "notExact" || f.withheld === "unverified")) {
+    if (m.type === "fillProposal" && m.fields.some((f) => f.withheld === "notExact" || f.withheld === "unverified" || f.withheld === "outOfScope")) {
       const answer = carriesAnswer(m, (id) => this.helper().writesAnswer(id));
       for (const c of this.consumers) {
         const shown = answer && !this.savedAnswers.has(c) ? withoutAnswers(m) : m;
@@ -546,5 +546,5 @@ export function withoutPageText(m: PageField): PageField {
  * "wrongKind", the nearest of the six reasons it decodes.
  */
 export function withOldReasons(p: FillProposal): FillProposal {
-  return { ...p, fields: p.fields.map((f) => (f.withheld === "notExact" || f.withheld === "unverified" ? { ...f, withheld: "wrongKind" as const } : f)) };
+  return { ...p, fields: p.fields.map((f) => (f.withheld === "notExact" || f.withheld === "unverified" || f.withheld === "outOfScope" ? { ...f, withheld: "wrongKind" as const } : f)) };
 }

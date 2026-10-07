@@ -3,6 +3,7 @@
 // grounded fill proposals. server.ts connects it to the socket; tests drive it directly.
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
+import type { AskScope } from "./fill/ask-scope.ts";
 import { randomUUID } from "node:crypto";
 import { ScreenModel } from "./model.ts";
 import { MEMORY_SNIPPETS, SnippetLedger, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
@@ -639,7 +640,7 @@ export class Helper {
       bind: (taskId, session) => this.bindNew(taskId, session),
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
-      replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed) : this.replanPage(r.goalId, r.instruction, r.page, r.owed, r)),
+      replan: (r) => (r.page === undefined ? this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed, r.askScope) : this.replanPage(r.goalId, r.instruction, r.page, r.owed, r)),
       // P3: the file the user confirmed in a preview, read once and bound to that attach step's field for that task.
       confirmFile: (taskId, path, windowId, key) => this.files.confirm(taskId, path, ConfirmedFiles.target(windowId, key)),
       forgetFile: (taskId) => this.files.forget(taskId),
@@ -1186,7 +1187,7 @@ export class Helper {
   }
 
   /** Runs an accepted offer of this settings family under a grant, recording the family it depends on. */
-  private runFrom(family: Family | null, taskId: string, plan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, guard?: (step: number, value: string, target?: { windowId: string; node: Node }) => string | null): Promise<TaskResult> {
+  private runFrom(family: Family | null, taskId: string, plan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, guard?: (step: number, value: string, target?: { windowId: string; node: Node; window?: WindowState }) => string | null): Promise<TaskResult> {
     if (family !== null) this.taskDeps.set(taskId, { family, routineId: null });
     return this.executor.run(taskId, plan, slots, expect, { grant: true, ...(guard === undefined ? {} : { guard }) });
   }
@@ -1278,7 +1279,7 @@ export class Helper {
    * Plans `instruction` as a goal and offers its first segment to `session`, as the reply to `requestId`: a goalRequest's,
    * or an Ask's whose intent route is plan (B30), which names the window the Ask was about so the goal reads it first.
    */
-  private async offerGoal(requestId: string, instruction: string, session: string | undefined, first: string | null, page: NonNullable<AskGoal["page"]> | null = null): Promise<GoalProgress> {
+  private async offerGoal(requestId: string, instruction: string, session: string | undefined, first: string | null, page: NonNullable<AskGoal["page"]> | null = null, askScope?: AskScope): Promise<GoalProgress> {
     let goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${requestId}`.slice(0, 200);
     const refuse = (says: string): GoalProgress => this.goals.refused(goalId, requestId, says);
@@ -1290,7 +1291,8 @@ export class Helper {
     if (!this.readerConnected) return refuse("No screen reader is connected");
     const session0 = this.readerSession;
     try {
-      const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page, { session }) : await this.goalPlan(goalId, instruction, [], first);
+      // I2: an Ask's goal is held to the Ask's settled scope (fill/ask-scope.ts) by the write contract and the goal gate.
+      const plan = page !== null && first !== null ? await this.pagePlan(goalId, instruction, first, page, { session, ...(askScope === undefined ? {} : { askScope }) }) : await this.goalPlan(goalId, instruction, [], first, [], askScope);
       if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
       this.opts.store.count("goal.proposed", 1);
       return this.goals.propose(plan, session, requestId);
@@ -1366,7 +1368,7 @@ export class Helper {
     return [...(user === null ? [] : [user]), ...rest].map((w) => w.window.windowId);
   }
 
-  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null, carried: readonly LeftItem[] = []): ReturnType<typeof planGoal> {
+  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null, carried: readonly LeftItem[] = [], askScope?: AskScope): ReturnType<typeof planGoal> {
     const writer = this.writer;
     if (writer === null) throw new GoalError("nothingToDo", "no plan writer is configured");
     const calendar = this.executorHasCalendar ? (this.opts.eventCalendar ?? "Caret") : null;
@@ -1385,6 +1387,7 @@ export class Helper {
       done,
       carried,
       ...(this.opts.drafter === undefined ? {} : { drafter: this.opts.drafter }),
+      ...(askScope === undefined ? {} : { askScope }),
     });
   }
 
@@ -1392,7 +1395,7 @@ export class Helper {
    * A page goal (P2): the page planner over the Ask's scope on that page, fill's picks gated by fill. Throws GoalError
    * when nothing can be offered; with no Jev, no page engine document, or no page, it refuses.
    */
-  private async pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string> } = {}): Promise<GoalPlan> {
+  private async pagePlan(goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; askScope?: AskScope } = {}): Promise<GoalPlan> {
     const ask = this.ask;
     const pageDocument = this.opts.pageDocument;
     if (ask === null) throw new GoalError("unchecked", "Jev is off, so Caret can't choose this page's values");
@@ -1453,7 +1456,7 @@ export class Helper {
     queueMicrotask(() => this.goals.forgetSource(goalId, windows));
   }
 
-  private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string> }): Promise<GoalPlan> {
+  private planPageWith(sources: ScreenModel, ask: NonNullable<Helper["ask"]>, pageDocument: NonNullable<HelperOptions["pageDocument"]>, goalId: string, instruction: string, windowId: string, page: { scope: FillScope; kind: PageGoal["kind"]; section: string | null }, more: { revealed?: readonly string[]; owed?: readonly LeftItem[]; session?: string | undefined; attached?: ReadonlySet<string>; askScope?: AskScope }): Promise<GoalPlan> {
     return planPage(this.model, {
       goalId,
       ...(sources === this.model ? {} : { sources }),
@@ -1470,6 +1473,7 @@ export class Helper {
       pageDocument,
       ...(more.owed === undefined ? {} : { carried: { owed: more.owed } }),
       ...(more.revealed === undefined ? {} : { revealed: more.revealed }),
+      ...(more.askScope === undefined ? {} : { askScope: more.askScope }),
       ...(this.opts.newId === undefined ? {} : { fill: { newId: this.opts.newId } }),
       // P3: attach rows only for a host that shows them; each offers a saved file a Jev choice matched, or a chooser.
       ...(this.filesFor(more.session) ? { attachOffer: (w: WindowState, n: Node, label: string) => this.attachOffer(w, n, label), attached: more.attached ?? new Set<string>() } : {}),
@@ -1507,13 +1511,13 @@ export class Helper {
    * A fresh plan for a page goal (P2): after a stop, the same scope on the page as it is now; after its writes revealed
    * controls (runs.ts afterReveal), those controls alone, under the scope's sources and person. Null when none.
    */
-  private async replanPage(goalId: string, instruction: string, page: PageGoal & { revealed?: readonly string[] }, owed: readonly LeftItem[], r: Pick<Replan, "completed" | "session" | "why">): Promise<GoalPlan | null> {
+  private async replanPage(goalId: string, instruction: string, page: PageGoal & { revealed?: readonly string[] }, owed: readonly LeftItem[], r: Pick<Replan, "completed" | "session" | "why" | "askScope">): Promise<GoalPlan | null> {
     if (this.mode !== "live" || this.gate.settings.paused) return null;
     // P3: a file control this goal (or one it replaces) already attached to, on this document, gets no second file. A
     // carried goal's receipts name the old document's keys (runs.ts keepCarry), so none of them match the new page.
     const attached = new Set(r.completed.filter((x) => x.target.windowId === page.windowId).map((x) => x.target.key));
     try {
-      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, session: r.session, attached, ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
+      return await this.pagePlan(goalId, instruction, page.windowId, { scope: continuationScope(page, page.revealed !== undefined), kind: page.kind, section: page.section }, { owed, session: r.session, attached, ...(r.askScope === undefined ? {} : { askScope: r.askScope }), ...(page.revealed === undefined ? {} : { revealed: page.revealed }) });
     } catch (e) {
       if (!(e instanceof GoalError)) throw e;
       this.opts.warn?.(`goal ${goalId}: no fresh page plan: ${e.fromTab ? `${e.code}; not logged, since it may quote the tab you left` : e.message}`);
@@ -1522,10 +1526,10 @@ export class Helper {
   }
 
   /** A fresh plan for a stopped goal's instruction, from the screen as it is now; null when none can be offered. */
-  private async replanGoal(goalId: string, instruction: string, done: readonly DonePress[], carried: readonly LeftItem[]): Promise<GoalPlan | null> {
+  private async replanGoal(goalId: string, instruction: string, done: readonly DonePress[], carried: readonly LeftItem[], askScope?: AskScope): Promise<GoalPlan | null> {
     if (this.writer === null || this.mode !== "live" || this.gate.settings.paused) return null;
     try {
-      return await this.goalPlan(goalId, instruction, done, null, carried);
+      return await this.goalPlan(goalId, instruction, done, null, carried, askScope);
     } catch (e) {
       if (!(e instanceof GoalError)) throw e;
       this.opts.warn?.(`goal ${goalId}: no fresh plan: ${e.message}`);
@@ -1652,7 +1656,7 @@ export class Helper {
         this.countAskRoute(d.route === "goal" ? "plan" : d.route);
         if (d.route === "goal") {
           if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
-          return await this.offerGoal(requestId, instruction, from, d.windowId, d.page ?? null);
+          return await this.offerGoal(requestId, instruction, from, d.windowId, d.page ?? null, d.askScope);
         }
         draft = d;
       } catch (e) {
@@ -1804,7 +1808,8 @@ export class Helper {
     let mints: ReadonlyMap<number, CheckedValue> = new Map();
     try {
       // W2: with the mints the plan was drafted with (CheckedPlan.mints): a value is never re-judged without them.
-      const now = validatePlan(p.draft.plan, p.draft.slots, { model: sources, memory: this.plannerMemory(), instruction: p.instruction }, p.draft.checked.mints);
+      // I2: under the Ask's scope it was checked with (CheckedPlan.scope), again.
+      const now = validatePlan(p.draft.plan, p.draft.slots, { model: sources, memory: this.plannerMemory(), instruction: p.instruction, ...(p.draft.checked.scope === undefined ? {} : { scope: p.draft.checked.scope }) }, p.draft.checked.mints);
       // The plan names its window by app and title; a window that replaced the proposed one under the same
       // title is another window, and the destinations' expected values were read from the first.
       const proposed = p.draft.checked.window.window.windowId;

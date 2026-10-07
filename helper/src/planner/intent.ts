@@ -11,7 +11,8 @@
 // (fill.ts FillScope). Jev stays the chooser of values: the intent only narrows what fill asks about.
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
-import { describeField, fieldLabelText } from "../fill/descriptor.ts";
+import { describeField } from "../fill/descriptor.ts";
+import { headingsBefore } from "../fill/ask-scope.ts";
 import { formControls, inWebArea, type Control } from "../fill/controls.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
 import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
@@ -176,26 +177,6 @@ function formInventory(w: WindowState): { node: Node; control: Control }[] {
     // In a browser window, the page's fields only: the address bar is the browser's.
     if (web && !inWebArea(w, n)) continue;
     out.push({ node: n, control: n.role === "AXComboBox" && inWebArea(w, n) ? "combobox" : "text" });
-  }
-  return out;
-}
-
-/** A heading node's text: its label, else its first static text child's. */
-function headingText(nodes: readonly Node[], h: Node): string | null {
-  const own = fieldLabelText(h.label);
-  if (own !== null) return own;
-  const child = nodes.find((n) => n.parent === h.key && n.role === "AXStaticText");
-  return fieldLabelText(child?.label ?? child?.value);
-}
-
-/** Each node's nearest heading before it in document order (the reader sends nodes in that order), by node key. */
-function headingsBefore(w: WindowState): Map<string, string | null> {
-  const nodes = [...w.nodes.values()];
-  const out = new Map<string, string | null>();
-  let current: string | null = null;
-  for (const n of nodes) {
-    if (n.role === "AXHeading") current = headingText(nodes, n);
-    else out.set(n.key, current);
   }
   return out;
 }

@@ -11,6 +11,7 @@
 //     AskAsks, a refusal that carries the question. The user's pick comes back as AskOptions.resume, which continues
 //     the same intent with that part fixed through every check below.
 // Nothing here acts.
+import { askScope, fieldFingerprint, type AskScope } from "../fill/ask-scope.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { AskOption, FillField, FillProposal, Node } from "../protocol.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
@@ -125,6 +126,8 @@ export interface AskGoal {
    * about native windows, which the writer plans.
    */
   page?: { scope: FillScope; trigger: string; kind: "all" | "section" | "list"; section: string | null };
+  /** I2: the Ask's settled scope, which the goal's write contract and goal gate enforce (fill/ask-scope.ts). */
+  askScope?: AskScope;
 }
 
 /**
@@ -166,19 +169,8 @@ const changed = (what: string): never => {
   throw new SaidError("unknownWindow", SAYS.windowChanged, `since Caret asked, ${what}`);
 };
 
-/**
- * What a field is, as a continued Ask compares it: what fill reads of it (its name, section, heading, label, nearest text and
- * placeholder, control, role and subrole), its exact value and states, and each child's role, label, value and states (a
- * select's options, a radio group's buttons; a disabled radio option is one fill skips, third check). Second re-check: a placeholder, an option's value and a changed value all got past a
- * fingerprint of name, section and "holds text".
- */
-function fieldSeen(w: WindowState, f: IntentField): string {
-  const n = w.nodes.get(f.key);
-  if (n === undefined) return "gone";
-  const d = describeField(w, n);
-  const children = [...w.nodes.values()].filter((c) => c.parent === f.key).map((c) => [c.role, c.label ?? null, c.value ?? null, c.states ?? []]);
-  return JSON.stringify([f.name, f.section, f.heading, d.label, d.nearest, d.placeholder, f.control, n.role, n.subrole ?? null, n.value ?? "", n.states ?? [], children]);
-}
+/** What a field is, as a continued Ask compares it and as the Ask's scope records it (fill/ask-scope.ts fieldFingerprint). */
+const fieldSeen = (w: WindowState, f: IntentField): string => fieldFingerprint(w, f.key);
 
 /** What a question records of the form; a later question of the same Ask keeps the first one's record of each field. */
 function seenOf(snap: IntentSnapshot, earlier: AskResume["seen"] | undefined): AskResume["seen"] {
@@ -359,11 +351,12 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
         ? { ...intent, route: "ask", why: ASKED_WHY[pending[0] as AskPart], open: pending }
         : { ...intent, route: "fill", why: "none" };
   }
-  // I2 (review of the A3 merge): any other plan from Jev's scope ask writes only the fields Jev chose, or the user
-  // picked (nativeFields, passed to planTask and planWithCode). Before this the native planner rebuilt its own field
-  // list from the instruction's words, so "fill the form and submit" with only Name chosen wrote Name and Email, and an
-  // "unclear" Email was written without asking. A part left open is asked first, as for a page goal. Fields open with
-  // nothing to offer means Jev chose no field: the plan may only hand off a press ("hit submit"), so nothing is asked.
+  // I2 (review of the A3 merge): any other plan from Jev's scope ask is held to Jev's fields, or the user's pick, by the
+  // Ask's scope (below, enforced by the write contract). Before it, the native planner rebuilt its own field list from
+  // the instruction's words: "fill the form and submit" with only Name chosen wrote Name and Email, and an "unclear"
+  // Email was written without asking. The planner is asked only about those fields (nativeFields), which saves
+  // questions about writes the contract would refuse. A part left open is asked first, as for a page goal. Fields open
+  // with nothing to offer means Jev chose no field: the plan may only hand off a press ("hit submit"), so nothing is asked.
   let nativeFields: string[] | undefined;
   if (!planAsAll && intent.route === "plan" && fromJev(intent)) {
     const offersFields = (intent.options ?? []).length > 0;
@@ -502,22 +495,34 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // H11: a plan intent is a goal only when a writer can plan it. Since L1 there is none by default, and without one a
   // goal refuses every native plan ("no plan writer") that planTask below would still make; a page fill is a goal
   // (planPage, below) and needs no writer.
-  if (checked.route === "plan" && o.goals === true && o.writer !== null) return { route: "goal", intent, maker: use, windowId: w.window.windowId };
-  /** The plan, when every field it writes is one Jev chose or the user picked; any other write is a bug, said loudly. */
-  const inScope = <D extends PlanDraft>(d: D): D => {
-    const outside = nativeFields === undefined ? [] : d.checked.writes.filter((x) => !nativeFields.includes(x.node.key));
-    if (outside.length > 0) throw new Error(`the plan writes ${outside.map((x) => x.node.key).join(", ")}, which the Ask's scope does not hold`);
-    return d;
-  };
+  // I2: the Ask's settled scope (fill/ask-scope.ts), recorded once and enforced by the write contract on every path
+  // below: a fill's fields as checked, or the fields a plan from Jev's scope ask may write; how each read when the Ask
+  // was asked (a continued Ask's first question's record); and the person the user picked. A plan from another maker
+  // has no settled fields, so the planner's own reading stands there, as before.
+  const scopeKeys = checked.route === "fill" ? checked.fields.map((f) => f.key) : nativeFields;
+  let scope: AskScope | undefined;
+  if (scopeKeys !== undefined) {
+    try {
+      scope = askScope(w.window.windowId, scopeKeys, resume?.seen.fields ?? seenOf(snap, undefined).fields, fixed.person?.kind === "person" ? fixed.person.name : null);
+    } catch (e) {
+      return refused(new SaidError("unknownWindow", SAYS.windowChanged, e instanceof Error ? e.message : String(e)));
+    }
+  }
+  const scoped = scope === undefined ? {} : { scope };
+
+  // H11: a plan intent is a goal only when a writer can plan it. Since L1 there is none by default, and without one a
+  // goal refuses every native plan ("no plan writer") that planTask below would still make; a page fill is a goal
+  // (planPage, below) and needs no writer.
+  if (checked.route === "plan" && o.goals === true && o.writer !== null) return { route: "goal", intent, maker: use, windowId: w.window.windowId, ...(scope === undefined ? {} : { askScope: scope }) };
   if (checked.route === "plan") {
     try {
-      const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }), ...(nativeFields === undefined ? {} : { fields: nativeFields }) });
-      return onlyPress(inScope(d)) ?? { ...d, ...extra, route: "plan" };
+      const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }), ...(nativeFields === undefined ? {} : { fields: nativeFields }), ...scoped });
+      return onlyPress(d) ?? { ...d, ...extra, route: "plan" };
     } catch (e) {
       if (!(e instanceof PlannerError) || (e.code !== "unsure" && e.code !== "nothingToDo") || o.writer === null) return refused(e);
       try {
-        const d = await planWithCode(instruction, model, memory, { writer: o.writer, askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(nativeFields === undefined ? {} : { fields: nativeFields }) });
-        return onlyPress(inScope(d)) ?? { ...d, ...extra, route: "plan" };
+        const d = await planWithCode(instruction, model, memory, { writer: o.writer, askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(nativeFields === undefined ? {} : { fields: nativeFields }), ...scoped });
+        return onlyPress(d) ?? { ...d, ...extra, route: "plan" };
       } catch (e2) {
         if (e2 instanceof PlannerError) return refused(new SaidError(e.code, e instanceof SaidError ? e.message : saysFor(e.code), `${e.message}; the plan writer did not help either: ${e2.message}`));
         throw e2;
@@ -539,13 +544,13 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     const section = bySection ? sectionName : intent.scope === "section" && fixed.fields === undefined ? (snap.sections.find((x) => x.ref === intent.section)?.name ?? null) : null;
     const narrowed = bySection ? checked.fields.length !== sectionBefore : checked.fields.length !== scopedBefore;
     const kind = narrowed ? "list" : whole ? "all" : section !== null ? "section" : "list";
-    return { route: "goal", intent, maker: use, windowId: w.window.windowId, page: { scope: checked.scope, trigger: checked.trigger, kind, section: kind === "section" ? section : null } };
+    return { route: "goal", intent, maker: use, windowId: w.window.windowId, page: { scope: checked.scope, trigger: checked.trigger, kind, section: kind === "section" ? section : null }, ...(scope === undefined ? {} : { askScope: scope }) };
   }
   // I6: the sources the fill reads, which may hold the tab the user just left, read now that a fill needs them.
   const sourceModel = o.fillModel === undefined ? model : await o.fillModel(w.window.windowId);
   let p: FillProposal;
   try {
-    p = await proposeFill(sourceModel, askJev, w.window.windowId, checked.trigger, now, { about, scope: checked.scope, newId: () => o.offerKey, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.fillTrace === undefined ? {} : { trace: o.fillTrace }) });
+    p = await proposeFill(sourceModel, askJev, w.window.windowId, checked.trigger, now, { about, scope: checked.scope, newId: () => o.offerKey, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.fillTrace === undefined ? {} : { trace: o.fillTrace }), ...(scope === undefined ? {} : { askScope: scope }) });
   } catch (e) {
     if (e instanceof FillError) return refused(new SaidError("nothingToDo", SAYS.nothingOnScreen, `the fill found nothing: ${e.message}`));
     return refused(e);
@@ -602,7 +607,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   }
   const plan: Plan = { id: o.offerKey, title: instruction.replace(/\s+/g, " ").trim().slice(0, 100), slots: slotNames, steps };
   await o.beforeCheck?.();
-  const ctx: PlanContext = { model: sourceModel, memory: memory.values(), instruction };
+  const ctx: PlanContext = { model: sourceModel, memory: memory.values(), instruction, ...scoped };
   let checkedPlan: ReturnType<typeof validatePlan>;
   try {
     // W2: the write contract's mint fill made for each written field (fill.ts mintOf), by the step's slot.
