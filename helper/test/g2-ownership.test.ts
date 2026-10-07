@@ -758,3 +758,18 @@ describe("G2 round 6: what the view keeps", () => {
     expect(lineDigests("Home\n4410 Speedway\n\napt 2, Austin\nPhone", "4410 Speedway\n\napt 2, Austin")).toHaveLength(1);
   });
 });
+
+describe("G2 round 6: a label that opens its node's value", () => {
+  it("drops the value's first line of a static text whose label names a secret and opens it", () => {
+    const m = new ScreenModel();
+    m.apply({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 600, 300] }, focused: false, root: null, nodes: [
+      { key: "o/a", parent: null, role: "AXStaticText", label: "Password", value: "violet-orchard-seven", frame: [20, 40, 300, 20] },
+      { key: "o/b", parent: null, role: "AXCell", label: "PIN:", value: "7319\nCity: Austin", frame: [20, 200, 300, 40] },
+    ], values: [], focusedKey: null, stats: { walkMs: 0, visited: 2, truncated: false } } as Snapshot);
+    const v = redactWindow(m.windows.get("other")!);
+    const all = [...v.nodes.values()].map((n) => nodeText(n)).join("\n");
+    expect(all).not.toContain("violet-orchard-seven");
+    expect(all).not.toContain("7319");
+    expect(all).toContain("City: Austin");
+  });
+});

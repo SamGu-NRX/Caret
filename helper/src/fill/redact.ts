@@ -30,15 +30,26 @@ function opensValue(line: string): boolean {
 
 /**
  * A text less the lines it must not give (secretText, and a line a marked opener above it opens), and the indexes of the
- * lines it dropped; the text unchanged when it gives all.
+ * lines it dropped; the text unchanged when it gives all. `openedAbove`: a line before the text (its node's label) opened
+ * a value, so the text's first line goes.
  */
-function keptText(text: string): { kept: string; dropped: Set<number> } {
-  if (!text.split(/\r?\n/u).some((l) => secretText(l))) return { kept: text, dropped: new Set() };
+function keptText(text: string, openedAbove = false): { kept: string; dropped: Set<number> } {
+  if (!openedAbove && !text.split(/\r?\n/u).some((l) => secretText(l))) return { kept: text, dropped: new Set() };
   const parts = text.split(/(\r?\n)/u);
   const out: string[] = [];
   const dropped = new Set<number>();
   for (let i = 0; i < parts.length; i += 2) {
     const l = parts[i] as string;
+    // The first line goes when a line above this text opened it (the node's label), and opens in turn.
+    if (i === 0 && openedAbove) {
+      dropped.add(0);
+      for (let open = opensValue(l); open && i + 2 < parts.length; ) {
+        i += 2;
+        dropped.add(i / 2);
+        open = opensValue(parts[i] as string);
+      }
+      continue;
+    }
     if (!secretText(l)) {
       out.push(l, parts[i + 1] ?? "");
       continue;
@@ -98,8 +109,11 @@ function build(w: WindowState): WindowState {
     // its content, redacted line by line below (G2 round 6).
     if (dropped.has(n.key) || (n.editable === true && (secretText(n.label) || secretText(n.placeholder)))) continue;
     // The node with its texts' secret lines gone. A node that gives no text, and had some, is gone with them.
-    const v = n.value === undefined ? undefined : keptText(n.value);
     const l = n.label === undefined ? undefined : keptText(n.label);
+    // A text's label and value read as one (model.ts nodeText): a label that opens a value ("Password", "PIN:") takes the
+    // value's first line too, which keptText on the value alone cannot see.
+    const opener = n.editable !== true && n.label !== undefined && opensValue(n.label.split(/\r?\n/u).at(-1) ?? "") && secretText(n.label);
+    const v = n.value === undefined ? undefined : keptText(n.value, opener);
     const value = v?.kept;
     const label = l?.kept;
     const gone = [...(v === undefined || n.value === undefined ? [] : [{ text: n.value, dropped: v.dropped }]), ...(l === undefined || n.label === undefined ? [] : [{ text: n.label, dropped: l.dropped }])].filter((x) => x.dropped.size > 0);
