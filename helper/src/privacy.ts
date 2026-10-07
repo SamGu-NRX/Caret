@@ -8,7 +8,7 @@
 import type { WindowState } from "./model.ts";
 import type { Node } from "./protocol.ts";
 import { isConversation } from "./conversation.ts";
-import { secretText } from "./memory/sensitive.ts";
+import { excludedValue } from "./privacy/exclude.ts";
 
 /**
  * Distinct characters of one window's text that one request may carry. The bound comes from the
@@ -741,24 +741,22 @@ export class SnippetLedger {
   }
 }
 
-/** G2 review: a request that would carry a secret marker (assertNoSecrets). */
+/** A request held a value in a format Caret never carries (assertNoExcludedValue). */
 export class SecretInRequest extends Error {}
 
 /**
- * G2 review: the one disclosure rule every request meets before it is sent: no text in its state, questions or yes/no
- * questions holds a secret marker word or a value Caret never types (memory/sensitive.ts secretText, the redacted view's
- * rule, fill/redact.ts), neither a whole string nor any text quoted inside
- * one (a candidate's description quotes its label, line and block head as 'text'). The candidate generator, fill and the
- * planner drop such lines and labels where they read them; this is the guarantee behind those filters, so a text one of
- * them misses stops the request loudly instead of reaching Jev. Throws SecretInRequest naming the question, never the
- * text.
+ * The client's last line (SC1 section 3, which narrowed G2's assertNoSecrets to formats): no string in a request's
+ * state, questions, yes/no questions or writer input holds a value in a format Caret never carries (privacy/exclude.ts
+ * excludedValue: a key, a card, account or ID number, a private key, a high-entropy token). It checks formats, not
+ * words: what a request may say is settled by its Disclosure, which mints only text a redacted view keeps, and its
+ * shape (privacy/disclosure.ts, privacy/shapes.ts). Every such value was withheld when its window was read in and the
+ * ledger refuses one, so one here is a bug: it throws SecretInRequest naming the path and the format, never the text.
  */
-export function assertNoSecrets<T extends { state?: unknown; questions?: Record<string, unknown>; nouls?: Record<string, unknown>; input?: unknown }>(req: T): T {
+export function assertNoExcludedValue<T extends { state?: unknown; questions?: Record<string, unknown>; nouls?: Record<string, unknown>; input?: unknown }>(req: T): T {
   const check = (where: string, v: unknown): void => {
     if (typeof v === "string") {
-      // Caret's own fixed wording passes only where Caret puts it, as a question's criterion; nowhere else, and never in
-      // the state, where screen text goes (G2 round 5).
-      if (secretText(v) && !(OWN_WORDING.has(v) && /^questions\.[^.]+\.criteria\.[^.]+$/u.test(where))) throw new SecretInRequest(`a Jev request's ${where} holds a secret marker; it was not sent`);
+      const kind = excludedValue(v);
+      if (kind !== null) throw new SecretInRequest(`a request's ${where} holds a value shaped like a ${kind}; it was not sent`);
       return;
     }
     if (Array.isArray(v)) v.forEach((x, i) => check(`${where}[${i}]`, x));
@@ -770,19 +768,4 @@ export function assertNoSecrets<T extends { state?: unknown; questions?: Record<
   // The writer sends input rather than Jev's state and questions. Check before schema parsing or key access.
   check("input", req.input);
   return req;
-}
-
-/**
- * G2 round 4: Caret's own fixed wording a request carries, which may name a kind of secret to say what Caret refuses
- * ("…give a card number, a password, a one-time code…"): assertNoSecrets passes these strings, matched exactly, as a
- * question's criterion and nowhere else. A builder registers its constants once, at load (ownWording).
- */
-const OWN_WORDING = new Set<string>();
-export function ownWording(...texts: readonly string[]): void {
-  for (const t of texts) OWN_WORDING.add(t);
-}
-
-/** G2 round 4: a screen text a request names something by (a field, a section, a window), or `instead` when it holds a marker. */
-export function sendable(text: string, instead: string): string {
-  return secretText(text) ? instead : text;
 }

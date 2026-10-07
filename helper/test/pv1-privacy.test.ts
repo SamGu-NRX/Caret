@@ -1,4 +1,4 @@
-import { Disclosure } from "../src/privacy/disclosure.ts";
+import { Disclosure, UnmintedText } from "../src/privacy/disclosure.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { redactWindow } from "../src/fill/redact.ts";
@@ -16,7 +16,7 @@ import { askAttend } from "../src/offers/event-card.ts";
 import { router1Request } from "../src/routing/judge.ts";
 import { freeze } from "../src/routing/routes.ts";
 import { contextNow } from "../src/routing/context.ts";
-import { assertNoSecrets, SecretInRequest } from "../src/privacy.ts";
+import { assertNoExcludedValue } from "../src/privacy.ts";
 import { gatewayRoute } from "../src/writer/routes.ts";
 import { makeWriterPort } from "../src/writer/port.ts";
 import { field, node, snap } from "./builders.ts";
@@ -47,8 +47,8 @@ describe("PV1 outbound redaction", () => {
     expect(JSON.stringify(head)).not.toContain("orchard");
     expect(JSON.stringify(head)).not.toContain(literal);
     expect(snapshot.literals).toContain("R-42");
-    expect(() => assertNoSecrets({ input })).not.toThrow();
-    expect(() => assertNoSecrets(head)).not.toThrow();
+    expect(() => assertNoExcludedValue({ input })).not.toThrow();
+    expect(() => assertNoExcludedValue(head)).not.toThrow();
   });
 
   it.each([
@@ -104,7 +104,7 @@ describe("PV1 outbound redaction", () => {
     const model = modelOf([node("group", "AXGroup", { label: "Password" }), field("email", "", { label: "Email", parent: "group" })]);
     const w = model.windows.get("form")!;
     expect(describeField(w, w.nodes.get("email")!).section).not.toBe("Password");
-    expect(() => assertNoSecrets(scopeRequest(intentSnapshot("Fill my email", model, w, []), 0))).not.toThrow();
+    expect(() => assertNoExcludedValue(scopeRequest(intentSnapshot("Fill my email", model, w, []), 0))).not.toThrow();
   });
 
   it("joins a marker split across a cell's own attributes", () => {
@@ -132,7 +132,7 @@ describe("PV1 outbound redaction", () => {
     for (const req of [headsRequest(s), scopeRequest(s, 0), scopeRequest(s, 1)]) {
       // Fixed refusal criteria may name a kind; screen-derived state and field instructions may not quote its label.
       expect(JSON.stringify([req.state, Object.values(req.questions).map((q) => q.instructions)])).not.toContain("Social Security number");
-      expect(() => assertNoSecrets(req)).not.toThrow();
+      expect(() => assertNoExcludedValue(req)).not.toThrow();
     }
     expect(JSON.stringify(intentInput(s))).not.toContain("Social Security number");
   });
@@ -148,7 +148,7 @@ describe("PV1 outbound redaction", () => {
     const raw = 'put "4111 1111 1111 1111" in Notes and the order number in Reference';
     const safe = instructionForModel(raw);
     expect(safe).toBe("[a field Caret leaves to you] and the order number in Reference");
-    expect(() => assertNoSecrets({ input: { instruction: safe } })).not.toThrow();
+    expect(() => assertNoExcludedValue({ input: { instruction: safe } })).not.toThrow();
     expect(instructionForModel("API\nkey: violet-orchard-seven")).toBe("[a field Caret leaves to you]");
   });
 
@@ -216,7 +216,7 @@ describe("PV1 outbound redaction", () => {
   it("the writer refuses marked input before reading its key or sending", async () => {
     let keyReads = 0;
     const writer = makeWriterPort(gatewayRoute("openai/gpt-oss-120b"), { key: () => { keyReads++; throw new Error("must not read a key"); } });
-    await expect(writer.write({ kind: "intent", disclosureId: "fixture", input: { instruction: "password: violet-orchard-seven" as never }, disclosure: new Disclosure([]), maxOutputTokens: 50, signal: new AbortController().signal })).rejects.toBeInstanceOf(SecretInRequest);
+    await expect(writer.write({ kind: "intent", disclosureId: "fixture", input: { instruction: "password: violet-orchard-seven" as never }, disclosure: new Disclosure([]), maxOutputTokens: 50, signal: new AbortController().signal })).rejects.toBeInstanceOf(UnmintedText);
     expect(keyReads).toBe(0);
   });
 });

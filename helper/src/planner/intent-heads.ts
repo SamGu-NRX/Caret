@@ -14,7 +14,6 @@
 // A2 found that hand-written rules for reading a request (A1's scope-reading.ts, removed here) did not converge: twelve
 // review rounds each found a new phrasing that widened the scope. A widening phrasing is answered by the vetoes or by
 // "unclear", never by a new reading rule.
-import { ownWording, sendable } from "../privacy.ts";
 import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { readWhose } from "./people.ts";
@@ -60,9 +59,6 @@ const WHY = {
   nothingToFill: "Something else Caret should not do.",
 } as const;
 
-
-// G2 round 4: the route's refuse option names kinds of secret ("a card number, a password…") to say what Caret refuses.
-ownWording(...Object.values(ROUTE), ...Object.values(WHY));
 
 const TASK = "Caret reads the user's instruction about the form on screen: what to do, from where, and for whom. Answer from the instruction; Caret finds the values itself.";
 
@@ -129,13 +125,16 @@ export function scopeFields(snap: IntentSnapshot): IntentField[] {
   return [...snap.fields, ...snap.uploads].sort((a, b) => (order.get(a.key) ?? 0) - (order.get(b.key) ?? 0));
 }
 
+/** A screen name as the scope ask's context gives it: Caret's own `instead` when it holds a marker word (memory/sensitive.ts). */
+const nameOf = (text: string, instead: string): string => (secretText(text) ? instead : text);
+
 export function fieldContext(snap: IntentSnapshot, f: IntentField): FieldContext {
   const all = scopeFields(snap);
   const i = all.indexOf(f);
   const same = (a: string | null, b: string | null): boolean => a !== null && b !== null && a.trim().toLowerCase() === b.trim().toLowerCase();
   const group = f.section === null || same(f.section, f.name) || same(f.section, f.heading) ? null : f.section;
-  const named = (x: string | null | undefined, instead: string): string | null => (x === null || x === undefined ? null : sendable(x, instead));
-  return { label: sendable(f.modelName ?? f.name, FIELD), heading: named(f.heading, SECTION), group: named(group, SECTION), role: f.upload === true ? "file upload" : CONTROL_WORDS[f.control], before: named(all[i - 1]?.modelName ?? all[i - 1]?.name, FIELD), after: named(all[i + 1]?.modelName ?? all[i + 1]?.name, FIELD) };
+  const named = (x: string | null | undefined, instead: string): string | null => (x === null || x === undefined ? null : nameOf(x, instead));
+  return { label: nameOf(f.modelName ?? f.name, FIELD), heading: named(f.heading, SECTION), group: named(group, SECTION), role: f.upload === true ? "file upload" : CONTROL_WORDS[f.control], before: named(all[i - 1]?.modelName ?? all[i - 1]?.name, FIELD), after: named(all[i + 1]?.modelName ?? all[i + 1]?.name, FIELD) };
 }
 
 /** fieldContext's texts as the snapshot's Disclosure mints them (planner/intent.ts snapMint). */

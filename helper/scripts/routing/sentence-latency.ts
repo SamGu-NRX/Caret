@@ -25,7 +25,7 @@ import { HelperServer } from "../../src/server.ts";
 import { Store } from "../../src/store.ts";
 import { MemoryStore } from "../../src/patterns/memory.ts";
 import { FakeCalendar } from "../../src/executor/means.ts";
-import { loadJevKey, makeJevClient, type AskJev, type JevRequest } from "../../src/fill/jev.ts";
+import { loadJevKey, makeJevClient, storableRequest, type AskJev, type JevRequest } from "../../src/fill/jev.ts";
 import { PROTOCOL_VERSION, ROUTING_CAPABILITY, type AppRef, type Node, type Snapshot, type TypedValue } from "../../src/protocol.ts";
 import { DEFAULT_SETTINGS } from "../../src/offers/settings.ts";
 import { LineClient } from "../../test/socket-reader.ts";
@@ -76,7 +76,7 @@ const askJev: AskJev = async (req) => {
     routerCalls++;
     const r = await live(req);
     spend += r.costUsd;
-    if (a.dump) appendFileSync(join(a.out as string, `router-requests${a.label === "" ? "" : `-${a.label}`}.ndjson`), `${JSON.stringify({ at: performance.now(), state: req.state, questions: req.questions, answers: r.answers })}\n`);
+    if (a.dump) appendFileSync(join(a.out as string, `router-requests${a.label === "" ? "" : `-${a.label}`}.ndjson`), `${JSON.stringify({ at: performance.now(), ...storableRequest(req, { state: req.state, questions: req.questions }), answers: r.answers })}\n`);
     return r;
   }
   // The event card's own questions: attend yes. Anything else: the first option.

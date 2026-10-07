@@ -16,6 +16,7 @@
 //
 // Harness-only: harness.ts installs it when CARET_SLOW_EVAL_EVENTS is set, and the Laya guard and the cache's fixture
 // checks run above it.
+import { withholdValues } from "../../privacy/exclude.ts";
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -70,7 +71,8 @@ export class SlowAnswerFailure extends Error {
 
 type Outcome = { kind: "stop"; reason: SlowStop; detail: string } | { kind: "rate" } | { kind: "transient"; detail: string } | { kind: "answer"; detail: string } | { kind: "pass" };
 
-const text = (e: unknown): string => (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 300);
+/** A failure as the run's files keep it: 300 characters, with any value in a format Caret never carries withheld (PV2 Q2). */
+const text = (e: unknown): string => withholdValues((e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 300));
 
 /** What a failed request means for the run (see the file's header). */
 export function classify(e: unknown): Outcome {

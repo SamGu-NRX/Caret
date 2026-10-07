@@ -81,11 +81,11 @@ const boundaries: Record<string, RegExp[]> = {
   "routing/judge.ts": [/viewOf\(model,/u, /windows.values\(\)\].map\(redactWindow\)/u, /const view = redactWindow\(q.window\)/u, /shown.some\(\(s\) => flat\(s\).includes\(flat\(t\)\)\)/u],
   "offers/event-card.ts": [/windows.values\(\)\].map\(redactWindow\)/u, /function askAttend[\s\S]*?w = redactWindow\(w\)/u, /nodeText\(n\).includes\(sentence\)/u],
   "patterns/skills.ts": [/viewOf\(model, cells\[0\]\?\.dstWindowId/u, /viewOf\(model, c.srcWindowId\)/u, /viewOf\(model, c.dstWindowId\)\?\.nodes.get\(c.dstKey\)\?\.label/u],
-  "writer/port.ts": [/async write\(req\) \{\s*assertNoSecrets\(req\)/u],
-  "writer/local-port.ts": [/assertNoSecrets\(\{ input: ask.prompt \}\)/u],
-  "writer/local-draft.ts": [/assertNoSecrets\(\{ input: ask.prompt \}\)/u],
-  "writer/local-model.ts": [/assertNoSecrets\(\{ input: \{ prefix: req.prefix, prompt: req.prompt \} \}\)/u],
-  "engines/decide/llama.ts": [/assertNoSecrets\(req\)/u],
+  "writer/port.ts": [/async write\(req\) \{[\s\S]*?assertNoExcludedValue\(req\);\s*\/\/[^\n]*\n\s*verifyWriterInput\(req\)/u],
+  "writer/local-port.ts": [/assertNoExcludedValue\(\{ input: ask.prompt \}\)/u],
+  "writer/local-draft.ts": [/assertNoExcludedValue\(\{ input: ask.prompt \}\)/u],
+  "writer/local-model.ts": [/assertNoExcludedValue\(\{ input: \{ prefix: req.prefix, prompt: req.prompt \} \}\)/u],
+  "engines/decide/llama.ts": [/assertNoExcludedValue\(req\)/u],
 };
 
 function inspect(sources: Map<string, string>): string[] {
@@ -100,8 +100,8 @@ function inspect(sources: Map<string, string>): string[] {
         if ((keys.includes("state") && keys.includes("questions")) || (keys.includes("disclosureId") && keys.includes("input"))) {
           foundBuilders[file] = (foundBuilders[file] ?? 0) + 1;
           const parent = ancestors.at(-1);
-          // SC1 step 1: a Disclosure's legacy() or seal() checks the request as assertNoSecrets did, and mints it.
-          const guard = parent?.type === "CallExpression" && (name(parent.callee) === "assertNoSecrets" || ["legacy", "seal"].includes(String(name(prop(parent.callee, "property")))));
+          // SC1: a Disclosure's seal() verifies the request it builds (minted, in shape) and checks its formats.
+          const guard = parent?.type === "CallExpression" && (name(parent.callee) === "assertNoExcludedValue" || name(prop(parent.callee, "property")) === "seal");
           if (!(file in transforms) && !guard) errors.push(`${file}: unguarded request`);
         }
       }
@@ -140,7 +140,7 @@ describe("PV1 request/read structure", () => {
   });
   it("rejects a newly added request file even if it uses the guard", () => {
     const changed = sources();
-    changed.set("new-request.ts", "const r = assertNoSecrets({ purpose: 'new', state: model.windows.get('raw'), questions: {} });");
+    changed.set("new-request.ts", "const r = assertNoExcludedValue({ purpose: 'new', state: model.windows.get('raw'), questions: {} });");
     expect(inspect(changed)).toContain("new-request.ts: request inventory changed");
   });
 });

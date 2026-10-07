@@ -17,7 +17,8 @@ import { buildFillPopup, fillPlan, recheckFields, recheckFill, writtenFields } f
 import { holds as holdsAfter } from "./recheck.ts";
 import { provenanceStale } from "../src/fill/contract.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
-import { assertNoSecrets, SecretInRequest } from "../src/privacy.ts";
+import { assertNoExcludedValue, SecretInRequest } from "../src/privacy.ts";
+import { Disclosure, OutOfShape, UnmintedText, type ModelText } from "../src/privacy/disclosure.ts";
 import { redactWindow } from "../src/fill/redact.ts";
 import { headsRequest, scopeRequest } from "../src/planner/intent-heads.ts";
 import { intentSnapshot } from "../src/planner/intent.ts";
@@ -391,17 +392,20 @@ describe("G2 review round 2: one disclosure rule", () => {
   });
 
   it("b: a request that still carries a secret marker is refused where it is built, loudly and without the text", () => {
-    const req = { state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field.", criteria: { c1: `"Robin" (in a block that starts 'Password: hunter2')`, none: "None." } } } };
-    expect(() => assertNoSecrets(req)).toThrow(SecretInRequest);
-    expect(() => assertNoSecrets(req)).toThrow(/questions\.f1\.criteria\.c1/u);
+    // SC1: a block head the redacted view dropped is text no Disclosure minted, so sealing the request throws, naming the
+    // path. The client no longer checks words on the wire (privacy.ts assertNoExcludedValue checks formats).
+    const d = new Disclosure([]);
+    const req = { purpose: "fill.values" as const, state: { task: d.own("t") }, questions: { f1: { type: "choice" as const, instructions: d.own("Field."), criteria: { c1: `"Robin" (in a block that starts 'Password: hunter2')` as ModelText, none: d.own("None.") } } } };
+    expect(() => d.seal(req)).toThrow(UnmintedText);
+    expect(() => d.seal(req)).toThrow(/questions\.f1\.criteria\.c1/u);
     try {
-      assertNoSecrets(req);
+      d.seal(req);
     } catch (e) {
       expect(String(e)).not.toContain("hunter2");
     }
-    // The same word rule as the redacted view (round 4): a marker word anywhere in any text throws, a plain field does not.
-    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field: 'Password'.", criteria: { none: "None." } } } })).toThrow(SecretInRequest);
-    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field: 'Email'.", criteria: { none: "None." } } } })).not.toThrow();
+    // A value in a format Caret never carries throws at the client's last line; a marker word alone is prose there.
+    expect(() => assertNoExcludedValue({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Card: 4111 1111 1111 1111.", criteria: { none: "None." } } } })).toThrow(SecretInRequest);
+    expect(() => assertNoExcludedValue({ state: { task: "t" }, questions: { f1: { type: "choice", instructions: "Field: 'Password'.", criteria: { none: "None." } } } })).not.toThrow();
   });
 
   // G2 round-3 review: lines that name a secret anywhere, not only as their leading label, each beside an ordinary value.
@@ -757,12 +761,12 @@ describe("G2 round 5", () => {
     expect(recheckFill(m, g, () => null)).not.toBeNull();
   });
 
-  it("8: Caret's own wording passes only as a question's criterion, never in the state", () => {
-    const refuse = "Something Caret must not or cannot do here: pay, give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.";
-    // The Ask heads register it (planner/intent-heads.ts); importing fill.ts loads them through the planner.
-    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { scope: { type: "choice", instructions: "Which?", criteria: { refuse } } } })).not.toThrow();
-    expect(() => assertNoSecrets({ state: { screenText: refuse }, questions: {} })).toThrow(SecretInRequest);
-    expect(() => assertNoSecrets({ state: { task: "t" }, questions: { scope: { type: "choice", instructions: refuse, criteria: { none: "None." } } } })).toThrow(SecretInRequest);
+  it("8: Caret's own wording passes only where its request's shape has a slot for it", () => {
+    const d = new Disclosure([]);
+    const refuse = d.own("Something Caret must not or cannot do here: pay, give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.");
+    // SC1 2c: the shape (privacy/shapes.ts) says where a request may carry text; Caret's wording is minted by own().
+    expect(() => d.seal({ purpose: "intent.route", state: { task: d.own("t") }, questions: { scope: { type: "choice", instructions: d.own("Which?"), criteria: { refuse } } } })).not.toThrow();
+    expect(() => d.seal({ purpose: "intent.route", state: { screenText: refuse }, questions: {} })).toThrow(OutOfShape);
   });
 });
 

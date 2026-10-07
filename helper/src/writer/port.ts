@@ -2,7 +2,7 @@
 // `plan`; `polish` and `memoryProposal` are refused until their schemas exist. The output is untrusted
 // text: a plan program still has to pass compileProgram and the sandbox.
 import { chat, type ChatRoute } from "./chat.ts";
-import { assertNoSecrets, type Snippet } from "../privacy.ts";
+import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
 import { verifyWriterInput, type Disclosure, type ModelValue } from "../privacy/disclosure.ts";
 import { writerPolicy, type ProviderPolicy } from "../privacy/providers.ts";
 import { readKey } from "./env.ts";
@@ -70,11 +70,12 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
   return {
     route,
     async write(req) {
-      assertNoSecrets(req);
+      // A kind with no schema yet is refused before its input is read (privacy/shapes.ts gives it no slot).
+      if (req.kind !== "plan" && req.kind !== "goal" && req.kind !== "intent") throw new Error(`writer kind ${req.kind} is not implemented yet`);
+      assertNoExcludedValue(req);
       // SC1 2b: every string in the input was minted for this request, before schema parsing, key access or transport.
       verifyWriterInput(req);
       if (retains && opts.evaluation !== true) throw new WriterProviderRefused(`${route.provider}:${route.model} keeps what it is sent, so it writes only for evaluation harnesses over fixture text`);
-      if (req.kind !== "plan" && req.kind !== "goal" && req.kind !== "intent") throw new Error(`writer kind ${req.kind} is not implemented yet`);
       if (req.disclosureId.length === 0) throw new Error("writer request has no disclosureId");
       if (req.kind === "intent") {
         const input = IntentInputSchema.parse(req.input);

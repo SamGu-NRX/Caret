@@ -1,10 +1,11 @@
 // I2: where A3's scope ask (planner/intent-heads.ts) meets G2's disclosure rule and W1's canned dispatch. A3 added a
 // request that quotes each field's label, heading, group and neighbours; G2's rule is that screen text holding a secret
-// marker word is sent as what it is, never as its words (privacy.ts sendable), and assertNoSecrets stops any request
-// that still carries one. W1's canned engines answer by each request's purpose, so the new request must name one.
+// marker word is sent as what it is, never as its words (planner/intent.ts snapMint). SC1 retired G2's wire check for
+// those words: the client's last check is for formats (privacy.ts assertNoExcludedValue), and the request is sealed by
+// its Disclosure (privacy/disclosure.ts), which mints only text the redacted view keeps. W1's canned engines answer by each request's purpose, so the new request must name one.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
-import { assertNoSecrets } from "../src/privacy.ts";
+import { assertNoExcludedValue } from "../src/privacy.ts";
 import { secretText } from "../src/memory/sensitive.ts";
 import { questionKind } from "../src/engines/decide/canned.ts";
 import { intentSnapshot } from "../src/planner/intent.ts";
@@ -59,7 +60,7 @@ describe("A3's scope ask under G2's disclosure rule", () => {
       const sent = JSON.stringify([req.state, req.questions]);
       expect(sent, `wording ${w}`).not.toContain(SECRET_LABEL);
       expect(sent, `wording ${w}`).not.toContain(SECRET_HEADING);
-      expect(() => assertNoSecrets(req)).not.toThrow();
+      expect(() => assertNoExcludedValue(req)).not.toThrow();
       // The field is still asked about, named as what it is.
       const hint = s.fields.find((f) => f.name === SECRET_LABEL);
       expect(String(req.questions[scopeId(hint?.ref ?? "")]?.instructions)).toContain("a field Caret leaves to the user");
@@ -69,10 +70,10 @@ describe("A3's scope ask under G2's disclosure rule", () => {
     }
   });
 
-  it("the heads request passes assertNoSecrets with its refuse wording, which names kinds of secret", () => {
+  it("the heads request passes the client's checks with its refuse wording, which names kinds of secret", () => {
     const req = headsRequest(form());
     expect(Object.values(req.questions.route?.criteria ?? {}).some((t) => secretText(t))).toBe(true);
-    expect(() => assertNoSecrets(req)).not.toThrow();
+    expect(() => assertNoExcludedValue(req)).not.toThrow();
     expect(JSON.stringify(req.state)).not.toContain(SECRET_LABEL);
   });
 

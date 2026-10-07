@@ -521,17 +521,21 @@ export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean)
   // The verifier's own phrase (mintProvenanceSays), over a ledger of no windows: nothing to charge, so every admitted
   // text mints and the rest are named, not quoted.
   const d = new Disclosure([]);
-  return mintProvenanceSays(d, pr, (t) => (admitted(t) ? d.planText(t) : null));
+  return mintProvenanceSays(d, pr, (t) => (admitted(t) ? d.planText(t) : null), () => true);
 }
 
 /**
  * provenanceSays's phrase, minted by the verifier's Disclosure: every quoted text as plan text (Disclosure.planText, which
  * refuses a text that shows a line redaction removed), Caret's words around them. A text that does not mint is named,
- * not quoted, as one the ledger refused always was.
+ * not quoted, as one the ledger refused always was. `shown` says whether a window's text may be quoted at all: the
+ * verifier quotes a window's title, line, label, span or value only when its Disclosure was built over that window and
+ * its redacted view shows the text (Disclosure.shownIn), since a provenance is not itself read from a view.
  */
-function mintProvenanceSays(d: Disclosure, pr: Provenance, m: (t: string) => ModelText | null): ModelText {
+function mintProvenanceSays(d: Disclosure, pr: Provenance, quote: (t: string) => ModelText | null, shown: (windowId: string, t: string) => boolean): ModelText {
+  const m = quote;
   switch (pr.kind) {
     case "window": {
+      const m = (t: string): ModelText | null => (shown(pr.windowId, t) ? quote(t) : null);
       const t = pr.title.trim();
       // The app is reader metadata, named as it always was; a window of it is open, or the app's name is plan text.
       const app = pr.app === "" ? null : (d.appNamed(pr.app) ?? d.planText(pr.app));
@@ -562,10 +566,10 @@ function mintProvenanceSays(d: Disclosure, pr: Provenance, m: (t: string) => Mod
     case "transfer":
       return d.own("a value the user copied there before");
     case "derived": {
-      const plain = d.t`${d.own(DERIVE_SAYS[pr.how])} in ${mintProvenanceSays(d, pr.base, m)}`;
+      const plain = d.t`${d.own(DERIVE_SAYS[pr.how])} in ${mintProvenanceSays(d, pr.base, m, shown)}`;
       if (pr.says === undefined) return plain;
       const says = m(pr.says);
-      const also = pr.also === null ? d.own("") : d.t`, and ${mintProvenanceSays(d, pr.also, m)}`;
+      const also = pr.also === null ? d.own("") : d.t`, and ${mintProvenanceSays(d, pr.also, m, shown)}`;
       return says === null ? d.t`${plain}${also}` : d.t`${plain}${also}; ${says}`;
     }
   }
@@ -698,8 +702,8 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     if (!mintedCache.has(t)) mintedCache.set(t, d.planText(t));
     return mintedCache.get(t) ?? null;
   };
-  // I1: an instruction that names a secret ("Put my password 'hunter2' in Plan") is not sent: no Jev request may carry a
-  // secret marker (privacy.ts assertNoSecrets, G2), and the verifier judges a value against its field and where it was
+  // I1: an instruction that names a secret ("Put my password 'hunter2' in Plan") is not sent: the verifier reads no
+  // instruction holding a secret marker (memory/sensitive.ts secretText, G2), and the verifier judges a value against its field and where it was
   // read without it. Its values Caret never types were refused before this (neverTypedRefusal, with the instruction).
   const raw = o.instruction === undefined || o.instruction === "" || secretText(o.instruction) ? undefined : o.instruction;
   if (raw !== undefined && !ledger.plan([raw])) throw new VerifierUnavailable("the instruction quotes more of an open window than the verifier may carry");
@@ -717,7 +721,7 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
       name,
       text,
       takes: takes === "" ? d.own("") : (admit(takes) ?? d.own("")),
-      from: mintProvenanceSays(d, p.provenance, admit),
+      from: mintProvenanceSays(d, p.provenance, admit, (id, t) => d.shownIn(id, t)),
       owner: p.owner === null || p.owner === "unclear" ? d.own("") : d.t`; the screen says it is ${d.own(OWNER_SAYS[p.owner])}`,
     };
     return [WORDINGS[0](d, parts), WORDINGS[1](d, parts)] as const;
@@ -733,8 +737,8 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     const qs: JevRequest["questions"] = Object.fromEntries(order.map((i) => [`x${i + 1}`, { type: "choice" as const, instructions: (questions[i] ?? [d.own(""), d.own("")])[wording], criteria: d.ownRecord(VERDICTS) }]));
     const sent = sentStrings([state, qs]);
     const req: JevRequest = d.seal({ purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged });
-    // I1: the disclosure rule every Jev request meets at build (privacy.ts assertNoSecrets, G2), the verifier's included:
-    // its provenance sentences quote only redacted, ledger-admitted text, and this is the guarantee behind that. A throw
+    // I1, SC1 2b: the verifier's request is sealed like every other (privacy/disclosure.ts): its provenance sentences
+    // quote only text minted from redacted views and admitted by the ledger, and seal checks that at build. A throw
     // here makes the verifier unavailable (below), so every value it would have checked is withheld, nothing is sent.
     return req;
   };

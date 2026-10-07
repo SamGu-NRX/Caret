@@ -280,7 +280,7 @@ export const UNNAMED_WINDOW = "a window";
 /**
  * SC1 2b: the snapshot's texts as its Disclosure (IntentSnapshot.ledger) mints them, each from the redacted view it was
  * read from, the instruction as a model may read it, and memory labels as memory. A text that holds a marker word, or
- * that its view no longer shows, is named in Caret's own words instead, as the requests named it before (sendable).
+ * that its view no longer shows, is named in Caret's own words instead (UNNAMED_FIELD, UNNAMED_SECTION, UNNAMED_WINDOW).
  */
 export interface SnapMint {
   d: Disclosure;

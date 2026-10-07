@@ -1,0 +1,1 @@
+Every request slot needs a row in helper/src/privacy/shapes.ts: Disclosure.verify throws OutOfShape for a path with no row, a mint reason the row disallows, or text over its max; a request with no purpose may carry only own() wording.

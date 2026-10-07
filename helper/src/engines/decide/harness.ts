@@ -6,8 +6,9 @@
 //   CARET_LLAMA_URL (http://127.0.0.1:8091), CARET_LLAMA_MODEL (a name for reports and cache keys), CARET_LLAMA_PROMPT
 //   (chat or document), CARET_LLAMA_THINKING=off (tells a thinking model's template not to think), and
 //   CARET_ENGINE_CALIBRATION ("choiceT,noulT"; 1,1 is none).
-import { assertNoSecrets } from "../../privacy.ts";
-import { verifySent } from "../../privacy/disclosure.ts";
+import { assertNoExcludedValue } from "../../privacy.ts";
+import { storable, verifySent } from "../../privacy/disclosure.ts";
+import { withholdValues } from "../../privacy/exclude.ts";
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -83,10 +84,9 @@ function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngi
   switch (o.name) {
     case "canned":
       if (o.canned === null) throw new Error("this harness has no canned engine");
-      // G2 round 4: a canned engine meets the Jev client's disclosure check too (privacy.ts assertNoSecrets), so a canned
-      // run fails where a live one would.
-      // SC1 2b: and the minting check on the body a live client would send.
-      return { name: "canned", model: "canned", reach: "mac", ask: (req) => (assertNoSecrets(req), verifySent(req, wireBody(req, "canned")), (o.canned as AskJev)(req)) };
+      // A canned engine meets the Jev client's checks too, so a canned run fails where a live one would: the format check
+      // (privacy.ts assertNoExcludedValue) and the minting and shape check on the body a live client would send (SC1 2b, 2c).
+      return { name: "canned", model: "canned", reach: "mac", ask: (req) => (assertNoExcludedValue(req), verifySent(req, wireBody(req, "canned")), (o.canned as AskJev)(req)) };
     case "llama": {
       const prompt = env.CARET_LLAMA_PROMPT ?? "chat";
       if (prompt !== "chat" && prompt !== "document") throw new Error(`CARET_LLAMA_PROMPT is '${prompt}'; it must be chat or document`);
@@ -155,14 +155,16 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
     ask = async (req) => {
       // The log holds request text, so it takes what the cache takes: fixture text only.
       checkFixture(req, o.fixture);
-      const body = { state: req.state, model: engine.model, questions: { ...req.questions, ...req.nouls } };
+      // PV2 Q2: verified as the client verifies it, with values in formats Caret never carries withheld (storable).
+      const wire = { state: req.state, model: engine.model, questions: { ...req.questions, ...req.nouls } };
+      const body = storable(req, wire, wire);
       const t0 = performance.now();
       let r: Awaited<ReturnType<AskJev>>;
       try {
         r = await inner(req);
       } catch (e) {
         // A failed request is logged with its error, which the eval's report shows only as the user's sentence.
-        appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, error: e instanceof Error ? `${e.name}: ${e.message}` : String(e), afterMs: performance.now() - t0 })}\n`, { mode: 0o600 });
+        appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, error: withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e)), afterMs: performance.now() - t0 })}\n`, { mode: 0o600 });
         throw e;
       }
       appendFileSync(log, `${JSON.stringify({ body, chars: JSON.stringify(body).length, sharedChars: JSON.stringify(wireBody(req, engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens })}\n`, { mode: 0o600 });

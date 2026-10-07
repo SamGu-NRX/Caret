@@ -2,8 +2,8 @@
 // CARET_ENV_FILE. Gateway uses only CARET_JEV_GATEWAY_KEY, never the writer's AI_GATEWAY_API_KEY.
 import { readFileSync } from "node:fs";
 import * as z from "zod";
-import { assertNoSecrets, type Snippet } from "../privacy.ts";
-import { verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
+import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
+import { storable, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
 import { jevPolicy } from "../privacy/providers.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
@@ -283,6 +283,15 @@ export function wireBody(req: JevRequest, model: string = JEV_MODEL, hoist: bool
   return { state: { ...state, [OPTION_DESCRIPTIONS]: shared }, model, questions };
 }
 
+/**
+ * PV2 Q2: what an evaluation's request log or dump keeps of a request: `kept`, its own record of it, once the request's
+ * wire body verifies as the client's would, with every value in a format Caret never carries withheld (privacy/
+ * disclosure.ts storable). A replayed request that never reaches the client is checked here the same way.
+ */
+export function storableRequest<T>(req: JevRequest, kept: T): T {
+  return storable(req, wireBody(req), kept);
+}
+
 /** Whether a minted value is a record of them (an array is not: Array.isArray does not narrow a readonly array). */
 function isRecord(v: ModelValue | undefined): v is { readonly [k: string]: ModelValue } {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -323,8 +332,9 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
     }
     const ids = Object.keys(req.nouls ?? {});
     if (ids.some((id) => id in req.questions)) throw new Error("Jev request repeats a question id between its choices and its yes/no questions");
-    // G2 review: no request leaves with a secret marker in it, whichever builder made it (privacy.ts assertNoSecrets).
-    assertNoSecrets(req);
+    // SC1 section 3: no request leaves with a value in a format Caret never carries, whichever builder made it
+    // (privacy.ts assertNoExcludedValue, G2's assertNoSecrets narrowed to formats).
+    assertNoExcludedValue(req);
     const wire = wireBody(req, route.model);
     // SC1 2b: every string on the wire was minted for this request, checked after wireBody so a string the client makes
     // up shows too.

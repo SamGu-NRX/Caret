@@ -15,7 +15,7 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { makeFieldContract, provenanceSays, setTestVerifier, verifyProposed, VerifierUnavailable, guardFor, type Proposed } from "../src/fill/contract.ts";
 import { fieldKinds } from "../src/fill/kinds.ts";
 import { fillPlan, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
-import { assertNoSecrets } from "../src/privacy.ts";
+import { assertNoExcludedValue } from "../src/privacy.ts";
 import type { HelperMessage, TaskProgress } from "../src/protocol.ts";
 import { field, MAIL_APP, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, WIN, wireButtons } from "./fake-app.ts";
@@ -109,7 +109,7 @@ describe("I1 joint 2: a secret on a source line never appears in a verifier requ
     expect(j.verified.length).toBeGreaterThan(0);
     expect(p.fields.find((f) => f.key === keyOf("Email"))?.value).toBe(ME);
     for (const r of j.verified) {
-      expect(() => assertNoSecrets(r)).not.toThrow();
+      expect(() => assertNoExcludedValue(r)).not.toThrow();
       const sent = strings([r.state, r.questions]).join("\n");
       for (const secret of ["sk-test-violetorchard77", "API key", "4412", "PIN"]) expect(sent).not.toContain(secret);
     }
@@ -117,17 +117,20 @@ describe("I1 joint 2: a secret on a source line never appears in a verifier requ
     expect(p.fields.find((f) => f.key === keyOf("Phone"))?.value ?? null).toBeNull();
   });
 
-  it("stops a verifier request whose provenance would quote a secret, before Jev sees it (privacy.ts assertNoSecrets)", async () => {
-    // A provenance no reading path makes (fill reads the redacted view): the request build is the backstop.
+  it("never quotes a provenance's secret line to the verifier: a line no known window's redacted view shows is named, not quoted", async () => {
+    // A provenance no reading path makes (fill reads the redacted view). SC1 2b: the verifier quotes a window's line only
+    // when its Disclosure knows the window and the window's redacted view shows the line (Disclosure.shownIn); the
+    // client no longer checks words, so this is the backstop.
     const field = makeFieldContract({ windowId: "form", node: { key: "form/email", parent: null, role: "AXTextField", label: "Email" }, descriptor: "Text field. Label: 'Email'.", name: "Email", labelWords: ["Email"], control: "text", kinds: fieldKinds(["Email"]), part: null });
     const p: Proposed = { field, text: ME, display: ME, owner: null, provenance: { kind: "window", windowId: "note", nodeKey: "src/note", app: "Mail", title: "Notes", span: ME, label: null, line: `${ME} password: hunter2-violet`, partOf: null, context: null, lines: [], sentences: [] } };
-    let sent = 0;
-    const ask: AskJev = async () => {
-      sent++;
-      throw new Error("not reached");
+    const sent: string[] = [];
+    const ask: AskJev = async (req) => {
+      sent.push(...strings([req.state, req.questions]));
+      throw new Error("no answer");
     };
     await expect(verifyProposed([p], { authority: TEST_AUTHORITY, askJev: ask, ledger: null, now: T0 })).rejects.toBeInstanceOf(VerifierUnavailable);
-    expect(sent).toBe(0);
+    expect(sent.length).toBeGreaterThan(0);
+    for (const secret of ["hunter2", "password"]) expect(sent.join("\n")).not.toContain(secret);
   });
 });
 

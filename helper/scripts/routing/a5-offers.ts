@@ -20,7 +20,7 @@ import { Helper } from "../../src/helper.ts";
 import { HelperServer } from "../../src/server.ts";
 import { Store } from "../../src/store.ts";
 import { MemoryStore } from "../../src/patterns/memory.ts";
-import { loadJevKey, makeJevClient, type AskJev, type JevRequest } from "../../src/fill/jev.ts";
+import { loadJevKey, makeJevClient, storableRequest, type AskJev, type JevRequest } from "../../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type HelperMessage } from "../../src/protocol.ts";
 import { DEFAULT_SETTINGS } from "../../src/offers/settings.ts";
 import { jevPickingText } from "../../test/builders.ts";
@@ -72,7 +72,7 @@ const isRouter = (r: JevRequest): boolean => "outcome" in r.questions || "task" 
 let routerCalls = 0;
 let spendUsd = 0;
 let overCap = 0;
-const captured: { recording: string; run: number; request: JevRequest }[] = [];
+const captured: { recording: string; run: number; request: Pick<JevRequest, "purpose" | "state" | "questions" | "nouls" | "snippets" | "charged"> }[] = [];
 let current = { recording: "", run: 0 };
 process.env.CARET_ENV_FILE = a["env-file"];
 const live = MODE === "live" ? makeJevClient(loadJevKey) : null;
@@ -80,7 +80,8 @@ const askJev: AskJev = async (req) => {
   if (!isRouter(req)) return fake(req);
   routerCalls++;
   if (MODE === "capture") {
-    captured.push({ ...current, request: req });
+    // PV2 Q2: the capture keeps a verified request, values in formats Caret never carries withheld (storableRequest).
+    captured.push({ ...current, request: storableRequest(req, { purpose: req.purpose, state: req.state, questions: req.questions, nouls: req.nouls, snippets: req.snippets, charged: req.charged }) });
     const answers = Object.fromEntries(Object.keys(req.questions).map((q) => [q, { choice: q === "route" ? "handoff" : "abstain", confidence: 0.9 }]));
     return { model: "capture", answers, inputTokens: 0, latencyMs: 0, costUsd: 0 };
   }

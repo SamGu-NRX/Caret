@@ -7,7 +7,10 @@
 //   on a copy LaunchServices opened; apps/caret LaunchRole), and the helper refuses CARET_JEV_CACHE outright
 //   (refuseCacheInHelper), since the helper reads the user's real screen;
 // - it refuses any request that declares text (privacy.ts Snippet) from a window the harness did not load from a
-//   fixture, or from the user's memory unless the harness's memory is a fixture's, before it reads or writes anything.
+//   fixture, or from the user's memory unless the harness's memory is a fixture's, before it reads or writes anything;
+// - it verifies each request as the client does (privacy/disclosure.ts: minted, in its shape) before it replays or
+//   records it, so a replayed run fails where a live one would, and it stores the request with every value in a format
+//   Caret never carries withheld (storable). An entry is kept until someone deletes it: nothing prunes the directory.
 //
 // A request is keyed by a hash of its canonical form: the engine and model, the state, and each question by its
 // content, not its id. An option is named by its description's rank among the request's descriptions. A fill's second
@@ -18,7 +21,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MEMORY_SNIPPETS } from "../../privacy.ts";
-import type { AskJev, ChoiceQuestion, JevRequest, JevResult, NoulQuestion } from "../../fill/jev.ts";
+import { wireBody, type AskJev, type ChoiceQuestion, type JevRequest, type JevResult, type NoulQuestion } from "../../fill/jev.ts";
+import { storable, verifySent } from "../../privacy/disclosure.ts";
 
 export type CacheMode = "record" | "replay" | "replay-or-record";
 const MODES: readonly CacheMode[] = ["record", "replay", "replay-or-record"];
@@ -202,6 +206,8 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
   return async (req) => {
     refuseShipped(opts.env ?? process.env);
     checkFixture(req, opts.fixture);
+    const wire = wireBody(req, opts.model);
+    verifySent(req, wire);
     const c = canonicalRequest(req, opts.engine, opts.model, opts.variant ?? "");
     const path = join(opts.dir, c.key.slice(0, 2), `${c.key}.json`);
     if (opts.mode !== "record") {
@@ -226,7 +232,7 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
       v: FORMAT,
       engine: opts.engine,
       model: opts.model,
-      canonical: { exact: c.exact, state: req.state, questions: c.questions },
+      canonical: storable(req, wire, { exact: c.exact, state: req.state, questions: c.questions }),
       answeredBy: r.model,
       answers: Object.fromEntries(Object.entries(r.answers).map(([id, a]) => [at(id), { choice: name(a.choice), confidence: a.confidence }])),
       nouls: Object.fromEntries(Object.entries(r.nouls ?? {}).map(([id, p]) => [at(id), p])),

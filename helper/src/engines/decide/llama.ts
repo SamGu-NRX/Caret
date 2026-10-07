@@ -1,4 +1,4 @@
-import { assertNoSecrets } from "../../privacy.ts";
+import { assertNoExcludedValue } from "../../privacy.ts";
 import { verifySent } from "../../privacy/disclosure.ts";
 // A decision engine on this Mac: an open instruct model in llama-server (llama.cpp), J1 part B.
 //
@@ -204,7 +204,7 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
   // One request at a time: two requests in flight would take turns in llama-server's one slot and push each other's
   // prompt prefix out of its cache, evaluating each prefix again for every question.
   const ask: AskJev = (req) => {
-    assertNoSecrets(req);
+    assertNoExcludedValue(req);
     // SC1 2b: the local engine refuses unminted text as the Jev client does, so an evaluation fails where a live run would.
     verifySent(req, wireBody(req, opts.model));
     const run = queue.then(() => answer(req));

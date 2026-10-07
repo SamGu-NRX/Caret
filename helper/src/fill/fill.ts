@@ -802,6 +802,16 @@ const OWN_SAYS = { workAuth: "work authorization", sponsorship: "need for visa s
 /** Owner questions one ask carries at most. Assumed: well above the personal values a few source windows hold. */
 const MAX_OWNERS = 40;
 
+/**
+ * SC1 2c, the minimized candidate: a value question describes a candidate by its span, its line (at most MAX_LINE, 80
+ * characters), its label and section, and its window, without the first line of its block. The block head stays in the
+ * whose and owner questions (mintOwned), where G2 added it to say whose details a value is. PV2 Q3 ran the B24 scripted
+ * oracle with and without it (~/.caret-run/evidence/screen/pv2/q3): every ask scored the same on the page and reader
+ * windows, and the requests carried 10-11% fewer characters. That oracle answers from fill's trace, not from the
+ * descriptions, so it shows no cost in code; what a model loses without the block head is unmeasured (no live run).
+ */
+const VALUE_BLOCK_HEAD = false;
+
 /** describeOwned's words, minted: the candidate's line (its whole source line when given), then where it sits in Caret's words. */
 function mintOwned(d: Disclosure, model: ScreenModel, c: Candidate, line?: string): ModelText | null {
   const said = mintCandidate(d, model, c, line === undefined ? {} : { line });
@@ -1052,7 +1062,7 @@ export async function proposeFill(
   /** A candidate's line as describeCandidate read it when a derived value named it: `line` is set only later (clauses). */
   const candidateSaid = (c: Candidate): (() => ModelText | null) => {
     const line = c.line ?? null;
-    return () => mintCandidate(m, model, c, { line });
+    return () => mintCandidate(m, model, c, { line, blockHead: VALUE_BLOCK_HEAD });
   };
   const textSaid = (c: Candidate): (() => ModelText | null) => () => m.candidate(viewOf(model, c.source.windowId) ?? w, c.text);
   /** "<value>" (the <part> of|in <whole>), the value a derivation of the whole's text. */
@@ -1544,13 +1554,18 @@ export async function proposeFill(
   });
   const titleSaid = title === null ? null : m.descriptor(w, title);
   // Each candidate's line, minted with what it carries now (its clause included), by its id in either ask.
-  const described = new Map<string, ModelText>();
-  for (const [list, ofId] of [[candidates, (c: Candidate) => c.id], [second, (c: Candidate) => c.id]] as const) {
-    for (const c of list) {
-      const said = mintCandidate(m, model, c);
-      if (said !== null) described.set(ofId(c), said);
+  // The whose stage describes each with its block head, the value questions as VALUE_BLOCK_HEAD says.
+  const describe = (blockHead: boolean): Map<string, ModelText> => {
+    const out = new Map<string, ModelText>();
+    for (const list of [candidates, second]) {
+      for (const c of list) {
+        const said = mintCandidate(m, model, c, { blockHead });
+        if (said !== null) out.set(c.id, said);
+      }
     }
-  }
+    return out;
+  };
+  const described = describe(VALUE_BLOCK_HEAD);
   // Two stages when some field wants a person's details (B24). First, both asks say whose details each such
   // field wants and whose each person's value is. Then the value questions, where a field that wants the user's
   // details is not offered a value both asks say is someone else's, and the reverse. In one stage, live Jev
@@ -1558,12 +1573,13 @@ export async function proposeFill(
   // the user's own name and email from memory were offered beside it (evidence/screen/b24/dev-7: 0 of 12 memory
   // values on the corpus's four memory forms).
   const staged = whose && personal.size > 0;
+  const describedWhose = !staged || VALUE_BLOCK_HEAD ? described : describe(true);
   const [w1, w2] =
     asked.length === 0 || !staged
       ? [null, null]
       : await Promise.all([
-          asking(buildFillRequest(m, w, asked.map((f) => f.said), candidates, described, 0, declared, titleSaid, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" })),
-          asking(buildFillRequest(m, w, asked.map((f) => f.said), second, described, 1, declared, titleSaid, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" })),
+          asking(buildFillRequest(m, w, asked.map((f) => f.said), candidates, describedWhose, 0, declared, titleSaid, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" })),
+          asking(buildFillRequest(m, w, asked.map((f) => f.said), second, describedWhose, 1, declared, titleSaid, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" })),
         ]);
   /** Both stage-one asks' answer to a whose or owner question, agreed at the whose cutoff, or null. */
   const stageOne = (q: string, q2: string = q): string | null => {

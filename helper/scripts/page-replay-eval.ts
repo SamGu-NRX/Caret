@@ -18,7 +18,7 @@ import * as z from "zod";
 import { ScreenModel } from "../src/model.ts";
 import { forgetWindows } from "../src/privacy.ts";
 import { proposeFill } from "../src/fill/fill.ts";
-import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
+import { loadJevKey, makeJevClient, storableRequest, type AskJev } from "../src/fill/jev.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { PageSnapshot, PROTOCOL_VERSION, type FillField, type Node, type Snapshot } from "../src/protocol.ts";
@@ -54,7 +54,7 @@ const askJev: AskJev = async (req) => {
   const r = await live(req);
   spent += r.costUsd;
   calls++;
-  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], `${JSON.stringify({ site: current, questions: Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])), answers: r.answers })}\n`);
+  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], `${JSON.stringify({ site: current, questions: storableRequest(req, Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers })}\n`);
   return r;
 };
 

@@ -3,8 +3,9 @@
 // redactWindow, so no extraction path has a secret filter of its own and none can miss one. Per-path filters did not
 // converge: each round of review found another path (a field's label, its nearest label, a block head, a cell) or
 // another format (a marker after the label, "pin#", a quoted value). The rule is the marker word (memory/sensitive.ts
-// markerWord) or a value Caret never types (valueKind); a request that still carries either is refused before it is
-// sent (privacy.ts assertNoSecrets).
+// markerWord) or a value Caret never types (valueKind). SC1: a request carries only text minted from this view
+// (privacy/disclosure.ts), and the client refuses a value in a format Caret never carries (privacy.ts
+// assertNoExcludedValue).
 //
 // What the view drops:
 //   - every line that holds a marker word or such a value, anywhere in it, whatever follows; a marker split by a line

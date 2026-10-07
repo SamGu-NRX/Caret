@@ -1,4 +1,4 @@
-import { assertNoSecrets } from "../privacy.ts";
+import { assertNoExcludedValue } from "../privacy.ts";
 // The helper's side of apps/local-model (caret-local-model, G1): one child process that loaded a GGUF once and
 // answers grammar-constrained completions, one JSON object per line each way (apps/local-model/README.md). Requests
 // go one at a time; the answers come back in order. Nothing here retries: a failure is the caller's to report.
@@ -130,7 +130,7 @@ export async function startLocalModel(o: LocalModelOptions): Promise<LocalModelT
     loadMs: ready.data.loadMs,
     memoryAtLoad: ready.data.memory,
     complete(req, signal) {
-      assertNoSecrets({ input: { prefix: req.prefix, prompt: req.prompt } });
+      assertNoExcludedValue({ input: { prefix: req.prefix, prompt: req.prompt } });
       const id = `r${++seq}`;
       const run = async (): Promise<LocalCompletion> => {
         signal?.throwIfAborted();

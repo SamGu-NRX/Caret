@@ -55,7 +55,7 @@ import { pageWindowId } from "../../helper/src/engines/windows.ts";
 import type { VerbTiming } from "../../helper/src/engines/page-link.ts";
 import type { EngineSession } from "../../helper/src/engines/session.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
-import type { AskJev, JevRequest, JevResult } from "../../helper/src/fill/jev.ts";
+import { storableRequest, type AskJev, type JevRequest, type JevResult } from "../../helper/src/fill/jev.ts";
 import { harnessEngine } from "../../helper/src/engines/decide/harness.ts";
 import type { CannedAnswer } from "../../helper/src/engines/decide/canned.ts";
 import { pageLoopCanned, type PageLoopOwnership } from "./canned-jev.ts";
@@ -533,7 +533,7 @@ const askJev: AskJev = async (req) => {
   if (spent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   const r = await decide.ask(req);
   spent += r.costUsd;
-  if (args["log-jev"] !== undefined) appendFileSync(args["log-jev"], `${JSON.stringify({ page: page?.id ?? "", stage, questions: Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }])), answers: r.answers, nouls: r.nouls ?? {} })}\n`);
+  if (args["log-jev"] !== undefined) appendFileSync(args["log-jev"], `${JSON.stringify({ page: page?.id ?? "", stage, questions: storableRequest(req, Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, { ins: String(q.instructions).slice(0, 400), criteria: q.criteria }]))), answers: r.answers, nouls: r.nouls ?? {} })}\n`);
   calls.push({ page: page?.id ?? "", stage, inputTokens: r.inputTokens, latencyMs: r.latencyMs, costUsd: r.costUsd });
   return r;
 };

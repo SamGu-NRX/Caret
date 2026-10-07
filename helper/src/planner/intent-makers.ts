@@ -6,7 +6,6 @@
 //     and each value's field. A part both asks do not agree on, at the floors below, is not taken.
 // Neither makes values. checkIntent checks whatever a maker returns.
 import type { Settled } from "../fill/ask-scope.ts";
-import { ownWording } from "../privacy.ts";
 import type { Disclosure, Minted, ModelText } from "../privacy/disclosure.ts";
 import * as z from "zod";
 import { randomInt } from "node:crypto";
@@ -108,7 +107,6 @@ const ROUTE_CRITERIA = {
   refuse: "Something Caret must not or cannot do here: pay or give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.",
   ask: "The instruction is too unclear to act on.",
 } as const;
-ownWording(...Object.values(ROUTE_CRITERIA));
 const REFUSE_REASONS = {
   neverTyped: "It asks for a card number, a password, a one-time code, or a Social Security or other government ID number.",
   payment: "It asks to pay.",
@@ -116,7 +114,6 @@ const REFUSE_REASONS = {
   noSuchField: "It asks for a field this form does not have.",
   nothingToFill: "Something else Caret should not do.",
 } as const;
-ownWording(...Object.values(REFUSE_REASONS));
 
 /** Stage one's two wordings of each question; the second reorders every option list. */
 const WORDS = {

@@ -20,7 +20,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { proposeFill } from "../src/fill/fill.ts";
-import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
+import { loadJevKey, makeJevClient, storableRequest, type AskJev } from "../src/fill/jev.ts";
 import { heldAsConversation, heldToHalf, windowBudget } from "../src/privacy.ts";
 import { collectCandidates, cutKinds } from "../src/fill/candidates.ts";
 import { formInputs } from "../src/fill/fill.ts";
@@ -62,7 +62,7 @@ const askJev: AskJev = async (req) => {
   const r = await live(req);
   spent += r.costUsd;
   calls++;
-  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], JSON.stringify({ form: current, questions: Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])), answers: r.answers }) + "\n");
+  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], JSON.stringify({ form: current, questions: storableRequest(req, Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]))), answers: r.answers }) + "\n");
   return r;
 };
 let current = "";

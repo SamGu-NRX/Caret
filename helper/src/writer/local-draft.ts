@@ -7,7 +7,7 @@ import { instructionForModel } from "../fill/redact.ts";
 // The development model, Cotypist's Gemma 4 E2B, is a base model (G1), so the prompt is a few-shot document, not a
 // chat. Its examples are invented and appear in no evaluation case. The host renders localTextRequest's prompt parts
 // into its own model's prompt; this file is the rendering L1 measured, for the host batch to match or replace.
-import { assertNoSecrets } from "../privacy.ts";
+import { assertNoExcludedValue } from "../privacy.ts";
 import type { LocalTextAsk } from "./local-port.ts";
 
 /**
@@ -93,6 +93,6 @@ export function draftAsk(instruction: string, field: { name: string; placeholder
     maxTokens: LOCAL_DRAFT_MAX_TOKENS,
     deadlineMs: now + LOCAL_DRAFT_DEADLINE_MS,
   };
-  assertNoSecrets({ input: ask.prompt });
+  assertNoExcludedValue({ input: ask.prompt });
   return ask;
 }

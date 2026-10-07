@@ -4,11 +4,12 @@
 // disappears at runtime, so the check that holds is `verify`, run on the body where each request is sent (the Jev
 // client, the writer port, the canned harness and the local decision engine): any string in the body that this
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
-import { assertNoSecrets, cut, flat, SnippetLedger, type Snippet } from "../privacy.ts";
+import { assertNoExcludedValue, cut, flat, SnippetLedger, type Snippet } from "../privacy.ts";
 import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
-import { excludedValue } from "./exclude.ts";
+import { excludedValue, withholdValues } from "./exclude.ts";
+import { ANY_PATH, childGlob, shapeOf, UNNAMED, type Slot } from "./shapes.ts";
 import { describeField, type FieldDescriptor } from "../fill/descriptor.ts";
 import type { Node } from "../protocol.ts";
 
@@ -82,6 +83,20 @@ export class UnmintedText extends Error {
   }
 }
 
+/**
+ * SC1 2c: a minted text at a path its request's shape (privacy/shapes.ts) has no row for, minted for a reason its slot
+ * does not allow, or longer than its slot; or a request whose purpose has no shape. Never names the text.
+ */
+export class OutOfShape extends UnmintedText {
+  constructor(message: string) {
+    super(message);
+    this.name = "OutOfShape";
+  }
+}
+
+/** How many ways of minting one text a Disclosure keeps, and how many a composition may produce, before it keeps their union. */
+const MAX_WAYS = 8;
+
 /** The parts of a decision or writer request that leave the Mac, as builders write them before they are sealed. */
 interface Sealable {
   purpose?: string;
@@ -152,18 +167,59 @@ export class Disclosure extends SnippetLedger {
   readonly [IS_DISCLOSURE] = true;
   /** Every text minted for this request, with the reasons it was minted under. */
   private readonly mints = new Map<string, Set<MintReason>>();
+  /**
+   * Each way a text was minted, as the set of reasons that one minting carried. The same string may be minted twice for
+   * different reasons (a count "2" Caret wrote and a "2" a field shows): a shape's slot accepts a text when one way of
+   * minting it fits, so a coincidence never refuses a request, while a text composed from a candidate carries that
+   * candidate in every way of minting it.
+   */
+  private readonly ways = new Map<string, MintReason[][]>();
+  /** Texts jsonText wrote, with the value each writes: verify checks that value's strings against the shape. */
+  private readonly asJson = new Map<string, unknown>();
   /** Texts plan() or memory() already priced, so minting them again declares nothing twice. */
   private readonly asPlan = new Set<string>();
   private readonly asMemory = new Set<string>();
   /** Texts take() already priced, by window id. */
   private readonly asTaken = new Map<string, Set<string>>();
 
-  /** Records `text` as minted under `reasons` and brands it. */
+  /** Records `text` as minted under `reasons`, as one way of minting it, and brands it. */
   private record(text: string, reasons: Iterable<MintReason>): ModelText {
+    return this.recordWays(text, [[...reasons]]);
+  }
+
+  /** Records `text` as minted in each of `ways` (each a set of reasons) and brands it. */
+  private recordWays(text: string, ways: readonly (readonly MintReason[])[]): ModelText {
     let r = this.mints.get(text);
     if (r === undefined) this.mints.set(text, (r = new Set()));
-    for (const x of reasons) r.add(x);
+    let kept = this.ways.get(text);
+    if (kept === undefined) this.ways.set(text, (kept = []));
+    for (const way of ways) {
+      for (const x of way) r.add(x);
+      const sorted = [...new Set(way)].sort();
+      if (!kept.some((k) => k.length === sorted.length && k.every((x, i) => x === sorted[i]))) kept.push(sorted);
+    }
+    // Past MAX_WAYS, one way holding every reason stands for them all: a slot then accepts it only if it allows all.
+    if (kept.length > MAX_WAYS) this.ways.set(text, [[...r].sort()]);
     return text as ModelText;
+  }
+
+  /**
+   * The ways of minting a text composed of `parts`, each of which must be minted, with `own` added when Caret's own
+   * wording joins them: one way for each choice of one way per part. Past MAX_WAYS, one way holding every reason.
+   */
+  private composedWays(parts: readonly string[], where: string, own: boolean): MintReason[][] {
+    let out: MintReason[][] = [own ? ["ownWording"] : []];
+    for (const p of parts) {
+      this.reasons(p, where);
+      const ways = this.ways.get(p) ?? [];
+      if (out.length * ways.length > MAX_WAYS) {
+        const all = new Set<MintReason>(own ? ["ownWording"] : []);
+        for (const q of parts) for (const x of this.reasons(q, where)) all.add(x);
+        return [[...all]];
+      }
+      out = out.flatMap((o) => ways.map((w) => [...o, ...w]));
+    }
+    return out;
   }
 
   /** The reasons `text` was minted under, or null when this Disclosure never minted it. */
@@ -315,6 +371,15 @@ export class Disclosure extends SnippetLedger {
     return this.record(text, ["drafted"]);
   }
 
+  /**
+   * Whether `text` may be quoted as a window's own: this Disclosure was built over the window `windowId` and its redacted
+   * view shows the text (viewHolds). A provenance names its window but was not read from a view here.
+   */
+  shownIn(windowId: string, text: string): boolean {
+    const w = this.known.get(windowId);
+    return w !== undefined && viewHolds(redactWindow(w), text);
+  }
+
   /** The app a window belongs to, by the name the reader gives it: not screen text the window shows, but a descriptor of it. */
   app(view: RedactedWindow): ModelText {
     if (!isRedacted(view)) throw new UnmintedText("an app name was read from a window that is not a redacted view");
@@ -378,19 +443,19 @@ export class Disclosure extends SnippetLedger {
    */
   derived<W extends string = never>(base: ModelText | Basis | readonly (ModelText | Basis)[], text: string, codeWords: readonly (string extends W ? never : W)[] = []): ModelText | null {
     const bases = typeof base === "string" || base instanceof Basis ? [base] : base;
-    const reasons = new Set<MintReason>(["held"]);
     const shown = new Set<string>(codeWords.map((w) => w.toLowerCase()));
+    const minted: ModelText[] = [];
     for (const b of bases) {
       if (b instanceof Basis) {
         if (b.of !== this) throw new UnmintedText("derived: a basis read for another request");
-      } else for (const r of this.reasons(b, "derived")) reasons.add(r);
+      } else minted.push(b);
       const t = b instanceof Basis ? b.text : b;
       for (const w of t.toLowerCase().split(/[^\p{L}\p{N}]+/u)) if (w !== "") shown.add(w);
     }
     const ws = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x !== "");
     if (ws.length === 0 && text.trim() !== "") return null;
     for (const w of ws) if (!shown.has(w) && !/^\d+(?:st|nd|rd|th|am|pm|h)?$/u.test(w) && !DERIVED_WORDS.has(w)) return null;
-    return this.record(text, reasons);
+    return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
   }
 
   /**
@@ -429,38 +494,32 @@ export class Disclosure extends SnippetLedger {
    */
   t(strings: TemplateStringsArray, ...holes: readonly ModelText[]): ModelText {
     if (!Array.isArray((strings as { raw?: unknown }).raw) || !Object.isFrozen(strings)) throw new UnmintedText("t takes a template literal");
-    const reasons = new Set<MintReason>();
     let out = strings[0] ?? "";
     holes.forEach((h, i) => {
       if (typeof h !== "string") throw new UnmintedText("t: a hole is not text");
-      for (const r of this.reasons(h, "t")) reasons.add(r);
       out += h + (strings[i + 1] ?? "");
     });
-    if (strings.some((s) => s !== "")) reasons.add("ownWording");
-    return this.record(out, reasons);
+    return this.recordWays(out, this.composedWays(holes, "t", strings.some((s) => s !== "")));
   }
 
   /** A minted text cut to `max` characters with an ellipsis (privacy.ts cut); it keeps its reasons. */
   cut(s: ModelText, max?: number): ModelText {
-    return this.record(cut(s, max), this.reasons(s, "cut"));
+    return this.recordWays(cut(s, max), this.composedWays([s], "cut", false));
   }
 
   /** A minted text's first `max` characters, with no ellipsis (String.slice); it keeps its reasons. */
   slice(s: ModelText, max: number): ModelText {
-    return this.record(s.slice(0, max), this.reasons(s, "slice"));
+    return this.recordWays(s.slice(0, max), this.composedWays([s], "slice", false));
   }
 
   /** A minted text with its whitespace collapsed (privacy.ts flat); it keeps its reasons. */
   flat(s: ModelText): ModelText {
-    return this.record(flat(s), this.reasons(s, "flat"));
+    return this.recordWays(flat(s), this.composedWays([s], "flat", false));
   }
 
   /** Minted texts joined by Caret's separator; the result carries every part's reasons. */
   join(parts: readonly ModelText[], sep: string): ModelText {
-    const reasons = new Set<MintReason>();
-    for (const p of parts) for (const r of this.reasons(p, "join")) reasons.add(r);
-    if (sep !== "" && parts.length > 1) reasons.add("ownWording");
-    return this.record(parts.join(sep), reasons);
+    return this.recordWays(parts.join(sep), this.composedWays(parts, "join", sep !== "" && parts.length > 1));
   }
 
   /**
@@ -470,21 +529,43 @@ export class Disclosure extends SnippetLedger {
    */
   seal<R extends Sealable>(req: R): R & { disclosure: Disclosure } {
     const sealed = { ...req, disclosure: this };
-    // The G2 disclosure rule, at build as it always was (SC1 step 5 narrows it to formats).
-    assertNoSecrets(req as Parameters<typeof assertNoSecrets>[0]);
+    // The client's format check, at build too (privacy.ts assertNoExcludedValue).
+    assertNoExcludedValue(req as Parameters<typeof assertNoExcludedValue>[0]);
     if (req.input !== undefined && req.kind !== undefined) this.verify(req.kind, req.input, "input");
-    else this.verify(req.purpose ?? "unknown", { state: req.state, questions: { ...(req.questions as object), ...(req.nouls as object | undefined) } });
+    else this.verify(req.purpose ?? UNNAMED, { state: req.state, questions: { ...(req.questions as object), ...(req.nouls as object | undefined) } });
     return sealed;
   }
 
   /**
-   * Every string in a body is a text this Disclosure minted, every key is a short identifier, and the paths the client
-   * writes itself hold only their allowed values. Throws UnmintedText naming the purpose and the path, never the text.
-   * `root` names the body in paths: "" for a Jev wire body, "input" for a writer's input.
+   * Every string in a body is a text this Disclosure minted, every key is a short identifier, the paths the client
+   * writes itself hold only their allowed values, and every text fits its purpose's shape (privacy/shapes.ts): its path
+   * has a row, one way it was minted carries only reasons the row allows, and it is no longer than the row's max.
+   * Throws UnmintedText (OutOfShape for a shape's rule) naming the purpose and the path, never the text. `root` names
+   * the body in paths: "" for a Jev wire body, "input" for a writer's input.
    */
   verify(purpose: string, body: unknown, root = ""): void {
+    const shape = shapeOf(purpose);
+    if (shape === null) throw new OutOfShape(`${purpose} has no request shape (privacy/shapes.ts), so nothing in it may be sent; it was not sent`);
+    const check = (path: string, glob: string, v: string): void => {
+      // A state sent as one JSON text (Disclosure.jsonText) is checked as the value it writes, at the same path.
+      const json = this.asJson.get(v);
+      if (json !== undefined) return this.walk(purpose, json, path, check, glob);
+      const slot: Slot | undefined = shape[glob] ?? shape[ANY_PATH];
+      if (slot === undefined) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
+      if (v.length > slot.max) throw new OutOfShape(`${purpose}: ${path} holds ${v.length} characters, more than its shape's ${slot.max}; it was not sent`);
+      const ways = this.ways.get(v) ?? [];
+      if (!ways.some((w) => w.every((r) => slot.reasons.includes(r)))) throw new OutOfShape(`${purpose}: ${path} carries text minted as ${[...(this.mints.get(v) ?? [])].sort().join(", ")}, which its shape allows only as ${slot.reasons.join(", ")}; it was not sent`);
+    };
+    this.walk(purpose, body, root, check);
+  }
+
+  /**
+   * Walks a body: every string a text this Disclosure minted (or a client-written path's allowed value), every key an
+   * identifier; `each` is called on every minted string with its path and glob (privacy/shapes.ts childGlob).
+   */
+  private walk(purpose: string, body: unknown, root: string, each: ((path: string, glob: string, v: string) => void) | null, rootGlob = root): void {
     const at = (path: string, k: string | number): string => (typeof k === "number" ? `${path}[${k}]` : path === "" ? k : `${path}.${k}`);
-    const walk = (v: unknown, path: string): void => {
+    const go = (v: unknown, path: string, glob: string): void => {
       if (typeof v === "string") {
         const exempt = EXEMPT_EXACT.find((e) => e.path.test(path));
         if (exempt !== undefined) {
@@ -492,20 +573,21 @@ export class Disclosure extends SnippetLedger {
           return;
         }
         if (!this.mints.has(v)) throw new UnmintedText(`${purpose}: ${path} carries text that was not minted for this request; it was not sent`);
+        each?.(path, glob, v);
         return;
       }
       if (v === null || typeof v === "number" || typeof v === "boolean" || v === undefined) return;
-      if (Array.isArray(v)) return v.forEach((x, i) => walk(x, at(path, i)));
+      if (Array.isArray(v)) return v.forEach((x, i) => go(x, at(path, i), childGlob(glob, i)));
       if (typeof v === "object") {
         for (const [k, x] of Object.entries(v)) {
           if (!KEY.test(k)) throw new UnmintedText(`${purpose}: a key under ${path === "" ? "the body" : path} is not an identifier; it was not sent`);
-          walk(x, at(path, k));
+          go(x, at(path, k), childGlob(glob, k));
         }
         return;
       }
       throw new UnmintedText(`${purpose}: ${path} holds a ${typeof v}, which no request carries; it was not sent`);
     };
-    walk(body, root);
+    go(body, root, rootGlob);
   }
 
   /**
@@ -513,7 +595,7 @@ export class Disclosure extends SnippetLedger {
    * harness.ts layaState): every string inside it must be minted, and the text carries their reasons.
    */
   jsonText(v: unknown): ModelText {
-    this.verify("jsonText", v);
+    this.walk("jsonText", v, "", null);
     const reasons = new Set<MintReason>(["ownWording"]);
     const walk = (x: unknown): void => {
       if (typeof x === "string") for (const r of this.reasons(x, "jsonText")) reasons.add(r);
@@ -521,7 +603,9 @@ export class Disclosure extends SnippetLedger {
       else if (typeof x === "object" && x !== null) Object.values(x).forEach(walk);
     };
     walk(v);
-    return this.record(JSON.stringify(v), reasons);
+    const text = JSON.stringify(v);
+    this.asJson.set(text, v);
+    return this.record(text, reasons);
   }
 
   /** Never serialized with a request: JSON of a request names its Disclosure, nothing it holds. */
@@ -537,7 +621,7 @@ export class Disclosure extends SnippetLedger {
 export function verifySent(req: { purpose?: string; disclosure?: unknown }, body: unknown): void {
   const d = asDisclosure(req.disclosure);
   if (d === null) throw new UnmintedText(`${req.purpose ?? "a request"} has no Disclosure, so nothing in it was minted; it was not sent`);
-  d.verify(req.purpose ?? "unknown", body);
+  d.verify(req.purpose ?? UNNAMED, body);
 }
 
 /** The writer port's check: the request has a Disclosure and its input is all minted text. */
@@ -547,3 +631,22 @@ export function verifyWriterInput(req: { kind: string; disclosure?: unknown; inp
   d.verify(req.kind, req.input, "input");
 }
 
+/**
+ * PV2 Q2 (SC1 T5): what a local store keeps of a request (the replay cache, a request log, an evaluation's dump). The
+ * request's wire body is verified first, as the client verifies what it sends: every string minted for this request,
+ * in its shape. Then `kept`, the store's own record of it, is returned with every value in a format Caret never carries
+ * withheld (privacy/exclude.ts withholdValues) in its strings and its keys. Throws UnmintedText as the client would, so
+ * a store never keeps a body the client would not send.
+ */
+export function storable<T>(req: { purpose?: string; disclosure?: unknown }, wire: unknown, kept: T): T {
+  verifySent(req, wire);
+  return withheldDeep(kept) as T;
+}
+
+/** A value with withholdValues applied to every string and key in it. */
+export function withheldDeep(v: unknown): unknown {
+  if (typeof v === "string") return withholdValues(v);
+  if (Array.isArray(v)) return v.map(withheldDeep);
+  if (typeof v === "object" && v !== null) return Object.fromEntries(Object.entries(v).map(([k, x]) => [withholdValues(k), withheldDeep(x)]));
+  return v;
+}

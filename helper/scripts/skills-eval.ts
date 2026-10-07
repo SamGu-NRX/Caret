@@ -17,7 +17,7 @@ import { parseArgs } from "node:util";
 import { positiveNumber } from "./flags.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { loadJevKey, makeJevClient, type AskJev, type JevRequest } from "../src/fill/jev.ts";
+import { loadJevKey, makeJevClient, storableRequest, type AskJev, type JevRequest } from "../src/fill/jev.ts";
 import { checkName, type RoutineFacts } from "../src/patterns/naming.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type PatternOffer, type SkillOffer } from "../src/protocol.ts";
 import type { TaskResult } from "../src/executor/executor.ts";
@@ -141,7 +141,7 @@ async function run(label: string, s: SkillStream, takeOffers: boolean): Promise<
     out.namingRequests = recorded.length;
     out.valuesInRequests = recorded.filter((r) => values.some((v) => JSON.stringify([r.state, r.questions]).includes(v))).length;
     out.skills = helper.memory.list("skill").flatMap((e) => (e.kind === "skill" ? [{ name: e.fields.name, runs: e.fields.runs, cleanRuns: e.fields.cleanRuns }] : []));
-    writeFileSync(join(OUT, `naming-requests-${label}.json`), JSON.stringify(recorded.map((r) => ({ state: r.state, questions: r.questions, snippets: r.snippets, charged: r.charged })), null, 2) + "\n");
+    writeFileSync(join(OUT, `naming-requests-${label}.json`), JSON.stringify(recorded.map((r) => storableRequest(r, { state: r.state, questions: r.questions, snippets: r.snippets, charged: r.charged })), null, 2) + "\n");
   } finally {
     out.wallSeconds = (Date.now() - t0) / 1000;
     helper.shutdown();

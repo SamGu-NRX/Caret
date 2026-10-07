@@ -30,7 +30,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import type { AskJev } from "../src/fill/jev.ts";
+import { storableRequest, type AskJev } from "../src/fill/jev.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { cannedReply } from "../src/engines/decide/canned.ts";
 import type { FillTrace } from "../src/fill/fill.ts";
@@ -257,7 +257,8 @@ const requestsBy = new Map<string, number>();
 const askJev: AskJev = async (req) => {
   if (jevSpent + writerSpent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   requestsBy.set(current, (requestsBy.get(current) ?? 0) + 1);
-  const qs = Object.fromEntries(Object.entries({ ...req.questions, ...req.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]));
+  // PV2 Q2: the log keeps an excerpt of a verified request (fill/jev.ts storableRequest), replayed or sent.
+  const qs = storableRequest(req, Object.fromEntries(Object.entries({ ...req.questions, ...req.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])));
   const hit = a.replay === undefined ? undefined : recorded.get(replayKey(current, qs))?.shift();
   if (a.replay !== undefined) replay[hit === undefined ? "misses" : "hits"]++;
   const r = hit === undefined ? await decide.ask(req) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };

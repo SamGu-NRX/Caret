@@ -165,8 +165,8 @@ export function luhn(digits: string): boolean {
  * G2 round 4: whether a text holds a secret marker word: any phrase of LABEL_PHRASES ("password", "PIN", "token",
  * "security code", "API key", "SSN", "routing", …) as whole words, a plural "s" allowed, case-insensitive, anywhere,
  * whatever follows it (a separator, a quote, a bracket, or nothing at all). The one rule for what may reach Jev: the
- * redacted view (fill/redact.ts) drops a line or a node that holds one, and a request that still carries one is refused
- * (privacy.ts assertNoSecrets). It drops some innocent lines ("Pin it to the board", "routing the call"); the lead
+ * redacted view (fill/redact.ts) drops a line or a node that holds one, and a request carries only text minted from that
+ * view (privacy/disclosure.ts; SC1 retired G2's wire check for these words, privacy.ts assertNoExcludedValue). It drops some innocent lines ("Pin it to the board", "routing the call"); the lead
  * accepted that cost (G2 round 4), counted in fill/redact.ts.
  */
 export function markerWord(text: string | null | undefined): boolean {
