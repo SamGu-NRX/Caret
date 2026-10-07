@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ActAnswer } from "../src/shared/messages.ts";
-import { classifyInsert, type InsertedField, type InsertIntent, type InsertState, recoverInsert } from "../src/content/partial-insert.ts";
+import { classifyInsert, type InsertedField, type InsertIntent, type InsertState, recoverInsert, textControlField } from "../src/content/partial-insert.ts";
 
 interface Row {
   name: string;
@@ -19,7 +19,11 @@ const table = JSON.parse(readFileSync(new URL("../../apps/caret/Tests/CaretHostC
 
 const expected = (r: Row): InsertState => (r.state === "partial" ? { kind: "partial", inserted: r.inserted ?? -1 } : { kind: r.state });
 
-/** A field as a string with a selection; counts every edit, so a test can say nothing was written. */
+/**
+ * A field as a string with a selection; counts every edit, so a test can say nothing was written. It selects as the
+ * editor adapter does (insert.ts domField): a range only by extending from a caret collapsed at its end, so a collapsed
+ * "selection" of anything but the current caret fails.
+ */
 class Field implements InsertedField {
   sel: [number, number];
   deletes = 0;
@@ -45,8 +49,13 @@ class Field implements InsertedField {
   }
   select(start: number, end: number): boolean {
     if (this.refuseSelect || start < 0 || end > this.text.length) return false;
+    if (this.sel[0] !== this.sel[1] || this.sel[1] !== end) return false;
     this.sel = [start, end];
     return true;
+  }
+  saveSelection(): () => void {
+    const saved: [number, number] = [this.sel[0], this.sel[1]];
+    return () => void (this.sel = saved);
   }
   selected(): string | null {
     return this.text.slice(this.sel[0], this.sel[1]);
@@ -75,7 +84,8 @@ describe("S1's ruling for a page insert", () => {
 
   it("runs the shared table through recovery: only a partial row is edited, and it goes back to exactly the original", async () => {
     for (const r of table.cases) {
-      const f = new Field(r.held);
+      // The caret where an insert at the caret leaves it: after the characters that went in.
+      const f = new Field(r.held, r.start + (r.inserted ?? 0));
       const a = await recoverInsert(f, { before: r.before, start: r.start, end: r.end, text: r.replacement }, open(f));
       expect(a.outcome, r.name).toBe("failed");
       // A page insert goes in at a caret; a partial over a replaced range is left (the host's ⌘Z puts such text back).
@@ -107,7 +117,7 @@ describe("a partial insert at the caret", () => {
   });
 
   it("is left, and the page's Undo named, when the grant ended before Caret could take it out", async () => {
-    const f = new Field("Dear Sam, th see you");
+    const f = new Field("Dear Sam, th see you", 12);
     const a = await recoverInsert(f, intent, async () => ({ outcome: "notAllowed", detail: "the task's grant ended (before Caret took out the part of its text that went in)" }));
     expect(f.text).toBe("Dear Sam, th see you");
     expect(f.deletes).toBe(0);
@@ -116,7 +126,7 @@ describe("a partial insert at the caret", () => {
   });
 
   it("is left when focus went or an input method started composing", async () => {
-    const f = new Field("Dear Sam, th see you");
+    const f = new Field("Dear Sam, th see you", 12);
     f.block = "the field no longer has focus";
     const a = await recoverInsert(f, intent, open(f));
     expect(f.deletes).toBe(0);
@@ -124,7 +134,7 @@ describe("a partial insert at the caret", () => {
   });
 
   it("is left when the user typed while Caret checked its grant", async () => {
-    const f = new Field("Dear Sam, th see you");
+    const f = new Field("Dear Sam, th see you", 12);
     f.duringGate = () => void (f.text = "Dear Sam, thx see you");
     const a = await recoverInsert(f, intent, open(f));
     expect(f.text).toBe("Dear Sam, thx see you");
@@ -133,23 +143,83 @@ describe("a partial insert at the caret", () => {
   });
 
   it("is left, with the caret back after it, when only Caret's characters cannot be selected", async () => {
-    const f = new Field("Dear Sam, th see you");
+    const f = new Field("Dear Sam, th see you", 12);
     f.refuseSelect = true;
     const a = await recoverInsert(f, intent, open(f));
     expect(f.deletes).toBe(0);
     expect(a.insert).toBe("unverified");
-    const g = new Field("Dear Sam, th see you");
+    expect(f.sel).toEqual([12, 12]);
+    // The first, non-empty selection takes one character too many (the user's ","): refused, and the caret goes back
+    // exactly where the insert left it, collapsed (S2 review).
+    const g = new Field("Dear Sam, th see you", 12);
+    const select = g.select.bind(g);
+    let first = true;
     g.select = (s, e) => {
+      if (!first || s === e) return select(s, e);
+      first = false;
       g.sel = [s - 1, e];
       return true;
     };
-    await recoverInsert(g, intent, open(g));
+    const b = await recoverInsert(g, intent, open(g));
     expect(g.deletes).toBe(0);
     expect(g.text).toBe("Dear Sam, th see you");
+    expect(b.insert).toBe("unverified");
+    expect(g.sel).toEqual([12, 12]);
+  });
+
+  it("restores a text control's own caret through the real adapter when it cannot select", async () => {
+    // textControlField is what insert.ts uses for an input or a textarea; this control throws on its first selection
+    // request (an input type with no selection API) and must end with the caret where the insert left it.
+    const control = {
+      value: "Dear Sam, th see you",
+      selectionStart: 12 as number | null,
+      selectionEnd: 12 as number | null,
+      calls: 0,
+      setSelectionRange(start: number, end: number): void {
+        this.calls++;
+        if (this.calls === 1) {
+          this.selectionStart = start;
+          throw new Error("InvalidStateError");
+        }
+        this.selectionStart = start;
+        this.selectionEnd = end;
+      },
+    };
+    let deletes = 0;
+    const field = textControlField(control, { blocked: () => null, deleteSelection: () => void deletes++, settle: async () => {} });
+    const a = await recoverInsert(field, intent, async () => null);
+    expect(deletes).toBe(0);
+    expect(a.insert).toBe("unverified");
+    expect([control.selectionStart, control.selectionEnd]).toEqual([12, 12]);
+  });
+
+  it("takes the characters out through the real text control adapter", async () => {
+    const control = {
+      value: "Dear Sam, th see you",
+      selectionStart: 12 as number | null,
+      selectionEnd: 12 as number | null,
+      setSelectionRange(start: number, end: number): void {
+        this.selectionStart = start;
+        this.selectionEnd = end;
+      },
+    };
+    const field = textControlField(control, {
+      blocked: () => null,
+      deleteSelection: () => {
+        const s = control.selectionStart ?? 0;
+        control.value = control.value.slice(0, s) + control.value.slice(control.selectionEnd ?? s);
+        control.selectionEnd = s;
+      },
+      settle: async () => {},
+    });
+    const a = await recoverInsert(field, intent, async () => null);
+    expect(a.insert).toBe("unchanged");
+    expect(control.value).toBe(intent.before);
+    expect([control.selectionStart, control.selectionEnd]).toEqual([9, 9]);
   });
 
   it("says so when the page changed the field again after Caret took its characters out", async () => {
-    const f = new Field("Dear Sam, th see you");
+    const f = new Field("Dear Sam, th see you", 12);
     f.afterDelete = (x) => void (x.text += "!");
     const a = await recoverInsert(f, intent, open(f));
     expect(a).toEqual({ outcome: "failed", detail: "only 3 of 7 characters of the insert went in; Caret took them out, but the field then read otherwise, so Caret left it as it is", insert: "unverified" });
@@ -212,7 +282,7 @@ describe("property: no unrecognized field is ever changed", () => {
         const state = classifyInsert(intent, held);
         expect(state.kind, JSON.stringify({ intent, held })).toBe(oracle(intent, held));
         counts[state.kind] = (counts[state.kind] ?? 0) + 1;
-        const f = new Field(held);
+        const f = new Field(held, start + (state.kind === "partial" ? state.inserted : 0));
         await recoverInsert(f, intent, open(f));
         if (state.kind === "partial") {
           expect(f.text, JSON.stringify({ intent, held })).toBe(before);

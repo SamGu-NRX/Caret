@@ -22,18 +22,22 @@ import TextInsertion
 ///    it with an AX error gets a ⌘V posted to its pid through the reconciled pasteboard
 ///    (`ReconcilingPasteboard`) instead, and is remembered (`WriteMethodTable`). An app that takes
 ///    the AX write and shows nothing gets no second write now, since the first may still land; the
-///    claim fails and the app pastes from its next one. Fields known to do that paste from the
-///    first write (`WriteFallback.pastesFirst`: Electron apps, and fields that say `AXSelectedText`
-///    cannot be set, as Mac Catalyst's do).
+///    claim fails and the app pastes from its next one.
 /// 5. Reread until the field holds exactly the value the guard predicted. After a paste, put the
 ///    user's clipboard back only if nobody wrote to it since Caret did, and if the field did not
 ///    take the paste, name the element that has focus now if the paste shows there
 ///    (`WriteFallback.strayInsertion`), without changing it.
+/// 6. A write that reached the app and did not verify (stopped or revoked between typed keys or
+///    chunks, an AX replacement whose settling failed, a post that threw) is read again once the
+///    field holds still, and judged by S1's ruling (`UnconfirmedInsert`). The fill's undo grant is
+///    armed before step 4, so ⌘Z reaches the field whole or partial; a field Caret does not
+///    recognize is left as it is and the result says what it holds and held.
 final class InsertionExecutor: @unchecked Sendable {
     struct Result: Sendable {
         let claim: Claim
         let insertion: DebugState.Insertion
-        /// For a verified fill: what ⌘Z may revert while the toast is up.
+        /// For a fill: what ⌘Z may revert while the toast is up. A verified write's, or an
+        /// unconfirmed one's whose field held the whole text or a part of it (S2).
         let undo: UndoGrant?
         /// Why the write did not happen or did not verify, as a `FillResult` reason code.
         let reason: String?
@@ -41,12 +45,18 @@ final class InsertionExecutor: @unchecked Sendable {
         let method: FillResult.Method?
         /// The field a paste landed in instead of the approved one, by its label.
         let strayField: String?
+        /// For a write that reached the app and did not verify: what a read of the field found then.
+        let recovery: UnconfirmedInsert.Report?
     }
 
     struct UndoResult: Sendable {
         let grant: UndoGrant
         let ok: Bool
         let error: String?
+        /// Only the part of an unconfirmed write that had gone in was taken out (S2).
+        var partial = false
+        /// For an unconfirmed write's field left as it is: what it holds and held, in S1's words.
+        var says: String?
     }
 
     private typealias Settle = WriteFallback.Settle
@@ -59,8 +69,6 @@ final class InsertionExecutor: @unchecked Sendable {
     private let policy: TargetPolicy
     let authority: HostAuthority
     let writeMethods = WriteMethodTable()
-    /// Keys typed into the app while a fix is written there; the tap starts the hold, this ends it.
-    let keyHold: KeyHold
     /// Pastes through Caret's marked item and puts the user's clipboard back only if it is still
     /// Caret's (Sam's decision of 2026-10-04).
     private let pasteboard: ReconcilingPasteboard
@@ -82,6 +90,9 @@ final class InsertionExecutor: @unchecked Sendable {
     /// can reread exactly that element even after focus moved to the next field.
     private let written = OSAllocatedUnfairLock(initialState: [(UInt64, AXUIElement, UInt64)]())
     private let writeIDs = OSAllocatedUnfairLock(initialState: UInt64(0))
+    /// How many written elements stay bound. Every insert is bound before it writes (S2), so a run
+    /// of Tabs must not push out the one whose toast or line still offers ⌘Z (5 s).
+    private static let boundWrites = 16
 
     init(
         arbiter: OfferArbiter,
@@ -92,7 +103,6 @@ final class InsertionExecutor: @unchecked Sendable {
         advanceAfterFill: Bool,
         pasteRestoreDelay: TimeInterval = 0,
         pasteboard: ReconcilingPasteboard = ReconcilingPasteboard(),
-        keyHold: KeyHold = KeyHold(),
         onFinished: @escaping @Sendable (Result) -> Void,
         onUndone: @escaping @Sendable (UndoResult) -> Void
     ) {
@@ -104,7 +114,6 @@ final class InsertionExecutor: @unchecked Sendable {
         self.advanceAfterFill = advanceAfterFill
         self.pasteRestoreDelay = pasteRestoreDelay
         self.pasteboard = pasteboard
-        self.keyHold = keyHold
         self.onFinished = onFinished
         self.onUndone = onUndone
     }
@@ -127,13 +136,10 @@ final class InsertionExecutor: @unchecked Sendable {
     /// Tap thread or debug socket. Takes the claim's authorization at the key, then only enqueues.
     func submit(_ claim: Claim) {
         let grant = authority.grant()
-        // On the tap thread the Tab itself is already counted, so any later mark is the user's next input
-        // (`WriteRecheck.input`). Keys typed meanwhile are held (`KeyHold`) and do not move it.
-        let mark = status.inputMark()
         if claim.rangeEdit != nil {
-            queue.async { [self] in runRange(claim, grant, since: mark) }
+            queue.async { [self] in runRange(claim, grant) }
         } else {
-            queue.async { [self] in run(claim, grant, since: mark) }
+            queue.async { [self] in run(claim, grant) }
         }
     }
 
@@ -147,7 +153,7 @@ final class InsertionExecutor: @unchecked Sendable {
 
     // MARK: - Insert
 
-    private func run(_ claim: Claim, _ authorization: HostAuthority.Grant, since mark: HostStatus.InputMark) {
+    private func run(_ claim: Claim, _ authorization: HostAuthority.Grant) {
         let started = DispatchTime.now().uptimeNanoseconds
         let text = claim.insertionText
         let pid = claim.offer.target.pid
@@ -158,9 +164,9 @@ final class InsertionExecutor: @unchecked Sendable {
         func finish(
             ok: Bool, error: String?, verified: Bool?, method: FillResult.Method? = nil, fellBack: Bool = false,
             undo: UndoGrant? = nil, rejected: Bool = false, stray: String? = nil,
-            clipboard: ReconcilingClipboard.Outcome? = nil, refused: [String] = [], types: [[String]]? = nil
+            clipboard: ReconcilingClipboard.Outcome? = nil, refused: [String] = [], types: [[String]]? = nil,
+            recovery: UnconfirmedInsert.Report? = nil
         ) {
-            keyHold.end(pid: pid)
             var insertion = DebugState.Insertion(
                 claimID: claim.claimID, ok: ok, error: error, text: text,
                 durationMs: Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000,
@@ -174,7 +180,10 @@ final class InsertionExecutor: @unchecked Sendable {
             insertion.clipboardLost = clipboard?.lost.isEmpty == false ? clipboard?.lost : nil
             insertion.clipboardRefused = refused.isEmpty ? nil : refused
             insertion.clipboardTypes = types
+            insertion.recovery = recovery?.name
+            if case .partial(let inserted)? = recovery?.state { insertion.partialLength = inserted }
             status.update { $0.lastInsertion = insertion }
+            if let recovery { status.increment("insertion.unconfirmed.\(recovery.name)") }
             if let clipboard { status.increment("clipboard.\(clipboard.name)") }
             if !refused.isEmpty { status.increment("clipboard.refused") }
             if case .notRestored(let lost)? = clipboard {
@@ -184,7 +193,10 @@ final class InsertionExecutor: @unchecked Sendable {
                 Self.log.fault("\(line, privacy: .public)")
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
-            onFinished(Result(claim: claim, insertion: insertion, undo: undo, reason: error, rejected: rejected, method: method, strayField: stray))
+            onFinished(Result(
+                claim: claim, insertion: insertion, undo: undo, reason: error, rejected: rejected, method: method, strayField: stray,
+                recovery: recovery
+            ))
         }
         func refuse(_ reason: String) {
             arbiter.abandon(claimID: claim.claimID, reason: reason)
@@ -211,17 +223,31 @@ final class InsertionExecutor: @unchecked Sendable {
             approved = edit
         }
 
+        // S2: every insert's undo grant exists before anything is written, a fill's and inline
+        // text's alike, armed with the field as the guard approved it, and its element is bound under
+        // the write id now, so a write stopped halfway still has its undo. Whether it is kept is
+        // decided once the write ends; the fill toast or the inline line owns it (S2 review).
+        let armed: UndoGrant = {
+            let writeID = writeIDs.withLock { id -> UInt64 in
+                id &+= 1
+                return id
+            }
+            written.withLock { list in
+                list.append((writeID, element, processStart))
+                if list.count > Self.boundWrites { list.removeFirst(list.count - Self.boundWrites) }
+            }
+            return UndoGrant.armed(target: before.identity, priorValue: before.value, edit: approved, origin: origin, writeID: writeID)
+        }()
+
         let appKey = WriteMethodTable.appKey(pid: pid)
         // Checked before every event and AX write: the claim still authorized, the same process
         // (not a new one reusing the pid), still allowed, and the approved element still focused,
         // since a pid-posted ⌘V goes to whichever field of the app has focus.
-        let inputs = self.status
         let stillTarget = { [policy] in
-            live() && ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid) && !AppSwitch.shared.isOff(pid: pid)
-                && WriteRecheck.input(atKey: mark, now: inputs.inputMark()) == nil
+            live() && ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid)
                 && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
         }
-        let refusal = { Self.refusal(live: live(), mark: mark, now: inputs.inputMark(), appOff: AppSwitch.shared.isOff(pid: pid)) }
+        let refusal = { live() ? "targetNotAllowed" : "revoked" }
         // A clipboard Caret cannot restore exactly refuses the paste route for this insert
         // (`WriteFallback.firstRoute`, `afterAXRefused`). The check's snapshot is the only one a paste
         // may write over and restore (`ReconcilingClipboard.arm`).
@@ -239,21 +265,19 @@ final class InsertionExecutor: @unchecked Sendable {
             }
         }
         // The clipboard is read only when a paste would come first; the AX route never touches it.
-        let pastes = WriteFallback.pastesFirst(
-            learned: writeMethods.learnedMethod(for: appKey).map { $0 == .pastePid },
-            selectedTextSettable: AXRead.isSettable(kAXSelectedTextAttribute, on: element),
-            electron: writeMethods.isElectron(pid: pid)
-        )
-        let route: WriteFallback.Route = pastes
-            ? WriteFallback.firstRoute(appPastes: true, clipboardRestorable: clipboardRestorable()) : .axWrite
+        let route: WriteFallback.Route = writeMethods.method(for: appKey) == .axSelectedText
+            ? .axWrite : WriteFallback.firstRoute(appPastes: true, clipboardRestorable: clipboardRestorable())
         var method: FillResult.Method = route == .paste ? .pastePid : .axSelectedText
         var fellBack = false
         var stray: String?
         var clipboard: ReconcilingClipboard.Outcome?
         var step: WriteFallback.Step
+        // Whether anything that changes text reached the app: an AX text write it accepted, or a
+        // posted key. Only then can a failed write have left something in the field.
+        var dispatched = false
 
         if method == .axSelectedText {
-            step = axInsert(approved, element: element, pid: pid, unchanged: before.value, stillTarget: stillTarget, refusal: refusal)
+            (step, dispatched) = axInsert(approved, element: element, unchanged: before.value, stillTarget: stillTarget, refusal: refusal)
             if step == .fallBackToPaste { step = WriteFallback.afterAXRefused(clipboardRestorable: clipboardRestorable()) }
             switch step {
             case .fallBackToPaste:
@@ -264,6 +288,7 @@ final class InsertionExecutor: @unchecked Sendable {
                 fellBack = true
                 let paste = pasteInsert(claim, snapshot: snapshot, approved: approved, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
                 (step, stray, clipboard) = (paste.step, paste.stray, paste.clipboard)
+                dispatched = dispatched || paste.posted
             case .failed(WriteFallback.clipboardUnrestorable):
                 // Refused with an error and the clipboard could not survive a paste: nothing was
                 // written. The app still needs a paste next time.
@@ -278,83 +303,109 @@ final class InsertionExecutor: @unchecked Sendable {
         } else {
             let paste = pasteInsert(claim, snapshot: snapshot, approved: approved, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
             (step, stray, clipboard) = (paste.step, paste.stray, paste.clipboard)
+            dispatched = paste.posted
         }
 
         let verified = step == .verified
         var error: String?
         if case .failed(let code) = step { error = code }
-        // Only a write that was made and settled wrong can be Caret's misplaced edit; a refusal before any write (the
-        // field changed, input since the key) left the field to whoever changed it (PR #16 review).
-        if Self.mayHaveMisplaced(error), stray == nil,
-           Self.reportIfMisplaced(FieldReader.read(element)?.value, before: before.value, expected: approved.resultingValue,
-                                  bundleID: claim.offer.target.bundleID, what: "insert", status: status) {
-            error = "misplaced"
-        }
+        // A paste found in another field leaves the approved one as it was read; that failure
+        // already names the field to check.
+        let recovery = !verified && dispatched && stray == nil ? readUnconfirmed(element: element, approved: approved, before: before) : nil
         arbiter.finishInsertion(claimID: claim.claimID, error: error)
 
-        var grant: UndoGrant?
-        if verified, let origin {
-            var target = before.identity
-            target.elementRevision = UTF16Text.digest(approved.resultingValue)
-            let writeID = writeIDs.withLock { id -> UInt64 in
-                id &+= 1
-                return id
-            }
-            // Bound before the grant exists anywhere else, so a ⌘Z that takes it always finds it.
-            written.withLock { list in
-                list.append((writeID, element, processStart))
-                if list.count > 8 { list.removeFirst(list.count - 8) }
-            }
-            grant = UndoGrant(
-                target: target, priorValue: before.value, writtenValue: approved.resultingValue,
-                insertedStart: approved.replaceStart, insertedLength: UTF16Text.length(approved.replacement),
-                origin: origin, writeID: writeID
-            )
-            if advanceAfterFill, stillTarget() {
-                PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: stillTarget).tab()
-            }
+        // Stamped now, so the toast's ⌘Z lives its full lifetime from the result.
+        let grant = UnconfirmedInsert.grant(armed: armed, verified: verified, report: recovery).map { grant -> UndoGrant in
+            var stamped = grant
+            stamped.createdAt = Date()
+            return stamped
+        }
+        if verified, origin != nil, advanceAfterFill, stillTarget() {
+            PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: stillTarget).tab()
         }
         finish(
             ok: error == nil, error: error, verified: verified, method: method, fellBack: fellBack, undo: grant,
-            stray: stray, clipboard: clipboard, refused: clipboardRefused, types: clipboardTypes
+            stray: stray, clipboard: clipboard, refused: clipboardRefused, types: clipboardTypes, recovery: recovery
         )
     }
 
+    /// The approved field after a write that reached the app and did not verify, judged by S1's
+    /// ruling. Keys posted before a stop may still be in the app's queue, so the value is read until
+    /// it holds still for three reads in a row, or for `ignoredAfter` at most. Another element
+    /// answering, or none, is unreadable: Caret then recognizes nothing and changes nothing.
+    private func readUnconfirmed(element: AXUIElement, approved: InsertionGuard.ApprovedEdit, before: FieldState) -> UnconfirmedInsert.Report {
+        var want = approved.target
+        want.elementRevision = ""
+        func held() -> String? {
+            guard let field = FieldReader.read(element) else { return nil }
+            var identity = field.identity
+            identity.elementRevision = ""
+            return identity == want ? field.value : nil
+        }
+        let started = Date()
+        var last = held()
+        var steady = 0
+        while steady < 2, Date().timeIntervalSince(started) < ignoredAfter {
+            Thread.sleep(forTimeInterval: 0.02)
+            let now = held()
+            let same: Bool
+            switch (now, last) {
+            case let (n?, l?): same = UTF16Text.same(n, l)
+            case (nil, nil): same = true
+            default: same = false
+            }
+            steady = same ? steady + 1 : 0
+            last = now
+        }
+        let intent = UnconfirmedInsert.Intent(before: before.value, start: approved.replaceStart, end: approved.replaceEnd, replacement: approved.replacement)
+        return UnconfirmedInsert.read(intent, held: last)
+    }
+
     /// Replaces the approved span through `AXSelectedText` on the element itself: the selection,
-    /// then the text, each only while the target still holds.
+    /// then the text, each only while the target still holds. `wrote`: the app accepted the text
+    /// write, so the field may have changed even if it never settled to the prediction.
     private func axInsert(
-        _ edit: InsertionGuard.ApprovedEdit, element: AXUIElement, pid: pid_t, unchanged: String,
+        _ edit: InsertionGuard.ApprovedEdit, element: AXUIElement, unchanged: String,
         stillTarget: () -> Bool, refusal: () -> String
-    ) -> WriteFallback.Step {
-        guard stillTarget() else { return .failed(refusal()) }
+    ) -> (step: WriteFallback.Step, wrote: Bool) {
+        guard stillTarget() else { return (.failed(refusal()), false) }
         guard AXRead.setRange(kAXSelectedTextRangeAttribute, location: edit.replaceStart, length: edit.replaceEnd - edit.replaceStart, on: element) == .success else {
-            return WriteFallback.afterAX(nil, refused: true)
+            return (WriteFallback.afterAX(nil, refused: true), false)
         }
-        // The field as approved, with exactly the approved span selected, before anything is written over it.
-        if let changed = selectedAsApproved(element, pid: pid, expectedValue: unchanged, range: UTF16Selection(start: edit.replaceStart, end: edit.replaceEnd)) {
-            return .failed(changed.rawValue)
-        }
-        guard stillTarget() else { return .failed(refusal()) }
-        guard AXRead.setString(kAXSelectedTextAttribute, edit.replacement, on: element) == .success else {
+        guard stillTarget() else { return (.failed(refusal()), false) }
+        let answer = Self.axAnswer(AXRead.setString(kAXSelectedTextAttribute, edit.replacement, on: element))
+        switch answer {
+        case .refused:
             // Only the selection moved, to the approved span, which the paste then replaces.
-            return WriteFallback.afterAX(nil, refused: true)
+            return (WriteFallback.afterAX(nil, answer: .refused), false)
+        case .uncertain:
+            // The app did not answer: the text may be in. No paste follows; the field is read (S2 review).
+            return (WriteFallback.afterAX(nil, answer: .uncertain), true)
+        case .accepted:
+            return (WriteFallback.afterAX(waitForSettle(element: element, expected: edit, unchanged: unchanged), answer: .accepted), true)
         }
-        return WriteFallback.afterAX(waitForSettle(element: element, expected: edit, unchanged: unchanged), refused: false)
+    }
+
+    /// An AX text write's answer. `kAXErrorCannotComplete` is the messaging failure (the app did
+    /// not answer in time), not a refusal: the app may have applied the write.
+    private static func axAnswer(_ error: AXError) -> WriteFallback.AXAnswer {
+        switch error {
+        case .success: return .accepted
+        case .cannotComplete: return .uncertain
+        default: return .refused
+        }
     }
 
     /// A ⌘V posted to the target's pid through KeyType's inserter and the reconciled pasteboard;
     /// an injection strategy types the text instead and never touches the pasteboard. If a posted
     /// paste did not reach the field, the after-read looks for it in the element that has focus now.
+    /// `posted`: at least one key went to the app, so a failed write may have left text behind
+    /// (typed characters or chunks before a stop).
     private func pasteInsert(
         _ claim: Claim, snapshot: ClipboardSnapshot?, approved: InsertionGuard.ApprovedEdit, element: AXUIElement, before: FieldState,
         stillTarget: @escaping () -> Bool, refusal: () -> String
-    ) -> (step: WriteFallback.Step, stray: String?, clipboard: ReconcilingClipboard.Outcome?) {
+    ) -> (step: WriteFallback.Step, stray: String?, clipboard: ReconcilingClipboard.Outcome?, posted: Bool) {
         let pid = claim.offer.target.pid
-        // A ⌘V replaces whatever is selected when the app reads it: the field must be exactly as approved, with
-        // exactly the approved span selected (the caret, for ghost text), before the key is built.
-        if let changed = selectedAsApproved(element, pid: pid, expectedValue: before.value, range: UTF16Selection(start: approved.replaceStart, end: approved.replaceEnd)) {
-            return (.failed(changed.rawValue), nil, nil)
-        }
         // Only a checked snapshot may be pasted over, and only while the pasteboard is still at its
         // count, or at Caret's own once it has written. Once the clipboard refuses, nothing more is
         // posted: no ⌘V (which would paste the user's own contents) and no delete before or after it.
@@ -396,7 +447,7 @@ final class InsertionExecutor: @unchecked Sendable {
             step = .failed("wroteElsewhere")
             stray = field
         }
-        return (step, stray, clipboard)
+        return (step, stray, clipboard, synthesizer.keysPosted > 0)
     }
 
     /// The label of the element of `pid` that has focus now, if it is not the approved one and the
@@ -449,108 +500,74 @@ final class InsertionExecutor: @unchecked Sendable {
     /// writing the whole value, which some apps take as a new document and lose their own undo
     /// history over (q1 bug 5).
     private func runUndo(_ grant: UndoGrant, _ authorization: HostAuthority.Grant, since mark: HostStatus.InputMark) {
-        func done(_ ok: Bool, _ error: String?) {
-            keyHold.end(pid: grant.target.pid)
+        func done(_ ok: Bool, _ error: String?, partial: Bool = false, says: String? = nil) {
             status.update {
-                $0.lastUndo = DebugState.UndoInfo(grantID: grant.id, ok: ok, error: error, strategy: grant.rangeUndo == nil ? nil : grant.strategy.rawValue)
+                var info = DebugState.UndoInfo(grantID: grant.id, ok: ok, error: error, strategy: grant.rangeUndo == nil ? nil : grant.strategy.rawValue)
+                info.partial = partial ? true : nil
+                $0.lastUndo = info
             }
-            onUndone(UndoResult(grant: grant, ok: ok, error: error))
+            onUndone(UndoResult(grant: grant, ok: ok, error: error, partial: partial, says: says))
         }
-        if grant.rangeUndo != nil { return runRangeUndo(grant, authorization, since: mark, done: done) }
+        if grant.rangeUndo != nil { return runRangeUndo(grant, authorization, since: mark, done: { done($0, $1) }) }
         let authority = self.authority
         guard authority.isLive(authorization) else { return done(false, "revoked") }
         guard let (_, element, processStart) = written.withLock({ list in list.last { $0.0 == grant.writeID } }) else {
             return done(false, "elementUnknown")
         }
         let pid = grant.target.pid
-        let inputs = self.status
-        // As for an insert: no input since the ⌘Z. Focus is not asked: a fill that moved focus to the next field is
-        // undone in the element it wrote, through Accessibility on that element; `selectedAsApproved` below checks
-        // that exactly Caret's text is selected there before "" goes over it.
         let stillTarget = { [policy] in
             authority.isLive(authorization) && policy.allowsLive(pid: pid) && ProcessStart.of(pid) == processStart
-                && WriteRecheck.input(atKey: mark, now: inputs.inputMark()) == nil
         }
-        let refusal = { Self.refusal(live: authority.isLive(authorization), mark: mark, now: inputs.inputMark()) }
-        guard stillTarget() else { return done(false, refusal()) }
-        guard let live = FieldReader.read(element) else { return done(false, "fieldUnreadable") }
+        guard stillTarget() else { return done(false, "targetNotAllowed") }
+        guard let live = FieldReader.read(element) else {
+            return done(false, "fieldUnreadable", says: grant.unconfirmed ? "Caret could not read the field; before the write it held \(UnconfirmedInsert.quoted(grant.priorValue))" : nil)
+        }
+        // An unconfirmed write's field that is left as it is: what it holds and held (S1).
+        func leftAlone(_ held: String) -> String? {
+            grant.unconfirmed ? "\(UnconfirmedInsert.contents(before: grant.priorValue, held: held)); Caret left it as it is" : nil
+        }
         let revert: UndoGuard.Revert
         switch UndoGuard.approve(grant, live: live.liveField) {
+        case .failure(.fieldChanged): return done(false, UndoGuard.Rejection.fieldChanged.code, says: leftAlone(live.value))
         case .failure(let rejection): return done(false, rejection.code)
         case .success(let r): revert = r
         }
-        guard stillTarget() else { return done(false, refusal()) }
+        // No key or click since ⌘Z: one would be the user's, and the restore must not cross it.
+        let quiet = { [status] in status.inputMark() == mark }
+        guard quiet() else { return done(false, UndoGuard.Rejection.inputDuringUndo.code) }
+        guard stillTarget() else { return done(false, authority.isLive(authorization) ? "targetNotAllowed" : "revoked") }
         guard AXRead.setRange(kAXSelectedTextRangeAttribute, location: revert.start, length: revert.length, on: element) == .success else {
             return done(false, "writeRefused")
         }
-        // Exactly Caret's text selected in exactly what Caret wrote, before "" goes over it.
-        if let changed = selectedAsApproved(element, pid: pid, expectedValue: grant.writtenValue,
-                                            range: UTF16Selection(start: revert.start, end: revert.start + revert.length), requireFocus: false) {
-            return done(false, changed.rawValue)
+        // The guard judged one read. Before anything is deleted, prove what would be: the field
+        // still holds exactly that value, unit for unit, its selection is exactly the span, and the
+        // user has been quiet. Otherwise report and write nothing; only a selection this undo made,
+        // over an unchanged field, is put back.
+        let selected = FieldReader.read(element)
+        if let rejection = selected.map({ UndoGuard.recheck(revert, approvedValue: live.value, now: $0.liveField, quiet: quiet()) }) ?? .fieldChanged {
+            if let selected, UTF16Text.same(selected.value, live.value), selected.selection == UTF16Selection(start: revert.start, end: revert.start + revert.length) {
+                AXRead.setRange(kAXSelectedTextRangeAttribute, location: live.selection.start, length: live.selection.end - live.selection.start, on: element)
+            }
+            return done(false, rejection.code, says: rejection == .fieldChanged ? selected.flatMap { leftAlone($0.value) } : nil)
         }
-        guard stillTarget() else { return done(false, refusal()) }
-        guard AXRead.setString(kAXSelectedTextAttribute, "", on: element) == .success else {
-            return done(false, "writeRefused")
-        }
+        guard stillTarget() else { return done(false, authority.isLive(authorization) ? "targetNotAllowed" : "revoked") }
+        // A restore the app did not answer may still apply: it is waited for like one it took.
+        let answer = Self.axAnswer(AXRead.setString(kAXSelectedTextAttribute, revert.restore, on: element))
+        guard answer != .refused else { return done(false, "writeRefused") }
         let deadline = Date().addingTimeInterval(pasteSettleTimeout)
-        var value: String?
         repeat {
-            value = FieldReader.read(element)?.value
-            if value == revert.expectedValue { return done(true, nil) }
+            if let value = FieldReader.read(element)?.value, UndoGuard.restored(revert, value: value) { return done(true, nil, partial: revert.partialWrite) }
             Thread.sleep(forTimeInterval: 0.02)
         } while Date() < deadline
-        if Self.reportIfMisplaced(value, before: grant.writtenValue, expected: revert.expectedValue, bundleID: grant.target.bundleID, what: "undo", status: status) {
-            return done(false, "misplaced")
-        }
-        done(false, "writeMismatch")
-    }
-
-    /// Polls, for at most `FixPaste.selectionTimeout` (a selection set in Electron reads back a moment late), until
-    /// the element reads exactly `expectedValue` with exactly `range` selected and still has the app's focus. Nil
-    /// when it does; else why not (`WriteRecheck.selected`). A changed value or another element ends it at once.
-    /// `requireFocus: false` for a write made to the element through Accessibility after focus left it on purpose.
-    private func selectedAsApproved(
-        _ element: AXUIElement, pid: pid_t, expectedValue: String, range: UTF16Selection, requireFocus: Bool = true
-    ) -> WriteRecheck.Refusal? {
-        let started = Date()
-        while true {
-            let field = FieldReader.read(element)
-            let same = !requireFocus || AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
-            let refusal = WriteRecheck.selected(value: field?.value, selection: field?.selection, sameElement: same, expectedValue: expectedValue, range: range)
-            guard refusal == .selectionMoved, Date().timeIntervalSince(started) <= FixPaste.selectionTimeout else { return refusal }
-            Thread.sleep(forTimeInterval: 0.01)
-        }
-    }
-
-    /// Why a write stopped before it was made: input since the key first, then the claim's authorization.
-    static func refusal(live: Bool, mark: HostStatus.InputMark, now: HostStatus.InputMark, appOff: Bool = false) -> String {
-        guard live else { return "revoked" }
-        // Turned off in that app after the key (PR #16 review): nothing more is written there.
-        if appOff { return "appOff" }
-        return WriteRecheck.input(atKey: mark, now: now)?.rawValue ?? "targetNotAllowed"
-    }
-
-    /// A write that left neither the value before it nor the predicted one changed the field in a way nobody
-    /// approved. It is counted and logged loudly (lengths and the app only, never the text), and the caller
-    /// reports it as `misplaced`. True when it was.
-    /// Whether a failed write is one to look at for a misplaced edit: only `writeMismatch`, which follows a write
-    /// that settled to something else. Every other failure stopped before Caret wrote.
-    static func mayHaveMisplaced(_ error: String?) -> Bool { error == "writeMismatch" }
-
-    static func reportIfMisplaced(_ value: String?, before: String, expected: String, bundleID: String, what: String, status: HostStatus) -> Bool {
-        guard WriteRecheck.landed(value: value, before: before, expected: expected) == .misplaced else { return false }
-        status.increment("\(what).misplaced")
-        let line = "caret: \(what.uppercased()) LEFT AN UNEXPECTED VALUE in \(bundleID): \(UTF16Text.length(value ?? "")) units, expected \(UTF16Text.length(expected))"
-        log.fault("\(line, privacy: .public)")
-        FileHandle.standardError.write(Data((line + "\n").utf8))
-        return true
+        done(false, answer == .uncertain ? WriteFallback.writeUncertain : "writeMismatch")
     }
 
     // MARK: - Range edits (writing fixes)
 
     /// A writing fix: one range of the field replaced, bound by `RangeEdit` to the field as offered
-    /// (`action-engine-v2.md` section 7). Through Accessibility, except in apps that paste ghost
-    /// text, which get `pasteRange` (`FixPaste`; this replaced D2-09 for those apps only).
+    /// (`action-engine-v2.md` section 7). Only through Accessibility, never a paste: a range edit
+    /// selects text the user did not select, and a pid-posted ⌘V lands in whichever field has
+    /// focus when the app reads it (D2-09). An app that refuses the AX write gets nothing.
     ///
     /// 1. Reread the focused field of the offer's pid and `confirmRange` it (`.observed`).
     /// 2. Select the range: the one selection change acceptance authorizes. Reread and validate
@@ -561,28 +578,26 @@ final class InsertionExecutor: @unchecked Sendable {
     ///    (carried through the edit), reread, and `verify`: that gives the undo.
     /// Every step asks first that the authorization is live, the process the same, and the field
     /// still the focused element.
-    private func runRange(_ claim: Claim, _ authorization: HostAuthority.Grant, since mark: HostStatus.InputMark) {
+    private func runRange(_ claim: Claim, _ authorization: HostAuthority.Grant) {
         let started = DispatchTime.now().uptimeNanoseconds
         guard let edit = claim.rangeEdit else { return }
         let pid = claim.offer.target.pid
         let authority = self.authority
         let live = { authority.isLive(authorization) }
 
-        var method: FillResult.Method = .axSelectedText
         func finish(error: String?, rejected: Bool = false, undo: UndoGrant? = nil) {
-            keyHold.end(pid: pid)
             var insertion = DebugState.Insertion(
                 claimID: claim.claimID, ok: error == nil, error: error, text: edit.replacement,
                 durationMs: Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000,
                 verified: rejected ? nil : error == nil
             )
             insertion.kind = claim.offer.kind.name
-            insertion.method = rejected ? nil : method.rawValue
+            insertion.method = rejected ? nil : FillResult.Method.axSelectedText.rawValue
             status.update { $0.lastInsertion = insertion }
             status.increment(error == nil ? "writing.fixed" : "writing.\(error ?? "failed")")
             onFinished(Result(
                 claim: claim, insertion: insertion, undo: undo, reason: error, rejected: rejected,
-                method: rejected ? nil : method, strayField: nil
+                method: rejected ? nil : .axSelectedText, strayField: nil, recovery: nil
             ))
         }
         func refuse(_ reason: String) {
@@ -596,31 +611,13 @@ final class InsertionExecutor: @unchecked Sendable {
         if case .failure(let refusal) = arbiter.confirmRange(claim, live: Self.rangeLive(before)) {
             return finish(error: refusal.code, rejected: true)
         }
-        let inputs = self.status
         let stillTarget = { [policy] in
-            live() && ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid) && !AppSwitch.shared.isOff(pid: pid)
-                && WriteRecheck.input(atKey: mark, now: inputs.inputMark()) == nil
+            live() && ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid)
                 && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
         }
-        // An app that pastes ghost text gets its fixes by paste too (`FixPaste`, which records the
-        // lead decision that replaced D2-09 for these apps).
-        let appKey = WriteMethodTable.appKey(pid: pid)
-        let pastes = WriteFallback.pastesFirst(
-            learned: writeMethods.learnedMethod(for: appKey).map { $0 == .pastePid },
-            selectedTextSettable: AXRead.isSettable(kAXSelectedTextAttribute, on: element),
-            electron: writeMethods.isElectron(pid: pid)
-        )
-        if pastes { method = .pastePid }
-        let refusal = { Self.refusal(live: live(), mark: mark, now: inputs.inputMark(), appOff: AppSwitch.shared.isOff(pid: pid)) }
-        let outcome = pastes
-            ? pasteRange(claim, edit, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
-            : applyRange(edit, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
+        let outcome = applyRange(edit, element: element, before: before, stillTarget: stillTarget, refusal: { live() ? "targetNotAllowed" : "revoked" })
         switch outcome {
         case .failed(let code):
-            if pastes, !FixPaste.keepsFixes(after: code) {
-                writeMethods.stopFixes(for: appKey)
-                status.increment("writing.fixesStopped")
-            }
             arbiter.finishInsertion(claimID: claim.claimID, error: code)
             finish(error: code)
         case .applied(let applied):
@@ -631,13 +628,10 @@ final class InsertionExecutor: @unchecked Sendable {
             }
             written.withLock { list in
                 list.append((writeID, element, processStart))
-                if list.count > 8 { list.removeFirst(list.count - 8) }
+                if list.count > Self.boundWrites { list.removeFirst(list.count - Self.boundWrites) }
             }
-            // A pasted fix is one step of the app's own Undo: the VM's ⌘Z rows after a pasted ghost
-            // in Electron and Catalyst (run 20261009T113411Z-9346) took back exactly the paste.
-            let strategy: UndoStrategy = pastes ? .nativeUndo : NativeUndoApps.strategy(bundleID: claim.offer.target.bundleID)
             finish(error: nil, undo: .range(applied.undo, priorValue: before.value, writtenValue: applied.value, writeID: writeID,
-                                            strategy: strategy))
+                                            strategy: NativeUndoApps.strategy(bundleID: claim.offer.target.bundleID)))
         }
     }
 
@@ -663,13 +657,10 @@ final class InsertionExecutor: @unchecked Sendable {
             let outcome = NativeUndo.run(grant, on: target)
             return done(outcome == .reverted, outcome.error)
         }
-        let inputs = self.status
-        let quietTarget = { stillTarget() && WriteRecheck.input(atKey: mark, now: inputs.inputMark()) == nil }
-        let refusal = { Self.refusal(live: authority.isLive(authorization), mark: mark, now: inputs.inputMark()) }
-        guard quietTarget() else { return done(false, refusal()) }
+        guard stillTarget() else { return done(false, authority.isLive(authorization) ? "targetNotAllowed" : "revoked") }
         guard let before = FieldReader.read(element) else { return done(false, "fieldUnreadable") }
         if case .failure(let refusal) = undo.validate(Self.rangeLive(before), phase: .observed) { return done(false, refusal.code) }
-        switch applyRange(undo, element: element, before: before, stillTarget: quietTarget, refusal: refusal) {
+        switch applyRange(undo, element: element, before: before, stillTarget: stillTarget, refusal: { authority.isLive(authorization) ? "targetNotAllowed" : "revoked" }) {
         case .failed(let code): done(false, code)
         case .applied: done(true, nil)
         }
@@ -684,102 +675,6 @@ final class InsertionExecutor: @unchecked Sendable {
     private enum RangeOutcome {
         case applied(AppliedRange)
         case failed(String)
-    }
-
-    /// `FixPaste`'s steps, for a fix in an app that pastes ghost text. `before` was validated
-    /// `.observed`. Keys the user types meanwhile are held (`KeyHold`).
-    private func pasteRange(
-        _ claim: Claim, _ edit: RangeEdit, element: AXUIElement, before: FieldState,
-        stillTarget: @escaping () -> Bool, refusal: () -> String
-    ) -> RangeOutcome {
-        // The user's selection back, after a refusal before anything was pasted. Harmless if the
-        // range selection never took; if it lands late, this later set lands after it.
-        func putSelectionBack() {
-            guard stillTarget() else { return }
-            let s = edit.observedSelection
-            AXRead.setRange(kAXSelectedTextRangeAttribute, location: s.start, length: s.end - s.start, on: element)
-        }
-        guard stillTarget() else { return .failed(refusal()) }
-        // 1. Exactly the word selected, read back as such.
-        let range = UTF16Selection(start: edit.replace.start, end: edit.replace.end)
-        guard AXRead.setRange(kAXSelectedTextRangeAttribute, location: edit.replace.start, length: edit.replace.length, on: element) == .success else {
-            return .failed(FixPaste.Failure.selectionNotTaken.rawValue)
-        }
-        let asked = Date()
-        var selected: FieldState?
-        while selected == nil, Date().timeIntervalSince(asked) <= FixPaste.selectionTimeout {
-            if let read = FieldReader.read(element), read.selection == range { selected = read } else { Thread.sleep(forTimeInterval: 0.01) }
-        }
-        guard let selected else {
-            putSelectionBack()
-            return .failed(FixPaste.Failure.selectionNotTaken.rawValue)
-        }
-        // 2. The field as the fix was offered for.
-        let approved: RangeEdit.Approved
-        switch edit.validate(Self.rangeLive(selected), phase: .rangeSelected) {
-        case .failure(let refusal):
-            putSelectionBack()
-            return .failed(refusal.code)
-        case .success(let a):
-            approved = a
-        }
-        // 3. The paste, through the clipboard ghost text uses.
-        let snapshot: ClipboardSnapshot
-        switch pasteboard.clipboard.check() {
-        case .pasteable(let checked): snapshot = checked
-        case .refused:
-            putSelectionBack()
-            return .failed(WriteFallback.clipboardUnrestorable)
-        }
-        guard stillTarget() else {
-            putSelectionBack()
-            return .failed(refusal())
-        }
-        let write = InsertionGuard.ApprovedEdit(
-            target: selected.identity, replaceStart: edit.replace.start, replaceEnd: edit.replace.end,
-            replacement: edit.replacement, resultingValue: approved.resultingValue
-        )
-        let paste = pasteInsert(claim, snapshot: snapshot, approved: write, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
-        // A paste that went to another field is left there and named, as for ghost text: a ⌘Z
-        // now would reach that field, not this one.
-        if paste.step == .failed("wroteElsewhere") { return .failed("wroteElsewhere") }
-        // 4. Exactly the range replaced, or taken back.
-        switch FixPaste.afterPaste(value: FieldReader.read(element)?.value, before: before.value, expected: approved.resultingValue) {
-        case .applied:
-            // The user's caret back, read back as such before the undo is built from it: Electron
-            // shows a selection change a moment late, and an undo bound to the earlier caret was
-            // refused as `selectionMoved` (run 20261009T121350Z-39994).
-            let caret = approved.resultingSelection
-            if stillTarget() {
-                AXRead.setRange(kAXSelectedTextRangeAttribute, location: caret.start, length: caret.end - caret.start, on: element)
-            }
-            let moved = Date()
-            var after = FieldReader.read(element)
-            while after?.selection != caret, Date().timeIntervalSince(moved) <= FixPaste.selectionTimeout {
-                Thread.sleep(forTimeInterval: 0.01)
-                after = FieldReader.read(element)
-            }
-            guard let after else { return .failed("fieldUnreadable") }
-            switch edit.verify(after: Self.rangeLive(after), approved: approved) {
-            case .failure(let refusal): return .failed(refusal.code)
-            case .success(let undo): return .applied(AppliedRange(value: approved.resultingValue, undo: undo))
-            }
-        case .untouched:
-            putSelectionBack()
-            if case .failed(let code) = paste.step { return .failed(code) }
-            return .failed("writeIgnored")
-        case .mismatch:
-            guard stillTarget(),
-                  PidKeystrokeSynthesizer(pid: claim.offer.target.pid, element: element, stillTarget: stillTarget).undo()
-            else { return .failed(FixPaste.Failure.fixNotRestored.rawValue) }
-            let sent = Date()
-            var back = FieldReader.read(element)?.value
-            while back?.utf16.elementsEqual(before.value.utf16) != true, Date().timeIntervalSince(sent) <= NativeUndo.timeout {
-                Thread.sleep(forTimeInterval: 0.02)
-                back = FieldReader.read(element)?.value
-            }
-            return .failed(FixPaste.afterUndo(value: back, before: before.value).rawValue)
-        }
     }
 
     /// Steps 2 to 4 of `runRange`, for a fix and for its undo. `before` was validated `.observed`.
@@ -863,18 +758,12 @@ final class InsertionExecutor: @unchecked Sendable {
         /// Accessibility's system-wide focused application, read live. Not
         /// `NSRunningApplication.isActive`: its time-varying properties change only as the main run
         /// loop runs (NSRunningApplication.h), and this runs on the insertion queue.
-        /// When the system-wide element cannot answer (kAXErrorCannotComplete in the macOS 26 rig guest, as for
-        /// AXRead.focusedElement), the target app's own AXFrontmost, also read live.
         func isFrontmost() -> Bool {
             var value: CFTypeRef?
-            if AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value) == .success,
-               let value, CFGetTypeID(value) == AXUIElementGetTypeID() {
-                var focused: pid_t = 0
-                return AXUIElementGetPid(value as! AXUIElement, &focused) == .success && focused == pid
-            }
-            var front: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFrontmostAttribute as CFString, &front) == .success else { return false }
-            return (front as? Bool) == true
+            guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value) == .success,
+                  let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
+            var focused: pid_t = 0
+            return AXUIElementGetPid(value as! AXUIElement, &focused) == .success && focused == pid
         }
 
         func read() -> RangeEdit.Live? { FieldReader.read(element).map(InsertionExecutor.rangeLive) }

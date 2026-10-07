@@ -189,7 +189,7 @@ extension SurfaceMachine {
     /// ⌘Z took the fill toast. The undo is tracked before it is requested, so the helper's answer
     /// always finds it; the line says so until the answer comes, or for 10 s.
     public func undoStarted(_ grant: UndoGrant) {
-        guard let taskID = grant.taskID else { return }
+        guard let taskID = grant.taskID else { return inlineUndoStarted(grant) }
         // ⌘Z undoes the run the question was about: it goes unanswered.
         dropQuestion("surface.skill.undone")
         if toastGrantID == grant.id { toastGrantID = nil }
