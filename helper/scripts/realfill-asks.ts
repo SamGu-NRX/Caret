@@ -5,7 +5,7 @@
 //
 //   node scripts/realfill-asks.ts --out DIR [--asks-file asks.json] [--asks a,b] [--maker heads|jev|writer]
 //        [--spend-limit USD] [--gap S] [--writer-model provider:model] [--plan-writer provider:model]
-//        [--engine jev|llama|gemini] [--log-requests FILE]
+//        [--engine jev|llama|gemini] [--log-requests FILE] [--replay JEV_LOG]
 // J1: --engine names the decision engine in Jev's place (engines/decide/harness.ts; llama's server and calibration come
 // from CARET_LLAMA_* and CARET_ENGINE_CALIBRATION), behind the record-and-replay cache (CARET_JEV_CACHE, replay-or-record
 // by default), so a rerun of unchanged asks costs nothing. Every window and memory entry here comes from fixture files.
@@ -72,6 +72,8 @@ const { values: a } = parseArgs({
     engine: { type: "string", default: "jev" },
     /** J1: every request's full body, for the token breakdown (synthetic corpus text only). */
     "log-requests": { type: "string" },
+    /** A2: an earlier run's --log-jev file, whose answers are replayed for the same questions (see `recorded`). */
+    replay: { type: "string" },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
@@ -178,6 +180,26 @@ const oracle: AskJev = async (req) => {
   return { model: "oracle", answers, nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
 };
 const decide = harnessEngine({ name: engineName(a.engine), canned: oracle, fixture: { windows: (id) => fixtureIds.has(id), memory: true, plan: true }, ...(a["log-requests"] === undefined ? {} : { logRequests: a["log-requests"] }) });
+/**
+ * A2: answers an earlier live run recorded (its --log-jev file), for developing on its asks without paying for them again.
+ * LV1's live runs had the decision cache off, so their log is the only record of what Jev answered. The log keeps each
+ * question's id and the first 300 characters of its text, not its options, so a request is replayed only when it asks,
+ * in the same ask, exactly the questions a recorded one asked; each recorded answer is used once, in order. A request
+ * the code now asks differently goes to --engine. A fill's options are shuffled by the run's seed, so a replayed choice
+ * names the same candidate only while the fill offers the same candidates: a replayed run is a guide, and only a live
+ * run is a measurement.
+ */
+const replayKey = (ask: string, qs: Record<string, string>): string => `${ask}\u0000${Object.entries(qs).sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, t]) => `${k}=${t}`).join("\u0001")}`;
+const recorded = new Map<string, { answers: Awaited<ReturnType<AskJev>>["answers"]; nouls: Record<string, number> }[]>();
+if (a.replay !== undefined) {
+  for (const line of readFileSync(resolve(a.replay), "utf8").split("\n")) {
+    if (line.trim() === "") continue;
+    const e = JSON.parse(line) as { ask: string; questions: Record<string, string>; answers: Awaited<ReturnType<AskJev>>["answers"]; nouls?: Record<string, number> };
+    const k = replayKey(e.ask, e.questions);
+    recorded.set(k, [...(recorded.get(k) ?? []), { answers: e.answers, nouls: e.nouls ?? {} }]);
+  }
+}
+const replay = { hits: 0, misses: 0 };
 /** Each decision request's latency, for the bake-off's p50 and p95. */
 const requestMs: number[] = [];
 let current = "";
@@ -186,14 +208,14 @@ const requestsBy = new Map<string, number>();
 const askJev: AskJev = async (req) => {
   if (jevSpent + writerSpent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   requestsBy.set(current, (requestsBy.get(current) ?? 0) + 1);
-  const r = await decide.ask(req);
+  const qs = Object.fromEntries(Object.entries({ ...req.questions, ...req.nouls }).map(([k, q]) => [k, String(q.instructions).slice(0, 300)]));
+  const hit = a.replay === undefined ? undefined : recorded.get(replayKey(current, qs))?.shift();
+  if (a.replay !== undefined) replay[hit === undefined ? "misses" : "hits"]++;
+  const r = hit === undefined ? await decide.ask(req) : { model: "replay", answers: hit.answers, nouls: hit.nouls, inputTokens: 0, latencyMs: 0, costUsd: 0 };
   jevSpent += r.costUsd;
   jevModels.add(r.model);
   requestMs.push(r.latencyMs);
-  if (a["log-jev"] !== undefined) {
-    const qs = { ...req.questions, ...req.nouls };
-    appendFileSync(a["log-jev"], JSON.stringify({ ask: current, questions: Object.fromEntries(Object.entries(qs).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])), answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
-  }
+  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], JSON.stringify({ ask: current, questions: qs, answers: r.answers, nouls: r.nouls ?? {} }) + "\n");
   return r;
 };
 // Intents go to the --writer-model named (only with --maker writer); the plan route's programs to --plan-writer's.
@@ -442,6 +464,7 @@ const md = [
   "",
   `Maker ${a.maker}${route !== null && a.maker === "writer" ? ` (${route.model} on ${route.provider})` : a.maker !== "writer" ? ` (Jev ${jevModels.size === 0 ? "unanswered" : [...jevModels].join(", ")})` : ""}; plan route's writer ${planRoute === null ? "off" : `${planRoute.provider} ${planRoute.model}`}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
   `Maker tokens per intent (input + output, ${a.maker === "writer" ? "the writer's" : "Jev input only"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
+  ...(a.replay === undefined ? [] : [`Replayed from ${a.replay}: ${replay.hits} requests; ${replay.misses} asked of ${decide.says} instead.`]),
   `Decisions: ${decide.says}; ${requestMs.length} requests, latency per request p50 ${pct([...requestMs].sort((x, y) => x - y), 0.5)} ms, p95 ${pct([...requestMs].sort((x, y) => x - y), 0.95)} ms.`,
   `Maker requests per intent: ${[...new Set(makerCalls)].sort((x, y) => x - y).join(", ") || "none"} (${makerCalls.length} intents made); maker latency p50 ${pct(makerMs, 0.5)} ms, p95 ${pct(makerMs, 0.95)} ms.`,
   "",
@@ -470,4 +493,4 @@ function ok2(p: Proposed): boolean {
 }
 writeFileSync(join(OUT, "realfill-asks.md"), md.join("\n") + "\n");
 writeFileSync(join(OUT, "realfill-asks.json"), JSON.stringify({ engine: decide.says, requestMs, maker: a.maker, model: a.maker === "writer" && route !== null ? route.model : `jev (${[...jevModels].join(", ")})`, jevSpent, writerSpent, retries, rows }, null, 1) + "\n");
-process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}; asked back ${back.length}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}\n`);
+process.stderr.write(`right ${n("right")}, partial ${n("partial")}, asked ${n("asked")}, refused ${n("refused")}, wrong ${n("wrong")}; asked back ${back.length}; recall ${recalled.length}/${asked.length}; refuse-picks proposed ${rows.reduce((s2, r) => s2 + (r.refusePicks?.proposed.length ?? 0), 0)}; after pick right ${cont("right")} partial ${cont("partial")} wrong ${cont("wrong")}; $${(jevSpent + writerSpent).toFixed(4)}${a.replay === undefined ? "" : `; replayed ${replay.hits}, missed ${replay.misses}`}\n`);
