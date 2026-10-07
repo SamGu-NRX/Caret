@@ -200,6 +200,7 @@ class Supervisor:
         self.cancel = threading.Event()
         self.cancel_reason, self.cancel_code = None, None
         self.lease_id, self.lock_fd, self.queue_lease = None, None, None
+        self.vz_before = set()
         self.lease_cleanup = self._lease_supports_cleanup()
         self.record = {"job_id": plan["job_id"], "plan": plan_path, "plan_sha256": plan_digest,
                        "supervisor_pid": self.pid, "mark": self.mark, "launchd_prefix": self.launchd_prefix,
@@ -578,19 +579,20 @@ class Supervisor:
             self._request_cancel(self.cancel_reason or "the recipe could not be registered", self.cancel_code or EXIT_ERROR)
         stop = self._watch(proc)
         proc.wait()
-        self._conclude()
         recipe_exit = proc.returncode if proc.returncode >= 0 else 128 - proc.returncode
         self.record["recipe"] = {"pid": proc.pid, "exit": recipe_exit, "owned_seen": sorted(self.tracker.tracked),
                                  "launchd_labels_seen": sorted(self.tracker.labels)}
+        # VM jobs: rig-run's clone, leases and Virtualization processes are part of the inventory that gates the
+        # release, so their recovery comes first and anything left keeps the job quarantined.
+        self.vz_before = vz_before
         vm = self._vm_postconditions(vz_before) if not self.profile["lease"] else None
+        self._conclude()
+        if vm and vm.get("incomplete"):
+            vm["cleared_in_quarantine"] = True
         if stop is not None and stop[0] != "leftover":
             kind, code, reason = stop
-            if vm and vm.get("incomplete"):
-                return EXIT_ERROR, "{}; VM cleanup incomplete: {}".format(reason, vm["incomplete"])
             return code, reason
         self.record["states"]["executed"] = True
-        if vm and vm.get("incomplete"):
-            return EXIT_ERROR, "recipe exited {}; VM cleanup incomplete: {}".format(recipe_exit, vm["incomplete"])
         problems = results.validate(self.plan, self.plan_digest, self.out, started_wall, recipe_exit)
         self.record["evidence_problems"] = problems
         if recipe_exit != 0:
@@ -737,19 +739,30 @@ class Supervisor:
         return found
 
     def _vm_leftovers(self, rig_pids):
+        """Clone directories and leases the job's rig-runs left. Raises OSError when lr-lease status cannot say."""
         clones = [os.path.join(self.paths["lume_clones"], "rig-run-{}".format(p)) for p in rig_pids]
-        clones = [c for c in clones if os.path.exists(c)]
-        status = self._lease_cmd("status").stdout
+        clones = [c for c in clones if os.path.lexists(c)]
+        status = self._lease_cmd("status")
+        if status.returncode != 0 or not status.stdout.startswith("Readings "):
+            raise OSError("lr-lease status exited {}".format(status.returncode))
         leases = []
-        for line in status.splitlines():
+        for line in status.stdout.splitlines():
             if line.startswith("{"):
                 try:
                     rec = json.loads(line)
                 except ValueError:
-                    continue
+                    raise OSError("lr-lease status printed a malformed lease line") from None
                 if rec.get("ownerPid") in rig_pids:
                     leases.append(rec.get("id"))
         return clones, leases
+
+    def _vm_recover(self):
+        """rig-stop for orphans, then lr-reap for dead owners' leases: the rig's own recovery, never Lume directly."""
+        done = subprocess.run([self.paths["rig_stop"], "--orphans", "--grace", "15"], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180)
+        subprocess.run([self.paths["lr_reap"], "--run", "rig"], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {"exit": done.returncode, "output": done.stdout[-2000:]}
 
     def _vm_postconditions(self, vz_before):
         rig_pids = sorted(pid for pid, argv in self.tracker.argv_seen.items()
@@ -758,19 +771,23 @@ class Supervisor:
         self.record["vm"] = report
         if not rig_pids:
             return report
-        clones, leases = self._vm_leftovers(rig_pids)
+        try:
+            clones, leases = self._vm_leftovers(rig_pids)
+        except OSError as ex:
+            clones, leases = None, None
+            report["probe_error"] = str(ex)
         report.update(clones_after_stop=clones, leases_after_stop=leases)
         for attempt in range(3):
-            if not clones and not leases:
+            if clones == [] and leases == []:
                 break
             # Every rig-run pid is gone by now, so these are orphans: rig-stop stops the VM, deletes the
             # clone and releases the leases; lr-reap removes leases of a dead owner.
-            done = subprocess.run([self.paths["rig_stop"], "--orphans", "--grace", "15"], stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180)
-            subprocess.run([self.paths["lr_reap"], "--run", "rig"], stdin=subprocess.DEVNULL,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            report.setdefault("rig_stop", []).append({"exit": done.returncode, "output": done.stdout[-2000:]})
-            clones, leases = self._vm_leftovers(rig_pids)
+            report.setdefault("rig_stop", []).append(self._vm_recover())
+            try:
+                clones, leases = self._vm_leftovers(rig_pids)
+            except OSError as ex:
+                clones, leases = None, None
+                report["probe_error"] = str(ex)
         # The VM's Virtualization service is launchd's child, not ours, so it is only waited for, never signalled.
         deadline = time.monotonic() + 30
         vz_left = [p for p in self._vz_pids() if p not in vz_before]
@@ -779,6 +796,8 @@ class Supervisor:
             vz_left = [p for p in self._vz_pids() if p not in vz_before]
         report.update(clones_left=clones, leases_left=leases, virtualization_left=vz_left)
         incomplete = []
+        if clones is None:
+            incomplete.append("lr-lease status unavailable")
         if clones:
             incomplete.append("clone directories {}".format(clones))
         if leases:
@@ -806,7 +825,20 @@ class Supervisor:
         else:
             if owned or labels:
                 results["supervisor-scan"] = [procs.PRESENT, "pids {} launchd {}".format(sorted(owned), labels)]
+        if self.record.get("vm", {}).get("rig_run_pids"):
+            results["vm"] = list(self._vm_state())
         return results
+
+    def _vm_state(self):
+        """(ABSENT|PRESENT|UNKNOWN, detail) of what this job's rig-runs left: clones, leases, Virtualization processes."""
+        try:
+            clones, leases = self._vm_leftovers(self.record["vm"]["rig_run_pids"])
+            vz_left = [p for p in self._vz_pids() if p not in self.vz_before]
+        except OSError as ex:
+            return procs.UNKNOWN, "VM probe failed: {}".format(ex)
+        if clones or leases or vz_left:
+            return procs.PRESENT, "clones {} leases {} Virtualization {}".format(clones, leases, vz_left)
+        return procs.ABSENT, "no clone, lease or Virtualization process left"
 
     def _conclude(self):
         """Settle the lease and release custody once every resource is ABSENT; until then, QUARANTINED."""
@@ -848,6 +880,10 @@ class Supervisor:
                 self.tracker.bootout_all()
             except OSError:
                 pass
+            if "vm" in results and results["vm"][0] != procs.ABSENT and \
+                    time.monotonic() - getattr(self, "vm_recovered_at", 0) >= QUARANTINE_RETRY[1]:
+                self.vm_recovered_at = time.monotonic()
+                self.record["vm"].setdefault("rig_stop", []).append(self._vm_recover())
             self._renew_if_due()
             elapsed = time.monotonic() - quarantined_at
             time.sleep(QUARANTINE_RETRY[0] if elapsed < 60 else QUARANTINE_RETRY[1])

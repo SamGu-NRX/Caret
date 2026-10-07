@@ -564,6 +564,28 @@ class VmPath(World):
         self.assertTrue(self.wait_for(lambda: not procs.lock_held(self.paths["slot_lock"]), 10))
 
 
+    def test_vm_leftovers_nobody_can_recover_keep_the_job_quarantined_until_they_are_gone(self):
+        # rig-stop that recovers nothing: the clone and rig-run's leases stay after rig-run is gone.
+        stub = os.path.join(self.root, "rig-stop-noop")
+        with open(stub, "w") as fh:
+            fh.write("#!/bin/sh\necho 'nothing recovered (test)'\nexit 1\n")
+        os.chmod(stub, 0o755)
+        self.paths["rig_stop"] = stub
+        job_id, clone = self.fake_rig("crash", 0)
+        self.assertEqual(self.queue("cancel", "--id", job_id).returncode, 0)
+        self.assertTrue(self.wait_for(lambda: any(r["event"] == "quarantined" for r in self.journal(job_id)), 120),
+                        self.queue_log(job_id))
+        self.assertTrue(self.contender_blocked())  # the clone is still there, so nothing is released
+        self.assertTrue(os.path.exists(clone))
+        # An operator clears the leftovers by hand; the quarantine notices and releases.
+        shutil.rmtree(clone)
+        for lease in self.leases():
+            subprocess.run([self.paths["lr_lease"], "release", lease["id"]], env=self.env, check=True)
+        self.assertTrue(self.wait_for(lambda: any(r["event"] == "clean" for r in self.journal(job_id)), 120),
+                        self.queue_log(job_id))
+        self.assertTrue(self.wait_for(lambda: not self.contender_blocked(), 20))
+
+
 @unittest.skipUnless(os.environ.get("CARET_HEAVY_VM_TEST") == "1",
                      "PENDING a VM slot: needs about 15 GiB free, HOLD released, and CARET_HEAVY_VM_TEST=1")
 class RealVm(World):
