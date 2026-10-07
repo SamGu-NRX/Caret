@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Workshop registration</title><link rel="stylesheet" href="style.css"></head><body>
+<h1>Workshop registration</h1><p>Guest-local test page. Register only records the click.</p>
+<form id="f" autocomplete="off">
+<label for="full_name">Full name</label><input type="text" id="full_name" name="full_name">
+<label for="email">Email</label><input type="email" id="email" name="email">
+<label for="shirt">T-shirt size</label>
+<select id="shirt" name="shirt"><option value="">Choose a size</option><option value="S">Small</option><option value="M">Medium</option><option value="L">Large</option><option value="XL">Extra large</option></select>
+<fieldset><legend>How will you attend?</legend>
+<label><input type="radio" name="attend" value="in-person" id="attend_in"> In person</label><label><input type="radio" name="attend" value="remote" id="attend_remote"> Remote</label></fieldset>
+<label><input type="checkbox" id="veg" name="veg"> Vegetarian meal</label>
+<label for="arrival">Arrival date</label><input type="date" id="arrival" name="arrival">
+<button type="submit" id="submit">Register</button><div id="log"></div>
+</form><script src="guard.js"></script></body></html>

@@ -1,0 +1,3 @@
+#!/bin/bash
+# Enqueue and report Caret's heavy jobs; see README.md. -B keeps bytecode out of this checkout.
+exec /opt/homebrew/opt/python@3.14/bin/python3.14 -I -B "$(cd "$(dirname "$0")" && pwd)/caret_heavy.py" "$@"

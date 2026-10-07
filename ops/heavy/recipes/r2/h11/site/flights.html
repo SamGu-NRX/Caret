@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Book a flight</title><link rel="stylesheet" href="style.css"></head><body>
+<h1>Book a flight</h1><p>Guest-local test page in the style of an airline search. Search only records the click.</p>
+<form id="f" autocomplete="off">
+<fieldset><legend>Trip</legend><label><input type="radio" name="trip" value="round" id="trip_round" checked> Round trip</label><label><input type="radio" name="trip" value="oneway" id="trip_oneway"> One way</label></fieldset>
+<label id="from-label">From</label><div id="from"></div>
+<label id="to-label">To</label><div id="to"></div>
+<label for="depart">Depart</label><input type="date" id="depart" name="depart">
+<label for="return">Return</label><input type="date" id="return" name="return">
+<button type="submit" id="submit">Search flights</button><div id="log"></div>
+</form><script src="combobox.js"></script><script src="guard.js"></script>
+<script>const ap=["Austin, TX (AUS)","Seattle, WA (SEA)","San Francisco, CA (SFO)","Portland, OR (PDX)","Los Angeles, CA (LAX)"];
+combobox(document.getElementById('from'),'from-input','from-label',ap);combobox(document.getElementById('to'),'to-input','to-label',ap);</script>
+</body></html>

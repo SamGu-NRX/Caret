@@ -1,0 +1,8 @@
+body{font-family:-apple-system,Helvetica,Arial,sans-serif;max-width:680px;margin:20px auto;color:#222}
+h1{font-size:21px}label,legend{display:block;font-weight:600;margin:12px 0 4px}.req{color:#c00}
+input[type=text],input[type=email],input[type=tel],input[type=url],input[type=date],select,textarea{width:100%;padding:7px;font-size:14px;box-sizing:border-box;border:1px solid #bbb;border-radius:4px}
+fieldset{border:0;padding:0;margin:0}fieldset label{display:inline;font-weight:400;margin-right:14px}
+button{margin-top:16px;padding:9px 16px;font-size:14px;background:#0b6;color:#fff;border:0;border-radius:4px}
+#log{margin-top:10px;color:#666;font-size:12px}
+[role=listbox]{border:1px solid #bbb;max-height:160px;overflow:auto;margin:0;padding:0;list-style:none}
+[role=option]{padding:5px 8px}[role=option][aria-selected=true]{background:#def}

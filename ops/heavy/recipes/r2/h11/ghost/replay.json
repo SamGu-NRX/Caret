@@ -1,0 +1,84 @@
+{
+ "entries": [
+  {
+   "after": " intro and examples before the call?",
+   "before": "Could we go over",
+   "reason": "lowConfidenceMidLine"
+  },
+  {
+   "after": " a bit thin right now.",
+   "before": "The examples in section two",
+   "reason": "lowConfidenceMidLine"
+  },
+  {
+   "after": " to go over it.",
+   "before": "We should schedule a call for next",
+   "text": " week"
+  },
+  {
+   "after": " and they were clear.",
+   "before": "I read your",
+   "reason": "lowConfidenceMidLine"
+  },
+  {
+   "after": " to the whole team by noon.",
+   "before": "Please send the",
+   "reason": "lowConfidenceMidLine"
+  },
+  {
+   "after": " me with the move last weekend.",
+   "before": "Thanks again for",
+   "reason": "lowConfidenceMidLine"
+  },
+  {
+   "after": " the review until Thursday.",
+   "before": "I was hoping we could",
+   "reason": "lowConfidenceMidLine"
+  },
+  {
+   "after": " than I expected, so I need more time.",
+   "before": "The report is",
+   "reason": "lowConfidenceMidLine"
+  },
+  {
+   "after": " the numbers with Dana.",
+   "before": "Call with Priya Thursday 3pm PT to go over the budget.\nThen we can",
+   "reason": "lowConfidenceMidLine"
+  },
+  {
+   "after": " before our meeting?",
+   "before": "Do you have time to look at the",
+   "reason": "lowConfidenceMidLine"
+  },
+  {
+   "after": "",
+   "before": "Hi Maya, thanks for sending the draft over. I read through the first section last night and ",
+   "text": "I'"
+  },
+  {
+   "after": "",
+   "before": "I will send you the report by the end of the ",
+   "text": "week."
+  },
+  {
+   "after": "",
+   "before": "Could you let me know when you are ",
+   "text": "available?"
+  },
+  {
+   "after": "",
+   "before": "Thanks for the update on the ",
+   "text": "issue."
+  },
+  {
+   "after": "",
+   "before": "Let me know if you have any ",
+   "text": "questions or need further"
+  },
+  {
+   "after": "",
+   "before": "Please remember to bring your ",
+   "text": "ID."
+  }
+ ]
+}

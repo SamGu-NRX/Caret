@@ -1,0 +1,5 @@
+# Q2 grants. Paths are relative to payload/. Caret.app is keyed by bundle id (dev.caret.host), the tools by path.
+Accessibility,PostEvent,ListenEvent,ScreenCapture acc/Caret.app
+Accessibility,PostEvent tools/q2-key
+Accessibility tools/q2-ax
+Accessibility tools/h10-ax
