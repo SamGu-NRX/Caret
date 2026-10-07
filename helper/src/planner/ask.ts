@@ -359,6 +359,18 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
         ? { ...intent, route: "ask", why: ASKED_WHY[pending[0] as AskPart], open: pending }
         : { ...intent, route: "fill", why: "none" };
   }
+  // I2 (review of the A3 merge): any other plan from Jev's scope ask writes only the fields Jev chose, or the user
+  // picked (nativeFields, passed to planTask and planWithCode). Before this the native planner rebuilt its own field
+  // list from the instruction's words, so "fill the form and submit" with only Name chosen wrote Name and Email, and an
+  // "unclear" Email was written without asking. A part left open is asked first, as for a page goal. Fields open with
+  // nothing to offer means Jev chose no field: the plan may only hand off a press ("hit submit"), so nothing is asked.
+  let nativeFields: string[] | undefined;
+  if (!planAsAll && intent.route === "plan" && fromJev(intent)) {
+    const offersFields = (intent.options ?? []).length > 0;
+    const pending = (intent.pageOpen ?? []).filter((p) => fixed[p] === undefined && (p !== "fields" || offersFields));
+    nativeFields = pending.includes("fields") ? [] : intent.fields.map((r) => snap.fields.find((f) => f.ref === r)?.key ?? changed(`the field ${r} is gone`));
+    if (pending.length > 0 && (pending.includes("fields") || nativeFields.length > 0)) intent = { ...intent, route: "ask", why: ASKED_WHY[pending[0] as AskPart], open: pending };
+  }
   /** The question for an unclear part, when it is not one the user already picked and code can list its candidates. */
   const question = (e: Unclear): AskQuestionDraft | string => {
     if (fixed[e.part] !== undefined) return `the user already picked the ${e.part}`;
@@ -491,15 +503,21 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // goal refuses every native plan ("no plan writer") that planTask below would still make; a page fill is a goal
   // (planPage, below) and needs no writer.
   if (checked.route === "plan" && o.goals === true && o.writer !== null) return { route: "goal", intent, maker: use, windowId: w.window.windowId };
+  /** The plan, when every field it writes is one Jev chose or the user picked; any other write is a bug, said loudly. */
+  const inScope = <D extends PlanDraft>(d: D): D => {
+    const outside = nativeFields === undefined ? [] : d.checked.writes.filter((x) => !nativeFields.includes(x.node.key));
+    if (outside.length > 0) throw new Error(`the plan writes ${outside.map((x) => x.node.key).join(", ")}, which the Ask's scope does not hold`);
+    return d;
+  };
   if (checked.route === "plan") {
     try {
-      const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }) });
-      return onlyPress(d) ?? { ...d, ...extra, route: "plan" };
+      const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }), ...(nativeFields === undefined ? {} : { fields: nativeFields }) });
+      return onlyPress(inScope(d)) ?? { ...d, ...extra, route: "plan" };
     } catch (e) {
       if (!(e instanceof PlannerError) || (e.code !== "unsure" && e.code !== "nothingToDo") || o.writer === null) return refused(e);
       try {
-        const d = await planWithCode(instruction, model, memory, { writer: o.writer, askJev, offerKey: o.offerKey, windowId: w.window.windowId, now });
-        return onlyPress(d) ?? { ...d, ...extra, route: "plan" };
+        const d = await planWithCode(instruction, model, memory, { writer: o.writer, askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(nativeFields === undefined ? {} : { fields: nativeFields }) });
+        return onlyPress(inScope(d)) ?? { ...d, ...extra, route: "plan" };
       } catch (e2) {
         if (e2 instanceof PlannerError) return refused(new SaidError(e.code, e instanceof SaidError ? e.message : saysFor(e.code), `${e.message}; the plan writer did not help either: ${e2.message}`));
         throw e2;

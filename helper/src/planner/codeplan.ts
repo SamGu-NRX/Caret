@@ -41,6 +41,8 @@ export interface CodePlanOptions {
   windowId: string;
   now?: number;
   signal?: AbortSignal;
+  /** I2: the only fields the plan may write, by node key (PlanTaskOptions.fields); absent, every writable field. */
+  fields?: readonly string[];
 }
 
 /** What the writer cost and wrote, for the proposal's log and the scoreboard. */
@@ -133,7 +135,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   const now = o.now ?? Date.now();
   const w = model.windows.get(o.windowId);
   if (w === undefined) throw new PlannerError("unseenWindow", `window ${o.windowId} is not open`);
-  const all = writableFields(w);
+  const all = writableFields(w).filter((f) => o.fields === undefined || o.fields.includes(f.node.key));
   if (all.length === 0) throw new PlannerError("nothingToDo", `'${w.window.title}' has no field Caret can write`);
   const ledger = new SnippetLedger(model.windows.values());
   if (!ledger.plan([instruction])) throw new PlannerError("privacy", "your instruction quotes more of an open window than one request may carry");

@@ -68,6 +68,12 @@ export interface PlanTaskOptions {
   cutoff?: number;
   /** Called after Jev's last answer and before the plan is checked. Fault injection for the evaluation only. */
   beforeCheck?: () => Promise<void>;
+  /**
+   * I2: the only fields the plan may write, by node key: an Ask's fields as Jev's scope ask chose them or the user
+   * picked them (ask.ts nativeFields). In place of the planner's own reading of which fields the instruction names;
+   * absent, the planner reads it as before. Empty: no field, so only a press can be planned.
+   */
+  fields?: readonly string[];
 }
 
 /** One question's two answers, as text: a value, a window or button label, or keep and none. */
@@ -194,7 +200,7 @@ async function planIn(
   const outranked = outrankedFields(instruction, fields);
   const named = new Set(fields.filter((f) => (relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.label)) && !outranked.has(f.node.key)).map((f) => f.node.key));
   const wholeForm = asksToFillForm(instruction);
-  const askedFields = fields.filter((f) => taken.has(f.node.key) && (wholeForm || named.has(f.node.key)));
+  const askedFields = fields.filter((f) => taken.has(f.node.key) && (o.fields !== undefined ? o.fields.includes(f.node.key) : wholeForm || named.has(f.node.key)));
   const askedButtons = buttons.filter((b) => taken.has(b.key));
   const values = valueOptions(instruction, model, w, memory.values(), ledger, o.now ?? Date.now());
   if ((askedFields.length === 0 || values.length === 0) && askedButtons.length === 0) {
