@@ -481,6 +481,7 @@ class TrackerTest(unittest.TestCase):
 class ProfileAndEnqueueTest(Temp):
     def test_profiles_floors_estimates_and_evidence(self):
         expected = {"caret-browser-eval": (11, 2.5, 0.5, True), "caret-helper-suite": (12, 3, 0.5, True),
+                    "caret-laya": (12, 3.5, 0.1, True),
                     "caret-swift": (20, 6, 6, True), "caret-vm": (15, 6, 2, False)}
         self.assertEqual({k: (p.floor_gib, p.est_mem_gib, p.est_disk_gib, p.lease)
                           for k, p in caret_heavy.PROFILES.items()}, expected)
@@ -559,6 +560,19 @@ class ProfileAndEnqueueTest(Temp):
             with self.subTest(bad):
                 with self.assertRaises(manifest.ManifestError):
                     caret_heavy._r2_vm_plan(argparse.Namespace(**dict(vars(args), **bad)), "/w", pin, {})
+
+    def test_laya_seals_its_interpreter_packages_model_config_and_data(self):
+        argv, specs, recorded = caret_heavy._laya_plan(None, "/w", "a" * 40, {})
+        self.assertEqual((argv, recorded), ([], {}))
+        self.assertEqual({s["dest"] for s in specs}, {
+            "laya-python/bin/python3.12", "laya-python/lib/python3.12", "laya-site", "laya-tokenizers",
+            "laya-mlx/laya_mlx", "laya-src", "laya-data/questions.jsonl", "laya-data/narrowed.jsonl",
+            "laya-data/jev-fields.jsonl", "laya-data/weights-sha256.txt"})
+        with open(os.path.join(HEAVY, "recipes/laya.sh")) as fh:
+            text = "".join(line for line in fh if not line.lstrip().startswith("#"))
+        self.assertIn('-S -B -X pycache_prefix=/var/empty', text)  # nothing from site-packages outside the sealed paths
+        self.assertNotIn("ghq", text)
+        self.assertNotIn(".caret-run", text)
 
     def test_r2_prepare_puts_stage_options_in_argv(self):
         parser = argparse.ArgumentParser()

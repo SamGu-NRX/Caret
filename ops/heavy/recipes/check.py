@@ -12,6 +12,8 @@ recipe's code. The codes and their precedence are in ops/heavy/README.md.
   check.py prepare NAME --log FILE --exit N [--fail-code 12|14]
   check.py spend --day YYYY-MM-DD --from-line N --limit USD [--ledger-dir DIR]
   check.py r2 --harness h11|h14 --run DIR --rev SHA --exit N --spend-limit USD [--options JSON]
+  check.py laya CKPT --exit N --expected K   OUT/runs/CKPT.jsonl (K records), -sanity.json, -latency.json
+  check.py laya-score NAME --exit N --ckpts CKPT...   OUT/score.json with a result for every checkpoint
   check.py finish [--require STEP...]
 
 Evidence that is present but malformed is 12 whatever the step exited. A step named in --require
@@ -322,6 +324,64 @@ def r2(harness, run, rev, exit_code, options, spend_limit):
     return record(step)
 
 
+def laya(ckpt, exit_code, expected):
+    """One checkpoint's run: exactly the expected field records, each with both wordings, and its two reports."""
+    runs = os.path.join(out_dir(), "runs")
+    records, sanity, latency = (os.path.join(runs, ckpt + suffix) for suffix in (".jsonl", "-sanity.json", "-latency.json"))
+    step = {"kind": "laya", "name": ckpt, "exit": exit_code, "expected": expected,
+            "evidence": existing(records, sanity, latency, os.path.join(out_dir(), ckpt + ".log"))}
+    try:
+        with open(records, encoding="utf-8") as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+        if not all(isinstance(r, dict) and isinstance(r.get("A"), dict) and isinstance(r.get("B"), dict) for r in rows):
+            raise ValueError("a record lacks both wordings")
+        for path in (sanity, latency):
+            with open(path, encoding="utf-8") as fh:
+                json.load(fh)
+        step["records"] = len(rows)
+        malformed = None
+    except FileNotFoundError as ex:
+        rows, malformed = None, None
+        step["why"] = "missing {}".format(os.path.basename(ex.filename))
+    except (OSError, ValueError) as ex:
+        rows, malformed = None, "malformed checkpoint output: {}".format(ex)
+    if malformed:
+        step.update(code=EVIDENCE, why=malformed)
+    elif exit_code != 0:
+        step.update(code=FAILED, why=step.get("why") or "laya_run.py exited {}".format(exit_code))
+    elif rows is None:
+        step["code"] = EVIDENCE
+    elif expected <= 0 or len(rows) != expected:
+        step.update(code=EVIDENCE, why="{} records, expected {}".format(len(rows), expected))
+    else:
+        step["code"] = OK
+    return record(step)
+
+
+def laya_score(name, exit_code, ckpts):
+    path = os.path.join(out_dir(), "score.json")
+    step = {"kind": "laya-score", "name": name, "exit": exit_code,
+            "evidence": existing(path, os.path.join(out_dir(), "score.log"))}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            report = json.load(fh)
+        missing = [c for c in ckpts if not isinstance(report.get(c), dict) or "zeroShot" not in report[c]]
+        problem = "no score for {}".format(missing) if missing or "jev" not in report else None
+    except FileNotFoundError:
+        report, problem = None, None
+    except (OSError, ValueError) as ex:
+        report, problem = None, "malformed score.json: {}".format(ex)
+    if problem:
+        step.update(code=EVIDENCE, why=problem)
+    elif exit_code != 0:
+        step.update(code=FAILED, why="score.py exited {}".format(exit_code))
+    elif report is None:
+        step.update(code=EVIDENCE, why="no score.json")
+    else:
+        step["code"] = OK
+    return record(step)
+
+
 def finish(required=()):
     steps = []
     try:
@@ -393,6 +453,14 @@ def main(argv=None):
     r.add_argument("--exit", type=int, required=True)
     r.add_argument("--options")
     r.add_argument("--spend-limit", type=float, required=True)
+    la = sub.add_parser("laya")
+    la.add_argument("name")
+    la.add_argument("--exit", type=int, required=True)
+    la.add_argument("--expected", type=int, required=True)
+    ls = sub.add_parser("laya-score")
+    ls.add_argument("name")
+    ls.add_argument("--exit", type=int, required=True)
+    ls.add_argument("--ckpts", nargs="+", required=True)
     f = sub.add_parser("finish")
     f.add_argument("--require", nargs="*", default=[], help="step names that must have been recorded")
     args = parser.parse_args(argv)
@@ -406,6 +474,10 @@ def main(argv=None):
         return spend(args.day, args.from_line, args.limit, args.ledger_dir)
     if args.cmd == "r2":
         return r2(args.harness, args.run, args.rev, args.exit, args.options, args.spend_limit)
+    if args.cmd == "laya":
+        return laya(args.name, args.exit, args.expected)
+    if args.cmd == "laya-score":
+        return laya_score(args.name, args.exit, args.ckpts)
     return finish(args.require)
 
 

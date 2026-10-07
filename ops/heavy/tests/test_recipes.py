@@ -166,6 +166,52 @@ class Recipes(unittest.TestCase):
         done, _ = self.run_recipe("live-tasks.sh", "t", "0.10")
         self.assertEqual(done.returncode, 64)
 
+    # Laya
+
+    def laya_inputs(self):
+        q = [{"shaped": {"laya": {"state": 1}, "typed-decisions": {"state": 1}, "multilingual": {"misfit": True}}},
+             {"shaped": {"laya": {"state": 1}, "typed-decisions": {"misfit": True}, "multilingual": {"state": 1}}}]
+        write(os.path.join(self.inputs, "laya-data/questions.jsonl"), "".join(json.dumps(x) + "\n" for x in q))
+        stub = os.path.join(self.inputs, "laya-python/bin/python3.12")
+        write(stub, """#!/opt/homebrew/opt/python@3.14/bin/python3.14 -I
+import json, os, sys
+args = [a for a in sys.argv[1:] if a not in ("-S", "-B", "-X", "pycache_prefix=/var/empty")]
+out = os.environ["CARET_HEAVY_OUT"]
+assert os.environ["PYTHONPATH"].startswith(os.environ["CARET_HEAVY_INPUTS"] + "/laya-mlx:"), os.environ["PYTHONPATH"]
+if args[0].endswith("laya_run.py"):
+    ck = args[args.index("--ckpt") + 1]
+    if os.environ.get("STUB_LAYA_FAIL") == ck:
+        sys.exit(1)
+    n = sum(1 for l in open(os.environ["CARET_HEAVY_INPUTS"] + "/laya-data/questions.jsonl")
+            if "misfit" not in json.loads(l)["shaped"].get(ck, {"misfit": 1}))
+    n -= os.environ.get("STUB_LAYA_SHORT") == ck
+    os.makedirs(out + "/runs", exist_ok=True)
+    with open(out + "/runs/" + ck + ".jsonl", "w") as fh:
+        fh.writelines(json.dumps({"A": {}, "B": {}}) + "\\n" for _ in range(n))
+    for s in ("-sanity.json", "-latency.json"):
+        open(out + "/runs/" + ck + s, "w").write("{}")
+else:
+    assert os.environ["CARET_HELPER_SRC"].endswith("/helper/src")
+    json.dump(dict({"jev": {}}, **{c: {"zeroShot": {}} for c in args[1:]}), open(out + "/score.json", "w"))
+""")
+        os.chmod(stub, 0o755)
+
+    def test_laya_runs_every_checkpoint_on_the_sealed_interpreter_then_scores(self):
+        self.laya_inputs()
+        done, result = self.run_recipe("laya.sh")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.steps(result), [("prepare", "dependencies", 0), ("laya", "laya", 0),
+                                              ("laya", "typed-decisions", 0), ("laya", "multilingual", 0),
+                                              ("laya-score", "score", 0)])
+
+    def test_laya_fails_on_a_crashed_or_short_checkpoint(self):
+        self.laya_inputs()
+        done, result = self.run_recipe("laya.sh", env={"STUB_LAYA_FAIL": "multilingual"})
+        self.assertEqual(done.returncode, 11, done.stdout)
+        done, result = self.run_recipe("laya.sh", env={"STUB_LAYA_SHORT": "laya"})
+        self.assertEqual(done.returncode, 12, done.stdout)
+        self.assertIn("1 records, expected 2", json.dumps(result["steps"]))
+
     # R2
 
     def vm_inputs(self):

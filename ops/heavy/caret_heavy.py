@@ -111,6 +111,11 @@ PROFILES = {
         "caret-swift", 20, 6, 6, True, 1800, 7200, 60,
         "Unmeasured. Estimates 6 + 6 as h11/heavy.sh uses; floor 8 + 12. Compiler time alone summed 124 s "
         "(dogfood build-2eea5cf.log); 7200 s is a default."),
+    "caret-laya": Profile(
+        "caret-laya", 12, 3.5, 0.1, True, 1800, 7200, 30,
+        "Unmeasured. Estimates 3.5 + 0.1 are LY1's own (queue.sh); the lead's Q1 amendment set 8 + 3.6, rounded up to "
+        "12 GiB. No run of the three checkpoints and the scoring has completed; 7200 s is a default. It downloads each "
+        "checkpoint's weights (0.64-0.84 GB) from Hugging Face into memory."),
     "caret-vm": Profile(
         "caret-vm", 15, 6, 2, False, 0, 10800, 60,
         "Floor 15 GiB is Sam's figure (Brief Q1). rig-run takes its own heavy 0/0 and vm 6/2 leases (measured: "
@@ -288,6 +293,29 @@ def _r2_vm_plan(args, worktree, rev, paths):
     return argv, inputs, recorded
 
 
+# LY1's environment (~/.caret-run/evidence/screen/ly1/run-env.sh), sealed piece by piece: a Codex runtime's Python 3.12
+# (the binary and its standard library only; its pkgconfig and man links dangle), the sg-voice MLX venv's packages,
+# LY1's tokenizers wheel (abi3), and laya_mlx from its ghq clone, which ~/ghq sweeps after 30 days.
+LAYA_PYTHON = os.path.join(HOME, ".cache/codex-runtimes/codex-primary-runtime/dependencies/python")
+LAYA_SITE = os.path.join(HOME, "Programming Projects/sg-voice/private/runtime/f5-tts-mlx-v026/venv/lib/python3.12/site-packages")
+LAYA_TOKENIZERS = os.path.join(HOME, ".caret-run/models/laya/venv/lib/python3.14/site-packages")
+LAYA_MLX = os.path.join(HOME, "ghq/github.com/mizorewww/laya-mlx/laya_mlx")
+LAYA_SRC = os.path.join(HOME, ".caret-run/models/laya/src")
+LAYA_DATA = os.path.join(HOME, ".caret-run/evidence/screen/ly1")
+
+
+def _laya_plan(args, worktree, rev, paths):
+    inputs = [spec("python", "file", os.path.join(LAYA_PYTHON, "bin/python3.12"), "laya-python/bin/python3.12"),
+              spec("python-stdlib", "tree", os.path.join(LAYA_PYTHON, "lib/python3.12"), "laya-python/lib/python3.12"),
+              spec("mlx-venv-packages", "tree", LAYA_SITE, "laya-site"),
+              spec("tokenizers-packages", "tree", LAYA_TOKENIZERS, "laya-tokenizers"),
+              spec("laya_mlx", "tree", LAYA_MLX, "laya-mlx/laya_mlx"),
+              spec("laya-model-config", "tree", LAYA_SRC, "laya-src")]
+    for name in ("questions.jsonl", "narrowed.jsonl", "jev-fields.jsonl", "weights-sha256.txt"):
+        inputs.append(spec("laya-data/" + name, "file", os.path.join(LAYA_DATA, name), "laya-data/" + name))
+    return [], inputs, {}
+
+
 RECIPES = {
     "helper-window": Recipe("helper-window", "caret-helper-suite", "recipes/helper-window.sh", False,
                             _tag, _helper_window_plan),
@@ -298,6 +326,7 @@ RECIPES = {
     "r2-prepare": Recipe("r2-prepare", "caret-swift", "recipes/r2/prepare.sh", False,
                          _r2_prepare_options, _r2_prepare_plan),
     "r2-vm": Recipe("r2-vm", "caret-vm", "recipes/r2/vm.sh", True, _r2_vm_options, _r2_vm_plan),
+    "laya": Recipe("laya", "caret-laya", "recipes/laya.sh", False, lambda parser: None, _laya_plan),
 }
 
 
