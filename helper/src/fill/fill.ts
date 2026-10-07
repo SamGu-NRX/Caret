@@ -25,6 +25,7 @@ import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, dateP
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
 import { secretText } from "../memory/sensitive.ts";
+import { formatForField } from "./field-format.ts";
 import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type Reading } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -1154,6 +1155,27 @@ export async function proposeFill(
           const v = memoryValue(a.value, part as FillMemoryPart);
           add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} of ${describeAbout(a)})`, partSaid(v ?? "", m.own(PART_SAYS[part]), "of", aboutSaid(a), aboutValue(a)), { from: "memory", a });
         }
+      }
+      if (list.length > 0) derived.set(f.id, list);
+    }
+  }
+  // F1: offer the field's format of a known month/year or GitHub address, retaining the original source and stating
+  // the conversion for the verifier. The shape gate still checks the formatted value, and no exemption is added.
+  if (derive) {
+    for (const f of fields) {
+      if (f.control !== "text") continue;
+      const list = derived.get(f.id) ?? [];
+      for (const c of candidates) {
+        const r = formatForField(c.text, f.labelWords, f.node.inputKind);
+        if (r === null || candidates.some((x) => x.text === r.value) || list.some((x) => x.text === r.value)) continue;
+        const [whole, base] = [candidateSaid(c), textSaid(c)];
+        list.push({ key: `${f.id}:${list.length}`, text: r.value, describe: `"${r.value}" (the value in the field's format of ${describeCandidate(c)})`, said: () => {
+          const wm = whole();
+          const b = base();
+          // HTTPS is the only word this transform adds; derived already accepts a caller's literal code vocabulary.
+          const v = b === null ? null : m.derived(b, r.value, ["https"]);
+          return wm === null || v === null ? null : m.t`"${v}" (the value in the field's format of ${wm})`;
+        }, base: { from: "window", c }, also: null, chose: { says: `Caret assumed: ${r.assumptions.join("; ")}`, also: null, how: "fieldFormat" } });
       }
       if (list.length > 0) derived.set(f.id, list);
     }

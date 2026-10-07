@@ -3,7 +3,8 @@
 //   - it parses as a Plan, and its slots fill;
 //   - it writes fields and hands off presses, in one window, since an act grant covers one window;
 //   - every window and target exists in the screen model, and every written target is an editable field;
-//   - every value traces verbatim to a window, a memory entry or the instruction (trace.ts);
+//   - every value traces verbatim to a window, a memory entry or the instruction (trace.ts), or a checked field-format
+//     conversion traces to its unchanged original window source;
 //   - every value carries the write contract's mint for exactly that text in exactly that field (W2,
 //     fill/contract.ts), whose deterministic checks are run again here: no whole address in City, no email in Phone;
 //   - a hand-off comes last, and its reason is the one the risk table gives its control's label, so a
@@ -16,7 +17,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanErrorCode } from "../protocol.ts";
 import { secretIn, traceValue, type MemoryValue, type Trace } from "./trace.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { contractStale, provenanceStale, requireChecked, shapeRefusal, type CheckedValue } from "../fill/contract.ts";
+import { contractStale, isChecked, provenanceStale, requireChecked, shapeRefusal, type CheckedValue } from "../fill/contract.ts";
 import { authorityRefusal, fieldFingerprint, scopeRefusal, type DocumentReader, type Origin } from "../fill/ask-scope.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { FILE_INPUT_SUBROLE } from "../engines/page-link.ts";
@@ -140,12 +141,16 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
       if (secretField !== null) throw new PlannerError("notEditable", `${at}: its target asks for one of the ${SENSITIVE_SAYS[secretField]} Caret never types; that is left to you`);
       const secretValue = secretIn(end.value, ctx.instruction);
       if (secretValue !== null) throw new PlannerError("notEditable", `${at}: its value is one of the ${SENSITIVE_SAYS[secretValue]} Caret never types; that is left to you`);
-      const trace = traceValue(end.value, ctx.model, ctx.memory, ctx.instruction);
+      const slot = /^\{\{(\w+)\}\}$/u.exec(rawValue(parsed.data, i) ?? "")?.[1];
+      const supplied = slot === undefined ? undefined : checked.get(slot);
+      const pr = supplied?.provenance;
+      // F1: formatted text need not occur verbatim. Only a genuine fieldFormat mint may trace to its original window
+      // source; requireChecked and provenanceStale below still enforce its exact text, target and unchanged source.
+      const trace: Trace | null = traceValue(end.value, ctx.model, ctx.memory, ctx.instruction) ?? (isChecked(supplied) && pr?.kind === "derived" && pr.how === "fieldFormat" && pr.base.kind === "window" ? { from: "window", windowId: pr.base.windowId, nodeKey: pr.base.nodeKey } : null);
       if (trace === null) throw new PlannerError("untracedValue", `${at}: '${clip(end.value)}' is not in any window, in memory or in your instruction`);
       // W2: the mint the drafter made for this slot's value in this field (fill/contract.ts), never a recomputed guess:
       // the field and provenance it was checked with travel with it (REVIEW-R2 P2.5: "Mary Ann" lost her source label here).
-      const slot = /^\{\{(\w+)\}\}$/u.exec(rawValue(parsed.data, i) ?? "")?.[1];
-      const mint = requireChecked(slot === undefined ? undefined : checked.get(slot), end.value, node.key, w.window.windowId, at);
+      const mint = requireChecked(supplied, end.value, node.key, w.window.windowId, at);
       if ((mint.field.descriptor !== d.text && mint.verdict.by !== "exempt") || contractStale(node, mint.field, end.value) !== null) throw new PlannerError("unknownTarget", `${at}: the field no longer reads as it did when its value was checked`);
       // W2 review: and the value's source must still say what it said then (the line, its sentences, its label).
       const stale = provenanceStale(ctx.model, mint.provenance);
