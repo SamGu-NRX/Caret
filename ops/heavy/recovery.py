@@ -209,44 +209,58 @@ class Journal:
 
     Only the owner holding owner.lock writes it. A crash can leave the last line incomplete; load(repair=True)
     truncates that torn tail before any further append, so a record acknowledged after a restart is never hidden
-    behind it. An append that fails (a short write then an error, or a failed fsync) is not acknowledged, so it cuts
-    the file back to where it started; if even that fails, the next append cuts the torn tail first. An unreadable
-    line anywhere else raises JournalCorrupt.
+    behind it. An append that fails anywhere (a short write then an error, the file's fsync, or the directory's fsync
+    that makes a new journal's name durable) is not acknowledged, so it cuts the file back to where it started. If
+    that cut fails too, this Journal refuses every later append until the cut succeeds, so no record ever lands
+    behind one that was refused. (A crash before the cut leaves the refused record for the restarted owner, which
+    then knows of a change the supervisor was told failed; each such record only makes the owner hold or clean up
+    more.) An unreadable line anywhere else raises JournalCorrupt.
     """
 
     def __init__(self, path):
         self.path = path
+        self.cut_to = None        # the start of a failed append whose bytes may still be in the file
+        self.dir_synced = False   # whether this Journal has made the file's directory entry durable
+
+    @staticmethod
+    def _cut(fd, size):
+        os.ftruncate(fd, size)
+        os.fsync(fd)
 
     def append(self, record):
         if "token" in record:
             raise ValueError("the journal never holds the token")
         line = memoryview((json.dumps(dict(record, at=utc_now()), sort_keys=True) + "\n").encode())
-        new = not os.path.exists(self.path)
         fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
         try:
+            if self.cut_to is not None:
+                self._cut(fd, self.cut_to)  # raises: nothing is appended behind a refused record
+                self.cut_to = None
             size = os.fstat(fd).st_size
             if size and os.pread(fd, 1, size - 1) != b"\n":
-                size = os.pread(fd, size, 0).rfind(b"\n") + 1  # a torn tail left by an earlier failure
-                os.ftruncate(fd, size)
+                size = os.pread(fd, size, 0).rfind(b"\n") + 1  # a torn tail left by an earlier crash
+                self._cut(fd, size)
             try:
                 while line:
                     line = line[os.write(fd, line):]
                 os.fsync(fd)
+                if not self.dir_synced:
+                    dfd = os.open(os.path.dirname(self.path), os.O_RDONLY)
+                    try:
+                        os.fsync(dfd)
+                    finally:
+                        os.close(dfd)
+                    self.dir_synced = True
             except BaseException:
+                self.cut_to = size
                 try:
-                    os.ftruncate(fd, size)
-                    os.fsync(fd)
+                    self._cut(fd, size)
+                    self.cut_to = None
                 except OSError:
                     pass
                 raise
         finally:
             os.close(fd)
-        if new:
-            dfd = os.open(os.path.dirname(self.path), os.O_RDONLY)
-            try:
-                os.fsync(dfd)
-            finally:
-                os.close(dfd)
 
     def load(self, repair=False):
         try:

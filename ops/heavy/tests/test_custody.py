@@ -348,6 +348,51 @@ class JournalReplay(unittest.TestCase):
                 j.append({"event": "lease"})
                 self.assertEqual([r["event"] for r in recovery.Journal(self.path).load()], ["adopted", "lease"])
 
+    def test_a_failed_record_whose_rollback_failed_is_cut_before_the_next_one(self):
+        j = recovery.Journal(self.path)
+        j.append({"event": "adopted"})
+        real_truncate, cuts = os.ftruncate, []
+
+        def ftruncate(fd, size):
+            cuts.append(size)
+            if len(cuts) == 1:
+                raise OSError(5, "I/O error")  # the rollback of the failed record
+            return real_truncate(fd, size)
+        with mock.patch.object(recovery.os, "fsync", side_effect=OSError(5, "I/O error")), \
+                mock.patch.object(recovery.os, "ftruncate", side_effect=ftruncate):
+            with self.assertRaises(OSError):
+                j.append({"event": "register"})  # written whole, never durable, not acknowledged
+        j.append({"event": "lease"})
+        self.assertEqual([r["event"] for r in recovery.Journal(self.path).load()], ["adopted", "lease"])
+
+    def test_nothing_is_appended_while_a_failed_record_cannot_be_cut(self):
+        j = recovery.Journal(self.path)
+        j.append({"event": "adopted"})
+        with mock.patch.object(recovery.os, "fsync", side_effect=OSError(5, "I/O error")), \
+                mock.patch.object(recovery.os, "ftruncate", side_effect=OSError(5, "I/O error")):
+            with self.assertRaises(OSError):
+                j.append({"event": "register"})
+            with self.assertRaises(OSError):
+                j.append({"event": "lease"})  # refused: it would land behind the failed record
+        self.assertEqual([r["event"] for r in recovery.Journal(self.path).load()], ["adopted", "register"])
+        j.append({"event": "lease"})
+        self.assertEqual([r["event"] for r in recovery.Journal(self.path).load()], ["adopted", "lease"])
+
+    def test_a_failed_directory_fsync_fails_the_first_record(self):
+        import stat
+        real_fsync = os.fsync
+
+        def fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(5, "I/O error")
+            return real_fsync(fd)
+        j = recovery.Journal(self.path)
+        with mock.patch.object(recovery.os, "fsync", side_effect=fsync):
+            with self.assertRaises(OSError):
+                j.append({"event": "adopted"})  # its directory entry is not durable: not acknowledged
+        j.append({"event": "lease"})
+        self.assertEqual([r["event"] for r in recovery.Journal(self.path).load()], ["lease"])
+
     def test_short_writes_are_completed(self):
         real = os.write
         with mock.patch.object(recovery.os, "write", side_effect=lambda fd, data: real(fd, bytes(data[:3]))):
