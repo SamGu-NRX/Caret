@@ -12,6 +12,7 @@ import type { FillScope } from "../fill/fill.ts";
 import type { CheckedValue, FieldContract, Provenance } from "../fill/contract.ts";
 import type { HandoffWhy } from "./capabilities.ts";
 import type { OwedField } from "./left.ts";
+import type { ReadableField, SavedValue } from "../fill/alternate.ts";
 
 export type ValueOrigin = z.infer<typeof ValueOriginSchema>;
 
@@ -116,6 +117,12 @@ export interface GoalInventory {
   texts: ReadonlyMap<string, { title: string; text: string; message: string }>;
   /** Each window the goal may act in, by id: the fields a goal writing there owes (left.ts), as they were frozen. */
   owed: ReadonlyMap<string, readonly OwedField[]>;
+  /**
+   * V6 B2: what lowering's alternate-field veto reads (fill/alternate.ts): each window's readable fields as frozen, by
+   * window id, filled, read-only and dropdowns included, and the user's saved values. buildInventory always sets it; a
+   * hand-built inventory without it is read from its targets alone. Never sent.
+   */
+  alternates?: { fields: ReadonlyMap<string, readonly ReadableField[]>; saved: readonly SavedValue[] };
 }
 
 /** `attach` (P2 adds the kind; P3 lowers it): a file the user confirmed in the preview, put in a page's file control. */

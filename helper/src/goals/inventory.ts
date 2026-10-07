@@ -21,6 +21,8 @@ import { RESOLVER_VERSION } from "../values/resolve.ts";
 import { allowedEffects } from "./capabilities.ts";
 import { markDerived } from "./gates.ts";
 import { owedFields, type OwedField } from "./left.ts";
+import { readableFields, type ReadableField, type SavedValue } from "../fill/alternate.ts";
+import { aboutKind } from "../fill/about.ts";
 import type { GoalControl, GoalDomain, GoalInventory, ReadValue, TargetBinding, ValueBinding, ValueOrigin } from "./plan.ts";
 
 /** Windows one goal may act in. With the calendar, that is the writer's four snapshots (PlanInputSchema). */
@@ -99,6 +101,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   const windowRefs = new Map<string, string>();
   const texts = new Map<string, { title: string; text: string; message: string }>();
   const owed = new Map<string, OwedField[]>();
+  const readable = new Map<string, readonly ReadableField[]>();
   const snapshots: PlanningSnapshot[] = [];
   let t = 0;
   let v = 0;
@@ -124,6 +127,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     // Completion is local: a required field Caret never types still needs the user.
     // Raw obligation labels stay in inventory.owed, never in the writer's snapshots.
     owed.set(w.window.windowId, owedFields(localWindows.get(w.window.windowId) ?? w));
+    readable.set(w.window.windowId, readableFields(localWindows.get(w.window.windowId) ?? w));
     const doc = o.pageDocument?.(w.window.windowId) ?? null;
     if (doc !== null) documents.set(w.window.windowId, doc);
     const title = w.window.title.slice(0, 200);
@@ -194,7 +198,12 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     targets.set(ref, { ref, domain, key: "calendar", role: "calendar", label: o.calendar, own: o.calendar, placeholder: null, control: "calendar", value: "", options: null });
     snapshots.push({ snapshot: `s${snapshots.length + 1}`, window: `w${snapshots.length + 1}`, revision: "calendar", title: `Calendar '${o.calendar}'`, targets: [{ ref, label: o.calendar, kind: "calendar", canFill: true, options: [], allowedPressEffects: [] }], values: [], questions: [] });
   }
-  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed }, ledger };
+  // V6 B2: the user's own values of a kind, for the alternate-field veto; a person's entry is not the user's.
+  const saved: SavedValue[] = o.memory.flatMap((m) => {
+    const kind = m.whose === "other" ? null : aboutKind(m.label, m.text);
+    return kind === null ? [] : [{ label: m.label, value: m.text, kind }];
+  });
+  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed, alternates: { fields: readable, saved } }, ledger };
 }
 
 /**

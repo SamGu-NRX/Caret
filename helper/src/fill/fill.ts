@@ -24,7 +24,7 @@ import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, in
 import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
-import { alternateKey, alternateKind, ownAlternateValue, primaryKind, setAlternateReason } from "./alternate.ts";
+import { alternateVetoes, readableFields, setAlternateReason, type AlternateWrite, type PartPicks } from "./alternate.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { clockTime, datedBySent, splitMoment, readClock, readDate, readDateTime, readMonth, sentLineFor, type Reading } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
@@ -562,6 +562,11 @@ export interface FillOptions {
   authority?: Authority;
   /** Which page document a window shows now (the owning helper's page engine), for an Ask's scope. */
   documentOf?: DocumentReader | null;
+  /**
+   * V6 B1: this fill is part `part` of a page plan whose parts ask together (page-planner.ts): its alternate-field veto
+   * waits for every part's proposals on `board` and reads them all. Absent, the fill's own proposals are the form's.
+   */
+  peers?: { board: PartPicks; part: number };
   cutoff?: number;
   rand?: (n: number) => number;
   /** Makes the proposal id; tests pass a counter. */
@@ -1893,35 +1898,28 @@ export async function proposeFill(
     };
   });
 
-  // The permitted heldout-1872a37-n1 run log records the user's primary email in Alternate email.
-  // Identity ownership and an exact verifier answer did not catch it. A secondary field must differ
-  // from its primary and the user's own value; remove the pick before checkValues can approve it.
-  // Inspect filled and unasked inputs too: formFields deliberately omits already populated fields.
-  // This uses Caret's existing window-level form boundary: page-link.ts does not retain HTML form IDs.
-  // A primary in another form can only withhold an extra alternate, never admit a write. Preserving
-  // those IDs is deferred by the lead; do not infer a narrower boundary from field groups or labels.
-  const primaryFields = [...w.nodes.values()].flatMap((node) => {
-    if (node.editable !== true || !FILLABLE_ROLES.has(node.role) || node.states?.includes("secure")) return [];
-    const d = describeField(w, node);
-    const name = d.label ?? d.nearest ?? d.placeholder;
-    const kind = primaryKind(name);
-    return kind === null || alternateKind(name) !== null ? [] : [{ node, name: name ?? "unnamed field", kind }];
-  });
-  for (const [i, pick] of picksOf) {
+  // The alternate-field veto (alternate.ts): a secondary field never repeats its primary's value or the user's own. A
+  // held-out run's log records the user's primary email in Alternate email; identity ownership and an exact verifier
+  // answer did not catch it. Every pick is checked here, controls and derived values included, before checkValues or an
+  // exemption can approve it, against:
+  //   - every field of the form Caret can read, filled, read-only or a dropdown (formFields omits populated fields);
+  //   - every value proposed into the form, by every part of a page plan (V6 B1: the parts ask concurrently);
+  //   - the form as it reads after the asks, so a primary that changed while they were out counts (V6 B3).
+  // The form is the window: page-link.ts keeps no HTML form ids. A primary in another form can only withhold an extra
+  // alternate, never admit a write; preserving those ids is the lead's deferred follow-up.
+  const ownWrites: AlternateWrite[] = [...picksOf].map(([i, x]) => ({ key: (fields[i] as Field).node.key, name: (fields[i] as Field).name, text: x.text }));
+  let proposedHere: readonly AlternateWrite[] = ownWrites;
+  if (opts.peers !== undefined) {
+    opts.peers.board.arrive(opts.peers.part, ownWrites);
+    proposedHere = await opts.peers.board.all();
+  }
+  const vetoes = alternateVetoes({ fields: readableFields(model.windows.get(windowId) ?? localWindow), writes: proposedHere, saved: opts.about ?? [] });
+  for (const i of [...picksOf.keys()]) {
     const f = fields[i] as Field;
-    const kind = alternateKind(f.name);
-    if (kind === null) continue;
-    const primaries = primaryFields.filter((p) => p.kind === kind && p.node.key !== f.node.key);
-    if (primaries.length === 0) continue;
-    const key = alternateKey(kind, pick.text);
-    const repeated = primaries.find((p) => {
-      const proposed = picksOf.get(fields.findIndex((x) => x.node.key === p.node.key))?.text;
-      return [p.node.value, proposed].some((v) => v !== undefined && v.trim() !== "" && alternateKey(kind, v) === key);
-    });
-    if (repeated === undefined && !ownAlternateValue(kind, pick.text, opts.about ?? [])) continue;
-    const primary = repeated ?? primaries[0]!;
+    const veto = vetoes.get(f.node.key);
+    if (veto === undefined) continue;
     const held: FillField = { ...out[i]!, choice: NONE, value: null, source: null, memory: null, handoff: null, basis: undefined, withheld: "notExact" };
-    setAlternateReason(held, `Caret left ${f.name}: it would repeat your ${primary.name}.`);
+    setAlternateReason(held, `Caret left ${f.name}: ${veto.says}.`);
     out[i] = held;
     picksOf.delete(i);
   }

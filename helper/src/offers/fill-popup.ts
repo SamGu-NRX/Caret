@@ -12,6 +12,7 @@ import { describeField } from "../fill/descriptor.ts";
 import { boxNeverTicked, formControls, inWebArea } from "../fill/controls.ts";
 import { conversionOf, describeInput, emptyInput, identityRefOf, memoryRefOf, memoryValue, mintOf } from "../fill/fill.ts";
 import { contractStale, provenanceStale, requireChecked, type CheckedValue } from "../fill/contract.ts";
+import { alternateStale } from "../fill/alternate.ts";
 import { identityKey } from "../fill/whose.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
@@ -234,7 +235,10 @@ function recheckField(model: ScreenModel, w: WindowState, f: GroundedField, abou
   if (describeInput(w, input) !== f.descriptor) return { log: `the field ${f.key} now reads differently`, says: "it reads differently now" };
   const value = valueStale(model, w, f, about, answer, page);
   if (value !== null) return value;
-  return contractStale(node, f.checked.field, f.value) === null ? null : { log: `the field ${f.key} now asks for something else`, says: "it asks for something else now" };
+  if (contractStale(node, f.checked.field, f.value) !== null) return { log: `the field ${f.key} now asks for something else`, says: "it asks for something else now" };
+  // V6 B3: an alternate field's value against the form's primary fields as they read at acceptance (alternate.ts).
+  const repeats = alternateStale(w, f.checked);
+  return repeats === null ? null : { log: `the field ${f.key} would repeat a primary field's value`, says: repeats };
 }
 
 /**

@@ -64,7 +64,7 @@ export function boxNeverTicked(label: string): boolean {
 }
 
 /** A select's value that is a prompt, not a choice: nothing is picked yet. */
-const PROMPT = /^(?:|select\b.*|choose\b.*|please (?:select|choose)\b.*|pick\b.*|-+.*-*|month|day|year|—)$/i;
+export const PROMPT = /^(?:|select\b.*|choose\b.*|please (?:select|choose)\b.*|pick\b.*|-+.*-*|month|day|year|—)$/i;
 
 const label = (n: Node): string | null => fieldLabelText(n.label);
 

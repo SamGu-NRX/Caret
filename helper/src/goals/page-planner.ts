@@ -17,7 +17,7 @@ import { ContractError, fieldContract, requireChecked, type FieldContract } from
 import { formControls, inWebArea } from "../fill/controls.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { isAnswerField } from "../fill/answers.ts";
-import { alternateReason } from "../fill/alternate.ts";
+import { alternateReason, PartPicks } from "../fill/alternate.ts";
 import { asksCountry, fieldPart } from "../fill/derive.ts";
 import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import type { EventClock } from "../offers/event-time.ts";
@@ -340,17 +340,23 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   // 2. Values: fill's one round over exactly each part's fields, under the Ask's scope; the parts' rounds run together.
   const scopeOf = (part: readonly PageInput[]): FillScope | undefined =>
     o.scope === null ? undefined : { ...o.scope, fields: part.map((x) => x.node.key), literals: new Map([...o.scope.literals].filter(([k]) => part.some((x) => x.node.key === k))) };
+  // V6 B1: each part's alternate-field veto reads every part's proposals before any verifier runs (fill/alternate.ts):
+  // an Alternate email in one part never repeats the Email another part proposes. A part that ends before it gets there
+  // is arrived for with no proposals, so none waits on it.
+  const board = new PartPicks(parts.length);
   const rounds = await Promise.all(
-    parts.map(async (part) => {
+    parts.map(async (part, k) => {
       const scope = scopeOf(part);
       try {
         // With no scope, the part's own fields (C2 review: a fill on focus asks about the 20 nearest the trigger, which
         // on a long form of look-alike fields were not the part's).
         const which = scope === undefined ? { only: part.map((x) => x.node.key) } : { scope };
-        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), authority: o.scopes === undefined || pageScope === undefined ? { kind: "goal", goalId: o.goalId } : { kind: "ask", scope: pageScope }, documentOf: o.documentOf ?? null }), error: null };
+        return { part, scope, proposal: await proposeFill(o.sources ?? model, o.askJev, o.windowId, (part[0] as PageInput).node.key, o.now, { about: o.about, ...which, ...(o.fill ?? {}), authority: o.scopes === undefined || pageScope === undefined ? { kind: "goal", goalId: o.goalId } : { kind: "ask", scope: pageScope }, documentOf: o.documentOf ?? null, peers: { board, part: k } }), error: null };
       } catch (e) {
         if (e instanceof FillError) return { part, scope, proposal: null, error: e };
         throw e;
+      } finally {
+        board.arrive(k, []);
       }
     }),
   );
@@ -473,7 +479,8 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     targets.set(t.ref, t);
     attach.push({ target: t, file: o.attachOffer === undefined ? { source: "choose" } : await o.attachOffer(w, n, label) });
   }
-  const inventory: GoalInventory = { ...inv.inventory, targets, values };
+  // V6 B2: lowering's alternate-field veto reads the user's About entries, as fill's did.
+  const inventory: GoalInventory = { ...inv.inventory, targets, values, alternates: { fields: inv.inventory.alternates?.fields ?? new Map(), saved: o.about } };
   // I6: who goes on after Caret's steps, as the plan's last row.
   const row = handoffRow(w, domain, [...[...gated.keys()].map((r) => (targets.get(r) as TargetBinding).key), ...attach.map((a) => a.target.key)]);
 

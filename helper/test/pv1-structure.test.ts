@@ -31,7 +31,8 @@ const reads: Record<string, number> = {
   "fill/contract.ts|provenanceStale|model.windows.get(pr.srcWindowId)": 1,
   "fill/fill.ts|selectedFormInputs|model.windows.get(windowId)": 1,
   "fill/fill.ts|sourceWords|model.windows.values()": 1,
-  "fill/fill.ts|proposeFill|model.windows.get(windowId)": 1,
+  // V6 B3: the second is the alternate-field veto's read of the form after the asks, compared locally and never sent.
+  "fill/fill.ts|proposeFill|model.windows.get(windowId)": 2,
   "fill/fill.ts|proposeFill|model.windows.values()": 1,
   "goals/inventory.ts|buildInventory|model.windows.get(id)": 1,
   "goals/inventory.ts|buildInventory|model.windows.values()": 1,

@@ -30,6 +30,7 @@ import { labelKind, secretText, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import { secretIn } from "../planner/trace.ts";
 import type { AskJev, JevRequest } from "./jev.ts";
 import { assertNoSecrets, SnippetLedger } from "../privacy.ts";
+import { alternateKinds, alternateStale, type AlternateKind } from "./alternate.ts";
 
 /** The page walk's text input kind (protocol.ts PageControlKind), projected into Node by toWindowSnapshot; null through Accessibility. */
 export type InputKind = "text" | "email" | "tel" | "url" | "number" | "search" | "date" | "time" | "datetime" | "month" | "week" | "textarea" | null;
@@ -62,6 +63,12 @@ export interface FieldContract {
   readonly autocomplete: AutocompleteToken | null;
   /** I2: how the field read when its contract was made (ask-scope.ts fieldFingerprint); null when made without its window. */
   readonly fingerprint: string | null;
+  /**
+   * V6 B3: the kinds this field is an alternate of (alternate.ts alternateKinds: "Alternate email" is an email's), read
+   * from its name. A value checked for it depends on the form's primary fields of those kinds: the acceptance's recheck
+   * and the guard right before each dispatch read them again (alternate.ts alternateStale). Empty for any other field.
+   */
+  readonly alternate: readonly AlternateKind[];
 }
 
 /** The part of a name, an address or a date an autocomplete field name asks for (HTML autofill), or none. */
@@ -362,6 +369,7 @@ export function makeFieldContract(x: {
     currencyShown: CURRENCY_SHOWN.test(words),
     autocomplete,
     fingerprint: x.fingerprint ?? null,
+    alternate: Object.freeze([...alternateKinds(x.name)]),
   });
 }
 
@@ -963,6 +971,12 @@ export function guardFor(model: () => ScreenModel, mints: ReadonlyMap<number, Ch
       if (target.window === undefined) return "Caret can't see the field to check it is still the one the Ask was about";
       const out = scopeRefusal({ field: { ...m.field, fingerprint: fieldFingerprint(target.window, m.field.key) }, owner: m.owner }, m.authority.scope, documentOf);
       if (out !== null) return out;
+    }
+    // V6 B3: an alternate field's value against the form's primary fields as they read right before the dispatch, in the
+    // window the executor resolved. A check with no target (the executor's look ahead) leaves it to the dispatch's own.
+    if (target !== undefined) {
+      const repeats = alternateStale(target.window, m);
+      if (repeats !== null) return `Caret left '${clip(m.field.name)}': ${repeats}`;
     }
     const stale = provenanceStale(model(), m.provenance);
     return stale === null ? null : `the source of '${clip(m.text)}' changed (${stale})`;

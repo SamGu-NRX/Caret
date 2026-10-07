@@ -28,6 +28,7 @@ import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { candidateProvenance, FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
 import { checkValues, ContractError, fieldContract, isChecked, VerifierUnavailable, type CheckedValue, type CheckOptions, type FieldContract, type Owner, type Proposed, type Provenance } from "../fill/contract.ts";
+import { alternateVetoes, readableFields } from "../fill/alternate.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts } from "../fill/kinds.ts";
@@ -330,8 +331,20 @@ async function planIn(
  * answer: nothing is written then.
  */
 export async function mintWrites(writes: readonly { key: string; w: WindowState; node: Node; name: string; text: string; provenance: Provenance; owner: Owner }[], o: CheckOptions): Promise<{ mints: Map<string, CheckedValue>; refused: { key: string; name: string; says: string; why: string }[] }> {
+  // V6: the alternate-field veto (fill/alternate.ts), over every write of the plan into each window, before any value is
+  // checked: an Alternate email never repeats the plan's Email or a primary field the window shows.
+  const vetoed = new Map<string, string>();
+  for (const id of new Set(writes.map((x) => x.w.window.windowId))) {
+    const here = writes.filter((x) => x.w.window.windowId === id);
+    const vetoes = alternateVetoes({ fields: readableFields((here[0] as (typeof writes)[number]).w), writes: here.map((x) => ({ key: x.node.key, name: x.name, text: x.text })), saved: [] });
+    for (const x of here) {
+      const v = vetoes.get(x.node.key);
+      if (v !== undefined) vetoed.set(x.key, v.says);
+    }
+  }
+  const kept = writes.filter((x) => !vetoed.has(x.key));
   const proposed: Proposed[] = [];
-  for (const x of writes) {
+  for (const x of kept) {
     let field: FieldContract;
     try {
       field = fieldContract(x.w, x.node);
@@ -349,9 +362,12 @@ export async function mintWrites(writes: readonly { key: string; w: WindowState;
     throw e;
   }
   const mints = new Map<string, CheckedValue>();
-  const refused: { key: string; name: string; says: string; why: string }[] = [];
+  const refused: { key: string; name: string; says: string; why: string }[] = writes.flatMap((x) => {
+    const says = vetoed.get(x.key);
+    return says === undefined ? [] : [{ key: x.key, name: x.name, says, why: "notExact" }];
+  });
   r.results.forEach((x, i) => {
-    const w = writes[i] as (typeof writes)[number];
+    const w = kept[i] as (typeof writes)[number];
     if (isChecked(x)) mints.set(w.key, x);
     else refused.push({ key: w.key, name: w.name, says: x.says, why: x.why });
   });
