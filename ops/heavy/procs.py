@@ -331,11 +331,13 @@ class Tracker:
     def _marked(self):
         hits = []
         for pid in self.probes.all_pids():
-            if pid == self.me or pid in self.tracked:
+            if pid == self.me:
                 continue
             usage = self.probes.usage(pid)
             if usage is None or usage[1] < self.started_abstime:
                 continue
+            if self.tracked.get(pid) == usage[1]:
+                continue  # already walked from the tracked set; a reused pid (other start) is read again
             got = self.probes.procargs(pid)
             if got is not None and self.mark_entry in got[1]:
                 hits.append(pid)

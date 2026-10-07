@@ -274,6 +274,62 @@ class AdapterTest(Temp):
         self.assertIn("unreadable", self.validate()[0])
 
 
+class TrackerTest(unittest.TestCase):
+    """procs.Tracker with fake probes: pid reuse never hides a marked process, and never signals a stranger."""
+
+    class Probes:
+        def __init__(self):
+            self.procs = {}  # pid -> (start, env, ppid, pgid)
+
+        def all_pids(self):
+            return list(self.procs)
+
+        def usage(self, pid):
+            p = self.procs.get(pid)
+            return None if p is None else (1, p[0])
+
+        def procargs(self, pid):
+            p = self.procs.get(pid)
+            return None if p is None else (["x"], p[1])
+
+        def children(self, pid):
+            return [c for c, p in self.procs.items() if p[2] == pid]
+
+        def group(self, pgid):
+            return [c for c, p in self.procs.items() if p[3] == pgid]
+
+    def tracker(self):
+        import procs
+        probes = self.Probes()
+        t = procs.Tracker(probes, "caret-x.n", "caret-heavy.caret-x.", started_abstime=100)
+        t.me = -1
+        procs_launchd = procs.launchd_jobs
+        procs.launchd_jobs = lambda prefix, uid=None: []
+        self.addCleanup(setattr, procs, "launchd_jobs", procs_launchd)
+        return probes, t
+
+    def test_a_reused_pid_carrying_the_marker_is_still_found(self):
+        probes, t = self.tracker()
+        probes.procs[500] = (200, ["CARET_HEAVY_MARK=caret-x.n"], 1, 500)
+        self.assertEqual(set(t.owned(full=True)), {500})
+        del probes.procs[500]
+        self.assertEqual(t.owned(full=True), {})
+        # The pid comes back as another marked process (a later start), detached from every tracked group.
+        probes.procs[500] = (300, ["CARET_HEAVY_MARK=caret-x.n"], 1, 999)
+        self.assertEqual(set(t.owned(full=True)), {500})
+
+    def test_a_reused_pid_without_the_marker_is_never_owned(self):
+        probes, t = self.tracker()
+        probes.procs[500] = (200, ["CARET_HEAVY_MARK=caret-x.n"], 1, 500)
+        t.owned(full=True)
+        probes.procs[500] = (300, ["OTHER=1"], 1, 999)
+        self.assertEqual(t.owned(full=True), {})
+        from unittest import mock
+        with mock.patch.object(os, "kill") as kill:  # never a real signal, even if this regresses
+            self.assertEqual(t.signal_all(15, {500: 1}), [])
+        kill.assert_not_called()
+
+
 class ProfileAndEnqueueTest(Temp):
     def test_profiles_floors_estimates_and_evidence(self):
         expected = {"caret-browser-eval": (11, 2.5, 0.5, True), "caret-helper-suite": (12, 3, 0.5, True),
