@@ -20,7 +20,7 @@ const builders: Record<string, number> = {
   "planner/intent-makers.ts": 3, "planner/planner.ts": 2, "routing/judge.ts": 3, "tasks/pending.ts": 2,
 };
 // These transform an already checked request, or normalize it for a cache; they never extract window text.
-const transforms: Record<string, number> = { "engines/decide/cache.ts": 2, "engines/decide/harness.ts": 1, "fill/jev.ts": 4, "privacy/disclosure.ts": 1 };
+const transforms: Record<string, number> = { "engines/decide/cache.ts": 2, "engines/decide/harness.ts": 1, "engines/decide/llama.ts": 1, "fill/jev.ts": 4, "privacy/disclosure.ts": 1 };
 const contributors = ["fill/answers.ts", "goals/inventory.ts", "patterns/skills.ts", "planner/intent.ts", "planner/people.ts", "planner/sources.ts", "planner/targets.ts"];
 
 // Exact raw model lookups are allowed only for local safety/execution, privacy-budget accounting, or an audited redaction boundary.

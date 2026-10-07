@@ -66,10 +66,24 @@ export class EngineRegistry implements EngineDirectory {
     return () => this.listeners.delete(l);
   }
 
-  /** Sets "Not on this site" and sends it to every engine that has said hello. */
+  /**
+   * Sets "Not on this site" and sends it to every engine that has said hello. What the model already holds of a site
+   * now switched off goes too (PV2 review): each tab showing such a site closes in the model and is read in again from
+   * its last walk, without that site's frames, or not at all when its top frame is that site's.
+   */
   setSitesOff(origins: readonly string[]): void {
+    const before = new Set(this.offSites);
     this.offSites = [...new Set(origins)].sort();
-    for (const e of this.sessions.values()) if (e.session.hello !== null) e.session.sitesOff(this.offSites);
+    const now = this.offSites.filter((o) => !before.has(o));
+    for (const e of this.sessions.values()) {
+      if (e.session.hello === null) continue;
+      e.session.sitesOff(this.offSites);
+      for (const [tabId, tab] of e.session.tabs) {
+        if (!tab.frames.some((f) => now.includes(f.origin))) continue;
+        this.hooks.apply({ type: "windowClosed", v: PROTOCOL_VERSION, at: Date.now(), windowId: pageWindowId(e.session.info.engine, tabId) });
+        e.link.reread(tab);
+      }
+    }
   }
 
   sitesOff(): readonly string[] {
@@ -111,10 +125,14 @@ export class EngineRegistry implements EngineDirectory {
     const tab = w === null ? undefined : this.sessions.get(w.engine)?.session.tabs.get(w.tabId);
     if (tab === undefined) return null;
     const top = tab.frames.find((f) => f.parentFrameId < 0);
+    // SC1 2a: nothing of a tab whose top frame is at a site switched off, and no heading of a frame that is (PV2 review).
+    const off = new Set(this.offSites);
+    if (top !== undefined && off.has(top.origin)) return null;
+    const frames = tab.frames.filter((f) => !off.has(f.origin));
     const site = top === undefined || top.origin === "null" ? null : `${top.origin}${top.path}`;
     const excluded: Partial<Record<PageExclusion, number>> = {};
-    for (const f of tab.frames) for (const [k, n] of Object.entries(f.excluded) as [PageExclusion, number][]) excluded[k] = (excluded[k] ?? 0) + n;
-    return { site, headings: tab.frames.flatMap((f) => f.headings), excluded };
+    for (const f of frames) for (const [k, n] of Object.entries(f.excluded) as [PageExclusion, number][]) excluded[k] = (excluded[k] ?? 0) + n;
+    return { site, headings: frames.flatMap((f) => f.headings), excluded };
   }
 
   engineFor(windowId: string): ReaderLink | null {

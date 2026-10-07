@@ -290,21 +290,23 @@ function mergeCutWalk(prior: Map<string, Node>, sent: readonly Node[]): Map<stri
 
 /**
  * SC1 2a: the nodes a snapshot brought, as the model keeps them (privacy/exclude.ts admitNode): an excluded control
- * without its value, every value in a secret format withheld. Twice when the first pass excluded a group, since a
- * snapshot may list a child before its parent.
+ * without its value, every value in a secret format withheld. When that excluded a group, every node the model holds is
+ * admitted again, in document order: a snapshot may list a child before its parent, and a cut walk or a partial one may
+ * mark a group whose children the model kept from before (PV2 review), which inherit its exclusion all the same.
  */
 function admitNodes(nodes: Map<string, Node>, fresh: readonly Node[]): void {
   let groupExcluded = false;
-  for (let pass = 0; pass < 2; pass++) {
-    for (const f of fresh) {
-      const n = nodes.get(f.key);
-      if (n === undefined) continue;
-      const a = admitNode(n, inherited(nodes, n));
-      if (a === n) continue;
-      nodes.set(f.key, a);
-      if (a.excluded !== undefined && a.editable !== true) groupExcluded = true;
-    }
-    if (!groupExcluded) return;
+  for (const f of fresh) {
+    const n = nodes.get(f.key);
+    if (n === undefined) continue;
+    const a = admitNode(n, inherited(nodes, n));
+    if (a !== n) nodes.set(f.key, a);
+    if (a.excluded !== undefined && a.editable !== true) groupExcluded = true;
+  }
+  if (!groupExcluded) return;
+  for (const [k, n] of nodes) {
+    const a = admitNode(n, inherited(nodes, n));
+    if (a !== n) nodes.set(k, a);
   }
 }
 

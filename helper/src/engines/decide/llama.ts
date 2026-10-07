@@ -203,7 +203,11 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
   };
   // One request at a time: two requests in flight would take turns in llama-server's one slot and push each other's
   // prompt prefix out of its cache, evaluating each prefix again for every question.
-  const ask: AskJev = (req) => {
+  const ask: AskJev = (asked) => {
+    // The request waits in the queue, so what is checked and what is rendered is one copy of it, taken now: a caller
+    // that changes its request afterwards changes nothing that is sent (PV2 review).
+    const copy = <T>(v: T): T => (v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T));
+    const req: JevRequest = { ...asked, state: copy(asked.state), questions: copy(asked.questions), ...(asked.nouls === undefined ? {} : { nouls: copy(asked.nouls) }) };
     assertNoExcludedValue(req);
     // SC1 2b: the local engine refuses unminted text as the Jev client does, so an evaluation fails where a live run would.
     verifySent(req, wireBody(req, opts.model));

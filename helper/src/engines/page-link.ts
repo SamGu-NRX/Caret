@@ -186,8 +186,11 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
   const nodes: Node[] = [];
   let focusedKey: string | null = null;
   const view = s.view ?? null;
-  // SC1 2a: a frame at a site the user turned Caret off for never enters the model, whatever the engine sent.
-  const kept = new Set(s.frames.filter((f) => !session.offSites.has(f.origin)).map((f) => f.frameId));
+  // SC1 2a: a frame at a site the user turned Caret off for never enters the model, whatever the engine sent. A tab whose
+  // top frame is at such a site is that site's page: none of its frames enters, nor its title (PV2 review).
+  const top = s.frames.find((f) => f.parentFrameId < 0);
+  const tabOff = top !== undefined && session.offSites.has(top.origin);
+  const kept = new Set(tabOff ? [] : s.frames.filter((f) => !session.offSites.has(f.origin)).map((f) => f.frameId));
   for (const f of s.frames) {
     if (!kept.has(f.frameId)) continue;
     // H10: screen frames for the top frame's nodes only. A child frame's rects are in its own viewport, whose place in
@@ -278,7 +281,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
     at: s.at,
     reason: "request",
     app: session.info.browser,
-    window: { windowId: pageWindowId(session.info.engine, s.tabId), kind: PAGE_WINDOW_KIND, title: s.title, frame: view === null ? null : [...view.window] },
+    window: { windowId: pageWindowId(session.info.engine, s.tabId), kind: PAGE_WINDOW_KIND, title: tabOff ? "" : s.title, frame: view === null ? null : [...view.window] },
     // The selected tab of a background browser window is not where the user is (W3): only the selected tab of the
     // window Chrome last focused counts, and the model's frontmost app (the reader's) decides whether that browser does.
     focused: s.active && s.inFocusedWindow,
@@ -424,6 +427,11 @@ export class PageEngineLink implements ReaderLink {
     this.apply = apply;
     this.onTiming = onTiming;
     session.onSnapshot = (s) => this.apply(toWindowSnapshot(s, session, ++this.seq));
+  }
+
+  /** Reads a tab's last walk into the model again, under the sites now switched off (EngineRegistry.setSitesOff). */
+  reread(s: PageSnapshot): void {
+    this.apply(toWindowSnapshot(s, this.session, ++this.seq));
   }
 
   /** A page command, timed; a walk's answer carries the extension's own time in its snapshot. */

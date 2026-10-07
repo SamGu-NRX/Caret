@@ -52,6 +52,36 @@ export function viewHolds(view: WindowState, text: string): boolean {
   return pieces.every((p) => !p.includes("\u0000") && all.includes(p));
 }
 
+/** Each raw window's value-shaped words that only lines its redacted view removed show (removedValueWords). */
+const REMOVED_WORDS = new WeakMap<WindowState, ReadonlySet<string>>();
+/** A word as a value is written: letters and digits, with the joining marks keys, codes and handles use inside. */
+const VALUE_WORD = /[\p{L}\p{N}][\p{L}\p{N}._@#$%&*!+/-]*[\p{L}\p{N}]/gu;
+
+/**
+ * The words of a raw window's removed lines (lines its redacted view does not show) that look like values, not prose: at
+ * least four characters holding a digit, a joining mark, or a capital after a small letter ("hunter2", "Zq7x-Kw",
+ * "violetOrchard"), and shown nowhere in the redacted view. A plan text quoting one quotes a secret line's value, however
+ * short (PV2 review should-fix; keptByViews' runs of PARTIAL_MIN characters catch only long ones). A plain word
+ * ("swordfish") is not caught: the marker grammar is best effort, and this widens it by nothing.
+ */
+function removedValueWords(raw: WindowState): ReadonlySet<string> {
+  let out = REMOVED_WORDS.get(raw);
+  if (out !== undefined) return out;
+  const view = redactWindow(raw);
+  const shown = viewText(view).toLowerCase();
+  const words = new Set<string>();
+  const lines = [raw.window.title, ...[...raw.nodes.values()].flatMap((n) => [n.label, n.value, n.placeholder])].flatMap((t) => (t === undefined || t === "" ? [] : t.split(/\r?\n/u)));
+  for (const line of lines) {
+    if (flat(line) === "" || viewHolds(view, line)) continue;
+    for (const m of line.matchAll(VALUE_WORD)) {
+      const w = m[0];
+      if (w.length >= 4 && /\p{N}|[._@#$%&*!+/-]|\p{Ll}\p{Lu}/u.test(w) && !shown.includes(w.toLowerCase())) words.add(w.toLowerCase());
+    }
+  }
+  REMOVED_WORDS.set(raw, (out = words));
+  return out;
+}
+
 declare const brand: unique symbol;
 /** Text a Disclosure minted for one request. Only privacy/ makes one. */
 export type ModelText = string & { readonly [brand]: "ModelText" };
@@ -122,6 +152,8 @@ const DERIVED_WORDS: ReadonlySet<string> = new Set([
   "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
   "am", "pm", "a", "p", "m", "utc", "noon", "midnight", "today", "tomorrow", "yesterday", "at", "to", "from", "on", "until", "and", "or", "of", "the", "in",
 ]);
+/** The separators Caret's own code joins minted texts with (Disclosure.join). */
+const SEPARATORS: ReadonlySet<string> = new Set([" ", ", ", "; ", " and ", " or ", "; or ", ", and ", ", or ", "\n", "\n\n", " / "]);
 /** What Disclosure.id takes: a code-made identifier. */
 const ID = /^[A-Za-z0-9_.:~#+/-]{1,96}$/u;
 
@@ -142,10 +174,13 @@ const BASIS_TOKEN = Symbol("basis");
 export class Basis {
   readonly of: object;
   readonly text: string;
-  constructor(token: symbol, of: object, text: string) {
+  /** The redacted view the text was read from, whose window a derivation from it is charged to. */
+  readonly view: WindowState | null;
+  constructor(token: symbol, of: object, text: string, view: WindowState | null = null) {
     if (token !== BASIS_TOKEN) throw new UnmintedText("a Basis comes only from Disclosure.basis");
     this.of = of;
     this.text = text;
+    this.view = view;
   }
 }
 
@@ -174,8 +209,8 @@ export class Disclosure extends SnippetLedger {
    * candidate in every way of minting it.
    */
   private readonly ways = new Map<string, MintReason[][]>();
-  /** Texts jsonText wrote, with the value each writes: verify checks that value's strings against the shape. */
-  private readonly asJson = new Map<string, unknown>();
+  /** Texts jsonText wrote: verify parses each and checks the strings it holds against the shape. */
+  private readonly asJson = new Set<string>();
   /** Texts plan() or memory() already priced, so minting them again declares nothing twice. */
   private readonly asPlan = new Set<string>();
   private readonly asMemory = new Set<string>();
@@ -358,6 +393,9 @@ export class Disclosure extends SnippetLedger {
         const w = this.known.get(id);
         if (w !== undefined && !viewHolds(redactWindow(w), run)) return false;
       }
+      // And a shorter value-shaped word only a removed line shows ("The note says hunter2").
+      const said = new Set([...piece.matchAll(VALUE_WORD)].map((m) => m[0].toLowerCase()));
+      if (said.size > 0) for (const w of this.known.values()) for (const word of removedValueWords(w)) if (said.has(word)) return false;
     }
     return true;
   }
@@ -455,17 +493,31 @@ export class Disclosure extends SnippetLedger {
     const ws = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x !== "");
     if (ws.length === 0 && text.trim() !== "") return null;
     for (const w of ws) if (!shown.has(w) && !/^\d+(?:st|nd|rd|th|am|pm|h)?$/u.test(w) && !DERIVED_WORDS.has(w)) return null;
+    // A basis was never priced, so what the derivation shows of its window is charged to that window here (PV2 review):
+    // each of its words the basis shows, as that word stands in the basis, so a word already taken costs nothing and a
+    // derivation that repeats a long prose line whole does not fit the window's budget, as the line itself would not.
+    // Caret's own words (codeWords, and the calendar and joining words of DERIVED_WORDS) reveal nothing of the window.
+    const own = new Set([...codeWords.map((w) => w.toLowerCase()), ...DERIVED_WORDS]);
+    for (const b of bases) {
+      if (!(b instanceof Basis) || b.view === null) continue;
+      const lower = b.text.toLowerCase();
+      const shownWords = [...new Set(text.split(/[^\p{L}\p{N}]+/u).filter((x) => x !== "" && !own.has(x.toLowerCase())))].flatMap((x) => {
+        const at = lower.indexOf(x.toLowerCase());
+        return at < 0 ? [] : [b.text.slice(at, at + x.length)];
+      });
+      if (shownWords.length > 0 && !this.take(b.view, "candidate", shownWords)) return null;
+    }
     return this.recordWays(text, this.composedWays(minted, "derived", false).map((w) => [...w, "held" as const]));
   }
 
   /**
    * A text of the redacted view that a derivation reads its words from (derived), neither priced nor minted itself: a
-   * sentence an event's title is read from. What the derived text shows is all that is sent of it. Null when the view
-   * does not show it.
+   * sentence an event's title is read from. What the derived text shows is all that is sent of it, and derived charges
+   * that to the view's window. Null when the view does not show it.
    */
   basis(view: RedactedWindow, text: string): Basis | null {
     if (!isRedacted(view)) throw new UnmintedText("a basis was read from a window that is not a redacted view");
-    return viewHolds(view, text) ? new Basis(BASIS_TOKEN, this, text) : null;
+    return viewHolds(view, text) ? new Basis(BASIS_TOKEN, this, text, view) : null;
   }
 
   /**
@@ -517,9 +569,19 @@ export class Disclosure extends SnippetLedger {
     return this.recordWays(flat(s), this.composedWays([s], "flat", false));
   }
 
-  /** Minted texts joined by Caret's separator; the result carries every part's reasons. */
+  /**
+   * Minted texts joined by a separator: one of Caret's own (SEPARATORS, a string literal at every call), or a text this
+   * Disclosure minted, whose reasons the result then carries. Any other separator throws UnmintedText, since a string's
+   * type cannot show at runtime whether it was a literal.
+   */
+  join<S extends string>(parts: readonly ModelText[], sep: string extends S ? never : S): ModelText;
+  join(parts: readonly ModelText[], sep: ModelText): ModelText;
   join(parts: readonly ModelText[], sep: string): ModelText {
-    return this.recordWays(parts.join(sep), this.composedWays(parts, "join", sep !== "" && parts.length > 1));
+    const text = parts.join(sep);
+    if (parts.length < 2 || sep === "") return this.recordWays(text, this.composedWays(parts, "join", false));
+    if (SEPARATORS.has(sep)) return this.recordWays(text, this.composedWays(parts, "join", true));
+    if (this.mints.has(sep)) return this.recordWays(text, this.composedWays([...parts, sep], "join", false));
+    throw new UnmintedText("join: the separator is neither Caret's own nor minted for this request");
   }
 
   /**
@@ -547,9 +609,9 @@ export class Disclosure extends SnippetLedger {
     const shape = shapeOf(purpose);
     if (shape === null) throw new OutOfShape(`${purpose} has no request shape (privacy/shapes.ts), so nothing in it may be sent; it was not sent`);
     const check = (path: string, glob: string, v: string): void => {
-      // A state sent as one JSON text (Disclosure.jsonText) is checked as the value it writes, at the same path.
-      const json = this.asJson.get(v);
-      if (json !== undefined) return this.walk(purpose, json, path, check, glob);
+      // A state sent as one JSON text (Disclosure.jsonText) is checked as the value that text writes, at the same path:
+      // parsed from the text itself, so a change to the object it was written from after the fact changes nothing.
+      if (this.asJson.has(v)) return this.walk(purpose, JSON.parse(v) as unknown, path, check, glob);
       const slot: Slot | undefined = shape[glob] ?? shape[ANY_PATH];
       if (slot === undefined) throw new OutOfShape(`${purpose}: ${path} has no row in the request shapes (privacy/shapes.ts, ${glob}); it was not sent`);
       if (v.length > slot.max) throw new OutOfShape(`${purpose}: ${path} holds ${v.length} characters, more than its shape's ${slot.max}; it was not sent`);
@@ -595,16 +657,18 @@ export class Disclosure extends SnippetLedger {
    * harness.ts layaState): every string inside it must be minted, and the text carries their reasons.
    */
   jsonText(v: unknown): ModelText {
-    this.walk("jsonText", v, "", null);
+    // Written once, then checked as written: what the text says is what is checked.
+    const text = JSON.stringify(v);
+    const written = JSON.parse(text) as unknown;
+    this.walk("jsonText", written, "", null);
     const reasons = new Set<MintReason>(["ownWording"]);
     const walk = (x: unknown): void => {
       if (typeof x === "string") for (const r of this.reasons(x, "jsonText")) reasons.add(r);
       else if (Array.isArray(x)) x.forEach(walk);
       else if (typeof x === "object" && x !== null) Object.values(x).forEach(walk);
     };
-    walk(v);
-    const text = JSON.stringify(v);
-    this.asJson.set(text, v);
+    walk(written);
+    this.asJson.add(text);
     return this.record(text, reasons);
   }
 

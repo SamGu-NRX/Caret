@@ -247,7 +247,8 @@ function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventCl
       const time = c.time.time;
       // The title and time are code's reading of the sentence: each word one the sentence shows, a number or a calendar word.
       const sentenceBasis = d.basis(w, sentence);
-      const said = sentenceBasis === null ? null : d.derived(sentenceBasis, c.title);
+      // "Meet" and "with" are the title's template words (offers/event-card.ts eventTitle), Caret's own.
+      const said = sentenceBasis === null ? null : d.derived(sentenceBasis, c.title, ["meet", "with"]);
       const when = sentenceBasis === null ? null : d.derived(sentenceBasis, time.says, ["utc"]);
       const from = d.descriptor(w, w.window.title);
       if (said === null || when === null || from === null) continue;
