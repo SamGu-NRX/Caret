@@ -1240,6 +1240,29 @@ export async function proposeFill(
   }
   const answerAsked = fields.filter((f) => answersFor.has(f.id));
   const asked = uncut.filter((f) => candidates.length > 0 || f.about.length > 0 || (derived.get(f.id)?.length ?? 0) > 0);
+  // Whose details a value is, asked for each candidate that is a person's (a typed email, phone or address,
+  // or a name), when some asked field wants a person's details (the owner veto below).
+  const personal = new Set(asked.filter((f) => f.personal).map((f) => f.id));
+  const personalCand = (c: Candidate): boolean => [...candidateKinds(model, c)].some((k) => PERSONAL_KINDS.has(k)) || personName(c) !== null || isNameLike(c.text, c.context);
+  // G2: a candidate that is the user's own identity (whose.ts) is the user's without asking; it is "asked" in every
+  // sense below (ownerKnown), its answer "user" from both asks.
+  const ownerCands = owners && personal.size > 0 ? candidates.filter((c) => personalCand(c) && c.identity === undefined).slice(0, MAX_OWNERS) : [];
+  // I3 (N1): for an Ask that names a person, both owner questions show each value's whole source line, read from the
+  // redacted view and charged to its window's budget after every span and clause, before the asks' declaration is taken
+  // (review: taken after, the line went out undeclared). The clause alone can lose the name
+  // ("555-0193, gpruitt@example.net" for Gary's email). The line is evidence for Jev, never proof: code reads no owner
+  // from it, and a line the budget refuses is left out, the owner question asked as before.
+  const ownerLines = new Map<string, string>();
+  if ((scope?.person ?? null) !== null) {
+    for (const c of ownerCands) {
+      const sw = viewOf(model, c.source.windowId);
+      const node = sw?.nodes.get(c.source.nodeKey);
+      if (sw === undefined || node === undefined) continue;
+      const line = nodeText(node).split(/\r?\n/u).map(bareLine).find((l) => l.includes(c.text));
+      if (line === undefined || line === c.text || line === c.line) continue;
+      if (ledger.take(sw, "candidate", [line])) ownerLines.set(c.id, line);
+    }
+  }
   // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its
   // window was still charged for them, which errs on the side of saying less.
   const sent = new Set([...asked, ...answerAsked].flatMap((f) => f.texts));
@@ -1280,28 +1303,6 @@ export async function proposeFill(
     new Map(asked.map((f) => [f.id, f.about.map((a) => ({ id: ids.get(a.id) ?? "", about: a })).sort((x, y) => x.id.localeCompare(y.id, "en", { numeric: true }))]));
   const askDerived = (ids: ReadonlyMap<string, string>): Map<string, AskExtra[]> =>
     new Map(asked.map((f) => [f.id, (derived.get(f.id) ?? []).map((d) => ({ id: ids.get(d.key) ?? "", describe: d.describe })).sort((x, y) => x.id.localeCompare(y.id, "en", { numeric: true }))]));
-  // Whose details a value is, asked for each candidate that is a person's (a typed email, phone or address,
-  // or a name), when some asked field wants a person's details (the owner veto below).
-  const personal = new Set(asked.filter((f) => f.personal).map((f) => f.id));
-  const personalCand = (c: Candidate): boolean => [...candidateKinds(model, c)].some((k) => PERSONAL_KINDS.has(k)) || personName(c) !== null || isNameLike(c.text, c.context);
-  // G2: a candidate that is the user's own identity (whose.ts) is the user's without asking; it is "asked" in every
-  // sense below (ownerKnown), its answer "user" from both asks.
-  const ownerCands = owners && personal.size > 0 ? candidates.filter((c) => personalCand(c) && c.identity === undefined).slice(0, MAX_OWNERS) : [];
-  // I3 (N1): for an Ask that names a person, both owner questions show each value's whole source line, read from the
-  // redacted view and charged to its window's budget after every span and clause. The clause alone can lose the name
-  // ("555-0193, gpruitt@example.net" for Gary's email). The line is evidence for Jev, never proof: code reads no owner
-  // from it, and a line the budget refuses is left out, the owner question asked as before.
-  const ownerLines = new Map<string, string>();
-  if ((scope?.person ?? null) !== null) {
-    for (const c of ownerCands) {
-      const sw = viewOf(model, c.source.windowId);
-      const node = sw?.nodes.get(c.source.nodeKey);
-      if (sw === undefined || node === undefined) continue;
-      const line = nodeText(node).split(/\r?\n/u).map(bareLine).find((l) => l.includes(c.text));
-      if (line === undefined || line === c.text || line === c.line) continue;
-      if (ledger.take(sw, "candidate", [line])) ownerLines.set(c.id, line);
-    }
-  }
   /** Whether fill has an answer to whose this candidate is: code's identity, or its owner questions were asked. */
   const ownerKnown = (c: Candidate): boolean => c.identity !== undefined || ownerCands.some((x) => x.id === c.id);
   const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
@@ -1674,6 +1675,10 @@ export async function proposeFill(
       }
       case "time": {
         const t = page ? readClock(text, resolveCtx) : null;
+        // I3 review: a format the source states vetoes here as it does for a date. The clock is checked on the span's day,
+        // and "08.03.2026 at 2:30am" under DD/MM is March 8, whose 02:30 Denver skips; the locale read August 3.
+        const order = dateOrderHint(windowOf(p)?.context ?? null);
+        if (t !== null && order !== null && readClock(text, resolveCtx, order)?.value !== t.value) return { why: "ambiguous" };
         const chose = t === null ? undefined : stated(t);
         if (t !== null) return { value: t.value, display: t.display, writes: true, ...(chose === undefined ? {} : { chose }) };
         const loose = clockTime(text);

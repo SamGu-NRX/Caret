@@ -11,7 +11,8 @@ import { Snapshot } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { planAsk, type AskDraft } from "../src/planner/ask.ts";
-import { buildDesk, loadCorpus, type Desk } from "../scripts/realfill-corpus.ts";
+import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
+import { field, snap } from "./builders.ts";
 
 beforeEach(() => setGeneratorClock(() => 0));
 afterEach(() => setGeneratorClock(null));
@@ -54,8 +55,9 @@ function jev(owner: { choice: string; confidence: number }) {
     seen.flatMap((r) => Object.entries(r.questions).filter(([id]) => id.endsWith("_owner") && r.subjects?.[id] === value).map(([, q]) => String(q.instructions)));
   return { ask, seen, ownerQuestions };
 }
-const run = (instruction: string, j: ReturnType<typeof jev>) => {
+const run = (instruction: string, j: ReturnType<typeof jev>, more?: (d: Desk) => void) => {
   const d = desk();
+  more?.(d);
   return planAsk(instruction, d.model, { values: () => d.memory }, d.about, { askJev: j.ask, maker: headsIntentMaker(j.ask), writer: null, offerKey: "i3o", windowId: d.form.window.windowId, now: 2000 });
 };
 
@@ -77,6 +79,21 @@ describe("the owner question of an Ask that names a person", () => {
     const writes = d instanceof Error ? [] : (d as AskDraft).checked.writes.map((w) => w.value);
     expect(writes).not.toContain("(512) 555-0193");
     expect(j.ownerQuestions("(512) 555-0193").every((q) => q.includes(LINE))).toBe(true);
+  });
+});
+
+describe("the owner line's disclosure", () => {
+  it("declares a whole line that no clause had sent, in every request that quotes it (review R1)", async () => {
+    // A labelled line offers its parts, not itself, and the email's clause stops at the semicolon (line-values.ts
+    // clauseAround, partAround): only the whole line names Gary beside the email, and no span or clause sends it.
+    const long = "Landlord: Gary Pruitt; gpruitt.cedar@example.net, (512) 555-0177";
+    const j = jev({ choice: "person", confidence: 0.95 });
+    await run("use Gary's info for the landlord part", j, (d) =>
+      d.model.apply(snap([field("te/gary", long, { role: "AXTextArea" })], { at: T0 - 20_000, windowId: "gary-note", title: "Gary.txt", app: { pid: 7998, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true })),
+    ).catch(() => undefined);
+    const quoting = j.seen.filter((r) => Object.values(r.questions).some((q) => String(q.instructions).includes(`in the line '${long}'`)));
+    expect(quoting.length).toBeGreaterThan(0);
+    for (const r of quoting) expect(r.snippets.map((x) => x.text)).toContain(long);
   });
 });
 

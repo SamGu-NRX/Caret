@@ -68,6 +68,7 @@ describe("a writer goal's resolved date", () => {
     ["a year the reading assumed", "2026-10-17", window("October 17")],
     ["a day and month order the locale gave", "2026-10-11", window("10/11/2026")],
     ["a source that does not read as the written date", "2026-10-21", window("October 20, 2026")],
+    ["a stated format that reads its source otherwise", "2026-08-03", { ...window("08.03.2026"), context: "Appointment (DD/MM/YYYY)" } as Provenance],
     ["a choice its provenance states", "2026-10-17", { kind: "derived", how: "resolved", base: window("Saturday, October 17"), also: null, says: "Caret assumed: year 2026" } as Provenance],
   ])("goes to the verifier, said, for %s", async (_, text, provenance) => {
     const verifier = recording("exact");

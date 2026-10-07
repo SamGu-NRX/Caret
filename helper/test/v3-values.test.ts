@@ -517,6 +517,14 @@ describe("review round 2: every assumption is a choice", () => {
     expect(at("Appointment").handoff).toBeNull();
   });
 
+  // I3 review R1: the time branch read the clock on the locale's date (August 3, where 02:30 exists) and wrote it, though
+  // the stated DD/MM format puts it on March 8, the night Denver's clocks skip 02:00 to 03:00.
+  it("a time input meets the same order evidence: a stated format that puts the clock on another day reads nothing", async () => {
+    const m = desk2(["Appointment (DD/MM/YYYY): 08.03.2026 at 2:30am"], ["08.03.2026 at 2:30am"], [control("e2", "time", "Appointment time")]);
+    const at = await fillDesk(m, { "Appointment time": "08.03.2026 at 2:30am" }, { ...DENVER, sourceLocale: "en-US" });
+    expect([at("Appointment time").handoff, at("Appointment time").withheld]).toEqual([null, "ambiguous"]);
+  });
+
   it("a year counted from a known reference is an assumption the verifier judges, not an exemption", async () => {
     const m = desk2(["Service completed: October 17 at 8:45am"], ["October 17 at 8:45am"], [control("e2", "date", "Last service date")]);
     const ref = { ...DENVER, referenceInstant: "2026-10-20T16:22:00Z" };
