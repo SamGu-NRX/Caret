@@ -68,7 +68,7 @@ import { jevGate } from "../../helper/src/goals/gates.ts";
 import { readyOnLoad } from "../../helper/src/offers/ready-on-load.ts";
 import { SnippetLedger } from "../../helper/src/privacy.ts";
 import { loadAsks, loadCorpus, normLabel, type CorpusForm } from "../../helper/scripts/realfill-corpus.ts";
-import { CFT_BUILD, Cdp, HOST_NAME, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
+import { CFT_BUILD, Cdp, HOST_NAME, LAUNCHD_PREFIX, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
 import { NetworkSink, type Oracle, type Scored } from "./oracle.ts";
 import { FixtureSite } from "./server.ts";
 import { TASK_PAGES, loadExpectation, taskPage, type Expectation } from "./tasks/site.ts";
@@ -671,10 +671,14 @@ async function main(): Promise<number> {
   const bridge = signedCopy(BRIDGE, join(bin, "caret-bridge"), "dev.caret.bridge", sign);
   const testHost = signedCopy(TESTHOST, join(bin, "caret-bridge-testhost"), "dev.caret.host", sign);
   const cftApp = exe.slice(0, exe.indexOf(".app/") + 4);
-  const service = `dev.caret.w3test.${randomBytes(4).toString("hex")}`;
+  const suffix = randomBytes(4).toString("hex");
+  const service = `dev.caret.w3test.${suffix}`;
+  // Under caret-heavy the launchd job's label carries the job's prefix (rig.ts registers it); the Mach service name
+  // the bridge looks up is unchanged.
+  const label = LAUNCHD_PREFIX === undefined ? service : `${LAUNCHD_PREFIX}w3test.${suffix}`;
   const secretFile = join(sockDir, "launch-secret");
   writeFileSync(secretFile, secret.toString("hex"), { mode: 0o600 });
-  await launchdJob(tmp, service, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], join(tmp, "testhost.log"));
+  await launchdJob(tmp, label, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], join(tmp, "testhost.log"));
   const profile = join(tmp, "profile");
   writeManifest(join(profile, "NativeMessagingHosts"), extensionId, bridge);
   const log = join(tmp, "chrome.log");
