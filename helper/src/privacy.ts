@@ -753,7 +753,7 @@ export class SecretInRequest extends Error {}
  * them misses stops the request loudly instead of reaching Jev. Throws SecretInRequest naming the question, never the
  * text.
  */
-export function assertNoSecrets(req: { state: unknown; questions: Record<string, unknown>; nouls?: Record<string, unknown> }): void {
+export function assertNoSecrets<T extends { state?: unknown; questions?: Record<string, unknown>; nouls?: Record<string, unknown>; input?: unknown }>(req: T): T {
   const check = (where: string, v: unknown): void => {
     if (typeof v === "string") {
       // Caret's own fixed wording passes only where Caret puts it, as a question's criterion; nowhere else, and never in
@@ -767,6 +767,9 @@ export function assertNoSecrets(req: { state: unknown; questions: Record<string,
   check("state", req.state);
   check("questions", req.questions);
   check("nouls", req.nouls ?? {});
+  // The writer sends input rather than Jev's state and questions. Check before schema parsing or key access.
+  check("input", req.input);
+  return req;
 }
 
 /**

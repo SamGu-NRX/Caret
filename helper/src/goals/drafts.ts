@@ -1,3 +1,5 @@
+import { instructionForModel } from "../memory/sensitive.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // Text a goal plan writes in Caret's own words (B30): a short reply, message or description. The writer composes it;
 // code decides whether it may be offered. A draft must add no fact: every number, date, time, money amount, email
 // address, phone, URL, code and name in it must be one the instruction, a window the plan names as the draft's
@@ -741,13 +743,14 @@ export async function confirmClaims(instruction: string, drafts: readonly { text
   const claims = [...new Set(drafts.flatMap((d) => sentencesOf(d.text).filter((s) => !noClaim(s, d.basis) && !restates(s, instruction, d.basis))))];
   if (claims.length === 0) return { calls: 0, costUsd: 0 };
   if (askJev === null) throw new DraftRefused("unchecked", `Caret can't check the draft's sentence ${q(claims[0] as string)} right now`, claims[0] as string);
+  const safeInstruction = instructionForModel(instruction);
   const req = (wording: 0 | 1): JevRequest => {
-    const nouls = Object.fromEntries(claims.map((s, i) => [`c${i + 1}`, { type: "noul" as const, instructions: CONFIRM_WORDS[wording](instruction, s) }]));
-    const sent = JSON.stringify([instruction, nouls]);
+    const nouls = Object.fromEntries(claims.map((s, i) => [`c${i + 1}`, { type: "noul" as const, instructions: CONFIRM_WORDS[wording](safeInstruction, s) }]));
+    const sent = JSON.stringify([safeInstruction, nouls]);
     const carried = snippets.filter((x) => sent.includes(x.text));
     const charged: Record<string, number> = {};
     for (const x of carried) charged[x.windowId] = (charged[x.windowId] ?? 0) + x.text.length;
-    return { purpose: "draft.check", state: { instruction, task: "Caret checks that a short text it drafted for the user adds nothing the user did not ask to say." }, questions: {}, nouls, snippets: carried, charged };
+    return assertNoSecrets({ purpose: "draft.check", state: { instruction: safeInstruction, task: "Caret checks that a short text it drafted for the user adds nothing the user did not ask to say." }, questions: {}, nouls, snippets: carried, charged });
   };
   let r: Awaited<ReturnType<AskJev>>[];
   try {

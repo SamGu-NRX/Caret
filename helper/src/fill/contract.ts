@@ -685,11 +685,10 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
     const order = wording === 0 ? batch : [...batch].reverse();
     const qs: JevRequest["questions"] = Object.fromEntries(order.map((i) => [`x${i + 1}`, { type: "choice" as const, instructions: (questions[i] as readonly [string, string])[wording], criteria: { ...VERDICTS } }]));
     const sent = sentStrings([state, qs]);
-    const req: JevRequest = { purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged };
+    const req: JevRequest = assertNoSecrets({ purpose: "fill.verify", state, questions: qs, snippets: declared.snippets.filter((x) => sent.some((t) => t.includes(x.text))), charged: declared.charged });
     // I1: the disclosure rule every Jev request meets at build (privacy.ts assertNoSecrets, G2), the verifier's included:
     // its provenance sentences quote only redacted, ledger-admitted text, and this is the guarantee behind that. A throw
     // here makes the verifier unavailable (below), so every value it would have checked is withheld, nothing is sent.
-    assertNoSecrets(req);
     return req;
   };
   const out: (readonly [VerifyAsk, VerifyAsk] | null)[] = proposed.map(() => null);
@@ -841,6 +840,7 @@ export function contractStale(node: Node, f: FieldContract, text: string): strin
  * before its asks, G2's `judged`); by default the node's text in `w` now.
  */
 export function windowProvenance(w: WindowState | undefined, c: { text: string; context: string | null; labelled?: boolean; line?: string | null; partOf?: string; source: { windowId: string; nodeKey: string; appName: string; windowTitle: string } }, text?: string): Provenance {
+  w = w === undefined ? undefined : redactWindow(w);
   const node = w?.nodes.get(c.source.nodeKey);
   const read = text ?? (node === undefined ? undefined : nodeText(node));
   return { kind: "window", windowId: c.source.windowId, nodeKey: c.source.nodeKey, app: c.source.appName, title: c.source.windowTitle, span: c.text, label: c.labelled === true ? c.context : null, line: c.line ?? null, partOf: c.partOf ?? null, context: c.context, lines: read === undefined ? [] : lineDigests(read, c.text), sentences: read === undefined ? [] : sentenceDigests(read, c.text) };
@@ -912,9 +912,10 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
       const shows = seen !== undefined && (norm(logicalLines(shown).join("\n")).includes(norm(pr.span)) || norm(shown).includes(norm(pr.span)) || view.values.some((v) => v.nodeKey === pr.nodeKey && norm(v.text) === norm(pr.span)));
       if (!shows) return "Caret may no longer read it where it was read";
       if (pr.lines.length === 0) return "Caret has no record of the lines it was read from";
-      const now = lineDigests(nodeText(node), pr.span);
+      // Compare the same redacted evidence used at request construction, not discarded secret lines.
+      const now = lineDigests(shown, pr.span);
       if (now.length === 0) return "its source no longer shows it";
-      if (!sameDigests(now, pr.lines) || !sameDigests(sentenceDigests(nodeText(node), pr.span), pr.sentences)) return "what its source says around it changed";
+      if (!sameDigests(now, pr.lines) || !sameDigests(sentenceDigests(shown, pr.span), pr.sentences)) return "what its source says around it changed";
       if (pr.context !== null && !spanContexts(view, seen as Node, pr.span).includes(pr.context)) return "the label it was read beside changed";
       return null;
     }

@@ -2,7 +2,7 @@
 // `plan`; `polish` and `memoryProposal` are refused until their schemas exist. The output is untrusted
 // text: a plan program still has to pass compileProgram and the sandbox.
 import { chat, type ChatRoute } from "./chat.ts";
-import type { Snippet } from "../privacy.ts";
+import { assertNoSecrets, type Snippet } from "../privacy.ts";
 import { readKey } from "./env.ts";
 import { extractProgram, PLAN_SYSTEM, PlanInputSchema, planUserMessage } from "./plan-prompt.ts";
 import { GOAL_SYSTEM } from "./goal-prompt.ts";
@@ -52,6 +52,7 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
   return {
     route,
     async write(req) {
+      assertNoSecrets(req);
       if (req.kind !== "plan" && req.kind !== "goal" && req.kind !== "intent") throw new Error(`writer kind ${req.kind} is not implemented yet`);
       if (req.disclosureId.length === 0) throw new Error("writer request has no disclosureId");
       if (req.kind === "intent") {

@@ -1,3 +1,4 @@
+import { assertNoSecrets } from "../privacy.ts";
 // Naming a routine (B19, plan section 4: "When a routine crosses the threshold, a language model names it
 // in the background. The name is a label only."). Jev answers only choice questions, so the house rule
 // holds here too: code proposes, Jev chooses, code checks.
@@ -230,13 +231,13 @@ export function namingRequest(f: RoutineFacts, windows: Iterable<WindowState>, w
   criteria[NONE] = "None of these names fits.";
   const declared = ledger.declared();
   return {
-    req: {
+    req: assertNoSecrets({
       purpose: "pattern.naming",
       state: { into: facts.dstApp, intoFields: dstLabels, from: facts.srcApps, fromSections: srcLabels.map((x) => x.text), timesSeen: facts.count },
       questions: { name: { type: "choice", instructions, criteria } },
       snippets: declared.snippets,
       charged: declared.charged,
-    },
+    }),
     ids,
   };
 }

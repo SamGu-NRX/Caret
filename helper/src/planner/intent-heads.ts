@@ -1,3 +1,5 @@
+import { instructionForModel } from "../memory/sensitive.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // Ask's intent from Jev (P1, A3). Three requests, sent together:
 //   - the heads, one request: route (fill, plan or refuse), why when it refuses, source and whose;
 //   - the scope ask, in two wordings: one categorical question per field, showing the field's label, its heading, its
@@ -69,11 +71,11 @@ export function headsRequest(snap: IntentSnapshot): JevRequest {
   const declared = snap.ledger.declared();
   const sectionRef = new Map(snap.sections.map((s) => [s.name, s.ref]));
   const state = {
-    instruction: snap.instruction,
+    instruction: instructionForModel(snap.instruction),
     form: {
       title: formTitle(snap),
       sections: snap.sections.map((s) => ({ id: s.ref, name: sendable(s.name, SECTION) })),
-      fields: snap.fields.map((f) => ({ id: f.ref, name: sendable(f.name, FIELD), control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled, section: f.section === null ? null : (sectionRef.get(f.section) ?? null) })),
+      fields: snap.fields.map((f) => ({ id: f.ref, name: sendable(f.modelName ?? f.name, FIELD), control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled, section: f.section === null ? null : (sectionRef.get(f.section) ?? null) })),
     },
     sources: snap.windows.map((w) => ({ id: w.ref, title: `${w.app}: ${sendable(w.title, "a window")}${w.from === null ? "" : ` (from ${w.from})`}` })),
     people: snap.persons.map((p) => ({ id: p.ref, span: p.span })),
@@ -90,7 +92,7 @@ export function headsRequest(snap: IntentSnapshot): JevRequest {
     source: { type: "choice", instructions: "Where does the instruction say the values come from?", criteria: source },
     whose: { type: "choice", instructions: "Whose details does the instruction ask Caret to put in the form?", criteria: whose },
   };
-  return { purpose: "ask.heads", state, questions, snippets: declared.snippets, charged: declared.charged };
+  return assertNoSecrets({ purpose: "ask.heads", state, questions, snippets: declared.snippets, charged: declared.charged });
 }
 
 // G2 round 4: a screen text that holds a secret marker word is sent as what it is, never as its words (privacy.ts
@@ -132,7 +134,7 @@ export function fieldContext(snap: IntentSnapshot, f: IntentField): FieldContext
   const same = (a: string | null, b: string | null): boolean => a !== null && b !== null && a.trim().toLowerCase() === b.trim().toLowerCase();
   const group = f.section === null || same(f.section, f.name) || same(f.section, f.heading) ? null : f.section;
   const named = (x: string | null | undefined, instead: string): string | null => (x === null || x === undefined ? null : sendable(x, instead));
-  return { label: sendable(f.name, FIELD), heading: named(f.heading, SECTION), group: named(group, SECTION), role: f.upload === true ? "file upload" : CONTROL_WORDS[f.control], before: named(all[i - 1]?.name, FIELD), after: named(all[i + 1]?.name, FIELD) };
+  return { label: sendable(f.modelName ?? f.name, FIELD), heading: named(f.heading, SECTION), group: named(group, SECTION), role: f.upload === true ? "file upload" : CONTROL_WORDS[f.control], before: named(all[i - 1]?.modelName ?? all[i - 1]?.name, FIELD), after: named(all[i + 1]?.modelName ?? all[i + 1]?.name, FIELD) };
 }
 
 /** The scope ask's two wordings. The first quotes the request first; the second describes the field first. */
@@ -152,11 +154,11 @@ export const scopeId = (ref: string): string => `s_${ref}`;
 export function scopeRequest(snap: IntentSnapshot, wording: 0 | 1, only?: ReadonlySet<string>): JevRequest {
   const declared = snap.ledger.declared();
   const questions: JevRequest["questions"] = {};
-  for (const f of scopeFields(snap)) if (only === undefined || only.has(f.key)) questions[scopeId(f.ref)] = { type: "choice", instructions: SCOPE_WORDINGS[wording](snap.instruction, fieldContext(snap, f)), criteria: { ...SCOPE_OPTIONS } };
-  const state = { instruction: snap.instruction, form: formTitle(snap), task: "Caret checks, field by field, which fields of the form the user's request asks it to fill in or change." };
+  for (const f of scopeFields(snap)) if (only === undefined || only.has(f.key)) questions[scopeId(f.ref)] = { type: "choice", instructions: SCOPE_WORDINGS[wording](instructionForModel(snap.instruction), fieldContext(snap, f)), criteria: { ...SCOPE_OPTIONS } };
+  const state = { instruction: instructionForModel(snap.instruction), form: formTitle(snap), task: "Caret checks, field by field, which fields of the form the user's request asks it to fill in or change." };
   // Raw text, not JSON: a heading with a quote or a backslash is sent, so its snippet must be declared (A3 review 2).
   const sent = [state.instruction, state.form, ...Object.values(questions).map((q) => q.instructions)].join("\n");
-  return { purpose: "ask.scope", state, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
+  return assertNoSecrets({ purpose: "ask.scope", state, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged });
 }
 
 /** One field's scope: "asks" only when both wordings say so at SCOPE_CUTOFF; "unclear" when either says so. */

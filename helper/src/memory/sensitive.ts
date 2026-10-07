@@ -259,3 +259,15 @@ export function markerAcross(first: string, second: string): boolean {
 /** G2: a PEM fence line: "-----BEGIN … PRIVATE KEY-----" opens a block that runs to its "-----END … PRIVATE KEY-----". */
 export const PEM_BEGIN = /^\s*-{3,}\s*BEGIN\b[^-]*PRIVATE KEY\s*-{3,}\s*$/iu;
 export const PEM_END = /^\s*-{3,}\s*END\b[^-]*PRIVATE KEY\s*-{3,}\s*$/iu;
+
+/** PV1: classify raw instruction clauses locally; models receive only neutral replacements, never their secret words or values.
+ * Keep the original instruction for local refusal and value-provenance checks, so a mixed request can retain its safe writes.
+ */
+export function instructionForModel(text: string): string {
+  if (!secretText(text) && mentionedKind(text) === null) return text;
+  const safe = text.split(/(\s+(?:and|then)\s+|[;\n])/iu).map((clause) =>
+    secretText(clause) || mentionedKind(clause) !== null ? "[a field Caret leaves to you]" : clause,
+  ).join("");
+  // A marker may span clause boundaries, such as "API\nkey: ...". Never reassemble it for a model.
+  return secretText(safe) ? "[a field Caret leaves to you]" : safe;
+}

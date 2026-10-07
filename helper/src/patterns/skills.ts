@@ -1,3 +1,4 @@
+import { viewOf } from "../fill/candidates.ts";
 // Skills (B19): routines Caret names, offers to keep, and lets run without a Tab once they have earned it.
 //   Naming. When a scored silent prediction leaves a routine proven at the user's level, Caret names it
 //     once, in the background (naming.ts), from structure only.
@@ -162,10 +163,10 @@ export class Skills {
   /** What naming may know about a routine, read from the cells of one of its predictions and the live screen model. */
   facts(r: RoutineRecord, cells: readonly FactCell[]): RoutineFacts {
     const model = this.deps.model;
-    const dstWindow = model.windows.get(cells[0]?.dstWindowId ?? "") ?? null;
+    const dstWindow = viewOf(model, cells[0]?.dstWindowId ?? "") ?? null;
     const srcLabels: RoutineFacts["srcLabels"] = [];
     for (const c of cells) {
-      const w = model.windows.get(c.srcWindowId);
+      const w = viewOf(model, c.srcWindowId);
       const n = w?.nodes.get(c.srcKey);
       if (w === undefined || n === undefined) continue;
       // A static text's label is its content, so its section's label stands for it.

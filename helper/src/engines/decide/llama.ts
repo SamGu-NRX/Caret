@@ -1,3 +1,4 @@
+import { assertNoSecrets } from "../../privacy.ts";
 // A decision engine on this Mac: an open instruct model in llama-server (llama.cpp), J1 part B.
 //
 // Each request becomes one prompt prefix, the state and every option once with a label, and then one short question
@@ -202,6 +203,7 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
   // One request at a time: two requests in flight would take turns in llama-server's one slot and push each other's
   // prompt prefix out of its cache, evaluating each prefix again for every question.
   const ask: AskJev = (req) => {
+    assertNoSecrets(req);
     const run = queue.then(() => answer(req));
     queue = run.catch(() => undefined);
     return run;

@@ -1,3 +1,4 @@
+import { redactWindow } from "../fill/redact.ts";
 // Ask as a scoped fill (B25 lead decision 1). An instruction becomes a small intent, and every part of it is a
 // choice from what code listed or an exact span of the instruction:
 //   - the route: fill, plan, ask or refuse;
@@ -16,9 +17,9 @@ import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { headingsBefore } from "../fill/ask-scope.ts";
 import { inWebArea, type Control } from "../fill/controls.ts";
-import { writableTargets } from "./targets.ts";
+import { localTargets } from "./targets.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
-import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
+import { instructionForModel, mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
 import { SnippetLedger } from "../privacy.ts";
 import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
@@ -112,6 +113,8 @@ export interface IntentField {
   ref: string;
   key: string;
   name: string;
+  /** Model-facing name read from the redacted view, separate from the local refusal name. */
+  modelName?: string;
   /** The field's group or fieldset label (describeField's section). */
   section: string | null;
   /** A3: the nearest heading before the field in document order, when the ledger took its text. */
@@ -192,23 +195,26 @@ export function personSpans(instruction: string): string[] {
  * Throws PlannerError("privacy") when the instruction cannot go out.
  */
 export function intentSnapshot(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[]): IntentSnapshot {
+  const local = w;
+  w = redactWindow(w);
   const ledger = new SnippetLedger(model.windows.values());
-  if (!ledger.plan([instruction])) throw new SaidError("privacy", SAYS.privacy, "the instruction quotes more of an open window than one request may carry");
+  if (!ledger.plan([instructionForModel(instruction)])) throw new SaidError("privacy", SAYS.privacy, "the instruction quotes more of an open window than one request may carry");
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const fields: IntentField[] = [];
   const sections: { ref: string; name: string }[] = [];
   const headings = headingsBefore(w);
   // I2 ruling: the one inventory the native planner reads too (targets.ts): a field with no readable name is in neither.
-  for (const x of writableTargets(w)) {
+  for (const x of localTargets(local)) {
     if (fields.length >= MAX_INTENT_FIELDS) break;
-    const d = describeField(w, x.node);
+    const kept = w.nodes.get(x.node.key);
+    const d = kept === undefined ? { section: null } : describeField(w, kept);
     const name = x.name;
-    if (!ledger.take(w, "descriptor", [name, d.section])) continue;
+    if (!ledger.take(w, "descriptor", [x.modelName, d.section])) continue;
     if (d.section !== null && !sections.some((s) => s.name === d.section)) sections.push({ ref: `s${sections.length + 1}`, name: d.section });
     const filled = x.control === "text" && (x.node.value ?? "") !== "";
     const h = headings.get(x.node.key) ?? null;
     const heading = h !== null && ledger.take(w, "descriptor", [h]) ? h : null;
-    fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, section: d.section, heading, control: x.control, filled, neverTyped: x.control === "text" ? neverTypedNode(w, x.node) : null });
+    fields.push({ ref: `f${fields.length + 1}`, key: x.node.key, name, modelName: x.modelName, section: d.section, heading, control: x.control, filled, neverTyped: x.neverTyped });
   }
   // File controls, as upload fields for the scope question: the name and its group taken together, as a field's are.
   const uploads: IntentField[] = [];
@@ -224,7 +230,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   // Other windows by title, most recently focused first. A title is what names a source ("Morgan's email"); a
   // window whose title does not fit what the ledger allows is left out.
   const windows: IntentSnapshot["windows"] = [];
-  const others = [...model.windows.values()].filter((o) => o !== w && o.window.title.trim() !== "").sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
+  const others = [...model.windows.values()].map(redactWindow).filter((o) => o.window.windowId !== w.window.windowId && o.window.title.trim() !== "").sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
   for (const o of others) {
     if (windows.length >= MAX_INTENT_WINDOWS) break;
     if (!ledger.take(o, "candidate", [o.window.title])) continue;
@@ -236,11 +242,14 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   const labels = [...new Set(memory.map((m) => m.label))];
   const memoryLabels = labels.length > 0 && ledger.memory(labels) ? labels : [];
   // People the instruction names: capitalized names and relations, and words that are a mail sender's name however typed.
-  const persons = [...new Set([...personSpans(instruction), ...senderNames(instruction, model, w)])];
+  // Extract model-visible spans only from retained clauses. An unmarked value or name in a
+  // forbidden clause must not reappear beside the neutralized instruction. Keep the original locally.
+  const spanInstruction = instructionForModel(instruction).replace(/\[a field Caret leaves to you\]/gu, "");
+  const persons = [...new Set([...personSpans(spanInstruction), ...senderNames(spanInstruction, model, w)])];
   const sources = namedSources(instruction, model, w, persons);
   return {
     instruction,
-    window: w,
+    window: local,
     title,
     fields,
     uploads,
@@ -250,7 +259,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     persons: persons.map((span, i) => ({ ref: `p${i + 1}`, span })),
     others: peopleOnScreen(model, w, memory),
     memoryValues: memory,
-    literals: instructionValues(instruction),
+    literals: instructionValues(spanInstruction),
     named: sources.named,
     excluded: sources.excluded,
     missing: sources.missing,

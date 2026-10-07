@@ -1,3 +1,5 @@
+import { instructionForModel } from "../memory/sensitive.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // Two ways to make an Ask's intent (B25, planner/intent.ts), measured against each other on B24's twenty asks
 // (scripts/realfill-asks.ts --maker; the pick and its numbers are in writer/config.ts ASK_MAKER):
 //   - the writer, emitting strict JSON whose refs the response schema enumerates (writer/intent-prompt.ts);
@@ -55,9 +57,9 @@ const IntentJson = z
 /** The writer's input for a snapshot: names, titles and labels the snapshot's ledger took, never a value. */
 export function intentInput(snap: IntentSnapshot): IntentInput {
   return {
-    instruction: snap.instruction.slice(0, 500),
+    instruction: instructionForModel(snap.instruction).slice(0, 500),
     form: snap.title === null ? snap.window.app.name : `${snap.window.app.name} window '${snap.title.slice(0, 150)}'`,
-    fields: snap.fields.map((f) => ({ ref: f.ref, name: sendable(f.name, "a field Caret leaves to the user"), section: f.section, control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled })),
+    fields: snap.fields.map((f) => ({ ref: f.ref, name: sendable(f.modelName ?? f.name, "a field Caret leaves to the user"), section: f.section, control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled })),
     sections: snap.sections,
     windows: snap.windows.map((w) => ({ ref: w.ref, app: w.app, title: w.title.slice(0, 300), from: w.from })),
     memory: snap.memory,
@@ -75,7 +77,7 @@ export function writerIntentMaker(writer: WriterPort, disclosureId: () => string
     async make(snap, signal) {
       let r: Awaited<ReturnType<WriterPort["write"]>>;
       try {
-        r = await writer.write({ kind: "intent", disclosureId: disclosureId(), disclosed: snap.ledger.declared().snippets, input: intentInput(snap), maxOutputTokens: INTENT_MAX_OUTPUT_TOKENS, signal: signal ?? AbortSignal.timeout(15_000) });
+        r = await writer.write(assertNoSecrets({ kind: "intent", disclosureId: disclosureId(), disclosed: snap.ledger.declared().snippets, input: intentInput(snap), maxOutputTokens: INTENT_MAX_OUTPUT_TOKENS, signal: signal ?? AbortSignal.timeout(15_000) }));
       } catch (e) {
         throw new PlannerError("unavailable", `the intent writer failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
       }
@@ -148,9 +150,9 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
       // G2 round 4: a name or title that holds a secret marker word is sent as what it is, never as its words.
       const form = snap.title === null || secretText(snap.title) ? `${snap.window.app.name} window` : `${snap.window.app.name} window '${snap.title}'`;
       const state = {
-        instruction: snap.instruction,
+        instruction: instructionForModel(snap.instruction),
         form,
-        form_fields: snap.fields.map((f) => sendable(f.name, "a field Caret leaves to the user")).join("; "),
+        form_fields: snap.fields.map((f) => sendable(f.modelName ?? f.name, "a field Caret leaves to the user")).join("; "),
         open_windows: snap.windows.map((w) => `${w.app}: ${sendable(w.title, "a window")}${w.from === null ? "" : ` (from ${w.from})`}`).join("; "),
         task: "Caret reads the user's instruction about the form on screen: what to do, which fields, from where, and for whom. Answer from the instruction; Caret finds the values itself.",
       };
@@ -163,7 +165,7 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
       const whoseCriteria: Record<string, string> = { user: "The user's own details, or each field's own: the instruction names no one else whose details go in." };
       for (const p of snap.persons) whoseCriteria[p.ref] = `The details of ${p.span}, whom the instruction names.`;
       whoseCriteria.unnamed = "Someone else's details, but the instruction does not say whose.";
-      const fieldCriteria: Record<string, string> = Object.fromEntries(snap.fields.map((f) => [f.ref, `The field '${sendable(f.name, "a field Caret leaves to the user")}'.`]));
+      const fieldCriteria: Record<string, string> = Object.fromEntries(snap.fields.map((f) => [f.ref, `The field '${sendable(f.modelName ?? f.name, "a field Caret leaves to the user")}'.`]));
       fieldCriteria.none = "None of the form's fields.";
       const stage1 = (wording: 0 | 1): JevRequest => {
         const order = <T extends Record<string, string>>(c: T): Record<string, string> => (wording === 0 ? c : ordered(c, shuffled(Object.keys(c), rand)));
@@ -175,9 +177,9 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
           whose: { type: "choice", instructions: WORDS.whose[wording], criteria: order(whoseCriteria) },
         };
         snap.literals.forEach((span, i) => {
-          questions[`lit${i + 1}`] = { type: "choice", instructions: WORDS.literal[wording](span), criteria: order(fieldCriteria) };
+          questions[`lit${i + 1}`] = { type: "choice", instructions: WORDS.literal[wording](instructionForModel(span)), criteria: order(fieldCriteria) };
         });
-        return { purpose: "intent.route", state, questions, snippets: declared.snippets, charged: declared.charged };
+        return assertNoSecrets({ purpose: "intent.route", state, questions, snippets: declared.snippets, charged: declared.charged });
       };
       const [a, b] = await ask(stage1(0), stage1(1));
       const agreed = (q: string): string | null => {
@@ -209,11 +211,11 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
       const listed = scope === "list" && !routeOpen ? snap.fields : [];
       const stage2 = (wording: 0 | 1): JevRequest => {
         const nouls: NonNullable<JevRequest["nouls"]> = {};
-        for (const f of listed) nouls[`n_${f.ref}`] = { type: "noul", instructions: WORDS.field[wording](sendable(f.name, "a field Caret leaves to the user")) };
+        for (const f of listed) nouls[`n_${f.ref}`] = { type: "noul", instructions: WORDS.field[wording](sendable(f.modelName ?? f.name, "a field Caret leaves to the user")) };
         ties.forEach((t, i) => {
-          nouls[`t${i + 1}`] = { type: "noul", instructions: WORDS.tie[wording](t.span, t.field.name) };
+          nouls[`t${i + 1}`] = { type: "noul", instructions: WORDS.tie[wording](instructionForModel(t.span), t.field.modelName ?? sendable(t.field.name, "a field Caret leaves to the user")) };
         });
-        return { purpose: "intent.fields", state, questions: {}, nouls, snippets: declared.snippets, charged: declared.charged };
+        return assertNoSecrets({ purpose: "intent.fields", state, questions: {}, nouls, snippets: declared.snippets, charged: declared.charged });
       };
       let yes = (_: string): boolean => false;
       if (listed.length > 0 || ties.length > 0) {

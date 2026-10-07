@@ -127,7 +127,7 @@ export function redactWindow(w: WindowState): WindowState {
 }
 
 function build(w: WindowState): WindowState {
-  if (secretText(w.window.title)) return { ...w, nodes: new Map(), values: [] };
+  if (secretText(w.window.title)) return { ...w, window: { ...w.window, title: "" }, nodes: new Map(), values: [] };
   const dropped = nodesLabelledBy(w, secretText);
   const nodes = new Map<string, Node>();
   /** Each kept node's texts, with the lines each lost, which no typed value of it may stand on. */
@@ -140,7 +140,10 @@ function build(w: WindowState): WindowState {
     // has that label as its content, redacted line by line below, as any document's.
     // A text's label is its content; a container's (a group, a list) is its name, an attribute (G2 round 7 review).
     const labelIsContent = n.editable !== true && n.value === undefined && TEXT_ROLES.has(n.role);
-    if ((n.parent !== null && gone.has(n.parent)) || dropped.has(n.key) || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) {
+    // AX can split a marker between its own attributes, such as label "API" and value "key: ...".
+    const attrs = [n.label, n.placeholder, n.value].filter((t): t is string => t !== undefined && t.trim() !== "");
+    const splitMarker = attrs.some((a, i) => attrs.some((b, j) => i !== j && markerAcross(a, b)));
+    if ((n.parent !== null && gone.has(n.parent)) || dropped.has(n.key) || splitMarker || secretText(n.placeholder) || (!labelIsContent && secretText(n.label))) {
       gone.add(n.key);
       continue;
     }

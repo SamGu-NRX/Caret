@@ -19,7 +19,17 @@ import { provenanceStale } from "../src/fill/contract.ts";
 import { PROTOCOL_VERSION, type PageControl, type PageSnapshot, type Snapshot } from "../src/protocol.ts";
 import { assertNoSecrets, SecretInRequest } from "../src/privacy.ts";
 import { redactWindow } from "../src/fill/redact.ts";
-import "../src/planner/intent-heads.ts";
+import { headsRequest, scopeRequest } from "../src/planner/intent-heads.ts";
+import { intentSnapshot } from "../src/planner/intent.ts";
+import { jevIntentMaker, writerIntentMaker } from "../src/planner/intent-makers.ts";
+import { planWithCode } from "../src/planner/codeplan.ts";
+import { planTask } from "../src/planner/planner.ts";
+import { PlannerError } from "../src/planner/validate.ts";
+import { macClock } from "../src/offers/event-time.ts";
+import { planGoal } from "../src/goals/propose.ts";
+import { GoalError } from "../src/goals/lower.ts";
+import { gatewayRoute } from "../src/writer/routes.ts";
+import type { WriterPort, WriterRequest } from "../src/writer/port.ts";
 import { bareLine, lineDigests } from "../src/fill/line-values.ts";
 import { secretText as holdsSecret } from "../src/memory/sensitive.ts";
 import { nodeText } from "../src/model.ts";
@@ -596,14 +606,17 @@ describe("G2 round 4: the redacted view, generated", () => {
       const m = pick(MARKERS);
       const [o, c] = pick(QUOTES) as [string, string];
       const line = `${pick(["", "my ", "Staging ", "Email: robin@example.test "])}${m}${pick(SEPS)}${o}${planted}${c}`;
-      const role = pick(["note", "mail", "label", "placeholder", "nearest", "cell", "cellLabel", "split", "blankOpener"] as const);
+      const role = pick(["note", "mail", "label", "placeholder", "nearest", "cell", "cellLabel", "split", "blankOpener", "sender", "splitAttrs", "hiddenLabel"] as const);
       const at = [20, 40, 120, 20] as [number, number, number, number];
       const source: Snapshot =
         role === "note" ? noteWindow(`Notes\n${line}\nName: Kenji Watanabe`)
+        : role === "sender" ? mailWindow({ from: `Robin Vale; ${m}: ${planted}`, to: "Kenji Watanabe <kenji@example.org>", subject: "Hi", body: "Name: Kenji Watanabe" })
         : role === "mail" ? mailWindow({ from: "Dana Park <dana@example.org>", to: "Kenji Watanabe <kenji@example.org>", subject: "Hi", body: `Hi Kenji,\n${line}\nDana` })
         : ({ type: "snapshot", v: PROTOCOL_VERSION, seq: 1, at: 800, reason: "initial", app: { pid: 7003, bundleId: "dev.caret.other", name: "Other" }, window: { windowId: "other", kind: "standard", title: "Setup", frame: [0, 0, 500, 300] }, focused: false, root: null, values: [], focusedKey: null, stats: { walkMs: 0, visited: 2, truncated: false },
             nodes:
-              role === "label" ? [{ key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, label: `${m}${pick(SEPS)}`, frame: at }]
+              role === "splitAttrs" ? [{ key: "o/c", parent: null, role: "AXCell", label: "API", value: `key: ${planted}`, frame: at }]
+              : role === "hiddenLabel" ? [{ key: "o/l", parent: null, role: "AXStaticText", value: m, frame: [0, 40, 80, 20] }, { key: "o/d", parent: null, role: "AXStaticText", value: "A short\ndocument", frame: [85, 40, 35, 20] }, { key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, frame: [125, 40, 100, 20] }]
+              : role === "label" ? [{ key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, label: `${m}${pick(SEPS)}`, frame: at }]
               : role === "placeholder" ? [{ key: "o/f", parent: null, role: "AXTextField", editable: true, value: planted, placeholder: m, frame: at }]
               : role === "nearest" ? [{ key: "o/l", parent: null, role: "AXStaticText", value: `${o}${m}${c}`, frame: at }, { key: "o/f", parent: null, role: pick(["AXTextField", "AXStaticText", "AXCell"]), ...(r() < 0.5 ? { editable: true as const } : {}), value: planted, frame: [150, 40, 120, 20] }]
               : role === "cellLabel" ? [{ key: "o/c", parent: null, role: pick(["AXCell", "AXStaticText"]), label: `${o}${m}${c}`, value: planted, ...(r() < 0.5 ? { frame: at } : {}) }]
@@ -614,9 +627,32 @@ describe("G2 round 4: the redacted view, generated", () => {
       const name = control("e1", "Full name");
       const others = role === "note" ? [source] : [source, noteWindow("Name: Kenji Watanabe")];
       const { ask, requests } = scripted({}, () => ({ choice: "unclear", confidence: 0.5 }));
-      await proposeFill(desk([name, control("e2", "Notes", "textarea")], others), ask, WIN, keyOf(name), 2000);
-      expect(requests.length, `case ${i}`).toBeGreaterThan(0);
-      const sent = JSON.stringify(requests.map((x) => [x.state, x.questions, x.nouls ?? {}, x.snippets]));
+      const model = desk([name, control("e2", "Notes", "textarea")], others);
+      await proposeFill(model, ask, WIN, keyOf(name), 2000);
+      const snap = intentSnapshot("Fill all fields", model, model.windows.get(WIN)!, []);
+      requests.push(headsRequest(snap), scopeRequest(snap, 0), scopeRequest(snap, 1));
+      await jevIntentMaker(ask).make(snap);
+      const writes: WriterRequest[] = [];
+      const writer: WriterPort = {
+        route: gatewayRoute("openai/gpt-oss-120b"),
+        async write(req) {
+          writes.push(req);
+          return { model: "fixture", provider: "fixture", output: { program: null, reply: "", json: { route: "refuse", why: "nothingToFill", scope: "none", section: "none", fields: [], sources: [], whose: "user", literals: [] } }, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
+        },
+      };
+      await writerIntentMaker(writer, () => "fixture").make(snap);
+      // These writers stop after their request, before any program runs. A secret guard failure must not be hidden
+      // as an expected planner failure: all three requests must reach the stand-in.
+      await expect(planWithCode("Fill all fields", model, { values: () => [] }, { writer, askJev: ask, offerKey: "fixture", windowId: WIN, now: 2000 })).rejects.toBeInstanceOf(PlannerError);
+      await expect(planGoal(model, { goalId: "fixture", instruction: "Fill all fields", writer, askJev: ask, windows: [WIN], memory: [], calendar: null, clock: macClock(new Date(2000)), now: 2000, readerSession: 0 })).rejects.toBeInstanceOf(GoalError);
+      expect(writes, `case ${i}: all writer builders reached`).toHaveLength(3);
+      try {
+        await planTask("Fill all fields", model, { values: () => [] }, { askJev: ask, offerKey: "fixture", windowId: WIN, now: 2000 });
+      } catch (e) {
+        expect(e).toBeInstanceOf(PlannerError);
+      }
+      expect(requests.some((r) => r.purpose === "planner.fields"), `case ${i}: planner built a request`).toBe(true);
+      const sent = JSON.stringify([requests.map((x) => [x.state, x.questions, x.nouls ?? {}, x.snippets]), writes.map((w) => [w.input, w.disclosed])]);
       expect(sent.includes(planted), `case ${i} (${role}): ${JSON.stringify(line)}`).toBe(false);
     }
   });

@@ -1,3 +1,5 @@
+import { redactWindow } from "../fill/redact.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // Pending-state watch (deep plan section 6.4). When the user leaves a window that shows unfinished
 // work, code (no model) finds the markers: a progress or busy indicator, an enabled Stop button by
 // the window's message composer (how agent threads such as Codex, T3 Code and browser chats show a
@@ -94,6 +96,7 @@ export const mask = (s: string): string => s.replace(/\d+/g, "#");
  * window's status. Secure fields never carry a value. Stops once `max` lines are in, between nodes.
  */
 export function allWatchLines(w: WindowState, max = Number.POSITIVE_INFINITY): string[] {
+  w = redactWindow(w);
   const out: string[] = [];
   for (const n of w.nodes.values()) {
     if (out.length >= max) break;
@@ -216,6 +219,7 @@ function insideItem(w: WindowState, parent: string | null): boolean {
  * an agent's composer comes last in a long transcript.
  */
 export function windowMarkers(w: WindowState): Marker[] {
+  w = redactWindow(w);
   const out: Marker[] = [];
   const comps = composers(w);
   // In a window with a message composer the text is a conversation, and a status in it is history:
@@ -294,6 +298,7 @@ export function buildPendingRequest(
   thenMarkers: readonly Marker[] = [],
   nowMarkers: readonly Marker[] = [],
 ): JevRequest {
+  w = redactWindow(w);
   const ledger = new SnippetLedger(screen);
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const before = new Set(then.map(mask));
@@ -304,7 +309,7 @@ export function buildPendingRequest(
   const lines = takeLines(ledger, w, picked, CHANGED_LINES);
   const signsNow = takeLines(ledger, w, markerLines(nowMarkers), SIGN_LINES);
   const signsThen = takeLines(ledger, w, markerLines(thenMarkers), SIGN_LINES);
-  return {
+  return assertNoSecrets({
     purpose: "pending.change",
     state: {
       window: windowName(w, title),
@@ -329,7 +334,7 @@ export function buildPendingRequest(
       },
     },
     ...ledger.declared(),
-  };
+  });
 }
 
 /** Marker lines and changed lines a question names, at most; assumed. Four and six lines of SNIPPET_CHARS are WINDOW_CHARS. */
@@ -371,13 +376,14 @@ function isIndicatorLine(w: WindowState, line: string): boolean {
  * caller can quote it.
  */
 export function buildLookRequest(w: WindowState, screen: Iterable<WindowState>, markers: readonly Marker[]): { req: JevRequest; lines: string[] } {
+  w = redactWindow(w);
   const ledger = new SnippetLedger(screen);
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const signs = takeLines(ledger, w, markerLines(markers), SIGN_LINES);
   const tail = takeLines(ledger, w, allWatchLines(w).slice(-CHANGED_LINES), CHANGED_LINES);
   return {
     lines: tail,
-    req: {
+    req: assertNoSecrets({
       purpose: "pending.look",
       state: {
         window: windowName(w, title),
@@ -395,7 +401,7 @@ export function buildLookRequest(w: WindowState, screen: Iterable<WindowState>, 
         },
       },
       ...ledger.declared(),
-    },
+    }),
   };
 }
 

@@ -3,6 +3,7 @@
 // text to the left on the same row, then directly above, using the frames in the screen model.
 import type { Frame, Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
+import { secretText } from "../memory/sensitive.ts";
 
 export interface FieldDescriptor {
   text: string;
@@ -80,7 +81,8 @@ function labelTexts(w: WindowState): LabelText[] {
   for (const n of w.nodes.values()) {
     if (n.role !== "AXStaticText" || n.frame === undefined) continue;
     const raw = n.label ?? n.value;
-    if (raw === undefined || raw.length === 0) continue;
+    // A document is content, never a competing nearest label.
+    if (raw === undefined || raw.length === 0 || /\S\s*\n\s*\S/u.test(raw)) continue;
     // With nothing to collapse, cleaning leaves the text as it is, so a long one is over the cap without running the replace.
     const unclean = UNCLEAN.test(raw);
     if (!unclean && raw.length > MAX_LABEL_CHARS) continue;
@@ -142,7 +144,8 @@ export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean):
   // A one-line text that names a secret is a label: it goes, and so does each node it is nearest to. A text of several
   // lines is a document, whose own lines the redacted view drops one by one, and which labels nothing (G2 round 6: a
   // document lost its name and phone, and then took "Robin Vale" beside it).
-  const labels = all.filter((e) => !e.document && marked(e.t));
+  const oneLine = all.filter((e) => !e.document);
+  const labels = oneLine.filter((e) => marked(e.t));
   if (labels.length === 0) return out;
   const isDocument = new Set(all.filter((e) => e.document).map((e) => e.key));
   for (const e of labels) out.add(e.key);
@@ -159,7 +162,7 @@ export function nodesLabelledBy(w: WindowState, marked: (t: string) => boolean):
       return sameRow || below;
     });
     if (!near) continue;
-    const full = nearestIn(all, n);
+    const full = nearestIn(oneLine, n);
     const shown = [nearestLabel(w, n, false), nearestLabel(w, n, true)];
     if ((full !== null && isMarkedLabel(full.key, full.t)) || shown.some((l) => l !== null && isMarkedLabel(l.key, l.t))) out.add(n.key);
   }
@@ -217,7 +220,8 @@ function overlapsHorizontally(a: Frame, b: Frame): boolean {
 
 function sectionOf(w: WindowState, field: Node): string | null {
   const n = sectionNode(w, field);
-  return n === null ? null : fieldLabelText(n.label);
+  // A section can name a secret even when its child field does not. Do not quote that name.
+  return n === null || secretText(n.label) ? null : fieldLabelText(n.label);
 }
 
 /** The node whose label is `n`'s section: its nearest ancestor below the web area with a short label, or null. */

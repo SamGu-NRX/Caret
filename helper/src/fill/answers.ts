@@ -1,3 +1,4 @@
+import { redactWindow } from "./redact.ts";
 // Offering a saved answer (S1) as a fill value. A saved answer is the user's own words (memory/answers.ts), so offering
 // one fits the never-wrong rule only when three things hold, and each is decided separately:
 //   1. It answers this field's question. Jev decides, as for any fill value: one Choice per field between the saved
@@ -165,6 +166,7 @@ export function pageOrg(title: string, site: string | null): string | null {
  * field, would otherwise vouch for an answer that names it (review finding 3).
  */
 export function pageText(w: WindowState, ctx: PageContext): PageText {
+  w = redactWindow(w);
   const parts = [w.window.title, ctx.site ?? "", ...ctx.headings];
   for (const n of w.nodes.values()) parts.push(n.label ?? "", n.placeholder ?? "", n.editable === true ? "" : (n.value ?? ""));
   return { tokens: tokens(parts.join(" \n ")), org: pageOrg(w.window.title, ctx.site), tenant: tenantOf(ctx.site) };

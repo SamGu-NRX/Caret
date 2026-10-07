@@ -1,3 +1,5 @@
+import { instructionForModel, mentionedKind } from "../memory/sensitive.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // Ask (B25): an instruction becomes an intent (intent.ts), code checks it, and the route decides what runs.
 //   - fill: the fill engine (fill/fill.ts proposeFill) restricted to the intent's fields, sources, person and
 //     spelled-out values; its text writes become the planner's plan of field writes, checked by validatePlan as
@@ -26,7 +28,7 @@ import type { WriterPort } from "../writer/port.ts";
 import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, wordsOf, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
-import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure, saysUnsureFields, type AskPart } from "./says.ts";
+import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNeverTyped, saysNoValue, saysPress, saysUnsure, saysUnsureFields, type AskPart } from "./says.ts";
 import { choicesFor, type Choice } from "./choices.ts";
 import { fieldWords } from "./sources.ts";
 import { asksForWholeForm, exclusionsIn, namedSection } from "./scope-words.ts";
@@ -340,6 +342,11 @@ function scopeFields(intent: AskIntent, snap: IntentSnapshot): IntentField[] {
 export async function planAsk(instruction: string, model: ScreenModel, memory: PlannerMemory, about: readonly AboutValue[], o: AskOptions & { goals?: false }): Promise<AskDraft>;
 export async function planAsk(instruction: string, model: ScreenModel, memory: PlannerMemory, about: readonly AboutValue[], o: AskOptions): Promise<AskDraft | AskGoal>;
 export async function planAsk(instruction: string, model: ScreenModel, memory: PlannerMemory, about: readonly AboutValue[], o: AskOptions): Promise<AskDraft | AskGoal> {
+  // PV1: refuse a wholly forbidden instruction locally, before even window selection can build a request.
+  // A mixed instruction keeps its original local checks; each outbound builder projects the safe clauses instead.
+  const kind = mentionedKind(instruction);
+  const safe = instructionForModel(instruction).replace(/\[a field Caret leaves to you\]|\b(?:and|then)\b/giu, "").trim();
+  if (kind !== null && safe === "") throw new AskRefused(new SaidError("notEditable", saysNeverTyped(kind.kind, kind.ssn), "the instruction only asks for a kind Caret never types"), null, null);
   const now = o.now ?? Date.now();
   const jev = { calls: 0, costUsd: 0, latencyMs: 0 };
   const askJev: AskJev = async (req) => {
@@ -874,16 +881,17 @@ function sectionScope(instruction: string, checked: FillChecked, snap: IntentSna
  * `fields` (ids f1, f2, ... in order). The answer holds for an id both wordings answer yes at PLAN_CUTOFF.
  */
 function jevConfirms(instruction: string, snap: IntentSnapshot, askJev: AskJev): (all: boolean, fields: readonly IntentField[]) => Promise<(id: string) => boolean> {
+  instruction = instructionForModel(instruction);
   const declared = snap.ledger.declared();
   return async (all, fields) => {
     const req = (wording: 0 | 1): JevRequest => {
       const questions: JevRequest["questions"] = {};
       if (all) questions.all = { type: "choice", instructions: CONFIRM_ALL[wording](instruction), criteria: { ...CONFIRM } };
       fields.forEach((f, i) => {
-        questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](instruction, f.name), criteria: { ...CONFIRM } };
+        questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](instruction, f.modelName ?? f.name), criteria: { ...CONFIRM } };
       });
       const sent = JSON.stringify([instruction, questions]);
-      return { purpose: "ask.confirm", state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
+      return assertNoSecrets({ purpose: "ask.confirm", state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged });
     };
     const [a, b] = await Promise.all([askJev(req(0)), askJev(req(1))]);
     return (id) => {

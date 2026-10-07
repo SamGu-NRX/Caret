@@ -1,3 +1,4 @@
+import { redactWindow } from "../fill/redact.ts";
 // Where an instruction says to copy from, read by code (B26). Two rules use it. Blanking a phrase only leaves fewer
 // words to name a field, so it can send more of a scope to Jev, never less; B28's whole-form and section scopes
 // match the whole instruction (scope-words.ts) and never read the blanked text.
@@ -128,7 +129,7 @@ const COMMON_NAMES = new Set(["will", "may", "mark", "bill", "rose", "art", "gra
  * lower case never matches by its start: "can" named Candace's mail in B26's second review.
  */
 export function senderNames(instruction: string, model: ScreenModel, form: WindowState): string[] {
-  const senders = [...model.windows.values()].filter((w) => w !== form && isConversation(w)).map((w) => wordsOf(senderOf(w) ?? ""));
+  const senders = [...model.windows.values()].map(redactWindow).filter((w) => w.window.windowId !== form.window.windowId && isConversation(w)).map((w) => wordsOf(senderOf(w) ?? ""));
   const out: string[] = [];
   for (const m of instruction.matchAll(/(?<![\p{L}'’])\p{L}[\p{L}'’-]*/gu)) {
     const word = m[0].replace(/['’]s$/u, "");
@@ -158,6 +159,7 @@ export function onlyInSources(instruction: string, span: string): boolean {
 
 /** A mail's sender as its "From" line shows it ("Beatrice Sutherland <bea@…>" gives "Beatrice Sutherland"), or null. */
 export function senderOf(w: WindowState): string | null {
+  w = redactWindow(w);
   const fromLine = labelledLines(w).find((l) => /^from$/i.test(l.label));
   if (fromLine === undefined) return null;
   return /^\s*"?([^"<>]+?)"?\s*(?:<[^>]*>)?\s*$/u.exec(fromLine.value)?.[1]?.trim() ?? null;
@@ -203,7 +205,7 @@ function isNote(w: WindowState): boolean {
  * email") names no window: what it resolves to is excluded.
  */
 export function namedSources(instruction: string, model: ScreenModel, form: WindowState, people: readonly string[]): { named: NamedSource[]; excluded: string[]; missing: boolean } {
-  const others = [...model.windows.values()].filter((w) => w !== form);
+  const others = [...model.windows.values()].map(redactWindow).filter((w) => w.window.windowId !== form.window.windowId);
   const phrases = sourcePhrases(instruction);
   const said = new Set(wordsOf(instruction).filter((x) => !STOP.has(x)));
   const just = model.windowBefore(form.window.windowId);

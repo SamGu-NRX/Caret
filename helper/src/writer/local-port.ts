@@ -6,6 +6,7 @@
 //   - toolLocalModel, for development and evaluations: G1's caret-local-model (writer/local-model.ts), which reads the
 //     GGUF by path. It renders the prompt the way writer/local-draft.ts says the host should.
 // A failure is LocalModelUnavailable, which says why; nothing retries.
+import { assertNoSecrets } from "../privacy.ts";
 import { LocalTextRequest, PROTOCOL_VERSION, type LocalTextReply } from "../protocol.ts";
 import type { LocalModelTool as LocalTool } from "./local-model.ts";
 import { renderDraftPrompt } from "./local-draft.ts";
@@ -59,6 +60,7 @@ export class HostLocalModel implements LocalModelPort {
   }
 
   async complete(ask: LocalTextAsk, signal?: AbortSignal): Promise<LocalText> {
+    assertNoSecrets({ input: ask.prompt });
     const id = `lt-${++this.seq}`;
     // Parsed here, so a request the host would refuse by schema fails in the helper, naming the field.
     const msg = LocalTextRequest.parse({ type: "localTextRequest", v: PROTOCOL_VERSION, id, ...ask });
@@ -102,6 +104,7 @@ export function toolLocalModel(tool: LocalTool): LocalModelPort {
   return {
     via: "tool",
     async complete(ask, signal) {
+      assertNoSecrets({ input: ask.prompt });
       if (ask.kind !== "draft") throw new LocalModelUnavailable("refused", `caret-local-model composes drafts only, not a ${ask.kind}`);
       if (ask.grammar === null) throw new LocalModelUnavailable("refused", "caret-local-model needs a grammar on every request");
       let r: Awaited<ReturnType<LocalTool["complete"]>>;

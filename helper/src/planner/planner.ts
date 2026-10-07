@@ -1,3 +1,7 @@
+import { instructionForModel } from "../memory/sensitive.ts";
+import { viewOf } from "../fill/candidates.ts";
+import { redactWindow } from "../fill/redact.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // The planner: "do X" becomes a checked plan (brief B16). Jev answers only choice questions, so the
 // house rule holds here too: code proposes, Jev chooses, code copies and verifies.
 //   1. Code picks the window: the one the host names (requestedWindow resolves a host's window number), the
@@ -189,10 +193,11 @@ async function planIn(
   answers: Record<string, AskPair>,
   jev: PlanDraft["jev"],
 ): Promise<PlanDraft> {
+  w = redactWindow(w);
   const fields = writableFields(w);
   const buttons = labelledButtons(w);
   const ledger = new SnippetLedger(model.windows.values());
-  if (!ledger.plan([instruction])) throw new PlannerError("privacy", PRIVACY_SAYS);
+  if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", PRIVACY_SAYS);
   // A title that does not fit the window's budget is left out; the question then names the app alone.
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   // A window that is not a card gives a question less than half its text (privacy.ts), which may not hold
@@ -453,6 +458,7 @@ export function fieldName(w: WindowState, n: Node): string {
 }
 
 export function writableFields(w: WindowState): Field[] {
+  w = redactWindow(w);
   const out: Field[] = [];
   // I2 ruling: the one inventory the intent snapshot reads (targets.ts), so the planner writes no field the scope
   // question could not ask about; a field with no readable name is not in it.
@@ -475,6 +481,7 @@ interface Button {
 }
 
 function labelledButtons(w: WindowState): Button[] {
+  w = redactWindow(w);
   const out: Button[] = [];
   for (const n of w.nodes.values()) {
     if (out.length >= MAX_PLAN_BUTTONS) break;
@@ -526,11 +533,14 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
   const add = (text: string, describe: string, provenance: Provenance, max = MAX_PLAN_VALUES): void => {
     if (out.length >= max || seen.has(text)) return;
     seen.add(text);
-    out.push({ id: `v${out.length + 1}`, text, describe, provenance });
+    // Local binding retains withheld values for refusal; a model sees only the neutral reference.
+    const safe = provenance.kind === "instruction" && !instructionForModel(instruction).includes(text)
+      ? "[a field Caret leaves to you]" : instructionForModel(describe);
+    out.push({ id: `v${out.length + 1}`, text, describe: safe, provenance });
   };
   const entry = (m: MemoryValue): Provenance => ({ kind: "memory", id: m.id, label: m.label, part: null, whose: m.whose ?? null });
   const spans = instructionValues(instruction);
-  if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`, { kind: "instruction", span: s });
+  if (ledger.plan(spans.map((s) => instructionForModel(instruction).includes(s) ? instructionForModel(s) : "[a field Caret leaves to you]"))) for (const s of spans) add(s, `"${s}" (written in the instruction)`, { kind: "instruction", span: s });
   for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`, entry(m));
   // A remembered name's first and last parts, split by code (fill/derive.ts, B24), for First and Last name
   // fields: "fill my name and email" on a form with split name fields found no value for either (Q1 bug 11).
@@ -583,24 +593,24 @@ async function chooseWindow(
   answers: Record<string, AskPair>,
 ): Promise<WindowState> {
   if (o.windowId !== undefined) {
-    const w = model.windows.get(o.windowId);
+    const w = viewOf(model, o.windowId);
     if (w === undefined) throw new PlannerError("unseenWindow", `window ${o.windowId} is not open`);
     if (!actionable(w)) throw new PlannerError("noWindow", `window ${o.windowId} has no field or button`);
     return w;
   }
-  const candidates = [...model.windows.values()].filter(actionable);
+  const candidates = [...model.windows.values()].map(redactWindow).filter(actionable);
   if (candidates.length === 0) throw new PlannerError("noWindow", "no open window has a field or a button");
   if (candidates.length === 1) return candidates[0] as WindowState;
   const ledger = new SnippetLedger(model.windows.values());
-  if (!ledger.plan([instruction])) throw new PlannerError("privacy", PRIVACY_SAYS);
+  if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", PRIVACY_SAYS);
   const listed = candidates.filter((w) => ledger.take(w, "descriptor", [w.window.title]));
   if (listed.length === 0) throw new PlannerError("privacy", "no open window's title fits what one question to Jev may carry");
   const declared = ledger.declared();
   const first = listed.map((w, i) => ({ id: `w${i + 1}`, w }));
   const second = shuffled(first, rand).map((x, i) => ({ id: `x${i + 1}`, w: x.w }));
-  const req = (list: typeof first, wording: 0 | 1): JevRequest => ({
+  const req = (list: typeof first, wording: 0 | 1): JevRequest => (assertNoSecrets({
     purpose: "planner.window",
-    state: { instruction, task: "Caret is about to plan the user's instruction in one of the user's open windows." },
+    state: { instruction: instructionForModel(instruction), task: "Caret is about to plan the user's instruction in one of the user's open windows." },
     questions: {
       window: {
         type: "choice",
@@ -610,7 +620,7 @@ async function chooseWindow(
     },
     snippets: declared.snippets,
     charged: declared.charged,
-  });
+  }));
   const [r1, r2] = await ask(req(first, 0), req(second, 1));
   const pick = (r: JevResult, list: typeof first): { w: WindowState | null; conf: number } => {
     const a = r.answers.window;
@@ -641,6 +651,8 @@ const PRESS_WORDINGS = [
 ] as const;
 
 function fieldRequest(instruction: string, w: WindowState, title: string | null, fields: readonly Field[], valuesFor: (f: Field) => readonly Option[], buttons: readonly Button[], wording: 0 | 1, declared: Declared): JevRequest {
+  instruction = instructionForModel(instruction);
+  w = redactWindow(w);
   const questions: JevRequest["questions"] = {};
   for (const f of fields) {
     const criteria: Record<string, string> = { ...Object.fromEntries(valuesFor(f).map((v) => [v.id, v.describe])), [KEEP]: "Leave the field as it is." };
@@ -653,7 +665,7 @@ function fieldRequest(instruction: string, w: WindowState, title: string | null,
       criteria: { ...Object.fromEntries(buttons.map((b) => [b.id, `the '${b.label}' button`])), [NONE]: "No button." },
     };
   }
-  return {
+  return assertNoSecrets({
     purpose: "planner.fields",
     state: {
       instruction,
@@ -663,7 +675,7 @@ function fieldRequest(instruction: string, w: WindowState, title: string | null,
     questions,
     snippets: declared.snippets,
     charged: declared.charged,
-  };
+  });
 }
 
 export { PlannerError };

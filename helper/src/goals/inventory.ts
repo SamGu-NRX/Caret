@@ -1,3 +1,5 @@
+import { instructionForModel } from "../memory/sensitive.ts";
+import { redactWindow } from "../fill/redact.ts";
 // The frozen snapshots a goal program reads, and the bindings behind their refs (D2-06). Built from the screen model
 // at one moment: each window the goal may act in lists its empty fields, the page controls code can set and its
 // labelled buttons as targets; values are the code-plan writer's (planner/codeplan.ts valueList: the instruction's
@@ -28,8 +30,11 @@ const MAX_BUTTONS = 6;
 
 const digest = (s: string): string => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
-/** A window's revision: every node's key, role, label and value, in order. Any change to what it shows changes it. */
+/** Hash the retained nodes in order, matching the goal snapshot and its revalidation view.
+ * Discarded secret text does not contribute to this model-facing revision.
+ */
 export function windowRevision(w: WindowState): string {
+  w = redactWindow(w);
   return digest(JSON.stringify([w.window.title, ...[...w.nodes.values()].map((n) => [n.key, n.role, n.label ?? "", n.value ?? "", n.editable === true])]));
 }
 
@@ -41,6 +46,7 @@ const STATIC_ROLES = new Set(["AXStaticText", "AXHeading"]);
  * text alone, which a message's header is read from. Host-side only.
  */
 export function basisText(w: WindowState): { title: string; text: string; message: string } {
+  w = redactWindow(w);
   const nodes = [...w.nodes.values()];
   const lines = (xs: typeof nodes): string => xs.map((n) => nodeText(n)).filter((t) => t !== "").join("\n");
   return { title: w.window.title, text: lines(nodes), message: lines(nodes.filter((n) => STATIC_ROLES.has(n.role) && n.editable !== true)) };
@@ -75,15 +81,17 @@ function domainOf(w: WindowState): GoalDomain {
 
 /** Builds the snapshots and their bindings. Throws an Error naming what is missing; the caller says it to the user. */
 export function buildInventory(model: ScreenModel, o: InventoryOptions): Inventory {
+  const localWindows = new Map<string, WindowState>();
   const windows = o.windows.slice(0, MAX_GOAL_WINDOWS).map((id) => {
     const w = model.windows.get(id);
     if (w === undefined) throw new Error(`window ${id} is not open`);
-    return w;
+    localWindows.set(id, w);
+    return redactWindow(w);
   });
   const first = windows[0];
   if (first === undefined) throw new Error("no window to plan in");
   const ledger = new SnippetLedger(model.windows.values());
-  if (!ledger.plan([o.instruction])) throw new Error("the instruction quotes more of an open window than one request may carry");
+  if (!ledger.plan([instructionForModel(o.instruction)])) throw new Error("the instruction quotes more of an open window than one request may carry");
   const targets = new Map<string, TargetBinding>();
   const values = new Map<string, ValueBinding>();
   const revisions = new Map<string, string>();
@@ -113,7 +121,9 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     revisions.set(w.window.windowId, windowRevision(w));
     windowRefs.set(`w${i + 1}`, w.window.windowId);
     texts.set(w.window.windowId, basisText(w));
-    owed.set(w.window.windowId, owedFields(w));
+    // Completion is local: a required field Caret never types still needs the user.
+    // Raw obligation labels stay in inventory.owed, never in the writer's snapshots.
+    owed.set(w.window.windowId, owedFields(localWindows.get(w.window.windowId) ?? w));
     const doc = o.pageDocument?.(w.window.windowId) ?? null;
     if (doc !== null) documents.set(w.window.windowId, doc);
     const title = w.window.title.slice(0, 200);
@@ -202,6 +212,7 @@ function contractOf(w: WindowState, node: Node, form: FormControl | null): { fie
 
 /** Events code reads from a source window's sentences: a resolved time and a person, as an event card would offer. */
 function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventClock, snapshot: string, ledger: SnippetLedger, nextRef: () => string): ReadValue[] {
+  w = redactWindow(w);
   const out: ReadValue[] = [];
   for (const n of w.nodes.values()) {
     const text = nodeText(n);

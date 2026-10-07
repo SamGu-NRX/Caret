@@ -1,3 +1,5 @@
+import { redactWindow } from "../fill/redact.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // The event card (Fable plan section 2, pop-up A). A sentence that names a time and a person, finished
 // in the field the user is typing in or arriving in a conversation window, becomes an offer to add the
 // event to a calendar: "Calendar  Coffee with Dana, Thu 3:00 to 3:30 PM  Tab", and the down arrow opens
@@ -179,13 +181,13 @@ export const OFFER_WHEN: Record<SentenceSource, string> = {
 
 /** One of the two asks. `declared` is the sentence as its window's ledger took it. */
 export function buildAttendRequest(sentence: string, wording: 0 | 1, declared: { snippets: JevRequest["snippets"]; charged: JevRequest["charged"] }, source: SentenceSource = "typed"): JevRequest {
-  return {
+  return assertNoSecrets({
     purpose: "event.card",
     state: { sentence, task: source === "typed" ? "The user is typing this sentence. Caret is deciding whether to offer adding an event to the user's calendar." : "The user is reading this line in a conversation. Caret is deciding whether to offer adding an event to the user's calendar." },
     questions: { attend: { type: "choice", instructions: WORDINGS[source][wording], criteria: { yes: "Yes: a future event the user will attend.", no: "No." } } },
     snippets: declared.snippets,
     charged: declared.charged,
-  };
+  });
 }
 
 export interface AttendAnswer {
@@ -196,6 +198,9 @@ export interface AttendAnswer {
 
 /** Both asks; `yes` only when both answered yes. Null when the sentence does not fit its window's budget, so nothing was asked. */
 export async function askAttend(ask: AskJev, model: ScreenModel, w: WindowState, sentence: string, source: SentenceSource = "typed"): Promise<AttendAnswer | null> {
+  // Changed-node events may supply raw sentence text. Admit it only when the redacted view retains it.
+  w = redactWindow(w);
+  if (![...w.nodes.values()].some((n) => nodeText(n).includes(sentence))) return null;
   const ledger = new SnippetLedger(model.windows.values());
   if (!ledger.take(w, "candidate", [sentence])) return null;
   const declared = ledger.declared();
@@ -586,7 +591,7 @@ export class EventCards {
     const gen = this.gen;
     const clockNow = this.clockAt(deps.now());
     const found: { w: WindowState; key: string; candidate: EventCandidate; source: SentenceSource }[] = [];
-    const windows = [...deps.model.windows.values()]
+    const windows = [...deps.model.windows.values()].map(redactWindow)
       .filter((w) => !exclude.has(w.window.windowId))
       .sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
     for (const w of windows) {

@@ -1,3 +1,6 @@
+import { viewOf } from "../fill/candidates.ts";
+import { redactWindow } from "../fill/redact.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // The two routers' questions to Jev and the checks on their answers. Each is one Choice over options code listed:
 // Router 1 over the outcomes legal now, Router 2 over the registry's route ids. Every piece of screen text goes
 // through a SnippetLedger (privacy.ts), so the request declares what it carries and each window keeps its budget.
@@ -103,7 +106,7 @@ export class PrivacyRefusal extends Error {}
  * `form`: the other fields' labels, which the task question leaves out so its sentence fits the window's budget first.
  */
 function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly RouteCandidate[], form = true): Taken {
-  const w = model.windows.get(ctx.windowId);
+  const w = viewOf(model, ctx.windowId);
   if (w === undefined) throw new PrivacyRefusal(`window ${ctx.windowId} left the model`);
   const ledger = new SnippetLedger(model.windows.values());
   const state: Record<string, unknown> = {
@@ -112,7 +115,7 @@ function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly 
   };
   if (ledger.take(w, "descriptor", [w.window.title])) state.window = w.window.title;
   state.conversation = isConversation(w);
-  const others = [...model.windows.values()].filter((o) => o.window.windowId !== w.window.windowId).sort((x, y) => y.lastFocusedAt - x.lastFocusedAt || y.updatedAt - x.updatedAt);
+  const others = [...model.windows.values()].map(redactWindow).filter((o) => o.window.windowId !== w.window.windowId).sort((x, y) => y.lastFocusedAt - x.lastFocusedAt || y.updatedAt - x.updatedAt);
   state.otherWindows = others.slice(0, OTHER_WINDOWS).map((o) => (ledger.take(o, "descriptor", [o.window.title]) ? `${o.app.name}: ${o.window.title}` : o.app.name));
   const node = ctx.field === null ? undefined : w.nodes.get(ctx.field.key);
   if (ctx.field === null || node === undefined) state.field = "none: the cursor is not in a text field";
@@ -126,7 +129,13 @@ function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly 
   const says = new Map<string, string>();
   const quoted = new Set<string>();
   for (const c of candidates) {
-    const fits = c.quotes.every((q) => ledger.take(q.window, q.kind, q.texts));
+    // Producers may hold raw changed-node evidence. A budget does not authorize text removed by redaction.
+    const fits = c.quotes.every((q) => {
+      const view = redactWindow(q.window);
+      const shown = [view.window.title, ...[...view.nodes.values()].flatMap((n) => [n.label ?? "", n.value ?? "", n.placeholder ?? ""])];
+      const flat = (s: string): string => s.replace(/\s+/gu, " ").trim();
+      return q.texts.every((t) => shown.some((s) => flat(s).includes(flat(t)))) && ledger.take(view, q.kind, q.texts);
+    });
     if (fits) quoted.add(c.id);
     says.set(c.id, fits ? c.says : c.plain);
   }
@@ -189,7 +198,7 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
       else if (o === "ask") criteria.ask = `${OUTCOME_SAYS.ask} ${reg.question?.question?.says ?? ""}; then: ${t.says.get(reg.question?.id ?? "") ?? ""}.`;
       else criteria[o] = OUTCOME_SAYS[o];
     }
-    const request: JevRequest = {
+    const request: JevRequest = assertNoSecrets({
       purpose: "route.judge",
       state: t.state,
       questions: {
@@ -201,7 +210,7 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
       },
       ...t.ledger.declared(),
       retry429: false,
-    };
+    });
     outcome = { request, options };
   }
   const cand = legal.includes("act") ? reg.task : null;
@@ -209,13 +218,13 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
   if (cand === null || cand === undefined || ev === undefined) return { outcome, task: null, taskPrivacy: false };
   const t = describe(model, ctx, [cand], false);
   if (!t.quoted.has(cand.id)) return { outcome, task: null, taskPrivacy: true };
-  const request: JevRequest = {
+  const request: JevRequest = assertNoSecrets({
     purpose: "route.task",
     state: { ...t.state, offer: { task: ev.task, sentence: ev.sentence, found: ev.found } },
     questions: { task: { type: "choice", instructions: taskInstructions(ev.offerWhen), criteria: { abstain: TASK_QUESTION.abstain, act: TASK_QUESTION.act } } },
     ...t.ledger.declared(),
     retry429: false,
-  };
+  });
   return { outcome, task: { cand, built: { request, options: TASK_OPTIONS } }, taskPrivacy: false };
 }
 
@@ -225,13 +234,13 @@ export function router2Request(model: ScreenModel, ctx: RoutingContext, reg: Reg
   const t = describe(model, ctx, cands);
   const criteria: Record<string, string> = {};
   for (const r of reg.routes) criteria[r.option] = r.candidate === null ? `None of these: ${r.reason ?? ""}. Offer nothing.` : (t.says.get(r.candidate.id) ?? r.candidate.plain);
-  const request: JevRequest = {
+  const request: JevRequest = assertNoSecrets({
     purpose: "route.pick",
     state: { ...t.state, decided: "Caret will offer to do one task now." },
     questions: { route: { type: "choice", instructions: "Which one task fits what the user is doing now?", criteria } },
     ...t.ledger.declared(),
     retry429: false,
-  };
+  });
   return { request, options: reg.routes.map((r) => r.option) };
 }
 

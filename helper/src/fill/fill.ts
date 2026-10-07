@@ -1,3 +1,5 @@
+import { instructionForModel } from "../memory/sensitive.ts";
+import { redactWindow } from "./redact.ts";
 // Grounded fill: one Jev request per form, one Choice question per empty field, each offering
 // the same candidate spans plus "none" (deep plan section 5, "Fill"). Jev picks a candidate id;
 // code copies that candidate's text verbatim into the proposal. Nothing here writes to any app.
@@ -168,7 +170,7 @@ export function selectedFormInputs(model: ScreenModel, windowId: string, trigger
   const w = model.windows.get(windowId);
   if (w === undefined) throw new FillError("noWindow", `unknown window ${windowId}`);
   const sourceWords = (): ReadonlySet<string> =>
-    new Set([...model.windows.values()].filter((x) => x.window.windowId !== windowId && opts.exclude?.has(x.window.windowId) !== true).flatMap((x) => [...x.nodes.values()].flatMap((n) => words(nodeText(n)))));
+    new Set([...model.windows.values()].map(redactWindow).filter((x) => x.window.windowId !== windowId && opts.exclude?.has(x.window.windowId) !== true).flatMap((x) => [...x.nodes.values()].flatMap((n) => words(nodeText(n)))));
   return formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords);
 }
 
@@ -428,11 +430,13 @@ export function buildFillRequest(
   candidates: Candidate[],
   wording: 0 | 1 = 0,
   declared: Declared = { snippets: [], charged: {} },
-  title: string | null = w.window.title,
+  title: string | null = redactWindow(w).window.title,
   about: ReadonlyMap<string, readonly AskAbout[]> = new Map(),
   whose = false,
   more: RequestMore = {},
 ): JevRequest {
+  w = redactWindow(w);
+  more = { ...more, ...(more.instruction === undefined ? {} : { instruction: instructionForModel(more.instruction) }) };
   const shared: Record<string, string> = {};
   for (const c of candidates) shared[c.id] = describeCandidate(c);
   const where = title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`;
@@ -469,7 +473,7 @@ export function buildFillRequest(
   }
   const anyAbout = fields.some((f) => (about.get(f.id)?.length ?? 0) > 0);
   const anyDerived = fields.some((f) => (more.derived?.get(f.id)?.length ?? 0) > 0);
-  const req: JevRequest = {
+  const req: JevRequest = assertNoSecrets({
     purpose: more.stage === "whose" ? "fill.whose" : "fill.values",
     state: {
       ...(more.instruction === undefined ? {} : { instruction: more.instruction }),
@@ -489,7 +493,7 @@ export function buildFillRequest(
     charged: declared.charged,
     ...(declared.consented === undefined ? {} : { consented: declared.consented }),
     ...(Object.keys(subjects).length === 0 ? {} : { subjects }),
-  };
+  });
   // G2 review: fill's requests meet the one disclosure rule as they are built, so a test or a canned engine sees a miss
   // too (privacy.ts assertNoSecrets; the Jev client checks every request again before it is sent).
   assertNoSecrets(req);
@@ -803,8 +807,9 @@ export async function proposeFill(
   const derive = opts.derive !== false;
   const owners = opts.owner !== false && whose;
   const resolveCtx: ResolveContext = opts.resolve ?? { locale: Intl.DateTimeFormat().resolvedOptions().locale, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, referenceInstant: null };
-  const w = model.windows.get(windowId);
-  if (w === undefined) throw new FillError("noWindow", `unknown window ${windowId}`);
+  const localWindow = model.windows.get(windowId);
+  if (localWindow === undefined) throw new FillError("noWindow", `unknown window ${windowId}`);
+  const w = redactWindow(localWindow);
   const pageOwned = w.window.kind === PAGE_WINDOW_KIND;
   // Every piece of screen text the asks carry goes through one ledger, which holds each window to its
   // budget (privacy.ts): the form's title and each field's descriptor, nearest field first, then the
@@ -819,7 +824,7 @@ export async function proposeFill(
   // untied rule included.
   const plainAsk = scope !== undefined && scope.wholeForm === true && scope.windows === null && scope.memory && scope.person === null && scope.literals.size === 0 && (scope.consented?.size ?? 0) === 0;
   // An Ask's instruction is in every question; it may quote a window, which pays for what it quotes.
-  if (scope !== undefined && !plainAsk && !ledger.plan([scope.instruction])) throw new FillError("instructionTooLong", "the instruction quotes more of an open window than one question to Jev may carry");
+  if (scope !== undefined && !plainAsk && !ledger.plan([instructionForModel(scope.instruction)])) throw new FillError("instructionTooLong", "the instruction quotes more of an open window than one question to Jev may carry");
   // G2: the form's own title and fields' texts meet the redacted view's rule too (memory/sensitive.ts secretText).
   const title = !secretText(w.window.title) && ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   type Field = {
@@ -854,7 +859,22 @@ export async function proposeFill(
       return c === undefined ? [] : [{ node: c.node, control: c.control, form: c }];
     });
   };
-  const inputs = scope !== undefined ? scopedInputs(w, scope.fields) : opts.only !== undefined ? onlyInputs(opts.only) : selectedFormInputs(model, windowId, triggerKey, opts);
+  // PV1: raw nodes classify forbidden targets locally before any descriptor is read for a model.
+  // Only nodes and controls retained by the redacted view can become request fields.
+  const localInputs = scope !== undefined ? scopedInputs(localWindow, scope.fields) : opts.only !== undefined ? onlyInputs(opts.only) : selectedFormInputs(model, windowId, triggerKey, opts);
+  const safeControls = new Map(formControls(w).map((c) => [c.node.key, c]));
+  const inputs = localInputs.flatMap((x): FormInput[] => {
+    if (neverTypedNode(localWindow, x.node) !== null || x.node.states?.includes("secure")) return [];
+    const node = w.nodes.get(x.node.key);
+    if (node === undefined) return [];
+    // Editable web comboboxes are synthesized by formInputs, not listed by formControls.
+    // Rebuild that control from the redacted node so safe dropdowns keep their existing behavior.
+    const form = x.form === null ? null : safeControls.get(node.key) ??
+      (x.control === "combobox" && node.role === "AXComboBox" && inWebArea(w, node)
+        ? { node, control: "combobox" as const, label: fieldLabelText(node.label), options: null, members: [] }
+        : undefined);
+    return form === undefined ? [] : [{ ...x, node, form }];
+  });
   const formHasCity = inputs.some((x) => x.control === "text" && fieldPart(describeField(w, x.node).label, false) === "city");
   for (const x of inputs) {
     const n = x.node;
@@ -1111,7 +1131,7 @@ export async function proposeFill(
           continue;
         }
         if (raw !== null) continue;
-        const sw = model.windows.get(c.source.windowId);
+        const sw = viewOf(model, c.source.windowId);
         const sent = sw === undefined ? null : sentLineFor([...sw.nodes.values()].map((n) => ({ key: n.key, text: nodeText(n) })), c.source.nodeKey, c.text);
         const dated = sent === null ? null : datedBySent(c.text, sent, resolveCtx);
         const read = dated === null ? null : readFor(f, c.text, dated.ctx, null);
@@ -1212,7 +1232,7 @@ export async function proposeFill(
   const judged = new Map<string, string>();
   const nodeKeyOf = (c: Candidate): string => `${c.source.windowId}\u0000${c.source.nodeKey}`;
   const snapshotOf = (c: Candidate): void => {
-    const sw = model.windows.get(c.source.windowId);
+    const sw = viewOf(model, c.source.windowId);
     const n = sw?.nodes.get(c.source.nodeKey);
     if (n !== undefined && !judged.has(nodeKeyOf(c))) judged.set(nodeKeyOf(c), nodeText(n));
   };
@@ -1545,7 +1565,7 @@ export async function proposeFill(
     if (kinds.length === 0) return false;
     const theirs = ownerCands.filter((x) => ownerAgreed(x) === "person" && [...candidateKinds(model, x)].some((k) => kinds.includes(k)));
     if (theirs.length < 2) return false;
-    const node = model.windows.get(c.source.windowId)?.nodes.get(c.source.nodeKey);
+    const node = viewOf(model, c.source.windowId)?.nodes.get(c.source.nodeKey);
     const line = node === undefined ? "" : (nodeText(node).split(/\r?\n/).find((l) => l.includes(c.text)) ?? "");
     const said = new Set(fieldTerms([line, c.context]));
     const named = [...fieldTerms(f.labelWords)].filter((t) => !isKindTerm(t) && t !== NAME_TERM && !KIND_ONLY_WORDS.has(t));
@@ -1993,7 +2013,7 @@ function deriveHow(part: FillPart | null, written: string, base: string, control
  * the source now.
  */
 export function candidateProvenance(model: ScreenModel, c: Candidate, text?: string): Provenance {
-  return windowProvenance(model.windows.get(c.source.windowId), c, text);
+  return windowProvenance(viewOf(model, c.source.windowId), c, text);
 }
 
 /**
@@ -2075,7 +2095,7 @@ export function conversionOf(control: string): MemoryConversion {
 
 /** Whether two candidates' "Label: value" lines are next to each other in their node, with no line between. */
 function adjacentLines(model: ScreenModel, a: Candidate, b: Candidate): boolean {
-  const node = model.windows.get(a.source.windowId)?.nodes.get(a.source.nodeKey);
+  const node = viewOf(model, a.source.windowId)?.nodes.get(a.source.nodeKey);
   if (node === undefined || a.context === null || b.context === null) return false;
   const lines = nodeText(node).split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim());
   const at = (c: Candidate): number => lines.findIndex((l) => l.startsWith(`${c.context}:`) && l.includes(c.text));

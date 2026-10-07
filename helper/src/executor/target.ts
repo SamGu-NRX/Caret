@@ -1,3 +1,5 @@
+import { redactWindow } from "../fill/redact.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // Finding the element a step names. An exact key wins. Otherwise role and label filter the window;
 // one match is used as is. Several matches go to Jev as the executor-step question (deep plan
 // section 5): the goal as an end-state sentence, at most 40 candidate elements one line each, asked
@@ -68,6 +70,10 @@ export function resolveLocally(w: WindowState, t: Target): { node: Node; how: "k
 
 /** The screen text describeElement quotes for an element: its label, value, container and placeholder, each clipped. */
 function elementTexts(w: WindowState, n: Node): { label: string | null; value: string | null; inside: string | null; placeholder: string | null } {
+  w = redactWindow(w);
+  const kept = w.nodes.get(n.key);
+  if (kept === undefined) return { label: null, value: null, inside: null, placeholder: null };
+  n = kept;
   const v = nodeText(n);
   let inside: string | null = null;
   for (let p = n.parent; p !== null; ) {
@@ -128,6 +134,7 @@ export function quotedPart(sent: string, value: string): string | null {
  * do not all fit: the question is then not asked, since leaving one out could leave out the right one.
  */
 export function targetSnippets(w: WindowState, screen: Iterable<WindowState>, goal: string, t: Target, cands: readonly { node: Node }[], sourced: readonly SourcedValue[] = []): Declared | null {
+  w = redactWindow(w);
   const ledger = new SnippetLedger(screen);
   const sent = [cut(goal), cut(t.describe)];
   for (const v of sourced) {
@@ -156,17 +163,18 @@ const WORDINGS = [
 ] as const;
 
 export function buildTargetRequest(w: WindowState, goal: string, t: Target, cands: { id: string; node: Node }[], wording: 0 | 1, declared: Declared = { snippets: [], charged: {} }): JevRequest {
+  w = redactWindow(w);
   const criteria: Record<string, string> = {};
   for (const c of cands) criteria[c.id] = describeElement(w, c.node);
   criteria[NONE] = "None of these elements.";
-  return {
+  return assertNoSecrets({
     purpose: "executor.target",
     state: { window: `${w.app.name} window '${w.window.title}'`, task: "Choose the element an automated step should act on." },
     // The goal and target are plan text, which can quote a value copied from any window: each goes out cut to SNIPPET_CHARS.
     questions: { target: { type: "choice", instructions: WORDINGS[wording](cut(goal), cut(t.describe)), criteria } },
     snippets: declared.snippets,
     charged: declared.charged,
-  };
+  });
 }
 
 /** Resolves a target, asking Jev twice when the locator is ambiguous. */

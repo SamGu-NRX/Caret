@@ -1,3 +1,6 @@
+import { instructionForModel } from "../memory/sensitive.ts";
+import { viewOf } from "../fill/candidates.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // Ask with natural phrasing (Q1 bugs 3 and 4). When the deterministic planner cannot ground an instruction
 // ("fill the rest of this from my note", "my name and email please": it asks Jev about the fields the
 // instruction names, and 7 of Q1's 10 instructions ended as unsure or nothing to do), the code-mode writer
@@ -96,7 +99,10 @@ export function valueList(instruction: string, model: ScreenModel, w: WindowStat
   const out: Value[] = [];
   const used = new Map<WindowState | null, number>();
   const add = (text: string, display: string, win: WindowState | null, owner: Value["owner"], provenance: Provenance, key: string | null = null, memoryRef: string | null = null): void => {
-    const d = display.length <= 400 ? display : `${display.slice(0, 399)}…`;
+    // Preserve the local value ref for refusal, but disclose no span removed with a forbidden clause.
+    const safe = provenance.kind === "instruction" && !instructionForModel(instruction).includes(text)
+      ? "[a field Caret leaves to you]" : instructionForModel(display);
+    const d = safe.length <= 400 ? safe : `${safe.slice(0, 399)}…`;
     const room = win === null ? formRoom : WINDOW_CHARS - win.window.title.length;
     const u = used.get(win) ?? 0;
     if (out.length >= MAX_VALUES || out.some((v) => v.text === text) || u + d.length > room) return;
@@ -104,7 +110,7 @@ export function valueList(instruction: string, model: ScreenModel, w: WindowStat
     out.push({ text, display: d, window: win, owner, key, memory: memoryRef, provenance });
   };
   const spans = instructionValues(instruction);
-  if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`, null, null, { kind: "instruction", span: s });
+  if (ledger.plan(spans.map((s) => instructionForModel(instruction).includes(s) ? instructionForModel(s) : "[a field Caret leaves to you]"))) for (const s of spans) add(s, `"${s}" (written in the instruction)`, null, null, { kind: "instruction", span: s });
   for (const m of memory) {
     if (!ledger.plan([m.text, m.label])) continue;
     // Memory holds people as well as the user (helper.ts plannerMemory): whose an entry is comes from the entry.
@@ -118,7 +124,7 @@ export function valueList(instruction: string, model: ScreenModel, w: WindowStat
   const cands = generateCandidates(model, w.window.windowId, MAX_VALUES, now, ledger);
   const windows = [...new Set(cands.map((c) => c.source.windowId))].slice(0, MAX_SOURCE_WINDOWS);
   for (const id of windows) {
-    const win = model.windows.get(id) ?? null;
+    const win = viewOf(model, id) ?? null;
     if (win === null) continue;
     const mine = cands.filter((c) => c.source.windowId === id);
     for (const c of mine) add(c.text, describeCandidate(c), win, null, candidateProvenance(model, c), c.source.nodeKey);
@@ -141,12 +147,12 @@ const MAX_SOURCE_WINDOWS = 3;
 /** Plans an instruction with the code-mode writer. Throws PlannerError with the failing check's code. */
 export async function planWithCode(instruction: string, model: ScreenModel, memory: PlannerMemory, o: CodePlanOptions): Promise<CodePlanDraft> {
   const now = o.now ?? Date.now();
-  const w = model.windows.get(o.windowId);
+  const w = viewOf(model, o.windowId);
   if (w === undefined) throw new PlannerError("unseenWindow", `window ${o.windowId} is not open`);
   const all = writableFields(w).filter((f) => o.fields === undefined || o.fields.includes(f.node.key));
   if (all.length === 0) throw new PlannerError("nothingToDo", `'${w.window.title}' has no field Caret can write`);
   const ledger = new SnippetLedger(model.windows.values());
-  if (!ledger.plan([instruction])) throw new PlannerError("privacy", "your instruction quotes more of an open window than one request may carry");
+  if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", "your instruction quotes more of an open window than one request may carry");
   // The title as the writer sees it, cut to the snapshot's 200 characters, is what the ledger declares (fix-check review).
   const title = w.window.title.slice(0, 200);
   if (!ledger.take(w, "descriptor", [title])) throw new PlannerError("privacy", `'${title}' is longer than one request may carry`);
@@ -192,7 +198,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   const writerDisclosure = disclosureFor(ledger.declared().snippets, snapshots, instruction);
   let written: Awaited<ReturnType<WriterPort["write"]>>;
   try {
-    written = await o.writer.write({ kind: "plan", disclosureId: o.offerKey, disclosed: writerDisclosure, input: { goal: instruction.slice(0, 500), snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) });
+    written = await o.writer.write(assertNoSecrets({ kind: "plan", disclosureId: o.offerKey, disclosed: writerDisclosure, input: { goal: instructionForModel(instruction).slice(0, 500), snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) }));
   } catch (e) {
     throw new PlannerError("unavailable", `the plan writer failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
   }
@@ -292,16 +298,17 @@ const ASKS_ABOUT = { yes: "Yes: the instruction asks for this field.", no: "No: 
  * asks to change. Their descriptors were taken through the ledger with the window's other field names.
  */
 async function confirmFields(instruction: string, unnamed: readonly Field[], askJev: AskJev, ledger: SnippetLedger): Promise<Set<string>> {
+  instruction = instructionForModel(instruction);
   if (unnamed.length === 0) return new Set();
   const declared = ledger.declared();
   const req = (wording: 0 | 1): JevRequest =>
-    sentOnly({
+    sentOnly(assertNoSecrets({
       purpose: "codeplan.asksAbout",
-      state: { instruction, task: "Caret drafted field writes for the user's instruction and checks that each field is one the instruction asks about." },
+      state: { instruction: instructionForModel(instruction), task: "Caret drafted field writes for the user's instruction and checks that each field is one the instruction asks about." },
       questions: Object.fromEntries(unnamed.map((f, i) => [`f${i + 1}`, { type: "choice" as const, instructions: ASKS_ABOUT_WORDINGS[wording](instruction, f.name), criteria: { ...ASKS_ABOUT } }])),
       snippets: declared.snippets,
       charged: declared.charged,
-    });
+    }));
   let r: Awaited<ReturnType<AskJev>>[];
   try {
     r = await Promise.all([askJev(req(0)), askJev(req(1))]);
@@ -349,6 +356,7 @@ export interface WriteToVerify {
  * the user's, and one written in the instruction is the user's own choice.
  */
 export async function verifyWrites(instruction: string, writes: readonly WriteToVerify[], askJev: AskJev, ledger: SnippetLedger): Promise<Set<string>> {
+  instruction = instructionForModel(instruction);
   // W2: nothing to ask when no write asks its value and none takes a person's details.
   if (writes.every((x) => x.askValue !== true && !personalField(x.field.label))) return new Set();
   const declared = ledger.declared();
@@ -367,7 +375,7 @@ export async function verifyWrites(instruction: string, writes: readonly WriteTo
       questions[`f${i + 1}`] = { type: "choice", instructions: wording === 0 ? `The user asked: "${instruction}". A form has the field '${x.field.name}'. Whose details does this field ask for?` : `Field: '${x.field.name}'. Instruction: "${instruction}". Is this field for the details of the user filling in the form, of someone else, or can you not tell?`, criteria: { ...WHOSE_CRITERIA } };
       if (x.value.window !== null) questions[`v${i + 1}`] = { type: "choice", instructions: wording === 0 ? `A value on the user's screen: ${x.value.display} Whose details is it?` : `Whose details is this value, the user's or someone else's? ${x.value.display}`, criteria: { ...OWNER_CRITERIA } };
     });
-    return sentOnly({ purpose: "plan.verify", state: { instruction, task: "Caret checks each value a drafted plan would write before offering the plan." }, questions, snippets: declared.snippets, charged: declared.charged });
+    return sentOnly(assertNoSecrets({ purpose: "plan.verify", state: { instruction: instructionForModel(instruction), task: "Caret checks each value a drafted plan would write before offering the plan." }, questions, snippets: declared.snippets, charged: declared.charged }));
   };
   let r: Awaited<ReturnType<AskJev>>[];
   try {
@@ -405,6 +413,6 @@ function sentOnly(req: JevRequest): JevRequest {
 
 /** The declarations a writer request's snapshots and goal carry. */
 export function disclosureFor(snippets: readonly Snippet[], snapshots: readonly PlanningSnapshot[], instruction: string): Snippet[] {
-  const sent = sentStrings([instruction, snapshots.map((x) => [x.title, x.targets.map((t) => t.label), x.values.map((v) => v.display)])]);
+  const sent = sentStrings([instructionForModel(instruction), snapshots.map((x) => [x.title, x.targets.map((t) => t.label), x.values.map((v) => v.display)])]);
   return snippets.filter((x) => sent.some((t) => t.includes(x.text)));
 }

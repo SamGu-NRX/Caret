@@ -1,3 +1,5 @@
+import { redactWindow } from "../fill/redact.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // Saved files (P3): a file the user attached once, kept for the same question next time ("Use this file for résumés
 // next time?"), and offered again only in a goal preview's attach row, never attached without that preview's
 // acceptance naming it (goalAccept.confirmedFile). Caret never looks for a file on disk: the only paths here are ones
@@ -103,8 +105,12 @@ export class SavedFiles {
   }
 
   /** What the attach row of file control `node` offers: a saved file a Jev choice matched to it, else a chooser. */
-  async offer(w: WindowState, _node: Node, label: string): Promise<AttachOffer> {
+  async offer(w: WindowState, node: Node, label: string): Promise<AttachOffer> {
     const choose: AttachOffer = { source: "choose" };
+    // Page planning supplies a raw node and label. Both must survive the model-facing view.
+    w = redactWindow(w);
+    const kept = w.nodes.get(node.key);
+    if (kept === undefined || !(kept.label ?? "").includes(label)) return choose;
     const docs = this.deps.documents();
     const ask = this.deps.askJev();
     if (docs === null || ask === null) return choose;
@@ -122,6 +128,7 @@ export class SavedFiles {
 
   /** The saved file both asks pick for this control at FILL_CUTOFF or above, with its lstat, or null. Throws when Jev does. */
   private async match(docs: MemoryDocumentStore, ask: AskJev, w: WindowState, label: string): Promise<{ file: SavedFile; stat: Stats } | null> {
+    w = redactWindow(w);
     const question = fileQuestion(label);
     if (question === null) return null;
     const present = savedFiles(docs).flatMap((f) => {
@@ -148,7 +155,7 @@ export class SavedFiles {
     // f1... in the first ask, g1..., shuffled, in the second: neither position nor id carries a choice across.
     const first = new Map(asked.map((c, i) => [`f${i + 1}`, c]));
     const second = new Map(shuffled(asked).map((c, i) => [`g${i + 1}`, c]));
-    const request = (ids: Map<string, (typeof asked)[number]>, wording: 0 | 1): JevRequest => ({
+    const request = (ids: Map<string, (typeof asked)[number]>, wording: 0 | 1): JevRequest => (assertNoSecrets({
       purpose: "savedFile.match",
       state: {
         destination_window: where,
@@ -160,7 +167,7 @@ export class SavedFiles {
       },
       snippets: declared.snippets,
       charged: declared.charged,
-    });
+    }));
     const [r1, r2] = await Promise.all([ask(request(first, 0)), ask(request(second, 1))]);
     const pick = (r: JevResult, ids: Map<string, (typeof asked)[number]>): { c: (typeof asked)[number] | null; confidence: number } | undefined => {
       const a = r.answers[QUESTION_ID];

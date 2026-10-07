@@ -85,7 +85,8 @@ describe("a kind Caret never types is never written by a goal", () => {
   it("drops a card number the instruction quotes, whatever field it is planned for", async () => {
     const notes: DeskWindow = { windowId: "7171-4", app: SUPPORT, title: "Support — Notes", nodes: [textField(SUPPORT, "Notes"), textField(SUPPORT, "Reference")] };
     const steps: CannedStep[] = [
-      { fill: { window: "Notes", target: "Notes", value: "4111 1111 1111 1111" } },
+      // PV1: the adversarial writer can choose the withheld ref, but its request never contains the card digits.
+      { fill: { window: "Notes", target: "Notes", value: "[a field Caret leaves to you]" } },
       { fill: { window: "Notes", target: "Reference", value: ORDER } },
     ];
     const sc = scene({ scripts: [steps], windows: [mailWindow(), notes], userWindow: "7171-4", askJev: standInJev() });

@@ -1,3 +1,5 @@
+import { instructionForModel } from "../memory/sensitive.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // A goal from the user's words to a plan code will offer (D2-06): the inventory of the windows it may act in, one
 // writer program, the sandbox (steps may target any window the program read), and lowering. Nothing acts here.
 import type { AskScope, DocumentReader, ScopeSet } from "../fill/ask-scope.ts";
@@ -72,7 +74,7 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
   const disclosed = disclosureFor(inv.ledger.declared().snippets, inv.snapshots, o.instruction);
   let written: Awaited<ReturnType<WriterPort["write"]>>;
   try {
-    written = await o.writer.write({ kind: "goal", disclosureId: o.goalId, disclosed, input: { goal: o.instruction.slice(0, 500), snapshots: inv.snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) });
+    written = await o.writer.write(assertNoSecrets({ kind: "goal", disclosureId: o.goalId, disclosed, input: { goal: instructionForModel(o.instruction).slice(0, 500), snapshots: inv.snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) }));
   } catch (e) {
     throw new GoalError("nothingToDo", "the plan writer is not available now", e instanceof Error ? e.message.slice(0, 200) : String(e));
   }

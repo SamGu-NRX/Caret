@@ -1,3 +1,5 @@
+import { instructionForModel } from "../memory/sensitive.ts";
+import { assertNoSecrets } from "../privacy.ts";
 // choose() inside a plan program, answered by Jev through the existing client (fill/jev.ts). The question
 // and option labels are the host's, from the frozen snapshot; the program only picks which group to ask
 // about. Options are numbered so Jev answers with a key, never with free text.
@@ -18,13 +20,13 @@ export function jevChooser(ask: AskJev, goal: string): ChooserPort {
     options.forEach((o, i) => (criteria[String(i + 1)] = o.label));
     criteria[NONE] = "None of these is supported by what is on screen";
     const snippets: Snippet[] = [{ windowId: window, kind: "descriptor", text: question.text }, ...options.map((o): Snippet => ({ windowId: window, kind: "candidate", text: o.label }))];
-    const req: JevRequest = {
+    const req: JevRequest = assertNoSecrets({
       purpose: "codemode.choice",
-      state: { goal },
+      state: { goal: instructionForModel(goal) },
       questions: { choice: { type: "choice", instructions: question.text, criteria } },
       snippets,
       charged: { [window]: snippets.reduce((n, s) => n + s.text.length, 0) },
-    };
+    });
     // The existing client takes no AbortSignal (its own fetch times out at 10 s), so an abort here stops
     // waiting and drops the answer; the request itself runs to its own timeout.
     const result = await new Promise<Awaited<ReturnType<AskJev>>>((resolve, reject) => {
