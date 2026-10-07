@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import * as z from "zod";
 import { assertNoSecrets, type Snippet } from "../privacy.ts";
-import { verifySent, type Disclosure } from "../privacy/disclosure.ts";
+import { verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
 import { jevPolicy } from "../privacy/providers.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
@@ -113,17 +113,18 @@ export function jevFailureKind(e: unknown): JevFailureKind | null {
   return null;
 }
 
+/** SC1 2b: every text a question carries is ModelText, minted by its request's Disclosure (privacy/disclosure.ts). */
 export interface ChoiceQuestion {
   type: "choice";
-  instructions: string | Record<string, unknown>;
-  criteria: Record<string, string | null>;
+  instructions: ModelText;
+  criteria: Record<string, ModelText | null>;
 }
 
 /** A yes/no question; Jev answers with the probability of yes (docs.typesafe.ai/api, "Noul"), and no confidence. */
 export interface NoulQuestion {
   type: "noul";
-  instructions: string | Record<string, unknown>;
-  criteria?: { true: string; false: string };
+  instructions: ModelText;
+  criteria?: { true: ModelText; false: ModelText };
 }
 
 /**
@@ -140,7 +141,8 @@ export type JevPurpose =
 export interface JevRequest {
   /** What the request asks (JevPurpose); absent only in tests' hand-built requests, which no canned engine answers. */
   purpose?: JevPurpose;
-  state: string | Record<string, unknown>;
+  /** SC1 2b: minted text, numbers, booleans, null, and lists and records of them (privacy/disclosure.ts ModelValue). */
+  state: ModelValue;
   questions: Record<string, ChoiceQuestion>;
   /**
    * Yes/no questions sent beside `questions` in the same request, by id (B25). Kept apart so every caller that
@@ -262,7 +264,7 @@ export function wireBody(req: JevRequest, model: string = JEV_MODEL, hoist: bool
   if (!hoist || typeof state !== "object" || state === null || Array.isArray(state)) return { state, model, questions: all };
   if (OPTION_DESCRIPTIONS in state) throw new Error(`a Jev request's state already has a ${OPTION_DESCRIPTIONS} key, which the body uses for shared options`);
   // Each id's one description across the choice questions, or null when some question gives it none or another one.
-  const described = new Map<string, string | null>();
+  const described = new Map<string, ModelText | null>();
   const uses = new Map<string, number>();
   for (const q of Object.values(req.questions)) {
     for (const [id, d] of Object.entries(q.criteria)) {
@@ -271,7 +273,7 @@ export function wireBody(req: JevRequest, model: string = JEV_MODEL, hoist: bool
       uses.set(id, (uses.get(id) ?? 0) + 1);
     }
   }
-  const shared: Record<string, string> = {};
+  const shared: Record<string, ModelText> = {};
   for (const [id, d] of described) if (d !== null && (uses.get(id) ?? 0) >= 2) shared[id] = d;
   if (Object.keys(shared).length === 0) return { state, model, questions: all };
   const questions: Record<string, ChoiceQuestion | NoulQuestion> = {};
@@ -281,15 +283,25 @@ export function wireBody(req: JevRequest, model: string = JEV_MODEL, hoist: bool
   return { state: { ...state, [OPTION_DESCRIPTIONS]: shared }, model, questions };
 }
 
+/** Whether a minted value is a record of them (an array is not: Array.isArray does not narrow a readonly array). */
+function isRecord(v: ModelValue | undefined): v is { readonly [k: string]: ModelValue } {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 /** The questions and state a body says, with shared options described in each question again: the inverse of wireBody. */
 export function expandWireBody(body: WireBody): WireBody {
   const state = body.state;
   if (typeof state !== "object" || state === null || Array.isArray(state) || !(OPTION_DESCRIPTIONS in state)) return body;
-  const { [OPTION_DESCRIPTIONS]: shared, ...rest } = state as Record<string, unknown>;
-  const d = shared as Record<string, string>;
+  const { [OPTION_DESCRIPTIONS]: shared, ...rest } = state;
+  // The shared descriptions are the body's own (wireBody put them there), each a question's minted criterion.
+  const d: Readonly<Record<string, ModelValue>> = isRecord(shared) ? shared : {};
+  const described = (id: string): ModelText | null => {
+    const x = d[id];
+    return typeof x === "string" ? x : null;
+  };
   const questions: Record<string, ChoiceQuestion | NoulQuestion> = {};
   for (const [k, q] of Object.entries(body.questions)) {
-    questions[k] = q.type === "choice" ? { ...q, criteria: Object.fromEntries(Object.entries(q.criteria).map(([id, x]) => [id, x === null && id in d ? (d[id] as string) : x])) } : q;
+    questions[k] = q.type === "choice" ? { ...q, criteria: Object.fromEntries(Object.entries(q.criteria).map(([id, x]) => [id, x === null ? described(id) : x])) } : q;
   }
   return { state: rest, model: body.model, questions };
 }

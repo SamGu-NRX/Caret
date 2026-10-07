@@ -5,14 +5,14 @@
 //
 // The stub answers every choice with its first option at 0.95 and every yes/no at 0.97, so a flow goes as far as the
 // first options take it; flows that need a particular answer to reach a builder say so.
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { makeJevClient, jevSettings, type AskJev, type JevRequest } from "../src/fill/jev.ts";
 import { DailySpend } from "../src/engines/decide/daily-cap.ts";
-import { legacyCounts, UnmintedText, verifyWriterInput } from "../src/privacy/disclosure.ts";
+import { UnmintedText, verifyWriterInput } from "../src/privacy/disclosure.ts";
 import type { WriterPort, WriterRequest } from "../src/writer/port.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
@@ -40,6 +40,11 @@ import { buildLookRequest, buildPendingRequest } from "../src/tasks/pending.ts";
 import { Disclosure } from "../src/privacy/disclosure.ts";
 import { redactWindow } from "../src/fill/redact.ts";
 import { buildDesk, loadCorpus } from "../scripts/realfill-corpus.ts";
+import { MemoryDocumentStore } from "../src/memory/documents.ts";
+import { normalizeQuestion, saveFile } from "../src/memory/files.ts";
+import { SavedFiles } from "../src/goals/saved-files.ts";
+import { planGoal } from "../src/goals/propose.ts";
+import { macClock } from "../src/offers/event-time.ts";
 import { MAIL_APP, field, node, snap, text, value } from "./builders.ts";
 import { executorWindow, TITLE as EXEC_TITLE, WIN as EXEC_WIN } from "./fake-app.ts";
 import { notesWindow } from "./desks.ts";
@@ -161,7 +166,12 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     // A code plan: the writer's program, the asks-about question for an unnamed field, and the value check.
     await swallow(planWithCode("do the landlord part from my notes", rentalDesk(), memory, { writer: writer(() => { const p = fillByText([["Landlord name", "Gary Pruitt"], ["Email", "elena.vance@example.com"]]); return { program: p, reply: p }; }), askJev: ask, offerKey: "tp1-plan", windowId: "form", now: 2000 }));
     const v = rentalDesk();
-    await swallow(verifyWrites("my email please", [{ key: "e", field: { name: "Email", label: "Email" }, value: { display: '"elena.vance@example.com"', window: "note", owner: null }, askValue: true }] as never, ask, new Disclosure(v.windows.values())));
+    // As the code plan mints them: the field's name from the form's view, the value from the note's.
+    const vd = new Disclosure(v.windows.values());
+    const name = vd.descriptor(redactWindow(v.windows.get("form") as WindowState), "Email");
+    const email = vd.candidate(redactWindow(v.windows.get("note") as WindowState), "elena.vance@example.com");
+    expect(name !== null && email !== null).toBe(true);
+    await swallow(verifyWrites("my email please", [{ key: "e", field: { name: name!, label: "Email" }, value: { display: vd.t`"${email!}"`, window: "note", owner: null }, askValue: true }], ask, vd));
   });
 
   it("intent.fields: a list scope both wordings settle", async () => {
@@ -248,13 +258,26 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     await swallow(confirmClaims("draft a reply that accepts", [{ text: "Hi Priya, I'm in! See you then.", basis: { instruction: "reply to Priya Raman", windows: [], memory: [] } as never }], ask, []));
   });
 
+  it("a saved file matched to a page's upload field, and a goal plan", async () => {
+    const store = new MemoryDocumentStore(join(dir, "Memory"));
+    const file = join(dir, "Quill Resume.pdf");
+    writeFileSync(file, "invented file body");
+    saveFile(store, { question: "Resume/CV", normalized: normalizeQuestion("Resume/CV"), site: null, path: file, savedOn: "2026-10-05T10:00:00.000Z" });
+    const model = new ScreenModel();
+    model.apply(snap([node("frame-0", "AXWebArea", { label: "Apply: Larkspur Labs" }), node("in-1", "CaretFileInput", { label: "Resume/CV", frame: [10, 40, 300, 30] })], { at: 1000, windowId: "page-tab-3", title: "Apply: Larkspur Labs", kind: "page", app: { pid: 5200, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true }));
+    const w = model.windows.get("page-tab-3") as WindowState;
+    let n = 0;
+    const files = new SavedFiles({ model, documents: () => store, askJev: () => ask, publish: () => {}, pageContext: () => ({ site: "https://jobs.example.test/apply", headings: [] }), hostShowsFiles: () => true, now: () => 50_000, newId: () => `offer-${++n}`, count: () => {} });
+    await files.offer(w, w.nodes.get("in-1") as Node, "Resume/CV");
+    store.close();
+    // The goal writer stops at its answer: no program, so the goal is refused after the request went out.
+    await swallow(planGoal(rentalDesk(), { goalId: "tp1-goal", instruction: "do the landlord part from my notes", writer: writer(() => ({ program: null, reply: "" })), askJev: ask, windows: ["form"], memory: [], calendar: null, clock: macClock(new Date(2000)), now: 2000, readerSession: 0 }));
+  });
+
   it("covers every builder's purpose, sent through the real client, and every writer kind", () => {
     const purposes = new Set(sent.map((r) => r.purpose));
-    const missing = PURPOSES.filter((p) => !purposes.has(p));
-    // savedFile.match and the goal writer need a saved file on disk and a goal scene; test/saved-files.test.ts and
-    // test/goal-edit.test.ts build them, and every builder seals its request, so those tests check them as built.
-    expect(missing.filter((p) => p !== "savedFile.match")).toEqual([]);
-    expect(new Set(written.map((w) => w.kind))).toEqual(new Set(WRITER_KINDS.filter((k) => k !== "goal")));
+    expect(PURPOSES.filter((p) => !purposes.has(p))).toEqual([]);
+    expect(new Set(written.map((w) => w.kind))).toEqual(new Set(WRITER_KINDS));
     expect(fetched.length).toBeGreaterThan(0);
   });
 
@@ -262,19 +285,14 @@ describe("T-P1: every wire string a builder sends is minted", () => {
     const before = fetched.length;
     for (const req of sent) {
       const raw = "a raw screen line no Disclosure minted";
-      const state = typeof req.state === "string" ? `${req.state} ${raw}` : { ...req.state, raw };
+      // A raw string where a builder could have put one: the types refuse it (T-P2), so the test casts to reach the client.
+      const state = (typeof req.state === "string" ? `${req.state} ${raw}` : { ...(req.state as object), raw }) as never;
       await expect(client({ ...req, state }), req.purpose).rejects.toBeInstanceOf(UnmintedText);
       const [qid, q] = Object.entries(req.questions)[0] ?? [];
-      if (qid !== undefined && q !== undefined) await expect(client({ ...req, questions: { ...req.questions, [qid]: { ...q, instructions: raw } } }), req.purpose).rejects.toBeInstanceOf(UnmintedText);
+      if (qid !== undefined && q !== undefined) await expect(client({ ...req, questions: { ...req.questions, [qid]: { ...q, instructions: raw as never } } }), req.purpose).rejects.toBeInstanceOf(UnmintedText);
     }
     for (const w of written) expect(() => verifyWriterInput({ ...w, input: { ...(w.input as object), raw: "a raw screen line no Disclosure minted" } })).toThrow(UnmintedText);
     expect(fetched.length).toBe(before);
   });
 
-  it("reports the strings each purpose still mints as legacy (SC1 step 1; step 4 brings every count to 0)", () => {
-    const report = Object.fromEntries([...legacyCounts].sort());
-    // eslint-disable-next-line no-console
-    console.log(`SC1 legacy strings by purpose: ${JSON.stringify(report)}`);
-    expect(Object.keys(report).length).toBeGreaterThan(0);
-  });
 });

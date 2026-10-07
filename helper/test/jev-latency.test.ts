@@ -38,7 +38,7 @@ describe("the bounded latency probe", () => {
   });
   it("refuses arbitrary or mutated probe text for Laya before network access", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
-    await expect(runProbe({ count: 1, providers: ["gateway"], gatewayModel: "convaiinnovations/laya-free", requests: { small: { ...SMALL_REQUEST, state: "private screen text" } }, spend: new DailySpend({ dir, capUsd: 1 }), env: { CARET_JEV_GATEWAY_KEY: "synthetic" }, fetchFn: fetch })).rejects.toThrow(/synthetic fixtures/);
+    await expect(runProbe({ count: 1, providers: ["gateway"], gatewayModel: "convaiinnovations/laya-free", requests: { small: { ...SMALL_REQUEST, state: "private screen text" as never } }, spend: new DailySpend({ dir, capUsd: 1 }), env: { CARET_JEV_GATEWAY_KEY: "synthetic" }, fetchFn: fetch })).rejects.toThrow(/synthetic fixtures/);
     expect(fetch).not.toHaveBeenCalled();
   });
   it("keeps the approved fixture snapshot when the caller mutates text between samples", async () => {
@@ -49,7 +49,7 @@ describe("the bounded latency probe", () => {
       // A clone of the request's text, with the Disclosure that minted it (structuredClone cannot keep a class instance).
       const req = { ...structuredClone({ ...probe.SMALL_REQUEST, disclosure: undefined }), disclosure: probe.SMALL_REQUEST.disclosure };
       const fetch = vi.fn<typeof globalThis.fetch>(async () => {
-        req.state = "private replacement text";
+        req.state = "private replacement text" as never;
         return new Response('{"model":"convaiinnovations/laya-free","answers":{"q":{"choice":"email","confidence":1}},"usage":{"input_tokens":1},"provider_metadata":{"gateway":{"cost":"0"}}}');
       });
       const pending = probe.runProbe({ count: 2, providers: ["gateway"], gatewayModel: "convaiinnovations/laya-free", requests: { small: req }, spend: new DailySpend({ dir, capUsd: 1 }), env: { CARET_JEV_GATEWAY_KEY: "synthetic" }, fetchFn: fetch });

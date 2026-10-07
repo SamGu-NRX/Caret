@@ -1341,7 +1341,7 @@ describe("the helper with routing on", () => {
     jev.task = () => ({ choice: "act", confidence: 0.9 });
     const attend: string[] = [];
     jev.other = async (req) => {
-      attend.push((req.state as { sentence: string }).sentence);
+      attend.push((req.state as unknown as { sentence: string }).sentence);
       return result({ attend: { choice: "yes", confidence: 0.9 } });
     };
     const h = make(true, false, { calendar: new FakeCalendar() });
@@ -1361,7 +1361,7 @@ describe("the helper with routing on", () => {
     expect(Object.keys(r1.questions)).toEqual(["task"]);
     expect(r1.snippets.some((x) => x.windowId === NOTES_DOC && x.text === sentence)).toBe(true);
     expect(r1.snippets.some((x) => x.windowId === NOTES_DOC && x.text === "Priya")).toBe(true);
-    const offer = (r1.state as { offer: { task: string; sentence: string; found: string } }).offer;
+    const offer = (r1.state as unknown as { offer: { task: string; sentence: string; found: string } }).offer;
     expect(offer.sentence).toBe(sentence);
     expect((r1.questions.task as { instructions: string }).instructions).toContain("Do not offer it for something over, cancelled, declined");
     const act = offer.found;

@@ -266,7 +266,8 @@ export function namingRequest(f: RoutineFacts, windows: Iterable<WindowState>, w
 /** "A", "A and B", or "A, B and C", of minted texts. */
 function listMinted(d: Disclosure, xs: readonly ModelText[]): ModelText {
   if (xs.length <= 1) return xs[0] ?? d.own("");
-  return d.t`${d.join(xs.slice(0, -1), ", ")} and ${xs[xs.length - 1] as ModelText}`;
+  const last = xs[xs.length - 1];
+  return last === undefined ? d.own("") : d.t`${d.join(xs.slice(0, -1), ", ")} and ${last}`;
 }
 
 /**

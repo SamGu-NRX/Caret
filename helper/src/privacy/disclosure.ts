@@ -6,9 +6,11 @@
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
 import { assertNoSecrets, cut, flat, SnippetLedger, type Snippet } from "../privacy.ts";
 import type { WindowState } from "../model.ts";
-import { instructionForModel, isRedacted } from "../fill/redact.ts";
+import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
 import { excludedValue } from "./exclude.ts";
+import { describeField, type FieldDescriptor } from "../fill/descriptor.ts";
+import type { Node } from "../protocol.ts";
 
 /** A window as redactWindow gave it (fill/redact.ts): the only window a Disclosure mints screen text from. */
 export type RedactedWindow = WindowState;
@@ -55,6 +57,9 @@ export type ModelText = string & { readonly [brand]: "ModelText" };
 /** What a request's state or a writer's input may hold: minted text, numbers, booleans, null, and lists and records of them. */
 export type ModelValue = ModelText | number | boolean | null | readonly ModelValue[] | { readonly [k: string]: ModelValue };
 
+/** A value whose every string is minted text: the type of a writer's input once its builder minted it. */
+export type Minted<T> = T extends string ? (string extends T ? ModelText : T & ModelText) : T extends (infer U)[] ? Minted<U>[] : T extends readonly (infer U)[] ? readonly Minted<U>[] : T extends object ? { [K in keyof T]: Minted<T[K]> } : T;
+
 /**
  * Why a text may be sent (SC1 2b):
  * - ownWording: Caret's own wording, code literals, never screen text;
@@ -65,10 +70,9 @@ export type ModelValue = ModelText | number | boolean | null | readonly ModelVal
  * - held: a string computed locally that the redacted view holds (a program's output, a derivation);
  * - plan: a step's goal or target as a plan Caret wrote says it (executor/target.ts), priced as plan text: the plan was
  *   built from minted text when it was proposed, and its values may quote any window, so every line it shows is charged;
- * - drafted: a sentence Caret's local model drafted (goals/drafts.ts), checked by Jev before it is offered;
- * - legacy: SC1 migration step 1 only. A builder that has not yet minted its text declares the whole request legacy.
+ * - drafted: a sentence Caret's local model drafted (goals/drafts.ts), checked by Jev before it is offered.
  */
-export type MintReason = "ownWording" | "descriptor" | "candidate" | "instruction" | "memory" | "held" | "plan" | "drafted" | "legacy";
+export type MintReason = "ownWording" | "descriptor" | "candidate" | "instruction" | "memory" | "held" | "plan" | "drafted";
 
 /** A request body carried a string its Disclosure never minted, or it had no Disclosure. Never names the text. */
 export class UnmintedText extends Error {
@@ -77,9 +81,6 @@ export class UnmintedText extends Error {
     this.name = "UnmintedText";
   }
 }
-
-/** Strings minted as legacy, by purpose, since the process started (SC1 step 1: T-P1 reports it; step 4 brings it to 0). */
-export const legacyCounts = new Map<string, number>();
 
 /** The parts of a decision or writer request that leave the Mac, as builders write them before they are sealed. */
 interface Sealable {
@@ -119,10 +120,20 @@ const EXEMPT_EXACT: readonly { path: RegExp; values: ReadonlySet<string> | null 
   { path: /^questions\.[^.]+\.type$/u, values: new Set(["choice", "noul"]) },
 ];
 
-/**
- * The one ledger a request's screen text goes through (privacy.ts SnippetLedger, whose budgets it keeps unchanged) and
- * the record of every text it minted. Construct one per request, over every window whose lines the request could reveal.
- */
+/** Only Disclosure.basis makes a Basis: its constructor takes this module's own token. */
+const BASIS_TOKEN = Symbol("basis");
+
+/** A text of a redacted view a derivation may read words from (Disclosure.basis); never sent itself. */
+export class Basis {
+  readonly of: object;
+  readonly text: string;
+  constructor(token: symbol, of: object, text: string) {
+    if (token !== BASIS_TOKEN) throw new UnmintedText("a Basis comes only from Disclosure.basis");
+    this.of = of;
+    this.text = text;
+  }
+}
+
 /**
  * Marks a Disclosure across module instances: a test that reloads the client's modules (vi.resetModules) still hands it
  * a request built with the Disclosure class it imported first, so the check is by this registered symbol, not instanceof.
@@ -133,10 +144,19 @@ function asDisclosure(x: unknown): Disclosure | null {
   return typeof x === "object" && x !== null && (x as { [IS_DISCLOSURE]?: unknown })[IS_DISCLOSURE] === true ? (x as Disclosure) : null;
 }
 
+/**
+ * The one ledger a request's screen text goes through (privacy.ts SnippetLedger, whose budgets it keeps unchanged) and
+ * the record of every text it minted. Construct one per request, over every window whose lines the request could reveal.
+ */
 export class Disclosure extends SnippetLedger {
   readonly [IS_DISCLOSURE] = true;
   /** Every text minted for this request, with the reasons it was minted under. */
   private readonly mints = new Map<string, Set<MintReason>>();
+  /** Texts plan() or memory() already priced, so minting them again declares nothing twice. */
+  private readonly asPlan = new Set<string>();
+  private readonly asMemory = new Set<string>();
+  /** Texts take() already priced, by window id. */
+  private readonly asTaken = new Map<string, Set<string>>();
 
   /** Records `text` as minted under `reasons` and brands it. */
   private record(text: string, reasons: Iterable<MintReason>): ModelText {
@@ -156,7 +176,11 @@ export class Disclosure extends SnippetLedger {
    * window, a plan or memory. The model withheld such values when windows were read in; this holds for any other path.
    */
   override take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
-    return !texts.some((t) => excludedValue(t) !== null) && super.take(w, kind, texts);
+    if (texts.some((t) => excludedValue(t) !== null) || !super.take(w, kind, texts)) return false;
+    let set = this.asTaken.get(w.window.windowId);
+    if (set === undefined) this.asTaken.set(w.window.windowId, (set = new Set()));
+    for (const t of texts) if (typeof t === "string") set.add(t);
+    return true;
   }
 
   override cost(w: WindowState, texts: readonly (string | null | undefined)[]): number | null {
@@ -164,11 +188,15 @@ export class Disclosure extends SnippetLedger {
   }
 
   override plan(texts: readonly string[]): boolean {
-    return !texts.some((t) => excludedValue(t) !== null) && super.plan(texts);
+    if (texts.some((t) => excludedValue(t) !== null) || !super.plan(texts)) return false;
+    for (const t of texts) this.asPlan.add(t);
+    return true;
   }
 
   override memory(texts: readonly string[]): boolean {
-    return !texts.some((t) => excludedValue(t) !== null) && super.memory(texts);
+    if (texts.some((t) => excludedValue(t) !== null) || !super.memory(texts)) return false;
+    for (const t of texts) this.asMemory.add(t);
+    return true;
   }
 
   /** The reasons a text this Disclosure minted carries; throws UnmintedText when it never minted it. */
@@ -186,8 +214,23 @@ export class Disclosure extends SnippetLedger {
   private fromView(view: RedactedWindow, text: string, reason: "descriptor" | "candidate" | "held"): ModelText | null {
     if (!isRedacted(view)) throw new UnmintedText(`a ${reason} was read from a window that is not a redacted view`);
     if (text === "" || !viewHolds(view, text)) return null;
-    if (!this.take(view, reason === "descriptor" ? "descriptor" : "candidate", [text])) return null;
+    if (this.asTaken.get(view.window.windowId)?.has(text) !== true && !this.take(view, reason === "descriptor" ? "descriptor" : "candidate", [text])) return null;
     return this.record(text, [reason]);
+  }
+
+  /**
+   * A field's descriptor as fill/descriptor.ts describeField words it for a node of the redacted view, read from that
+   * view here: its role in Caret's words, and its label, nearest label, placeholder and section as the view shows them.
+   * Priced as one text, as the builders that send whole descriptors have always taken them, unless already taken.
+   */
+  fieldDescriptor(view: RedactedWindow, node: Node, fd: FieldDescriptor = describeField(view, node)): ModelText | null {
+    if (!isRedacted(view)) throw new UnmintedText("a descriptor was read from a window that is not a redacted view");
+    if (view.nodes.get(node.key) === undefined) return null;
+    const own = describeField(view, node);
+    if (own.text !== fd.text) return null;
+    for (const t of [fd.label, fd.nearest, fd.placeholder, fd.section]) if (t !== null && !viewHolds(view, t)) return null;
+    if (this.asTaken.get(view.window.windowId)?.has(fd.text) !== true && !this.take(view, "descriptor", [fd.text])) return null;
+    return this.record(fd.text, ["descriptor"]);
   }
 
   /** A kept node's label or placeholder, a window's title, or another name the redacted view shows for something. */
@@ -200,6 +243,18 @@ export class Disclosure extends SnippetLedger {
     return text === null || text === undefined ? null : this.fromView(view, text, "candidate");
   }
 
+  /**
+   * A text some window this Disclosure was built over shows in its redacted view, read from the first that does: a
+   * person's name the user picked from those on screen. Null when no view shows it or it will not fit.
+   */
+  onScreen(text: string): ModelText | null {
+    for (const w of this.known.values()) {
+      const v = redactWindow(w);
+      if (viewHolds(v, text)) return this.fromView(v, text, "candidate");
+    }
+    return null;
+  }
+
   /** A string code computed locally (a program's output, a part of a value) that the redacted view shows as it is. */
   held(view: RedactedWindow, text: string | null | undefined): ModelText | null {
     return text === null || text === undefined ? null : this.fromView(view, text, "held");
@@ -210,8 +265,45 @@ export class Disclosure extends SnippetLedger {
    * a window it shows is charged to that window. Null when one would go over its budget.
    */
   planText(text: string): ModelText | null {
-    if (!this.plan([text])) return null;
+    if (!this.keptByViews(text)) return null;
+    if (!this.asPlan.has(text) && !this.plan([text])) return null;
     return this.record(text, ["plan"]);
+  }
+
+  /**
+   * A text code wrote from what it read on screen (a reading's assumptions, the choice it made), held (MintReason held):
+   * minted when every line of a window it reveals is kept by that window's redacted view, priced as plan text.
+   */
+  heldText(text: string): ModelText | null {
+    if (!this.keptByViews(text)) return null;
+    if (!this.asPlan.has(text) && !this.plan([text])) return null;
+    return this.record(text, ["held"]);
+  }
+
+  /**
+   * Whether every line of a window that `text` reveals (SnippetLedger's reading: each line it holds, and each window
+   * that shows a piece of it) is kept by that window's redacted view. Plan and draft text are code's, built from minted
+   * text, but a value can be anything code chose; one that shows a line redaction removed never mints.
+   */
+  private keptByViews(text: string): boolean {
+    const pieces = text.split("\n").map((raw) => flat(raw).replace(/^…|…$/gu, "")).filter((x) => x !== "");
+    for (const piece of pieces) {
+      const r = this.revealed(piece);
+      for (const [line, ids] of r.lines) for (const id of ids) {
+        const w = this.known.get(id);
+        if (w !== undefined && !viewHolds(redactWindow(w), line)) return false;
+      }
+      for (const id of r.shownBy) {
+        const w = this.known.get(id);
+        if (w !== undefined && !viewHolds(redactWindow(w), piece)) return false;
+      }
+      // And every run of it a line shows (PARTIAL_MIN or more characters): a value quoted out of a removed line.
+      for (const [run, ids] of this.partialRuns(piece)) for (const id of ids) {
+        const w = this.known.get(id);
+        if (w !== undefined && !viewHolds(redactWindow(w), run)) return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -219,7 +311,7 @@ export class Disclosure extends SnippetLedger {
    * drafted from. Null when one would go over its budget.
    */
   draftedText(text: string): ModelText | null {
-    if (!this.plan([text])) return null;
+    if (!this.keptByViews(text) || !this.plan([text])) return null;
     return this.record(text, ["drafted"]);
   }
 
@@ -235,13 +327,24 @@ export class Disclosure extends SnippetLedger {
   }
 
   /**
+   * A span of the user's instruction as a model may read it: minted only when it stands in the instruction's model
+   * text (instructionForModel), so a span of a withheld clause never goes out.
+   */
+  instructionSpan(raw: string, span: string): ModelText | null {
+    const shown = instructionForModel(raw);
+    if (span === "" || !shown.includes(span)) return null;
+    return this.record(span, ["instruction"]);
+  }
+
+  /**
    * A value the user told Caret (an About entry or a saved answer) and its label, priced against every window whose lines
    * it reveals (SnippetLedger.memory). Null when it names a kind Caret never sends (memory/sensitive.ts sensitiveKind) or
    * a window would go over its budget.
    */
   memoryText(label: string | null, text: string): ModelText | null {
     if (text === "" || sensitiveKind(label, text) !== null || excludedValue(text) !== null) return null;
-    if (!this.memory([text])) return null;
+    // Priced once, as memory or as plan text (a builder that declares the user's memory under "plan" did so before SC1).
+    if (!this.asMemory.has(text) && !this.asPlan.has(text) && !this.memory([text])) return null;
     return this.record(text, ["memory"]);
   }
 
@@ -249,8 +352,8 @@ export class Disclosure extends SnippetLedger {
    * Caret's own wording: a string literal in code. Its type takes literal types only, so a `string` variable does not
    * compile here; build sentences around screen text with `t`.
    */
-  own<S extends string>(s: string extends S ? never : S): ModelText {
-    return this.record(s, ["ownWording"]);
+  own<S extends string>(s: string extends S ? never : S): S & ModelText {
+    return this.record(s, ["ownWording"]) as S & ModelText;
   }
 
   /**
@@ -273,18 +376,31 @@ export class Disclosure extends SnippetLedger {
    * (calendar words code writes), or one of `codeWords`, the caller's own literal vocabulary. Null otherwise: a
    * derivation never brings in a word the screen did not show. It carries the bases' reasons and held.
    */
-  derived<W extends string = never>(base: ModelText | readonly ModelText[], text: string, codeWords: readonly (string extends W ? never : W)[] = []): ModelText | null {
-    const bases = typeof base === "string" ? [base] : base;
+  derived<W extends string = never>(base: ModelText | Basis | readonly (ModelText | Basis)[], text: string, codeWords: readonly (string extends W ? never : W)[] = []): ModelText | null {
+    const bases = typeof base === "string" || base instanceof Basis ? [base] : base;
     const reasons = new Set<MintReason>(["held"]);
     const shown = new Set<string>(codeWords.map((w) => w.toLowerCase()));
     for (const b of bases) {
-      for (const r of this.reasons(b, "derived")) reasons.add(r);
-      for (const w of b.toLowerCase().split(/[^\p{L}\p{N}]+/u)) if (w !== "") shown.add(w);
+      if (b instanceof Basis) {
+        if (b.of !== this) throw new UnmintedText("derived: a basis read for another request");
+      } else for (const r of this.reasons(b, "derived")) reasons.add(r);
+      const t = b instanceof Basis ? b.text : b;
+      for (const w of t.toLowerCase().split(/[^\p{L}\p{N}]+/u)) if (w !== "") shown.add(w);
     }
     const ws = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x !== "");
     if (ws.length === 0 && text.trim() !== "") return null;
     for (const w of ws) if (!shown.has(w) && !/^\d+(?:st|nd|rd|th|am|pm|h)?$/u.test(w) && !DERIVED_WORDS.has(w)) return null;
     return this.record(text, reasons);
+  }
+
+  /**
+   * A text of the redacted view that a derivation reads its words from (derived), neither priced nor minted itself: a
+   * sentence an event's title is read from. What the derived text shows is all that is sent of it. Null when the view
+   * does not show it.
+   */
+  basis(view: RedactedWindow, text: string): Basis | null {
+    if (!isRedacted(view)) throw new UnmintedText("a basis was read from a window that is not a redacted view");
+    return viewHolds(view, text) ? new Basis(BASIS_TOKEN, this, text) : null;
   }
 
   /**
@@ -345,25 +461,6 @@ export class Disclosure extends SnippetLedger {
     for (const p of parts) for (const r of this.reasons(p, "join")) reasons.add(r);
     if (sep !== "" && parts.length > 1) reasons.add("ownWording");
     return this.record(parts.join(sep), reasons);
-  }
-
-  /**
-   * SC1 step 1: declares every string a not-yet-converted builder's request carries as legacy, then seals it. The count
-   * of legacy strings per purpose is kept in legacyCounts; step 4 converts every builder and removes this.
-   */
-  legacy<R extends Sealable>(req: R): R & { disclosure: Disclosure } {
-    let n = 0;
-    const walk = (v: unknown): void => {
-      if (typeof v === "string") {
-        this.record(v, ["legacy"]);
-        n++;
-      } else if (Array.isArray(v)) v.forEach(walk);
-      else if (typeof v === "object" && v !== null) Object.values(v).forEach(walk);
-    };
-    walk([req.state, req.questions, req.nouls, req.input]);
-    const purpose = req.purpose ?? req.kind ?? "unknown";
-    legacyCounts.set(purpose, (legacyCounts.get(purpose) ?? 0) + n);
-    return this.seal(req);
   }
 
   /**

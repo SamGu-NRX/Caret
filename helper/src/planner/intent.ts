@@ -1,4 +1,4 @@
-import { Disclosure } from "../privacy/disclosure.ts";
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
 import { instructionForModel, instructionView, redactWindow } from "../fill/redact.ts";
 // Ask as a scoped fill (B25 lead decision 1). An instruction becomes a small intent, and every part of it is a
 // choice from what code listed or an exact span of the instruction:
@@ -20,7 +20,7 @@ import { headingsBefore } from "../fill/ask-scope.ts";
 import { inWebArea, type Control } from "../fill/controls.ts";
 import { localTargets } from "./targets.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
-import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
+import { mentionedKind, secretText, type SensitiveKind } from "../memory/sensitive.ts";
 import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
 import { fieldWords, namedSources, onlyInSources, restrictsSources, senderNames, senderOf, type NamedSource } from "./sources.ts";
@@ -158,6 +158,8 @@ export interface IntentSnapshot {
   /** The instruction names a source no open window could be ("off my LinkedIn" with no LinkedIn open). */
   missing: boolean;
   ledger: Disclosure;
+  /** The redacted views the snapshot read, by window id: the form's and each listed source's (snapMint mints from them). */
+  views: ReadonlyMap<string, WindowState>;
 }
 
 /** Fields and windows one snapshot lists at most: the plan's provisional inventory limit (section 4), and sources by recency. */
@@ -230,6 +232,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   // Other windows by title, most recently focused first. A title is what names a source ("Morgan's email"); a
   // window whose title does not fit what the ledger allows is left out.
   const windows: IntentSnapshot["windows"] = [];
+  const views = new Map<string, WindowState>([[w.window.windowId, w]]);
   const others = [...model.windows.values()].map(redactWindow).filter((o) => o.window.windowId !== w.window.windowId && o.window.title.trim() !== "").sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
   for (const o of others) {
     if (windows.length >= MAX_INTENT_WINDOWS) break;
@@ -238,6 +241,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     const sender = senderOf(o);
     const from = sender !== null && sender.length <= 60 && ledger.take(o, "candidate", [sender]) ? sender : null;
     windows.push({ ref: `w${windows.length + 1}`, windowId: o.window.windowId, app: o.app.name, title: o.window.title, from });
+    views.set(o.window.windowId, o);
   }
   const labels = [...new Set(memory.map((m) => m.label))];
   const memoryLabels = labels.length > 0 && ledger.memory(labels) ? labels : [];
@@ -264,7 +268,62 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     excluded: sources.excluded,
     missing: sources.missing,
     ledger,
+    views,
   };
+}
+
+/** How a request names a field it may not quote, and a section or window it may not quote (SC1: Caret's own words). */
+export const UNNAMED_FIELD = "a field Caret leaves to the user";
+export const UNNAMED_SECTION = "a section";
+export const UNNAMED_WINDOW = "a window";
+
+/**
+ * SC1 2b: the snapshot's texts as its Disclosure (IntentSnapshot.ledger) mints them, each from the redacted view it was
+ * read from, the instruction as a model may read it, and memory labels as memory. A text that holds a marker word, or
+ * that its view no longer shows, is named in Caret's own words instead, as the requests named it before (sendable).
+ */
+export interface SnapMint {
+  d: Disclosure;
+  instruction: ModelText;
+  /** "<app> window '<title>'", or "<app> window" when the title did not fit or names a secret. */
+  formTitle: ModelText;
+  field(f: IntentField): ModelText;
+  section(name: string): ModelText;
+  source(w: IntentSnapshot["windows"][number]): { app: ModelText; title: ModelText; from: ModelText | null };
+  /** A span of the instruction (a person, a literal), or null when the model's instruction does not show it. */
+  span(text: string): ModelText | null;
+  memoryLabel(label: string): ModelText | null;
+}
+
+const MINTS = new WeakMap<IntentSnapshot, SnapMint>();
+
+export function snapMint(snap: IntentSnapshot): SnapMint {
+  const hit = MINTS.get(snap);
+  if (hit !== undefined) return hit;
+  const d = snap.ledger;
+  const form = snap.views.get(snap.window.window.windowId) ?? redactWindow(snap.window);
+  const fromForm = (text: string | null | undefined, instead: typeof UNNAMED_FIELD | typeof UNNAMED_SECTION): ModelText => {
+    if (text === null || text === undefined || text === instead || secretText(text)) return d.own(instead);
+    return d.descriptor(form, text) ?? d.own(instead);
+  };
+  const title = snap.title === null || secretText(snap.title) ? null : d.descriptor(form, snap.title);
+  const m: SnapMint = {
+    d,
+    instruction: d.instruction(snap.instruction),
+    formTitle: title === null ? d.t`${d.app(form)} window` : d.t`${d.app(form)} window '${title}'`,
+    field: (f) => fromForm(f.modelName ?? f.name, UNNAMED_FIELD),
+    section: (name) => fromForm(name, UNNAMED_SECTION),
+    source: (w) => {
+      const v = snap.views.get(w.windowId);
+      if (v === undefined) throw new Error(`the snapshot lists window ${w.windowId} without its view`);
+      const t = secretText(w.title) ? null : d.descriptor(v, w.title);
+      return { app: d.app(v), title: t ?? d.own(UNNAMED_WINDOW), from: w.from === null ? null : d.candidate(v, w.from) };
+    },
+    span: (text) => d.instructionSpan(snap.instruction, text),
+    memoryLabel: (label) => d.memoryText(null, label),
+  };
+  MINTS.set(snap, m);
+  return m;
 }
 
 /** An intent checked against its snapshot: the fill engine's scope, and what the route needs. */

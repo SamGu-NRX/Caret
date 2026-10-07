@@ -1,8 +1,7 @@
-import { Disclosure } from "../privacy/disclosure.ts";
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
 import { instructionForModel, instructionView } from "../fill/redact.ts";
 import { viewOf } from "../fill/candidates.ts";
 import { redactWindow } from "../fill/redact.ts";
-import { assertNoSecrets } from "../privacy.ts";
 // The planner: "do X" becomes a checked plan (brief B16). Jev answers only choice questions, so the
 // house rule holds here too: code proposes, Jev chooses, code copies and verifies.
 //   1. Code picks the window: the one the host names (requestedWindow resolves a host's window number), the
@@ -29,7 +28,7 @@ import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { candidateProvenance, FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
 import { checkValues, ContractError, fieldContract, isChecked, VerifierUnavailable, type CheckedValue, type CheckOptions, type FieldContract, type Owner, type Proposed, type Provenance } from "../fill/contract.ts";
-import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
+import { describeCandidate, generateCandidates, mintCandidate, type Candidate } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts } from "../fill/kinds.ts";
 import { writeMisfit } from "../fill/writable.ts";
@@ -115,7 +114,8 @@ export interface PlanDraft {
 interface Option {
   id: string;
   text: string;
-  describe: string;
+  /** What the question says of the value, minted by the plan's Disclosure. */
+  describe: ModelText;
   /** W2: where the value was read, as the write contract carries it (fill/contract.ts). */
   provenance: Provenance;
 }
@@ -200,7 +200,7 @@ async function planIn(
   const ledger = new Disclosure(model.windows.values());
   if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", PRIVACY_SAYS);
   // A title that does not fit the window's budget is left out; the question then names the app alone.
-  const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
+  const title = ledger.descriptor(w, w.window.title);
   // A window that is not a card gives a question less than half its text (privacy.ts), which may not hold
   // every field and button: what the instruction names is taken first, the rest in document order.
   const order = byRelevance(instruction, [...fields.map((f) => ({ key: f.node.key, name: f.name, text: f.descriptor })), ...buttons.map((b) => ({ key: b.key, name: b.label, text: b.label }))]);
@@ -238,8 +238,8 @@ async function planIn(
   const fitting = (f: Field, vs: readonly Option[]): Option[] => vs.filter((v) => writeMisfit(v.text, { labelWords: [f.label] }) === null);
   const [r1, r2] = await ask(
     ...sentOnly([
-      fieldRequest(instruction, w, title, questioned, (f) => fitting(f, values), askedButtons, 0, declared),
-      fieldRequest(instruction, w, title, questioned, (f) => fitting(f, second.values), second.buttons, 1, declared),
+      fieldRequest(ledger, instruction, w, title, questioned, (f) => fitting(f, values), askedButtons, 0, declared),
+      fieldRequest(ledger, instruction, w, title, questioned, (f) => fitting(f, second.values), second.buttons, 1, declared),
     ]),
   );
   const withheld: PlanDraft["withheld"] = [];
@@ -458,6 +458,20 @@ export function fieldName(w: WindowState, n: Node): string {
   return [d.section, d.label ?? d.nearest ?? d.placeholder].filter((x) => x !== null).join(" ") || "field";
 }
 
+/**
+ * A field's name (fieldName) minted from the redacted view `w` it was read in: its section and its label, nearest label
+ * or placeholder, each as the view shows it; Caret's "field" when it has none. Null when the view does not show a part.
+ */
+export function mintFieldName(d: Disclosure, w: WindowState, f: Pick<Field, "node" | "name">): ModelText | null {
+  const fd = describeField(w, f.node);
+  const parts = [fd.section, fd.label ?? fd.nearest ?? fd.placeholder].filter((x): x is string => x !== null);
+  if (parts.length === 0) return f.name === "field" ? d.own("field") : null;
+  const minted = parts.map((x) => d.descriptor(w, x)).filter((x): x is ModelText => x !== null);
+  if (minted.length !== parts.length) return null;
+  const name = d.join(minted, " ");
+  return name === f.name ? name : null;
+}
+
 export function writableFields(w: WindowState): Field[] {
   w = redactWindow(w);
   const out: Field[] = [];
@@ -529,34 +543,61 @@ export function requestedWindow(model: ScreenModel, req: { windowId?: string | u
 
 /** Values to choose from: the instruction's spans, then memory, then the other windows' candidates; each text once. */
 function valueOptions(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: Disclosure, now: number): Option[] {
+  const d = ledger;
   const out: Option[] = [];
   const retainedValues = new Set(instructionView(instruction).retained.flatMap(instructionValues));
   const seen = new Set<string>();
-  const add = (text: string, describe: string, provenance: Provenance, max = MAX_PLAN_VALUES): void => {
+  const LEFT = "[a field Caret leaves to you]";
+  /** `said` is the option's sentence minted, or null when a part would not mint (the option is then not offered). */
+  const add = (text: string, said: () => ModelText | null, describe: string, provenance: Provenance, max = MAX_PLAN_VALUES): void => {
     if (out.length >= max || seen.has(text)) return;
-    seen.add(text);
     // Local binding retains withheld values for refusal; a model sees only the neutral reference.
-    const safe = provenance.kind === "instruction" && !retainedValues.has(text)
-      ? "[a field Caret leaves to you]" : instructionForModel(describe);
-    out.push({ id: `v${out.length + 1}`, text, describe: safe, provenance });
+    const withheld = provenance.kind === "instruction" && !retainedValues.has(text);
+    // What the question said before SC1 is the oracle: a sentence the instruction's redaction changes is not offered.
+    const minted = withheld ? d.own(LEFT) : instructionForModel(describe) === describe ? said() : null;
+    if (minted === null) return;
+    seen.add(text);
+    out.push({ id: `v${out.length + 1}`, text, describe: minted, provenance });
   };
   const entry = (m: MemoryValue): Provenance => ({ kind: "memory", id: m.id, label: m.label, part: null, whose: m.whose ?? null });
   const spans = instructionValues(instruction);
-  if (ledger.plan(spans.map((s) => retainedValues.has(s) ? instructionForModel(s) : "[a field Caret leaves to you]"))) for (const s of spans) add(s, `"${s}" (written in the instruction)`, { kind: "instruction", span: s });
-  for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`, entry(m));
+  if (ledger.plan(spans.map((s) => (retainedValues.has(s) ? instructionForModel(s) : LEFT)))) {
+    for (const s of spans) {
+      add(s, () => {
+        const m = d.instructionSpan(instruction, s);
+        return m === null ? null : d.t`"${m}" (written in the instruction)`;
+      }, `"${s}" (written in the instruction)`, { kind: "instruction", span: s });
+    }
+  }
+  const remembered = new Map<string, { text: ModelText; label: ModelText }>();
+  for (const m of memory) {
+    if (!ledger.plan([m.text, m.label])) continue;
+    add(m.text, () => {
+      const text = d.memoryText(m.label, m.text);
+      const label = d.memoryText(null, m.label);
+      if (text === null || label === null) return null;
+      remembered.set(m.id, { text, label });
+      return d.t`"${text}" (from the user's memory: ${label})`;
+    }, `"${m.text}" (from the user's memory: ${m.label})`, entry(m));
+  }
   // A remembered name's first and last parts, split by code (fill/derive.ts, B24), for First and Last name
   // fields: "fill my name and email" on a form with split name fields found no value for either (Q1 bug 11).
   for (const m of memory) {
     // Only for an entry whose text went into the question above, so the part's description declares nothing new.
-    if (!/\bname\b/i.test(m.label) || !seen.has(m.text)) continue;
+    const r = remembered.get(m.id);
+    if (!/\bname\b/i.test(m.label) || !seen.has(m.text) || r === undefined) continue;
     const s = splitName(m.text);
     if (s.kind !== "split") continue;
     for (const [part, text] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) {
-      if (text !== null) add(text, `"${text}" (the ${part} in the user's memory: ${m.label} "${m.text}")`, { kind: "derived", how: "namePart", base: entry(m), also: null });
+      if (text === null) continue;
+      add(text, () => {
+        const v = d.derived(r.text, text);
+        return v === null ? null : d.t`"${v}" (the ${d.own(part)} in the user's memory: ${r.label} "${r.text}")`;
+      }, `"${text}" (the ${part} in the user's memory: ${m.label} "${m.text}")`, { kind: "derived", how: "namePart", base: entry(m), also: null });
     }
   }
   const cands = generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger);
-  for (const c of cands) add(c.text, describeCandidate(c), candidateProvenance(model, c));
+  for (const c of cands) add(c.text, () => mintCandidate(d, model, c), describeCandidate(c), candidateProvenance(model, c));
   // A whole address fits no City or Street field (kinds.ts misfit), so its parts are offered too: B17's and
   // B18's held-out sets asked for the city or street of an address the windows show only whole (a change
   // tuned on those sets). Each part is a span of the same line, so it traces to it. They have their own
@@ -565,24 +606,32 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
   // apart (fill/derive.ts splitAddress, B24): the corpus's rental form took "4410 Speedway Apt 2" in Street
   // address beside an empty Apt / Unit field (asks-dev-3).
   const unitField = writableFields(w).some((f) => fieldPart(f.label) === "unit");
+  /** A part of a candidate's address, said as "the <part> of <the candidate's line>". */
+  const part = (c: Candidate, v: string, partName: ModelText): ModelText | null => {
+    const whole = mintCandidate(d, model, c);
+    const text = d.again(c.text);
+    const value = text === null ? null : d.derived(text, v);
+    return whole === null || value === null ? null : d.t`"${value}" (the ${partName} of ${whole})`;
+  };
   for (const c of cands) {
     const split = unitField ? splitAddress(c.text) : null;
     if (split !== null) {
-      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: candidateProvenance(model, c), also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, () => part(c, v, d.id(k)), `"${v}" (the ${k} of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: candidateProvenance(model, c), also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
       continue;
     }
     const parts = addressParts(c.text);
     if (parts === null) continue;
     const whole = candidateProvenance(model, c);
-    add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
-    if (parts.city !== null) add(parts.city, `"${parts.city}" (the city of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+    add(parts.street, () => part(c, parts.street, d.own("street line")), `"${parts.street}" (the street line of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+    const city = parts.city;
+    if (city !== null) add(city, () => part(c, city, d.own("city")), `"${city}" (the city of ${describeCandidate(c)})`, { kind: "derived", how: "addressPart", base: whole, also: null }, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
   }
   return out;
 }
 
 const WINDOW_WORDINGS = [
-  (instr: string) => `The user asked: "${instr}". In which of these windows should that be done? Choose none if no window fits.`,
-  (instr: string) => `Instruction: "${instr}". Pick the window the instruction is about, or none if it is about none of them.`,
+  (d: Disclosure, instr: ModelText) => d.t`The user asked: "${instr}". In which of these windows should that be done? Choose none if no window fits.`,
+  (d: Disclosure, instr: ModelText) => d.t`Instruction: "${instr}". Pick the window the instruction is about, or none if it is about none of them.`,
 ] as const;
 
 async function chooseWindow(
@@ -605,19 +654,29 @@ async function chooseWindow(
   if (candidates.length === 1) return candidates[0] as WindowState;
   const ledger = new Disclosure(model.windows.values());
   if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", PRIVACY_SAYS);
-  const listed = candidates.filter((w) => ledger.take(w, "descriptor", [w.window.title]));
+  const named = new Map<WindowState, ModelText>();
+  for (const w of candidates) {
+    const t = ledger.descriptor(w, w.window.title);
+    if (t !== null) named.set(w, ledger.t`${ledger.app(w)} window '${t}'`);
+  }
+  const listed = candidates.filter((w) => named.has(w));
   if (listed.length === 0) throw new PlannerError("privacy", "no open window's title fits what one question to Jev may carry");
   const declared = ledger.declared();
   const first = listed.map((w, i) => ({ id: `w${i + 1}`, w }));
   const second = shuffled(first, rand).map((x, i) => ({ id: `x${i + 1}`, w: x.w }));
-  const req = (list: typeof first, wording: 0 | 1): JevRequest => (ledger.legacy({
+  const instr = ledger.instruction(instruction);
+  const req = (list: typeof first, wording: 0 | 1): JevRequest => (ledger.seal({
     purpose: "planner.window",
-    state: { instruction: instructionForModel(instruction), task: "Caret is about to plan the user's instruction in one of the user's open windows." },
+    state: { instruction: instr, task: ledger.own("Caret is about to plan the user's instruction in one of the user's open windows.") },
     questions: {
       window: {
         type: "choice",
-        instructions: WINDOW_WORDINGS[wording](instruction),
-        criteria: { ...Object.fromEntries(list.map((x) => [x.id, `${x.w.app.name} window '${x.w.window.title}'`])), [NONE]: "None of these windows." },
+        // The question quotes the instruction as a model may read it (SC1: before, the wording quoted it raw).
+        instructions: WINDOW_WORDINGS[wording](ledger, instr),
+        criteria: { ...Object.fromEntries(list.flatMap((x) => {
+          const said = named.get(x.w);
+          return said === undefined ? [] : [[x.id, said] as const];
+        })), [NONE]: ledger.own("None of these windows.") },
       },
     },
     snippets: declared.snippets,
@@ -644,35 +703,37 @@ async function chooseWindow(
 }
 
 const FIELD_WORDINGS = [
-  (instr: string, d: string) => `The user asked: "${instr}". This field is in the window: ${d} After the task is done, which value should this field hold? Choose keep if the instruction does not ask to change this field.`,
-  (instr: string, d: string) => `Instruction: "${instr}". Field: ${d} Pick the value the instruction asks to put in this field, or keep if it asks for no change here.`,
+  (m: Disclosure, instr: ModelText, d: ModelText) => m.t`The user asked: "${instr}". This field is in the window: ${d} After the task is done, which value should this field hold? Choose keep if the instruction does not ask to change this field.`,
+  (m: Disclosure, instr: ModelText, d: ModelText) => m.t`Instruction: "${instr}". Field: ${d} Pick the value the instruction asks to put in this field, or keep if it asks for no change here.`,
 ] as const;
 const PRESS_WORDINGS = [
-  (instr: string) => `The user asked: "${instr}". Which button does the instruction ask to press? Choose none if it asks for no press.`,
-  (instr: string) => `Instruction: "${instr}". If the instruction asks for a button to be pressed, pick it; otherwise pick none.`,
+  (m: Disclosure, instr: ModelText) => m.t`The user asked: "${instr}". Which button does the instruction ask to press? Choose none if it asks for no press.`,
+  (m: Disclosure, instr: ModelText) => m.t`Instruction: "${instr}". If the instruction asks for a button to be pressed, pick it; otherwise pick none.`,
 ] as const;
 
-function fieldRequest(instruction: string, w: WindowState, title: string | null, fields: readonly Field[], valuesFor: (f: Field) => readonly Option[], buttons: readonly Button[], wording: 0 | 1, declared: Declared): JevRequest {
-  instruction = instructionForModel(instruction);
+function fieldRequest(d: Disclosure, raw: string, w: WindowState, title: ModelText | null, fields: readonly Field[], valuesFor: (f: Field) => readonly Option[], buttons: readonly Button[], wording: 0 | 1, declared: Declared): JevRequest {
+  const instruction = d.instruction(raw);
   w = redactWindow(w);
   const questions: JevRequest["questions"] = {};
   for (const f of fields) {
-    const criteria: Record<string, string> = { ...Object.fromEntries(valuesFor(f).map((v) => [v.id, v.describe])), [KEEP]: "Leave the field as it is." };
-    questions[f.id] = { type: "choice", instructions: FIELD_WORDINGS[wording](instruction, f.descriptor), criteria };
+    const descriptor = d.fieldDescriptor(w, f.node);
+    if (descriptor === null) throw new PlannerError("privacy", `the descriptor of '${f.name}' is not one its window shows`);
+    const criteria: Record<string, ModelText> = { ...Object.fromEntries(valuesFor(f).map((v) => [v.id, v.describe])), [KEEP]: d.own("Leave the field as it is.") };
+    questions[f.id] = { type: "choice", instructions: FIELD_WORDINGS[wording](d, instruction, descriptor), criteria };
   }
   if (buttons.length > 0) {
-    questions.press = {
-      type: "choice",
-      instructions: PRESS_WORDINGS[wording](instruction),
-      criteria: { ...Object.fromEntries(buttons.map((b) => [b.id, `the '${b.label}' button`])), [NONE]: "No button." },
-    };
+    const named = buttons.flatMap((b) => {
+      const label = d.descriptor(w, b.label);
+      return label === null ? [] : [[b.id, d.t`the '${label}' button`] as const];
+    });
+    questions.press = { type: "choice", instructions: PRESS_WORDINGS[wording](d, instruction), criteria: { ...Object.fromEntries(named), [NONE]: d.own("No button.") } };
   }
-  return new Disclosure([]).legacy({
+  return d.seal({
     purpose: "planner.fields",
     state: {
       instruction,
-      window: title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`,
-      task: "Caret plans the instruction as values written into this window's fields. Values come from the instruction, the user's memory and the user's other open windows; Caret writes only a value listed here.",
+      window: title === null ? d.t`${d.app(w)} window` : d.t`${d.app(w)} window '${title}'`,
+      task: d.own("Caret plans the instruction as values written into this window's fields. Values come from the instruction, the user's memory and the user's other open windows; Caret writes only a value listed here."),
     },
     questions,
     snippets: declared.snippets,

@@ -358,7 +358,7 @@ function takeLines(d: Disclosure, w: WindowState, lines: readonly string[], max:
   for (const l of lines) {
     if (out.length >= max) break;
     const t = cut(flat(l));
-    if (t === "" || out.includes(t as ModelText)) continue;
+    if (t === "" || out.some((x) => x === t)) continue;
     const m = mintLine(d, w, t);
     if (m !== null) out.push(m);
   }

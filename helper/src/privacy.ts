@@ -526,7 +526,7 @@ export class SnippetLedger {
    * line, not the whole line, reveals that part of it (B25 review: an instruction quoting most of a note's sentence
    * was charged nothing). A run inside a whole line the text holds is that line's, charged once already.
    */
-  private partialRuns(t: string): [string, string[]][] {
+  protected partialRuns(t: string): [string, string[]][] {
     let r = this.partials.get(t);
     if (r !== undefined) return r;
     const whole = this.revealed(t).lines;
@@ -544,7 +544,7 @@ export class SnippetLedger {
     return r;
   }
 
-  private revealed(t: string): { lines: [string, string[]][]; shownBy: string[] } {
+  protected revealed(t: string): { lines: [string, string[]][]; shownBy: string[] } {
     let r = this.reveals.get(t);
     if (r !== undefined) return r;
     const shownBy: string[] = [];

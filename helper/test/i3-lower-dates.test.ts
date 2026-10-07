@@ -2,7 +2,7 @@
 // reads its source as exactly the written value with no assumption, as fill's controlValue requires. A reading that
 // assumed a year, an order or a locale, a provenance that states a choice, and a source that no longer reads as the
 // written value all go to the verifier with what Caret assumed said; a refusing verifier leaves the field to the user.
-import { Disclosure } from "../src/privacy/disclosure.ts";
+import { inventoryLedger } from "./minted.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { DraftPlan } from "../src/codemode/types.ts";
 import { lowerGoal } from "../src/goals/lower.ts";
@@ -54,7 +54,7 @@ async function lowerOne(v: ValueBinding, verifier: AskJev) {
   setTestVerifier(verifier);
   const plain = val("v2", "2026-10-20", window("October 20, 2026"));
   const inv = inventory([tgt("t1"), tgt("t2")], [v, plain]);
-  return lowerGoal("g", "put the dates in", draft([{ ref: "a", kind: "fill", target: "t1", value: v.ref }, { ref: "b", kind: "fill", target: "t2", value: "v2" }]), inv, { askJev: standInJev(), ledger: new Disclosure([]) });
+  return lowerGoal("g", "put the dates in", draft([{ ref: "a", kind: "fill", target: "t1", value: v.ref }, { ref: "b", kind: "fill", target: "t2", value: "v2" }]), inv, { askJev: standInJev(), ledger: inventoryLedger(inv) });
 }
 const stepFor = (g: Awaited<ReturnType<typeof lowerOne>>, ref: string) => g.segments.flatMap((s) => s.steps).find((s) => s.target.ref === ref && s.kind === "write");
 

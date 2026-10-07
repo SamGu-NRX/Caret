@@ -10,6 +10,7 @@
 import { PAGE_SUBROLE, type Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import { fieldLabelText } from "./descriptor.ts";
+import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 
 export type Control = "text" | "date" | "time" | "select" | "radio" | "checkbox" | "combobox";
 
@@ -411,14 +412,43 @@ export function namedInList(label: string, span: string, context: string | null 
   return items.length >= 2 && want !== "" && items.some((x) => wordsOf(x).join(" ") === want);
 }
 
-const ROLE_NAMES: Record<FormControl["control"], string> = {
+const ROLE_NAMES = {
   combobox: "Dropdown",
   select: "Pop-up menu",
   radio: "Radio buttons",
   checkbox: "Checkbox",
   date: "Date field",
   time: "Time field",
-};
+} as const satisfies Record<FormControl["control"], string>;
+
+/**
+ * SC1 2b: describeControl's descriptor, minted by `d` from the redacted view `w` the control was read in: the kind in
+ * Caret's words, the label, nearest label, options and section as the view shows them. Null when a part does not mint.
+ */
+export function mintControl(d: Disclosure, w: WindowState, c: FormControl, section: string | null, nearest: string | null): ModelText | null {
+  const parts: ModelText[] = [d.t`${c.format === "datetime" ? d.own("Date and time field") : d.own(ROLE_NAMES[c.control])}.`];
+  const m = (t: string): ModelText | null => d.descriptor(w, t);
+  if (c.label !== null) {
+    const l = m(c.label);
+    if (l === null) return null;
+    parts.push(d.t`Label: '${l}'.`);
+  } else if (nearest !== null) {
+    const n = m(nearest);
+    if (n === null) return null;
+    parts.push(d.t`Nearest label: '${n}'.`);
+  }
+  if (c.options !== null) {
+    const os = c.options.map(m).filter((o): o is ModelText => o !== null);
+    if (os.length !== c.options.length) return null;
+    parts.push(d.t`Options: ${d.join(os.map((o) => d.t`'${o}'`), ", ")}.`);
+  }
+  if (section !== null && section !== c.label) {
+    const s = m(section);
+    if (s === null) return null;
+    parts.push(d.t`Section: '${s}'.`);
+  }
+  return d.join(parts, " ");
+}
 
 /** The descriptor a question carries for a control: what it is, its label, its section, and the options it shows. */
 export function describeControl(c: FormControl, section: string | null, nearest: string | null): string {

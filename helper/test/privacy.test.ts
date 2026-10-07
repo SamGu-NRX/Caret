@@ -100,7 +100,7 @@ function textOf(w: WindowState): WindowText {
 }
 
 /** Every string a request sends: the values in its state and questions (keys are fixed names and candidate ids). */
-function bodyOf(req: Omit<JevRequest, "disclosure">): string {
+function bodyOf(req: Omit<JevRequest, "disclosure" | "state"> & { state: unknown }): string {
   const out: string[] = [];
   const walk = (v: unknown): void => {
     if (typeof v === "string") out.push(v);
@@ -115,8 +115,8 @@ function bodyOf(req: Omit<JevRequest, "disclosure">): string {
 interface Recorded {
   session: string;
   producer: string;
-  /** The request as recorded; the check's own synthetic requests have no Disclosure, since none is ever sent. */
-  req: Omit<JevRequest, "disclosure">;
+  /** The request as recorded; the check's own synthetic requests have no Disclosure and unminted text, since none is ever sent. */
+  req: Omit<JevRequest, "disclosure" | "state"> & { state: unknown };
   windows: WindowText[];
 }
 

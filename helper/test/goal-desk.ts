@@ -275,7 +275,7 @@ export function cannedGoalWriter(scripts: CannedStep[][]): WriterPort & { reques
     route: FAKE_WRITER_ROUTE,
     requests,
     async write(req) {
-      const input = req.input as { snapshots: PlanningSnapshot[] };
+      const input = req.input as unknown as { snapshots: PlanningSnapshot[] };
       requests.push(input.snapshots);
       const script = scripts.shift();
       const program = script === undefined ? null : cannedProgram(input.snapshots, script);

@@ -9,7 +9,7 @@ import { redactWindow } from "../fill/redact.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { describeField, mintDescriptor } from "../fill/descriptor.ts";
-import type { ModelText } from "../privacy/disclosure.ts";
+import type { ModelText, ModelValue } from "../privacy/disclosure.ts";
 import { isConversation } from "../conversation.ts";
 import { formFields, FillError } from "../fill/fill.ts";
 import type { RoutingContext } from "./context.ts";
@@ -92,7 +92,7 @@ const OTHER_WINDOWS = 5;
 /** The screen text one request carries, minted through one Disclosure; null pieces did not fit their window's budget. */
 interface Taken {
   ledger: Disclosure;
-  state: Record<string, unknown>;
+  state: Record<string, ModelValue>;
   says: Map<string, ModelText>;
   /** Candidates whose quotes fit their windows' budgets. */
   quoted: Set<string>;
@@ -111,7 +111,7 @@ function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly 
   const w = viewOf(model, ctx.windowId);
   if (w === undefined) throw new PrivacyRefusal(`window ${ctx.windowId} left the model`);
   const d = new Disclosure(model.windows.values());
-  const state: Record<string, unknown> = {
+  const state: Record<string, ModelValue> = {
     task: d.own("Caret is a helper on this Mac. It is deciding, once for this moment, what to do for the person using it."),
     app: d.app(w),
   };

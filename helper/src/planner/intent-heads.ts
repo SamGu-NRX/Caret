@@ -1,5 +1,3 @@
-import { instructionForModel } from "../fill/redact.ts";
-import { assertNoSecrets } from "../privacy.ts";
 // Ask's intent from Jev (P1, A3). Three requests, sent together:
 //   - the heads, one request: route (fill, plan or refuse), why when it refuses, source and whose;
 //   - the scope ask, in two wordings: one categorical question per field, showing the field's label, its heading, its
@@ -17,13 +15,14 @@ import { assertNoSecrets } from "../privacy.ts";
 // review rounds each found a new phrasing that widened the scope. A widening phrasing is answered by the vetoes or by
 // "unclear", never by a new reading rule.
 import { ownWording, sendable } from "../privacy.ts";
+import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { readWhose } from "./people.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import type { Control } from "../fill/controls.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { ROUTE_CUTOFF } from "./intent-makers.ts";
-import type { AskIntent, IntentField, IntentSnapshot } from "./intent.ts";
+import { snapMint, UNNAMED_FIELD as FIELD, UNNAMED_SECTION as SECTION, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
 import { relevance } from "./planner.ts";
 import { dateShaped, timeShaped } from "../fill/kinds.ts";
 import { fieldWords, restrictsSources } from "./sources.ts";
@@ -47,19 +46,20 @@ export const SCOPE_CUTOFF = 0.5;
 
 // "all" and "some" both fill; which fields is the scope ask's. "all" also says the request narrows nothing, so fill may
 // ask values as Fill all does (FillScope.wholeForm) when every empty field is in scope.
-const ROUTE: Record<string, string> = {
+const ROUTE = {
   all: "Fill every empty field of the form Caret can: the whole form, or everything Caret knows, with nothing said about particular values.",
   some: "Fill some fields of this form: a part of it, particular fields, or particular values (Caret asks which fields separately).",
   plan: "More than filling fields with values that already exist: press a button, submit, send, add an event to the calendar, write a message, reply or description in new words, or a task of several steps.",
   refuse: "Something Caret must not or cannot do here: pay, give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.",
-};
-const WHY: Record<string, string> = {
+} as const;
+const WHY = {
   neverTyped: "It asks for a card number, a password, a one-time code, or a Social Security or other government ID number.",
   payment: "It asks to pay.",
   pressOrSend: "It asks to submit, send or press something, and nothing else.",
   noSuchField: "It asks for a field this form does not have.",
   nothingToFill: "Something else Caret should not do.",
-};
+} as const;
+
 
 // G2 round 4: the route's refuse option names kinds of secret ("a card number, a password…") to say what Caret refuses.
 ownWording(...Object.values(ROUTE), ...Object.values(WHY));
@@ -68,38 +68,39 @@ const TASK = "Caret reads the user's instruction about the form on screen: what 
 
 /** The heads request: the form, sources and people as state, the heads as Choice questions. */
 export function headsRequest(snap: IntentSnapshot): JevRequest {
+  const m = snapMint(snap);
+  const d = m.d;
   const declared = snap.ledger.declared();
   const sectionRef = new Map(snap.sections.map((s) => [s.name, s.ref]));
+  const people = snap.persons.flatMap((p) => {
+    const span = m.span(p.span);
+    return span === null ? [] : [{ ref: p.ref, span }];
+  });
+  const sources = snap.windows.map((w) => ({ w, said: m.source(w) }));
   const state = {
-    instruction: instructionForModel(snap.instruction),
+    instruction: m.instruction,
     form: {
-      title: formTitle(snap),
-      sections: snap.sections.map((s) => ({ id: s.ref, name: sendable(s.name, SECTION) })),
-      fields: snap.fields.map((f) => ({ id: f.ref, name: sendable(f.modelName ?? f.name, FIELD), control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled, section: f.section === null ? null : (sectionRef.get(f.section) ?? null) })),
+      title: m.formTitle,
+      sections: snap.sections.map((s) => ({ id: d.id(s.ref), name: m.section(s.name) })),
+      fields: snap.fields.map((f) => ({ id: d.id(f.ref), name: m.field(f), control: f.neverTyped === null ? d.id(f.control) : d.own("never typed by Caret"), filled: f.filled, section: f.section === null ? null : d.id(sectionRef.get(f.section) ?? "") })),
     },
-    sources: snap.windows.map((w) => ({ id: w.ref, title: `${w.app}: ${sendable(w.title, "a window")}${w.from === null ? "" : ` (from ${w.from})`}` })),
-    people: snap.persons.map((p) => ({ id: p.ref, span: p.span })),
-    task: TASK,
+    sources: sources.map(({ w, said }) => ({ id: d.id(w.ref), title: said.from === null ? d.t`${said.app}: ${said.title}` : d.t`${said.app}: ${said.title} (from ${said.from})` })),
+    people: people.map((p) => ({ id: d.id(p.ref), span: p.span })),
+    task: d.own(TASK),
   };
-  const source: Record<string, string> = { any: "The instruction does not say where the values come from.", ...(snap.memory.length > 0 ? { memory: "What the user told Caret about themselves (their own name and email)." } : {}), instruction: "Only values the instruction itself spells out." };
-  for (const w of snap.windows) source[w.ref] = `The ${w.app} window '${sendable(w.title, "a window")}'${w.from === null ? "" : `, from ${w.from}`}.`;
-  const whose: Record<string, string> = { user: "The user's own details, or each field's own: the instruction names no one else whose details go in." };
-  for (const p of snap.persons) whose[p.ref] = `The details of ${p.span}, whom the instruction names.`;
-  whose.unclear = "Someone else's details, but the instruction does not say whose.";
+  const source: Record<string, ModelText> = { any: d.own("The instruction does not say where the values come from."), ...(snap.memory.length > 0 ? { memory: d.own("What the user told Caret about themselves (their own name and email).") } : {}), instruction: d.own("Only values the instruction itself spells out.") };
+  for (const { w, said } of sources) source[w.ref] = said.from === null ? d.t`The ${said.app} window '${said.title}'.` : d.t`The ${said.app} window '${said.title}', from ${said.from}.`;
+  const whose: Record<string, ModelText> = { user: d.own("The user's own details, or each field's own: the instruction names no one else whose details go in.") };
+  for (const p of people) whose[p.ref] = d.t`The details of ${p.span}, whom the instruction names.`;
+  whose.unclear = d.own("Someone else's details, but the instruction does not say whose.");
   const questions: JevRequest["questions"] = {
-    route: { type: "choice", instructions: "What does the instruction ask Caret to do with the form on screen?", criteria: ROUTE },
-    why: { type: "choice", instructions: "If Caret should refuse the instruction, why?", criteria: WHY },
-    source: { type: "choice", instructions: "Where does the instruction say the values come from?", criteria: source },
-    whose: { type: "choice", instructions: "Whose details does the instruction ask Caret to put in the form?", criteria: whose },
+    route: { type: "choice", instructions: d.own("What does the instruction ask Caret to do with the form on screen?"), criteria: d.ownRecord(ROUTE) },
+    why: { type: "choice", instructions: d.own("If Caret should refuse the instruction, why?"), criteria: d.ownRecord(WHY) },
+    source: { type: "choice", instructions: d.own("Where does the instruction say the values come from?"), criteria: source },
+    whose: { type: "choice", instructions: d.own("Whose details does the instruction ask Caret to put in the form?"), criteria: whose },
   };
-  return snap.ledger.legacy({ purpose: "ask.heads", state, questions, snippets: declared.snippets, charged: declared.charged });
+  return d.seal({ purpose: "ask.heads", state, questions, snippets: declared.snippets, charged: declared.charged });
 }
-
-// G2 round 4: a screen text that holds a secret marker word is sent as what it is, never as its words (privacy.ts
-// sendable); assertNoSecrets stops any request that still carries one.
-const FIELD = "a field Caret leaves to the user";
-const SECTION = "a section";
-const formTitle = (snap: IntentSnapshot): string => (snap.title === null || secretText(snap.title) ? `${snap.window.app.name} window` : `${snap.window.app.name} window '${snap.title}'`);
 
 /** The scope ask's options. Every field gets all three; "unclear" always makes Caret ask. */
 export const SCOPE_OPTIONS = {
@@ -108,7 +109,7 @@ export const SCOPE_OPTIONS = {
   unclear: "Unclear: the request could mean this field or not, so Caret should ask the user.",
 } as const;
 
-const CONTROL_WORDS: Record<Control, string> = { text: "text field", date: "date field", time: "time field", select: "pop-up menu", radio: "set of radio buttons", checkbox: "checkbox", combobox: "combo box" };
+const CONTROL_WORDS = { text: "text field", date: "date field", time: "time field", select: "pop-up menu", radio: "set of radio buttons", checkbox: "checkbox", combobox: "combo box" } as const satisfies Record<Control, string>;
 
 /** What the scope ask shows of a field besides its label: its heading, its group, its kind and its neighbours. */
 export interface FieldContext {
@@ -137,28 +138,51 @@ export function fieldContext(snap: IntentSnapshot, f: IntentField): FieldContext
   return { label: sendable(f.modelName ?? f.name, FIELD), heading: named(f.heading, SECTION), group: named(group, SECTION), role: f.upload === true ? "file upload" : CONTROL_WORDS[f.control], before: named(all[i - 1]?.modelName ?? all[i - 1]?.name, FIELD), after: named(all[i + 1]?.modelName ?? all[i + 1]?.name, FIELD) };
 }
 
+/** fieldContext's texts as the snapshot's Disclosure mints them (planner/intent.ts snapMint). */
+interface MintedContext {
+  label: ModelText;
+  heading: ModelText | null;
+  group: ModelText | null;
+  role: ModelText;
+  before: ModelText | null;
+  after: ModelText | null;
+}
+
+function mintedContext(snap: IntentSnapshot, f: IntentField): MintedContext {
+  const m = snapMint(snap);
+  const all = scopeFields(snap);
+  const i = all.indexOf(f);
+  const c = fieldContext(snap, f);
+  const near = (x: IntentField | undefined): ModelText | null => (x === undefined ? null : m.field(x));
+  return { label: m.field(f), heading: f.heading === null || c.heading === null ? null : m.section(f.heading), group: c.group === null || f.section === null ? null : m.section(f.section), role: f.upload === true ? m.d.own("file upload") : m.d.own(CONTROL_WORDS[f.control]), before: near(all[i - 1]), after: near(all[i + 1]) };
+}
+
 /** The scope ask's two wordings. The first quotes the request first; the second describes the field first. */
 const SCOPE_WORDINGS = [
-  (instr: string, c: FieldContext): string => {
-    const where = [c.heading === null ? null : `under the heading '${c.heading}'`, c.group === null ? null : `in the group '${c.group}'`].filter((x) => x !== null).join(", ");
-    const beside = [c.before === null ? null : `after '${c.before}'`, c.after === null ? null : `before '${c.after}'`].filter((x) => x !== null).join(" and ");
-    return `The user asked Caret: "${instr}". On the form, the field '${c.label}' is a ${c.role}${where === "" ? "" : `, ${where}`}${beside === "" ? "" : `, ${beside}`}. Does the request ask Caret to fill in or change this field?`;
+  (d: Disclosure, instr: ModelText, c: MintedContext): ModelText => {
+    const where = [c.heading === null ? null : d.t`under the heading '${c.heading}'`, c.group === null ? null : d.t`in the group '${c.group}'`].filter((x): x is ModelText => x !== null);
+    const beside = [c.before === null ? null : d.t`after '${c.before}'`, c.after === null ? null : d.t`before '${c.after}'`].filter((x): x is ModelText => x !== null);
+    const w = where.length === 0 ? d.own("") : d.t`, ${d.join(where, ", ")}`;
+    const b = beside.length === 0 ? d.own("") : d.t`, ${d.join(beside, " and ")}`;
+    return d.t`The user asked Caret: "${instr}". On the form, the field '${c.label}' is a ${c.role}${w}${b}. Does the request ask Caret to fill in or change this field?`;
   },
-  (instr: string, c: FieldContext): string =>
-    `The field '${c.label}'. Kind: ${c.role}. Heading: ${c.heading === null ? "none" : `'${c.heading}'`}. Group: ${c.group === null ? "none" : `'${c.group}'`}. The field before it: ${c.before === null ? "none" : `'${c.before}'`}; after it: ${c.after === null ? "none" : `'${c.after}'`}. The request: "${instr}". Is this field one the request asks Caret to fill in or change?`,
+  (d: Disclosure, instr: ModelText, c: MintedContext): ModelText =>
+    d.t`The field '${c.label}'. Kind: ${c.role}. Heading: ${c.heading === null ? d.own("none") : d.t`'${c.heading}'`}. Group: ${c.group === null ? d.own("none") : d.t`'${c.group}'`}. The field before it: ${c.before === null ? d.own("none") : d.t`'${c.before}'`}; after it: ${c.after === null ? d.own("none") : d.t`'${c.after}'`}. The request: "${instr}". Is this field one the request asks Caret to fill in or change?`,
 ] as const;
 
 export const scopeId = (ref: string): string => `s_${ref}`;
 
 /** The scope ask in one wording: one categorical question per field (or per field in `only`, by key), in one request. */
 export function scopeRequest(snap: IntentSnapshot, wording: 0 | 1, only?: ReadonlySet<string>): JevRequest {
+  const m = snapMint(snap);
+  const d = m.d;
   const declared = snap.ledger.declared();
   const questions: JevRequest["questions"] = {};
-  for (const f of scopeFields(snap)) if (only === undefined || only.has(f.key)) questions[scopeId(f.ref)] = { type: "choice", instructions: SCOPE_WORDINGS[wording](instructionForModel(snap.instruction), fieldContext(snap, f)), criteria: { ...SCOPE_OPTIONS } };
-  const state = { instruction: instructionForModel(snap.instruction), form: formTitle(snap), task: "Caret checks, field by field, which fields of the form the user's request asks it to fill in or change." };
+  for (const f of scopeFields(snap)) if (only === undefined || only.has(f.key)) questions[scopeId(f.ref)] = { type: "choice", instructions: SCOPE_WORDINGS[wording](d, m.instruction, mintedContext(snap, f)), criteria: d.ownRecord(SCOPE_OPTIONS) };
+  const state = { instruction: m.instruction, form: m.formTitle, task: d.own("Caret checks, field by field, which fields of the form the user's request asks it to fill in or change.") };
   // Raw text, not JSON: a heading with a quote or a backslash is sent, so its snippet must be declared (A3 review 2).
   const sent = [state.instruction, state.form, ...Object.values(questions).map((q) => q.instructions)].join("\n");
-  return snap.ledger.legacy({ purpose: "ask.scope", state, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged });
+  return d.seal({ purpose: "ask.scope", state, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged });
 }
 
 /** One field's scope: "asks" only when both wordings say so at SCOPE_CUTOFF; "unclear" when either says so. */

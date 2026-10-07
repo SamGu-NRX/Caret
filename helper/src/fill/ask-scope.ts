@@ -6,7 +6,9 @@
 import type { Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import type { Owner } from "./contract.ts";
+import { createHash } from "node:crypto";
 import { describeField, fieldLabelText } from "./descriptor.ts";
+import { redactWindow } from "./redact.ts";
 
 /**
  * I2 ruling: one request, one settlement. What the per-field scope question settled for a request, kept so a later step
@@ -122,6 +124,8 @@ export function headingsBefore(w: WindowState): Map<string, string | null> {
  * and the user moves focus between the question and the answer. "gone" for a field the window no longer has.
  */
 export function fieldFingerprint(w: WindowState, key: string): string {
+  // PV1: read from the redacted view, and kept as a digest, so the record a scope keeps holds no screen text.
+  w = redactWindow(w);
   const n = w.nodes.get(key);
   if (n === undefined) return "gone";
   const d = describeField(w, n);
@@ -129,7 +133,7 @@ export function fieldFingerprint(w: WindowState, key: string): string {
   const children = [...w.nodes.values()].filter((c) => c.parent === key).map((c) => [c.role, c.label ?? null, c.value ?? null, states(c.states)]);
   // The page's own input kind, autocomplete name and maxlength too (re-review): a field that now asks for a phone where it
   // asked for an email is not the field the Ask was about.
-  return JSON.stringify([d.label, d.nearest, d.placeholder, d.section, headingsBefore(w).get(key) ?? null, n.role, n.subrole ?? null, n.inputKind ?? null, n.autocomplete ?? null, n.maxLength ?? null, n.value ?? "", states(n.states), children]);
+  return createHash("sha256").update(JSON.stringify([d.label, d.nearest, d.placeholder, d.section, headingsBefore(w).get(key) ?? null, n.role, n.subrole ?? null, n.inputKind ?? null, n.autocomplete ?? null, n.maxLength ?? null, n.value ?? "", states(n.states), children])).digest("hex");
 }
 
 /** What the scope check needs of a write: its target and fingerprint (FieldContract), and whose value it is. */

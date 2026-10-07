@@ -2,7 +2,7 @@
 // the form's own: typed values first, then single lines of visible text, splitting "Label: value"
 // lines so the value is the span and the label is its context. Jev later picks among these by id,
 // and code copies the chosen span verbatim.
-import { Disclosure } from "../privacy/disclosure.ts";
+import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
 import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
@@ -83,12 +83,12 @@ export interface CandidateIdentity {
  * husband Marcus Cole, …").
  */
 export type Placement = "soleRecipient" | "toUsersAddress" | "ownNoteAlone" | "namesOther";
-export const PLACEMENT_SAYS: Record<Placement, string> = {
+export const PLACEMENT_SAYS = {
   soleRecipient: "it is the only recipient on the To: line of this mail",
   toUsersAddress: "it is on a To: line whose address is the email the user told Caret is theirs",
   ownNoteAlone: "it is in a sentence of the note the user just left that names no other person",
   namesOther: "it is in a sentence that names someone other than the user",
-};
+} as const satisfies Record<Placement, string>;
 
 /**
  * "justLeft": the window the user was in just before they came to the form (ScreenModel.windowBefore).
@@ -1153,12 +1153,49 @@ function short(s: string): string | null {
   return t.length <= MAX_CONTEXT_CHARS ? t : `${t.slice(0, MAX_CONTEXT_CHARS - 1)}…`;
 }
 
-const RECENCY_TEXT: Record<Recency, string> = {
+const RECENCY_TEXT = {
   justLeft: "the window the user just left",
   recent: "a window the user visited in the last two minutes, but not the one they just left",
   earlier: "a window the user visited more than two minutes ago",
   unseen: "a window the user has not visited",
-};
+} as const satisfies Record<Recency, string>;
+
+/**
+ * SC1 2b: describeCandidate's line, minted by `d`: the span, its label, line, block head and section as its source
+ * window's redacted view shows them, its kind and recency in Caret's words, the app and title of the window, and the
+ * memory label of an identity. Null when the source window is gone or a part is not one its view shows or will not fit.
+ * `blockHead` false leaves the block head out (SC1 2c, the minimized candidate).
+ */
+export function mintCandidate(d: Disclosure, model: ScreenModel, c: Candidate, o: { blockHead?: boolean; line?: string | null } = {}): ModelText | null {
+  const v = viewOf(model, c.source.windowId);
+  if (v === undefined) return null;
+  const facts: ModelText[] = [];
+  const text = d.candidate(v, c.text);
+  if (text === null) return null;
+  const view = (t: string, as: "descriptor" | "candidate"): ModelText | null => (as === "descriptor" ? d.descriptor(v, t) : d.candidate(v, t));
+  if (c.kind !== null) facts.push(d.id(c.kind));
+  if (c.identity !== undefined) {
+    const label = d.memoryText(null, c.identity.label);
+    if (label === null) return null;
+    facts.push(d.t`the user's own ${label}, which the user told Caret`);
+  }
+  const parts: [string | null | undefined, "descriptor" | "candidate", (m: ModelText) => ModelText][] = [
+    [c.context !== null && c.context !== c.text ? c.context : null, "descriptor", (m) => d.t`labelled '${m}'`],
+    [o.line !== undefined ? o.line : c.line, "candidate", (m) => d.t`in the line '${m}'`],
+    [o.blockHead === false ? null : c.blockHead, "candidate", (m) => d.t`in a block that starts '${m}'`],
+    [c.section !== null && c.section !== c.context ? c.section : null, "descriptor", (m) => d.t`under '${m}'`],
+  ];
+  for (const [t, as, say] of parts) {
+    if (t === null || t === undefined) continue;
+    const m = view(t, as);
+    if (m === null) return null;
+    facts.push(say(m));
+  }
+  const title = c.source.windowTitle === "" ? d.own("") : d.descriptor(v, c.source.windowTitle);
+  if (title === null) return null;
+  facts.push(d.t`in ${d.app(v)} window '${title}', ${d.own(RECENCY_TEXT[c.recency])}`);
+  return d.t`"${text}" (${d.join(facts, "; ")})`;
+}
 
 /** One line per candidate: the span, then the facts code knows about where it was found. */
 export function describeCandidate(c: Candidate): string {

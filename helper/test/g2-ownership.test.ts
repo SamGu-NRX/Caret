@@ -211,7 +211,7 @@ describe("structural evidence in whose-value questions (G2)", () => {
 });
 
 describe("a date's or a contact's clause (G2)", () => {
-  const descriptions = (requests: JevRequest[]): string[] => requests.flatMap((r) => Object.values(r.questions).flatMap((q) => Object.values(q.criteria).filter((d): d is string => typeof d === "string")));
+  const descriptions = (requests: JevRequest[]): string[] => requests.flatMap((r) => Object.values(r.questions).flatMap((q) => Object.values(q.criteria).filter((d) => typeof d === "string")));
 
   // Passes before G2 too: on a two-field page the old rule's long-line clause fits. On F1's walked Greenhouse page the
   // note's budget was spent before any clause, and these dates went out bare (evidence/screen/g2/whose/probe-*.json).

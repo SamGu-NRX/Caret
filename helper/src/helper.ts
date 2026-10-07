@@ -3107,8 +3107,8 @@ export class Helper {
           ? `Finish the rest of what the user is copying from ${from} (${h.values} values)`
           : `Fill ${h.values} fields from ${from} the way the user did before`;
     const say = (d: Disclosure): MintedSay => {
-      const apps = h.from.map((a) => d.appNamed(a));
-      const fromM = apps.every((a) => a !== null) && apps.length > 0 ? d.join(apps as ModelText[], " and ") : d.own("another window");
+      const apps = h.from.map((a) => d.appNamed(a)).filter((a): a is ModelText => a !== null);
+      const fromM = apps.length === h.from.length && apps.length > 0 ? d.join(apps, " and ") : d.own("another window");
       const name = h.skill ? d.memoryText(null, h.says) : null;
       const m = h.skill
         ? name === null
@@ -3582,7 +3582,8 @@ function eventOffer(d: Disclosure, v: WindowState, sentence: ModelText, c: Event
 /** "A", "A and B", "A, B and C", of minted texts. */
 function andListMinted(d: Disclosure, xs: readonly ModelText[]): ModelText {
   if (xs.length <= 1) return xs[0] ?? d.own("");
-  return d.t`${d.join(xs.slice(0, -1), ", ")} and ${xs.at(-1) as ModelText}`;
+  const last = xs.at(-1);
+  return last === undefined ? d.own("") : d.t`${d.join(xs.slice(0, -1), ", ")} and ${last}`;
 }
 
 function startOpen(c: EventCandidate): boolean {

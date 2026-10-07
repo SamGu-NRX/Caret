@@ -1,4 +1,4 @@
-import { Disclosure } from "../privacy/disclosure.ts";
+import { Disclosure, type Minted, type ModelText } from "../privacy/disclosure.ts";
 import { instructionForModel } from "../fill/redact.ts";
 import { redactWindow } from "../fill/redact.ts";
 // The frozen snapshots a goal program reads, and the bindings behind their refs (D2-06). Built from the screen model
@@ -15,7 +15,7 @@ import type { Node } from "../protocol.ts";
 import { eventCandidate, sentences, spansIn } from "../offers/event-card.ts";
 import type { EventClock } from "../offers/event-time.ts";
 import { valueList, type Value } from "../planner/codeplan.ts";
-import { writableFields } from "../planner/planner.ts";
+import { mintFieldName, writableFields } from "../planner/planner.ts";
 import type { MemoryValue } from "../planner/trace.ts";
 import { WINDOW_CHARS } from "../privacy.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
@@ -69,7 +69,8 @@ export interface InventoryOptions {
 }
 
 export interface Inventory {
-  snapshots: PlanningSnapshot[];
+  /** What the goal writer reads, every text minted by `ledger` (SC1 2b). */
+  snapshots: Minted<PlanningSnapshot>[];
   inventory: GoalInventory;
   ledger: Disclosure;
 }
@@ -100,7 +101,8 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   const windowRefs = new Map<string, string>();
   const texts = new Map<string, { title: string; text: string; message: string }>();
   const owed = new Map<string, OwedField[]>();
-  const snapshots: PlanningSnapshot[] = [];
+  const snapshots: Minted<PlanningSnapshot>[] = [];
+  const d = ledger;
   let t = 0;
   let v = 0;
   const people = o.memory.filter((m) => m.whose === "other");
@@ -129,25 +131,38 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     if (doc !== null) documents.set(w.window.windowId, doc);
     const title = w.window.title.slice(0, 200);
     if (!ledger.take(w, "descriptor", [title])) throw new Error(`'${title}' is longer than one request may carry`);
+    const titleText = d.descriptor(w, title) ?? d.own("");
     const domain = domainOf(w);
-    const snapTargets: PlanningSnapshot["targets"] = [];
-    /** `shown`: the label as the writer reads it, when it says more than the control's own (a select's choices). */
-    const bind = (b: Omit<TargetBinding, "ref" | "domain">, canFill: boolean, effects: string[], shown = b.label): void => {
+    const snapTargets: Minted<PlanningSnapshot>["targets"] = [];
+    /**
+     * `shown`: the label as the writer reads it, when it says more than the control's own (a select's choices). `said`
+     * mints it, and with it the binding's own label, which the gates name the target by (gates.ts).
+     */
+    const bind = (b: Omit<TargetBinding, "ref" | "domain">, canFill: boolean, effects: string[], said: () => ModelText | null, shown = b.label): void => {
       if (!ledger.take(w, "descriptor", [shown])) return;
+      const label = said();
+      if (label === null) return;
       const ref = `t${++t}`;
       targets.set(ref, { ref, domain, ...b });
-      snapTargets.push({ ref, label: shown.slice(0, 200), kind: b.control, canFill, options: [], allowedPressEffects: effects });
+      snapTargets.push({ ref: d.id(ref), label: d.slice(label, 200), kind: d.id(b.control), canFill, options: [], allowedPressEffects: effects.map((e) => d.id(e)) });
     };
     for (const f of writableFields(w)) {
       if ((f.node.value ?? "") !== "") continue;
-      bind({ key: f.node.key, role: f.node.role, label: f.name, own: f.label, placeholder: f.node.placeholder ?? null, control: "text", value: "", options: null, ...contractOf(w, f.node, null) }, true, []);
+      bind({ key: f.node.key, role: f.node.role, label: f.name, own: f.label, placeholder: f.node.placeholder ?? null, control: "text", value: "", options: null, ...contractOf(w, f.node, null) }, true, [], () => mintFieldName(d, w, f));
     }
     // A page's controls the page engine sets (D2-04, W2). Boxes are left out: a goal plan never ticks one.
     if (domain.kind === "window" && domain.page) {
       for (const c of formControls(w)) {
         const control = CONTROL[c.control];
         if (control === undefined || c.label === null) continue;
-        bind({ key: c.node.key, role: c.node.role, label: c.label, own: c.label, placeholder: c.node.placeholder ?? null, control, value: "", options: c.options, ...contractOf(w, c.node, c) }, true, [], c.options === null ? c.label : `${c.label} (one of: ${c.options.join(", ")})`);
+        const label = c.label;
+        const options = c.options;
+        bind({ key: c.node.key, role: c.node.role, label, own: label, placeholder: c.node.placeholder ?? null, control, value: "", options, ...contractOf(w, c.node, c) }, true, [], () => {
+          const name = d.descriptor(w, label);
+          if (name === null || options === null) return name;
+          const minted = options.map((x) => d.descriptor(w, x)).filter((x): x is ModelText => x !== null);
+          return minted.length !== options.length ? null : d.t`${name} (one of: ${d.join(minted, ", ")})`;
+        }, options === null ? label : `${label} (one of: ${options.join(", ")})`);
       }
     }
     let buttons = 0;
@@ -155,17 +170,17 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
       const label = (n.label ?? "").trim();
       if (n.role !== "AXButton" || label === "" || n.states?.includes("disabled") || buttons >= MAX_BUTTONS) continue;
       buttons++;
-      bind({ key: n.key, role: n.role, label, own: label, placeholder: null, control: "button", value: "", options: null }, false, allowedEffects({ label, role: n.role, windowKind: w.window.kind, bundleId: w.app.bundleId, page: domain.kind === "window" && domain.page }));
+      bind({ key: n.key, role: n.role, label, own: label, placeholder: null, control: "button", value: "", options: null }, false, allowedEffects({ label, role: n.role, windowKind: w.window.kind, bundleId: w.app.bundleId, page: domain.kind === "window" && domain.page }), () => d.descriptor(w, label));
     }
     const own = i === 0 ? listed.filter((x) => x.window === null) : [];
     const fromHere = listed.filter((x) => x.window === w);
-    const snapValues: PlanningSnapshot["values"] = [];
+    const snapValues: Minted<PlanningSnapshot>["values"] = [];
     for (const x of [...own, ...fromHere]) {
       const b = valueOf(x, snapshot);
       values.set(b.ref, b);
-      snapValues.push({ ref: b.ref, display: b.display, origin: b.origin });
+      snapValues.push({ ref: d.id(b.ref), display: x.display, origin: mintOrigin(d, b.origin) });
     }
-    snapshots.push({ snapshot, window: `w${i + 1}`, revision: revisions.get(w.window.windowId) ?? "", title, targets: snapTargets, values: snapValues, questions: [] });
+    snapshots.push({ snapshot: d.id(snapshot), window: d.id(`w${i + 1}`), revision: d.id(revisions.get(w.window.windowId) ?? "none"), title: titleText, targets: snapTargets, values: snapValues, questions: [] });
   });
 
   // Source windows the goal does not act in, with their values and any event code finds in them.
@@ -176,24 +191,27 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     revisions.set(sw.window.windowId, windowRevision(sw));
     windowRefs.set(`w${snapshots.length + 1}`, sw.window.windowId);
     texts.set(sw.window.windowId, basisText(sw));
-    const snapValues: PlanningSnapshot["values"] = [];
+    const snapValues: Minted<PlanningSnapshot>["values"] = [];
     for (const x of listed.filter((y) => y.window === sw)) {
       const b = valueOf(x, snapshot);
       values.set(b.ref, b);
-      snapValues.push({ ref: b.ref, display: b.display, origin: b.origin });
+      snapValues.push({ ref: d.id(b.ref), display: x.display, origin: mintOrigin(d, b.origin) });
     }
-    if (o.calendar !== null) for (const b of eventsIn(sw, people, o.clock, snapshot, ledger, () => `v${++v}`)) {
+    if (o.calendar !== null) for (const { b, display } of eventsIn(sw, people, o.clock, snapshot, ledger, () => `v${++v}`)) {
       values.set(b.ref, b);
-      snapValues.push({ ref: b.ref, display: b.display, origin: b.origin });
+      snapValues.push({ ref: d.id(b.ref), display, origin: mintOrigin(d, b.origin) });
     }
-    snapshots.push({ snapshot, window: `w${snapshots.length + 1}`, revision: revisions.get(sw.window.windowId) ?? "", title: sw.window.title.length <= 200 ? sw.window.title : "", targets: [], values: snapValues, questions: [] });
+    const swTitle = sw.window.title.length <= 200 ? (d.descriptor(sw, sw.window.title) ?? d.own("")) : d.own("");
+    snapshots.push({ snapshot: d.id(snapshot), window: d.id(`w${snapshots.length + 1}`), revision: d.id(revisions.get(sw.window.windowId) ?? "none"), title: swTitle, targets: [], values: snapValues, questions: [] });
   }
 
   if (o.calendar !== null) {
     const ref = `t${++t}`;
     const domain: GoalDomain = { kind: "calendar", calendar: o.calendar };
     targets.set(ref, { ref, domain, key: "calendar", role: "calendar", label: o.calendar, own: o.calendar, placeholder: null, control: "calendar", value: "", options: null });
-    snapshots.push({ snapshot: `s${snapshots.length + 1}`, window: `w${snapshots.length + 1}`, revision: "calendar", title: `Calendar '${o.calendar}'`, targets: [{ ref, label: o.calendar, kind: "calendar", canFill: true, options: [], allowedPressEffects: [] }], values: [], questions: [] });
+    // The calendar's name is the user's own setting, minted as what the user told Caret.
+    const name = d.memoryText(null, o.calendar);
+    if (name !== null) snapshots.push({ snapshot: d.id(`s${snapshots.length + 1}`), window: d.id(`w${snapshots.length + 1}`), revision: d.own("calendar"), title: d.t`Calendar '${name}'`, targets: [{ ref: d.id(ref), label: name, kind: d.own("calendar"), canFill: true, options: [], allowedPressEffects: [] }], values: [], questions: [] });
   }
   return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed }, ledger };
 }
@@ -212,9 +230,10 @@ function contractOf(w: WindowState, node: Node, form: FormControl | null): { fie
 }
 
 /** Events code reads from a source window's sentences: a resolved time and a person, as an event card would offer. */
-function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventClock, snapshot: string, ledger: Disclosure, nextRef: () => string): ReadValue[] {
+function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventClock, snapshot: string, ledger: Disclosure, nextRef: () => string): { b: ReadValue; display: ModelText }[] {
   w = redactWindow(w);
-  const out: ReadValue[] = [];
+  const d = ledger;
+  const out: { b: ReadValue; display: ModelText }[] = [];
   for (const n of w.nodes.values()) {
     const text = nodeText(n);
     if (text === "") continue;
@@ -226,10 +245,17 @@ function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventCl
       // the person's name and the date and time spans.
       if (!ledger.take(w, "candidate", [c.person, ...spans])) continue;
       const time = c.time.time;
+      // The title and time are code's reading of the sentence: each word one the sentence shows, a number or a calendar word.
+      const sentenceBasis = d.basis(w, sentence);
+      const said = sentenceBasis === null ? null : d.derived(sentenceBasis, c.title);
+      const when = sentenceBasis === null ? null : d.derived(sentenceBasis, time.says, ["utc"]);
+      const from = d.descriptor(w, w.window.title);
+      if (said === null || when === null || from === null) continue;
       const ref = nextRef();
-      const display = `the event '${c.title}', ${time.says} (read from '${w.window.title}')`.slice(0, 400);
+      const minted = d.slice(d.t`the event '${said}', ${when} (read from '${from}')`, 400);
+      const display: string = minted;
       // Derived here from a person and a resolved time, so it skips Jev's value question (gates.ts markDerived).
-      out.push(markDerived({
+      out.push({ display: minted, b: markDerived({
         ref,
         text: c.title,
         display,
@@ -239,8 +265,22 @@ function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventCl
         event: { title: c.title, start: time.start, end: time.end, says: time.says, sentence },
         draft: null,
         owner: null,
-      }));
+      }) });
     }
   }
   return out;
+}
+
+/** A value's origin as the writer reads it, every text a code-made id or Caret's word (SC1 2b). */
+function mintOrigin(d: Disclosure, o: ValueOrigin): Minted<PlanningSnapshot>["values"][number]["origin"] {
+  switch (o.kind) {
+    case "span":
+      return { kind: d.own("span"), snapshot: d.id(o.snapshot), source: d.id(o.source), startUTF16: o.startUTF16, endUTF16: o.endUTF16, digest: d.id(o.digest) };
+    case "memory":
+      return { kind: d.own("memory"), entryId: d.id(o.entryId), fileRevision: o.fileRevision === "" ? d.own("") : d.id(o.fileRevision), digest: d.id(o.digest) };
+    case "derived":
+      return { kind: d.own("derived"), inputs: o.inputs.map((x) => d.id(x)), resolver: d.id(o.resolver), version: d.id(o.version), parametersDigest: d.id(o.parametersDigest) };
+    case "draft":
+      return { kind: d.own("draft"), draftId: d.id(o.draftId), model: d.id(o.model), basis: o.basis.map((x) => d.id(x)), digest: d.id(o.digest) };
+  }
 }

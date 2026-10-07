@@ -1,6 +1,6 @@
+import { createHash } from "node:crypto";
 import { instructionForModel, instructionView, redactWindow } from "../fill/redact.ts";
 import { mentionedKind } from "../memory/sensitive.ts";
-import { assertNoSecrets } from "../privacy.ts";
 // Ask (B25): an instruction becomes an intent (intent.ts), code checks it, and the route decides what runs.
 //   - fill: the fill engine (fill/fill.ts proposeFill) restricted to the intent's fields, sources, person and
 //     spelled-out values; its text writes become the planner's plan of field writes, checked by validatePlan as
@@ -29,7 +29,8 @@ import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
 import { namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, wordsOf, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import { planWithCode, type WriterUse } from "./codeplan.ts";
-import { checkIntent, intentSnapshot, leftToYouSays, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
+import { checkIntent, intentSnapshot, leftToYouSays, snapMint, UNCLEAR_PART, type AskFixed, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
+import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 import { SAYS, SaidError, Unclear, asksFieldsBeside, jevFailedError, saysAmbiguous, saysFor, saysNeverTyped, saysNoValue, saysOptionsUnseen, saysPress, saysUnsure, saysUnsureFields, type AskPart } from "./says.ts";
 import { choicesFor, type Choice } from "./choices.ts";
 import { fieldWords } from "./sources.ts";
@@ -240,11 +241,18 @@ function saidWithUnnamed(e: unknown, w: WindowState): unknown {
   return new SaidError(e.code, said, e.message);
 }
 
-/** What a question records of the form; a later question of the same Ask keeps the first one's record of each field. */
+/**
+ * What a question records of the form; a later question of the same Ask keeps the first one's record of each field. The
+ * title is recorded as a digest of the redacted view's title, as fields are (fieldFingerprint): a record holds no screen
+ * text (PV1).
+ */
 function seenOf(snap: IntentSnapshot, earlier: AskResume["seen"] | undefined): AskResume["seen"] {
   const now = Object.fromEntries([...snap.fields, ...snap.uploads].map((f) => [f.key, fieldSeen(snap.window, f)]));
-  return earlier === undefined ? { title: snap.window.window.title, fields: now } : { title: earlier.title, fields: { ...now, ...earlier.fields } };
+  return earlier === undefined ? { title: titleSeen(snap.window), fields: now } : { title: earlier.title, fields: { ...now, ...earlier.fields } };
 }
+
+/** The form's title as a record compares it: a digest of its redacted view's title. */
+const titleSeen = (w: WindowState): string => createHash("sha256").update(redactWindow(w).window.title).digest("hex");
 
 /**
  * Refuses a continued Ask when the form's title, or any field it is about to fill, no longer reads as the question saw
@@ -252,7 +260,7 @@ function seenOf(snap: IntentSnapshot, earlier: AskResume["seen"] | undefined): A
  * after the fill's last model call, so a change made while Jev answered is seen too (second re-check).
  */
 function checkSeen(r: AskResume, snap: IntentSnapshot, keys: readonly string[]): void {
-  if (snap.window.window.title !== r.seen.title) changed("the form's title changed");
+  if (titleSeen(snap.window) !== r.seen.title) changed("the form's title changed");
   for (const key of keys) {
     const f = snap.fields.find((x) => x.key === key);
     if (f === undefined || r.seen.fields[key] !== fieldSeen(snap.window, f)) changed(`the field '${f?.name ?? key}' changed`);
@@ -778,9 +786,10 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     const left = withUnseen(withUnnamed(leftToYouSays(checked.leftToYou), w), w, checked.fields);
     // V4: a menu whose options Caret cannot see is named once, as the user's, not also as one with nothing found.
     const unseen = new Set(unseenOptions(w, checked.fields).map((f) => f.key));
-    const empty = checked.fields.filter((f) => !unseen.has(f.key)).map((f) => f.name);
+    // PV1: the names a sentence and its record carry are the redacted view's (modelName), never a local raw name.
+    const empty = checked.fields.filter((f) => !unseen.has(f.key)).map((f) => f.modelName ?? f.name);
     const said = [empty.length === 0 ? null : saysNoValue(empty), left].filter((x): x is string => x !== null).join(" ");
-    return refused(new SaidError("nothingToDo", said, `no value for ${checked.fields.map((f) => f.name).join(", ")} on screen, in memory or in the instruction${unseen.size === 0 ? "" : `; ${unseen.size} of them menus whose options the window does not show`}`));
+    return refused(new SaidError("nothingToDo", said, `no value for ${checked.fields.map((f) => f.modelName ?? f.name).join(", ")} on screen, in memory or in the instruction${unseen.size === 0 ? "" : `; ${unseen.size} of them menus whose options the window does not show`}`));
   }
 
   const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: w.window.windowId } : {}) };
@@ -842,12 +851,12 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
 
 const CONFIRM = { yes: "Yes: the instruction asks for this.", no: "No: the instruction does not ask for this." } as const;
 const CONFIRM_FIELD = [
-  (instr: string, name: string): string => `The user asked: "${instr}". Does that ask to fill in or change the field '${name}'?`,
-  (instr: string, name: string): string => `Field: '${name}'. Instruction: "${instr}". Is this field one the instruction asks to fill or change?`,
+  (d: Disclosure, instr: ModelText, name: ModelText): ModelText => d.t`The user asked: "${instr}". Does that ask to fill in or change the field '${name}'?`,
+  (d: Disclosure, instr: ModelText, name: ModelText): ModelText => d.t`Field: '${name}'. Instruction: "${instr}". Is this field one the instruction asks to fill or change?`,
 ] as const;
 const CONFIRM_ALL = [
-  (instr: string): string => `The user asked: "${instr}". Does that ask Caret to fill in every field of the form it can?`,
-  (instr: string): string => `Instruction: "${instr}". Is it a request to fill in the whole form?`,
+  (d: Disclosure, instr: ModelText): ModelText => d.t`The user asked: "${instr}". Does that ask Caret to fill in every field of the form it can?`,
+  (d: Disclosure, instr: ModelText): ModelText => d.t`Instruction: "${instr}". Is it a request to fill in the whole form?`,
 ] as const;
 
 type FillChecked = Extract<ReturnType<typeof checkIntent>, { route: "fill" }>;
@@ -904,18 +913,20 @@ function sectionScope(instruction: string, checked: FillChecked, snap: IntentSna
  * Asks Jev, in both wordings in parallel, whether the instruction asks for the whole form (`all`) and for each of
  * `fields` (ids f1, f2, ... in order). The answer holds for an id both wordings answer yes at PLAN_CUTOFF.
  */
-function jevConfirms(instruction: string, snap: IntentSnapshot, askJev: AskJev): (all: boolean, fields: readonly IntentField[]) => Promise<(id: string) => boolean> {
-  instruction = instructionForModel(instruction);
+function jevConfirms(raw: string, snap: IntentSnapshot, askJev: AskJev): (all: boolean, fields: readonly IntentField[]) => Promise<(id: string) => boolean> {
+  const m = snapMint(snap);
+  const d = m.d;
+  const instruction = d.instruction(raw);
   const declared = snap.ledger.declared();
   return async (all, fields) => {
     const req = (wording: 0 | 1): JevRequest => {
       const questions: JevRequest["questions"] = {};
-      if (all) questions.all = { type: "choice", instructions: CONFIRM_ALL[wording](instruction), criteria: { ...CONFIRM } };
+      if (all) questions.all = { type: "choice", instructions: CONFIRM_ALL[wording](d, instruction), criteria: d.ownRecord(CONFIRM) };
       fields.forEach((f, i) => {
-        questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](instruction, f.modelName ?? f.name), criteria: { ...CONFIRM } };
+        questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](d, instruction, m.field(f)), criteria: d.ownRecord(CONFIRM) };
       });
       const sent = JSON.stringify([instruction, questions]);
-      return snap.ledger.legacy({ purpose: "ask.confirm", state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged });
+      return d.seal({ purpose: "ask.confirm", state: { instruction, task: d.own("Caret checks which fields of the form the user's instruction asks it to fill.") }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged });
     };
     const [a, b] = await Promise.all([askJev(req(0)), askJev(req(1))]);
     return (id) => {

@@ -37,7 +37,7 @@ describe("an Ask about a page is planned by the page planner (P2)", () => {
     // The box whose value fill would not write ("34" for "Are you over 18?") is named as the user's before Tab.
     expect(preview.warnings.some((w) => /Are you over 18\?/.test(w))).toBe(true);
     // Fill's own two wordings chose every value: the goal value gate's question was never asked.
-    expect(r.asked.some((q) => typeof q.state !== "string" && q.state.task === VERIFY_TASK)).toBe(false);
+    expect(r.asked.some((q) => typeof q.state !== "string" && (q.state as { task?: unknown }).task === VERIFY_TASK)).toBe(false);
   });
 
   it("fills them all on one acceptance, presses nothing, and one undo restores the page", async () => {

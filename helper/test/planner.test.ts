@@ -438,7 +438,7 @@ describe("planTask", () => {
     expect(d.slots).toEqual({ v1: "Austin" });
     expect(d.checked.writes[0]?.trace).toMatchObject({ from: "window", windowId: "6160-9" });
     const city = Object.entries((jev.requests[0] as JevRequest).questions).find(([id]) => id !== "press")?.[1];
-    const offered = Object.values(city?.criteria ?? {}).filter((x): x is string => typeof x === "string");
+    const offered = Object.values(city?.criteria ?? {}).filter((x) => x !== null);
     expect(offered.some((x) => x.startsWith('"455 Congress Ave, Austin, TX 78701"'))).toBe(false);
     expect(offered.some((x) => x.startsWith('"Austin" (the city of "455 Congress Ave, Austin, TX 78701"'))).toBe(true);
     expect(offered.some((x) => x.startsWith('"455 Congress Ave" '))).toBe(false);
@@ -614,7 +614,7 @@ describe("planRequest through the helper", () => {
       route: FAKE_WRITER_ROUTE,
       write: async (req: WriterRequest) => {
         intents.push(req.kind);
-        const input = req.input as { fields: { ref: string; name: string }[] };
+        const input = req.input as unknown as { fields: { ref: string; name: string }[] };
         const ref = input.fields.find((f) => f.name === "Name")?.ref ?? "none";
         const json = { route: "fill", why: "none", scope: "list", section: "none", fields: [ref], sources: ["any"], whose: "user", literals: [] };
         return { model: "fake", provider: "groq", output: { program: null, reply: JSON.stringify(json), json }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };

@@ -216,7 +216,7 @@ describe("PV1 outbound redaction", () => {
   it("the writer refuses marked input before reading its key or sending", async () => {
     let keyReads = 0;
     const writer = makeWriterPort(gatewayRoute("openai/gpt-oss-120b"), { key: () => { keyReads++; throw new Error("must not read a key"); } });
-    await expect(writer.write({ kind: "intent", disclosureId: "fixture", input: { instruction: "password: violet-orchard-seven" }, disclosure: new Disclosure([]), maxOutputTokens: 50, signal: new AbortController().signal })).rejects.toBeInstanceOf(SecretInRequest);
+    await expect(writer.write({ kind: "intent", disclosureId: "fixture", input: { instruction: "password: violet-orchard-seven" as never }, disclosure: new Disclosure([]), maxOutputTokens: 50, signal: new AbortController().signal })).rejects.toBeInstanceOf(SecretInRequest);
     expect(keyReads).toBe(0);
   });
 });

@@ -126,7 +126,7 @@ function cannedWriter(c: Case): WriterPort & { requests: number } {
     requests: 0,
     async write(req: Parameters<WriterPort["write"]>[0]) {
       w.requests++;
-      const snapshots = (req.input as { snapshots: PlanningSnapshot[] }).snapshots;
+      const snapshots = (req.input as unknown as { snapshots: PlanningSnapshot[] }).snapshots;
       const hasEvent = snapshots.some((x) => x.values.some((v) => v.display.startsWith("the event '")));
       const program = w.requests > 1 ? null : cannedProgram(snapshots, cannedSteps(c).filter((x) => hasEvent || !("fill" in x && x.fill.window === "Calendar")));
       return { model: "canned", provider: "canned", output: { program, reply: program ?? "" }, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };

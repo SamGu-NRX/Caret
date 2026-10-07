@@ -22,6 +22,15 @@ import { labelKind, SENSITIVE_SAYS } from "../memory/sensitive.ts";
 import type { EventClock } from "../offers/event-time.ts";
 import { writtenFields } from "../offers/fill-popup.ts";
 import { fieldName } from "../planner/planner.ts";
+import { UNNAMED_FIELD } from "../planner/intent.ts";
+import { redactWindow } from "../fill/redact.ts";
+
+/** A field's name as the plan says it, read from the window's redacted view (PV1: never a name redaction removed). */
+function viewName(w: WindowState, n: Node): string {
+  const v = redactWindow(w);
+  const kept = v.nodes.get(n.key);
+  return kept === undefined ? UNNAMED_FIELD : fieldName(v, kept);
+}
 import { saysNoValue, UNSURE_FIELD } from "../planner/says.ts";
 import { handoffWhy } from "../planner/validate.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
@@ -357,7 +366,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   // has something to offer (before C2: with a file control only). A fill that failed any other way refuses the plan.
   const failed = rounds.find((x) => x.error !== null && x.error.why !== "nothingToCopy")?.error;
   if (failed !== undefined && failed !== null) throw new GoalError("nothingToDo", "Caret couldn't read this form's values", failed.message);
-  if (rounds.every((x) => x.error !== null) && rounds.length > 0 && files.length === 0) throw new GoalError("nothingToDo", saysNoValue(asked.map((x) => fieldName(w, x.node))), rounds[0]?.error?.message);
+  if (rounds.every((x) => x.error !== null) && rounds.length > 0 && files.length === 0) throw new GoalError("nothingToDo", saysNoValue(asked.map((x) => viewName(w, x.node))), rounds[0]?.error?.message);
   for (const x of rounds) if (x.error !== null) for (const y of x.part) leave(y.node, "Caret found nothing on screen or in memory for it");
   // What a Fill all would write: text values and the controls fill says it writes, each with its span and source; and
   // (an Ask's own) a value the instruction spells out for the field, which both asks chose as written there.
@@ -385,7 +394,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
   }
   if (writes.size === 0 && files.length === 0) {
     const unsure = left.filter((l) => l.key !== `size:${o.windowId}`);
-    throw new GoalError("nothingToDo", unsure.length > 0 ? clip(unsure.map((l) => l.says).join("; "), 590) : saysNoValue(asked.map((x) => fieldName(w, x.node))));
+    throw new GoalError("nothingToDo", unsure.length > 0 ? clip(unsure.map((l) => l.says).join("; "), 590) : saysNoValue(asked.map((x) => viewName(w, x.node))));
   }
 
   // 3. The inventory: the page as frozen (revision, document, owed fields), and a target for each field fill writes.

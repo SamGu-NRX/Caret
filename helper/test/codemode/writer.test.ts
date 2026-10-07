@@ -8,7 +8,7 @@ import { listModels } from "../../src/writer/chat.ts";
 import { GATEWAY_GPT_OSS_120B, GROQ_GPT_OSS_120B, GROQ_QWEN_3_8_27B } from "../../src/writer/config.ts";
 import { extractProgram, PLAN_API, planUserMessage } from "../../src/writer/plan-prompt.ts";
 import { GOAL_API, GOAL_SYSTEM } from "../../src/writer/goal-prompt.ts";
-import { makeWriterPort } from "../../src/writer/port.ts";
+import { makeWriterPort, type WriterRequest } from "../../src/writer/port.ts";
 import { CANNED_PROGRAM, FORM, MAIL } from "./fixtures.ts";
 import { WRITER_CORPUS } from "./writer-corpus.ts";
 
@@ -27,7 +27,8 @@ const completion = (content: string, model = "openai/gpt-oss-120b") => ({
   usage: { prompt_tokens: 2000, completion_tokens: 500, completion_tokens_details: { reasoning_tokens: 120 } },
 });
 
-const request = (input: unknown = { goal: "Sign me up", snapshots: [FORM, MAIL] }) => (minted({ kind: "plan" as const, disclosureId: "disc-1", input, maxOutputTokens: 1500, signal: new AbortController().signal }));
+// The input is fixture wording, minted with the request; its type is the port's, which takes minted values only.
+const request = (input: unknown = { goal: "Sign me up", snapshots: [FORM, MAIL] }): WriterRequest => minted({ kind: "plan", disclosureId: "disc-1", input: input as Record<string, unknown>, maxOutputTokens: 1500, signal: new AbortController().signal }) as unknown as WriterRequest;
 
 describe("plan prompt", () => {
   test("the API the writer reads names exactly the functions the sandbox exposes", () => {

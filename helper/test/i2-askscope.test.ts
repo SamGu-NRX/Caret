@@ -230,7 +230,7 @@ describe("the writer goal (review reproduction 1)", () => {
     route: FAKE_WRITER_ROUTE,
     async write(req) {
       const base = { model: "canned", provider: "canned", inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
-      const program = cannedProgram((req.input as { snapshots: PlanningSnapshot[] }).snapshots, STEPS);
+      const program = cannedProgram((req.input as unknown as { snapshots: PlanningSnapshot[] }).snapshots, STEPS);
       return { ...base, output: { program, reply: program } };
     },
   };

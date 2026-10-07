@@ -3,7 +3,7 @@
 // text: a plan program still has to pass compileProgram and the sandbox.
 import { chat, type ChatRoute } from "./chat.ts";
 import { assertNoSecrets, type Snippet } from "../privacy.ts";
-import { verifyWriterInput, type Disclosure } from "../privacy/disclosure.ts";
+import { verifyWriterInput, type Disclosure, type ModelValue } from "../privacy/disclosure.ts";
 import { writerPolicy, type ProviderPolicy } from "../privacy/providers.ts";
 import { readKey } from "./env.ts";
 import { extractProgram, PLAN_SYSTEM, PlanInputSchema, planUserMessage } from "./plan-prompt.ts";
@@ -23,7 +23,8 @@ export interface WriterRequest {
    * record of what was sent (B24). Never sent.
    */
   disclosed?: readonly Snippet[];
-  input: unknown;
+  /** SC1 2b: minted text only (privacy/disclosure.ts ModelValue); the port verifies it against `disclosure`. */
+  input: ModelValue;
   /** SC1 2b: the Disclosure that minted every text in `input` (privacy/disclosure.ts). Never sent; write() verifies against it. */
   disclosure: Disclosure;
   maxOutputTokens: number;

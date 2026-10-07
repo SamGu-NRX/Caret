@@ -36,7 +36,8 @@ export function fixtureFillRequest(recordText: string): JevRequest {
     { title: "Draft.txt", text: readFileSync(join(FIXTURES, "sources/draft.txt"), "utf8") },
     { title: "Venue deposit and Thursday review", text: JSON.stringify(JSON.parse(readFileSync(join(FIXTURES, "sources/colleague-thread.mail.json"), "utf8"))) },
   ];
-  const questions: JevRequest["questions"] = {};
+  // Fixture wording, minted with the request (test/minted.ts).
+  const questions: Record<string, { type: "choice"; instructions: string; criteria: Record<string, string> }> = {};
   for (const [id, q] of Object.entries(record.questions)) {
     if (!/^f\d+$/.test(id)) throw new Error("the recorded fixture has an unexpected question id");
     const label = /Label: '([^']+)'/.exec(q.ins)?.[1];
