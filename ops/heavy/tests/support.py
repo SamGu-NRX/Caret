@@ -60,6 +60,20 @@ def profile(lease=True, lease_wait=60, exec_s=120, grace=5.0, floor=0):
                                "Synthetic test profile; not a Caret floor.")
 
 
+def world_processes(root):
+    """(pid, command) of this user's processes, other than this one, whose command line names the test world *root*:
+    its relays, supervisors, recipes and recovery agents all carry a path inside it."""
+    roots = {root, os.path.realpath(root)}
+    listing = subprocess.run(["ps", "-U", str(os.getuid()), "-ww", "-o", "pid=,command="], capture_output=True,
+                             text=True).stdout
+    found = []
+    for line in listing.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if pid.isdigit() and int(pid) != os.getpid() and any(r + os.sep in command for r in roots):
+            found.append((int(pid), command))
+    return found
+
+
 class World(unittest.TestCase):
     """Per-test temporary world. Subclasses call self.enqueue(...) and self.run_queue(...)."""
 
@@ -157,9 +171,23 @@ class World(unittest.TestCase):
             if outcome:
                 pid = outcome.get("supervisor_pid")
                 self.wait_for(lambda: pid is None or procs.DarwinProbes().usage(pid) is None, 30)
+        # Anything of this world still running is this test's own: a test that ended mid-job, or a supervisor waiting on
+        # the recovery agent booted out above, with its relay waiting on it. Stopped by exact pid; a survivor fails the
+        # teardown rather than outliving the world (2026-10-07: eleven were found orphaned for hours).
+        left = world_processes(self.root)
+        for pid, _ in left:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if left:
+            self.wait_for(lambda: not world_processes(self.root), 20)
+        survivors = world_processes(self.root)
         for dirpath, dirnames, filenames in os.walk(self.root):
             os.chmod(dirpath, 0o755)
         shutil.rmtree(self.root, ignore_errors=True)
+        if survivors:
+            raise AssertionError("processes of this test world survived its teardown: {}".format([p for p, _ in survivors]))
 
     # Jobs
 
