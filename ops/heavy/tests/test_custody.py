@@ -507,6 +507,34 @@ class SupervisorErrorWithoutAnOwner(Custody):
         self.assert_all_released(job_id)
 
 
+class LeaseAcquiredButNotYetRegistered(Custody):
+    """The supervisor dies after lr-lease created its lease and before the owner learned the lease's id."""
+    QUEUE_REV = QUEUE_LEGACY_REV  # the supervisor's own lease
+
+    def run_case(self):
+        job_id, _ = self.enqueue(["ok"], test={"kill_at": "supervisor:after-lease-acquire"})
+        self.run_queue("--once", "--max-wait", "120").wait(timeout=300)
+        self.assertTrue(os.path.exists(os.path.join(self.run_root(job_id), "test-point-fired")))
+        self.wait_clean(job_id, "recovery")
+        clean = [r for r in self.journal(job_id) if r["event"] == "clean"][0]
+        self.assertTrue(clean.get("reconciled"), clean)
+        self.assertEqual(self.leases(), [])  # settled by the owner, not left to quarantine or the reaper
+        self.assert_all_released(job_id)
+
+    def test_with_the_live_lr_lease(self):
+        self.run_case()
+
+
+class LeaseAcquiredButNotYetRegisteredCleanupRequired(LeaseAcquiredButNotYetRegistered):
+    LEASE_SOURCE = os.path.join(HEAVY, "vendor/long-run/bin")
+
+    def test_with_the_live_lr_lease(self):
+        pass  # replaced below
+
+    def test_with_the_vendored_cleanup_required_lease(self):
+        self.run_case()
+
+
 class LeaderStaysUnreaped(Custody):
     QUEUE_REV = QUEUE_LEGACY_REV  # quarantined through the supervisor's own lease status
 

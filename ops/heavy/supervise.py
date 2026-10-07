@@ -412,6 +412,7 @@ class Supervisor:
                 return "heavy lease: {}".format(got.stdout.strip() or got.returncode)
             self.lease_id = got.stdout.strip()
             self.lease_renewed = time.monotonic()
+            recovery.test_point(self.plan, "supervisor:after-lease-acquire")
         if self.profile["lease"]:
             if self.heavy_fd is None:
                 os.makedirs(os.path.dirname(self.paths["heavy_lock"]), exist_ok=True)

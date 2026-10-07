@@ -365,6 +365,9 @@ class Owner:
         self.label = label_for(plan["job_id"], attempt)
         self.fds, self.token = {}, None
         self.lease, self.supervisor = None, None
+        # When the supervisor was adopted and when it was seen dead (epoch ms): the window in which a lease of its
+        # run, owned by it, can only have been taken for this attempt.
+        self.adopted_ms = self.dead_ms = None
         self.resources, self.watches = {}, {}
         self.state = "waiting"
         self.term_at = self.next_kill = self.next_retry = None
@@ -375,10 +378,12 @@ class Owner:
         say("recovery", message)
 
     def _restore(self):
+        self.adopted_ms = self.dead_ms = None
         for rec in self.journal.load(repair=True):
             ev = rec.get("event")
             if ev == "adopted":
                 self.supervisor = rec["supervisor"]
+                self.adopted_ms = self.adopted_ms or rec.get("since_ms")
                 self.state = "custody" if self.state == "waiting" else self.state
             elif ev == "lease":
                 self.lease = {"id": rec["id"], "cleanup": rec["cleanup"]}
@@ -386,8 +391,11 @@ class Owner:
                 self._track(rec["resource"])
             elif ev == "members" and rec["id"] in self.watches:
                 self.watches[rec["id"]].identities.update({int(p): s for p, s in rec["add"]})
-            elif ev in ("stopping", "quarantined", "clean"):
-                self.state = {"stopping": "cleanup", "quarantined": "quarantined", "clean": "clean"}[ev]
+            elif ev == "stopping":
+                self.dead_ms = rec.get("dead_ms")
+                self.state = "cleanup"
+            elif ev in ("quarantined", "clean"):
+                self.state = {"quarantined": "quarantined", "clean": "clean"}[ev]
 
     def _track(self, resource):
         self.resources[resource["id"]] = resource
@@ -547,7 +555,9 @@ class Owner:
                 raise ValueError("this attempt already has supervisor {}".format(self.supervisor))
             self._adopt_locks(msg["locks"], fds)
             self.token, self.supervisor = msg["token"], sup
-            self.journal.append({"event": "adopted", "supervisor": sup, "locks": sorted(self.fds)})
+            self.adopted_ms = self.adopted_ms or int(time.time() * 1000)
+            self.journal.append({"event": "adopted", "supervisor": sup, "locks": sorted(self.fds),
+                                 "since_ms": self.adopted_ms})
             if self.state == "waiting":
                 self.state = "custody"
             test_point(self.plan, "recovery:after-adopt")
@@ -652,7 +662,8 @@ class Owner:
         self._tick_groups()
         if self.state == "custody" and self.supervisor is not None \
                 and same_process(self.probes, self.supervisor) is False:
-            self.journal.append({"event": "stopping", "reason": "the supervisor died"})
+            self.dead_ms = int(time.time() * 1000)
+            self.journal.append({"event": "stopping", "reason": "the supervisor died", "dead_ms": self.dead_ms})
             self.state = "cleanup"
             self.log("the supervisor {} died; adopting cleanup".format(self.supervisor))
         if self.state in ("cleanup", "quarantined") and (self.supervisor is None
@@ -690,13 +701,16 @@ class Owner:
             return
         results = self.inventory()
         if all(r[0] == procs.ABSENT for r in results.values()):
-            lease = settle_lease(self.paths["lr_lease"], self.lease, self.token, self.attempt)
-            if lease[0] == procs.ABSENT:
-                self.journal.append({"event": "clean", "by": "recovery", "results": results, "lease": list(lease)})
+            settled, reconciled = self._settle_all()
+            if all(state == procs.ABSENT for state, _ in settled.values()):
+                self.journal.append({"event": "clean", "by": "recovery", "results": results,
+                                     "lease": list(settled.get(self.lease["id"], ["ABSENT", "none"]) if self.lease
+                                                   else ["ABSENT", "no lease"]),
+                                     "reconciled": reconciled})
                 self.state = "clean"
                 self.finished = True
                 return
-            results["lease"] = list(lease)
+            results.update({"lease " + lid: list(v) for lid, v in settled.items()})
         if now - self.term_at >= grace and (self.next_kill is None or now >= self.next_kill):
             self._stop(signal.SIGKILL)
             self.next_kill = now + (1.0 if self.state == "cleanup" else RETRY_QUARANTINE_S)
@@ -704,6 +718,37 @@ class Owner:
             self.journal.append({"event": "quarantined", "by": "recovery", "results": results})
             self.state = "quarantined"
             self.log("QUARANTINED: {}".format(results))
+
+    def _orphan_leases(self):
+        """Leases this attempt took that the owner was never told about: the supervisor died between lr-lease
+        creating one and the owner journalling it. With the vendored lr-lease a lease names its attempt; otherwise it
+        is one of this job's run, owned by the dead supervisor, created between its adoption and its death. Raises
+        OSError when lr-lease status cannot say."""
+        known = {self.lease["id"]} if self.lease else set()
+        out = []
+        for rec in procs.lease_records(self.paths["lr_lease"]):
+            if rec["id"] in known:
+                continue
+            if rec.get("attempt") == self.attempt:
+                out.append({"id": rec["id"], "cleanup": True})
+            elif (self.supervisor is not None and rec.get("ownerPid") == self.supervisor[0]
+                  and rec.get("run") == self.plan["lease"]["run"] and not rec.get("cleanupRequired")
+                  and self.adopted_ms is not None and self.dead_ms is not None
+                  and self.adopted_ms <= rec.get("createdAt", -1) <= self.dead_ms):
+                out.append({"id": rec["id"], "cleanup": False})
+        return out
+
+    def _settle_all(self):
+        """{lease id: (state, detail)} after settling this job's lease and any it never heard of, and the ids of the
+        latter. An unreadable lease list is UNKNOWN."""
+        leases = [self.lease] if self.lease else []
+        try:
+            extra = self._orphan_leases()
+        except OSError as ex:
+            return {"(lease list)": (procs.UNKNOWN, str(ex))}, []
+        settled = {lease["id"]: settle_lease(self.paths["lr_lease"], lease, self.token, self.attempt)
+                   for lease in leases + extra}
+        return settled, [lease["id"] for lease in extra]
 
     def _renew_if_due(self):
         """Alone, a cleanup-required lease is renewed by token, so mem-guard keeps seeing it while cleanup runs."""

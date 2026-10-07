@@ -375,36 +375,45 @@ def launchd_state(label, uid=None, launchctl="/bin/launchctl", timeout=20):
     return UNKNOWN, "launchctl print exited {}: {}".format(done.returncode, done.stderr.strip()[:200])
 
 
-def lease_state(lr_lease, lease_id, env=None, timeout=60):
-    """(ABSENT|PRESENT|UNKNOWN, detail) of one lr-lease record, from `lr-lease status`."""
+def lease_records(lr_lease, env=None, timeout=60):
+    """Every lease `lr-lease status` lists. Raises OSError when it fails, times out or prints anything unexpected:
+    exactly as many lease objects as its count."""
     try:
         done = subprocess.run([lr_lease, "status"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, timeout=timeout, env=env)
-    except (OSError, subprocess.TimeoutExpired) as ex:
-        return UNKNOWN, "lr-lease status failed: {!r}".format(ex)
+    except subprocess.SubprocessError as ex:
+        raise OSError("lr-lease status failed: {!r}".format(ex)) from None
     if done.returncode != 0:
-        return UNKNOWN, "lr-lease status exited {}: {}".format(done.returncode, done.stdout.strip()[:200])
+        raise OSError("lr-lease status exited {}: {}".format(done.returncode, done.stdout.strip()[:200]))
     if not done.stdout.startswith("Readings ") or "\nLeases: " not in done.stdout:
-        return UNKNOWN, "lr-lease status output is not the expected report"
+        raise OSError("lr-lease status output is not the expected report")
     lines = done.stdout.splitlines()
     try:
         start = next(i for i, line in enumerate(lines) if line.startswith("Leases: "))
         count = int(lines[start][len("Leases: "):])
     except (StopIteration, ValueError):
-        return UNKNOWN, "lr-lease status has no lease count"
-    # Exactly that many lines follow, each one lease object (lr-lease-cli.mjs status).
-    found = None
+        raise OSError("lr-lease status has no lease count") from None
+    if len(lines) < start + 1 + count:
+        raise OSError("lr-lease status listed fewer leases than its count")
+    records = []
     for line in lines[start + 1:start + 1 + count]:
         try:
             record = json.loads(line)
         except ValueError:
-            return UNKNOWN, "lr-lease status printed a malformed lease line"
+            raise OSError("lr-lease status printed a malformed lease line") from None
         if not isinstance(record, dict) or "id" not in record:
-            return UNKNOWN, "lr-lease status printed a lease line that is not a lease"
-        if record["id"] == lease_id:
-            found = record
-    if len(lines) < start + 1 + count:
-        return UNKNOWN, "lr-lease status listed fewer leases than its count"
+            raise OSError("lr-lease status printed a lease line that is not a lease")
+        records.append(record)
+    return records
+
+
+def lease_state(lr_lease, lease_id, env=None, timeout=60):
+    """(ABSENT|PRESENT|UNKNOWN, detail) of one lr-lease record, from `lr-lease status`."""
+    try:
+        records = lease_records(lr_lease, env=env, timeout=timeout)
+    except OSError as ex:
+        return UNKNOWN, str(ex)
+    found = next((r for r in records if r["id"] == lease_id), None)
     if found is None:
         return ABSENT, "no lease {}".format(lease_id)
     return PRESENT, "lease {} is {}".format(lease_id, found.get("state", "active"))
