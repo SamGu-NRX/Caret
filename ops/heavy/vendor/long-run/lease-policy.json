@@ -1,0 +1,40 @@
+{
+  "units": "GiB, where 1 GiB = 1073741824 bytes",
+  "defaultTtlMinutes": 45,
+  "defaultTtlMinutesComment": "Assumed, unmeasured batch duration from the admission plan; expiry removes the record, not the job.",
+  "kinds": {
+    "heavy": {
+      "maxCount": 1,
+      "maxCountComment": "Measured 2026-10-03 (kgu-one stress run ~/.long-run/stress/runs/2026-10-03T22-34-15Z/report.md): a second Blender job reached critical memory pressure within 15 s; a second Xcode+Simulator job added ~7% throughput (24.8 vs 23.1 jobs/h) while slowing each job 1.6-1.9x; Xcode+Blender together went critical. Keep 1.",
+      "diskFloorGB": 8,
+      "diskFloorGBComment": "Existing shared-Mac floor, interpreted conservatively as GiB; not measured for safety.",
+      "swapFloorGB": 0,
+      "swapFloorGBComment": "Applies only under warning pressure. Under normal pressure, memory estimates are charged against free disk instead, because macOS grows swap files on demand (total swap grew 14 to 16 GB on 2026-10-02 with 38 GB disk free)."
+    },
+    "gui": {
+      "maxCount": 1,
+      "maxCountComment": "Assumed, unmeasured; only one GUI batch at once.",
+      "diskFloorGB": 8,
+      "diskFloorGBComment": "Existing shared-Mac floor, interpreted as GiB; unmeasured.",
+      "swapFloorGB": 0,
+      "swapFloorGBComment": "Applies only under warning pressure. Under normal pressure, memory estimates are charged against free disk instead, because macOS grows swap files on demand (total swap grew 14 to 16 GB on 2026-10-02 with 38 GB disk free)."
+    },
+    "container": {
+      "maxCount": 1,
+      "maxCountComment": "Assumed, unmeasured conservative starting limit from the lease brief.",
+      "diskFloorGB": 8,
+      "diskFloorGBComment": "Existing shared-Mac floor, interpreted as GiB; unmeasured.",
+      "swapFloorGB": 0,
+      "swapFloorGBComment": "Applies only under warning pressure. Under normal pressure, memory estimates are charged against free disk instead, because macOS grows swap files on demand (total swap grew 14 to 16 GB on 2026-10-02 with 38 GB disk free)."
+    },
+    "vm": {
+      "maxCount": 1,
+      "maxCountComment": "2026-10-03: Sam authorized a VM 'if space permits' (Caret thread b9836627). One VM at a time; the disk floor and estimates decide 'if space permits'. Count unmeasured. Exclusive with heavy work: the rig's rig-run also holds the single heavy lease while a VM runs, since a VM peaks at 5.65 GiB (R2, 54 runs) on a 19-21 GiB memory baseline (stress run above).",
+      "diskFloorGB": 4,
+      "diskFloorGBComment": "2026-10-05 14:45Z: Sam said run the VM at ~14.9 GiB free; lowered 7 -> 4 (earlier the same day 15 -> 7). Admission needs this floor plus rig-run's est-mem 6 and est-disk 2, both measured (R2: VM peak RSS 5.65 GiB, charged to disk as possible swap growth under normal pressure; clone adds at most 0.51 GiB). The floor is margin after that worst case and is not measured; mem-guard stops a VM under critical pressure.",
+      "swapFloorGB": 0,
+      "swapFloorGBComment": "Applies only under warning pressure. Under normal pressure, memory estimates are charged against free disk instead, because macOS grows swap files on demand (total swap grew 14 to 16 GB on 2026-10-02 with 38 GB disk free)."
+    }
+  },
+  "swapRuleChange": "2026-10-02: free swap alone refused a 1 GB build at 0.9 GB free swap while pressure was normal with 61% free memory; rule now uses pressure plus disk."
+}

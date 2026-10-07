@@ -1,12 +1,14 @@
 import * as fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 export const GB = 1024 ** 3;
 export const KINDS = ['heavy', 'gui', 'vm', 'container'];
 const command = (file, args) => execFileSync(file, args, { encoding: 'utf8', timeout: 10000 }).trim();
 const nonnegative = value => Number.isFinite(value) && value >= 0;
+const HEX64 = /^[0-9a-f]{64}$/;
+const ATTEMPT = /^[A-Za-z0-9._-]{1,80}$/;
 export const validId = id => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id);
 
 export function parseSwap(text) {
@@ -83,7 +85,10 @@ export function readLeases(directory) {
     const lease = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (lease.id !== name.slice(0, -5) || !KINDS.includes(lease.kind) ||
         typeof lease.run !== 'string' || !lease.run || !Number.isInteger(lease.ownerPid) || lease.ownerPid <= 0 ||
-        !nonnegative(lease.estMemGB) || !nonnegative(lease.estDiskGB) || !nonnegative(lease.expiresAt)) {
+        !nonnegative(lease.estMemGB) || !nonnegative(lease.estDiskGB) || !nonnegative(lease.expiresAt) ||
+        (lease.cleanupRequired !== undefined && (lease.cleanupRequired !== true || !ATTEMPT.test(lease.attempt ?? '') ||
+          !HEX64.test(lease.tokenSha256 ?? ''))) ||
+        (lease.state !== undefined && (lease.state !== 'quarantined' || lease.cleanupRequired !== true))) {
       throw new Error(`invalid lease record: ${name}`);
     }
     return lease;
@@ -103,6 +108,9 @@ export function snapshot(readers) {
 export function decision(kind, estMemGB, estDiskGB, leases, policy, readings) {
   const rule = policy.kinds[kind];
   if (rule.maxCount === 0) return 'disabled by policy';
+  // A quarantined lease's owner died before confirming its cleanup: whatever it ran may still hold the machine.
+  const quarantined = leases.find(lease => lease.state === 'quarantined' && lease.kind === kind);
+  if (quarantined) return `quarantined lease ${quarantined.id} (run ${quarantined.run}) blocks ${kind}: cleanup not confirmed`;
   if (leases.filter(lease => lease.kind === kind).length >= rule.maxCount) return `count limit ${rule.maxCount} reached`;
   if (kind !== 'heavy' && readings.quietUntil > readings.now) return `quiet window until ${new Date(readings.quietUntil).toISOString()}`;
   if (readings.pressure === 'critical') return 'critical memory pressure';
@@ -128,7 +136,9 @@ export function decision(kind, estMemGB, estDiskGB, leases, policy, readings) {
 export function acquire(directory, policy, readers, request) {
   if (!KINDS.includes(request.kind) || typeof request.run !== 'string' || !request.run.trim() || /[\r\n]/.test(request.run) ||
       !nonnegative(request.estMemGB) || !nonnegative(request.estDiskGB) ||
-      !Number.isInteger(request.ownerPid) || request.ownerPid <= 0) throw new Error('invalid acquisition request');
+      !Number.isInteger(request.ownerPid) || request.ownerPid <= 0 ||
+      (request.cleanup !== undefined && (!ATTEMPT.test(request.cleanup?.attempt ?? '') ||
+        !HEX64.test(request.cleanup?.tokenSha256 ?? '')))) throw new Error('invalid acquisition request');
   const ttl = request.ttlMinutes ?? policy.defaultTtlMinutes;
   if (!nonnegative(ttl) || ttl === 0) throw new Error('TTL must be positive minutes');
   const readings = snapshot(readers);
@@ -136,7 +146,8 @@ export function acquire(directory, policy, readers, request) {
   const reason = decision(request.kind, request.estMemGB, request.estDiskGB, readLeases(directory), policy, readings);
   if (reason) return { reason };
   const lease = { id: randomUUID(), ownerPid: request.ownerPid, run: request.run, kind: request.kind,
-    estMemGB: request.estMemGB, estDiskGB: request.estDiskGB, createdAt: readings.now, expiresAt: readings.now + ttl * 60000 };
+    estMemGB: request.estMemGB, estDiskGB: request.estDiskGB, createdAt: readings.now, expiresAt: readings.now + ttl * 60000,
+    ...(request.cleanup ? { cleanupRequired: true, attempt: request.cleanup.attempt, tokenSha256: request.cleanup.tokenSha256 } : {}) };
   if (!Number.isFinite(lease.expiresAt) || lease.expiresAt > 8640000000000000) throw new Error('TTL exceeds supported date range');
   const temporary = path.join(directory, `.${lease.id}.tmp`);
   try {
@@ -148,11 +159,71 @@ export function acquire(directory, policy, readers, request) {
   return { lease };
 }
 
+function writeLease(directory, lease, tag) {
+  const temporary = path.join(directory, `.${lease.id}.${tag}.tmp`);
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(lease) + '\n', { flag: 'wx', mode: 0o600 });
+    fs.renameSync(temporary, path.join(directory, `${lease.id}.json`));
+  } finally {
+    try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+}
+
+function quarantine(directory, lease, reason, now) {
+  writeLease(directory, { ...lease, state: 'quarantined', quarantinedAt: now, quarantineReason: reason }, 'quarantine');
+}
+
 export function release(directory, id) {
   // Show what arrived, so a caller whose shell variable was empty or mangled can see it.
   if (!validId(id)) throw new Error(`invalid lease ID ${JSON.stringify(String(id).slice(0, 60))} (length ${String(id).length})`);
+  // A cleanup-required lease is never dropped by a plain release (mem-guard releases a dead owner's lease this way):
+  // it is quarantined, keeping its reservation, until its cleanup is acknowledged with ack().
+  // Only this record is read, so an unrelated malformed one cannot block a release.
+  let lease = null;
+  try { lease = JSON.parse(fs.readFileSync(path.join(directory, `${id}.json`), 'utf8')); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (lease?.cleanupRequired) {
+    if (lease.state !== 'quarantined') quarantine(directory, lease, 'released without a confirmed clean', Date.now());
+    return { quarantined: true };
+  }
   // Idempotent: releasing a lease that is already gone (reaped, or released twice) is not an error.
   try { fs.unlinkSync(path.join(directory, `${id}.json`)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return {};
+}
+
+function tokenMatches(lease, attempt, token) {
+  if (!lease.cleanupRequired) return 'lease is not cleanup-required';
+  if (lease.attempt !== attempt) return `lease belongs to attempt ${lease.attempt}, not ${attempt}`;
+  const digest = createHash('sha256').update(String(token)).digest('hex');
+  return digest === lease.tokenSha256 ? null : 'cleanup token does not match';
+}
+
+// The authenticated clean acknowledgement: the attempt id and the secret token, whose SHA-256 the record holds.
+export function ack(directory, id, attempt, token) {
+  if (!validId(id)) throw new Error('invalid lease ID');
+  const lease = readLeases(directory).find(record => record.id === id);
+  if (!lease) return { reason: 'no such lease' };
+  const why = tokenMatches(lease, attempt, token);
+  if (why) return { reason: why };
+  fs.unlinkSync(path.join(directory, `${id}.json`));
+  return { acked: true };
+}
+
+// Renewal by whoever holds the token (the recovery owner after the original owner died), for an active lease only.
+export function renewByToken(directory, id, attempt, token, ttlMinutes, now) {
+  if (!validId(id)) throw new Error('invalid lease ID');
+  if (!nonnegative(ttlMinutes) || ttlMinutes === 0) throw new Error('TTL must be positive minutes');
+  if (!nonnegative(now)) throw new Error('invalid time reading');
+  const expiresAt = now + ttlMinutes * 60000;
+  if (!Number.isFinite(expiresAt) || expiresAt > 8640000000000000) throw new Error('TTL exceeds supported date range');
+  const lease = readLeases(directory).find(record => record.id === id);
+  if (!lease) return { reason: 'no such lease' };
+  const why = tokenMatches(lease, attempt, token);
+  if (why) return { reason: why };
+  if (lease.state === 'quarantined') return { reason: 'lease is quarantined; only ack clears it' };
+  const renewed = { ...lease, expiresAt };
+  writeLease(directory, renewed, 'renew');
+  return { lease: renewed };
 }
 
 // Extends a live lease's expiresAt for its own owner. Expiry no longer reaps a live owner (see reap), but mem-guard
@@ -188,13 +259,17 @@ export function reap(directory, readers, run) {
   const removed = [];
   for (const lease of readLeases(directory)) {
     if (run !== undefined && lease.run !== run) continue;
+    if (lease.state === 'quarantined') continue;  // only ack() clears it
     let reason = null;
     if (!readers.pidAlive(lease.ownerPid)) reason = 'owner dead';
     else {
       const started = readers.pidStartedAt(lease.ownerPid);
       if (started !== null && started > lease.createdAt + START_TOLERANCE_MS) reason = 'owner pid reused';
     }
-    if (reason) {
+    if (reason && lease.cleanupRequired) {
+      quarantine(directory, lease, reason, now);
+      removed.push({ id: lease.id, reason: `quarantined: ${reason}` });
+    } else if (reason) {
       fs.unlinkSync(path.join(directory, `${lease.id}.json`));
       removed.push({ id: lease.id, reason });
     }

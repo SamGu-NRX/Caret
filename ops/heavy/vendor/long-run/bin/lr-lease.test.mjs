@@ -4,7 +4,8 @@ import * as fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
-import { acquire, release, renew, reap, readLeases, readPolicy, decision, parsePressure, parseSwap, parseQuiet, machineReaders } from './lr-lease-core.mjs';
+import { createHash } from 'node:crypto';
+import { acquire, release, renew, renewByToken, ack, reap, readLeases, readPolicy, decision, parsePressure, parseSwap, parseQuiet, machineReaders } from './lr-lease-core.mjs';
 
 const bin = path.dirname(fileURLToPath(import.meta.url));
 // Tests pin the counts they assert. The live policy's thresholds are reused, but its counts are tuned
@@ -214,6 +215,92 @@ test('machine parsers handle macOS units, pressure flags and quiet first field',
   assert.equal(parseQuiet('2000000 presentation\n'), 2000000000);
   assert.throws(() => parseQuiet('not-a-time'), /epoch seconds/);
   assert.equal(machineReaders(bin).pidAlive(process.pid), true);
+});
+
+// Cleanup-required leases (2026-10-07, Caret's heavy-job design): a lease whose owner dies without a confirmed clean
+// becomes quarantined, keeps its reservation, blocks its kind, and is never reaped; only an acknowledgement carrying the
+// attempt id and the secret token (whose SHA-256 the record holds) removes it.
+const token = 'synthetic-cleanup-token-not-a-credential';
+const cleanup = { attempt: 'attempt-1', tokenSha256: createHash('sha256').update(token).digest('hex') };
+
+test('a cleanup-required lease records the attempt and the token digest, never the token', t => {
+  const directory = fixture(t);
+  const { lease } = acquire(directory, policy, readers(), { ...request, cleanup });
+  assert.equal(lease.cleanupRequired, true);
+  assert.equal(lease.attempt, 'attempt-1');
+  assert.equal(lease.tokenSha256, cleanup.tokenSha256);
+  assert.ok(!fs.readFileSync(path.join(directory, `${lease.id}.json`), 'utf8').includes(token));
+  assert.throws(() => acquire(directory, policy, readers(), { ...request, cleanup: { attempt: 'x', tokenSha256: 'short' } }), /invalid/);
+});
+
+test('owner death quarantines a cleanup-required lease: kept, counted, blocking its kind, never reaped', t => {
+  const directory = fixture(t);
+  const unlimited = structuredClone(policy);
+  unlimited.kinds.heavy.maxCount = 5;
+  const { lease } = acquire(directory, unlimited, readers(), { ...request, ownerPid: 777, cleanup });
+  const dead = readers({ now: readings.now + 60000 });
+  dead.pidAlive = () => false;
+  assert.deepEqual(reap(directory, dead), [{ id: lease.id, reason: 'quarantined: owner dead' }]);
+  const [kept] = readLeases(directory);
+  assert.equal(kept.state, 'quarantined');
+  assert.match(decision('heavy', 0, 0, [kept], unlimited, readings), /quarantined lease .* blocks heavy/);
+  assert.equal(decision('gui', 0, 0, [kept], unlimited, readings), null);
+  assert.deepEqual(reap(directory, dead), []);  // stays, and is not quarantined twice
+  assert.equal(readLeases(directory).length, 1);
+  // A plain release (mem-guard's after the owner exits) quarantines too, rather than dropping the reservation.
+  const second = acquire(directory, unlimited, readers({ diskGB: 1000 }), { ...request, kind: 'gui', cleanup }).lease;
+  assert.deepEqual(release(directory, second.id), { quarantined: true });
+  assert.equal(readLeases(directory).find(l => l.id === second.id).state, 'quarantined');
+});
+
+test('only the attempt and the token acknowledge a clean; renewal by token keeps a live lease', t => {
+  const directory = fixture(t);
+  const { lease } = acquire(directory, policy, readers(), { ...request, cleanup, ttlMinutes: 1 });
+  assert.match(ack(directory, lease.id, 'attempt-2', token).reason, /attempt/);
+  assert.match(ack(directory, lease.id, 'attempt-1', 'wrong-token').reason, /token/);
+  assert.equal(readLeases(directory).length, 1);
+  assert.match(renewByToken(directory, lease.id, 'attempt-1', 'wrong-token', 5, readings.now).reason, /token/);
+  const renewed = renewByToken(directory, lease.id, 'attempt-1', token, 5, readings.now + 1000).lease;
+  assert.equal(renewed.expiresAt, readings.now + 1000 + 5 * 60000);
+  assert.deepEqual(ack(directory, lease.id, 'attempt-1', token), { acked: true });
+  assert.deepEqual(readLeases(directory), []);
+  // A quarantined lease is acknowledged the same way; renewal does not revive it.
+  const q = acquire(directory, policy, readers(), { ...request, ownerPid: 888, cleanup }).lease;
+  const dead = readers();
+  dead.pidAlive = () => false;
+  reap(directory, dead);
+  assert.match(renewByToken(directory, q.id, 'attempt-1', token, 5, readings.now).reason, /quarantined/);
+  assert.deepEqual(ack(directory, q.id, 'attempt-1', token), { acked: true });
+  assert.deepEqual(readLeases(directory), []);
+});
+
+test('a lease without cleanup_required keeps today\'s behaviour', t => {
+  const directory = fixture(t);
+  const { lease } = acquire(directory, policy, readers(), { ...request, ownerPid: 999 });
+  assert.match(ack(directory, lease.id, 'attempt-1', token).reason, /not cleanup-required/);
+  const dead = readers();
+  dead.pidAlive = () => false;
+  assert.deepEqual(reap(directory, dead), [{ id: lease.id, reason: 'owner dead' }]);
+});
+
+test('CLI: the token travels on stdin only', t => {
+  const home = fixture(t);
+  const root = path.join(home, '.long-run');
+  fs.mkdirSync(root);
+  const cliPolicy = structuredClone(policy);
+  for (const kind of Object.keys(cliPolicy.kinds)) cliPolicy.kinds[kind].diskFloorGB = 0;
+  fs.writeFileSync(path.join(root, 'lease-policy.json'), JSON.stringify(cliPolicy));
+  const env = { ...process.env, HOME: home };
+  const lr = (args, input) => spawnSync(path.join(bin, 'lr-lease'), args, { env, encoding: 'utf8', input });
+  const got = lr(['acquire', '--run', 'cli-test', '--kind', 'heavy', '--est-mem', '0', '--est-disk', '0',
+    '--owner-pid', String(process.pid), '--cleanup-attempt', 'attempt-1', '--cleanup-token-sha256', cleanup.tokenSha256]);
+  assert.equal(got.status, 0, got.stdout);
+  const id = got.stdout.trim();
+  assert.equal(lr(['renew', id, '--attempt', 'attempt-1', '--ttl', '5'], token + '\n').status, 0);
+  assert.equal(lr(['ack', id, '--attempt', 'attempt-1'], 'wrong\n').status, 75);
+  const acked = lr(['ack', id, '--attempt', 'attempt-1'], token + '\n');
+  assert.equal(acked.status, 0, acked.stdout);
+  assert.equal(readLeases(path.join(root, 'leases')).length, 0);
 });
 
 function child(command, args) {
