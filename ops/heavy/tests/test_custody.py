@@ -482,6 +482,27 @@ class AdoptionIsAllOrNothing(unittest.TestCase):
         os.close(good)
 
 
+class LeaderStaysUnreaped(Custody):
+    QUEUE_REV = QUEUE_LEGACY_REV  # quarantined through the supervisor's own lease status
+
+    def test_the_recipes_leader_is_not_reaped_while_the_job_is_quarantined(self):
+        flaky = os.path.join(self.home, ".long-run/flaky-status")
+        self.paths["lr_lease"] = os.path.join(self.home, ".long-run/bin/lr-lease-flaky")
+        job_id, _ = self.enqueue(["ok"], profile=profile(grace=3))
+        open(flaky, "w").close()
+        self.run_queue("--once", "--max-wait", "120")
+        self.assertTrue(self.wait_for(lambda: any(r["event"] == "quarantined" for r in self.journal(job_id)), 120),
+                        self.queue_log(job_id))
+        leader = [r for r in self.journal(job_id) if r["event"] == "register" and r["resource"]["id"] == "recipe"]
+        pid = leader[0]["resource"]["pgid"]
+        state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        self.assertTrue(state.startswith("Z"), "leader {} is {!r}: reaped, so its pid could be reused".format(pid, state))
+        os.unlink(flaky)
+        self.wait_clean(job_id, "supervisor")
+        self.assertTrue(self.wait_for(lambda: subprocess.run(["ps", "-p", str(pid)], capture_output=True).returncode != 0, 20))
+        self.assert_all_released(job_id)
+
+
 class Test8PidReuseAndStaleRecords(unittest.TestCase):
     class Probes:
         def __init__(self):

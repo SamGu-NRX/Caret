@@ -578,8 +578,10 @@ class Supervisor:
             self.log("recipe never released", pid=proc.pid)
             self._request_cancel(self.cancel_reason or "the recipe could not be registered", self.cancel_code or EXIT_ERROR)
         stop = self._watch(proc)
-        proc.wait()
-        recipe_exit = proc.returncode if proc.returncode >= 0 else 128 - proc.returncode
+        # The leader stays unreaped until the conclusion: as a zombie it keeps its pid, so neither that pid nor its
+        # process group's id can be reissued to an unrelated process while a quarantine is still stopping things.
+        status = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
+        recipe_exit = status.si_status if status.si_code == os.CLD_EXITED else 128 + status.si_status
         self.record["recipe"] = {"pid": proc.pid, "exit": recipe_exit, "owned_seen": sorted(self.tracker.tracked),
                                  "launchd_labels_seen": sorted(self.tracker.labels)}
         # VM jobs: rig-run's clone, leases and Virtualization processes are part of the inventory that gates the
@@ -587,6 +589,7 @@ class Supervisor:
         self.vz_before = vz_before
         vm = self._vm_postconditions(vz_before) if not self.profile["lease"] else None
         self._conclude()
+        proc.wait()  # reaped only now
         if vm and vm.get("incomplete"):
             vm["cleared_in_quarantine"] = True
         if stop is not None and stop[0] != "leftover":
