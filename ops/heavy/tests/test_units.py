@@ -522,14 +522,18 @@ class ProfileAndEnqueueTest(Temp):
     def test_profiles_floors_estimates_and_evidence(self):
         expected = {"caret-browser-eval": (11, 2.5, 0.5, True), "caret-helper-suite": (12, 3, 0.5, True),
                     "caret-laya": (12, 3.5, 0.1, True),
-                    "caret-swift": (20, 6, 6, True), "caret-vm": (15, 6, 2, False)}
+                    "caret-swift": (8, 6, 2, True), "caret-vm": (15, 6, 2, False)}
         self.assertEqual({k: (p.floor_gib, p.est_mem_gib, p.est_disk_gib, p.lease)
                           for k, p in caret_heavy.PROFILES.items()}, expected)
         for name, p in caret_heavy.PROFILES.items():
             with self.subTest(name):
                 self.assertRegex(p.evidence, "Unmeasured|unmeasured")
-                # A floor must cover the lease's own 8 GiB plus the estimates the queue does not charge.
-                if p.lease:
+                if name == "caret-swift":
+                    # lr-lease's heavy floor exactly; the queue's per-job lease charges the estimates against it.
+                    with open(os.path.expanduser("~/.long-run/lease-policy.json")) as fh:
+                        self.assertEqual(p.floor_gib, json.load(fh)["kinds"]["heavy"]["diskFloorGB"])
+                elif p.lease:
+                    # Older profiles: the floor covers the lease's own 8 GiB plus the estimates.
                     self.assertGreaterEqual(p.floor_gib, 8 + p.est_mem_gib + p.est_disk_gib)
                 self.assertEqual(p.queue_timeout_s, p.lease_wait_s + p.exec_s + p.term_grace_s + 300)
         self.assertEqual(caret_heavy.PROFILES["caret-vm"].wait_flock, ("ios_qa_lock",))
@@ -549,6 +553,9 @@ class ProfileAndEnqueueTest(Temp):
                 self.assertNotIn("--unpinned", argv)
                 self.assertEqual(head[head.index("--wait-absent") + 1], os.path.expanduser("~/.caret-run/HOLD"))
                 self.assertEqual(head[head.index("--min-free-gib") + 1], str(prof.floor_gib))
+                if name == "caret-swift":
+                    self.assertEqual((head[head.index("--est-mem-gib") + 1], head[head.index("--est-disk-gib") + 1]),
+                                     ("6", "2"))
                 self.assertEqual((head[head.index("--repo") + 1], head[head.index("--expect-rev") + 1]), ("/w", "a" * 40))
                 self.assertEqual(float(head[head.index("--timeout") + 1]), prof.queue_timeout_s)
                 self.assertEqual("--wait-flock" in head, name == "caret-vm")

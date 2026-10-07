@@ -75,13 +75,13 @@ Known gaps. A process that leaves every tracked group, clears its environment an
 
 ## Profiles
 
-All figures are unmeasured unless the evidence column says otherwise. The floor is the queue's free-disk admission and the supervisor's recheck under the lease. It must cover the lease's own 8 GiB floor plus the estimates, because the queue charges no estimates.
+All figures are unmeasured unless the evidence column says otherwise. The floor is the queue's free-disk admission and the supervisor's recheck under the lease. On the live queue (401c4d1) the per-job lease charges the estimates against lr-lease's floor. `caret-swift` relies on that and uses the heavy floor itself; the older profiles still carry floors that cover 8 GiB plus their estimates.
 
 | Profile | Floor GiB | Estimates GiB (mem + disk) | Lease wait s | Execution s | Grace s | Queue timeout s | Evidence |
 |---|---:|---|---:|---:|---:|---:|---|
 | `caret-browser-eval` | 11 | 2.5 + 0.5 | 1800 | 3600 | 30 | 5730 | Unmeasured; 8 + 3 from Brief Q1. No whole three-set or live run has been timed. |
 | `caret-helper-suite` | 12 | 3 + 0.5 | 1800 | 3600 | 30 | 5730 | Unmeasured; I1's estimates, lead's 12 GiB. W2's window step took 52 s. |
-| `caret-swift` | 20 | 6 + 6 | 1800 | 7200 | 60 | 9360 | Unmeasured; h11/heavy.sh's estimates. Compiler time alone was 124 s. |
+| `caret-swift` | 8 | 6 + 2 | 1800 | 7200 | 60 | 9360 | Floor is lr-lease's heavy floor; the queue's lease charges the estimates (admitted at 16 GiB free under normal pressure). Memory 6 is H11's build estimate, unmeasured; disk 2 from the 1.5 GB of build output on record (STATE.md), peak unmeasured. Compiler time alone was 124 s. |
 | `caret-laya` | 12 | 3.5 + 0.1 | 1800 | 7200 | 30 | 9330 | Unmeasured; LY1's estimates, the lead's 12 GiB. No complete run of the three checkpoints and the scoring. Fetches each checkpoint's weights (0.64 to 0.84 GB) into memory. |
 | `caret-vm` | 15 | rig-run's 6 + 2 | 0 | 10800 | 60 | 11160 | Floor is Sam's figure. Estimates measured (VM peak 5.65 GiB, clone at most 0.51 GiB). Times unmeasured; grace covers rig-run's 45 s cleanup budget. Also waits on `~/.codex/local-ios-qa.lock` (advisory `--wait-flock`). |
 
