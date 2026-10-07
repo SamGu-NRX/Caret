@@ -143,12 +143,28 @@ final class InsertionExecutor: @unchecked Sendable {
         }
     }
 
+    /// ⌘Z's authorization and input mark, taken at the key, for an undo launched later.
+    struct UndoTicket: Sendable {
+        let grant: UndoGrant
+        let authorization: HostAuthority.Grant
+        let mark: HostStatus.InputMark
+    }
+
+    /// Tap thread: takes the authorization and the input mark at the key. On the tap thread the ⌘Z
+    /// itself is already counted, so any later mark is the user's next input.
+    func prepareUndo(_ grant: UndoGrant) -> UndoTicket {
+        UndoTicket(grant: grant, authorization: authority.grant(), mark: status.inputMark())
+    }
+
+    /// Main, once the grant's owner knows the undo started, so its answer always finds the owner
+    /// waiting (S2 review). Only enqueues.
+    func launchUndo(_ ticket: UndoTicket) {
+        queue.async { [self] in runUndo(ticket.grant, ticket.authorization, since: ticket.mark) }
+    }
+
     /// Tap thread or debug socket. Only enqueues.
     func submitUndo(_ grant: UndoGrant) {
-        let authorization = authority.grant()
-        // On the tap thread the ⌘Z itself is already counted, so any later mark is the user's next input.
-        let mark = status.inputMark()
-        queue.async { [self] in runUndo(grant, authorization, since: mark) }
+        launchUndo(prepareUndo(grant))
     }
 
     // MARK: - Insert
@@ -227,7 +243,7 @@ final class InsertionExecutor: @unchecked Sendable {
         // text's alike, armed with the field as the guard approved it, and its element is bound under
         // the write id now, so a write stopped halfway still has its undo. Whether it is kept is
         // decided once the write ends; the fill toast or the inline line owns it (S2 review).
-        let armed: UndoGrant = {
+        let attempt: InsertAttempt = {
             let writeID = writeIDs.withLock { id -> UInt64 in
                 id &+= 1
                 return id
@@ -236,7 +252,7 @@ final class InsertionExecutor: @unchecked Sendable {
                 list.append((writeID, element, processStart))
                 if list.count > Self.boundWrites { list.removeFirst(list.count - Self.boundWrites) }
             }
-            return UndoGrant.armed(target: before.identity, priorValue: before.value, edit: approved, origin: origin, writeID: writeID)
+            return InsertAttempt(claim: claim, before: before.liveField, approved: approved, writeID: writeID)
         }()
 
         let appKey = WriteMethodTable.appKey(pid: pid)
@@ -309,17 +325,10 @@ final class InsertionExecutor: @unchecked Sendable {
         let verified = step == .verified
         var error: String?
         if case .failed(let code) = step { error = code }
-        // A paste found in another field leaves the approved one as it was read; that failure
-        // already names the field to check.
-        let recovery = !verified && dispatched && stray == nil ? readUnconfirmed(element: element, approved: approved, before: before) : nil
+        let recovery = InsertAttempt.needsRead(verified: verified, dispatched: dispatched, strayField: stray)
+            ? attempt.report(held: readUnconfirmed(element: element, approved: approved)) : nil
         arbiter.finishInsertion(claimID: claim.claimID, error: error)
-
-        // Stamped now, so the toast's ⌘Z lives its full lifetime from the result.
-        let grant = UnconfirmedInsert.grant(armed: armed, verified: verified, report: recovery).map { grant -> UndoGrant in
-            var stamped = grant
-            stamped.createdAt = Date()
-            return stamped
-        }
+        let grant = attempt.grant(verified: verified, report: recovery, at: Date())
         if verified, origin != nil, advanceAfterFill, stillTarget() {
             PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: stillTarget).tab()
         }
@@ -329,11 +338,11 @@ final class InsertionExecutor: @unchecked Sendable {
         )
     }
 
-    /// The approved field after a write that reached the app and did not verify, judged by S1's
+    /// The approved field's value after a write that reached the app and did not verify, for S1's
     /// ruling. Keys posted before a stop may still be in the app's queue, so the value is read until
     /// it holds still for three reads in a row, or for `ignoredAfter` at most. Another element
-    /// answering, or none, is unreadable: Caret then recognizes nothing and changes nothing.
-    private func readUnconfirmed(element: AXUIElement, approved: InsertionGuard.ApprovedEdit, before: FieldState) -> UnconfirmedInsert.Report {
+    /// answering, or none, is nil (unreadable): Caret then recognizes nothing and changes nothing.
+    private func readUnconfirmed(element: AXUIElement, approved: InsertionGuard.ApprovedEdit) -> String? {
         var want = approved.target
         want.elementRevision = ""
         func held() -> String? {
@@ -357,8 +366,7 @@ final class InsertionExecutor: @unchecked Sendable {
             steady = same ? steady + 1 : 0
             last = now
         }
-        let intent = UnconfirmedInsert.Intent(before: before.value, start: approved.replaceStart, end: approved.replaceEnd, replacement: approved.replacement)
-        return UnconfirmedInsert.read(intent, held: last)
+        return last
     }
 
     /// Replaces the approved span through `AXSelectedText` on the element itself: the selection,

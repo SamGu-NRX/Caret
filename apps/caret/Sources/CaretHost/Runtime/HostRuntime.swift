@@ -525,13 +525,16 @@ public final class HostRuntime {
                         }
                     }
                 } else {
-                    executor.submitUndo(grant)
+                    // Authorization and input mark at the key; the undo launches only once every owner
+                    // has heard it started, so even an immediate answer finds its owner (S2 review).
+                    let ticket = executor.prepareUndo(grant)
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
                             fill.undoStarted(grant)
                             writing.undoStarted(grant)
                             // An inline insert's grant belongs to the line at the caret (S2).
                             surface.undoStarted(grant)
+                            executor.launchUndo(ticket)
                         }
                     }
                 }
