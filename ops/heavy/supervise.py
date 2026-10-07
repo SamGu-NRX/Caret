@@ -175,6 +175,10 @@ def relay(plan_path, plan_digest, plan):
     return code
 
 
+# The run name heavy-job-queue gives the lease it takes for each job (its _acquire_lease). oblige checks it, so a wrong
+# lease ID cannot make another run's lease cleanup-required.
+QUEUE_LEASE_RUN = "heavy-job-queue"
+
 # outcome.json's "cleanup" when the supervisor left before the cleanup was confirmed; also sent to the relay.
 HANDED_OVER = "left to the recovery owner"
 
@@ -238,7 +242,7 @@ class Supervisor:
         self.vz_before = set()
         self.lease_cleanup = self._lease_supports("--cleanup-token-sha256")
         # Whether lr-lease can make the queue's lease cleanup-required (`oblige`, the vendored version, pending install).
-        self.lease_oblige = self.lease_cleanup and self._lease_supports("verb === 'oblige'")
+        self.lease_oblige = self.lease_cleanup and self._lease_supports("verb === 'oblige' && rest.length === 7")
         self.lease_obliged = False
         self.record = {"job_id": plan["job_id"], "plan": plan_path, "plan_sha256": plan_digest,
                        "supervisor_pid": self.pid, "mark": self.mark, "launchd_prefix": self.launchd_prefix,
@@ -481,7 +485,7 @@ class Supervisor:
             # The queue releases its lease once the relay's group is empty, which its SIGKILL of the relay after 10 s
             # makes true while cleanup may still run. Obliged, that release quarantines the lease instead, until this
             # attempt's token acknowledges the clean (the vendored lr-lease; with the live one, _hold_reservation).
-            got = self._lease_cmd("oblige", self.queue_lease, "--attempt", self.attempt,
+            got = self._lease_cmd("oblige", self.queue_lease, "--run", QUEUE_LEASE_RUN, "--attempt", self.attempt,
                                   "--cleanup-token-sha256", recovery.token_sha256(self.token))
             if got.returncode != 0:
                 self._release()

@@ -212,16 +212,45 @@ export function ack(directory, id, attempt, token) {
 // Makes an active lease cleanup-required for one attempt, whoever owns it. A job queue holds a job's lease (owner: its
 // runner) and releases it when the job's process group is empty, which can come before the job's own cleanup is
 // confirmed; the job obliges the lease before starting work, so that release quarantines it instead of dropping it
-// until ack(). Only the token's digest is passed. A lease already obliged, or quarantined, is refused.
-export function oblige(directory, id, attempt, tokenSha256) {
+// until ack(). Only the token's digest is passed. The caller names the run it expects the lease to belong to, so a wrong
+// ID cannot turn another run's lease into one only an unknown token clears. A lease already obliged, or quarantined, is
+// refused.
+export function oblige(directory, id, run, attempt, tokenSha256) {
   if (!validId(id)) throw new Error('invalid lease ID');
+  if (typeof run !== 'string' || !run) throw new Error('oblige needs the run the lease belongs to');
   if (!ATTEMPT.test(attempt ?? '') || !HEX64.test(tokenSha256 ?? '')) throw new Error('invalid cleanup attempt or token digest');
   const lease = readLeases(directory).find(record => record.id === id);
   if (!lease) return { reason: 'no such lease' };
+  if (lease.run !== run) return { reason: `lease ${id} belongs to run ${lease.run}, not ${run}` };
   if (lease.cleanupRequired) return { reason: `lease is already cleanup-required for attempt ${lease.attempt}` };
   const obliged = { ...lease, cleanupRequired: true, attempt, tokenSha256 };
   writeLease(directory, obliged, 'oblige');
   return { lease: obliged };
+}
+
+// The operator's way out when a lease cannot be acknowledged (its recovery owner lost the token, or its record is
+// stuck quarantined): removes any lease, active or quarantined. Use it only after checking by hand that the attempt's
+// registered resources (process groups, marked processes, launchd labels, VM clones) are gone, since a quarantined lease
+// is what keeps admission closed while they might not be. The reason is required, one line, at most 500 characters.
+// Before the record is removed, one JSON line is appended and fsync'd to clears.ndjson next to the leases: when, the
+// operator's user and pid, the whole lease record (which holds the token's digest, never the token) and the reason.
+export function clear(directory, id, reason, operator) {
+  if (!validId(id)) throw new Error('invalid lease ID');
+  if (typeof reason !== 'string' || !reason.trim() || reason.length > 500 || /[\r\n]/.test(reason)) {
+    throw new Error('clear needs --reason: one line of at most 500 characters saying what was checked');
+  }
+  const lease = readLeases(directory).find(record => record.id === id);
+  if (!lease) return { reason: 'no such lease' };
+  const entry = JSON.stringify({ at: Date.now(), user: operator.user, pid: operator.pid, lease, reason: reason.trim() });
+  const fd = fs.openSync(path.join(directory, 'clears.ndjson'), 'a', 0o600);
+  try {
+    fs.writeSync(fd, entry + '\n');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.unlinkSync(path.join(directory, `${id}.json`));
+  return { cleared: true };
 }
 
 // Renewal by whoever holds the token (the recovery owner after the original owner died), for an active lease only.

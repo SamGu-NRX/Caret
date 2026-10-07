@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { acquire, release, renew, renewByToken, ack, oblige, reap, readLeases, readPolicy, decision, parsePressure, parseSwap, parseQuiet, machineReaders } from './lr-lease-core.mjs';
+import { acquire, release, renew, renewByToken, ack, oblige, clear, reap, readLeases, readPolicy, decision, parsePressure, parseSwap, parseQuiet, machineReaders } from './lr-lease-core.mjs';
 
 const bin = path.dirname(fileURLToPath(import.meta.url));
 // Tests pin the counts they assert. The live policy's thresholds are reused, but its counts are tuned
@@ -288,25 +288,57 @@ test('oblige makes an active lease cleanup-required for one attempt, whoever own
   // reservation outlives the runner's release until the job's cleanup is acknowledged.
   const directory = fixture(t);
   const { lease } = acquire(directory, policy, readers(), { ...request, ownerPid: 777 });
-  assert.throws(() => oblige(directory, lease.id, 'attempt-1', 'short'), /invalid/);
-  assert.throws(() => oblige(directory, lease.id, 'bad attempt!', cleanup.tokenSha256), /invalid/);
-  assert.deepEqual(oblige(directory, '00000000-0000-4000-8000-000000000000', 'attempt-1', cleanup.tokenSha256),
+  assert.throws(() => oblige(directory, lease.id, request.run, 'attempt-1', 'short'), /invalid/);
+  assert.throws(() => oblige(directory, lease.id, request.run, 'bad attempt!', cleanup.tokenSha256), /invalid/);
+  assert.deepEqual(oblige(directory, '00000000-0000-4000-8000-000000000000', request.run, 'attempt-1', cleanup.tokenSha256),
     { reason: 'no such lease' });
-  const obliged = oblige(directory, lease.id, 'attempt-1', cleanup.tokenSha256).lease;
+  // A wrong ID must not turn another run's lease into one only an unknown token clears.
+  assert.match(oblige(directory, lease.id, 'some-other-run', 'attempt-1', cleanup.tokenSha256).reason,
+    /belongs to run lease-unit-test, not some-other-run/);
+  assert.equal(readLeases(directory)[0].cleanupRequired, undefined);
+  const obliged = oblige(directory, lease.id, request.run, 'attempt-1', cleanup.tokenSha256).lease;
   assert.deepEqual([obliged.cleanupRequired, obliged.attempt, obliged.tokenSha256, obliged.ownerPid],
     [true, 'attempt-1', cleanup.tokenSha256, 777]);
   assert.deepEqual(readLeases(directory), [obliged]);
-  assert.match(oblige(directory, lease.id, 'attempt-2', cleanup.tokenSha256).reason, /already cleanup-required for attempt attempt-1/);
+  assert.match(oblige(directory, lease.id, request.run, 'attempt-2', cleanup.tokenSha256).reason, /already cleanup-required for attempt attempt-1/);
   // The owner's plain release now quarantines it; only the attempt's token clears it.
   assert.deepEqual(release(directory, lease.id), { quarantined: true });
-  assert.match(oblige(directory, lease.id, 'attempt-1', cleanup.tokenSha256).reason, /already cleanup-required/);
+  assert.match(oblige(directory, lease.id, request.run, 'attempt-1', cleanup.tokenSha256).reason, /already cleanup-required/);
   assert.deepEqual(ack(directory, lease.id, 'attempt-1', token), { acked: true });
   assert.deepEqual(readLeases(directory), []);
   // Acknowledged before the owner releases: the owner's release is then the usual idempotent no-op.
   const second = acquire(directory, policy, readers(), { ...request, ownerPid: 777 }).lease;
-  oblige(directory, second.id, 'attempt-1', cleanup.tokenSha256);
+  oblige(directory, second.id, request.run, 'attempt-1', cleanup.tokenSha256);
   assert.deepEqual(ack(directory, second.id, 'attempt-1', token), { acked: true });
   assert.deepEqual(release(directory, second.id), {});
+});
+
+test('clear removes any lease, only with a reason, and logs who cleared what and why before removing it', t => {
+  // For an operator who has checked that the attempt's registered resources are gone, when its recovery owner cannot
+  // acknowledge (for example it lost its token). The log is append-only and never read back by lr-lease.
+  const directory = fixture(t);
+  const operator = { user: 'operator', pid: 4242 };
+  const q = acquire(directory, policy, readers(), { ...request, ownerPid: 777, cleanup }).lease;
+  const dead = readers();
+  dead.pidAlive = () => false;
+  reap(directory, dead);
+  assert.equal(readLeases(directory)[0].state, 'quarantined');
+  for (const reason of [undefined, '', '   ', 'x'.repeat(501), 'two\nlines']) {
+    assert.throws(() => clear(directory, q.id, reason, operator), /reason/);
+  }
+  assert.equal(readLeases(directory).length, 1);
+  assert.deepEqual(clear(directory, '00000000-0000-4000-8000-000000000000', 'checked', operator), { reason: 'no such lease' });
+  assert.equal(fs.existsSync(path.join(directory, 'clears.ndjson')), false);
+  assert.deepEqual(clear(directory, q.id, 'checked: group and launchd labels gone', operator), { cleared: true });
+  assert.deepEqual(readLeases(directory), []);
+  const second = acquire(directory, policy, readers(), request).lease;  // a plain lease clears the same way
+  assert.deepEqual(clear(directory, second.id, 'stale after a crash', { user: 'op2', pid: 5 }), { cleared: true });
+  const log = fs.readFileSync(path.join(directory, 'clears.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(log.map(e => [e.user, e.pid, e.lease.id, e.lease.state, e.reason]), [
+    ['operator', 4242, q.id, 'quarantined', 'checked: group and launchd labels gone'],
+    ['op2', 5, second.id, undefined, 'stale after a crash']]);
+  assert.ok(log.every(e => Number.isFinite(e.at)));
+  assert.ok(!fs.readFileSync(path.join(directory, 'clears.ndjson'), 'utf8').includes(token));
 });
 
 test('CLI: the token travels on stdin only', t => {
@@ -330,12 +362,28 @@ test('CLI: the token travels on stdin only', t => {
   // oblige carries only the digest in argv; the acknowledgement still takes the token on stdin.
   const plain = lr(['acquire', '--run', 'cli-test', '--kind', 'heavy', '--est-mem', '0', '--est-disk', '0',
     '--owner-pid', String(process.pid)]).stdout.trim();
-  const obliged = lr(['oblige', plain, '--attempt', 'attempt-1', '--cleanup-token-sha256', cleanup.tokenSha256]);
+  const obligeArgs = ['oblige', plain, '--run', 'cli-test', '--attempt', 'attempt-1', '--cleanup-token-sha256', cleanup.tokenSha256];
+  assert.equal(lr(['oblige', plain, '--attempt', 'attempt-1', '--cleanup-token-sha256', cleanup.tokenSha256]).status, 75);  // --run is required
+  const wrongRun = lr(['oblige', plain, '--run', 'rig', '--attempt', 'attempt-1', '--cleanup-token-sha256', cleanup.tokenSha256]);
+  assert.equal(wrongRun.status, 75, wrongRun.stdout);
+  const obliged = lr(obligeArgs);
   assert.equal(obliged.status, 0, obliged.stdout);
-  assert.equal(lr(['oblige', plain, '--attempt', 'attempt-1', '--cleanup-token-sha256', cleanup.tokenSha256]).status, 75);
+  assert.equal(lr(obligeArgs).status, 75);
   assert.equal(readLeases(path.join(root, 'leases'))[0].cleanupRequired, true);
   assert.equal(lr(['ack', plain, '--attempt', 'attempt-1'], token + '\n').status, 0);
   assert.equal(readLeases(path.join(root, 'leases')).length, 0);
+  // clear: the reason is required, and the clear is logged with the caller's pid.
+  const stuck = lr(['acquire', '--run', 'cli-test', '--kind', 'heavy', '--est-mem', '0', '--est-disk', '0',
+    '--owner-pid', String(process.pid), '--cleanup-attempt', 'attempt-2', '--cleanup-token-sha256', cleanup.tokenSha256]).stdout.trim();
+  assert.equal(lr(['release', stuck]).status, 0);  // quarantined: only ack or clear removes it
+  assert.equal(lr(['clear', stuck]).status, 75);
+  assert.equal(lr(['clear', stuck, '--reason', '   ']).status, 75);
+  assert.equal(readLeases(path.join(root, 'leases')).length, 1);
+  const cleared = lr(['clear', stuck, '--reason', 'resources checked gone by hand']);
+  assert.equal(cleared.status, 0, cleared.stdout);
+  assert.equal(readLeases(path.join(root, 'leases')).length, 0);
+  const [entry] = fs.readFileSync(path.join(root, 'leases', 'clears.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual([entry.pid, entry.reason, entry.lease.id, entry.lease.state], [process.pid, 'resources checked gone by hand', stuck, 'quarantined']);
 });
 
 function child(command, args) {
