@@ -182,6 +182,11 @@ class World(unittest.TestCase):
                 pass
         if left:
             self.wait_for(lambda: not world_processes(self.root), 20)
+        # A supervisor alive after the first bootout can load its recovery agent again (Custody._ensure_loaded); with
+        # the world deleted, that agent fails its boot check and launchd restarts it for good. Boot them out again.
+        for job_id in self.jobs:
+            for label, _ in procs.launchd_jobs("caret-heavy-recovery.{}.".format(job_id)):
+                procs.launchd_bootout(label)
         survivors = world_processes(self.root)
         for dirpath, dirnames, filenames in os.walk(self.root):
             os.chmod(dirpath, 0o755)
