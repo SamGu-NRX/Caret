@@ -5,7 +5,7 @@ import { Disclosure } from "../src/privacy/disclosure.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { collectCandidates, describeCandidate } from "../src/fill/candidates.ts";
-import { proposeFill } from "../src/fill/fill.ts";
+import { heldReason, NOTE_UNSHOWN, proposeFill } from "../src/fill/fill.ts";
 import type { JevRequest } from "../src/fill/jev.ts";
 import { datePart, splitAddress, splitDate } from "../src/fill/derive.ts";
 import { holds } from "./recheck.ts";
@@ -28,7 +28,7 @@ function scene(note: string, labels: string[]): ScreenModel {
 }
 
 /** Fill's proposed text value for each field, by label, with Jev picking the text `want` maps the field's label to. */
-async function fill(note: string, want: Record<string, string>): Promise<{ values: Record<string, string | null>; requests: JevRequest[] }> {
+async function fill(note: string, want: Record<string, string>): Promise<{ values: Record<string, string | null>; requests: JevRequest[]; held: Record<string, string | null> }> {
   const labels = Object.keys(want);
   const m = scene(note, labels);
   const requests: JevRequest[] = [];
@@ -38,19 +38,34 @@ async function fill(note: string, want: Record<string, string>): Promise<{ value
   });
   const p = await proposeFill(m, async (req) => (requests.push(req), pick(req)), FORM, F("field:0"), 3000);
   const values = Object.fromEntries(labels.map((l, i) => [l, p.fields.find((f) => f.key === F(`field:${i}`))?.value ?? null]));
-  return { values, requests };
+  const held = Object.fromEntries(labels.map((l, i) => {
+    const f = p.fields.find((x) => x.key === F(`field:${i}`));
+    return [l, f === undefined ? null : heldReason(f)];
+  }));
+  return { values, requests, held };
 }
 
 describe("values inside a note's lines", () => {
+  const signup = [
+    "Volunteer signup",
+    "Mobile 555-0164 (no landline anymore).",
+    "I graduate from UT Austin in May 2027 with a BS in Computer Science, and I could start the week after that.",
+    "Reach me at jo.cole@example.org any time after five; weekdays and weekends are both fine with me for calls.",
+  ].join("\n");
+  const signupWant = { "Mobile phone": "555-0164", "Graduation date": "May 2027", Email: "jo.cole@example.org" };
+
+  // INT1 review P2: the date needs no owner judgement and is filled at any allotment; the phone and the email do, and
+  // while OWNER_NOTE_CHARS is 0 this note is too long to show whole, so they are refused as NOTE_UNSHOWN, explicitly.
+  it("fills a date from a long line; with the owner-note allotment at 0, refuses the phone and the email as unshown", async () => {
+    const { values, held } = await fill(signup, signupWant);
+    expect(values["Graduation date"]).toBe("May 2027");
+    expect([values["Mobile phone"], values.Email]).toEqual([null, null]);
+    expect([held["Mobile phone"], held.Email]).toEqual([`Caret left Mobile phone: ${NOTE_UNSHOWN}.`, `Caret left Email: ${NOTE_UNSHOWN}.`]);
+  });
+
   // TODO(INT1): needs the owner-note allotment above 0 (privacy.ts OWNER_NOTE_CHARS, 0 until re-expressed on the output-based ledger); at 0 this note is too long to show whole, so its user values are withheld (NOTE_UNSHOWN).
   it.skip("fills a phone from a short sentence line, and an email and a date from long lines", async () => {
-    const note = [
-      "Volunteer signup",
-      "Mobile 555-0164 (no landline anymore).",
-      "I graduate from UT Austin in May 2027 with a BS in Computer Science, and I could start the week after that.",
-      "Reach me at jo.cole@example.org any time after five; weekdays and weekends are both fine with me for calls.",
-    ].join("\n");
-    const { values } = await fill(note, { "Mobile phone": "555-0164", "Graduation date": "May 2027", Email: "jo.cole@example.org" });
+    const { values } = await fill(signup, signupWant);
     // HA2: the phone and the email are admitted only by owner questions that showed the whole note; this note's prose
     // lines go to them under the owner-note allotment (privacy.ts OWNER_NOTE_CHARS).
     expect(values).toEqual({ "Mobile phone": "555-0164", "Graduation date": "May 2027", Email: "jo.cole@example.org" });
@@ -178,8 +193,7 @@ describe("a menu takes the part of a whole value it asks for", () => {
     { key: F(key), parent: null, role: "AXPopUpButton", label, value: "Select...", editable: true, frame: [100, y, 200, 24] },
     ...options.map((o, i): Node => ({ key: F(`${key}/item${i}`), parent: F(key), role: "AXMenuItem", label: o })),
   ];
-  // TODO(INT1): needs the owner-note allotment above 0 (privacy.ts OWNER_NOTE_CHARS, 0 until re-expressed on the output-based ledger); at 0 this note is too long to show whole, so its user values are withheld (NOTE_UNSHOWN).
-  it.skip("writes May for a month menu and Oregon for a state menu when Jev picks the whole date and address", async () => {
+  const menus = async (): Promise<Record<string, [string, boolean] | null>> => {
     const m = new ScreenModel();
     const note = "Signup\nAddress: 2210 Willow Bend Drive, Apt 5B, Portland, Oregon 97214\nGraduated in May 2021 from Northfield, after four long years of night classes and weekend shifts.";
     m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: note, editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
@@ -191,9 +205,24 @@ describe("a menu takes the part of a whole value it asks for", () => {
     m.apply(snap(nodes, { at: 2000, windowId: FORM, title: "Application", focused: true }));
     const jev = jevPickingText((_id, ins) => (ins.includes("'Graduation date month'") ? "May 2021" : ins.includes("'State'") ? "2210 Willow Bend Drive, Apt 5B, Portland, Oregon 97214" : null));
     const p = await proposeFill(m, jev, FORM, F("city"), 3000);
-    const got = Object.fromEntries(p.fields.map((f) => [f.key.split("/").pop(), f.handoff === null ? null : [f.handoff.value, f.handoff.writes ?? false]]));
+    stateHeld = heldReason(p.fields.find((f) => f.key === F("state")) as never);
+    return Object.fromEntries(p.fields.map((f) => [f.key.split("/").pop(), f.handoff === null ? null : [f.handoff.value, f.handoff.writes ?? false]]));
+  };
+  let stateHeld: string | null = null;
+
+  // INT1 review P2: the month needs no owner judgement and is set at any allotment; the state is part of an address, an
+  // owner-judged value, refused while OWNER_NOTE_CHARS is 0 because the note is too long to show whole.
+  it("writes May for a month menu; with the owner-note allotment at 0, offers no state from the address", async () => {
+    const got = await menus();
+    expect(got.month).toEqual(["May", false]);
+    expect(got.state).toBeNull();
+    expect(stateHeld).toContain(NOTE_UNSHOWN);
+  });
+
+  // TODO(INT1): needs the owner-note allotment above 0 (privacy.ts OWNER_NOTE_CHARS, 0 until re-expressed on the output-based ledger); at 0 this note is too long to show whole, so its user values are withheld (NOTE_UNSHOWN).
+  it.skip("writes May for a month menu and Oregon for a state menu when Jev picks the whole date and address", async () => {
     // Through Accessibility a menu is the user's to set (writes false); the value is the part, an option's exact name.
-    expect(got).toEqual({ city: null, month: ["May", false], state: ["Oregon", false] });
+    expect(await menus()).toEqual({ city: null, month: ["May", false], state: ["Oregon", false] });
   });
 });
 

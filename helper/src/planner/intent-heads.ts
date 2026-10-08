@@ -14,6 +14,7 @@
 // A2 found that hand-written rules for reading a request (A1's scope-reading.ts, removed here) did not converge: twelve
 // review rounds each found a new phrasing that widened the scope. A widening phrasing is answered by the vetoes or by
 // "unclear", never by a new reading rule.
+import { shapeOf } from "../privacy/shapes.ts";
 import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
 import { secretText } from "../memory/sensitive.ts";
 import { readWhose } from "./people.ts";
@@ -210,15 +211,29 @@ function sectionQuestion(snap: IntentSnapshot, wording: 0 | 1): JevRequest["ques
     const name = h.name === SECTION ? null : m.section(h.name);
     return name === null || name === SECTION ? [] : [{ ref: h.ref, name }];
   });
-  const cut = snap.sectionsCut || listed.length < snap.headings.length;
+  // The question's words must fit their slot (privacy/shapes.ts ask.scope questions.*.instructions), or the whole request
+  // is refused before Jev runs (INT1 review P2: 40 headings beside a 543-character Ask reached 1,544 of 1,400). So the
+  // list keeps the first sections whose names fit, each whole, and says it may be incomplete: a request naming one left
+  // out then reads as "not in this list", as for a name that did not mint. Names are never cut short.
+  const max = shapeOf("ask.scope")?.["questions.*.instructions"]?.max ?? Number.POSITIVE_INFINITY;
   const o = d.ownRecord(SECTION_OPTIONS);
+  const said = (shown: readonly { ref: string; name: ModelText }[], cut: boolean): ModelText => {
+    const names = shown.length === 0 ? d.own("none listed.") : d.t`${d.join(shown.map((h) => d.t`'${h.name}'`), ", ")}.`;
+    return SECTION_WORDINGS[wording](d, m.instruction, cut ? d.t`${names} ${d.own(SECTIONS_CUT)}` : names);
+  };
+  let shown = listed;
+  let cut = snap.sectionsCut || listed.length < snap.headings.length;
+  let instructions = said(shown, cut);
+  while (instructions.length > max && shown.length > 0) {
+    shown = shown.slice(0, -1);
+    cut = true;
+    instructions = said(shown, cut);
+  }
   const criteria: Record<string, ModelText> = { whole: o.whole, fields: o.fields };
-  for (const h of listed) criteria[h.ref] = d.t`One section: the fields in the section '${h.name}', and no others.`;
+  for (const h of shown) criteria[h.ref] = d.t`One section: the fields in the section '${h.name}', and no others.`;
   criteria.unlisted = o.unlisted;
   criteria.unclear = o.unclear;
-  const names = listed.length === 0 ? d.own("none listed.") : d.t`${d.join(listed.map((h) => d.t`'${h.name}'`), ", ")}.`;
-  const list = cut ? d.t`${names} ${d.own(SECTIONS_CUT)}` : names;
-  return { type: "choice", instructions: SECTION_WORDINGS[wording](d, m.instruction, list), criteria };
+  return { type: "choice", instructions, criteria };
 }
 
 /** The scope ask in one wording: one categorical question per field (or per field in `only`, by key), and the section question, in one request. */

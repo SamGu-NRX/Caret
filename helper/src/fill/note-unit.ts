@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
+import { sectionTexts } from "../privacy.ts";
 import { redactWindow } from "./redact.ts";
 
 /** A text owner questions show whole. */
@@ -38,6 +39,17 @@ function textArea(n: Node): boolean {
 
 const flat = (t: string): string => t.replace(/\s+/gu, " ").trim();
 
+/**
+ * A node's text as a unit reads it: its own text (model.ts nodeText) and SCP1's section texts, its heading list and
+ * outline (INT1 review P1). A page's heading can be the disclaimer ("Neither contact line is mine."), so it is evidence;
+ * a heading redaction removed makes the unit incomplete (b), and the digest covers it.
+ */
+function unitText(n: Node): string {
+  const own = nodeText(n);
+  const sections = sectionTexts(n);
+  return sections.length === 0 ? own : [own, ...sections].filter((t) => t !== "").join("\n");
+}
+
 /** The unit a source node belongs to (c), or null when its window or node is gone. */
 export function unitOf(model: ScreenModel, windowId: string, nodeKey: string): NoteUnit | null {
   const raw = model.windows.get(windowId);
@@ -54,8 +66,8 @@ function build(raw: WindowState, nodeKey: string | null): NoteUnit {
   for (const k of keys) {
     const r = raw.nodes.get(k);
     const v = view.nodes.get(k);
-    const rt = r === undefined ? "" : nodeText(r).trim();
-    const vt = v === undefined ? "" : nodeText(v).trim();
+    const rt = r === undefined ? "" : unitText(r).trim();
+    const vt = v === undefined ? "" : unitText(v).trim();
     // (b): any line or node the view does not give is a cut, whatever it held.
     if (rt !== vt) complete = false;
     if (vt !== "") texts.push(vt);
@@ -85,7 +97,7 @@ export function unitsHolding(model: ScreenModel, value: string, form: string | n
   for (const w of model.windows.values()) {
     if (w.window.windowId === form) continue;
     for (const n of w.nodes.values()) {
-      if (!flat(nodeText(n)).includes(want)) continue;
+      if (!flat(unitText(n)).includes(want)) continue;
       const k = unitKey({ windowId: w.window.windowId, nodeKey: textArea(n) ? n.key : null });
       if (!out.has(k)) out.set(k, build(w, textArea(n) ? n.key : null));
     }

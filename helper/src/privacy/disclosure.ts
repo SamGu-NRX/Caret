@@ -90,7 +90,9 @@ function removedValueWords(raw: WindowState): ReadonlySet<string> {
   const view = redactWindow(raw);
   const shown = viewText(view).toLowerCase();
   const words = new Set<string>();
-  const lines = [raw.window.title, ...[...raw.nodes.values()].flatMap((n) => [n.label, n.value, n.placeholder])].flatMap((t) => (t === undefined || t === "" ? [] : t.split(/\r?\n/u)));
+  // Every text the view is built from, SCP1's section texts (Node.headings, Node.outline) included: redaction removes a
+  // secret section line as it removes a label's (INT1 review P1: an outline "API key: Zq7x" let "Open Zq7x" through).
+  const lines = [raw.window.title, ...[...raw.nodes.values()].flatMap((n) => [n.label, n.value, n.placeholder, ...sectionTexts(n)])].flatMap((t) => (t === undefined || t === "" ? [] : t.split(/\r?\n/u)));
   for (const line of lines) {
     if (flat(line) === "" || viewHolds(view, line)) continue;
     for (const w of valueWords(line)) if (w.length >= 4 && /\p{N}|[._@#$%&*!+/-]|\p{Ll}\p{Lu}/u.test(w) && !shown.includes(w.toLowerCase())) words.add(w.toLowerCase());

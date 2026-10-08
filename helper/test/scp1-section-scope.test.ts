@@ -13,7 +13,7 @@ import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { SELF_IDENTIFICATION } from "../src/engines/page-exclusions.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
-import { headsIntentMaker, headsRequest, readHeads, scopeId, scopeRequest, settleFields } from "../src/planner/intent-heads.ts";
+import { headsIntentMaker, headsRequest, readHeads, scopeId, scopeRequest, SECTION_QUESTION, settleFields } from "../src/planner/intent-heads.ts";
 import type { IntentMaker } from "../src/planner/intent-makers.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft, type AskGoal } from "../src/planner/ask.ts";
 import { askScope, scopeSet, sectionMembership, sectionPlacement, sectionRefusal, windowOutline, withScope } from "../src/fill/ask-scope.ts";
@@ -1157,6 +1157,34 @@ describe("final check of 781ff11: an incomplete name inventory proves nothing un
       const b = await plan(whole, jev({ asks: EQUIPMENT, section: "whole", route: "all" }), "fill out this form from my notes", goals);
       expect(written(a as AskDraft, cut)).toEqual(written(b as AskDraft, whole));
       expect(written(a as AskDraft, cut)).toEqual(EQUIPMENT);
+    }
+  });
+});
+
+describe("INT1 review P2: the combined section question fits its slot", () => {
+  it("lists only as many of 40 headings as fit beside a 543-character Ask, and says the list is incomplete", () => {
+    const many = Array.from({ length: 40 }, (_, i) => `Section ${i + 1} about the equipment`);
+    const ask = `Fill in the service request for the Kestrel 9 using my notes, ${"and keep everything exactly as the notes say it ".repeat(12)}`.slice(0, 543);
+    expect(ask.length).toBe(543);
+    const s = snapFor(desk({ page: pageSnapshot(many) }), ask);
+    for (const wording of [0, 1] as const) {
+      const req = scopeRequest(s, wording);
+      const q = req.questions[SECTION_QUESTION];
+      expect(q).toBeDefined();
+      const ins = String(q?.instructions);
+      expect(ins.length).toBeLessThanOrEqual(1400);
+      expect(ins).toContain("The list may be incomplete");
+      const listed = Object.keys(q?.criteria ?? {}).filter((k) => !["whole", "fields", "unlisted", "unclear"].includes(k));
+      expect(listed.length).toBeGreaterThan(0);
+      expect(listed.length).toBeLessThan(40);
+      // Every name the question lists is whole, and every option is one the instructions list.
+      for (const k of listed) {
+        const name = /'([^']*)'/u.exec(String(q?.criteria[k]))?.[1] as string;
+        expect(many).toContain(name);
+        expect(ins).toContain(`'${name}'`);
+      }
+      // A section the list left out is the "not listed" option's, which never names one.
+      expect(Object.values(q?.criteria ?? {}).some((c) => String(c).includes("'Section 40 about the equipment'"))).toBe(false);
     }
   });
 });

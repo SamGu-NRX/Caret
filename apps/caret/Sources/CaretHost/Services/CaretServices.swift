@@ -117,7 +117,15 @@ public final class CaretServices {
     /// True when Caret starts no helper: the one it attaches to is someone else's to configure.
     public var jevKeyAvailable: Bool {
         guard case .launch = mode else { return true }
-        if ServiceLauncher.hasJevKey(ServiceLauncher.childEnvironment(ProcessInfo.processInfo.environment, passesJevKey: true)) { return true }
+        // childEnvironment throws when a release host is configured for a provider it refuses: the helper would not be
+        // started with that key, so the key counts as unavailable (no saved key stands in for it).
+        let env: [String: String]
+        do {
+            env = try ServiceLauncher.childEnvironment(ProcessInfo.processInfo.environment, passesJevKey: true)
+        } catch {
+            return false
+        }
+        if ServiceLauncher.hasJevKey(env) { return true }
         return jevKeys?.exists() ?? false
     }
 
