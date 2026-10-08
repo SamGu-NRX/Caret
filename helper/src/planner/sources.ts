@@ -43,12 +43,12 @@ const RESTRICTS = /\b(?:only|just)\b[^.;]*\b(?:instruction|what i (?:typed|wrote
  * email" is PREP_SOURCE's.
  */
 const BARE_NOUN = ["note", "notes", "memo", "message", "messages", "text", "texts", "thread", "reply", "chat", "dm", ...NAMED_NOUNS].join("|");
-const POSSESSIVE_SOURCE = new RegExp(`(?<![\\p{L}])(${NAME})['’]s\\s+(?:latest\\s+|last\\s+|new\\s+|recent\\s+)?(${BARE_NOUN})\\b(?!\\s+(?:field|box|line|section|part)\\b)`, "gu");
+const possessiveSource = (name: string): RegExp => new RegExp(`(?<![\\p{L}])(${name})['’]s\\s+(?:latest\\s+|last\\s+|new\\s+|recent\\s+)?(${BARE_NOUN})\\b(?!\\s+(?:field|box|line|section|part)\\b)`, "gu");
 /** Verbs by which someone gave the values: a note's or a mail's. */
 const NOTE_VERBS = "jotted(?:\\s+down)?|wrote(?:\\s+down)?|noted(?:\\s+down)?|put\\s+down|typed(?:\\s+up)?|saved";
 const MAIL_VERBS = "mentioned|said|sent(?:\\s+me)?|offered|suggested|proposed|gave(?:\\s+me)?|told\\s+me|emailed(?:\\s+me)?|texted(?:\\s+me)?|wrote\\s+me|asked\\s+for|picked";
 /** "what I jotted down", "the Saturday Chris mentioned", "whatever Dana sent me". */
-const CLAUSE_SOURCE = new RegExp(`(?:\\b(?:from|off)\\s+)?(?:\\b(?:what|whatever|everything|anything|all)\\s+)?(?<![\\p{L}])(I|you|he|she|they|we|${NAME})\\s+(?:(${NOTE_VERBS})|(${MAIL_VERBS}))\\b`, "gu");
+const clauseSource = (name: string): RegExp => new RegExp(`(?:\\b(?:from|off)\\s+)?(?:\\b(?:what|whatever|everything|anything|all)\\s+)?(?<![\\p{L}])(I|you|he|she|they|we|${name})\\s+(?:(${NOTE_VERBS})|(${MAIL_VERBS}))\\b`, "gu");
 
 export interface SourcePhrase {
   start: number;
@@ -64,10 +64,16 @@ export interface SourcePhrase {
 }
 
 const PRONOUNS = new Set(["I", "you", "he", "she", "they", "we"]);
+const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 const kindOf = (noun: string): SourcePhrase["kind"] => (NOTE_NOUNS.includes(noun) ? "note" : MAIL_NOUNS.includes(noun) ? "mail" : "titled");
 
-/** The phrases of an instruction that name where to copy from, in order, overlapping ones merged. */
-export function sourcePhrases(instruction: string): SourcePhrase[] {
+/**
+ * The phrases of an instruction that name where to copy from, in order, overlapping ones merged. A name is read by its
+ * capital; `people` are the person spans the instruction names (intent.ts personSpans), so a name among them typed in
+ * lower case ("the stuff ines sent") is read as one too. A relation ("my wife") is not a name.
+ */
+export function sourcePhrases(instruction: string, people: readonly string[] = []): SourcePhrase[] {
+  const name = [NAME, ...people.filter((p) => /^\p{Ll}/u.test(p) && !/^(?:my|our)\s/iu.test(p)).map(escape)].join("|");
   const out: SourcePhrase[] = [];
   const negated = (start: number): boolean => NEGATION.test(instruction.slice(Math.max(0, start - 40), start));
   for (const m of instruction.matchAll(PREP_SOURCE)) {
@@ -76,14 +82,14 @@ export function sourcePhrases(instruction: string): SourcePhrase[] {
       if (PLACING.test(clause)) continue;
     }
     const noun = (m[1] as string).toLowerCase();
-    const owner = new RegExp(`(${NAME})['’]s\\s`, "u").exec(m[0])?.[1] ?? null;
+    const owner = new RegExp(`(${name})['’]s\\s`, "u").exec(m[0])?.[1] ?? null;
     out.push({ start: m.index, end: m.index + m[0].length, kind: kindOf(noun), noun: kindOf(noun) === "titled" ? noun : null, name: owner, negated: negated(m.index) });
   }
-  for (const m of instruction.matchAll(POSSESSIVE_SOURCE)) {
+  for (const m of instruction.matchAll(possessiveSource(name))) {
     const noun = (m[2] as string).toLowerCase();
     out.push({ start: m.index, end: m.index + m[0].length, kind: kindOf(noun), noun: kindOf(noun) === "titled" ? noun : null, name: m[1] as string, negated: negated(m.index) });
   }
-  for (const m of instruction.matchAll(CLAUSE_SOURCE)) {
+  for (const m of instruction.matchAll(clauseSource(name))) {
     const who = m[1] as string;
     // A sentence's capitalized first word is not a name ("Fill what I jotted down" has no person called Fill).
     if (!PRONOUNS.has(who) && /^(?:Fill|Use|Put|Add|Make|Set|Do|Go|Grab|Copy|Enter|Type|Get|Pick|Book|Choose|Please|Just|Ok|Okay|Can|Could)$/u.test(who)) continue;
@@ -147,9 +153,9 @@ export const restrictsSources = (instruction: string): boolean => RESTRICTS.test
 
 /** Whether `span` (a person the instruction names) occurs only inside its source phrases. */
 export function onlyInSources(instruction: string, span: string): boolean {
-  const phrases = sourcePhrases(instruction);
+  const phrases = sourcePhrases(instruction, [span]);
   let found = false;
-  const re = new RegExp(`(?<![\\p{L}])${span.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?![\\p{L}])`, "gu");
+  const re = new RegExp(`(?<![\\p{L}])${escape(span)}(?![\\p{L}])`, "gu");
   for (const m of instruction.matchAll(re)) {
     found = true;
     if (!phrases.some((p) => m.index >= p.start && m.index + m[0].length <= p.end)) return false;
@@ -206,7 +212,7 @@ function isNote(w: WindowState): boolean {
  */
 export function namedSources(instruction: string, model: ScreenModel, form: WindowState, people: readonly string[]): { named: NamedSource[]; excluded: string[]; missing: boolean } {
   const others = [...model.windows.values()].map(redactWindow).filter((w) => w.window.windowId !== form.window.windowId);
-  const phrases = sourcePhrases(instruction);
+  const phrases = sourcePhrases(instruction, people);
   const said = new Set(wordsOf(instruction).filter((x) => !STOP.has(x)));
   const just = model.windowBefore(form.window.windowId);
   const nouns = new Set([...NOTE_NOUNS, ...MAIL_NOUNS, ...NAMED_NOUNS]);

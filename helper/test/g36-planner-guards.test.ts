@@ -1,0 +1,66 @@
+// Planner and guard rules, each on a synthetic desk shaped like the B31 Ask its describe names. All names, numbers and
+// addresses are invented.
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ScreenModel, type WindowState } from "../src/model.ts";
+import { PAGE_WINDOW_KIND } from "../src/fill/fill.ts";
+import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { checkIntent, intentSnapshot, type AskIntent } from "../src/planner/intent.ts";
+import { pointsAtOther, readWhose } from "../src/planner/people.ts";
+import { onlyInSources } from "../src/planner/sources.ts";
+import { field, node, snap, text } from "./builders.ts";
+
+beforeAll(() => setGeneratorClock(() => 0));
+afterAll(() => setGeneratorClock(null));
+
+const W = "dev.caret.page/g36";
+const CHROME = { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" };
+const key = (label: string): string => `${W}/textfield:${label}~0`;
+
+/** A page form of text fields with these labels, the first focused, in front of whatever `m` already shows. */
+function pageForm(m: ScreenModel, labels: readonly string[]): WindowState {
+  const inputs = labels.map((l, i) => field(key(l), "", { parent: `${W}/webarea:~0`, label: l, frame: [100, 60 + 40 * i, 200, 20] }));
+  m.apply(snap([node(`${W}/webarea:~0`, "AXWebArea", { label: "Form" }), ...inputs], { at: 1000, windowId: "form", kind: PAGE_WINDOW_KIND, title: "Form", app: CHROME, focused: true, focusedKey: key(labels[0] as string) }));
+  const form = m.windows.get("form");
+  if (form === undefined) throw new Error("the form window was not applied");
+  return form;
+}
+
+describe("a person named only as who sent the source is not whose details go in (b31-08 shape)", () => {
+  // A mail from the user's partner to the user, holding the user's details; the form asks for the user's contact details.
+  function snapFor(instruction: string) {
+    const m = new ScreenModel();
+    m.apply(snap([text("h1", "From: Marta Quill <marta.quill@example.org>"), text("h2", "To: Sam Rivera <sam.rivera@example.org>"), text("b", "Your new address: 14 Orchard Row, Unit 2")], { at: 900, windowId: "mail", title: "Dentist form", app: { pid: 9002, bundleId: "com.apple.mail", name: "Mail" }, focused: true }));
+    return intentSnapshot(instruction, m, pageForm(m, ["Email", "Street address"]), []);
+  }
+  const intent = (whose: string): AskIntent => ({ route: "fill", why: "none", scope: "all", section: "none", fields: [], sources: [], whose, literals: [] });
+
+  it.each(["do the contact part w the things marta sent", "do the contact part w the things Marta sent"])("reads %s as the user's own details", (instruction) => {
+    const s = snapFor(instruction);
+    expect(s.persons.map((p) => p.span)).toEqual([instruction.includes("Marta") ? "Marta" : "marta"]);
+    expect(readWhose(s, s.others, s.memoryValues).kind).toBe("user");
+    expect(pointsAtOther(s)).toBe(false);
+    // A maker that took the sender for the subject does not set it either.
+    const checked = checkIntent(intent("p1"), s);
+    expect(checked.route === "fill" ? checked.scope.person : "not a fill").toBeNull();
+  });
+
+  it("still reads a sender named as the person as whose details go in", () => {
+    const s = snapFor("put marta down as the contact");
+    expect(readWhose(s, s.others, s.memoryValues)).toMatchObject({ kind: "person", ref: "p1" });
+  });
+
+  it("rules out the mail a lower-case name sent when the instruction says not to use it", () => {
+    for (const instruction of ["fill my contact details, not what marta sent", "fill my contact details, not what Marta sent"]) {
+      expect(snapFor(instruction), instruction).toMatchObject({ named: [], excluded: ["mail"] });
+    }
+  });
+
+  it("rules out a mail named by a sender's full name or a lower-case possessive", () => {
+    expect(snapFor("fill my contact details, not what Marta Quill sent")).toMatchObject({ named: [], excluded: ["mail"] });
+    expect(snapFor("fill my contact details, not from marta's email")).toMatchObject({ named: [], excluded: ["mail"] });
+  });
+
+  it("reads no relation as a sender's name", () => {
+    expect(onlyInSources("my wife sent it, put her down as the contact", "my wife")).toBe(false);
+  });
+});
