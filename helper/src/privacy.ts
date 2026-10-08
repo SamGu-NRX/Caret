@@ -40,7 +40,7 @@ export const OWNER_NOTE_CHARS = 0;
 /** Approved draft 2; the host onboarding owner reuses this text. Required fix acceptances remain separate. */
 export const PRIVACY_PROMISE = `What Caret sends
 
-To decide what to offer, Caret sends short pieces of what's on your screen to a cloud model: a field's label, the values that might go in it, and the lines around them. To decide whose details a value is, Caret may send the whole note it came from, if the note is 2,000 characters or shorter. No request carries more than half of a conversation. Before anything leaves your Mac, Caret removes password fields, card numbers, one-time codes and keys, and lines it recognizes as secrets, though it can miss a secret written in ordinary words. It sends nothing from an app or website you've switched off.
+To decide what to offer, Caret sends a cloud model what you type to it and short pieces of what's on your screen: a field's label, the values that might go in it, and the lines around them. To decide whose details a value is, Caret may send the whole note it came from, if the note is 2,000 characters or shorter. No request carries more than half of a conversation. Before anything leaves your Mac, Caret removes password fields, card numbers, one-time codes and keys, and lines it recognizes as secrets, though it can miss a secret written in ordinary words. It sends nothing from an app or website you've switched off.
 
 Who receives it
 
