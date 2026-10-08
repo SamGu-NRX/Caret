@@ -25,6 +25,7 @@ import { pageTabReader } from "./engines/tab-source.ts";
 import { writersOnStart } from "./writer/startup.ts";
 import { HostLocalModel } from "./writer/local-port.ts";
 import { refuseCacheInHelper } from "./engines/decide/cache.ts";
+import { MARKERS_OFF_ENV } from "./fill/redact.ts";
 import { ledgeredJev, ledgeredWriter, SpendLedger, throttledTotals } from "./spend.ts";
 import { readAppsOff } from "./privacy/read-policy.ts";
 
@@ -36,6 +37,8 @@ const DEFAULT_DATA_DIR = join(homedir(), "Library", "Application Support", "Care
 // J1: the decision cache writes request text to disk, and this process's requests carry the user's real screen text,
 // so a CARET_JEV_CACHE meant for a test harness stops the helper here instead of being ignored.
 refuseCacheInHelper();
+// SC1 step 3's evidence switch turns the marker heuristics off for tests and evaluations only (fill/redact.ts).
+if (process.env[MARKERS_OFF_ENV] !== undefined) throw new Error(`${MARKERS_OFF_ENV} is set, but it turns off the redacted view's marker heuristics and is for tests only; the helper does not start with it`);
 
 const { values: args } = parseArgs({
   options: {
