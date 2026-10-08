@@ -5,7 +5,7 @@
 import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
 import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
-import { nearestText } from "./descriptor.ts";
+import { nearestLabel, nearestText } from "./descriptor.ts";
 import { heldAsConversation } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, textKind, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
@@ -13,6 +13,7 @@ import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, se
 import { redactWindow } from "./redact.ts";
 import { WITHHELD } from "../privacy/exclude.ts";
 import { splitDate } from "./derive.ts";
+import { collapsedMap, collapsedRange, nodePart, sourceLine, TITLE, wholePart, type SourceAt } from "../privacy/ledger/source.ts";
 
 /**
  * A field whose typed value is a candidate, as a line of text is: editable, holding text, not secure, not a kind memory
@@ -23,6 +24,138 @@ function sourceField(node: Node): boolean {
   return node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null && node.role !== "AXCheckBox";
 }
 
+/**
+ * Where a candidate's texts were read (OUTPUT-LEDGER-SPEC section 4), as ranges of its source window's text parts:
+ * its span, and the clause it quotes with that clause's text. The seal charges these ranges as they are. A text with
+ * no range here (a copy fill made, a part code derived) is charged every line of its window that holds it.
+ */
+export interface CandidateSource {
+  /** The redacted view the ranges are of: a mint from another view object uses none of them. */
+  readonly view?: WindowState;
+  readonly text?: SourceAt;
+  readonly line?: Fact;
+  readonly context?: Fact;
+  readonly section?: Fact;
+  readonly blockHead?: Fact;
+}
+
+/** A text the generator read, with its source range. */
+export interface Fact {
+  readonly text: string;
+  readonly at: SourceAt;
+}
+
+/** A text and its source range, or the text alone when its source has none (another node's text cut down, a copy). */
+type Read = { readonly text: string; readonly at: SourceAt | null };
+const factOf = (r: Read | null): Fact | undefined => (r === null || r.at === null ? undefined : { text: r.text, at: r.at });
+const SOURCES = new WeakMap<Candidate, CandidateSource>();
+
+/** Where `c`'s texts were read, as far as the generator recorded it. */
+export function sourceOf(c: Candidate): CandidateSource {
+  return SOURCES.get(c) ?? {};
+}
+
+/** `copy`, a copy of `c` with the same texts (another id), with `c`'s source ranges. */
+export function withSources<C extends Candidate>(copy: C, c: Candidate): C {
+  const src = SOURCES.get(c);
+  if (src !== undefined) SOURCES.set(copy, src);
+  return copy;
+}
+
+/**
+ * The part and raw offset that offset `i` of nodeText(node) came from, or null for the line break nodeText puts
+ * between a label and a value. One map, through the label/value join; bareMap continues it through bareLine.
+ */
+function partOffset(node: Node, i: number): { part: string; offset: number } | null {
+  if (node.editable === true) return { part: nodePart(node.key, "value"), offset: i };
+  if (node.label !== undefined && node.value !== undefined) {
+    if (i < node.label.length) return { part: nodePart(node.key, "label"), offset: i };
+    if (i === node.label.length) return null;
+    return { part: nodePart(node.key, "value"), offset: i - node.label.length - 1 };
+  }
+  return { part: nodePart(node.key, node.value !== undefined ? "value" : "label"), offset: i };
+}
+
+/** The source range of nodeText(node) from `from` to `to`, or null when it is empty or crosses the label/value join. */
+export function nodeRange(node: Node, from: number, to: number): SourceAt | null {
+  if (to <= from) return null;
+  const a = partOffset(node, from);
+  const b = partOffset(node, to - 1);
+  if (a === null || b === null || a.part !== b.part) return null;
+  return { part: a.part, start: a.offset, end: b.offset + 1 };
+}
+
+/** bareLine(raw), with the offset in `raw` each of its characters came from: collapsedMap, less a list bullet. */
+export function bareMap(raw: string): { line: string; from: number[] } {
+  const { text, from } = collapsedMap(raw);
+  const bullet = BULLET_PREFIX.exec(text);
+  const cut = bullet === null ? 0 : bullet[0].length;
+  const line = text.slice(cut);
+  if (line !== bareLine(raw)) throw new Error("bareMap: the line does not read as bareLine reads it");
+  return { line, from: from.slice(cut) };
+}
+const BULLET_PREFIX = /^(?:[-*•·–—]|•) /u;
+
+/**
+ * The source range of `text` read from the line of nodeText(node) that starts at `lineStart` and reads `raw`: at `pos`
+ * in bareLine(raw) when the reader knows it, else where it first stands in that line. Null when the line does not hold
+ * it or it crosses the label/value join.
+ */
+function lineRange(node: Node, lineStart: number, raw: string, text: string, pos?: number): SourceAt | null {
+  if (text === "") return null;
+  const { line, from } = bareMap(raw);
+  const p = pos ?? line.indexOf(text);
+  if (p < 0 || line.slice(p, p + text.length) !== text) return null;
+  return nodeRange(node, lineStart + from[p]!, lineStart + from[p + text.length - 1]! + 1);
+}
+
+/**
+ * The source range of `text` read from the line of nodeText(node) at `lineStart` reading `raw`, where `text`, less an
+ * ellipsis Caret added at its end, stands at the start of that line collapsed (collapsedMap). Null otherwise.
+ */
+function lineHeadRange(node: Node, lineStart: number, raw: string, text: string): SourceAt | null {
+  const r = collapsedRange("", raw, text);
+  return r === null ? null : nodeRange(node, lineStart + r.start, lineStart + r.end);
+}
+
+/** The source range of `text` at the start of one of a node's own parts collapsed (its label, or its value). */
+function partHeadRange(node: Node, part: "label" | "value", text: string): SourceAt | null {
+  const raw = part === "label" ? node.label : node.value;
+  return raw === undefined ? null : collapsedRange(nodePart(node.key, part), raw, text);
+}
+
+/** Where a span was read: a line of nodeText (its start there and its raw text), or an offset in nodeText. */
+type Found = { readonly lineStart: number; readonly raw: string } | { readonly offset: number };
+
+/** The source range of `text`, read where `found` says. */
+function foundRange(node: Node, text: string, found: Found | undefined): SourceAt | null {
+  if (found === undefined) return null;
+  if ("offset" in found) return nodeText(node).slice(found.offset, found.offset + text.length) === text ? nodeRange(node, found.offset, found.offset + text.length) : null;
+  return lineRange(node, found.lineStart, found.raw, text);
+}
+
+/** Each raw line of nodeText(node) with its start there, split as the generator splits it (at LF, a CR before it kept off). */
+function nodeLines(node: Node): { raw: string; start: number }[] {
+  const t = nodeText(node);
+  const out: { raw: string; start: number }[] = [];
+  let start = 0;
+  for (const piece of t.split("\n")) {
+    const raw = piece.endsWith("\r") ? piece.slice(0, -1) : piece;
+    out.push({ raw, start });
+    start += piece.length + 1;
+  }
+  return out;
+}
+
+/** Where a typed value was read: a code-found one's line or offset (windowValues), else where it first stands in its node's text. */
+function valueFound(node: Node, v: TypedValue): Found | undefined {
+  const off = sourceOffsets.get(v);
+  if (off !== undefined) return { offset: off };
+  const line = valueLines.get(v);
+  if (line !== undefined) return line;
+  const at = nodeText(node).indexOf(v.text);
+  return at < 0 ? undefined : { offset: at };
+}
 
 export interface Candidate {
   id: string;
@@ -283,16 +416,18 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   /** Windows a span of which did not fit their budget, closed or not. */
   const missed = new Set<string>();
   /** The candidate for a span, with every fact about it worked out. */
-  const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string, sourceOffset?: number): Candidate | null => {
+  const build = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => Read | null, quote?: string, partOf?: string, sourceOffset?: number, found?: Found): Candidate | null => {
     const url = kind === "url" || textKind(text) === "url";
     const raw = url ? rawURLToken(nodeText(node), text, MAX_SCAN, sourceOffset) : null;
     if (url && raw === null) return null;
-    const ctx = timed("context", context);
+    const read = timed("context", context);
+    const ctx = read?.text ?? null;
     const labelled = labelledSpan(node, text, ctx);
     // A span that must go with its line's words (line-values.ts LineText.with, or a clause its line warns in) carries them
     // from the start, charged with it; any other clause waits until every span is in.
     const fact = quote !== undefined ? null : timed("context", () => lineFact(w, node, text, labelled));
     let required = quote ?? (fact?.required === true ? fact.clause : undefined);
+    let requiredAt = quote !== undefined ? (found !== undefined && !("offset" in found) ? lineRange(node, found.lineStart, found.raw, quote) : null) : fact?.required === true ? fact.at : null;
     // The verifier must read the maximal raw token, not just the URL substring the extractor picked.
     // It is required context, so a budget cut withholds the URL instead of silently omitting its evidence.
     if (raw !== null && required?.includes(raw) !== true) {
@@ -302,8 +437,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const start = Math.min(source.indexOf(line), source.indexOf(raw));
       const end = Math.max(source.indexOf(line) + line.length, source.indexOf(raw) + raw.length);
       required = required === undefined ? raw : source.slice(start, end);
+      requiredAt = required === raw ? nodeRange(node, source.indexOf(raw), source.indexOf(raw) + raw.length) : nodeRange(node, start, end);
     }
     const clause = required !== undefined || fact === null || fact.required ? null : fact.clause;
+    const sec = timed("section", () => sectionRead(w, node));
+    const head = timed("blockHead", () => blockHeadRead(w, node, text));
     const c: Candidate = {
     id: `c${out.length + 1}`,
     text,
@@ -312,8 +450,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     labelled,
     line: required ?? null,
     ...(partOf === undefined ? {} : { partOf }),
-    section: timed("section", () => sectionAround(w, node)),
-    blockHead: timed("blockHead", () => blockHead(w, node, text)),
+    section: sec?.text ?? null,
+    blockHead: head?.text ?? null,
     recency: recency(w),
     source: {
       pid: w.app.pid,
@@ -327,6 +465,17 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     };
     if (clause !== null) clauses.set(c, clause);
     if (required !== undefined) quoted.add(c);
+    const textAt = foundRange(node, text, found ?? (sourceOffset === undefined ? undefined : { offset: sourceOffset }));
+    const lineText = required ?? clause;
+    const lineAt = required !== undefined ? requiredAt : clause !== null ? (fact?.at ?? null) : null;
+    SOURCES.set(c, {
+      view: w,
+      ...(textAt === null ? {} : { text: textAt }),
+      ...(lineText === null || lineAt === null || lineAt === undefined ? {} : { line: { text: lineText, at: lineAt } }),
+      context: factOf(read),
+      section: factOf(sec),
+      blockHead: factOf(head),
+    });
     return c;
   };
   /** Spans that go only with their clause (Candidate.line set at build). */
@@ -348,10 +497,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * Adds a span unless the cap is reached, its text is already in, or its window is closed. A span that
    * does not fit its window's budget closes the window.
    */
-  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, quote?: string, partOf?: string, sourceOffset?: number): void => {
+  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => Read | null, quote?: string, partOf?: string, sourceOffset?: number, found?: Found): void => {
     // SC1 2a: a span holding a value the model withheld is never a candidate; its line may still be another's context.
     if (full() || seen.has(text) || holdsUnwarned(text) || closed.has(w.window.windowId) || text.includes(WITHHELD)) return;
-    const c = build(w, node, text, kind, context, quote, partOf, sourceOffset);
+    const c = build(w, node, text, kind, context, quote, partOf, sourceOffset, found);
     if (c === null) return;
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       // W2: a part of a labelled value (line-values.ts valueParts) is an extra beside the whole value: one that does not
@@ -474,7 +623,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * them in relevance order. False when the cap or the clock ran out. A span's group is the term of the
    * whole-or-nothing set it goes in with: its kind's for a typed value, NAME_TERM for a name-like line.
    */
-  type Span = { node: Node; text: string; kind: ValueKind | null; group: string | null; context: () => string | null; terms: Set<string>; names: string[]; quote?: string; partOf?: string; sourceOffset?: number };
+  type Span = { node: Node; text: string; kind: ValueKind | null; group: string | null; context: () => Read | null; terms: Set<string>; names: string[]; quote?: string; partOf?: string; sourceOffset?: number; found?: Found };
   const byRelevance = (w: WindowState, fields: readonly ReadonlySet<string>[]): boolean => {
     const spans: Span[] = [];
     const built = { done: false };
@@ -519,19 +668,20 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       const terms = termsOf(node, line, [v.kind]);
       const names = wantsNames ? namesOutside(line, valuesOf.get(node.key)) : [];
       if (names.length > 0) terms.add(NAME_TERM);
-      spans.push({ node, text: v.text, kind: v.kind, group: kindTerm(v.kind), context: () => contextFor(w, node, v.text), terms, names, sourceOffset: sourceOffsets.get(v) });
+      spans.push({ node, text: v.text, kind: v.kind, group: kindTerm(v.kind), context: () => contextRead(w, node, v.text), terms, names, sourceOffset: sourceOffsets.get(v), found: valueFound(node, v) });
     }
     for (const node of w.nodes.values()) {
       if (outOfTime()) return false;
       stats.nodes++;
       const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
-      const lines = timed("split", () => nodeText(node).split(/\r?\n/));
-      for (const raw of lines) {
+      const lines = timed("split", () => nodeLines(node));
+      for (const { raw, start } of lines) {
         if (outOfTime()) return false;
+        const found: Found = { lineStart: start, raw };
         for (const s of lineSpans(raw)) {
           const kinds = (valuesOf.get(node.key) ?? []).filter((v) => s.line.includes(v.text)).map((v) => v.kind);
-          const context = s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField);
+          const context = s.label !== null ? constant<Read>({ text: s.label, at: labelRange(node, start, raw, s.label) }) : () => lineContextRead(w, node, lines.length, isSourceField);
           const terms = termsOf(node, s.line, kinds);
           // A source field's own label says what its value is, as contextFor reads it ("Name" for "dana w.").
           const name = wantsNames && isNameLike(s.text, s.label ?? (isSourceField ? (node.label ?? null) : null));
@@ -544,11 +694,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
           if (names.length > 0) terms.add(NAME_TERM);
           // W2: a part of a labelled value joins no kind's group: the group goes in whole or not at all, so a part and its
           // quote of the whole value spent the names' budget and cut the note (W1's Greenhouse regression). Parts come after.
-          spans.push({ node, text: s.text, kind: null, group: name && s.partOf === undefined ? NAME_TERM : null, context, terms, names, ...(s.with === undefined ? {} : { quote: s.with }), ...(s.partOf === undefined ? {} : { partOf: s.partOf }) });
+          spans.push({ node, text: s.text, kind: null, group: name && s.partOf === undefined ? NAME_TERM : null, context, terms, names, found, ...(s.with === undefined ? {} : { quote: s.with }), ...(s.partOf === undefined ? {} : { partOf: s.partOf }) });
           // Each name a contact line holds goes in with the names too, as its own span, copied verbatim from
           // the line: else "From: Priya Raman <priya.raman@…>" left a name out whenever the line was cut, and
           // the names spent the budget for nothing (B14 oracle replay, Claim form with the sources as Messages).
-          for (const n of names) if (n !== s.text) spans.push({ node, text: n, kind: null, group: NAME_TERM, context, terms: new Set([...terms]), names: [n] });
+          for (const n of names) if (n !== s.text) spans.push({ node, text: n, kind: null, group: NAME_TERM, context, terms: new Set([...terms]), names: [n], found });
         }
       }
     }
@@ -602,7 +752,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         const sp = spans[i] as (typeof spans)[number];
         if (sp.group !== k || seen.has(sp.text) || holdsUnwarned(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
-        const c = build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf, sp.sourceOffset);
+        const c = build(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf, sp.sourceOffset, sp.found);
         if (c !== null) group.push(c);
       }
       if (group.length > 0) groups.set(k, group);
@@ -641,7 +791,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (closed.has(w.window.windowId)) break;
       const sp = spans[i] as (typeof spans)[number];
       if ([...sp.terms].some((t) => leftOut.has(t))) continue;
-      add(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf, sp.sourceOffset);
+      add(w, sp.node, sp.text, sp.kind, sp.context, sp.quote, sp.partOf, sp.sourceOffset, sp.found);
     }
     return true;
   };
@@ -662,7 +812,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
       if (node === undefined || secretValue(w, v)) continue;
-      add(w, node, v.text, v.kind, () => contextFor(w, node, v.text), undefined, undefined, sourceOffsets.get(v));
+      add(w, node, v.text, v.kind, () => contextRead(w, node, v.text), undefined, undefined, sourceOffsets.get(v), valueFound(node, v));
     }
   }
   for (const w of windows) {
@@ -675,11 +825,14 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       stats.nodes++;
       const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
-      const lines = timed("split", () => nodeText(node).split(/\r?\n/));
-      for (const raw of lines) {
+      const lines = timed("split", () => nodeLines(node));
+      for (const { raw, start } of lines) {
         // A node can hold thousands of lines (a log, a transcript), so the cap and the clock apply per line too.
         if (full() || outOfTime()) return stop();
-        for (const s of lineSpans(raw)) add(w, node, s.text, null, s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField), s.with, s.partOf);
+        for (const s of lineSpans(raw)) {
+          const context = s.label !== null ? constant<Read>({ text: s.label, at: labelRange(node, start, raw, s.label) }) : () => lineContextRead(w, node, lines.length, isSourceField);
+          add(w, node, s.text, null, context, s.with, s.partOf, undefined, { lineStart: start, raw });
+        }
       }
     }
   }
@@ -744,6 +897,8 @@ export function lineSpans(raw: string): { line: string; text: string; label: str
 const valuesCache = new WeakMap<WindowState, readonly TypedValue[]>();
 /** Code extraction offsets stay local; reader TypedValues have no source offsets. */
 const sourceOffsets = new WeakMap<TypedValue, number>();
+/** The line of nodeText a code-found value was read from (its start there and raw text), for its source range. */
+const valueLines = new WeakMap<TypedValue, { lineStart: number; raw: string }>();
 export function windowValues(w: WindowState): readonly TypedValue[] {
   const cached = valuesCache.get(w);
   if (cached !== undefined) return cached;
@@ -765,6 +920,7 @@ export function windowValues(w: WindowState): readonly TypedValue[] {
       for (const v of lineValues(line)) {
         if (seen.has(v.text) || reader.some((r) => r.text.includes(v.text) || v.text.includes(r.text))) continue;
         const value: TypedValue = { kind: v.kind, text: v.text, nodeKey: node.key };
+        valueLines.set(value, { lineStart: match.index, raw });
         if (v.kind === "url") {
           // Normalizing a line changes offsets. Locate the URL in the original line, retaining normalized extraction for other kinds.
           const extracted = lineValues(raw).find((r) => r.kind === "url" && r.text === v.text);
@@ -812,7 +968,17 @@ export function lineGives(raw: string, span: string): boolean {
 /** How many wrapped lines a sentence is read on for a warning (lineFact). Assumed: a sentence rarely wraps more. */
 const WRAPPED_LINES = 3;
 
-export function lineFact(w: WindowState, node: Node, text: string, labelled: boolean): { clause: string; required: boolean } | null {
+export function lineFact(w: WindowState, node: Node, text: string, labelled: boolean): { clause: string; required: boolean; at: SourceAt | null } | null {
+  const fact = readLineFact(node, text, labelled);
+  if (fact === null) return null;
+  // The clause's source range, when it stands in the span's own line (one cut from lines joined across a wrap has none).
+  const t = nodeText(node);
+  const lineStart = t.lastIndexOf("\n", t.indexOf(text)) + 1;
+  const raw = lineHolding(t, text).replace(/\r$/u, "");
+  return { ...fact, at: lineRange(node, lineStart, raw, fact.clause) };
+}
+
+function readLineFact(node: Node, text: string, labelled: boolean): { clause: string; required: boolean } | null {
   const t = nodeText(node);
   const at = t.indexOf(text);
   if (at < 0) return null;
@@ -894,18 +1060,38 @@ export function labelledCandidate(w: WindowState, node: Node, text: string, labe
   const url = kind === "url" || textKind(text) === "url";
   const raw = url ? rawURLToken(nodeText(node), text, MAX_SCAN) : null;
   if (url && raw === null) return null;
-  return {
+  const sec = sectionRead(w, node);
+  const head = blockHeadRead(w, node, text);
+  const c: Candidate = {
     id,
     text,
     kind,
     ...(raw === null ? {} : { line: raw }),
     context: label,
     labelled: true,
-    section: sectionAround(w, node),
-    blockHead: blockHead(w, node, text),
+    section: sec?.text ?? null,
+    blockHead: head?.text ?? null,
     recency,
     source: { pid: w.app.pid, windowId: w.window.windowId, bundleId: w.app.bundleId, appName: w.app.name, windowTitle: w.window.title, nodeKey: node.key, kind },
   };
+  // Its source ranges: the "Label: value" line labelledLines read, its label and the value in it.
+  const line = nodeLines(node).find((l) => {
+    const m = LABELLED.exec(bareLine(l.raw));
+    return m?.[1]?.trim() === label && m[2]?.includes(text) === true;
+  });
+  const textAt = line === undefined ? null : lineRange(node, line.start, line.raw, text);
+  const labelAt = line === undefined ? null : labelRange(node, line.start, line.raw, label);
+  const t = nodeText(node);
+  const rawAt = raw === null || t.indexOf(raw) < 0 ? null : nodeRange(node, t.indexOf(raw), t.indexOf(raw) + raw.length);
+  SOURCES.set(c, {
+    view: w,
+    ...(textAt === null ? {} : { text: textAt }),
+    ...(raw === null || rawAt === null ? {} : { line: { text: raw, at: rawAt } }),
+    context: labelAt === null ? undefined : { text: label, at: labelAt },
+    section: factOf(sec),
+    blockHead: factOf(head),
+  });
+  return c;
 }
 
 /** Whether the span sits on a "Label: value" line of the node whose label is `context`. */
@@ -923,8 +1109,14 @@ export function labelledSpan(node: Node, text: string, context: string | null): 
 
 /** The context of an unlabelled line: for a one-line node, its field label or the nearest label text. */
 function lineContext(w: WindowState, node: Node, lines: number, isSourceField: boolean): string | null {
+  return lineContextRead(w, node, lines, isSourceField)?.text ?? null;
+}
+
+/** lineContext's label, with its source range. */
+function lineContextRead(w: WindowState, node: Node, lines: number, isSourceField: boolean): Read | null {
   if (lines !== 1) return null;
-  return isSourceField ? (node.label ?? nearestText(w, node, true)) : nearestText(w, node, true);
+  if (isSourceField && node.label !== undefined) return { text: node.label, at: node.label.trim() === "" ? null : partHeadRange(node, "label", sourceLine(node.label)) };
+  return nearestRead(w, node);
 }
 
 /**
@@ -1067,21 +1259,46 @@ export function countSpans(model: ScreenModel, targetWindowId: string): { spans:
  * otherwise split the whole node again for every value (B8 measured 20 ms per focus on one 220 KB node).
  */
 function contextFor(w: WindowState, node: Node, span: string): string | null {
+  return contextRead(w, node, span)?.text ?? null;
+}
+
+/** contextFor's label, with its source range. */
+function contextRead(w: WindowState, node: Node, span: string): Read | null {
   const text = nodeText(node);
   for (let at = text.indexOf(span); at >= 0; ) {
     const start = text.lastIndexOf("\n", at) + 1;
     const nl = text.indexOf("\n", at);
-    const m = LABELLED.exec(bareLine(text.slice(start, nl < 0 ? text.length : nl)));
-    if (m !== null && m[1] !== undefined && m[2] !== undefined && m[2].includes(span) && labelNames(m[2].trim(), span)) return m[1].trim();
+    const raw = text.slice(start, nl < 0 ? text.length : nl);
+    const m = LABELLED.exec(bareLine(raw));
+    if (m !== null && m[1] !== undefined && m[2] !== undefined && m[2].includes(span) && labelNames(m[2].trim(), span)) {
+      const label = m[1].trim();
+      return { text: label, at: labelRange(node, start, raw, label) };
+    }
     if (nl < 0) break;
     at = text.indexOf(span, nl + 1);
   }
-  if (node.editable === true && node.label !== undefined) return node.label;
+  if (node.editable === true && node.label !== undefined) return { text: node.label, at: node.label.trim() === "" ? null : partHeadRange(node, "label", sourceLine(node.label)) };
   // A document's text area has no label, and the text above it is its window's title ("Job notes.txt"), which
   // described every value in a note as "labelled 'Job notes.txt'" (B24 capture). A value inside a document has
   // no label but its line's.
   if (node.editable === true && text.includes("\n")) return null;
-  return nearestText(w, node, true);
+  return nearestRead(w, node);
+}
+
+/** nearestText(w, node, true), with its source range in the node it was read from. */
+function nearestRead(w: WindowState, node: Node): Read | null {
+  const near = nearestLabel(w, node, true);
+  const t = nearestText(w, node, true);
+  if (near === null || t === null) return t === null ? null : { text: t, at: null };
+  const n = w.nodes.get(near.key);
+  return { text: t, at: n === undefined ? null : partHeadRange(n, n.label !== undefined ? "label" : "value", t) };
+}
+
+/** The source range of a "Label: value" line's label: at the start of the line as bareLine reads it (after a bullet). */
+function labelRange(node: Node, lineStart: number, raw: string, label: string): SourceAt | null {
+  const bullet = BULLET_PREFIX.exec(collapsedMap(raw).text);
+  const r = collapsedRange("", raw, label, bullet === null ? 0 : bullet[0].length);
+  return r === null ? null : nodeRange(node, lineStart + r.start, lineStart + r.end);
 }
 
 /**
@@ -1099,6 +1316,11 @@ function labelNames(value: string, span: string): boolean {
 
 /** The label of the nearest named ancestor, skipping web areas, whose label is the page title. */
 function sectionAround(w: WindowState, node: Node): string | null {
+  return sectionRead(w, node)?.text ?? null;
+}
+
+/** sectionAround's label, with its source range in the ancestor it was read from. */
+function sectionRead(w: WindowState, node: Node): Read | null {
   let key = node.parent;
   while (key !== null) {
     const n = w.nodes.get(key);
@@ -1107,7 +1329,7 @@ function sectionAround(w: WindowState, node: Node): string | null {
     if (n.role === "AXWebArea") return null;
     if (n.label !== undefined) {
       const t = short(n.label);
-      if (t !== null) return t;
+      if (t !== null) return { text: t, at: partHeadRange(n, "label", t) };
     }
     key = n.parent;
   }
@@ -1138,11 +1360,20 @@ function childrenOf(w: WindowState, parent: string): Node[] {
  * box repeats its title as a static text.
  */
 function blockHead(w: WindowState, node: Node, span: string): string | null {
+  return blockHeadRead(w, node, span)?.text ?? null;
+}
+
+/** blockHead's line, with its source range in the node it was read from. */
+function blockHeadRead(w: WindowState, node: Node, span: string): Read | null {
   const text = nodeText(node);
   const own = firstLines(text);
   let head: string | undefined;
-  if (own.more) head = own.first;
-  else if (node.parent !== null) {
+  /** Where the head's line was read: its node, and its start and raw text in that node's nodeText. */
+  let from: { node: Node; start: number; raw: string } | null = null;
+  if (own.more) {
+    head = own.first;
+    from = own.at === undefined ? null : { node, start: own.at, raw: text.slice(own.at, text.indexOf("\n", own.at) < 0 ? text.length : text.indexOf("\n", own.at)) };
+  } else if (node.parent !== null) {
     const section = w.nodes.get(node.parent)?.label;
     for (const n of childrenOf(w, node.parent)) {
       if (!LINE_ROLES.has(n.role)) continue;
@@ -1151,27 +1382,32 @@ function blockHead(w: WindowState, node: Node, span: string): string | null {
       const first = (nl < 0 ? t : t.slice(0, nl)).trim();
       if (first.length === 0 || first === section) continue;
       head = first;
+      from = { node: n, start: 0, raw: nl < 0 ? t : t.slice(0, nl) };
       break;
     }
   }
   // With two lines of its own, the node's trimmed text holds a line break, so it cannot equal one line.
   if (head === undefined || head.includes(span) || (!own.more && head === text.trim())) return null;
-  return short(head);
+  const t = short(head);
+  if (t === null) return null;
+  return { text: t, at: from === null ? null : lineHeadRange(from.node, from.start, from.raw, t) };
 }
 
 /**
  * The first non-empty trimmed line of a text, and whether another non-empty line follows, reading only
  * as far as that second line: the node may be a whole log, and this runs for every span kept from it.
  */
-function firstLines(text: string): { first: string | undefined; more: boolean } {
+function firstLines(text: string): { first: string | undefined; more: boolean; at?: number } {
   let first: string | undefined;
+  let at: number | undefined;
   for (let start = 0; start <= text.length; ) {
     const nl = text.indexOf("\n", start);
     const end = nl < 0 ? text.length : nl;
     const line = text.slice(start, end).trim();
     if (line.length > 0) {
-      if (first !== undefined) return { first, more: true };
+      if (first !== undefined) return { first, more: true, ...(at === undefined ? {} : { at }) };
       first = line;
+      at = start;
     }
     if (nl < 0) break;
     start = nl + 1;
@@ -1202,7 +1438,9 @@ export function mintCandidate(d: Disclosure, model: ScreenModel, c: Candidate, o
   const v = viewOf(model, c.source.windowId);
   if (v === undefined) return null;
   const facts: ModelText[] = [];
-  const text = d.candidate(v, c.text);
+  // The span and its clause carry the ranges the generator read them at (sourceOf); the other facts have none.
+  const src = sourceOf(c).view === v ? sourceOf(c) : {};
+  const text = d.candidate(v, c.text, src.text);
   if (text === null) return null;
   const view = (t: string, as: "descriptor" | "candidate"): ModelText | null => (as === "descriptor" ? d.descriptor(v, t) : d.candidate(v, t));
   if (c.kind !== null) facts.push(d.id(c.kind));
@@ -1211,19 +1449,23 @@ export function mintCandidate(d: Disclosure, model: ScreenModel, c: Candidate, o
     if (label === null) return null;
     facts.push(d.t`the user's own ${label}, which the user told Caret`);
   }
-  const parts: [string | null | undefined, "descriptor" | "candidate", (m: ModelText) => ModelText][] = [
-    [c.context !== null && c.context !== c.text ? c.context : null, "descriptor", (m) => d.t`labelled '${m}'`],
-    [o.line !== undefined ? o.line : c.line, "candidate", (m) => d.t`in the line '${m}'`],
-    [o.blockHead === false ? null : c.blockHead, "candidate", (m) => d.t`in a block that starts '${m}'`],
-    [c.section !== null && c.section !== c.context ? c.section : null, "descriptor", (m) => d.t`under '${m}'`],
+  const line = o.line !== undefined ? o.line : c.line;
+  const lineAt = line !== null && line !== undefined && src.line?.text === line ? src.line.at : undefined;
+  /** A fact's recorded range, when the fact is still the text the generator read. */
+  const rangeOf = (t: string | null | undefined, f: Fact | undefined): SourceAt | undefined => (t !== null && t !== undefined && f?.text === t ? f.at : undefined);
+  const parts: [string | null | undefined, "descriptor" | "candidate", (m: ModelText) => ModelText, SourceAt?][] = [
+    [c.context !== null && c.context !== c.text ? c.context : null, "descriptor", (m) => d.t`labelled '${m}'`, rangeOf(c.context, src.context)],
+    [line, "candidate", (m) => d.t`in the line '${m}'`, lineAt],
+    [o.blockHead === false ? null : c.blockHead, "candidate", (m) => d.t`in a block that starts '${m}'`, rangeOf(c.blockHead, src.blockHead)],
+    [c.section !== null && c.section !== c.context ? c.section : null, "descriptor", (m) => d.t`under '${m}'`, rangeOf(c.section, src.section)],
   ];
-  for (const [t, as, say] of parts) {
+  for (const [t, as, say, at] of parts) {
     if (t === null || t === undefined) continue;
-    const m = view(t, as);
+    const m = at === undefined ? view(t, as) : as === "descriptor" ? d.descriptor(v, t, at) : d.candidate(v, t, at);
     if (m === null) return null;
     facts.push(say(m));
   }
-  const title = c.source.windowTitle === "" ? d.own("") : d.descriptor(v, c.source.windowTitle);
+  const title = c.source.windowTitle === "" ? d.own("") : d.descriptor(v, c.source.windowTitle, c.source.windowTitle === v.window.title ? wholePart(TITLE, v.window.title) : undefined);
   if (title === null) return null;
   facts.push(d.t`in ${d.app(v)} window '${title}', ${d.own(RECENCY_TEXT[c.recency])}`);
   return d.t`"${text}" (${d.join(facts, "; ")})`;

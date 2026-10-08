@@ -15,6 +15,45 @@ export const LINE_BREAK = /\r\n|\r|\n/u;
 /** A line as the inventory holds it: whitespace collapsed to one space, trimmed. */
 export const sourceLine = (s: string): string => s.replace(/\s+/gu, " ").trim();
 
+/**
+ * sourceLine(raw), with the offset in `raw` each of its characters came from: a collapsed run of whitespace gives its
+ * first. A text read from `raw` at [a, b) of the result came from raw's [from[a], from[b - 1] + 1). The one map from
+ * collapsed text back to raw positions: producers that collapse whitespace before they cut a text (the fill candidate
+ * generator, describeField) read their source ranges through it.
+ */
+export function collapsedMap(raw: string): { text: string; from: number[] } {
+  let text = "";
+  const from: number[] = [];
+  for (let i = 0; i < raw.length; ) {
+    if (/\s/u.test(raw[i]!)) {
+      let j = i;
+      while (j < raw.length && /\s/u.test(raw[j]!)) j++;
+      if (text !== "" && j < raw.length) {
+        text += " ";
+        from.push(i);
+      }
+      i = j;
+    } else {
+      text += raw[i];
+      from.push(i);
+      i++;
+    }
+  }
+  return { text, from };
+}
+
+/**
+ * The source range of `text` in part `part` (raw text `raw`), where `text`, less an ellipsis Caret added at its end,
+ * stands at `at` of collapsedMap(raw).text (its start when not given). Null when it does not stand there.
+ */
+export function collapsedRange(part: PartId, raw: string, text: string, at = 0): SourceAt | null {
+  const { text: c, from } = collapsedMap(raw);
+  // The text as it stands, a literal ellipsis included; else less the one Caret added.
+  const t = c.slice(at, at + text.length) === text ? text : text.endsWith("\u2026") ? text.slice(0, -1).trimEnd() : null;
+  if (t === null || t === "" || c.slice(at, at + t.length) !== t) return null;
+  return { part, start: from[at]!, end: from[at + t.length - 1]! + 1 };
+}
+
 /** A text's lines as the inventory reads them: split at line breaks, collapsed, trimmed, empty ones dropped. */
 export function sourceLines(text: string): string[] {
   return text.split(LINE_BREAK).map(sourceLine).filter((l) => l !== "");

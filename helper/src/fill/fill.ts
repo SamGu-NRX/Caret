@@ -14,7 +14,7 @@ import { fieldFingerprint, scopeRefusal, type Authority, type DocumentReader } f
 import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
-import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, mintCandidate, PLACEMENT_SAYS, viewOf, type Candidate } from "./candidates.ts";
+import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, mintCandidate, PLACEMENT_SAYS, viewOf, withSources, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import type { Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
@@ -1624,7 +1624,7 @@ export async function proposeFill(
   // 30 of 180 judgments the first ask got right, mostly picking the other person's details or none
   // (wording2-cal-* in the evidence folder), so window order is context worth keeping, not noise.
   const order = shuffledWithinWindows(candidates, opts.rand);
-  const second = order.map((c, i) => ({ ...c, id: `v${i + 1}` }));
+  const second = order.map((c, i) => withSources({ ...c, id: `v${i + 1}` }, c));
   const back = new Map(second.map((c, i) => [c.id, order[i]?.id ?? ""]));
   // Values from memory are numbered m1... in the first ask and n1..., shuffled, in the second, the same way.
   const aboutIds = new Map(aboutSent.map((a, i) => [a.id, `m${i + 1}`]));

@@ -173,7 +173,8 @@ describe("which fields: Jev's, never code's", () => {
   });
 
   // The design property, on random answers over every corpus form: no field reaches the fill's scope unless both wordings
-  // answered "asks" at the cutoff, and an "unclear" never reaches a fill.
+  // answered "asks" at the cutoff, and an "unclear" never reaches a fill. About 2.7 s alone; under the full suite at the
+  // default worker count it ran past the 5-second default, so it has 30.
   it("never adds a field Jev did not choose, and never fills past an unclear (random answers, every corpus form)", () => {
     const r = rng(31);
     const choices = ["asks", "not", "unclear"];
@@ -215,7 +216,7 @@ describe("which fields: Jev's, never code's", () => {
     }
     expect(fills).toBeGreaterThan(50);
     expect(asks).toBeGreaterThan(50);
-  });
+  }, 30_000);
 });
 
 describe("the vetoes", () => {

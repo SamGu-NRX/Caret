@@ -17,7 +17,7 @@ import { sensitiveKind } from "../memory/sensitive.ts";
 import { excludedValue, withholdValues } from "./exclude.ts";
 import { ANY_PATH, childGlob, knownPath, scalarsAt, shapeItems, shapeOf, UNNAMED, type ScalarType, type Slot } from "./shapes.ts";
 import { switchedOffCount } from "./read-policy.ts";
-import { describeField, type FieldDescriptor } from "../fill/descriptor.ts";
+import { describeField, descriptorSources, type FieldDescriptor } from "../fill/descriptor.ts";
 import type { Node } from "../protocol.ts";
 
 /** A window as redactWindow gave it (fill/redact.ts): the only window a Disclosure mints screen text from. */
@@ -393,12 +393,22 @@ export class Disclosure extends SnippetLedger {
     if (view.nodes.get(node.key) === undefined) return null;
     const own = describeField(view, node);
     if (own.text !== fd.text) return null;
-    const parts = [fd.label, fd.nearest, fd.placeholder, fd.section].filter((t): t is string => t !== null);
+    // Each window text with the range describeField read it at (descriptorSources), or else the text.
+    const src = descriptorSources(own);
+    const read = src?.view === view ? src : undefined;
+    const named: [string | null, SourceAt | undefined][] = [
+      [fd.label, read?.label],
+      [fd.nearest, read?.nearest],
+      [fd.placeholder, read?.placeholder],
+      [fd.section, read?.section],
+    ];
+    const parts = named.flatMap(([t]) => (t === null ? [] : [t]));
     for (const t of parts) if (!viewHolds(view, t)) return null;
+    for (const [t, at] of named) if (t !== null && at !== undefined && !rangeHolds(view, at, t)) throw new Error(`a field descriptor's recorded source range [${at.start}, ${at.end}) of ${JSON.stringify(at.part)} does not hold its text`);
     // Its window texts are declared one by one; the whole descriptor, Caret's words included, is what the early check
     // measures, as the seal will.
     this.know(view);
-    const spans = parts.map((t) => ({ view, text: t }));
+    const spans: ViewSpan[] = named.flatMap(([t, at]) => (t === null ? [] : [at === undefined ? { view, text: t } : { view, at }]));
     if (!this.admitTexts(parts, { under: view.window.windowId, kind: "descriptor", spans }) || !this.admitTexts([fd.text], { under: null, kind: "descriptor", spans })) return null;
     this.declareSpans(fd.text, spans);
     return this.record(fd.text, ["descriptor"]);

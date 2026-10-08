@@ -57,7 +57,7 @@ describe("PV2 review: provenance, shapes and budgets in the Disclosure", () => {
     expect(() => verifySent({ purpose: "route.judge", disclosure: d }, { state: json, questions: {} })).toThrow(/state\.task carries text minted as candidate/u);
   });
 
-  it("3: a derivation read from a basis is charged to its window, and refused past a conversation's limit", () => {
+  it("3: a derivation read from a basis is charged its whole basis, and refused past a conversation's limit", () => {
     const prose = "Dana said the staging rotation moves to the Austin office after the March review, then back again in June.";
     const { m, view } = note([prose]);
     const d = new Disclosure(m);
@@ -71,8 +71,10 @@ describe("PV2 review: provenance, shapes and budgets in the Disclosure", () => {
     expect(b).not.toBeNull();
     expect(c.derived(b!, prose)).toBeNull();
     expect(c.declared().charged).toEqual({});
-    expect(c.derived(b!, "March review")).toBe("March review");
-    expect(c.declared().charged.chat).toBe(12);
+    // A derivation charges the whole basis it read (OUTPUT-LEDGER-SPEC section 4), not only the words it repeats: the
+    // 107-character sentence is over the chat's 55, so even "March review" from it is refused.
+    expect(c.derived(b!, "March review"), "a derivation takes its whole basis: 107 of a limit of 55").toBeNull();
+    expect(c.declared().charged).toEqual({});
   });
 });
 

@@ -5,6 +5,7 @@ import type { Frame, Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import { secretText } from "../memory/sensitive.ts";
 import type { Disclosure, ModelText } from "../privacy/disclosure.ts";
+import { collapsedRange, nodePart, type SourceAt } from "../privacy/ledger/source.ts";
 
 export interface FieldDescriptor {
   text: string;
@@ -27,18 +28,54 @@ const MAX_LEFT_GAP = 260;
 const MAX_ABOVE_GAP = 48;
 const MAX_LABEL_CHARS = 60;
 
+/**
+ * Where each part of a field descriptor was read (OUTPUT-LEDGER-SPEC section 4): a range of the view's text, through the
+ * one collapse map (ledger/source.ts collapsedRange). Each part is a prefix of its node text collapsed: chrome is taken
+ * off its end and a long one is cut, with an ellipsis Caret adds outside the range.
+ */
+export interface DescriptorSources {
+  readonly view: WindowState;
+  readonly label?: SourceAt;
+  readonly placeholder?: SourceAt;
+  readonly nearest?: SourceAt;
+  readonly section?: SourceAt;
+}
+const SOURCES = new WeakMap<FieldDescriptor, DescriptorSources>();
+
+/** Where `fd`'s parts were read, when describeField made it. */
+export function descriptorSources(fd: FieldDescriptor): DescriptorSources | undefined {
+  return SOURCES.get(fd);
+}
+
+/** The range of `text` at the start of node `n`'s part, or nothing. */
+const headOf = (n: Node | undefined, part: "label" | "value" | "placeholder", text: string | null): SourceAt | undefined => {
+  const raw = n === undefined ? undefined : n[part];
+  return text === null || raw === undefined || n === undefined ? undefined : (collapsedRange(nodePart(n.key, part), raw, text) ?? undefined);
+};
+
 export function describeField(w: WindowState, field: Node): FieldDescriptor {
   // A label or placeholder is a short snippet in the question (privacy.ts): a long one is cut, ellipsis included.
   const label = cutLabel(fieldLabelText(field.label));
   const placeholder = cutLabel(clean(field.placeholder));
+  const near = label === null ? nearestLabel(w, field) : null;
   const nearest = label === null ? nearestText(w, field) : null;
+  const sectionAt = sectionNode(w, field);
   const section = sectionOf(w, field);
   const parts = [`${roleName(field.role)}.`];
   if (label !== null) parts.push(`Label: '${label}'.`);
   if (nearest !== null) parts.push(`Nearest label: '${nearest}'.`);
   if (placeholder !== null) parts.push(`Placeholder: '${placeholder}'.`);
   if (section !== null) parts.push(`Section: '${section}'.`);
-  return { text: parts.join(" "), label, placeholder, nearest, section };
+  const fd: FieldDescriptor = { text: parts.join(" "), label, placeholder, nearest, section };
+  const nearNode = near === null ? undefined : w.nodes.get(near.key);
+  const at = {
+    label: headOf(field, "label", label),
+    placeholder: headOf(field, "placeholder", placeholder),
+    nearest: headOf(nearNode, nearNode?.label !== undefined ? "label" : "value", nearest),
+    section: section === null || sectionAt === null ? undefined : headOf(sectionAt, "label", section),
+  };
+  SOURCES.set(fd, { view: w, ...Object.fromEntries(Object.entries(at).filter(([, v]) => v !== undefined)) });
+  return fd;
 }
 
 /**
@@ -48,15 +85,20 @@ export function describeField(w: WindowState, field: Node): FieldDescriptor {
  */
 export function mintDescriptor(d: Disclosure, w: WindowState, field: Node, fd: FieldDescriptor = describeField(w, field)): ModelText | null {
   const parts: ModelText[] = [d.t`${d.own(roleName(field.role))}.`];
-  const add = (text: string | null, say: (m: ModelText) => ModelText): boolean => {
+  const src = descriptorSources(fd);
+  const read = src?.view === w ? src : undefined;
+  const add = (text: string | null, say: (m: ModelText) => ModelText, at?: SourceAt): boolean => {
     if (text === null) return true;
-    const m = d.descriptor(w, text);
+    const m = d.descriptor(w, text, at);
     if (m === null) return false;
     parts.push(say(m));
     return true;
   };
   const ok =
-    add(fd.label, (m) => d.t`Label: '${m}'.`) && add(fd.nearest, (m) => d.t`Nearest label: '${m}'.`) && add(fd.placeholder, (m) => d.t`Placeholder: '${m}'.`) && add(fd.section, (m) => d.t`Section: '${m}'.`);
+    add(fd.label, (m) => d.t`Label: '${m}'.`, read?.label) &&
+    add(fd.nearest, (m) => d.t`Nearest label: '${m}'.`, read?.nearest) &&
+    add(fd.placeholder, (m) => d.t`Placeholder: '${m}'.`, read?.placeholder) &&
+    add(fd.section, (m) => d.t`Section: '${m}'.`, read?.section);
   return ok ? d.join(parts, " ") : null;
 }
 
