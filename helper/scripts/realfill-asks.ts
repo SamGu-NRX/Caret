@@ -38,7 +38,7 @@ import { parseArgs } from "node:util";
 import { sealRequest, storedRecord, type AskJev } from "../src/fill/jev.ts";
 import { harnessEngine } from "../src/engines/decide/harness.ts";
 import { realfillOracle } from "./realfill-oracle.ts";
-import type { FillTrace } from "../src/fill/fill.ts";
+import { mintOf, type FillTrace } from "../src/fill/fill.ts";
 import { engineName } from "../src/engines/decide/port.ts";
 import { answerQuestion, AskAsks, AskRefused, planAsk, type AskDraft, type AskQuestionDraft } from "../src/planner/ask.ts";
 import { jevIntentMaker, writerIntentMaker, type IntentMaker, type MakerUse } from "../src/planner/intent-makers.ts";
@@ -265,6 +265,7 @@ for (const [i, ask] of asks.entries()) {
   let intent: AskIntent | null = null;
   let use: MakerUse | null = null;
   let question: AskQuestionDraft | null = null;
+  let asked0: AskAsks | null = null;
   const run = (resume?: AskQuestionDraft["resume"]) =>
     planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n), fillTrace: (t) => traces.push(t), values: true, ...(resume === undefined ? {} : { resume }) });
   try {
@@ -281,8 +282,7 @@ for (const [i, ask] of asks.entries()) {
     if (e instanceof AskRefused) ((intent = e.intent), (use = e.maker));
     if (e instanceof AskAsks) {
       question = e.question;
-      // A value question's fallback is the Ask as proposed without the user: what settled automatically.
-      draft = e.fallback;
+      asked0 = e;
     }
   }
   const labelOf = new Map<string, string>();
@@ -295,14 +295,21 @@ for (const [i, ask] of asks.entries()) {
     return p.value === p.expected || (f?.accept ?? []).includes(p.value);
   };
   const wanted = Object.entries(expected).filter(([, v]) => v !== "none" && v !== "handoff" && v !== "unchecked").map(([l]) => l);
-  const scoreDraft = (d: AskDraft | null, asked: boolean): { verdict: Verdict; proposed: Proposed[]; missing: string[] } => {
+  /**
+   * What an Ask proposes: a draft's checked writes and controls; while a value question is open, the fill it is about, by
+   * its checked writes (a field with a mint) and its controls, which is what settled before the user answers.
+   */
+  const scoreDraft = (d: AskDraft | AskAsks | null, asked: boolean): { verdict: Verdict; proposed: Proposed[]; missing: string[] } => {
+    const fill = d instanceof AskAsks ? (d.question.resume.values?.proposal.fields ?? []) : [];
+    const writes = d instanceof AskAsks ? fill.flatMap((f) => (f.control === "text" && f.value !== null && mintOf(f) !== undefined ? [{ key: f.key, value: f.value }] : [])) : (d?.checked.writes ?? []).map((wr) => ({ key: wr.node.key, value: wr.value }));
+    const controls = d instanceof AskAsks ? fill.flatMap((f) => (f.handoff === null ? [] : [{ key: f.key, value: f.handoff.value }])) : (d?.controls ?? []);
     const proposed: Proposed[] = [
-      ...(d?.checked.writes ?? []).map((wr) => {
-        const field = labelOf.get(wr.node.key) ?? `(${wr.node.label ?? wr.node.key})`;
+      ...writes.map((wr) => {
+        const field = labelOf.get(wr.key) ?? `(${wr.key})`;
         return { field, value: wr.value, expected: exp(field), control: false };
       }),
-      ...(d?.controls ?? []).map((c) => {
-        const field = labelOf.get(c.key) ?? `(${c.name})`;
+      ...controls.map((c) => {
+        const field = labelOf.get(c.key) ?? `(${c.key})`;
         return { field, value: c.value, expected: exp(field), control: true };
       }),
     ];
@@ -310,7 +317,8 @@ for (const [i, ask] of asks.entries()) {
     const verdict: Verdict = proposed.length === 0 ? (asked ? "asked" : "refused") : ask.expected === "refuse" || proposed.some((p) => !ok(p)) ? "wrong" : missing.length === 0 ? "right" : "partial";
     return { verdict, proposed, missing };
   };
-  const scored = scoreDraft(draft, question !== null);
+  // A value question's Ask is scored by the fill it is about: what settled before the user answers.
+  const scored = scoreDraft(draft ?? (question?.part === "value" ? asked0 : null), question !== null);
   const { proposed, missing } = scored;
   // B29: option recall, then the simulated pick of the right options, continued up to three questions deep.
   const expectedValues = Object.values(expected).filter((v) => v !== "none" && v !== "handoff" && v !== "unchecked" && v !== "checked");
@@ -365,7 +373,7 @@ for (const [i, ask] of asks.entries()) {
     } catch (e) {
       if (!(e instanceof PlannerError)) throw e;
       if (e instanceof AskAsks) q = e.question;
-      continued = { ...scoreDraft(e instanceof AskAsks ? e.fallback : null, q !== null), says: e.message };
+      continued = { ...scoreDraft(e instanceof AskAsks && e.question.part === "value" ? e : null, q !== null), says: e.message };
     }
   }
   // A must-refuse ask that was asked: pick every option of a fields question, or each option of any other in turn, and

@@ -212,12 +212,9 @@ export class AskRefused extends SaidError {
  */
 export class AskAsks extends AskRefused {
   readonly question: AskQuestionDraft;
-  /** A value question's Ask as proposed with no answer: the values that did settle, or null when that proposes nothing. */
-  readonly fallback: AskDraft | null;
-  constructor(e: PlannerError, intent: AskIntent | null, maker: MakerUse | null, question: AskQuestionDraft, fallback: AskDraft | null = null) {
+  constructor(e: PlannerError, intent: AskIntent | null, maker: MakerUse | null, question: AskQuestionDraft) {
     super(e, intent, maker);
     this.question = question;
-    this.fallback = fallback;
   }
 }
 
@@ -241,20 +238,13 @@ export function answerQuestion(q: AskQuestionDraft, picks: readonly string[]): A
   return { ...q.resume, fixed };
 }
 
-/**
- * Asks about the first field of `step.queue`: its eligible values and Leave blank, beside the values already checked.
- * Its fallback is the Ask proposed as it stands, for a caller that measures what settled without the user.
- */
-async function valueQuestion(step: ValueStep, resume: AskResume, window: AskQuestionDraft["window"], at: Parameters<ValueStep["finish"]>[1]): Promise<never> {
+/** Asks about the first field of `step.queue`: its eligible values and Leave blank, beside the values already checked. */
+function valueQuestion(step: ValueStep, resume: AskResume, window: AskQuestionDraft["window"]): never {
   const u = step.queue[0] as UnresolvedValue;
   const c = valueChoices(u);
   const filling = step.proposal.fields.flatMap((f) => (f.value !== null ? [`${step.names.get(f.key) ?? f.descriptor}: ${f.value}`] : f.handoff !== null ? [`${step.names.get(f.key) ?? f.descriptor}: ${f.handoff.display}`] : []));
-  const fallback = await step.finish(step.proposal, at).catch((e: unknown) => {
-    if (e instanceof AskRefused) return null;
-    throw e;
-  });
   const why = u.why === "selection" ? "Jev's two value questions did not settle it" : "the check called it exact under its cutoff";
-  throw new AskAsks(new SaidError("unsure", c.text, `${u.name}: ${why}; asked by its ${u.options.length} eligible values`), step.intent, step.maker, { ...c, filling, window, resume: { ...resume, values: step } }, fallback);
+  throw new AskAsks(new SaidError("unsure", c.text, `${u.name}: ${why}; asked by its ${u.options.length} eligible values`), step.intent, step.maker, { ...c, filling, window, resume: { ...resume, values: step } });
 }
 
 const refsOf = (snap: IntentSnapshot): SnapRefs => ({
@@ -953,7 +943,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   const queue = o.values === true && settlement !== undefined ? valueQueue(settlement.unresolved) : [];
   if (settlement !== undefined && queue.length > 0) {
     const step: ValueStep = { settlement, proposal: p, queue, names: new Map(checked.fields.map((f) => [f.key, f.name])), seenKeys: [...checked.fields, ...checked.leftToYou].map((f) => f.key), finish, intent, maker: use };
-    return valueQuestion(step, resumeFor(scopeKeys), { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title }, { model: sourceModel, offerKey: o.offerKey, jev });
+    return valueQuestion(step, resumeFor(scopeKeys), { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title });
   }
   return finish(p, { model: sourceModel, offerKey: o.offerKey, jev });
 }
@@ -987,10 +977,9 @@ async function continueValues(r: AskResume, step: ValueStep, w: WindowState, mod
       throw e;
     }
   }
-  const at = { model, offerKey: o.offerKey, jev };
   const next: ValueStep = { ...step, proposal, queue: step.queue.slice(1) };
-  if (next.queue.length > 0) return valueQuestion(next, r, { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title }, at);
-  return next.finish(proposal, at);
+  if (next.queue.length > 0) return valueQuestion(next, r, { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title });
+  return next.finish(proposal, { model, offerKey: o.offerKey, jev });
 }
 
 const CONFIRM = { yes: "Yes: the instruction asks for this.", no: "No: the instruction does not ask for this." } as const;

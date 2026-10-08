@@ -597,7 +597,11 @@ export interface FillTrace {
   options: ReadonlyMap<string, { text: string; from: "window" | "memory" | "derived"; label: string | null; app: string | null }>;
   /** An Ask's exact proposed output of each option a field's value questions list, by field id and option id. */
   outputs?: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  /** An Ask's candidates a veto kept out of a field's value questions, by field id and candidate id, with the veto. */
+  vetoed?: ReadonlyMap<string, ReadonlyMap<string, OptionVeto>>;
 }
+/** The veto that keeps a candidate out of an Ask's value question (FillTrace.vetoed). */
+export type OptionVeto = "conversion" | "sourceCut" | "ownerEvidence" | "neverTyped" | "shape" | "notSendable";
 
 export interface FillOptions {
   /** W1: called once per proposal, before its first ask, with what it asks (FillTrace). Harnesses only. */
@@ -1699,6 +1703,8 @@ export async function proposeFill(
   };
   /** An Ask's exact outputs by field and option id, filled once its options are built (FillTrace.outputs). */
   const traceOutputs = new Map<string, ReadonlyMap<string, string>>();
+  /** An Ask's candidates a veto kept out of each field's options (FillTrace.vetoed), filled as they are built. */
+  const traceVetoed = new Map<string, Map<string, OptionVeto>>();
   if (opts.trace !== undefined) {
     const traced = new Map<string, { text: string; from: "window" | "memory" | "derived"; label: string | null; app: string | null }>();
     for (const c of candidates) {
@@ -1718,7 +1724,7 @@ export async function proposeFill(
       traced.set(derivedSecond.get(d.key) ?? "", o);
     }
     traced.delete("");
-    opts.trace({ owns: (req) => mine.has(req), fields: asked.map((f) => ({ id: f.id, key: f.node.key, name: f.name })), options: traced, outputs: traceOutputs });
+    opts.trace({ owns: (req) => mine.has(req), fields: asked.map((f) => ({ id: f.id, key: f.node.key, name: f.name })), options: traced, outputs: traceOutputs, vetoed: traceVetoed });
   }
   // C2: a field offered a part of a memory entry is asked whose details it wants, as one offered the whole entry is
   // (theUsers), a date's month, day or year included, which no other rule makes personal.
@@ -2299,21 +2305,26 @@ export async function proposeFill(
         ...f.about.filter((a) => (aboutSaidNow.get(a.id) ?? null) !== null).map((a) => ({ id: aboutIds.get(a.id) ?? "", second: aboutSecond.get(a.id) ?? "", pick: { from: "memory" as const, a } })),
         ...(derived.get(f.id) ?? []).filter((d) => derivedSaid.has(d.key)).map((d) => ({ id: derivedIds.get(d.key) ?? "", second: derivedSecond.get(d.key) ?? "", pick: { from: "derived" as const, text: d.text, base: d.base, also: d.also, ...(d.chose === undefined ? {} : { chose: d.chose }) } })),
       ];
+      const vetoed = new Map<string, OptionVeto>();
+      traceVetoed.set(f.id, vetoed);
       const members = picks.flatMap(({ id, second, pick }): Member[] => {
+        const veto = (why: OptionVeto): Member[] => (vetoed.set(id, why), []);
         const read = controlValue(f, pick);
         if ("why" in read) {
           if (pickText(pick) === literalOf(f)) unreadLiterals.add(f.node.key);
-          return [];
+          return veto("conversion");
         }
         const cut = anchored(f) && fromAnchor(f, pick) ? anchoredCut(pick) : fieldCut(f) || pickCut(pick);
-        const unshown = cut ? null : noteUnshown(f, pick);
+        if (cut) return veto("sourceCut");
+        const unshown = noteUnshown(f, pick);
         if (unshown !== null && !privacyHeld.has(f.id)) privacyHeld.set(f.id, unshown);
-        if (cut || unshown !== null) return [];
+        if (unshown !== null) return veto("ownerEvidence");
         const chose = read.chose ?? (pick.from === "derived" ? pick.chose : undefined);
         const proposed: Proposed = { field: contracts[i] as FieldContract, text: read.value, display: read.display, provenance: bindOwned(provenanceOf(model, pick, f.part, read.value, judgedText, f.control, chose)), owner: ownerOf(pick) };
         // As the write contract will judge it: the verifier's values meet every shape check, an exemption's the never-typed one.
         const verifier = f.control === "text" || f.control === "combobox" || chose !== undefined;
-        if ((neverTypedRefusal(proposed, scope.instruction) ?? (verifier ? (shapeRefusal(proposed) ?? textShapeRefusal(proposed)) : null)) !== null) return [];
+        if (neverTypedRefusal(proposed, scope.instruction) !== null) return veto("neverTyped");
+        if (verifier && (shapeRefusal(proposed) ?? textShapeRefusal(proposed)) !== null) return veto("shape");
         return [{ id, second, pick, read, proposed, output: read.value, owner: proposed.owner, assumptions: saysOf(proposed.provenance), verifier, ...evidenceOf(pick) }];
       });
       optionsOf.set(f.id, groupOptions(members));
@@ -2433,6 +2444,7 @@ export async function proposeFill(
       const derivation = mintDerivation(m, first.proposed, (t) => m.heldText(t)) ?? m.own("literal copy");
       said.set(o.id, { output, units, said: m.t`Proposed value: "${output}". Source: ${source}. Observed label: ${mintLabel(first.pick)}. Supporting text: ${m.join(supports, "; ")}. Derivation: ${derivation}.` });
     }
+    for (const o of options) if (!said.has(o.id)) for (const x of o.members) traceVetoed.get(fid)?.set(x.id, "notSendable");
     optionsOf.set(fid, options.filter((o) => said.has(o.id)));
     criteria.set(fid, said);
   }
@@ -2613,6 +2625,32 @@ export async function proposeFill(
     if (unshown !== null && withheld === "ambiguous") setHeldReason(field, `Caret left ${f.name}: ${unshown}.`);
     return field;
   };
+  /**
+   * An Ask's decision on one field from its two value answers, shared by the first answers and a pick's fresh pair:
+   * "blank" when both chose none; else "admitted" only when both chose the same option (exactly `only`, for a pick) at its
+   * cutoff (MEMORY_CUTOFF with both whose answers the user's, for the user's own value; else FILL_CUTOFF) and no rule that
+   * relates it to the field holds it; else "held", with why.
+   */
+  type AskDecision = { kind: "blank" } | { kind: "held"; why: FillWithheld } | { kind: "admitted"; option: ValueOption<Member> };
+  const decideAsk = (f: Field, a1: FillAsk, a2: FillAsk, only?: string): AskDecision => {
+    if (a1.choice === NONE && a2.choice === NONE) return { kind: "blank" };
+    if (a1.choice !== a2.choice || (only !== undefined && a1.choice !== only)) return { kind: "held", why: "disagree" };
+    const option = optionsOf.get(f.id)?.find((o) => o.id === a1.choice) as ValueOption<Member>;
+    const first = option.members[0] as Member;
+    const fromMemory = memoryOf(first.pick) !== null;
+    if (Math.min(a1.confidence, a2.confidence) < (fromMemory ? memoryCutoff : cutoff) || (fromMemory && !theUsers(f))) return { kind: "held", why: "lowConfidence" };
+    const why = relationalHold(f, first.pick);
+    return why === null ? { kind: "admitted", option } : { kind: "held", why };
+  };
+  /** The field as an Ask's decision leaves it; a blank one says why when a value was kept out of its options. */
+  const askField = (f: Field, i: number, empty: Omit<FillField, "withheld" | "asks">, d: AskDecision, asks: [FillAsk, FillAsk], confidence: number): FillField => {
+    if (d.kind === "admitted") return asField(f, i, empty, (d.option.members[0] as Member).pick, (d.option.members[0] as Member).read, asks, confidence, null, null, d.option);
+    if (d.kind === "held") return asField(f, i, empty, undefined, null, asks, confidence, d.why, null, undefined);
+    // Both chose none: a value the user spelled out that reads more than one way, or one its owner's evidence kept out of
+    // the options, says why the field is blank (privacyHeld, unreadLiterals).
+    const unshown = privacyHeld.get(f.id) ?? null;
+    return asField(f, i, empty, undefined, null, asks, confidence, unreadLiterals.has(f.node.key) || unshown !== null ? "ambiguous" : null, unshown, undefined);
+  };
   const out: FillField[] = fields.map((f, i) => {
     const empty = { key: f.node.key, control: f.control, handoff: null, frame: f.node.frame ?? null, descriptor: f.descriptor, choice: NONE, confidence: 0, value: null, source: null, memory: null };
     if (answersFor.has(f.id)) return answerField(f, empty);
@@ -2627,16 +2665,15 @@ export async function proposeFill(
     const agree = a1.choice === a2.choice;
     const confidence = agree ? Math.min(a1.confidence, a2.confidence) : 0;
     // An Ask's option already met the conversion, cut and privacy vetoes (optionsOf); a fill on focus's pick meets them here.
-    const option = askValues && agree && a1.choice !== NONE ? optionsOf.get(f.id)?.find((o) => o.id === a1.choice) : undefined;
-    const chosen = askValues ? option?.members[0]?.pick : agree && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
+    if (askValues) return askField(f, i, empty, decideAsk(f, a1, a2), [a1, a2], confidence);
+    const chosen = agree && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
     const picked: Pick | undefined = chosen === undefined ? undefined : literalPick(f, chosen);
     const fromMemory = picked !== undefined && memoryOf(picked) !== null;
     // An anchored field's pick from the anchor window is judged on its own; any other pick meets the cut rules.
-    const anchoredPick = !askValues && picked !== undefined && anchored(f) && fromAnchor(f, picked);
-    const cutOut = !askValues && picked !== undefined && (anchoredPick ? anchoredCut(picked) : fieldCut(f) || pickCut(picked));
-    const read = picked === undefined ? null : option !== undefined ? (option.members[0] as Member).read : controlValue(f, picked);
-    // An Ask says why a field is blank when its owner's evidence kept a value out of its options (privacyHeld).
-    const unshown = askValues ? (picked === undefined && agree ? (privacyHeld.get(f.id) ?? null) : null) : picked === undefined ? null : noteUnshown(f, picked);
+    const anchoredPick = picked !== undefined && anchored(f) && fromAnchor(f, picked);
+    const cutOut = picked !== undefined && (anchoredPick ? anchoredCut(picked) : fieldCut(f) || pickCut(picked));
+    const read = picked === undefined ? null : controlValue(f, picked);
+    const unshown = picked === undefined ? null : noteUnshown(f, picked);
     const withheld: FillWithheld | null =
       a1.choice === NONE && a2.choice === NONE
         ? null
@@ -2649,9 +2686,7 @@ export async function proposeFill(
               : read !== null && "why" in read
                 ? read.why
                 : ((picked === undefined ? null : relationalHold(f, picked)) ?? (unshown !== null ? "ambiguous" : null));
-    // The value the user spelled out for this field reads more than one way, so no option offered it (optionsOf).
-    if (withheld === null && picked === undefined && (unreadLiterals.has(f.node.key) || unshown !== null)) return asField(f, i, empty, undefined, null, [a1, a2], confidence, "ambiguous", unshown, undefined);
-    return asField(f, i, empty, withheld === null ? picked : undefined, read, [a1, a2], confidence, withheld, unshown, option);
+    return asField(f, i, empty, withheld === null ? picked : undefined, read, [a1, a2], confidence, withheld, unshown, undefined);
   });
 
   // The alternate-field veto (alternate.ts): a secondary field never repeats its primary's value or the user's own. A
@@ -2834,24 +2869,13 @@ export async function proposeFill(
     const [x1, x2] = await Promise.all([ask(askValueRequest(0, { f, selection })), ask(askValueRequest(1, { f, selection }))]);
     const a1 = readAsk(x1, f, (id) => id);
     const a2 = readAsk(x2, f, (id) => back.get(id));
-    const first = option.members[0] as Member;
-    const fromMemory = memoryOf(first.pick) !== null;
-    const both = a1.choice === optionId && a2.choice === optionId;
-    const confidence = both ? Math.min(a1.confidence, a2.confidence) : 0;
-    // Only agreement on the value picked, at the unchanged cutoff, then every veto and check the first answers met.
-    const withheld: FillWithheld | null =
-      a1.choice === NONE && a2.choice === NONE
-        ? null
-        : !both
-          ? "disagree"
-          : confidence < (fromMemory ? memoryCutoff : cutoff) || (fromMemory && !theUsers(f))
-            ? "lowConfidence"
-            : restsOnStale(first.pick)
-              ? "ambiguous"
-              : relationalHold(f, first.pick);
+    const confidence = a1.choice === a2.choice ? Math.min(a1.confidence, a2.confidence) : 0;
+    // The first answers' decision, held to the value picked; a cached owner verdict invalidated since then holds it too.
+    const decided = decideAsk(f, a1, a2, optionId);
+    const d: AskDecision = decided.kind === "admitted" && restsOnStale((option.members[0] as Member).pick) ? { kind: "held", why: "ambiguous" } : decided;
     const empty = { key, control: f.control, handoff: null, frame: f.node.frame ?? null, descriptor: f.descriptor, choice: NONE, confidence: 0, value: null, source: null, memory: null };
     picksOf.delete(i);
-    let field = asField(f, i, empty, withheld === null ? first.pick : undefined, first.read, [a1, a2], confidence, withheld, null, option);
+    let field = askField(f, i, empty, d, [a1, a2], confidence);
     const blank = (why: FillWithheld): FillField => ({ ...field, choice: NONE, value: null, source: null, memory: null, handoff: null, basis: undefined, withheld: why });
     const pick = picksOf.get(i);
     if (pick !== undefined) {

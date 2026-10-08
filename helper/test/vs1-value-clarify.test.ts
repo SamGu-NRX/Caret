@@ -11,7 +11,7 @@ import { AnyMessage, AskAnswer, AskQuestion, ConsumerMessage, HelperMessage, MAX
 import { ScreenModel } from "../src/model.ts";
 import { aboutValues } from "../src/fill/about.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import type { UnresolvedValue } from "../src/fill/fill.ts";
+import { MEMORY_CUTOFF, type UnresolvedValue } from "../src/fill/fill.ts";
 import { valueChoices, valueQueue } from "../src/planner/choices.ts";
 import { AskAsks, AskRefused, answerQuestion, planAsk, type AskDraft } from "../src/planner/ask.ts";
 import type { IntentMaker } from "../src/planner/intent-makers.ts";
@@ -23,7 +23,7 @@ import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts"
 import type { WriterRequest } from "../src/writer/port.ts";
 import { answeringScope, field, MAIL_APP, scopeLabel, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, wireButtons } from "./fake-app.ts";
-import { optionOutput } from "./vs1-kit.ts";
+import { optionOutput, proposedOf } from "./vs1-kit.ts";
 
 const unresolved = (n: number, values = 1): UnresolvedValue => ({
   key: `form/${n}`, name: `Field ${n}`, kind: "value", why: "selection",
@@ -109,7 +109,8 @@ const outcome = (p: Promise<AskDraft>): Promise<AskDraft | AskRefused> => p.catc
   if (e instanceof AskRefused) return e;
   throw e;
 });
-const writes = (d: AskDraft | AskRefused | null): Record<string, string> => (d === null || d instanceof AskRefused ? {} : Object.fromEntries(d.checked.writes.map((w) => [w.node.label ?? w.node.key, w.value])));
+/** What an outcome proposes, by field label (vs1-kit proposedOf), text fields only: the desk's form has no controls. */
+const writes = (d: AskDraft | AskRefused | null): Record<string, string> => proposedOf({ labelOf: new Map([["form/0", "First name"], ["form/1", "Work email"], ["form/2", "Phone"]]) }, d);
 const ask = (o: AskDraft | AskRefused): AskAsks => {
   if (!(o instanceof AskAsks)) throw new Error(`expected a question, got ${o instanceof AskRefused ? o.message : "a draft"}`);
   return o;
@@ -128,7 +129,7 @@ describe("a value question in the Ask", () => {
     const q = ask(await outcome(plan(desk(), jev(split))));
     expect(q.question).toMatchObject({ part: "value", pick: "one", text: "Which email should go in Work email?", filling: ["First name: Grace"] });
     expect(q.question.options.map((o) => o.option)).toEqual([{ kind: "value", id: "o1", value: "grace.oduya@example.com", source: "Your saved Email" }, { kind: "blank", id: "o2" }]);
-    expect(writes(q.fallback)).toEqual({ "First name": "Grace" });
+    expect(writes(q)).toEqual({ "First name": "Grace" });
   });
 
   it("a pick asks both value wordings once more, with the selection, and adds the value only when both agree at the cutoff", async () => {
@@ -142,6 +143,32 @@ describe("a value question in the Ask", () => {
     for (const r of fresh) expect(Object.keys(r.questions)).toEqual(["f2"]);
     expect(String(fresh[0]?.questions.f2?.instructions)).toContain('Explicit user selections: the value "grace.oduya@example.com" for \'Work email\'.');
     expect(writes(d)).toEqual({ "First name": "Grace", "Work email": "grace.oduya@example.com" });
+  });
+
+  // Sol review P1: a pick is admitted only when both fresh wordings choose exactly it at the unchanged cutoff.
+  describe("the fresh pair's truth table", () => {
+    const TWO = "Email: g.oduya@lumen.example\nPhone: 555-0188";
+    const cases: [string, (wording: 0 | 1) => [string | null, number]][] = [
+      ["none / none", () => [null, 0.99]],
+      ["the pick / none", (w) => (w === 0 ? ["grace.oduya@example.com", 0.99] : [null, 0.99])],
+      ["both on another value", () => ["g.oduya@lumen.example", 0.99]],
+      // The pick is the user's saved email, so its cutoff is MEMORY_CUTOFF.
+      ["both on the pick, under the cutoff", () => ["grace.oduya@example.com", MEMORY_CUTOFF - 0.01]],
+    ];
+    it.each(cases)("%s writes nothing in Work email", async (_, fresh) => {
+      const m = desk(TWO);
+      const j = jev(split, (label, w) => (label === "Work email" ? fresh(w) : [null, 0.9]));
+      const q = ask(await outcome(plan(m, j)));
+      expect(q.question.options.map((o) => o.option.kind === "value" && o.option.value)).toContain("grace.oduya@example.com");
+      const d = await outcome(plan(m, j, pickValue(q, "grace.oduya@example.com")));
+      expect(writes(d)["Work email"]).toBeUndefined();
+    });
+    it("both on the pick at the cutoff writes it", async () => {
+      const m = desk(TWO);
+      const j = jev(split, (label) => (label === "Work email" ? ["grace.oduya@example.com", MEMORY_CUTOFF] : [null, 0.9]));
+      const d = await outcome(plan(m, j, pickValue(ask(await outcome(plan(m, j))), "grace.oduya@example.com")));
+      expect(writes(d)["Work email"]).toBe("grace.oduya@example.com");
+    });
   });
 
   it("a fresh pair that does not agree leaves the field blank and asks nothing more", async () => {

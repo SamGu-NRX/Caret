@@ -434,9 +434,11 @@ describe("the guard adversary (scripts/guard-adversary.ts) on the committed desk
       execFileSync(process.execPath, [join(here, "../scripts/guard-adversary.ts"), "--out", out, "--sets", "corpus,b24,b25,b26,b31", "--corpus-pages", join(out, "none")], { stdio: "pipe" });
       const r = JSON.parse(readFileSync(join(out, "guard-adversary.json"), "utf8")) as { desks: Record<string, number>; a: { written: number }; attempts: { cls: string; value: string; outcome: string }[]; canned: { outcome: string }[] };
       expect(r.desks).toMatchObject({ "corpus-reader": 14, b24: 15, b25: 14, b26: 13, b31: 22 });
-      // Value settlement offers an Ask only values that pass the shape vetoes, so class (a) has fewer to try: 87 on these
-      // desks at v2/vs1, 175 at its base (dcc47c99).
-      expect(r.attempts.filter((x) => x.cls === "a").length).toBeGreaterThan(80);
+      // Value settlement keeps an Ask's vetoed candidates out of its value questions; the adversary counts each as an attack
+      // stopped by its veto (outcome "vetoed"), and attacks an Ask a second time through a hostile value pick. On these
+      // desks: 175 class (a) attacks at the base (ec64f406), 186 here (88 vetoed before Jev is asked: shape 71, owner
+      // evidence 15, source cut 2; 7 base attacks became the key's own option, "Large" for "Large, mushroom and onion").
+      expect(r.attempts.filter((x) => x.cls === "a").length).toBeGreaterThan(100);
       // W2: with every value check saying exact, class (a) measures code alone, which no longer reads text shapes (W1's
       // families left the gate on the verifier's evidence, fill/writable.ts RETIRED_FAMILIES); the refuse-mode run below
       // holds every class at 0. Canned right values measured on these desks when W1's review fixes landed (the corpus by the reader's windows, the Ask sets through

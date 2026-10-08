@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Snapshot } from "../src/protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
-import type { FillTrace } from "../src/fill/fill.ts";
+import { mintOf, type FillTrace } from "../src/fill/fill.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { AskAsks, AskRefused, planAsk, type AskDraft, type AskResume } from "../src/planner/ask.ts";
 import { PlannerError } from "../src/planner/validate.ts";
@@ -56,16 +56,17 @@ export interface Run {
   resume: (resume: AskResume) => Promise<AskDraft | AskRefused>;
 }
 
-/** The corpus labels a draft writes or hands off, with their values. */
+/**
+ * The corpus labels an outcome writes or hands off, with their values: a draft's checked writes and controls; while a value
+ * question is open, the fill it is about, by its checked writes (a field with a mint) and its controls.
+ */
 export function proposedOf(r: Pick<Run, "labelOf">, d: AskDraft | AskRefused | null): Record<string, string> {
+  if (d instanceof AskAsks && d.question.part === "value") {
+    const fields = d.question.resume.values?.proposal.fields ?? [];
+    return Object.fromEntries(fields.flatMap((f) => (f.control === "text" && f.value !== null && mintOf(f) !== undefined ? [[r.labelOf.get(f.key) ?? f.key, f.value]] : f.handoff !== null ? [[r.labelOf.get(f.key) ?? f.key, f.handoff.value]] : [])));
+  }
   if (d === null || d instanceof AskRefused) return {};
   return Object.fromEntries([...d.checked.writes.map((w) => [r.labelOf.get(w.node.key) ?? w.node.key, w.value] as const), ...(d.controls ?? []).map((c) => [r.labelOf.get(c.key) ?? c.key, c.value] as const)]);
-}
-
-/** The automatic draft of an outcome: the draft itself, or a value question's fallback. */
-export function automatic(o: AskDraft | AskRefused): AskDraft | null {
-  if (o instanceof AskAsks) return o.fallback;
-  return o instanceof AskRefused ? null : o;
 }
 
 /** Runs B31 Ask `id` on its desk (`page`: the page engine's walk, as the scoreboard's default), with `values` value questions on. */

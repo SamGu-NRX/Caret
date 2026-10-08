@@ -1,5 +1,4 @@
-// C1 item 6 asked a whole-form Ask that narrows nothing as Fill all does. Value settlement (design/ask/VALUE-SETTLEMENT.md)
-// asks every Ask's values in its own wording, around the complete request, whatever it narrows. Every name is invented.
+// Every Ask's value questions quote the complete request, whatever it narrows. Every name is invented.
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { proposeFill, type FillScope } from "../src/fill/fill.ts";
