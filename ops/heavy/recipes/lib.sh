@@ -4,7 +4,7 @@ PY=$CARET_HEAVY_PY
 CHECK="$CARET_HEAVY_RECIPES/check.py"
 OUT=$CARET_HEAVY_OUT
 # The Developer ID the eval signs its bridge with; a certificate hash, not a secret.
-SIGN_IDENTITY=472BDE15DB7ADCB740F9E2508F0916EE1671FD75
+SIGN_IDENTITY=DC7B5D99A0E1EE3CFA464E216C400A5A91F7F439
 
 # Every Python the recipes start: isolated, no bytecode written, none read from beside a module (caret_heavy.PY_FLAGS).
 py() { "$PY" -I -B -X pycache_prefix=/var/empty "$@"; }
