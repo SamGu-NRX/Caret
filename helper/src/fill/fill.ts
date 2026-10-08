@@ -16,7 +16,7 @@ import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillFi
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, MAX_LINE, mintCandidate, PLACEMENT_SAYS, viewOf, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
-import type { Declared } from "../privacy.ts";
+import { WINDOW_CHARS, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
@@ -24,7 +24,7 @@ import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, for
 import { asksCountry, asksPlace, PART_SAYS, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, type CheckOptions, CONTRACT_UNSTATED, contractSays, ContractError, isChecked, makeFieldContract, mintDerivation, mintExempt, neverTypedRefusal, provenanceStale, requireChecked, shapeRefusal, textShapeRefusal, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance, type Refused } from "./contract.ts";
 import { identitiesOf, identityOf, placementsOf, sameIdentity } from "./whose.ts";
-import { ownedOf, unitAt, unitEvidence, unitKey, unitOf, unitsHolding, windowUnits, type NoteUnit } from "./note-unit.ts";
+import { ownedOf, unitKey, unitOf, unitsHolding, windowUnit, type NoteUnit } from "./note-unit.ts";
 import { groupOptions, type OptionMember, type ValueOption } from "./value-options.ts";
 import { OwnerVerdicts, type CacheTicket, type OwnerAnswer } from "./owner-cache.ts";
 import { alternateVetoes, readableFields, setAlternateReason, type AlternateWrite, type PartPicks } from "./alternate.ts";
@@ -781,7 +781,7 @@ type Pick =
   | { from: "derived"; text: string; base: { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue } | { from: "instruction"; text: string }; also: Candidate | null; chose?: Chosen }
   | { from: "choice"; text: string; basis: ChoiceBasis };
 /** A source-supported choice's whole evidence: one unit of a scoped source window, one memory entry, or the user's whole request. */
-type ChoiceBasis = { from: "unit"; unit: NoteUnit; app: string; title: string; evidence: string } | { from: "memory"; a: AboutValue } | { from: "instruction"; text: string };
+type ChoiceBasis = { from: "unit"; unit: NoteUnit; app: string; title: string } | { from: "memory"; a: AboutValue } | { from: "instruction"; text: string };
 
 /** Words of a label that say its value is a person's: "Name:", "Traveler:", "To:", "Emergency contact:". Written for common labels, not measured. */
 const PERSON_LABEL = /\b(?:name|traveler|traveller|passenger|patient|guest|applicant|student|attendee|from|to|cc|reference|landlord|contact|recipient|sender|tenant|driver|member|employee|candidate|spouse|partner|roommate|manager|advisor)\b/i;
@@ -1731,9 +1731,9 @@ export async function proposeFill(
   type Supported = { id: string; second: string; f: Field; pick: Extract<Pick, { from: "choice" }> };
   const supported: Supported[] = [];
   if (scope !== undefined) {
-    const unitBases = [...model.windows.keys()].filter((id) => id !== windowId && unread?.has(id) !== true).flatMap((id) => windowUnits(model, id)).filter((u) => u.complete).map((u): ChoiceBasis => {
+    const unitBases = [...model.windows.keys()].filter((id) => id !== windowId && unread?.has(id) !== true).flatMap((id) => windowUnit(model, id) ?? []).filter((u) => u.complete).map((u): ChoiceBasis => {
       const view = viewOf(model, u.windowId);
-      return { from: "unit", unit: u, app: view?.app.name ?? "", title: view?.window.title ?? "", evidence: unitEvidence(model, u.windowId, u.nodeKey) ?? "" };
+      return { from: "unit", unit: u, app: view?.app.name ?? "", title: view?.window.title ?? "" };
     });
     const listed = asked.flatMap((f) => {
       const outputs = choiceOutputs(f);
@@ -2446,10 +2446,14 @@ export async function proposeFill(
     const u = unitOf(model, source.windowId, source.nodeKey);
     return u === null ? null : noteOf(u);
   };
-  /** A unit's note id (source_notes), minted once; null when redaction cut it, this fill may not read it, or it does not fit. */
-  const noteOf = (u: NoteUnit): ModelText | null => {
-    if (!u.complete || unread?.has(u.windowId) === true) return null;
-    let id = noteIds.get(unitKey(u));
+  /**
+   * A unit's note id (source_notes), minted once under `key`; null when redaction cut it, this fill may not read it, or it
+   * does not fit. A choice's window (`key` its digest, since owner questions name the same window's other unit by unitKey)
+   * must also fit one source_notes entry, WINDOW_CHARS, or the sealed request would refuse it.
+   */
+  const noteOf = (u: NoteUnit, key: string = unitKey(u)): ModelText | null => {
+    if (!u.complete || unread?.has(u.windowId) === true || (key !== unitKey(u) && u.text.length > WINDOW_CHARS)) return null;
+    let id = noteIds.get(key);
     if (id === undefined) {
       const view = viewOf(model, u.windowId);
       const said = view === undefined ? null : m.candidate(view, u.text);
@@ -2457,10 +2461,12 @@ export async function proposeFill(
       id = `note_${notes.size + 1}`;
       notes.set(id, said);
       noteSaid.set(id, m.id(id));
-      noteIds.set(unitKey(u), id);
+      noteIds.set(key, id);
     }
     return noteSaid.get(id) ?? null;
   };
+  /** The note id of a choice's whole window (note-unit.ts windowUnit). */
+  const windowNote = (u: NoteUnit): ModelText | null => noteOf(u, `shown\u0000${u.digest}`);
   /**
    * The line a window value was read from, whole when it is a short one (MAX_LINE, the generator's own bound for a line it
    * offers whole), else the clause the generator kept of it; null when neither went through the ledger.
@@ -2558,7 +2564,7 @@ export async function proposeFill(
     let support: ModelText;
     let label: ModelText = unavailable;
     if (b.from === "unit") {
-      const note = noteOf(b.unit);
+      const note = windowNote(b.unit);
       const view = viewOf(model, b.unit.windowId);
       if (note === null || view === undefined) return "unshown";
       units.add(note);
@@ -2953,8 +2959,9 @@ export async function proposeFill(
     let pr = p.provenance;
     while (pr.kind === "derived") pr = pr.base;
     // A whole unit is the one judged, by digest, or none.
-    const unit = pr.kind === "unit" && unitEvidence(model, pr.windowId, pr.nodeKey) === pr.digest ? unitAt(model, pr.windowId, pr.nodeKey) : null;
-    const id = pr.kind === "window" ? unitNote(pr) : unit !== null ? noteOf(unit) : null;
+    const now = pr.kind === "unit" ? windowUnit(model, pr.windowId) : null;
+    const unit = now !== null && pr.kind === "unit" && now.digest === pr.digest ? now : null;
+    const id = pr.kind === "window" ? unitNote(pr) : unit !== null ? windowNote(unit) : null;
     const text = id === null ? undefined : notes.get(id);
     return id === null || text === undefined ? null : { id, text };
   };
@@ -3319,7 +3326,7 @@ function provenanceOf(model: ScreenModel, p: Pick, part: FillPart | null, writte
     // Its stated derivation is what keeps it from every exemption (contract.ts statedChoice), so it never goes without one.
     if (chose === undefined) throw new Error(`a source-supported choice '${p.text}' reached provenance without its derivation`);
     const b = p.basis;
-    const base: Provenance = b.from === "unit" ? { kind: "unit", windowId: b.unit.windowId, nodeKey: b.unit.nodeKey, app: b.app, title: b.title, digest: b.evidence } : b.from === "memory" ? { kind: "memory", id: b.a.id, label: b.a.label, part: null, whose: "user" } : { kind: "instruction", span: b.text };
+    const base: Provenance = b.from === "unit" ? { kind: "unit", windowId: b.unit.windowId, app: b.app, title: b.title, digest: b.unit.digest } : b.from === "memory" ? { kind: "memory", id: b.a.id, label: b.a.label, part: null, whose: "user" } : { kind: "instruction", span: b.text };
     return { kind: "derived", how: "sourceSupported", base, also: null, says: chose.says };
   }
   if (chose !== undefined) {

@@ -67,31 +67,50 @@ export function unitAt(model: ScreenModel, windowId: string, nodeKey: string | n
   return node === undefined || !textArea(node) ? null : build(raw, nodeKey);
 }
 
-/** Every unit of a window's text (c), each once: each text area that holds text, and the whole window when another node does. */
-export function windowUnits(model: ScreenModel, windowId: string): NoteUnit[] {
-  const raw = model.windows.get(windowId);
-  if (raw === undefined) return [];
-  const out = new Map<string, NoteUnit>();
-  for (const n of raw.nodes.values()) {
-    if (unitText(n).trim() === "") continue;
-    const nodeKey = textArea(n) ? n.key : null;
-    const k = unitKey({ windowId, nodeKey });
-    if (!out.has(k)) out.set(k, build(raw, nodeKey));
-  }
-  return [...out.values()];
+/**
+ * Every text of a node the redacted view shows (privacy/disclosure.ts viewText): its label, value and placeholder, and its
+ * section texts. Unlike unitText, an editable field's label is in it ("Optional services, not requested" over "Oil change").
+ */
+function shownText(n: Node): string {
+  return [n.label, n.value, n.placeholder, ...sectionTexts(n)].filter((t): t is string => t !== undefined && t !== "").join("\n");
 }
 
 /**
- * What a choice judged against a unit rests on (fill.ts), as one digest: the unit's own (its text as shown, and whether
- * redaction cut it), the window's title, and the label of every node in it, which the text leaves out for an editable
- * node. Any change refuses the choice at every recheck. Null when the unit is gone.
+ * The nodes of a window's own content: in a browser, its page (the AXWebArea and everything under it, as controls.ts
+ * formControls reads a page's controls), not the browser's toolbar and tabs; any other window's every node.
  */
-export function unitEvidence(model: ScreenModel, windowId: string, nodeKey: string | null): string | null {
+function contentNodes(raw: WindowState): Map<string, Node> {
+  const web = [...raw.nodes.values()].find((n) => n.role === "AXWebArea");
+  if (web === undefined) return raw.nodes;
+  const out = new Map<string, Node>([[web.key, web]]);
+  for (const n of raw.nodes.values()) if (n.parent !== null && out.has(n.parent)) out.set(n.key, n);
+  return out;
+}
+
+/**
+ * The basis a choice is judged against (fill.ts), one text for what is sent, what completeness is judged on and what the
+ * digest rechecks: the window's title, then every text each node of its content shows. The content holds every message's
+ * headers, body and disclaimer, whatever nodes carry them; a text area alone is no message, since nothing on the walk says
+ * where the message it is part of begins or ends. Incomplete when redaction removed any of it (b). Null when the window is
+ * gone or shows no text.
+ */
+export function windowUnit(model: ScreenModel, windowId: string): NoteUnit | null {
   const raw = model.windows.get(windowId);
-  const u = unitAt(model, windowId, nodeKey);
-  if (raw === undefined || u === null) return null;
-  const keys = nodeKey === null ? [...raw.nodes.keys()] : [nodeKey];
-  return createHash("sha256").update([u.digest, raw.window.title, ...keys.map((k) => raw.nodes.get(k)?.label ?? "")].join("\u0000")).digest("hex").slice(0, 32);
+  if (raw === undefined) return null;
+  const nodes = contentNodes(raw);
+  if (![...nodes.values()].some((n) => shownText(n).trim() !== "")) return null;
+  const view = redactWindow(raw);
+  let complete = raw.window.title === view.window.title;
+  const texts = view.window.title.trim() === "" ? [] : [view.window.title.trim()];
+  for (const [k, r] of nodes) {
+    const v = view.nodes.get(k);
+    const vt = v === undefined ? "" : shownText(v).trim();
+    if (shownText(r).trim() !== vt) complete = false;
+    if (vt !== "") texts.push(vt);
+  }
+  const text = texts.join("\n");
+  const digest = createHash("sha256").update(`${windowId}\u0000shown\u0000${complete ? "1" : "0"}\u0000${text}`).digest("hex").slice(0, 32);
+  return { windowId, nodeKey: null, text, complete, digest };
 }
 
 function build(raw: WindowState, nodeKey: string | null): NoteUnit {

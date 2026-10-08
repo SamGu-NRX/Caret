@@ -33,7 +33,7 @@ import { secretIn } from "../planner/trace.ts";
 import type { AskJev, JevRequest } from "./jev.ts";
 import { WITHHELD } from "../privacy/exclude.ts";
 import { alternateKinds, alternateStale, type AlternateKind, type SavedReader } from "./alternate.ts";
-import { ownedStale, unitEvidence, type OwnedEvidence } from "./note-unit.ts";
+import { ownedStale, windowUnit, type OwnedEvidence } from "./note-unit.ts";
 
 /** The page walk's text input kind (protocol.ts PageControlKind), projected into Node by toWindowSnapshot; null through Accessibility. */
 export type InputKind = "text" | "email" | "tel" | "url" | "number" | "search" | "date" | "time" | "datetime" | "month" | "week" | "textarea" | null;
@@ -166,11 +166,11 @@ export type Provenance =
   | { kind: "memory"; id: string; label: string; part: FillMemory["part"] | null; whose: "user" | "other" | null }
   | { kind: "instruction"; span: string }
   /**
-   * A whole source unit (fill/note-unit.ts) a source-supported choice was judged against: its identity and the digest of
-   * that evidence (note-unit.ts unitEvidence), which the one recheck requires unchanged (provenanceStale). It has no span:
-   * the evidence is the whole unit.
+   * The whole window a source-supported choice was judged against (fill/note-unit.ts windowUnit): its id and the digest
+   * of the text it was shown, which the one recheck requires unchanged (provenanceStale). It has no span: the evidence is
+   * the whole window.
    */
-  | { kind: "unit"; windowId: string; nodeKey: string | null; app: string; title: string; digest: string }
+  | { kind: "unit"; windowId: string; app: string; title: string; digest: string }
   | { kind: "answer"; id: string; question: string }
   | {
       kind: "derived";
@@ -1138,9 +1138,9 @@ export function provenanceStale(model: ScreenModel, pr: Provenance): string | nu
     }
     case "unit": {
       // The whole unit by digest: any edit, a cut, a window Caret may no longer read, a changed title or label.
-      const now = unitEvidence(model, pr.windowId, pr.nodeKey);
+      const now = windowUnit(model, pr.windowId);
       if (now === null) return "the text it was judged against is gone";
-      return now === pr.digest ? null : "the text it was judged against changed";
+      return now.digest === pr.digest ? null : "the text it was judged against changed";
     }
     case "derived": {
       const stale = provenanceStale(model, pr.base) ?? (pr.also === null ? null : provenanceStale(model, pr.also));
