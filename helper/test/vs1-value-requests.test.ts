@@ -175,4 +175,16 @@ describe("the verifier's street line", () => {
     expect(street).toHaveLength(2);
     for (const t of street) expect(t).toContain("Required content and format: only the street line of an address; the form's fields 'Apt / Unit', 'City' and 'ZIP code' take the rest.");
   });
+
+  // Sol review P2: the siblings came from the Ask's scoped fields, so an Ask for the street alone named none, and the
+  // verifier read the street line against no stated contract. They are the form's, whatever the Ask writes.
+  it("names them for an Ask that writes only the street line", async () => {
+    const labels = ["Street address", "Apt / Unit", "City", "ZIP code"];
+    const note = "Address: 4410 Speedway Apt 2, Austin, Texas 78751";
+    const j = recorder({ "Street address": "4410 Speedway" });
+    await proposeFill(desk(note, labels, "Rental notes.txt"), j, "form", "form/0", T0, { rand: () => 0, scope: { ...scope(labels, "just put my street in from my notes"), fields: ["form/0"] } });
+    const street = verifies(j.reqs).flatMap((r) => Object.values(r.questions).map((q) => String(q.instructions))).filter((t) => t.includes('"4410 Speedway"'));
+    expect(street).toHaveLength(2);
+    for (const t of street) expect(t).toContain("Required content and format: only the street line of an address; the form's fields 'Apt / Unit', 'City' and 'ZIP code' take the rest.");
+  });
 });

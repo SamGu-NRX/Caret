@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkValues, guardFor, isChecked, makeFieldContract, mintExempt, provenanceStale, setTestVerifier, ContractError, type CheckedValue, type Provenance } from "../src/fill/contract.ts";
 import { STAND_IN } from "./setup/verifier.ts";
-import { mintOf, proposeFill } from "../src/fill/fill.ts";
+import { mintOf, proposeFill, VALUE_TASK } from "../src/fill/fill.ts";
 import { formControls, pickableOptions, serviceBox } from "../src/fill/controls.ts";
 import { ScreenModel } from "../src/model.ts";
 import type { AskJev } from "../src/fill/jev.ts";
@@ -214,6 +214,16 @@ describe("a month or day menu", () => {
     expect(t, "Month is asked").toBeDefined();
     expect([...(t?.options.values() ?? [])].some((o) => o.from === "choice")).toBe(false);
     expect(proposedOf(r, r.outcome).Month).toBeUndefined();
+  });
+});
+
+describe("a settlement provider that fails", () => {
+  it("leaves the choices blank and keeps the base's own values", async () => {
+    const r = await runB31("b31-13", { values: true, firstPass: "oracle", fail: (req) => (req.state as { task?: string }).task === VALUE_TASK });
+    expect(r.requests.some((q) => (q.state as { task?: string }).task === VALUE_TASK && Object.values(q.questions).some((x) => String(x.instructions).includes("Label: 'Year'")))).toBe(true);
+    const got = proposedOf(r, r.outcome);
+    for (const label of ["Year", "Oil and filter change", "Tire rotation", "Brake inspection"]) expect(got[label], label).toBeUndefined();
+    expect(got["Full name"]).toBe("Jamie Torres");
   });
 });
 

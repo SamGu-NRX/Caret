@@ -6,7 +6,7 @@
 // failed call admit nothing, and nothing but an admitted value is minted. Synthetic desk: every value is invented.
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { FILL_CUTOFF, FillError, MEMORY_CUTOFF, mintOf, proposeFill, WHOSE_CUTOFF, type FillScope } from "../src/fill/fill.ts";
+import { FILL_CUTOFF, FillError, MEMORY_CUTOFF, mintOf, proposeFill, valueSettlementOf, WHOSE_CUTOFF, type FillScope } from "../src/fill/fill.ts";
 import { aboutValues } from "../src/fill/about.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import type { FillField } from "../src/protocol.ts";
@@ -39,6 +39,8 @@ interface Cell {
   /** Rewrites one wording's answer after it is chosen (a remapped, invalid or missing id). */
   tamper?: (wording: 0 | 1, a: A, req: JevRequest) => A | undefined;
   fail?: boolean;
+  /** A pick's fresh pair (its request names the picked value): each wording's answer, as `values` gives the first pair's. */
+  fresh?: [[string | null, number], [string | null, number]];
 }
 
 function jev(c: Cell): AskJev {
@@ -56,7 +58,8 @@ function jev(c: Cell): AskJev {
       else if (!isSettlement(q.criteria)) answers[id] = { choice: splitFirst(q.criteria, w as 0 | 1), confidence: 0.99 };
       else {
         const label = LABELS.find((l) => ins.includes(`'${l}'`)) ?? "";
-        const [want, given] = label === c.label ? c.values[w as 0 | 1] : [WANT[label] ?? null, 0.99];
+        const pair = c.fresh !== undefined && /Explicit user selections: [^.]*the value "/u.test(ins) ? c.fresh : c.values;
+        const [want, given] = label === c.label ? pair[w as 0 | 1] : [WANT[label] ?? null, 0.99];
         const n = Object.keys(q.criteria).length;
         const confidence = label === c.label && c.p === true ? (given - 1 / n) / (1 - 1 / n) : given;
         const hit = Object.entries(q.criteria).find(([, d]) => want !== null && optionOutput(d) === want)?.[0] ?? "none";
@@ -95,6 +98,34 @@ describe("a screen value: both wordings, the same option, each with p at FILL_CU
     [[null, 0.99], [null, 0.99], false],
   ] as const)("p %j / %j -> admitted %s", async (a, b, want) => {
     expect(await admitted({ label: "Name", p: true, values: [a as [string | null, number], b as [string | null, number]] })).toBe(want);
+  });
+
+  // Sol review P3: the cutoff itself admits, in both wordings; a hair under it in either does not.
+  const under = FILL_CUTOFF - 1e-6;
+  it.each([
+    [[v, FILL_CUTOFF], [v, FILL_CUTOFF], true],
+    [[v, FILL_CUTOFF], [v, under], false],
+    [[v, under], [v, FILL_CUTOFF], false],
+  ] as const)("at the cutoff: p %j / %j -> admitted %s", async (a, b, want) => {
+    expect(await admitted({ label: "Name", p: true, values: [a as [string | null, number], b as [string | null, number]] })).toBe(want);
+  });
+
+  // The same boundary for a pick's fresh pair: the first pair splits, the user picks the value, and the fresh pair decides.
+  it.each([
+    [[v, FILL_CUTOFF], [v, FILL_CUTOFF], true],
+    [[v, FILL_CUTOFF], [v, under], false],
+    [[v, under], [v, FILL_CUTOFF], false],
+  ] as const)("a picked fresh pair at the cutoff: p %j / %j -> admitted %s", async (a, b, want) => {
+    const c: Cell = { label: "Name", p: true, values: [[v, 0.99], [null, 0.99]], fresh: [a as [string | null, number], b as [string | null, number]] };
+    const m = desk();
+    const p = await proposeFill(m, jev(c), "form", "form/0", T0, { about: ABOUT, rand: () => 0, scope: SCOPE });
+    const s = valueSettlementOf(p);
+    const u = s?.unresolved.find((x) => x.key === "form/0");
+    const option = u?.options.find((o) => o.value === v);
+    if (s === undefined || option === undefined) throw new Error("Name was not left to a value question");
+    const f = await s.settle("form/0", option.id, { model: m, askJev: jev(c) });
+    expect(mintOf(f) !== undefined, "mint iff value").toBe(f.value !== null);
+    expect(f.value !== null).toBe(want);
   });
 
   it("admits on p where Jev's confidence alone reads under the cutoff", async () => {
