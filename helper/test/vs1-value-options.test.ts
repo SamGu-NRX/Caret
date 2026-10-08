@@ -3,14 +3,10 @@
 // currency field takes) and states that output; candidates the existing shape, cut and privacy vetoes reject are not
 // offered. Two members share an option only when everything that could make them differ is identical: the output, the
 // source evidence unit, where it came from, the label it was read beside, its owner and every assumption code made.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { describe, expect, it } from "vitest";
 import { groupOptions, type OptionMember } from "../src/fill/value-options.ts";
 import { BOX_CONTRACT } from "../src/fill/fill.ts";
 import { runB31, valueQuestions } from "./vs1-kit.ts";
-
-beforeEach(() => setGeneratorClock(() => 0));
-afterEach(() => setGeneratorClock(null));
 
 const member = (id: string, o: Partial<OptionMember> = {}): OptionMember => ({ id, output: "April", evidence: "note-1", origin: "window", label: "Birthday", owner: null, assumptions: [], verifier: false, ...o });
 

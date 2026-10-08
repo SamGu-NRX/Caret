@@ -1,18 +1,10 @@
-// The early-capped candidate generator: the same output as the generator before B6, a cost that
-// follows the cap rather than the screen, and a time budget that stops it.
 import { describe, expect, it } from "vitest";
-import { collectCandidates, countSpans, generateCandidates, MAX_CANDIDATES, setGeneratorClock } from "../src/fill/candidates.ts";
+import { collectCandidates, countSpans, generateCandidates, MAX_CANDIDATES, MAX_GENERATOR_VISITS } from "../src/fill/candidates.ts";
 import { ScreenModel } from "../src/model.ts";
 import type { Node, TypedValue } from "../src/protocol.ts";
 import { legacyGenerateCandidates } from "./legacy-candidates.ts";
 import { largeScene, rng } from "./large-scene.ts";
 import { snap } from "./builders.ts";
-
-/** A clock that moves 0.5 ms each time it is read. */
-const slowClockFor = (): (() => number) => {
-  let t = 0;
-  return () => (t += 0.5);
-};
 
 describe("candidate generator", () => {
   const scene = largeScene();
@@ -28,8 +20,8 @@ describe("candidate generator", () => {
     expect(c.typed).toBe(all.filter((x) => x.kind !== null).length);
   });
 
-  it.each([1, 20, MAX_CANDIDATES, 300, 1000, Number.POSITIVE_INFINITY])("gives exactly the old generator's first %s candidates", (max) => {
-    const got = collectCandidates(scene.model, scene.formWindowId, { max, now: NOW, budgetMs: Number.POSITIVE_INFINITY }).candidates;
+  it.each([1, 20, MAX_CANDIDATES])("gives exactly the old generator's first %s candidates", (max) => {
+    const got = collectCandidates(scene.model, scene.formWindowId, { max, now: NOW }).candidates;
     expect(got).toEqual(legacyGenerateCandidates(scene.model, scene.formWindowId, max, NOW));
   });
 
@@ -54,7 +46,7 @@ describe("candidate generator", () => {
         model.apply(snap(nodes, { at: 1000 + w * 100 + seed, windowId: `w${w}`, focused: r() < 0.7, values }));
       }
       for (const max of [3, 10, MAX_CANDIDATES]) {
-        expect(collectCandidates(model, "w0", { max, now: 5000, budgetMs: Number.POSITIVE_INFINITY }).candidates, `seed ${seed} max ${max}`).toEqual(
+        expect(collectCandidates(model, "w0", { max, now: 5000 }).candidates, `seed ${seed} max ${max}`).toEqual(
           legacyGenerateCandidates(model, "w0", max, 5000),
         );
       }
@@ -83,7 +75,7 @@ describe("candidate generator", () => {
         model.apply(snap(nodes, { at: 1000 + w * 100 + seed, windowId: `w${w}`, focused: w === 0, values }));
       }
       for (const max of [5, MAX_CANDIDATES]) {
-        expect(collectCandidates(model, "w0", { max, now: 5000, budgetMs: Number.POSITIVE_INFINITY }).candidates, `seed ${seed} max ${max}`).toEqual(
+        expect(collectCandidates(model, "w0", { max, now: 5000 }).candidates, `seed ${seed} max ${max}`).toEqual(
           legacyGenerateCandidates(model, "w0", max, 5000),
         );
       }
@@ -91,7 +83,7 @@ describe("candidate generator", () => {
   });
 
   it("stops reading once it has the cap, so it never builds every span", () => {
-    const { candidates, stats } = collectCandidates(scene.model, scene.formWindowId, { now: NOW, budgetMs: Number.POSITIVE_INFINITY });
+    const { candidates, stats } = collectCandidates(scene.model, scene.formWindowId, { now: NOW });
     expect(candidates).toHaveLength(MAX_CANDIDATES);
     const values = [...scene.model.windows.values()].reduce((k, w) => k + w.values.length, 0);
     // The scene's most recent window alone holds enough typed values: no node is read for lines.
@@ -101,65 +93,42 @@ describe("candidate generator", () => {
     expect(stats.overBudget).toBe(false);
   });
 
-  describe("time budget", () => {
-    /** A clock that moves 0.5 ms each time it is read. */
-    const slowClock = (): (() => number) => {
-      let t = 0;
-      return () => (t += 0.5);
-    };
-
-    it("stops when the budget runs out and returns the head of the full ranking", () => {
-      const full = legacyGenerateCandidates(scene.model, scene.formWindowId, 1000, NOW);
-      const { candidates, stats } = collectCandidates(scene.model, scene.formWindowId, { max: 1000, now: NOW, budgetMs: 5, clock: slowClock() });
-      expect(stats.overBudget).toBe(true);
-      expect(candidates.length).toBeGreaterThan(0);
-      expect(candidates.length).toBeLessThan(1000);
-      expect(candidates).toEqual(full.slice(0, candidates.length));
-      // The clock is read every 64 nodes or values: ten reads past the start is 5 ms.
-      expect(stats.values + stats.nodes).toBeLessThanOrEqual(64 * 11);
-    });
-
-    it("does not stop a pass that fits in the budget", () => {
-      const { stats } = collectCandidates(scene.model, scene.formWindowId, { now: NOW, budgetMs: 15, clock: slowClock() });
-      expect(stats.overBudget).toBe(false);
-    });
-
-    it("stops on the budget while reading lines as well as typed values", () => {
-      const noValues = new ScreenModel();
-      for (const s of scene.snapshots) noValues.apply({ ...s, values: [] });
-      const { candidates, stats } = collectCandidates(noValues, scene.formWindowId, { max: 1000, now: NOW, budgetMs: 2, clock: slowClock() });
-      expect(stats.overBudget).toBe(true);
-      expect(stats.nodes).toBeGreaterThan(0);
-      expect(candidates).toEqual(legacyGenerateCandidates(noValues, scene.formWindowId, 1000, NOW).slice(0, candidates.length));
-    });
+  it("counts duplicate typed values toward the visit cap", () => {
+    const model = new ScreenModel();
+    const node = { key: "source/phone", parent: null, role: "AXStaticText", label: "Phone: 555-0147" };
+    const values: TypedValue[] = Array.from({ length: MAX_GENERATOR_VISITS + 1 }, () => ({ kind: "phone", text: "555-0147", nodeKey: node.key }));
+    model.apply(snap([node], { at: 1000, windowId: "source", focused: true, values }));
+    const result = collectCandidates(model, "form", { now: NOW });
+    expect(result.stats.overBudget).toBe(true);
+    expect(result.stats.values).toBe(MAX_GENERATOR_VISITS);
+    expect(result.candidates.map((c) => c.text)).toEqual(["555-0147"]);
+    expect(result.cut).toEqual(["source"]);
   });
 
-  it("applies the cap and the budget inside one node's lines", () => {
+  it("stops on the visit cap while reading lines", () => {
+    const noValues = new ScreenModel();
+    for (const s of scene.snapshots) noValues.apply({ ...s, values: [] });
+    const result = collectCandidates(noValues, scene.formWindowId, { max: 1000, now: NOW });
+    expect(result.stats.overBudget).toBe(true);
+    expect(result.stats.nodes).toBeGreaterThan(0);
+    expect(result.candidates).toEqual(legacyGenerateCandidates(noValues, scene.formWindowId, 1000, NOW).slice(0, result.candidates.length));
+  });
+
+  it("applies both caps inside one node's lines", () => {
     const model = new ScreenModel();
     const log = Array.from({ length: 20_000 }, (_, i) => `build step ${i} finished`).join("\n");
     model.apply(snap([{ key: "l/statictext~0", parent: null, role: "AXStaticText", label: log }], { at: 1000, windowId: "log", focused: true }));
     model.apply(snap([], { at: 2000, windowId: "form", focused: true }));
-    let reads = 0;
-    const counting = (): number => ++reads;
-    const capped = collectCandidates(model, "form", { now: 3000, budgetMs: Number.POSITIVE_INFINITY, clock: counting });
+    const capped = collectCandidates(model, "form", { now: 3000 });
     expect(capped.candidates).toHaveLength(MAX_CANDIDATES);
-    // Stopped at the 80th line: the clock is read every 64 lines, plus once at the start and once at the end.
-    // Reading all 20,000 lines would have read it over 300 times.
-    expect(reads).toBeLessThanOrEqual(4);
     expect(capped.stats.overBudget).toBe(false);
-    const timed = collectCandidates(model, "form", { max: 20_000, now: 3000, budgetMs: 5, clock: slowClockFor() });
-    expect(timed.stats.overBudget).toBe(true);
-    expect(timed.candidates.length).toBeLessThanOrEqual(64 * 11);
+    const visited = collectCandidates(model, "form", { max: 20_000, now: 3000 });
+    expect(visited.stats.overBudget).toBe(true);
+    expect(visited.candidates).toHaveLength(MAX_GENERATOR_VISITS - 1);
+    expect(visited.cut).toEqual(["log"]);
   });
 
   it("keeps generateCandidates' signature and default cap", () => {
-    // generateCandidates takes no clock, so the budget's default one is fixed: under CPU stress the wall
-    // clock ran out on this scene before the cap (B14).
-    setGeneratorClock(() => 0);
-    try {
-      expect(generateCandidates(scene.model, scene.formWindowId, undefined, NOW)).toEqual(legacyGenerateCandidates(scene.model, scene.formWindowId, MAX_CANDIDATES, NOW));
-    } finally {
-      setGeneratorClock(null);
-    }
+    expect(generateCandidates(scene.model, scene.formWindowId, undefined, NOW)).toEqual(legacyGenerateCandidates(scene.model, scene.formWindowId, MAX_CANDIDATES, NOW));
   });
 });

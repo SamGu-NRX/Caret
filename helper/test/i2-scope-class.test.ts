@@ -1,8 +1,7 @@
 // I2: the lead's rulings on the re-review of 487bdf0, each as the reviewer's reproduction: the Ask's scope is settled
 // once by the per-field scope question (uploads with the fields, in document order), frozen with the document it was
 // asked on, kept by a goal across its replans, and asked on every route of every maker.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { afterEach, describe, expect, it } from "vitest";
 import { scopeSet } from "../src/fill/ask-scope.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel } from "../src/model.ts";
@@ -17,9 +16,6 @@ import { runCodePlan } from "../src/codemode/sandbox.ts";
 import { macClock } from "../src/offers/event-time.ts";
 import { caseWindow, cannedProgram, goalScene, mailWindow, standInJev, SUPPORT, textField, type CannedStep, type GoalScene } from "./goal-desk.ts";
 import { field, node, optionIs, scopeLabel, snap } from "./builders.ts";
-
-beforeEach(() => setGeneratorClock(() => 0));
-afterEach(() => setGeneratorClock(null));
 
 const PAGE = "page:i2:9";
 const WEB = "pg/web";

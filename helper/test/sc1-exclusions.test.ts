@@ -21,7 +21,7 @@ import { jevPolicy, writerPolicy } from "../src/privacy/providers.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { LABEL_PHRASES, labelKind } from "../src/memory/sensitive.ts";
-import { collectCandidates, setGeneratorClock } from "../src/fill/candidates.ts";
+import { collectCandidates } from "../src/fill/candidates.ts";
 import { formFields, proposeFill } from "../src/fill/fill.ts";
 import { aboutValues } from "../src/fill/about.ts";
 import { makeJevClient, jevSettings, JevGatewayPolicyError, type AskJev, type JevRequest } from "../src/fill/jev.ts";
@@ -45,11 +45,9 @@ import { rng } from "./large-scene.ts";
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "caret-sc1-te-"));
 beforeAll(() => {
-  setGeneratorClock(() => 0);
   setTestVerifier(null);
 });
 afterAll(() => {
-  setGeneratorClock(null);
   rmSync(dir, { recursive: true, force: true });
 });
 

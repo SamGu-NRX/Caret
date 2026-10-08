@@ -3,20 +3,16 @@
 // runs it, one undo restores it, and controls the writes reveal are offered as a second segment (afterReveal). Caret
 // presses nothing on the page. Driven through the Helper and the page engine of fill-transaction.test.ts. Every name and
 // value is invented.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, type GoalProgress, type PageControl } from "../src/protocol.ts";
 import { MAX_FIELDS } from "../src/fill/fill.ts";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { field, jevPickingText, snap } from "./builders.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { byLabel, c, chrome, FakePage, mixedControls, NOTE, PICKS, TEXTEDIT, WIN } from "./fake-page.ts";
 import { closeRigs, goalMessages, presses, rig, type Finished, type Rig, type Segment } from "./page-rig.ts";
 
-// Canned picks require the complete candidate list, regardless of CPU load.
-beforeEach(() => setGeneratorClock(() => 0));
 afterEach(() => {
   closeRigs();
-  setGeneratorClock(null);
 });
 
 /** The question a goal's value gate asks (planner/codeplan.ts verifyWrites): a page plan's fill picks must not be asked it. */
@@ -172,8 +168,6 @@ describe("the size hand-off (P2), in parts since C2", () => {
   });
 
   it("names the fields past four parts as the user's before Tab", async () => {
-    // A value for the first field of each part only: a short note, read fast enough under load (the candidate
-    // generator's wall-clock budget, candidates.ts).
     const many = (): PageControl[] => Array.from({ length: 85 }, (_, i) => c(`t${i + 1}`, "text", `Q${i + 1}`, { value: "" }));
     const firsts = [1, 21, 41, 61, 81];
     const r = await rig({ controls: many, note: firsts.map((i) => `Q${i}: a${i}`).join("\n"), picks: Object.fromEntries(firsts.map((i) => [`Q${i}`, `a${i}`])) });

@@ -5,17 +5,13 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { describe, expect, it } from "vitest";
 import { Snapshot } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { planAsk, type AskDraft } from "../src/planner/ask.ts";
 import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { field, scopeLabel, snap, optionIs } from "./builders.ts";
-
-beforeEach(() => setGeneratorClock(() => 0));
-afterEach(() => setGeneratorClock(null));
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = loadCorpus(join(here, "../../fixtures/realfill"));

@@ -115,6 +115,7 @@ describe("W3 page findings, helper side", () => {
     expect((await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");
   });
   afterEach(() => {
+    for (const session of host.registry.list()) session.close();
     helper.shutdown();
     store.close();
     rmSync(dir, { recursive: true, force: true });

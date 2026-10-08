@@ -4,7 +4,6 @@
 // Email when Jev chose only Name; a resumed native plan wrote into a field that changed after the question; and a
 // picked person never reached native planning.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { askScope, fieldFingerprint, type AskScope } from "../src/fill/ask-scope.ts";
 import { checkValues, ContractError, fieldContract, guardFor, isChecked, mintExempt, type Proposed } from "../src/fill/contract.ts";
 import { mintOf, proposeFill, type FillScope } from "../src/fill/fill.ts";
@@ -28,9 +27,6 @@ import { Store } from "../src/store.ts";
 import { FakeCalendar } from "../src/executor/means.ts";
 import type { Step } from "../src/executor/schema.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN as FA_WIN } from "./fake-app.ts";
-
-beforeEach(() => setGeneratorClock(() => 0));
-afterEach(() => setGeneratorClock(null));
 
 const MEMORY = [
   { id: "about-1", label: "Name", text: "Elena Vance", whose: "user" as const },

@@ -6,8 +6,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { afterEach, describe, expect, it } from "vitest";
 import { MAX_ASK_OPTIONS, PROTOCOL_VERSION, Snapshot, type AskQuestion } from "../src/protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { intentSnapshot, type IntentSnapshot } from "../src/planner/intent.ts";
@@ -20,9 +19,6 @@ import { field, scopeLabel, snap, optionIs } from "./builders.ts";
 import type { PageControl } from "../src/protocol.ts";
 import { c } from "./fake-page.ts";
 import { closeRigs, rig, type Segment } from "./page-rig.ts";
-
-beforeEach(() => setGeneratorClock(() => 0));
-afterEach(() => setGeneratorClock(null));
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = loadCorpus(join(here, "../../fixtures/realfill"));

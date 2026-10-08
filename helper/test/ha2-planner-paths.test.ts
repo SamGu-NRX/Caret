@@ -1,8 +1,7 @@
 // HA2 (lead decision 3): the native planner's and the code writer's whose questions meet fill's rule. A value read from
 // a window, for a field both asks say wants the user's details, counts only when both owner questions showed the whole
 // note it was read from; otherwise it is dropped. Fresh synthetic fixtures, the same as ha2-owner-evidence.test.ts.
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { setTestVerifier } from "../src/fill/contract.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel } from "../src/model.ts";
@@ -102,8 +101,6 @@ const writer: WriterPort = {
 const viaPlanner = (note: string, ask: AskJev) => written(planTask(INSTRUCTION, desk(note), { values: () => [] }, { askJev: ask, offerKey: "ha2-plan", windowId: "form", now: 2000 }));
 const viaWriter = (note: string, ask: AskJev) => written(planWithCode(INSTRUCTION, desk(note), { values: () => [] }, { writer, askJev: ask, offerKey: "ha2-code", windowId: "form", now: 2000 }));
 
-beforeEach(() => setGeneratorClock(() => 0));
-afterEach(() => setGeneratorClock(null));
 beforeAll(() => setTestVerifier(null));
 afterAll(() => setTestVerifier(STAND_IN));
 

@@ -91,6 +91,7 @@ async function rig(o: { jev?: AskJev; view?: boolean; controls?: () => PageContr
     published,
     ask: (instruction) => helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "a1", at: Date.now(), instruction, windowId: WIN }, undefined, true, true) as Promise<GoalProgress | PlanProposal>,
     close: () => {
+      page.session.close();
       helper.shutdown();
       store.close();
       rmSync(dir, { recursive: true, force: true });

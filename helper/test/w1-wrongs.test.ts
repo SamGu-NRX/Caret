@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { proposeFill, type FillScope } from "../src/fill/fill.ts";
-import { lineSpans, setGeneratorClock } from "../src/fill/candidates.ts";
+import { lineSpans } from "../src/fill/candidates.ts";
 import { instructionText, LABELLED, lineTexts, questionAnswer, roleAt, severalValues } from "../src/fill/line-values.ts";
 import { familyRefusal, SHAPE_FAMILIES } from "../src/fill/writable.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
@@ -54,11 +54,9 @@ const liveLike: AskJev = async (req) => ({
   costUsd: 0,
 });
 beforeAll(() => {
-  setGeneratorClock(() => 0);
   setTestVerifier(liveLike);
 });
 afterAll(() => {
-  setGeneratorClock(null);
   setTestVerifier(STAND_IN);
 });
 

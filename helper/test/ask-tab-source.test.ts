@@ -146,6 +146,7 @@ describe("an Ask reads the tab the user just left (I6)", () => {
     await vi.waitFor(() => expect(helper.model.windows.get(FORM)?.focused).toBe(true));
   });
   afterEach(() => {
+    tabs.session.close();
     helper.shutdown();
     store.close();
     rmSync(dir, { recursive: true, force: true });

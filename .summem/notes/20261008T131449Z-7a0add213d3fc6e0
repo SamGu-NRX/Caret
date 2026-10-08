@@ -1,0 +1,1 @@
+Tests that wire page sessions into Helper must close those sessions before Helper.shutdown and Store.close; a scheduled trailing walk otherwise reaches a closed store.

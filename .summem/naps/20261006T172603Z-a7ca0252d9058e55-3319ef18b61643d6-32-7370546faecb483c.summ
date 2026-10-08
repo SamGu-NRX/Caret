@@ -1,0 +1,1 @@
+Web writes need CheckedValue; writable.ts writeMisfit guards them; Ask scope code vetoes. Undo restores whole fields. realfill-asks defaults page; replay needs CARET_JEV_CACHE_MODE=replay, no CARET_ENV_FILE. Builds need privacy_gate.sh+PrivacyPromise.txt; CARET_RELEASE_HOST=1.

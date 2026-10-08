@@ -23,7 +23,6 @@ function sourceField(node: Node): boolean {
   return node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null && node.role !== "AXCheckBox";
 }
 
-
 export interface Candidate {
   id: string;
   text: string;
@@ -104,27 +103,13 @@ const MAX_CONTEXT_CHARS = 60;
  */
 export const MAX_CANDIDATES = 80;
 /**
- * Time the generator may spend on one focus before it stops and returns what it has. It runs on the
- * helper's event loop, which B6 holds to 20 ms per piece of work; 15 ms leaves the rest of the focus
- * path (form fields, descriptors) room. Spans it did not reach are the least recent, since windows
- * are taken most recent first.
+ * floor(15 ms / 0.025 ms per visit) = 600 visits. The denominator is the p95 of thread-CPU ms / guard
+ * visits over all 1,590 idle-fixed generator calls in ~/.caret-run/evidence/screen/budget/idle-fixed/
+ * measurements.json and v4.json, measured on an M4 Pro. The 15 ms allocation leaves room for fields and
+ * descriptors in the helper's 20 ms focus-work goal; it is not a wall-time ceiling. A fixed work cap
+ * keeps the same screen's candidates independent of scheduler load.
  */
-export const GENERATOR_BUDGET_MS = 15;
-const wallClock = (): number => performance.now();
-let defaultClock: () => number = wallClock;
-
-/**
- * Sets the clock the budget reads when a call passes none; null puts back the wall clock. Tests whose
- * answers must not depend on the machine's load fix it: under CPU stress the wall clock stopped a long
- * chat partway, which withheld Name on the fill desk in 2 of 20 suite runs (B14). The budget's own tests
- * pass a clock per call instead. The helper never sets it.
- */
-export function setGeneratorClock(clock: (() => number) | null): void {
-  defaultClock = clock ?? wallClock;
-}
-
-/** Nodes or values between clock reads. */
-const CLOCK_EVERY = 64;
+export const MAX_GENERATOR_VISITS = 600;
 const MIN_LINE = 2;
 export const MAX_LINE = 80;
 const LINE_ROLES = new Set(["AXStaticText", "AXCell", "AXHeading", "AXLink"]);
@@ -149,9 +134,6 @@ const CONTACT_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "addres
 export interface GenerateOptions {
   max?: number;
   now?: number;
-  budgetMs?: number;
-  /** Milliseconds, for the budget. Tests pass a fake clock. */
-  clock?: () => number;
   /** When given, wall time by part of the work is added to it, for the audit's probe. */
   profile?: GeneratorProfile;
   /**
@@ -214,7 +196,7 @@ export interface Collected {
   cutAll: boolean;
   /**
    * A field takes a name and a name may have been kept out: a conversation's names, or a line holding
-   * one, did not fit; a window was cut whose left-out lines were not read; or the cap or the clock
+   * one, did not fit; a window was cut whose left-out lines were not read; or either cap
    * stopped the generator partway through a window. Fill then asks no field that takes a name and
    * proposes no name-like value (fill.ts).
    */
@@ -224,11 +206,11 @@ export interface Collected {
 }
 
 export interface GenerateStats {
-  /** Windows, typed values and nodes the generator looked at before it had enough or ran out of time. */
+  /** Windows, typed values and nodes the generator looked at before it had enough or exhausted its visit cap. */
   windows: number;
   values: number;
   nodes: number;
-  /** True when the budget ran out before the cap was reached or every window was read. */
+  /** True when the visit cap was exhausted before the candidate cap or every window was read. */
   overBudget: boolean;
   ms: number;
 }
@@ -243,14 +225,11 @@ export interface GenerateStats {
 export function collectCandidates(model: ScreenModel, targetWindowId: string, o: GenerateOptions = {}): Collected {
   const max = o.max ?? MAX_CANDIDATES;
   const now = o.now ?? Date.now();
-  const clock = o.clock ?? defaultClock;
-  const budget = o.budgetMs ?? GENERATOR_BUDGET_MS;
-  const t0 = clock();
+  const t0 = performance.now();
   const stats: GenerateStats = { windows: 0, values: 0, nodes: 0, overBudget: false, ms: 0 };
-  let tick = 0;
-  const outOfTime = (): boolean => {
-    if (++tick % CLOCK_EVERY !== 0) return false;
-    if (clock() - t0 <= budget) return false;
+  let visits = 0;
+  const outOfWork = (): boolean => {
+    if (++visits <= MAX_GENERATOR_VISITS) return false;
     stats.overBudget = true;
     return true;
   };
@@ -393,11 +372,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     }
     leftOutOf.clear();
     stats.windows = touched.size;
-    stats.ms = clock() - t0;
+    stats.ms = performance.now() - t0;
     return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)), clauses: pending };
   };
   /**
-   * Stops early, on the cap or the clock, partway through `reading`: what of it was offered is a partial
+   * Stops early, on either cap, partway through `reading`: what of it was offered is a partial
    * set like a privacy cut's, so it is reported cut and fill withholds the kinds it lost (B13 review: a
    * chat's 79 times filled the cap before its meeting date, and an older window's date was asked alone).
    * Windows not reached at all are left out whole; their values are the least recent on screen.
@@ -430,7 +409,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     let n = 0;
     const note = (node: Node, text: string, line: string, kinds: readonly ValueKind[], label: string | null): boolean => {
       if (seen.has(text)) return true;
-      if (++n > LEFT_OUT_MAX || outOfTime()) {
+      if (++n > LEFT_OUT_MAX || outOfWork()) {
         cutAll = true;
         return false;
       }
@@ -458,7 +437,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       }
     }
   };
-  /** The cap or the clock stopped the generator inside a window. */
+  /** Either cap stopped the generator inside a window. */
   let partway = false;
   /** The names held by spans a conversation's budget left out. */
   const cutNames: string[] = [];
@@ -471,7 +450,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   /**
    * Every span of a conversation, typed values first and then lines as the two passes below would take
    * them, each with the terms of its line, its section and the kinds of typed values it holds; then adds
-   * them in relevance order. False when the cap or the clock ran out. A span's group is the term of the
+   * them in relevance order. False when either cap was reached. A span's group is the term of the
    * whole-or-nothing set it goes in with: its kind's for a typed value, NAME_TERM for a name-like line.
    */
   type Span = { node: Node; text: string; kind: ValueKind | null; group: string | null; context: () => string | null; terms: Set<string>; names: string[]; quote?: string; partOf?: string; sourceOffset?: number };
@@ -480,7 +459,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     const built = { done: false };
     const finished = rankWindow(w, fields, spans, built);
     if (finished && !missed.has(w.window.windowId)) return true;
-    // Cut, or stopped partway: what it left out. Spans the clock stopped it from even listing are unknown.
+    // Cut, or stopped partway: what it left out. Spans the visit cap stopped it from even listing are unknown.
     // A left-out span's names are weighed at the end against everything offered, as cutKinds weighs
     // typed values, so NAME_TERM stays out of cutTerms.
     if (!built.done) cutAll = true;
@@ -491,7 +470,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     }
     return finished;
   };
-  /** byRelevance's work: lists the window's spans into `spans`, then offers them; false when the cap or the clock ran out. */
+  /** byRelevance's work: lists the window's spans into `spans`, then offers them; false when either cap was reached. */
   const rankWindow = (w: WindowState, fields: readonly ReadonlySet<string>[], spans: Span[], built: { done: boolean }): boolean => {
     const sections = new Map<string, string[]>();
     const sectionWords = (n: Node): string[] => {
@@ -511,7 +490,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       return t;
     };
     for (const v of windowValues(w)) {
-      if (outOfTime()) return false;
+      if (outOfWork()) return false;
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
       if (node === undefined || secretValue(w, v)) continue;
@@ -522,13 +501,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       spans.push({ node, text: v.text, kind: v.kind, group: kindTerm(v.kind), context: () => contextFor(w, node, v.text), terms, names, sourceOffset: sourceOffsets.get(v) });
     }
     for (const node of w.nodes.values()) {
-      if (outOfTime()) return false;
+      if (outOfWork()) return false;
       stats.nodes++;
       const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
-        if (outOfTime()) return false;
+        if (outOfWork()) return false;
         for (const s of lineSpans(raw)) {
           const kinds = (valuesOf.get(node.key) ?? []).filter((v) => s.line.includes(v.text)).map((v) => v.kind);
           const context = s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField);
@@ -595,7 +574,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     const kindOrder = [...new Set(order.filter(takesKind).map((i) => spans[i]?.group as string))];
     const groups = new Map<string, Candidate[]>();
     for (const k of kindOrder) {
-      if (outOfTime()) return false;
+      if (outOfWork()) return false;
       const group: Candidate[] = [];
       const texts = new Set<string>();
       for (const i of order) {
@@ -613,7 +592,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     // cheap ones needed. No run measured this before B13's replay.
     const served = (k: string): number => fields.filter((f) => f.has(k)).length;
     for (;;) {
-      if (full() || outOfTime()) return false;
+      if (full() || outOfWork()) return false;
       let best: { k: string; rate: number } | null = null;
       for (const [k, group] of groups) {
         const cost = out.length + group.length > max ? null : o.ledger?.cost(w, group.flatMap(candidateTexts));
@@ -637,7 +616,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     if (leftOut.size > 0) missed.add(w.window.windowId);
     // Then the rest, nearest the fields first, with their facts, until one does not fit.
     for (const i of order.filter((x) => !takesKind(x))) {
-      if (full() || outOfTime()) return false;
+      if (full() || outOfWork()) return false;
       if (closed.has(w.window.windowId)) break;
       const sp = spans[i] as (typeof spans)[number];
       if ([...sp.terms].some((t) => leftOut.has(t))) continue;
@@ -660,7 +639,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       continue;
     }
     for (const v of windowValues(w)) {
-      if (full() || outOfTime()) return stop();
+      if (full() || outOfWork()) return stop();
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
       if (node === undefined || secretValue(w, v)) continue;
@@ -673,14 +652,14 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     if (closed.has(w.window.windowId) || ranked.has(w.window.windowId)) continue;
     reading = w.window.windowId;
     for (const node of w.nodes.values()) {
-      if (full() || outOfTime()) return stop();
+      if (full() || outOfWork()) return stop();
       stats.nodes++;
       const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
-        // A node can hold thousands of lines (a log, a transcript), so the cap and the clock apply per line too.
-        if (full() || outOfTime()) return stop();
+        // A node can hold thousands of lines (a log, a transcript), so both caps apply per line too.
+        if (full() || outOfWork()) return stop();
         for (const s of lineSpans(raw)) add(w, node, s.text, null, s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField), s.with, s.partOf);
       }
     }

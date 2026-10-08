@@ -3,7 +3,6 @@
 // agree under the cutoff) goes on to value settlement. So a field the base question settles is the base's, and a
 // settlement request lists only the fields it did not settle. Fixture desks only.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
 import { STAND_IN } from "./setup/verifier.ts";
 import { VALUE_TASK } from "../src/fill/fill.ts";
@@ -11,14 +10,8 @@ import { answerQuestion } from "../src/planner/ask.ts";
 import { byOutput, proposedOf, runB31, valueQuestionFor, valueQuestions } from "./vs1-kit.ts";
 
 // The verifier's requests go to the run's Jev, as live, not the suite's stand-in.
-beforeEach(() => {
-  setGeneratorClock(() => 0);
-  setTestVerifier(null);
-});
-afterEach(() => {
-  setGeneratorClock(null);
-  setTestVerifier(STAND_IN);
-});
+beforeEach(() => setTestVerifier(null));
+afterEach(() => setTestVerifier(STAND_IN));
 
 const settlementRequests = (r: Awaited<ReturnType<typeof runB31>>) => r.requests.filter((q) => q.purpose === "fill.values" && (q.state as { task?: string }).task === VALUE_TASK);
 

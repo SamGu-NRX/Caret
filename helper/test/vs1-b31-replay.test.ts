@@ -5,7 +5,6 @@
 // one; explicit negatives stay unoffered or unwritten. Fresh model runs are the live comparison's to measure.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { checkValues, makeFieldContract, setTestVerifier } from "../src/fill/contract.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { STAND_IN } from "./setup/verifier.ts";
@@ -13,14 +12,8 @@ import { AskAsks, answerQuestion } from "../src/planner/ask.ts";
 import { B31, byOutput, byRecorded, corpus, proposedOf, runB31, valueQuestionFor, valueQuestions, type Answer, type Run } from "./vs1-kit.ts";
 
 // The verifier answers as each test says (the kit's oracle calls every value exact), not as the suite's stand-in.
-beforeEach(() => {
-  setGeneratorClock(() => 0);
-  setTestVerifier(null);
-});
-afterEach(() => {
-  setGeneratorClock(null);
-  setTestVerifier(STAND_IN);
-});
+beforeEach(() => setTestVerifier(null));
+afterEach(() => setTestVerifier(STAND_IN));
 
 interface Recorded {
   ask: string;
