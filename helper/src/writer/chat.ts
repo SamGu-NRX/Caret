@@ -1,3 +1,4 @@
+import { requireVercelDevelopment } from "../privacy/vercel.ts";
 // One OpenAI-compatible chat completion, the shape both Vercel AI Gateway and Groq serve. No retry: a
 // failed write is reported, and the plan says a provider change is explicit configuration.
 import { sealedBody, type Sealed } from "../privacy/send.ts";
@@ -95,6 +96,7 @@ export async function chat(
   /** An OpenAI-style response_format, such as a strict json_schema (B25 intents); absent for free text. */
   responseFormat?: Readonly<Record<string, unknown>>,
 ): Promise<ChatResult> {
+  if (route.provider === "gateway" || new URL(route.baseUrl).hostname === "ai-gateway.vercel.sh") requireVercelDevelopment();
   const body = (wire: unknown) => ({ ...route.extraBody, model: route.model, messages: messagesOf(wire), [route.maxTokensParam]: maxOutputTokens, temperature: 0, ...(responseFormat === undefined ? {} : { response_format: responseFormat }) });
   const t0 = performance.now();
   const res = await fetchFn(`${route.baseUrl}/chat/completions`, {
@@ -141,6 +143,7 @@ const ModelList = z.object({ data: z.array(z.object({ id: z.string() }).loose())
 
 /** The model ids a route's provider currently lists. */
 export async function listModels(route: Pick<ChatRoute, "provider" | "baseUrl">, key: string | null, fetchFn: typeof fetch = fetch): Promise<string[]> {
+  if (route.provider === "gateway" || new URL(route.baseUrl).hostname === "ai-gateway.vercel.sh") requireVercelDevelopment();
   const res = await fetchFn(`${route.baseUrl}/models`, { headers: key === null ? {} : { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(20_000) });
   if (!res.ok) throw new ChatHttpError(route.provider, res.status, null, "model list failed");
   return ModelList.parse(await res.json()).data.map((m) => m.id);

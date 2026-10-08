@@ -1,3 +1,4 @@
+import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
 import { Disclosure, UnmintedText } from "../src/privacy/disclosure.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
@@ -220,3 +221,7 @@ describe("PV1 outbound redaction", () => {
     expect(keyReads).toBe(0);
   });
 });
+
+// These provider-shaping tests use fake transports; gateway execution requires an explicit dev opt-in.
+vercelBeforeEach(() => { vercelVi.stubEnv("CARET_DEV_VERCEL_GEMINI", "1"); vercelVi.stubEnv("CARET_RELEASE_HOST", "0"); });
+vercelAfterEach(() => vercelVi.unstubAllEnvs());

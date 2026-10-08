@@ -1,0 +1,1 @@
+The privacy gate also covers apps/caret/scripts/build-app.sh and direct helper bundling; onboarding must render generated Contents/Resources/PrivacyPromise.txt. Release child environments set CARET_RELEASE_HOST=1, which refuses every Vercel route even with a dev opt-in.

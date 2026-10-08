@@ -1,10 +1,7 @@
-// What a Jev request may carry from the screen. The host's onboarding promises: "To decide what to
-// offer, Caret sends short snippets to a cloud model, such as a field's label and the values it might
-// fill. Never a whole document or conversation." Every request builder declares each piece of screen text it puts in a
-// request as a Snippet (a field descriptor or a candidate value, and the window it came from) and takes
-// it through a SnippetLedger, which holds each window to its budget. test/privacy.test.ts records every
-// request the producers make over the synthetic sessions and checks the request text against the
-// declarations and these bounds.
+// Request builders declare each piece of screen text as a Snippet and charge it to a window's
+// SnippetLedger. test/privacy.test.ts checks the declarations and bounds over synthetic sessions.
+// PRIVACY_PROMISE discloses the whole-note owner exception; the build gate requires acceptance
+// of the fixes backing its switched-off and conversation sentences before this text can ship.
 import type { WindowState } from "./model.ts";
 import type { Node } from "./protocol.ts";
 import { isConversation } from "./conversation.ts";
@@ -52,7 +49,9 @@ export const CONVERSATION_CHARS = 600;
  * before HA2 (243 with the lever off), wrong 0; with conversations kept out it measured canned right 306, page oracle 132
  * (130 off), reader oracle 122 (120 off), wrong 0 on both oracles and the refuse-mode adversary (evidence/screen/ha2, tag
  * lever1). Live B31 (evidence/screen/ha2/live-cap0, live-cap2000): the owner (fill.whose) requests' p95 went from
- * 385.07 ms to 398.80 ms, +3.6% against a 20% budget; ten requests per run, a small sample.
+ * 385.07 ms to 398.80 ms, +3.6% against a 20% budget; ten requests per run, a small sample. It sends more than the old
+ * onboarding promise allowed ("never a whole document"), so ownerNoteGate requires the whole-note disclosure in
+ * PRIVACY_PROMISE. The build gate separately requires acceptance of the fixes behind its other privacy claims.
  *
  * TODO(INT1): temporary: re-express on the output-based ledger, then restore 2,000. HA2 built the allotment as a second
  * charge inside the pre-PV2 SnippetLedger's pricing, past the window's budget. PV2's span ledger has no such charge, and
@@ -62,19 +61,23 @@ export const CONVERSATION_CHARS = 600;
  */
 export const OWNER_NOTE_CHARS = 0;
 
-/**
- * The user-facing privacy promise the host's onboarding shows, as this helper keeps it for the packaging gate. The
- * verified text that discloses the owner note is the coordinator's to write; until it is here, with
- * OWNER_NOTE_DISCLOSURE naming the words of it that disclose the note, ownerNoteGate refuses to package.
- */
-export const PRIVACY_PROMISE = "To decide what to offer, Caret sends short snippets to a cloud model, such as a field's label and the values it might fill. Never a whole document or conversation.";
-/** The words of PRIVACY_PROMISE that disclose the owner note (OWNER_NOTE_CHARS); null until the verified promise names them. */
-export const OWNER_NOTE_DISCLOSURE: string | null = null;
+/** Approved draft 2; the host onboarding owner reuses this text. Required fix acceptances remain separate. */
+export const PRIVACY_PROMISE = `What Caret sends
+
+To decide what to offer, Caret sends short pieces of what's on your screen to a cloud model: a field's label, the values that might go in it, and the lines around them. To decide whose details a value is, Caret may send the whole note it came from, if the note is 2,000 characters or shorter. No request carries more than half of a conversation. Before anything leaves your Mac, Caret removes password fields, card numbers, one-time codes and keys, and lines it recognizes as secrets, though it can miss a secret written in ordinary words. It sends nothing from an app or website you've switched off.
+
+Who receives it
+
+Caret's main model is Jev, run by TypeSafe. TypeSafe says Jev isn't trained on customer requests or responses, and its terms say it won't put them in a dataset used to train models without Caret's consent. Its terms set no limit on how long it keeps requests. They let TypeSafe keep using requests, even after you stop using Caret, to monitor for fraud and abuse, and to derive what it calls telemetry: logs, statistics, classifications and "learnings". TypeSafe may use that telemetry without restriction, including to improve its services and other products. We don't know whether TypeSafe staff read requests.
+
+Inline suggestions come from a model hosted by Groq. Groq says it doesn't keep request data by default, except reliability and abuse logs, which it keeps for up to 30 days. It also says it doesn't use your text to train models unless Caret allows it. Groq has a setting that turns those logs off, and we haven't confirmed it's on for Caret's account. We don't know whether Groq staff read requests.`;
+/** The approved sentence that discloses whole owner notes when OWNER_NOTE_CHARS is above zero. */
+export const OWNER_NOTE_DISCLOSURE: string | null = "To decide whose details a value is, Caret may send the whole note it came from, if the note is 2,000 characters or shorter.";
 
 /**
  * Why the app may not be packaged as configured, or null: OWNER_NOTE_CHARS above 0 needs a promise that discloses the
- * owner note, by OWNER_NOTE_DISCLOSURE's words. scripts/package_mac.py runs helper/scripts/privacy-gate.ts before it
- * builds, and stops on a refusal.
+ * owner note, by OWNER_NOTE_DISCLOSURE's words. The shared build gate also requires acceptance of the fixes
+ * behind the conversation and switched-off promises, and refuses shipping the development-only gateway.
  */
 export function ownerNoteGate(chars: number = OWNER_NOTE_CHARS, promise: string = PRIVACY_PROMISE, disclosure: string | null = OWNER_NOTE_DISCLOSURE): string | null {
   if (chars <= 0) return null;

@@ -276,8 +276,11 @@ describe("HA2 recall lever 2: the session's owner verdicts (fill/owner-cache.ts)
 });
 
 describe("the packaging gate (privacy.ts ownerNoteGate)", () => {
-  // TODO(INT1): with the allotment at 0 the product passes this check; restore "refuses the product as configured" with it.
-  it("passes the product's allotment of 0 (TODO(INT1)), and refuses an allotment above 0 with a promise that names no disclosure", () => {
+  // TODO(INT1): with the allotment at 0 the product passes ownerNoteGate whatever the promise says; the approved
+  // disclosure is checked against the 2,000 Sam approved explicitly until the allotment is restored.
+  it("accepts the approved disclosure, but refuses an allotment above 0 with no disclosure", () => {
+    expect(ownerNoteGate()).toBeNull();
+    expect(ownerNoteGate(2000)).toBeNull();
     expect(ownerNoteGate()).toBeNull();
     expect(ownerNoteGate(2000, "Never a whole document.", null)).toMatch(/OWNER_NOTE_DISCLOSURE/u);
   });

@@ -167,10 +167,14 @@ final class ServiceLauncher {
 
     private func startHelper() {
         guard !stopping else { return }
-        let launch = Self.helperLaunch(programs: programs, home: home, hostEnvironment: ProcessInfo.processInfo.environment, storedKey: storedKey)
-        jevSource = launch.jev
-        log(launch.logLine)
-        spawn(.helper, path: programs.node, args: launch.args, env: launch.env)
+        do {
+            let launch = try Self.helperLaunch(programs: programs, home: home, hostEnvironment: ProcessInfo.processInfo.environment, storedKey: storedKey)
+            jevSource = launch.jev
+            log(launch.logLine)
+            spawn(.helper, path: programs.node, args: launch.args, env: launch.env)
+        } catch {
+            stopAll(because: "Caret could not configure the helper: \(error)")
+        }
     }
 
     /// Where the helper's Jev key comes from.
@@ -204,9 +208,9 @@ final class ServiceLauncher {
     /// Without any key the helper refuses to start (loadJevKey), and every restart would fail the same way, so it runs
     /// with `--no-jev` and the menu says Jev is off.
     static func helperLaunch(programs: CaretServices.Programs, home: CaretHome, hostEnvironment: [String: String],
-                             storedKey: () -> String?) -> HelperLaunch {
+                             storedKey: () -> String?) throws -> HelperLaunch {
         var args = [programs.helperEntry, "--auth-fd", "0", "--socket", home.screenSocket, "--page-socket", home.pageSocket, "--data-dir", home.dataDirectory]
-        var env = childEnvironment(hostEnvironment, passesJevKey: true)
+        var env = try childEnvironment(hostEnvironment, passesJevKey: true)
         if hasJevKey(env) {
             return HelperLaunch(args: args, env: env, jev: .environment, logLine: "the helper has Jev: its key comes from Caret's environment")
         }
@@ -260,8 +264,12 @@ final class ServiceLauncher {
     }
 
     private func startReader() {
-        spawn(.reader, path: programs.reader, args: Self.readerArguments(home: home, settingsPath: SettingsStore.path),
-              env: Self.childEnvironment(ProcessInfo.processInfo.environment, passesJevKey: false))
+        do {
+            let env = try Self.childEnvironment(ProcessInfo.processInfo.environment, passesJevKey: false)
+            spawn(.reader, path: programs.reader, args: Self.readerArguments(home: home, settingsPath: SettingsStore.path), env: env)
+        } catch {
+            stopAll(because: "Caret could not configure the reader: \(error)")
+        }
     }
 
     /// `--calendar-user`: the reader adds accepted events to the user's calendars, the one chosen in What Caret knows
@@ -271,18 +279,46 @@ final class ServiceLauncher {
     }
 
     /// The children's environment, built rather than inherited: nothing like NODE_OPTIONS or DYLD_* reaches them.
-    /// For the helper, the Jev key passes through by the two names it reads (fill/jev.ts), and so does J1's daily Jev
-    /// spend cap, `CARET_JEV_DAILY_CAP` (the helper's default, $0.50 a day, applies when it is unset); the reader never
-    /// asks Jev and gets none of them.
-    static func childEnvironment(_ host: [String: String], passesJevKey: Bool) -> [String: String] {
+    /// The helper gets its explicit Jev settings. Release runs extract the TypeSafe allow-list from env files
+    /// and reject other providers; the reader gets no Jev configuration.
+    static func childEnvironment(_ host: [String: String], passesJevKey: Bool) throws -> [String: String] {
         var env = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-        for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG"] + (passesJevKey ? jevKeyNames + ["CARET_JEV_DAILY_CAP"] : []) {
+        #if DEBUG
+        let release = host["CARET_RELEASE_HOST"] == "1"
+        #else
+        let release = true
+        #endif
+        let devKeys = release ? [] : ["CARET_DEV_VERCEL_GEMINI", "CARET_JEV_GATEWAY_KEY"]
+        for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG"] + (passesJevKey ? typeSafeEnvironmentKeys + ["CARET_ENV_FILE"] + devKeys : []) {
             if let v = host[key], !v.isEmpty { env[key] = v }
+        }
+        if release {
+            // Do not pass the file path: the helper would reread variables the host stripped.
+            if passesJevKey, let file = env["CARET_ENV_FILE"], let text = try? String(contentsOfFile: file, encoding: .utf8) {
+                for line in text.components(separatedBy: .newlines) {
+                    let parts = line.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "export ", with: "").split(separator: "=", maxSplits: 1).map(String.init)
+                    guard parts.count == 2 else { continue }
+                    let key = parts[0].trimmingCharacters(in: .whitespaces)
+                    guard typeSafeEnvironmentKeys.contains(key), env[key] == nil else { continue }
+                    let value = parts[1].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                    if !value.isEmpty { env[key] = value }
+                }
+            }
+            if let provider = env["CARET_JEV_PROVIDER"], provider != "typesafe" {
+                throw LaunchError("CARET_JEV_PROVIDER must be typesafe under a release host; Vercel AI Gateway is disabled")
+            }
+            env = env.filter { key, _ in
+                !key.hasPrefix("CARET_DEV_") && !key.hasPrefix("AI_GATEWAY_") && !key.hasPrefix("VERCEL_")
+            }
+            env.removeValue(forKey: "CARET_ENV_FILE")
+            env["CARET_RELEASE_HOST"] = "1"
         }
         return env
     }
 
-    static let jevKeyNames = ["TYPESAFE_API_KEY", "CARET_ENV_FILE"]
+    // jev.ts reads the direct key, provider and model; DailySpend reads the cap. Preserve these when
+    // removing the env-file path so a release does not silently change the configured TypeSafe model.
+    static let typeSafeEnvironmentKeys = ["TYPESAFE_API_KEY", "CARET_JEV_PROVIDER", "CARET_JEV_MODEL", "CARET_JEV_DAILY_CAP"]
 
     static func hasJevKey(_ env: [String: String]) -> Bool {
         env["TYPESAFE_API_KEY"] != nil || env["CARET_ENV_FILE"] != nil

@@ -1,4 +1,4 @@
-"""The app is not packaged while the helper sends more than the privacy promise discloses (scripts/package_mac.py)."""
+"""Packaging must pass the shared privacy build gate before it builds or copies an app."""
 
 import importlib.util
 import subprocess
@@ -33,7 +33,7 @@ class PackageGateTest(unittest.TestCase):
             package_mac.privacy_gate, package_mac.run = original_gate, original_run
         self.assertEqual(calls, ["gate"])
 
-    def test_the_real_gate_refuses_this_tree_until_the_promise_discloses_the_owner_note(self):
+    def test_the_real_gate_refuses_this_tree_until_required_fixes_are_accepted(self):
         with self.assertRaises(SystemExit):
             package_mac.privacy_gate()
 

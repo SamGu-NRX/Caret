@@ -55,7 +55,7 @@ class CompletionsTests(unittest.TestCase):
             captured["body"] = json.loads(request.data.decode("utf-8"))
             return BytesIO(response_body)
 
-        with patch.dict(os.environ, {"VERCEL_API_GATEWAY_KEY": "test-key"}, clear=True):
+        with patch.dict(os.environ, {"VERCEL_API_GATEWAY_KEY": "test-key", "CARET_DEV_VERCEL_GEMINI": "1"}, clear=True):
             with patch("caret.completions.urlopen", fake_urlopen):
                 result = complete_text("Say done", system="You are terse.")
 
@@ -84,7 +84,7 @@ class CompletionsTests(unittest.TestCase):
                 fp=BytesIO(b'{"error":"bad key"}'),
             )
 
-        with patch.dict(os.environ, {"VERCEL_API_GATEWAY_KEY": "bad"}, clear=True):
+        with patch.dict(os.environ, {"VERCEL_API_GATEWAY_KEY": "bad", "CARET_DEV_VERCEL_GEMINI": "1"}, clear=True):
             with patch("caret.completions.urlopen", fake_urlopen):
                 with self.assertRaises(CompletionError) as ctx:
                     complete([{"role": "user", "content": "hi"}])

@@ -26,6 +26,8 @@
 #   Contents/Library/LaunchAgents/dev.caret.host.plist   the agent SMAppService registers
 #   Contents/Frameworks/llama.framework
 set -euo pipefail
+root="$(cd "$(dirname "$0")/../../.." && pwd)"
+CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" /bin/sh "$root/scripts/privacy_gate.sh"
 script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 mode="${1:-release}"
@@ -96,6 +98,7 @@ rm -rf "$app" "$other"
 contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Frameworks" "$contents/Helpers" "$contents/Resources" "$contents/Library/LaunchAgents"
 cp Bundle/Info.plist "$contents/Info.plist"
+CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist" CARET_REQUIRE_PROCESSED_PLIST=1 CARET_BUILD_PLIST="$PWD/$contents/Info.plist" CARET_PRIVACY_RESOURCE="$PWD/$contents/Resources/PrivacyPromise.txt" /bin/sh "$root/scripts/privacy_gate.sh"
 cp "$bin/Caret" "$contents/MacOS/Caret"
 # Only the acceptance build may carry the acceptance code (Sources/Caret/Acceptance.swift), and it must.
 if LC_ALL=C grep -q "ACCEPTANCE BUILD" "$contents/MacOS/Caret"; then has_acceptance=1; else has_acceptance=0; fi
