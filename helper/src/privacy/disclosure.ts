@@ -935,13 +935,14 @@ export class Disclosure extends SnippetLedger {
    * sent through this Disclosure before it, held to each conversation's limit together. Throws LedgerRefused, naming the
    * purpose, window key and limit, when there is no registry, a unit cannot be measured, or a limit breaks.
    */
-  measureSent(purpose: string, sent: readonly string[], notes: OwnerNotes = new Map(), spanned: readonly string[] = sent, commit = true): Measurement {
+  measureSent(purpose: string, sent: readonly string[], notes: OwnerNotes = new Map(), spanned: readonly string[] = sent, commit = true, embedded: readonly string[] = []): Measurement {
     if (this.registry === null) throw new LedgerRefused(`${purpose}: its Disclosure has no screen registry, so what it reveals cannot be measured; it was not sent`);
     // A JSON text this Disclosure wrote (jsonText) is a declared layer: the strings it holds are measured too, decoded,
     // since their escaped spelling can cut runs a reader of the decoded text sees whole. A layer a sink rendered into
     // other text (a chat message quoting the wire as JSON) stands in `spanned`, the wire's strings, not in `sent`: its
-    // decoded strings are measured all the same. Added after the units, so the owner-note indexes (into `sent`) stand.
-    const units = [...sent];
+    // decoded strings are measured all the same. So is every wire string a rendered sink embeds (send.ts Sealed.embedded),
+    // decoded, whatever its rendering's escaping. Added after the units, so the owner-note indexes (into `sent`) stand.
+    const units = [...sent, ...embedded];
     const layers = [...sent, ...spanned];
     for (let i = 0; i < layers.length; i++) {
       if (!this.asJson.has(layers[i]!)) continue;
@@ -1008,7 +1009,7 @@ export function verifySent(req: { purpose?: string; disclosure?: unknown }, body
  * string and scalar spelling), then measured by the request's Disclosure (Disclosure.measureSent). Bytes that do not
  * decode refuse. Throws LedgerRefused (an UnmintedText) naming no text.
  */
-export function measureBytes(req: { purpose?: string; kind?: string; disclosure?: unknown }, bytes: string, spanned?: readonly string[], commit = true): Measurement {
+export function measureBytes(req: { purpose?: string; kind?: string; disclosure?: unknown }, bytes: string, spanned?: readonly string[], commit = true, embedded: readonly string[] = []): Measurement {
   const purpose = req.purpose ?? req.kind ?? UNNAMED;
   const d = asDisclosure(req.disclosure);
   if (d === null) throw new UnmintedText(`${purpose} has no Disclosure, so nothing in it was minted; it was not sent`);
@@ -1020,7 +1021,7 @@ export function measureBytes(req: { purpose?: string; kind?: string; disclosure?
     throw e;
   }
   const texts = units.map((u) => u.text);
-  return d.measureSent(purpose, texts, d.ownerNoteUnits(purpose, units), spanned ?? texts, commit);
+  return d.measureSent(purpose, texts, d.ownerNoteUnits(purpose, units), spanned ?? texts, commit, embedded);
 }
 
 /** The writer port's check: the request has a Disclosure and its input is all minted text. */
