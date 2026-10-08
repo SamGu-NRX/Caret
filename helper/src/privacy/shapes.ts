@@ -113,8 +113,10 @@ export const SHAPES: { readonly [K in ShapeKey]: Readonly<Record<string, Slot>> 
     "questions.*.criteria.*": { reasons: ["candidate", "descriptor", "held", "instruction", "memory", "ownWording"], max: 1400 }, // seen 426
     // Value settlement: an Ask's value question carries the request, the user's picks (a field's name, a window's title,
     // a person, a value), the section path and the field's contract (held: code's reading of its label) around the
-    // descriptor. UNMEASURED: the old 2500 plus the 500-character request and as much again for the rest.
-    "questions.*.instructions": { reasons: ["candidate", "descriptor", "held", "instruction", "memory", "ownWording"], max: 3500 }, // seen 989 before value settlement
+    // descriptor. UNMEASURED: the old 2500 plus the 500-character request and as much again for the rest. "plan": the
+    // fresh pair after a pick is composed again from texts the verifier minted as plan text (its field, its contract), and
+    // past Disclosure's MAX_WAYS the composition carries every reason of its parts (live B26, one pick).
+    "questions.*.instructions": { reasons: ["candidate", "descriptor", "held", "instruction", "memory", "ownWording", "plan"], max: 3500 }, // seen 989 before value settlement
     "state.destination_window": { reasons: ["descriptor", "ownWording"], max: 1200 }, // seen 99
     "state.form_fields": { reasons: ["candidate", "descriptor", "instruction", "memory", "ownWording"], max: 2900 }, // seen 1176
     "state.instruction": { reasons: ["instruction"], max: 700 }, // seen 92

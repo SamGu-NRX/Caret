@@ -6,7 +6,7 @@
 // them. Synthetic desks: every value is invented.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { proposeFill, type FillScope } from "../src/fill/fill.ts";
+import { proposeFill, valueSettlementOf, type FillScope } from "../src/fill/fill.ts";
 import { aboutValues } from "../src/fill/about.ts";
 import { setTestVerifier, VERDICTS, VERIFY_TASK } from "../src/fill/contract.ts";
 import { VALUE_NONE, VALUE_TASK } from "../src/fill/fill.ts";
@@ -139,5 +139,23 @@ describe("the verifier's requests", () => {
     const notes = vs.map((r) => (r.state as { source_notes?: Record<string, string> }).source_notes ?? {});
     expect(notes.every((n) => Object.values(n).includes(NOTE))).toBe(true);
     expect(cell).toMatch(/Source evidence: the line "My cell is \(617\) 555-0129" in TextEdit 'Ines contact\.txt', whose whole text is note_\d+ in source_notes\. Derivation: none\./u);
+  });
+});
+
+describe("a picked value's fresh pair", () => {
+  // Live B26: the verifier had quoted the field (its descriptor and contract minted again as plan text), and the fresh pair's
+  // question, composed from more ways than Disclosure keeps apart, carried "plan" and failed its shape at seal.
+  it("seals after the verifier quoted the field and its contract", async () => {
+    const labels = ["Start date (MM/YYYY)", "Email"];
+    const note = ["Start date: 08/2022", "Email: ines.lindqvist@example.org"].join("\n");
+    const low: AskJev = async (req) => req.purpose === "fill.verify"
+      ? { model: "v", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "exact", confidence: 0.6 }])), inputTokens: 0, latencyMs: 0, costUsd: 0 }
+      : recorder({ "Start date (MM/YYYY)": "08/2022", Email: "ines.lindqvist@example.org" })(req);
+    const m = desk(note, labels);
+    const p = await proposeFill(m, low, "form", "form/0", T0, { rand: () => 0, scope: scope(labels, "my start date and email from the note", { picked: { fields: ["form/0", "form/1"] } }) });
+    const s = valueSettlementOf(p);
+    const u = s?.unresolved.find((x) => x.key === "form/0");
+    expect(u?.why).toBe("verifier");
+    await expect(s?.settle("form/0", u?.options[0]?.id ?? "", { model: m, askJev: low })).resolves.toMatchObject({ key: "form/0" });
   });
 });
