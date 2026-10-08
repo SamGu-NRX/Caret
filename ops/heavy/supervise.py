@@ -956,12 +956,16 @@ class Supervisor:
                 self.log("stopping: {}".format(unknown[2]))
                 return self._finish_stop(unknown, None)
             owned = owned or {}
+            # Sampled first, so a scan that stops for a window still records the job's memory, and a job over its cap
+            # as well keeps the cap's short grace.
+            memory_stop = self._sample_memory(owned, start)
             if full and self.lane == "browser" and stop is None:
                 window = self._window_stop(owned)
                 if window is not None:
+                    if memory_stop is not None:
+                        window = self._both_stops(window, memory_stop)
                     self.log("stopping: {}".format(window[2]), owned=sorted(owned))
                     return self._finish_stop(window, owned)
-            memory_stop = self._sample_memory(owned, start)
             if stop is None:
                 if memory_stop is not None:
                     stop = memory_stop
@@ -977,8 +981,16 @@ class Supervisor:
             self._renew_if_due()
             time.sleep(POLL)
 
+    def _both_stops(self, window, memory):
+        """One stop for a scan where a browser-lane job owns a window and is over its memory cap. It exits 77, the
+        lane's own violation, which no rerun with more memory fixes; it takes the cap's short grace, because a job
+        still growing must not get the profile's full one; and outcome.json keeps both reasons."""
+        self.record["stop_reasons"] = [{"kind": k, "exit": c, "reason": r} for k, c, r in (window, memory)]
+        return ("window+memory", window[1], "{}; and {}".format(window[2], memory[2]))
+
     def _finish_stop(self, stop, owned):
-        self._stop_all(stop[2], owned, grace=MEMORY_CAP_GRACE_S if stop[0] == "memory" else None)
+        short = "memory" in stop[0].split("+")
+        self._stop_all(stop[2], owned, grace=MEMORY_CAP_GRACE_S if short else None)
         return stop
 
     def _window_owners(self):
