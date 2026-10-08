@@ -1,9 +1,9 @@
-import { ENV } from "../host-env.ts";
 // Reads one API key at call time, from the process environment or from the .env file named by
 // CARET_ENV_FILE. Errors name the variable and file, never the value.
+import { ENV, processEnv, type HostEnv } from "../host-env.ts";
 import { readFileSync } from "node:fs";
 
-export function readKey(name: string, env: NodeJS.ProcessEnv = process.env): string {
+export function readKey(name: keyof HostEnv, env: HostEnv = processEnv()): string {
   const direct = env[name];
   if (direct !== undefined && direct.length > 0) return direct;
   const file = env[ENV.caret_env_file];

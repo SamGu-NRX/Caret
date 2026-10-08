@@ -1,110 +1,87 @@
+// The page wire has one schema, the helper's (helper/src/protocol.ts). This drives the real worker through a fake
+// `chrome` and parses everything it sends with that schema, then checks the shared fixtures the Swift bridge also
+// decodes (bridge/Tests/CaretPageProtocolTests) against the same schema. The worker builds its messages inline at
+// each send, so the test captures what it posts to the native port rather than calling a builder.
 import { readFileSync, readdirSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { parseToHelper } from "../src/shared/bridge-messages.ts";
-import { parseFromHelper, parseVerb } from "../src/worker/wire.ts";
-import { examples, incoming, outgoing, verbs } from "./page-contract-examples.ts";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { AnyPageMessage, EngineMessage, HelperToEngine } from "../../helper/src/protocol.ts";
+import { parseFromHelper } from "../src/worker/wire.ts";
+import { fakeChrome, settle, type Frame } from "./fake-chrome.ts";
 
-const root = new URL("../../", import.meta.url);
-const directory = new URL("helper/fixtures/contracts/page/", root);
-const read = (path: string) => readFileSync(new URL(path, root), "utf8");
-const bridgeOnly = new Set(["engineChallenge", "engineHello", "engineWelcome"]);
-const fixtures = () => readdirSync(directory).filter((f) => f.endsWith(".json") && !bridgeOnly.has(f.slice(0, -5))).map((f) => ({ name: f, value: JSON.parse(readFileSync(new URL(f, directory), "utf8")) as Record<string, unknown> }));
-const swift = read("bridge/Sources/CaretPageProtocol/PageProtocol.swift");
-const kinds = (text: string, key: string) => [...text.matchAll(new RegExp(`${key}: "([^"]+)"`, "g"))].map((m) => m[1]!);
-const unique = (xs: string[]) => [...new Set(xs)].sort();
-const nameOf = (x: { type: string; verb?: { kind: string } }) => x.type === "pageCommand" ? `${x.type}-${x.verb!.kind}.json` : `${x.type}.json`;
+const ORIGIN = "https://form.example.test";
+const FORM: Frame = { frameId: 0, parentFrameId: -1, documentId: "D1", url: `${ORIGIN}/apply` };
+const OTHER: Frame = { frameId: 0, parentFrameId: -1, documentId: "D2", url: `${ORIGIN}/other` };
+const target = { tabId: 1, frameId: 0, documentId: "D1", id: "field-1", control: "text", name: "First name", taskId: "t1" } as const;
+const walkReport = {
+  origin: ORIGIN, path: "/apply", title: "Apply", headings: ["Synthetic form"], iframes: [], viewport: [1280, 900], screen: [0, 0, 1280, 1000],
+  excluded: { password: 1 }, truncated: false, focused: { id: "field-1", selection: [0, 3] }, hasFocus: true, walkMs: 1,
+  controls: [{ id: "field-1", key: "k1", strongKey: "[\"form\",\"first\"]", kind: "text", role: "textbox", name: "First name", value: "Ada", form: "apply", rect: [0, 0, 100, 20] }],
+};
 
-describe("extension/Swift page contract", () => {
-  it("has a shared fixture for every bridge message and every page verb, without extra kinds", () => {
-    const f = fixtures();
-    expect(f.map((x) => x.name).sort()).toEqual(examples.map(nameOf).sort());
-    const messages = read("extension/src/shared/messages.ts");
-    const toHelper = messages.split("export type ToHelper =")[1]!;
-    const fromHelper = read("extension/src/worker/wire.ts").split("export type FromHelper =")[1]!.split("/** A bridge message")[0]!;
-    expect(unique(f.map((x) => String(x.value.type)))).toEqual(unique([...kinds(toHelper, "type"), ...kinds(fromHelper, "type")]));
-    const declaredVerbs = messages.split("export type ActVerb =")[1]!.split("/**\n * H10")[0]!;
-    expect(unique(verbs.map((v) => v.kind))).toEqual(unique(kinds(declaredVerbs, "kind")));
-    const swiftKinds = [...swift.split("public enum PageMessage:")[1]!.matchAll(/case "([^"]+)": self = \./g)].map((m) => m[1]!);
-    // The bridge's engineChallenge/engineHello/engineWelcome handshake is not spoken by the extension.
-    expect(unique(swiftKinds.filter((k) => !["engineChallenge", "engineHello", "engineWelcome"].includes(k)))).toEqual(unique(f.map((x) => String(x.value.type))));
-    expect(unique([...swift.matchAll(/case "(page[^"]+)": self = \./g)].map((m) => m[1]!).filter((k) => verbs.some((v) => v.kind === k)))).toEqual(unique(verbs.filter((v) => v.kind !== "pageWalk").map((v) => v.kind)));
-    expect(swift).toContain('if kind == "pageWalk"');
+const directory = new URL("../../helper/fixtures/contracts/page/", import.meta.url);
+const fixtures = readdirSync(directory).filter((f) => f.endsWith(".json")).map((name) => ({ name, value: JSON.parse(readFileSync(new URL(name, directory), "utf8")) as unknown }));
+const kinds = (schema: typeof EngineMessage | typeof HelperToEngine) => schema.options.map((o) => o.shape.type.value).sort();
+
+let sent: Record<string, unknown>[] = [];
+
+/** One connection's worth of traffic: every kind the worker sends, and pageResult in each shape it builds. */
+async function drive(): Promise<Record<string, unknown>[]> {
+  const f = fakeChrome();
+  // The helper checks the extension id's shape; content-script senders must carry the same id.
+  f.chrome.runtime.id = "a".repeat(32);
+  vi.stubGlobal("chrome", f.chrome);
+  vi.resetModules();
+  f.frames.set(1, [FORM]);
+  f.frames.set(2, [OTHER]);
+  await import("../src/worker.ts");
+  await settle();
+  const helper = (m: Record<string, unknown>) => f.fire("port.message", { v: 1, ...m });
+  const expires = Date.now() + 5000;
+  await helper({ type: "engineReady", engine: "e1" });
+  await f.fire("nav.committed", { tabId: 1, frameId: 0, documentId: "D1" });
+  await f.fire("nav.committed", { tabId: 2, frameId: 0, documentId: "D2" });
+  await helper({ type: "pagePing", id: "ping" });
+  await f.fire("tabs.activated", { tabId: 1, windowId: 9 });
+  f.answers.set("1:0:walk", walkReport);
+  await helper({ type: "pageCommand", id: "walk", expires, verb: { kind: "pageWalk", tabId: 1 } });
+  await helper({ type: "pageCommand", id: "press", expires, verb: { kind: "pagePress", ...target, name: "Submit" } });
+  await helper({ type: "pageCommand", id: "late", expires: Date.now() - 1, verb: { kind: "pageWalk", tabId: 1 } });
+  await helper({ type: "scopedActGrant", taskId: "t1", at: Date.now(), expires, scope: { kind: "page", engine: "e1", tabId: 1, frameId: 0, origin: ORIGIN, navGen: 2 } });
+  f.answers.set("1:0:act", { outcome: "ok", detail: null, readings: { before: "", afterInput: "Ada", afterBlur: "Ada", invalid: true, error: "Required" } });
+  await helper({ type: "pageCommand", id: "write", expires, verb: { kind: "pageWrite", ...target, expect: "", value: "Ada" } });
+  await f.fire("runtime.message", { caret: 1, op: "userInput", kind: "key" }, { id: f.chrome.runtime.id, tab: { id: 1 }, frameId: 0 }, () => {});
+  f.state.active.set(9, 2);
+  await f.fire("tabs.activated", { tabId: 2, windowId: 9 });
+  f.answers.set("1:0:frame", { origin: ORIGIN, viewport: [1280, 900], iframes: [] });
+  f.answers.set("1:0:text", { selection: [], blocks: ["Synthetic text"], cut: false, docsText: null });
+  await helper({ type: "pageReadText", id: "read", expires, tabId: 1 });
+  const results = ["walk", "press", "late", "write", "read"];
+  for (let i = 0; i < 50 && results.some((id) => !f.sentToHelper.some((m) => m.type === "pageResult" && m.id === id)); i++) await settle();
+  return f.sentToHelper;
+}
+
+describe("extension/helper page contract", () => {
+  beforeAll(async () => {
+    sent = await drive();
   });
-  it.each(examples)("parses and serializes its own $type example through the production decoder", (example) => {
-    const fixture = JSON.parse(readFileSync(new URL(nameOf(example), directory), "utf8"));
-    expect(JSON.parse(JSON.stringify(example))).toEqual(fixture);
-    if (outgoing.some((m) => m.type === example.type)) expect(parseToHelper(fixture)).toEqual(example);
-    else {
-      const parsed = parseFromHelper(fixture);
-      expect(parsed).not.toBeNull();
-      expect(parsed).toEqual(parseFromHelper(JSON.parse(JSON.stringify(example))));
-      // The incoming decoder intentionally projects only routing fields, so compare its serialized projection.
-      expect(JSON.parse(JSON.stringify(parsed))).toEqual(parseFromHelper(example));
-    }
-    if ("verb" in example) expect(parseVerb(fixture.verb)).toEqual(example.verb);
+
+  it("sends every kind the helper's schema receives from the extension", () => {
+    expect([...new Set(sent.map((m) => String(m.type)))].sort()).toEqual(kinds(EngineMessage));
+    const outcomes = sent.filter((m) => m.type === "pageResult").map((m) => `${String(m.id)}:${String(m.outcome)}`);
+    expect(outcomes.sort()).toEqual(["late:error", "press:handoff", "read:ok", "walk:ok", "write:ok"]);
   });
-  it("pins the Swift required stored fields and verb decode keys to the fixtures", () => {
-    function types(name: string): string | undefined {
-      const start = swift.indexOf(`public struct ${name}:`);
-      if (start < 0) return undefined;
-      const opening = swift.indexOf("{", start);
-      let depth = 1, end = opening + 1;
-      while (depth > 0 && end < swift.length) {
-        if (swift[end] === "{") depth++;
-        if (swift[end] === "}") depth--;
-        end++;
-      }
-      return swift.slice(opening + 1, end - 1);
-    }
-    function required(name: string, value: Record<string, unknown>) {
-      const body = types(name);
-      expect(body, `missing Swift type ${name}`).toBeDefined();
-      for (const declaration of body!.matchAll(/public var ([^\n;}]+)/g)) {
-        for (const match of declaration[1]!.matchAll(/([\w, ]+): ([\w\[\]:]+)(\?)?/g)) {
-          if (match[3]) continue;
-          for (const key of match[1]!.split(",").map((s) => s.trim()).filter(Boolean)) expect(value, `${name}.${key}`).toHaveProperty(key);
-        }
-      }
-    }
-    for (const { value } of fixtures()) {
-      const type = String(value.type);
-      const name = type === "pageFocus" ? "PageFocusMoved" : type[0]!.toUpperCase() + type.slice(1);
-      required(name, value);
-      if (type === "pageSnapshot") {
-        for (const f of value.frames as Record<string, unknown>[]) {
-          required("PageFrame", f);
-          for (const c of f.controls as Record<string, unknown>[]) required("PageControl", c);
-        }
-      }
-      if (type === "pageCommand") {
-        const verb = value.verb as Record<string, unknown>;
-        const block = swift.split('case "' + verb.kind + '": self =')[1]?.split("\n")[0];
-        if (verb.kind !== "pageWalk") {
-          expect(block, `missing Swift verb ${verb.kind}`).toBeDefined();
-          const targetBlock = swift.split("let t = PageTarget(")[1]!.split("// The wire")[0]!;
-          for (const key of [...(block! + targetBlock).matchAll(/c\.decode\([^\n]*?forKey: \.(\w+)\)/g)].map((m) => m[1]!)) expect(verb, `Swift ${verb.kind}.${key}`).toHaveProperty(key);
-        }
-      }
-    }
+
+  it("sends only messages the helper's schema accepts", () => {
+    for (const m of sent) expect(EngineMessage.safeParse(m).error?.issues ?? [], `${String(m.type)} ${String(m.id ?? "")}`).toEqual([]);
   });
-  it("uses outgoing validation at the actual worker send boundary", () => {
-    expect(read("extension/src/worker.ts")).toContain("const checked = parseToHelper(m)");
-    expect(read("extension/src/worker.ts")).toContain("port?.postMessage(checked)");
+
+  it.each(fixtures)("$name parses with the helper's schema", ({ value }) => {
+    expect(AnyPageMessage.safeParse(value).error?.issues ?? []).toEqual([]);
   });
-  it.each(outgoing)("rejects unknown kinds and missing required fields for $type", (example) => {
-    expect(parseToHelper({ ...example, type: "broken" })).toBeNull();
-    for (const key of Object.keys(example).filter((k) => !["readings", "choice", "attached", "text"].includes(k))) {
-      const broken = { ...example } as Record<string, unknown>;
-      delete broken[key];
-      expect(parseToHelper(broken), `${example.type}.${key}`).toBeNull();
-    }
-  });
-  it("rejects malformed nested controls and preserves extension-only snapshot fields", () => {
-    const snapshot = outgoing.find((m) => m.type === "pageSnapshot")!;
-    const bad = JSON.parse(JSON.stringify(snapshot));
-    delete bad.frames[0].controls[0].name;
-    expect(parseToHelper(bad)).toBeNull();
-    const extra = { ...snapshot, walkMs: 1, view: null };
-    expect(parseToHelper(extra)).toEqual(extra);
+
+  it("decodes every helper-to-extension fixture with the worker's own decoder", () => {
+    const incoming = fixtures.filter(({ value }) => HelperToEngine.safeParse(value).success);
+    expect([...new Set(incoming.map(({ value }) => (value as { type: string }).type))].sort()).toEqual(kinds(HelperToEngine));
+    for (const { name, value } of incoming) expect(parseFromHelper(value), name).not.toBeNull();
   });
 });

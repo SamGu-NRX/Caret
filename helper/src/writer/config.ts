@@ -1,8 +1,8 @@
-import { ENV } from "../host-env.ts";
 // Writer routes and the configured pick. Changing the pick is explicit configuration and needs a fresh run
 // of scripts/writer-eval.ts (plan section 5); there is no automatic fallback to another route.
 // L1 (2026-10-05): Sam turned Groq off ("As for Groq, I currently don't want to."). No route is configured; a developer
 // names one with --dev-writer (writer/routes.ts devWriterRoute, writer/startup.ts).
+import { ENV } from "../host-env.ts";
 import type { ChatRoute } from "./chat.ts";
 
 const GROQ = "https://api.groq.com/openai/v1";

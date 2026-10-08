@@ -22,27 +22,18 @@ function swiftList(source: string, name: string): string[] {
 function files(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []);
 }
-function literalReads(source: string, file: string): string[] {
-  const tokens = [...tokenizer(source, { ecmaVersion: "latest", locations: true })].map((t) => ({
-    ...t, value: source.slice(t.start, t.end).replace(/^['"]|['"]$/g, ""),
-  }));
+// Every reference to process.env, whatever its shape: `process` must be followed by a member other than `env`, and
+// `env` may not be imported from node:process. Anything else (an alias, destructuring, a computed key) is a reference.
+function envReferences(source: string, file: string): string[] {
+  const tokens = [...tokenizer(source, { ecmaVersion: "latest", locations: true })];
+  const text = (i: number) => (tokens[i] === undefined ? "" : source.slice(tokens[i]!.start, tokens[i]!.end));
   const found: string[] = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i]!;
-    let end = -1;
-    if (t.value === "process" && tokens[i + 1]?.type.label === "." && tokens[i + 2]?.value === "env") end = i + 3;
-    else if (t.value === "env" && tokens[i - 1]?.type.label !== ".") end = i + 1;
-    const next = tokens[end];
-    const name = tokens[end + 1];
-    const isDot = next?.type.label === "." && name?.type.label === "name";
-    const isBracket = next?.type.label === "[" && name?.type.label === "string";
-    const isCall = ["setting", "readKey"].includes(String(t.value)) && tokens[i + 1]?.type.label === "(" && tokens[i + 2]?.type.label === "string";
-    const literal = isCall ? tokens[i + 2] : isDot || isBracket ? name : undefined;
-    if (!literal) continue;
-    // runStop's env is a disk/hold configuration, not NodeJS.ProcessEnv.
-    if (file.endsWith("engines/decide/slow.ts") && ["holdFile", "diskPath", "floorGiB"].includes(String(literal.value))) continue;
-    found.push(`${file}:${t.loc!.start.line}: literal environment read ${literal.value}; use host-env.ts`);
-  }
+  tokens.forEach((t, i) => {
+    const processName = t.type.label === "name" && text(i) === "process";
+    const importsProcess = t.type.label === "string" && ["node:process", "process"].includes(text(i).slice(1, -1)) && text(i - 1) === "from";
+    const member = [".", "?."].includes(text(i + 1)) && tokens[i + 2]?.type.label === "name" && text(i + 2) !== "env";
+    if ((processName && !member) || importsProcess) found.push(`${file}:${t.loc!.start.line}: process.env outside host-env.ts`);
+  });
   return found;
 }
 
@@ -56,15 +47,19 @@ describe("native/helper environment contract", () => {
     }
     for (const entry of HELPER_ONLY_ENV) expect(entry.reason).not.toBe("");
   });
-  it("rejects literal reads throughout helper/src; helper/scripts is out of scope", () => {
+  it("references process.env only in host-env.ts; helper/scripts is out of scope", () => {
     const violations = files(join(root, "helper/src")).filter((f) => !f.endsWith("/host-env.ts"))
-      .flatMap((f) => literalReads(readFileSync(f, "utf8"), relative(root, f)));
+      .flatMap((f) => envReferences(readFileSync(f, "utf8"), relative(root, f)));
     expect(violations).toEqual([]);
   });
-  it("detects each literal syntax with file and line, without scanning comments", () => {
-    const sample = '// env.IGNORED\nprocess.env.A; process.env["B"]; env.C; env["D"]; setting("E", env);';
-    expect(literalReads(sample, "probe.ts")).toHaveLength(5);
-    expect(literalReads(sample, "probe.ts").every((s) => s.startsWith("probe.ts:2:"))).toBe(true);
+  it.each([
+    "process.env.A", 'process.env["B"]', "process.env[`C${x}`]", "process?.env", 'process["env"]', "const { D } = process.env",
+    "const { env } = process", "const p = process; p.env.E", "Object.entries(process.env)", 'import { env } from "node:process"',
+  ])("reports %s with its file and line", (sample) => {
+    expect(envReferences(`// process.env in a comment\n${sample};`, "probe.ts")).toEqual(["probe.ts:2: process.env outside host-env.ts"]);
+  });
+  it("ignores other process members and the word in strings", () => {
+    expect(envReferences('process.exit(1); process.stdout.write("process.env"); const s = "process";', "probe.ts")).toEqual([]);
   });
   it("finds every shared name in each launcher or an explicit per-launcher exception", () => {
     for (const entry of HOST_ENV) {

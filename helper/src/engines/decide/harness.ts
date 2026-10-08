@@ -1,4 +1,3 @@
-import { ENV } from "../../host-env.ts";
 // The decision engine an evaluation harness runs on (J1): `--engine jev|canned|llama|gemini`, with the record-and-replay
 // cache in front of every engine that costs money or time, and, for llama, the calibration its probabilities are read
 // through. Harnesses only: everything here stores or sends fixture text.
@@ -7,6 +6,7 @@ import { ENV } from "../../host-env.ts";
 //   CARET_LLAMA_URL (http://127.0.0.1:8091), CARET_LLAMA_MODEL (a name for reports and cache keys), CARET_LLAMA_PROMPT
 //   (chat or document), CARET_LLAMA_THINKING=off (tells a thinking model's template not to think), and
 //   CARET_ENGINE_CALIBRATION ("choiceT,noulT"; 1,1 is none).
+import { ENV, processEnv, type HostEnv } from "../../host-env.ts";
 import { assertNoExcludedValue } from "../../privacy.ts";
 import { verifySent } from "../../privacy/disclosure.ts";
 import { appendStoredLine, seal } from "../../privacy/send.ts";
@@ -29,7 +29,7 @@ export interface HarnessEngineOptions {
   /** The harness's answer-key engine, for `canned`. */
   canned: AskJev | null;
   fixture: FixtureSources;
-  env?: NodeJS.ProcessEnv;
+  env?: HostEnv;
   /** Appends every request (fixture text only) to this file, with its size as sent and with shared options sent once. */
   logRequests?: string;
 }
@@ -53,7 +53,7 @@ export const CALIBRATIONS: Readonly<Record<string, Calibration>> = {
   "qwen3-4b-instruct-2507-q4km": { choiceT: 1, noulT: 1 },
 };
 
-export function calibrationFromEnv(env: NodeJS.ProcessEnv, model?: string): Calibration {
+export function calibrationFromEnv(env: HostEnv, model?: string): Calibration {
   const raw = env[ENV.caret_engine_calibration];
   if (raw === undefined || raw === "") {
     const known = model === undefined ? undefined : CALIBRATIONS[model];
@@ -75,9 +75,9 @@ function layaState(ask: AskJev): AskJev {
   return (req) => ask(typeof req.state === "string" ? req : { ...req, state: req.disclosure.jsonText(req.state) });
 }
 
-function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngine {
+function baseEngine(o: HarnessEngineOptions, env: HostEnv): DecideEngine {
   if (o.name === "jev" || o.name.startsWith("gateway:")) {
-    const providerEnv = o.name === "jev" ? env : { ...env, CARET_JEV_PROVIDER: "gateway", CARET_JEV_MODEL: o.name.slice("gateway:".length) };
+    const providerEnv = o.name === "jev" ? env : { ...env, [ENV.caret_jev_provider]: "gateway", [ENV.caret_jev_model]: o.name.slice("gateway:".length) };
     const settings = jevSettings(providerEnv);
     const ask = makeJevClient((provider) => loadJevKey(providerEnv, provider), 10_000, DailySpend.fromEnv(providerEnv), settings, undefined, undefined, { fixture: o.fixture, env });
     return { name: o.name, model: settings.model, reach: settings.provider, ask: settings.model === LAYA_FREE_MODEL ? layaState(ask) : ask };
@@ -107,7 +107,7 @@ function baseEngine(o: HarnessEngineOptions, env: NodeJS.ProcessEnv): DecideEngi
  * R1: the slow runner's layer (slow.ts) under the cache, when the runner (scripts/slow-eval.ts) names an events file in
  * CARET_SLOW_EVAL_EVENTS. It needs the cache on, since a rerun after a limit must not ask again what was answered.
  */
-function slowFromEnv(engine: DecideEngine, env: NodeJS.ProcessEnv, cacheDir: string | null, variant: string): AskJev {
+function slowFromEnv(engine: DecideEngine, env: HostEnv, cacheDir: string | null, variant: string): AskJev {
   const events = env[ENV.caret_slow_eval_events];
   if (events === undefined || events === "" || engine.name === "canned") return engine.ask;
   if (cacheDir === null) throw new Error("CARET_SLOW_EVAL_EVENTS needs the replay cache on: a rerun after a rate limit would ask every answered request again");
@@ -128,7 +128,7 @@ function slowFromEnv(engine: DecideEngine, env: NodeJS.ProcessEnv, cacheDir: str
 }
 
 export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
-  const env = o.env ?? process.env;
+  const env = o.env ?? processEnv();
   const engine = baseEngine(o, env);
   const cache = engine.name === "canned" ? null : cacheFromEnv(env, HARNESS_CACHE_DIR);
   const variant = engine.reach === "typesafe" || engine.reach === "gateway" ? `provider:${engine.reach};body:${HOIST_SHARED_OPTIONS ? "shared-options" : "per-question"}${engine.model === LAYA_FREE_MODEL ? ";state:json-text" : ""}` : engine.name === "llama" ? `prompt:${env[ENV.caret_llama_prompt] ?? "chat"};thinking:${env[ENV.caret_llama_thinking] ?? "default"};read:${LLAMA_READING}` : "";
@@ -136,11 +136,11 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   let ask = cache === null ? sent : cachedAsk(sent, { ...cache, engine: engine.name, model: engine.model, variant, fixture: o.fixture, env });
   if (engine.model === LAYA_FREE_MODEL) {
     // Guard cached answers too: fixture-only Laya is not available in the shipped app.
-    refuseShipped(process.env);
+    refuseShipped(processEnv());
     refuseShipped(env);
     const fixtureAsk = ask;
     ask = async (req) => {
-      refuseShipped(process.env);
+      refuseShipped(processEnv());
       refuseShipped(env);
       checkFixture(req, o.fixture);
       return fixtureAsk(req);

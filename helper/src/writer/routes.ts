@@ -1,7 +1,7 @@
-import { ENV } from "../host-env.ts";
 // Routes a developer may name (L1): "groq:<model>" for one of the measured Groq routes, "gateway:<model>" for Vercel AI
 // Gateway's OpenAI-compatible endpoint by model id. Nothing here is a default: writer/startup.ts uses a route only when
 // --dev-writer names it, and the eval scripts only when their flags do.
+import { ENV } from "../host-env.ts";
 import type { ChatRoute } from "./chat.ts";
 import { CANDIDATES } from "./config.ts";
 

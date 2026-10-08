@@ -26,6 +26,8 @@ const Completion = z
   })
   .strict();
 const Failure = z.object({ id: z.string().nullable(), ok: z.literal(false), error: z.string() }).strict();
+/** Every line caret-local-model writes, keyed by its Swift type in apps/local-model/Sources/LocalModelCore/Wire.swift. */
+export const LOCAL_MODEL_RESPONSES = { Ready, NotReady, Completion, Failure };
 
 export type LocalCompletion = z.infer<typeof Completion>;
 

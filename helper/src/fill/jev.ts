@@ -1,6 +1,6 @@
-import { ENV } from "../host-env.ts";
 // System One through TypeSafe or Vercel (brief GW1). Keys are read at call time from the environment or
 // CARET_ENV_FILE. Gateway uses only CARET_JEV_GATEWAY_KEY, never the writer's AI_GATEWAY_API_KEY.
+import { ENV, processEnv, type HostEnv } from "../host-env.ts";
 import { requireVercelDevelopment } from "../privacy/vercel.ts";
 import { readFileSync } from "node:fs";
 import * as z from "zod";
@@ -22,7 +22,7 @@ export interface JevSettings {
   model: string;
 }
 
-function setting(name: string, env: NodeJS.ProcessEnv): string | undefined {
+function setting(name: keyof HostEnv, env: HostEnv): string | undefined {
   const direct = env[name];
   if (direct !== undefined && direct !== "") return direct;
   const file = env[ENV.caret_env_file];
@@ -38,7 +38,7 @@ function setting(name: string, env: NodeJS.ProcessEnv): string | undefined {
 }
 
 /** Gateway is opt-in; Laya is used only when CARET_JEV_MODEL or the bake-off names it (brief GW1). */
-export function jevSettings(env: NodeJS.ProcessEnv = process.env): JevSettings {
+export function jevSettings(env: HostEnv = processEnv()): JevSettings {
   const provider = setting(ENV.caret_jev_provider, env) ?? "typesafe";
   if (provider !== "typesafe" && provider !== "gateway") throw new Error("CARET_JEV_PROVIDER must be typesafe or gateway");
   return {
@@ -225,9 +225,9 @@ export interface JevResult {
 export type AskJev = (req: JevRequest) => Promise<JevResult>;
 
 export function loadJevKey(provider?: JevProvider): string;
-export function loadJevKey(env: NodeJS.ProcessEnv, provider?: JevProvider): string;
-export function loadJevKey(envOrProvider: NodeJS.ProcessEnv | JevProvider = process.env, selectedProvider?: JevProvider): string {
-  const env = typeof envOrProvider === "string" ? process.env : envOrProvider;
+export function loadJevKey(env: HostEnv, provider?: JevProvider): string;
+export function loadJevKey(envOrProvider: HostEnv | JevProvider = processEnv(), selectedProvider?: JevProvider): string {
+  const env = typeof envOrProvider === "string" ? processEnv() : envOrProvider;
   const provider = typeof envOrProvider === "string" ? envOrProvider : selectedProvider ?? jevSettings(env).provider;
   const name = provider === "gateway" ? ENV.caret_jev_gateway_key : ENV.typesafe_api_key;
   const value = setting(name, env);
@@ -340,7 +340,7 @@ export function expandWireBody(body: WireBody): WireBody {
  * The Jev client. Every request first takes a hold on the day's budget (engines/decide/daily-cap.ts): past
  * CARET_JEV_DAILY_CAP it is refused with JevCapError before anything is sent.
  */
-export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs = 10_000, spend: DailySpend = DailySpend.fromEnv(), settings: JevSettings = jevSettings(), fetchFn: typeof fetch = (input, init) => fetch(input, init), onUsage?: (usage: JevUsage) => void, evaluation?: { fixture: FixtureSources; env: NodeJS.ProcessEnv }): AskJev {
+export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs = 10_000, spend: DailySpend = DailySpend.fromEnv(), settings: JevSettings = jevSettings(), fetchFn: typeof fetch = (input, init) => fetch(input, init), onUsage?: (usage: JevUsage) => void, evaluation?: { fixture: FixtureSources; env: HostEnv }): AskJev {
   const route = { ...settings };
   return async (req) => {
     if (route.provider === "gateway" || new URL(route.url).hostname === "ai-gateway.vercel.sh") requireVercelDevelopment();
@@ -348,7 +348,7 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
       // SC1 T4: a provider that keeps or trains on what it is sent (Laya: privacy/providers.ts) never gets real-screen
       // text, even with explicit model configuration or no replay cache: only an evaluation's declared fixture text.
       if (evaluation === undefined) throw new JevGatewayPolicyError(`${route.model} keeps what it is sent, so it runs only with declared fixture sources in evaluation harnesses`, route.model);
-      refuseShipped(process.env);
+      refuseShipped(processEnv());
       refuseShipped(evaluation.env);
       checkFixture(req, evaluation.fixture);
     }

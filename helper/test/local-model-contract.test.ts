@@ -1,12 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it, vi, type MockInstance } from "vitest";
-import { LocalModelError, startLocalModel, type LocalModelTool } from "../src/writer/local-model.ts";
+import { LOCAL_MODEL_RESPONSES, LocalModelError, startLocalModel, type LocalModelTool } from "../src/writer/local-model.ts";
 import { examples, request, ready } from "./local-model-contract-examples.ts";
 
 const root = new URL("../../", import.meta.url);
 const directory = new URL("helper/fixtures/contracts/local-model/", root);
 const read = (path: string) => readFileSync(new URL(path, root), "utf8");
+const responses = Object.entries(LOCAL_MODEL_RESPONSES).map(([type, schema]) => ({ type, schema, fixture: type[0]!.toLowerCase() + type.slice(1) }));
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`${name}.json`, directory), "utf8")) as Record<string, unknown>;
 
 // This fixture process captures exactly what the helper writes and serves shared Swift response examples.
@@ -46,9 +47,12 @@ function structBody(source: string, name: string): string {
 describe("helper/Swift local-model wire contract", () => {
   it("has exactly the request and every production response schema, with shared variants", () => {
     expect(readdirSync(directory).filter((s) => s.endsWith(".json")).sort()).toEqual(Object.keys(examples).map((s) => `${s}.json`).sort());
-    const source = read("helper/src/writer/local-model.ts");
-    const parsedSchemas = [...source.matchAll(/(\w+)\.safeParse\(/g)].map((m) => m[1]![0]!.toLowerCase() + m[1]!.slice(1));
-    expect([...new Set(Object.keys(examples).filter((s) => s !== "request").map((s) => s.split("-")[0]))].sort()).toEqual([...new Set(parsedSchemas)].sort());
+    const variants = Object.keys(examples).filter((s) => s !== "request").map((s) => s.split("-")[0]);
+    expect([...new Set(variants)].sort()).toEqual(responses.map((r) => r.fixture).sort());
+  });
+  it.each(Object.keys(examples).filter((s) => s !== "request"))("%s parses with the helper's response schema", (name) => {
+    const { schema } = responses.find((r) => r.fixture === name.split("-")[0])!;
+    expect(schema.safeParse(fixture(name)).error?.issues ?? []).toEqual([]);
   });
   it.each(Object.entries(examples))("serializes its own %s example to the shared fixture", (name, value) => {
     expect(JSON.parse(JSON.stringify(value))).toEqual(fixture(name));
@@ -79,13 +83,13 @@ describe("helper/Swift local-model wire contract", () => {
     const quoted = (s: string) => [...s.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
     expect(quoted(keys!).sort()).toEqual(Object.keys(fixture("request")).sort());
     for (const key of [...swift.matchAll(/o\["([^"]+)"\]/g)].map((m) => m[1]!)) expect(fixture("request"), `Swift request read ${key}`).toHaveProperty(key);
-    for (const name of ["Ready", "NotReady", "Completion", "Failure"]) {
-      const body = structBody(swift, name);
+    for (const { type, fixture: name } of responses) {
+      const body = structBody(swift, type);
       const coding = body.match(/private enum CodingKeys: String, CodingKey \{ case ([^}]+)\}/)?.[1];
-      expect(coding, `missing Swift coding keys for ${name}`).toBeDefined();
-      const f = fixture(name[0]!.toLowerCase() + name.slice(1));
+      expect(coding, `missing Swift coding keys for ${type}`).toBeDefined();
+      const f = fixture(name);
       expect(coding!.split(",").map((s) => s.trim()).sort()).toEqual(Object.keys(f).sort());
-      for (const key of [...body.matchAll(/public let (\w+)(?::| =)/g)].map((m) => m[1]!)) expect(f, `${name}.${key}`).toHaveProperty(key);
+      for (const key of [...body.matchAll(/public let (\w+)(?::| =)/g)].map((m) => m[1]!)) expect(f, `${type}.${key}`).toHaveProperty(key);
     }
     for (const [name, value] of [["MemoryUse", fixture("completion").memory], ["Timing", fixture("completion").ms]] as const) {
       const fields = [...structBody(swift, name).matchAll(/public let (\w+):/g)].map((m) => m[1]!);

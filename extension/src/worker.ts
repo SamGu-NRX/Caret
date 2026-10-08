@@ -20,7 +20,6 @@
 // LEFT_TAB_MS, only while every one of those is unchanged, never on a site Caret is off for or denies, and only by one
 // message to each of that tab's own frames. No other tab is touched and no observer is attached.
 import type { ActAnswer, ActVerb, FrameReport, FrameSelfAnswer, FrameTextAnswer, NavChanged, TabText, ToContent, UserActed } from "./shared/messages.ts";
-import { parseToHelper } from "./shared/bridge-messages.ts";
 import { GrantTable } from "./shared/grants.ts";
 import { classifyPress } from "./shared/risk.ts";
 import { FrameDocs, NavGens, frameOrigin } from "./worker/frames.ts";
@@ -78,10 +77,8 @@ async function profileId(): Promise<string> {
 }
 
 function send(m: object): void {
-  const checked = parseToHelper(m);
-  if (checked === null) { log("send failed: invalid page message"); return; }
   try {
-    port?.postMessage(checked);
+    port?.postMessage(m);
   } catch (e) {
     log("send failed", e);
   }

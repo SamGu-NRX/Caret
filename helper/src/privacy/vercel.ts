@@ -1,7 +1,7 @@
-import { ENV } from "../host-env.ts";
+import { ENV, processEnv, type HostEnv } from "../host-env.ts";
 /** Sam excluded every Vercel route from shipping because its data handling cannot be disclosed. */
-export function requireVercelDevelopment(env: NodeJS.ProcessEnv = process.env): void {
-  if (process.env[ENV.caret_release_host] === "1" || env[ENV.caret_release_host] === "1") {
+export function requireVercelDevelopment(env: HostEnv = processEnv()): void {
+  if (processEnv()[ENV.caret_release_host] === "1" || env[ENV.caret_release_host] === "1") {
     throw new Error("Vercel AI Gateway is disabled under a release host");
   }
   if (env[ENV.caret_dev_vercel_gemini] !== "1") {

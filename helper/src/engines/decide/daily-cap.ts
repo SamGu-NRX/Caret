@@ -1,4 +1,3 @@
-import { ENV } from "../../host-env.ts";
 // A hard daily dollar cap on Jev (brief J1, part A4). Jev's $5 of credits went in four days (TypeSafe's console,
 // Oct 2 to 5: 23,725 requests, 137 M input tokens), so every live Jev call on this Mac now checks one day's total
 // before it is sent and adds its cost after. The total is kept per local calendar day in one file that every process
@@ -7,6 +6,7 @@ import { ENV } from "../../host-env.ts";
 // The cap is CARET_JEV_DAILY_CAP, from the environment or the .env file named by CARET_ENV_FILE (where the Jev key
 // comes from), in dollars. Without it the cap is DEFAULT_DAILY_CAP_USD. The day's file is in CARET_JEV_SPEND_DIR, or
 // SPEND_DIR by default.
+import { ENV, processEnv, type HostEnv } from "../../host-env.ts";
 import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -55,7 +55,7 @@ export function localDay(d: Date): string {
 }
 
 /** The cap the environment configures, in dollars. A value that is not a dollar amount above zero fails here, at start. */
-export function capFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+export function capFromEnv(env: HostEnv = processEnv()): number {
   let raw = env[CAP_VAR];
   const file = env[ENV.caret_env_file];
   if ((raw === undefined || raw === "") && file !== undefined && file !== "") {
@@ -107,7 +107,7 @@ export class DailySpend {
     this.now = opts.now ?? (() => new Date());
   }
 
-  static fromEnv(env: NodeJS.ProcessEnv = process.env): DailySpend {
+  static fromEnv(env: HostEnv = processEnv()): DailySpend {
     const dir = env[ENV.caret_jev_spend_dir];
     return new DailySpend({ dir: dir === undefined || dir === "" ? SPEND_DIR : dir, capUsd: capFromEnv(env) });
   }

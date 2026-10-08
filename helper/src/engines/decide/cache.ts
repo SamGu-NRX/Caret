@@ -1,4 +1,3 @@
-import { ENV } from "../../host-env.ts";
 // Record and replay of decision requests, for test harnesses (brief J1, part A3). An evaluation run makes the same
 // requests as the last run on an unchanged page, so with the cache a rerun costs nothing and answers the same.
 //
@@ -18,6 +17,7 @@ import { ENV } from "../../host-env.ts";
 // ask lists the same candidates shuffled under fresh ids every run (fill.ts shuffledWithinWindows), so keying on ids
 // would miss every second ask; the recorded answer is mapped back to this run's ids. When two options share a
 // description, or two questions their content, no renaming can tell them apart and the key uses the exact ids.
+import { ENV, processEnv, type HostEnv } from "../../host-env.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
@@ -59,20 +59,20 @@ export interface CacheOptions {
   variant?: string;
   fixture: FixtureSources;
   /** The environment checked for the shipped app's markers; the process's own by default. */
-  env?: NodeJS.ProcessEnv;
+  env?: HostEnv;
 }
 
 const SHIPPED_MARKERS = [ENV.caret_launchd_agent, ENV.caret_opened_by_launchservices] as const;
 
 /** Throws CacheRefused in the shipped app (its launchd agent's marker, or a copy LaunchServices opened). */
-export function refuseShipped(env: NodeJS.ProcessEnv): void {
+export function refuseShipped(env: HostEnv): void {
   for (const m of SHIPPED_MARKERS) {
     if (env[m] !== undefined && env[m] !== "") throw new CacheRefused(`the decision cache stores request text on disk and runs only in test harnesses, but ${m} is set: this is the shipped app`);
   }
 }
 
 /** The helper serves the user's real screens, so a CARET_JEV_CACHE in its environment is a mistake: refused at start. */
-export function refuseCacheInHelper(env: NodeJS.ProcessEnv = process.env): void {
+export function refuseCacheInHelper(env: HostEnv = processEnv()): void {
   if (env[ENV.caret_jev_cache] !== undefined) throw new CacheRefused("CARET_JEV_CACHE is set, but the helper reads real screens and the decision cache would store their text on disk; the cache is only for test harnesses");
 }
 
@@ -80,7 +80,7 @@ export function refuseCacheInHelper(env: NodeJS.ProcessEnv = process.env): void 
  * The cache a harness uses: CARET_JEV_CACHE names the directory ("off" turns it off; unset is `dir`), and
  * CARET_JEV_CACHE_MODE the mode (replay-or-record unless set).
  */
-export function cacheFromEnv(env: NodeJS.ProcessEnv, dir: string): { dir: string; mode: CacheMode } | null {
+export function cacheFromEnv(env: HostEnv, dir: string): { dir: string; mode: CacheMode } | null {
   const raw = env[ENV.caret_jev_cache_mode] ?? "replay-or-record";
   if (!(MODES as readonly string[]).includes(raw)) throw new Error(`CARET_JEV_CACHE_MODE is '${raw}'; it must be ${MODES.join(", ")}`);
   const named = env[ENV.caret_jev_cache];
@@ -202,10 +202,10 @@ export function checkFixture(req: JevRequest, fixture: FixtureSources): void {
 
 /** `ask` with the cache in front of it (see the file's header). */
 export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
-  refuseShipped(opts.env ?? process.env);
+  refuseShipped(opts.env ?? processEnv());
   if (!(MODES as readonly string[]).includes(opts.mode)) throw new Error(`cache mode '${opts.mode}' is not one of ${MODES.join(", ")}`);
   return async (req) => {
-    refuseShipped(opts.env ?? process.env);
+    refuseShipped(opts.env ?? processEnv());
     checkFixture(req, opts.fixture);
     // Sealed once (privacy/send.ts): the key, the engine's request and the record all come from this frozen copy.
     const sealed = seal({ req, wire: wireBody(req, opts.model) });

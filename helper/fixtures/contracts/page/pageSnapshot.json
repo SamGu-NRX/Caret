@@ -24,7 +24,7 @@
         {
           "id": "field-1",
           "key": "fixture-key",
-          "strongKey": null,
+          "strongKey": "fixture-strong-key",
           "kind": "text",
           "role": "textbox",
           "name": "First name",
@@ -37,7 +37,7 @@
               "selected": true
             }
           ],
-          "form": null,
+          "form": "fixture-form",
           "rect": [
             0,
             0,
@@ -53,6 +53,21 @@
             "name": "Name"
           },
           "pressed": false
+        },
+        {
+          "id": "field-2",
+          "key": "fixture-key-2",
+          "strongKey": null,
+          "kind": "checkbox",
+          "role": "checkbox",
+          "name": "Subscribe",
+          "form": null,
+          "rect": [
+            0,
+            30,
+            20,
+            20
+          ]
         }
       ],
       "iframes": [

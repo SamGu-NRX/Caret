@@ -40,3 +40,11 @@ type Entry = typeof entries[number];
 export const ENV = Object.fromEntries(entries.map((e) => [e.key, e.name])) as {
   readonly [K in Entry["key"]]: Extract<Entry, { key: K }>["name"];
 };
+
+/** The environment typed to the names above, so reading an unlisted name is a type error. */
+export type HostEnv = { readonly [N in Entry["name"]]?: string };
+
+/** The helper's only reference to process.env (test/host-env.test.ts). Read per call: test setup replaces process.env. */
+export function processEnv(): HostEnv {
+  return process.env;
+}

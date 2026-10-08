@@ -1,4 +1,3 @@
-import { ENV } from "../host-env.ts";
 // G2 round 4: the one place that decides what of a source window fill may read. The candidate generator (candidates.ts:
 // its passes, rankWindow, leftOut, windowValues, labelledLines) and fill's anchor read a window only through
 // redactWindow, so no extraction path has a secret filter of its own and none can miss one. Per-path filters did not
@@ -20,6 +19,7 @@ import { ENV } from "../host-env.ts";
 // Cost on the corpora (fixtures/realfill/sources and F1's task notes, mails and memory: 276 non-blank lines,
 // test/g2-ownership.test.ts "the redacted view's cost"; W4's note, 15 lines, outside the repository): 1 line, Ashby's
 // "Incident question: use the token-leak story, write it fresh.", whose key is none: 0 right values lost.
+import { ENV, processEnv } from "../host-env.ts";
 import type { WindowState } from "../model.ts";
 import type { Node, TypedValue } from "../protocol.ts";
 import { markerAcross, markerEnds, PEM_BEGIN, PEM_END, secretText } from "../memory/sensitive.ts";
@@ -245,7 +245,7 @@ function splitTextNodes(w: WindowState): Set<string> {
  * formats, the shapes, the budgets) withholds. A test-only switch: the helper refuses to start with it set (main.ts).
  */
 export const MARKERS_OFF_ENV = ENV.caret_test_markers_off;
-const markersOff = (): boolean => process.env[MARKERS_OFF_ENV] === "1";
+const markersOff = (): boolean => processEnv()[MARKERS_OFF_ENV] === "1";
 
 function build(w: WindowState): WindowState {
   if (markersOff()) return w;
