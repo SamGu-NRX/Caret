@@ -199,7 +199,7 @@ async function planIn(
   w = redactWindow(w);
   const fields = writableFields(w);
   const buttons = labelledButtons(w);
-  const ledger = new Disclosure(model.windows.values());
+  const ledger = new Disclosure(model);
   if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", PRIVACY_SAYS);
   // A title that does not fit the window's budget is left out; the question then names the app alone.
   const title = ledger.descriptor(w, w.window.title);
@@ -710,7 +710,7 @@ async function chooseWindow(
   const candidates = [...model.windows.values()].map(redactWindow).filter(actionable);
   if (candidates.length === 0) throw new PlannerError("noWindow", "no open window has a field or a button");
   if (candidates.length === 1) return candidates[0] as WindowState;
-  const ledger = new Disclosure(model.windows.values());
+  const ledger = new Disclosure(model);
   if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", PRIVACY_SAYS);
   const named = new Map<WindowState, ModelText>();
   for (const w of candidates) {

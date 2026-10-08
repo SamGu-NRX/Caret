@@ -4,7 +4,8 @@
 // switched off since it was built (Disclosure.verify). So a request built before a switch-off never reaches a model or a
 // disk, however long it waited. test/sc1-boundary.test.ts holds every POST body and every request store in src to them.
 import { appendFileSync, writeFileSync, type WriteFileOptions } from "node:fs";
-import { verifySent, verifyWriterInput, withheldDeep } from "./disclosure.ts";
+import { measureBytes, verifySent, verifyWriterInput, withheldDeep } from "./disclosure.ts";
+import type { Measurement } from "./ledger/account.ts";
 import { withholdValues } from "./exclude.ts";
 import { assertLocalStorePath } from "./store-path.ts";
 import type { ModelValue } from "./disclosure.ts";
@@ -26,6 +27,13 @@ export interface Sealed {
   readonly out: Outbound;
   /** The wire body as bytes, taken once: what every send posts and every store parses, never an object. */
   readonly bytes: string;
+  /**
+   * What the bytes reveal of each window (OUTPUT-LEDGER-SPEC, the output ledger), by window key, as measured at seal: the
+   * request's declared charge. Never sent.
+   */
+  readonly charged: Readonly<Record<string, number>>;
+  /** The seal's measurement itself, positions included, for an operation's union (section 7). Never sent. */
+  readonly measurement: Measurement;
 }
 
 function freeze<T>(v: T): T {
@@ -41,13 +49,22 @@ function check(o: Outbound): void {
   else verifySent(o.req, o.wire);
 }
 
-/** Seals a request: copies its wire body once, freezes the copy and verifies it. Throws UnmintedText as a send would. */
+/** The request whose Disclosure measures an outbound body. */
+const owner = (o: Outbound): { purpose?: string; kind?: string; disclosure?: unknown } => ("writer" in o ? o.writer : o.req);
+
+/**
+ * Seals a request: copies its wire body once, freezes the copy, verifies it (membership, shape and the switch-off
+ * policy, before anything is measured), then measures its bytes with the output ledger (OUTPUT-LEDGER-SPEC section 6):
+ * what they reveal of every window the registry knows, each held to its limits. Throws UnmintedText (LedgerRefused for
+ * the ledger) as a send would; nothing is kept of a refused seal.
+ */
 export function seal(o: Outbound): Sealed {
   const bytes = JSON.stringify("writer" in o ? o.writer.input : o.wire);
   const wire = freeze(JSON.parse(bytes) as unknown);
   const out: Outbound = "writer" in o ? { writer: { ...o.writer, input: wire } } : { req: o.req, wire };
   check(out);
-  return Object.freeze({ wire, out, bytes });
+  const measurement = measureBytes(owner(out), bytes);
+  return Object.freeze({ wire, out, bytes, charged: Object.freeze({ ...measurement.charged }), measurement });
 }
 
 /** The sealed wire read again from its bytes, a fresh value, checked as it leaves (a switch-off since refuses it). */
@@ -59,11 +76,16 @@ function fromBytes(s: Sealed): unknown {
 
 /**
  * The body a transport posts, checked as it leaves: the frozen wire, or what `render` makes of it (a chat route's
- * messages, a local engine's prompt), rendered from the frozen copy only. Throws UnmintedText when it may not leave.
+ * messages, a local engine's prompt), rendered from the frozen copy only. Whatever is posted is measured here, against
+ * the registry as it is now (OUTPUT-LEDGER-SPEC section 6: a rendered body is that sink's final bytes, and a registry
+ * that changed since the seal needs a new measure), on every attempt. Throws UnmintedText (LedgerRefused for the ledger)
+ * when it may not leave.
  */
 export function sealedBody(s: Sealed, render?: (wire: unknown) => unknown): string {
   const wire = fromBytes(s);
-  return render === undefined ? s.bytes : JSON.stringify(render(wire));
+  const bytes = render === undefined ? s.bytes : JSON.stringify(render(wire));
+  measureBytes(owner(s.out), bytes);
+  return bytes;
 }
 
 /**
@@ -98,7 +120,7 @@ export function appendStoredLine(path: string, s: Sealed, build: (wire: unknown)
  */
 export function storedRequest<T>(s: Sealed, req: JevRequest, build: (frozen: JevRequest) => T): T {
   const wire = fromBytes(s);
-  return withheldDeep(build(frozenRequest(req, wire))) as T;
+  return withheldDeep(build(frozenRequest(req, wire, s.charged))) as T;
 }
 
 /**
@@ -177,7 +199,7 @@ export function writeStoreNdjson(path: string, values: readonly unknown[], o?: W
  * back from the frozen copy, with the live request's Disclosure and declarations. Anything that renders or records a
  * request after it was sealed reads this, never the live request.
  */
-export function frozenRequest(req: JevRequest, wire: unknown): JevRequest {
+export function frozenRequest(req: JevRequest, wire: unknown, charged?: Readonly<Record<string, number>>): JevRequest {
   const w = wire as { state: ModelValue; questions: Record<string, ChoiceQuestion | NoulQuestion> };
   const questions: Record<string, ChoiceQuestion> = {};
   const nouls: Record<string, NoulQuestion> = {};
@@ -186,5 +208,6 @@ export function frozenRequest(req: JevRequest, wire: unknown): JevRequest {
     else questions[id] = q;
   }
   // Frozen, deep: a caller holding the snapshot cannot change what it says (defence in depth; stores read the bytes).
-  return Object.freeze({ ...req, state: freeze(w.state), questions: freeze(questions), ...(req.nouls === undefined ? {} : { nouls: freeze(nouls) }) });
+  // The declared charge is the seal's, when there is one: what the sealed bytes reveal, not what minting estimated.
+  return Object.freeze({ ...req, ...(charged === undefined ? {} : { charged }), state: freeze(w.state), questions: freeze(questions), ...(req.nouls === undefined ? {} : { nouls: freeze(nouls) }) });
 }

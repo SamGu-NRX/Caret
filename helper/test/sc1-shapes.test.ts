@@ -4,7 +4,7 @@
 // builder through the real client, holds each builder to its row. This file checks the rule itself, each part with one
 // correct answer, and that a builder adding a slot without a row fails.
 import { describe, expect, it } from "vitest";
-import { Disclosure, OutOfShape, setShapeLengthLog, UnmintedText, verifySent, type MintReason, type ModelText, type ShapeLengthRefusal } from "../src/privacy/disclosure.ts";
+import { Disclosure, OutOfShape, setShapeLengthLog, UnmintedText, verifySent, type MintReason, type ModelText, type ShapeLengthRefusal, registryOf } from "../src/privacy/disclosure.ts";
 import { ANY_PATH, childGlob, SHAPES, UNNAMED } from "../src/privacy/shapes.ts";
 import { OPTION_DESCRIPTIONS, wireBody, type JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
@@ -66,7 +66,7 @@ describe("T-M1: verify holds each text to its slot", () => {
 
   it("refuses a text minted for a reason its slot does not allow, naming the reasons, never the text", () => {
     const { m, view } = desk();
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const name = d.candidate(view, "Elena Vance") as ModelText;
     // route.judge's task is Caret's wording only.
     expect(() => d.seal({ purpose: "route.judge", state: { task: name }, questions: {} })).toThrow(/state\.task carries text minted as candidate, which its shape allows only as ownWording/u);
@@ -83,7 +83,7 @@ describe("T-M1: verify holds each text to its slot", () => {
 
   it("accepts a text one way of minting fits: a count Caret wrote that a window also shows", () => {
     const { m, view } = desk();
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     expect(d.candidate(view, "2")).toBe("2");
     const two = d.count(2);
     expect([...(d.reasonsOf(two) ?? [])].sort()).toEqual(["candidate", "ownWording"]);
@@ -92,7 +92,7 @@ describe("T-M1: verify holds each text to its slot", () => {
   });
 
   it("refuses a text longer than its slot, naming the lengths, never the text, and logs the purpose, slot and length", () => {
-    const d = new Disclosure([]);
+    const d = new Disclosure(registryOf([]));
     const long = d.own(`${"x".repeat(296)}-pw7Q` as "x");
     const logged: ShapeLengthRefusal[] = [];
     const was = setShapeLengthLog((r) => logged.push(r));
@@ -109,7 +109,7 @@ describe("T-M1: verify holds each text to its slot", () => {
   it("gives the intent writer one value from a source window, its sender, by an explicit row, and no other", () => {
     expect(Object.entries(SHAPES.intent).filter(([, slot]) => slot.reasons.includes("candidate")).map(([glob]) => glob)).toEqual(["input.windows[*].from"]);
     const { m, view } = desk();
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const sender = d.candidate(view, "Elena Vance") as ModelText;
     const window = { ref: d.id("w1"), app: d.app(view), title: d.descriptor(view, "Notes") as ModelText, from: sender };
     expect(() => d.seal({ kind: "intent", input: { windows: [window] } })).not.toThrow();
@@ -119,7 +119,7 @@ describe("T-M1: verify holds each text to its slot", () => {
 
   it("checks a hoisted option description as the option it came from, and a JSON state as the value it writes", () => {
     const { m, view } = desk();
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const name = d.candidate(view, "Elena Vance") as ModelText;
     const q = { type: "choice" as const, instructions: d.own("Which?"), criteria: { a: d.t`"${name}"`, none: d.own("None.") } };
     const ok = d.seal({ purpose: "fill.values", state: { task: d.own("Fill.") }, questions: { f1: q, f2: q }, snippets: [], charged: {} });
@@ -136,7 +136,7 @@ describe("T-M1: verify holds each text to its slot", () => {
 
   it("holds a request with no purpose to Caret's own wording, and refuses a purpose with no shape", () => {
     const { m, view } = desk();
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     expect(() => d.seal({ state: { anything: d.own("Fixture wording.") }, questions: {} })).not.toThrow();
     expect(() => d.seal({ state: { anything: d.candidate(view, "Elena Vance") } , questions: {} })).toThrow(/unnamed: state\.anything carries text minted as candidate/u);
     expect(() => d.verify("no.such.purpose", { state: {} })).toThrow(/no\.such\.purpose has no request shape/u);

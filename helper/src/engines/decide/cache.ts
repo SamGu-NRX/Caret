@@ -208,7 +208,7 @@ export function cachedAsk(ask: AskJev, opts: CacheOptions): AskJev {
     checkFixture(req, opts.fixture);
     // Sealed once (privacy/send.ts): the key, the engine's request and the record all come from this frozen copy.
     const sealed = seal({ req, wire: wireBody(req, opts.model) });
-    const asked = frozenRequest(req, sealed.wire);
+    const asked = frozenRequest(req, sealed.wire, sealed.charged);
     const c = canonicalRequest(asked, opts.engine, opts.model, opts.variant ?? "");
     const path = join(opts.dir, c.key.slice(0, 2), `${c.key}.json`);
     if (opts.mode !== "record") {

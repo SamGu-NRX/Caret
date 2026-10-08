@@ -209,3 +209,115 @@ export function overLimits(r: Pick<Revealed, "charged" | "prose">, limits: Limit
   if (limits.prose !== null && r.prose > limits.prose) return "prose";
   return null;
 }
+
+// Finding the lines a measurement must scan. A line can be marked only by a common run of RUN_MIN or more scalars, which
+// starts with one of the units' RUN_MIN-grams, or by being whole inside a unit; a line of RUN_MIN or more normalized
+// scalars that is whole inside a unit shares a RUN_MIN-gram with it too. So the lines worth scanning are those sharing a
+// RUN_MIN-gram with a unit, and the shorter lines equal to some stretch of a unit. Scanning only those gives exactly
+// reveal()'s answer (test/ledger-core.test.ts holds them equal) without reading every line of every window.
+
+/** A RUN_MIN-gram as a number; two grams may share one, which only adds a line to scan. */
+function gramKey(cps: readonly number[], i: number): number {
+  let h = 0x811c9dc5;
+  for (let k = 0; k < RUN_MIN; k++) h = Math.imul(h ^ cps[i + k]!, 0x01000193);
+  return h;
+}
+
+const shortKey = (cps: readonly number[], i: number, n: number): string => cps.slice(i, i + n).join(",");
+
+/** A window inventory's lines by their RUN_MIN-grams, and its short lines (under RUN_MIN scalars) by their text. */
+interface LineIndex {
+  readonly grams: ReadonlyMap<number, readonly number[]>;
+  readonly short: ReadonlyMap<string, readonly number[]>;
+}
+
+const LINE_INDEX = new WeakMap<LineInventory, LineIndex>();
+
+function lineIndex(inv: LineInventory): LineIndex {
+  let ix = LINE_INDEX.get(inv);
+  if (ix !== undefined) return ix;
+  const grams = new Map<number, number[]>();
+  const short = new Map<string, number[]>();
+  inv.normalized.forEach((n, li) => {
+    const c = n.cps;
+    if (c.length === 0) return;
+    if (c.length < RUN_MIN) {
+      const k = shortKey(c, 0, c.length);
+      const at = short.get(k);
+      if (at === undefined) short.set(k, [li]);
+      else at.push(li);
+      return;
+    }
+    const seen = new Set<number>();
+    for (let i = 0; i + RUN_MIN <= c.length; i++) {
+      const k = gramKey(c, i);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const at = grams.get(k);
+      if (at === undefined) grams.set(k, [li]);
+      else at.push(li);
+    }
+  });
+  ix = { grams, short };
+  LINE_INDEX.set(inv, ix);
+  return ix;
+}
+
+/** Measured units, indexed once for every window a request is measured against. */
+export class UnitProbe {
+  readonly index: UnitIndex;
+  private readonly grams = new Set<number>();
+  private readonly shorts = new Set<string>();
+
+  constructor(units: readonly Normalized[]) {
+    this.index = new UnitIndex(units);
+    for (const u of units) {
+      const c = u.cps;
+      for (let i = 0; i < c.length; i++) {
+        for (let n = 1; n < RUN_MIN && i + n <= c.length; n++) {
+          if (c[i + n - 1] === BOUNDARY) break;
+          this.shorts.add(shortKey(c, i, n));
+        }
+        if (i + RUN_MIN > c.length) continue;
+        let clean = true;
+        for (let k = 0; k < RUN_MIN && clean; k++) clean = c[i + k] !== BOUNDARY;
+        if (clean) this.grams.add(gramKey(c, i));
+      }
+    }
+  }
+
+  /** The lines of `inv` the units could mark, in line order. */
+  candidates(inv: LineInventory): number[] {
+    const ix = lineIndex(inv);
+    const out = new Set<number>();
+    const [small, large] = this.grams.size <= ix.grams.size ? [this.grams, ix.grams] : [new Set(ix.grams.keys()), null];
+    if (large !== null) for (const k of small) for (const li of large.get(k) ?? []) out.add(li);
+    else for (const k of small) if (this.grams.has(k)) for (const li of ix.grams.get(k) ?? []) out.add(li);
+    for (const [k, lis] of ix.short) if (this.shorts.has(k)) for (const li of lis) out.add(li);
+    return [...out].sort((a, b) => a - b);
+  }
+
+  /** What the units reveal of `inv`: reveal()'s answer, scanning only the candidate lines. */
+  reveal(inv: LineInventory): Revealed {
+    const positions = new Uint8Array(inv.total);
+    let charged = 0;
+    let prose = 0;
+    for (const li of this.candidates(inv)) {
+      const norm = inv.normalized[li]!;
+      const line = inv.lines[li]!;
+      const start = inv.starts[li]!;
+      const { marks, whole } = this.index.scanLine(norm.cps);
+      const mark = (p: number): void => {
+        if (positions[start + p] === 1) return;
+        positions[start + p] = 1;
+        charged++;
+        if (line.length > CARD_LINE_CHARS) prose++;
+      };
+      if (whole) for (let p = 0; p < line.length; p++) mark(p);
+      else marks.forEach((m, i) => {
+        if (m === 1) for (const p of norm.origins[i]!) mark(p);
+      });
+    }
+    return { positions, charged, prose };
+  }
+}

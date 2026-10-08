@@ -70,7 +70,7 @@ describe("B13 review: no wrong fill from a partial set", () => {
       }),
     );
     m.apply(scheduleForm(2000, ["Meeting date", "Start time"]));
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Meeting date"]), fieldTerms(["Start time"])] });
     expect(cut).toContain(CHAT);
     expect(candidates.map((c) => c.text)).not.toContain(MEETING);
@@ -96,7 +96,7 @@ describe("B13 review: no wrong fill from a partial set", () => {
       ),
     );
     m.apply(scheduleForm(2000, ["Start time"]));
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Start time"])] });
     expect(cut).toContain(CHAT);
     expect(candidates.map((c) => c.text)).toContain("3:45 PM");
@@ -122,7 +122,7 @@ describe("B13 review: no wrong fill from a partial set", () => {
     m.apply(calendar(1500));
     const labels = ["Start time", "Meeting date"];
     m.apply(scheduleForm(2000, labels));
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     // No time budget, so only the cap stops it: under a loaded test run the 15 ms clock can stop it first.
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: labels.map((l) => fieldTerms([l])), budgetMs: Number.POSITIVE_INFINITY });
     expect(candidates).toHaveLength(80);
@@ -179,7 +179,7 @@ describe("B13 second review: the fixes' own gaps", () => {
     m.apply(snap([text(`${CHAT}/e`, "Email: a@example.com"), text(`${CHAT}/k`, "ok")], { at: 1000, windowId: CHAT, title: "Kofi", app: MESSAGES, values: [value("email", "a@example.com", `${CHAT}/e`)] }));
     m.apply(snap([text("notes/0", "dana@example.com")], { at: 1200, windowId: "6464-1", title: "Notes", app: NOTES, values: [value("email", "dana@example.com", "notes/0")] }));
     m.apply(scheduleForm(2000, ["Email"]));
-    const ledger = new Disclosure(m.windows.values());
+    const ledger = new Disclosure(m);
     const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Email"])] });
     expect(cut).toContain(CHAT);
     expect(candidates.map((c) => c.text)).toContain("dana@example.com");
@@ -201,9 +201,9 @@ describe("B13 review: executor plan text", () => {
     const goal = `${"The Notes field of the follow-up form holds the code that the chat gave for the meeting room, which is ".padEnd(117, ".")}abcd`;
     const form = m.windows.get(FORM)!;
     const t = { role: "AXTextField", label: "Notes", describe: "the Notes field" };
-    expect(targetSnippets(form, m.windows.values(), goal, t, [], [{ text: "abcd", window: chat }])).toBeNull();
+    expect(targetSnippets(form, m, goal, t, [], [{ text: "abcd", window: chat }])).toBeNull();
     // A goal that does not quote the value asks.
-    expect(targetSnippets(form, m.windows.values(), "The Notes field holds the room code", t, [], [{ text: "abcd", window: chat }])).not.toBeNull();
+    expect(targetSnippets(form, m, "The Notes field holds the room code", t, [], [{ text: "abcd", window: chat }])).not.toBeNull();
   });
 });
 

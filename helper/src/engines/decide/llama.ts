@@ -214,7 +214,7 @@ export function llamaEngine(opts: LlamaOptions): DecideEngine {
     // is rendered from; a caller that changes its request afterwards changes nothing that is sent (PV2 review).
     assertNoExcludedValue(asked);
     const out = seal({ req: asked, wire: wireBody(asked, opts.model) });
-    const req = frozenRequest(asked, out.wire);
+    const req = frozenRequest(asked, out.wire, out.charged);
     const run = queue.then(() => answer(out, req));
     queue = run.catch(() => undefined);
     return run;

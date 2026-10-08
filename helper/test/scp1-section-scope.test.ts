@@ -353,13 +353,13 @@ describe("sections are occurrences (review of fc233af and 3e8a129)", () => {
   it("indexes a page's heading and section text in the window's lines, so plan text quoting one is charged", () => {
     const long = "Equipment details and warranty coverage";
     const withText = desk({ page: pageSnapshot([long], { occurrences: [{ id: "o1", heading: true, text: long }], chains: { "Serial number": ["o1"] } }) });
-    const ledger = new SnippetLedger(withText.model.windows.values());
+    const ledger = new SnippetLedger(withText.model);
     expect(ledger.plan([`please fill the ${long} part`])).toBe(true);
     expect(ledger.charges()[withText.windowId] ?? 0).toBeGreaterThanOrEqual(long.length);
     // And a change to it alone is a change to the window's lines: the next snapshot's charge follows the new text.
     const changed = "Service history and maintenance notes";
     withText.model.apply({ ...pageSnapshot([changed], { occurrences: [{ id: "o1", heading: true, text: changed }], chains: {} }), at: 2500, focused: true });
-    const again = new SnippetLedger(withText.model.windows.values());
+    const again = new SnippetLedger(withText.model);
     expect(again.plan([`please fill the ${long} part`])).toBe(true);
     expect(again.charges()[withText.windowId] ?? 0).toBe(0);
     expect(again.plan([`please fill the ${changed} part`])).toBe(true);

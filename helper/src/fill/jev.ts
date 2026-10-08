@@ -299,7 +299,7 @@ export interface SealedRequest {
  */
 export function sealRequest(req: JevRequest): SealedRequest {
   const sealed = seal({ req, wire: wireBody(req) });
-  return Object.freeze({ sealed, asked: frozenRequest(req, sealed.wire) });
+  return Object.freeze({ sealed, asked: frozenRequest(req, sealed.wire, sealed.charged) });
 }
 
 /**

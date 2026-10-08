@@ -87,7 +87,7 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
   // Code checked each draft's facts in lowering; what it says the user promises or turns down goes to Jev (B30).
   const drafts = plan.segments.flatMap((g) => g.steps.flatMap((x) => (x.value?.draft == null ? [] : [{ text: x.value.text, basis: frozenBasis(o.instruction, x.value, inv.inventory) }])));
   try {
-    await confirmClaims(o.instruction, drafts, o.askJev, inv.ledger.declared().snippets);
+    await confirmClaims(o.instruction, drafts, o.askJev, inv.ledger.declared().snippets, model);
   } catch (e) {
     if (e instanceof DraftRefused) throw new GoalError("draft", e.says, `${e.why}: ${e.word ?? ""}`);
     throw e;

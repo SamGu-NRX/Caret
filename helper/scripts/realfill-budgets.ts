@@ -61,7 +61,7 @@ for (const form of corpus.forms) {
     return fieldTerms([d.label, d.nearest, d.placeholder]);
   });
   const opts = a.consent ? { consented: new Set([sw.window.windowId]) } : {};
-  const ledger = new Disclosure(desk.model.windows.values(), opts);
+  const ledger = new Disclosure(desk.model, opts);
   const gen = collectCandidates(desk.model, desk.form.window.windowId, { now: T0, ledger, fields: terms });
   const c = chars(sw);
   const offered = new Set(gen.candidates.filter((x) => x.source.windowId === sw.window.windowId).map((x) => x.text));

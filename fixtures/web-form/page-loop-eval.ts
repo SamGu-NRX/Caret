@@ -778,7 +778,7 @@ async function main(): Promise<number> {
     const plan = helper.goals.planOf(reply.goalId);
     const gated = (plan?.segments ?? []).flatMap((s) => s.steps).filter((x) => x.gate === "fill" && x.value !== null);
     const v0 = calls.length;
-    const dropped = gated.length === 0 ? new Map<string, string>() : (await jevGate(plan?.instruction ?? "", gated.map((x) => ({ ref: x.ref, target: x.target, written: x.writes ?? x.value?.text ?? "", value: x.value as NonNullable<typeof x.value> })), askJev, new Disclosure(helper.model.windows.values()), plan?.inventory.notes ?? new Map())).unconfirmed;
+    const dropped = gated.length === 0 ? new Map<string, string>() : (await jevGate(plan?.instruction ?? "", gated.map((x) => ({ ref: x.ref, target: x.target, written: x.writes ?? x.value?.text ?? "", value: x.value as NonNullable<typeof x.value> })), askJev, new Disclosure(helper.model), plan?.inventory.notes ?? new Map())).unconfirmed;
     const disagreements = gated.flatMap((x) => {
       const verdict = dropped.has(x.ref) ? ("dropped" as const) : ("kept" as const);
       const node = w.nodes.get(x.target.key);

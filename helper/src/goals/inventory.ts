@@ -93,7 +93,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   });
   const first = windows[0];
   if (first === undefined) throw new Error("no window to plan in");
-  const ledger = new Disclosure(model.windows.values());
+  const ledger = new Disclosure(model);
   if (!ledger.plan([instructionForModel(o.instruction)])) throw new Error("the instruction quotes more of an open window than one request may carry");
   const targets = new Map<string, TargetBinding>();
   const values = new Map<string, ValueBinding>();

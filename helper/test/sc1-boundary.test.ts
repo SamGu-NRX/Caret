@@ -7,7 +7,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { Basis, Disclosure, UnmintedText, verifySent, verifyWriterInput, type ModelText } from "../src/privacy/disclosure.ts";
+import { Basis, Disclosure, UnmintedText, verifySent, verifyWriterInput, type ModelText, registryOf } from "../src/privacy/disclosure.ts";
 import type { ChoiceQuestion, JevRequest } from "../src/fill/jev.ts";
 import type { WriterRequest } from "../src/writer/port.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
@@ -180,7 +180,7 @@ describe("the minting primitives", () => {
     const m = model();
     const raw = m.windows.get("note") as WindowState;
     const view = redactWindow(raw);
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     expect(d.candidate(view, "Elena Vance")).toBe("Elena Vance");
     expect(d.candidate(view, "violet-orchard-seven")).toBeNull();
     expect(d.held(view, "Email")).toBe("Email");
@@ -195,7 +195,7 @@ describe("the minting primitives", () => {
   it("composes only minted text, keeps the reasons, and refuses a raw hole", () => {
     const m = model();
     const view = redactWindow(m.windows.get("note") as WindowState);
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const name = d.candidate(view, "Elena Vance") as ModelText;
     const said = d.t`The value is "${name}".`;
     expect(said).toBe('The value is "Elena Vance".');
@@ -210,7 +210,7 @@ describe("the minting primitives", () => {
   });
 
   it("verifies a body: every string minted, every key an identifier, the client's own paths by value", () => {
-    const d = new Disclosure([]);
+    const d = new Disclosure(registryOf([]));
     const ok = d.own("Which one?");
     expect(() => d.verify("probe.latency", { state: { task: ok }, questions: { q: { type: "choice", instructions: ok, criteria: { a: ok } } }, model: "jev-latest" })).not.toThrow();
     expect(() => d.verify("probe.latency", { state: { task: "raw" } })).toThrow(/state\.task carries text that was not minted/u);
@@ -227,6 +227,6 @@ describe("the minting primitives", () => {
   it("refuses a request with no Disclosure at the client and at the writer port, and a Basis made by hand", () => {
     expect(() => verifySent({ purpose: "probe.latency" }, { state: {} })).toThrow(/has no Disclosure/u);
     expect(() => verifyWriterInput({ kind: "plan", input: {} })).toThrow(/has no Disclosure/u);
-    expect(() => new Basis(Symbol("basis"), new Disclosure([]), "raw")).toThrow(UnmintedText);
+    expect(() => new Basis(Symbol("basis"), new Disclosure(registryOf([])), "raw")).toThrow(UnmintedText);
   });
 });

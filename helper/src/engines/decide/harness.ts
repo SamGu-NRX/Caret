@@ -159,7 +159,7 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
       // Caret never carries withheld (privacy/send.ts storedLine).
       // Sealed once: the engine is asked, and the log written, from this frozen copy only.
       const sealed = seal({ req, wire: { state: req.state, model: engine.model, questions: { ...req.questions, ...req.nouls } } });
-      const asked = frozenRequest(req, sealed.wire);
+      const asked = frozenRequest(req, sealed.wire, sealed.charged);
       const t0 = performance.now();
       let r: Awaited<ReturnType<AskJev>>;
       try {

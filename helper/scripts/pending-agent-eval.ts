@@ -20,6 +20,7 @@ import { capJev, DEFAULT_MAX_USD } from "./spend.ts";
 import { loadJevKey, makeJevClient, type JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import type { AppRef, Node, TaskState } from "../src/protocol.ts";
+import { registryOf } from "../src/privacy/disclosure.ts";
 import { buildPendingRequest, mask, readPendingAnswer, stateFor, watchLines, windowMarkers, type Marker } from "../src/tasks/pending.ts";
 import { agentSnap, BROWSER, browserChat, CODEX, codexWindow, T3, t3Window, type AgentWindow } from "../test/agent-fixtures.ts";
 
@@ -77,7 +78,7 @@ function b6Request(w: WindowState, then: readonly string[], now: readonly string
   const nowText = kept.length <= 30 ? kept : [...kept.slice(0, 3), ...kept.slice(-27)];
   const thenText = then.length <= 20 ? then : [...then.slice(0, 3), ...then.slice(-17)];
   const list = (ms: readonly Marker[]): string => (ms.length === 0 ? "none" : [...new Set(ms.map((m) => m.line))].slice(0, 10).join("\n"));
-  const current = buildPendingRequest(w, [w], then, now, thenMarkers, nowMarkers);
+  const current = buildPendingRequest(w, registryOf([w]), then, now, thenMarkers, nowMarkers);
   return minted({
     purpose: "pending.change",
     state: {
@@ -115,7 +116,7 @@ for (const { name, app, build } of APPS) {
   const then = windowOf(app, build({ running: true, threads: THREADS, transcriptLines: LINES }));
   for (const c of CASES) {
     const now = windowOf(app, build(c.now));
-    const args = [now, [now], watchLines(then), watchLines(now), windowMarkers(then), windowMarkers(now)] as const;
+    const args = [now, registryOf([now]), watchLines(then), watchLines(now), windowMarkers(then), windowMarkers(now)] as const;
     const forms: { form: "b10" | "b6"; req: JevRequest }[] = [
       { form: "b10", req: buildPendingRequest(...args) },
       { form: "b6", req: b6Request(args[0], args[2], args[3], args[4], args[5]) },
@@ -172,7 +173,7 @@ const JOB_CASES: { id: string; expect: TaskState; then: WindowState; now: Window
   })),
 ];
 for (const c of JOB_CASES) {
-  const args = [c.now, [c.now], watchLines(c.then), watchLines(c.now), windowMarkers(c.then), windowMarkers(c.now)] as const;
+  const args = [c.now, registryOf([c.now]), watchLines(c.then), watchLines(c.now), windowMarkers(c.then), windowMarkers(c.now)] as const;
   for (const { form, req } of [{ form: "b10" as const, req: buildPendingRequest(...args) }, { form: "b6" as const, req: b6Request(args[0], args[2], args[3], args[4], args[5]) }]) {
     for (let r = 0; r < REPS; r++) {
       try {

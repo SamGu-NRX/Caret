@@ -184,7 +184,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   if (w === undefined) throw new PlannerError("unseenWindow", `window ${o.windowId} is not open`);
   const all = writableFields(w).filter((f) => o.fields === undefined || o.fields.includes(f.node.key));
   if (all.length === 0) throw new PlannerError("nothingToDo", `'${w.window.title}' has no field Caret can write`);
-  const ledger = new Disclosure(model.windows.values());
+  const ledger = new Disclosure(model);
   if (!ledger.plan([instructionForModel(instruction)])) throw new PlannerError("privacy", "your instruction quotes more of an open window than one request may carry");
   // The title as the writer sees it, cut to the snapshot's 200 characters, is what the ledger declares (fix-check review).
   const title = w.window.title.slice(0, 200);

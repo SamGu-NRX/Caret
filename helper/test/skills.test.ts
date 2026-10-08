@@ -79,7 +79,7 @@ describe("naming a routine from its structure", () => {
 
   it("keeps Jev's pick of code's names after one ask, and declares only labels", async () => {
     const seen: JevRequest[] = [];
-    const r = await nameRoutine(facts(), answering(first, 0.9, seen), () => model.windows.values(), () => 0);
+    const r = await nameRoutine(facts(), answering(first, 0.9, seen), () => model, () => 0);
     expect(r).toMatchObject({ by: "jev", asks: 1, failures: [] });
     expect(checkName(r.name!, safeFacts(facts()))).toBeNull();
     const req = seen[0]!;
@@ -96,7 +96,7 @@ describe("naming a routine from its structure", () => {
       ["under", answering(first, 0.2)],
       ["Jev failed", (async () => { throw new Error("HTTP 503"); }) as AskJev],
     ] as const) {
-      const r = await nameRoutine(facts(), ask, () => model.windows.values(), () => 0);
+      const r = await nameRoutine(facts(), ask, () => model, () => 0);
       expect(r.asks, why).toBe(2);
       expect(r.failures).toHaveLength(2);
       expect(r.failures[0]).toContain(why);
@@ -104,7 +104,7 @@ describe("naming a routine from its structure", () => {
       expect(r.name).toBe(fallbackName(safeFacts(facts())));
     }
     let n = 0;
-    const second = await nameRoutine(facts(), answering((req) => (n++ === 0 ? "none" : first(req))), () => model.windows.values(), () => 0);
+    const second = await nameRoutine(facts(), answering((req) => (n++ === 0 ? "none" : first(req))), () => model, () => 0);
     expect(second).toMatchObject({ by: "jev", asks: 2 });
   });
 
@@ -114,7 +114,7 @@ describe("naming a routine from its structure", () => {
     expect(app.dstApp).toBe("");
     expect(nameCandidates(app).every((n) => !/airtable/i.test(n))).toBe(true);
     const seen: JevRequest[] = [];
-    await nameRoutine(facts({ dstApp: "Airtable", values: [...values, "Airtable"] }), answering(first, 0.9, seen), () => model.windows.values(), () => 0);
+    await nameRoutine(facts({ dstApp: "Airtable", values: [...values, "Airtable"] }), answering(first, 0.9, seen), () => model, () => 0);
     expect(JSON.stringify([seen[0]!.state, seen[0]!.questions]).includes("Airtable")).toBe(false);
     // A two-character value is a word, not a substring: "42" knocks out "Account 42", not "Link".
     const short = safeFacts(facts({ dstLabels: ["Account 42", "Link"], values: ["42"] }));
@@ -131,14 +131,14 @@ describe("naming a routine from its structure", () => {
     m.apply(snap([...dst.nodes.values()], { at: 1, windowId: "6160-1", app: MAIL_APP, title: "New message" }));
     m.apply(snap([{ key: "n/line", parent: null, role: "AXStaticText", label: "Subject and To into Mail Fixture" }], { at: 1, windowId: "9090-1", title: "Notes" }));
     const seen: JevRequest[] = [];
-    await nameRoutine(facts({ dstWindow: m.windows.get("6160-1")! }), answering(first, 0.9, seen), () => m.windows.values(), () => 0);
+    await nameRoutine(facts({ dstWindow: m.windows.get("6160-1")! }), answering(first, 0.9, seen), () => m, () => 0);
     expect(seen[0]!.snippets).toContainEqual({ windowId: "9090-1", kind: "candidate", text: "Subject and To into Mail Fixture" });
     // At least the line; the ledger also charges the labels and app name the line contains, counting overlaps twice.
     expect(seen[0]!.charged["9090-1"]).toBeGreaterThanOrEqual("Subject and To into Mail Fixture".length);
   });
 
   it("names by code at once with Jev off", async () => {
-    expect(await nameRoutine(facts(), null, () => model.windows.values())).toMatchObject({ by: "code", asks: 0, name: fallbackName(safeFacts(facts())) });
+    expect(await nameRoutine(facts(), null, () => model)).toMatchObject({ by: "code", asks: 0, name: fallbackName(safeFacts(facts())) });
   });
 });
 
@@ -219,7 +219,7 @@ describe("skills in the helper", () => {
     ];
     const facts = helper.patterns.skills.facts(routine, cells);
     expect(facts.dstLabels).toEqual(["Reference"]);
-    const result = await nameRoutine(facts, namer, () => helper.model.windows.values(), () => 0);
+    const result = await nameRoutine(facts, namer, () => helper.model, () => 0);
     expect(result.asks).toBeGreaterThan(0);
     expect(JSON.stringify(result.requests)).not.toContain("Archive");
     expect(JSON.stringify(result.requests)).not.toContain("Old cached label");

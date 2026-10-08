@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { jevChooser } from "../../src/codemode/jev-chooser.ts";
-import { Disclosure } from "../../src/privacy/disclosure.ts";
+import { Disclosure, registryOf } from "../../src/privacy/disclosure.ts";
 import type { AskJev, JevRequest } from "../../src/fill/jev.ts";
 
 const OPTIONS = [
@@ -18,7 +18,7 @@ function fakeJev(choice: string, confidence: number, seen: JevRequest[] = []): A
 
 /** The Disclosure that minted the program's snapshots: the question and labels are its texts (fixture wording here). */
 const snapshotsDisclosure = (): Disclosure => {
-  const d = new Disclosure([]);
+  const d = new Disclosure(registryOf([]));
   for (const t of [QUESTION.text, ...OPTIONS.map((o) => o.label)]) d.own(t as never);
   return d;
 };

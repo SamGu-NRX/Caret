@@ -244,7 +244,7 @@ describe("a value its line warns about, under a tight budget", () => {
     m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: `Contact\n${long}`, editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
     m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));
     const { Disclosure } = await import("../src/privacy/disclosure.ts");
-    const cs = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m.windows.values()) }).candidates;
+    const cs = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m) }).candidates;
     const c = cs.find((x) => x.text === "555-0101");
     expect(c === undefined || (c.line ?? "").includes("no longer works")).toBe(true);
   });
@@ -272,7 +272,7 @@ describe("a warned value that does not fit", () => {
     const m = new ScreenModel();
     m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: `Phone: 555-0101; do not use this old number belonging to Dana Whitfield because ${pad}\\nPhone: 555-0101`, editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
     m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));
-    const r = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m.windows.values()) });
+    const r = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m) });
     const c = r.candidates.find((x) => x.text === "555-0101");
     expect(c === undefined || (c.line ?? "").includes("do not use")).toBe(true);
     if (c === undefined) expect([...cutKinds(m, r.cut, r.candidates)]).toContain("phone");
@@ -285,7 +285,7 @@ describe("a warned value that does not fit", () => {
     const m = new ScreenModel();
     m.apply(snap([{ key: NOTE_KEY, parent: null, role: "AXTextArea", value: `Phone: 555-0101; do not use this old number because ${pad}\nPhone: 555-0101 ext 42`, editable: true }], { at: 1000, windowId: "7001-1", title: "Notes.txt", app: NOTE_APP, focused: true }));
     m.apply(snap([field(F("field:0"), "", { label: "Phone" })], { at: 2000, windowId: FORM, focused: true }));
-    const r = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m.windows.values()) });
+    const r = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m) });
     const bare = r.candidates.filter((x) => x.text.includes("555-0101") && !(x.line ?? "").includes("do not use"));
     expect(bare.map((x) => x.text)).toEqual([]);
     expect([...cutKinds(m, r.cut, r.candidates)]).toContain("phone");

@@ -406,13 +406,13 @@ describe("the privacy line on every Jev request", () => {
       await s.replay([notesWindow(500), snap([...city("Shipping"), ...city("Billing")], { at: 1000, windowId: "5150-9", title: "Addresses", app: FIXTURE_APP })], "executor target");
       const w = s.helper.model.windows.get("5150-9") as WindowState;
       s.producer = "executor target";
-      await resolveTarget(w, s.helper.model.windows.values(), { role: "AXTextField", label: "City", describe: "the City field" }, "The shipping City field holds Austin", s.ask);
+      await resolveTarget(w, s.helper.model, { role: "AXTextField", label: "City", describe: "the City field" }, "The shipping City field holds Austin", s.ask);
       // A plan's value can be any text a window shows; here a whole page of the private notes. It goes out cut short.
       const page = [...(s.helper.model.windows.get(NOTES)?.nodes.values() ?? [])].map((n) => n.label ?? "").join(" ");
-      await resolveTarget(w, s.helper.model.windows.values(), { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask);
+      await resolveTarget(w, s.helper.model, { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask);
       // The same value with the plan saying where it was copied from (Plan.sources): the part the cut goal shows is charged to the notes.
       const notes = s.helper.model.windows.get(NOTES);
-      await resolveTarget(w, s.helper.model.windows.values(), { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask, undefined, undefined, [{ text: page, window: notes }]);
+      await resolveTarget(w, s.helper.model, { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask, undefined, undefined, [{ text: page, window: notes }]);
     });
     expect(rec).toHaveLength(6);
     expect(rec.slice(4).every((r) => r.req.snippets.some((x) => x.windowId === NOTES && x.kind === "candidate"))).toBe(true);
@@ -712,7 +712,7 @@ describe("a window the Ask names (B26 lead decision 1)", () => {
     const offered = (first: boolean): string[] => {
       const m = desk(50);
       const terms = ["Guest's full name", "Guest phone", "Guest email", "Arrival time", "Meal notes"].map((l) => fieldTerms([l]));
-      const ledger = new Disclosure(m.windows.values(), { consented: new Set([MAIL]) });
+      const ledger = new Disclosure(m, { consented: new Set([MAIL]) });
       return collectCandidates(m, FORM, { now: 1000, ledger, fields: terms, ...(first ? { first: { windows: new Set([MAIL]), names: ["Bea", "Beatrice Sutherland"] } } : {}) }).candidates.map((c) => c.text);
     };
     expect(offered(true)).toContain("My shift ends at 7, so we'd get there around 7:45 pm. See you soon, Bea");

@@ -1,5 +1,5 @@
 import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
-import { Disclosure, UnmintedText } from "../src/privacy/disclosure.ts";
+import { Disclosure, UnmintedText, registryOf } from "../src/privacy/disclosure.ts";
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { redactWindow } from "../src/fill/redact.ts";
@@ -169,7 +169,7 @@ describe("PV1 outbound redaction", () => {
       return { model: "fixture", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "refuse", confidence: 1 }])), inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 };
     }).make(snapshot);
     expect(calls).toBe(2);
-    const values = valueList(instruction, model, w, [], new Disclosure(model.windows.values()), 1000, 1000);
+    const values = valueList(instruction, model, w, [], new Disclosure(model), 1000, 1000);
     expect(values.find((v) => v.text === "Robin Vale")?.display).toBe("[a field Caret leaves to you]");
     expect(values.find((v) => v.text === "R-42")?.display).toContain("R-42");
   });
@@ -219,7 +219,7 @@ describe("PV1 outbound redaction", () => {
   it("the writer refuses marked input before reading its key or sending", async () => {
     let keyReads = 0;
     const writer = makeWriterPort(gatewayRoute("openai/gpt-oss-120b"), { key: () => { keyReads++; throw new Error("must not read a key"); } });
-    await expect(writer.write({ kind: "intent", disclosureId: "fixture", input: { instruction: "password: violet-orchard-seven" as never }, disclosure: new Disclosure([]), maxOutputTokens: 50, signal: new AbortController().signal })).rejects.toBeInstanceOf(UnmintedText);
+    await expect(writer.write({ kind: "intent", disclosureId: "fixture", input: { instruction: "password: violet-orchard-seven" as never }, disclosure: new Disclosure(registryOf([])), maxOutputTokens: 50, signal: new AbortController().signal })).rejects.toBeInstanceOf(UnmintedText);
     expect(keyReads).toBe(0);
   });
 });

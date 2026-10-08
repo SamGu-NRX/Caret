@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { Disclosure, UnmintedText, verifySent, type ModelText } from "../src/privacy/disclosure.ts";
+import { Disclosure, UnmintedText, verifySent, type ModelText, registryOf } from "../src/privacy/disclosure.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { redactWindow } from "../src/fill/redact.ts";
 import { EngineSession } from "../src/engines/session.ts";
@@ -38,7 +38,7 @@ function note(lines: string[]): { m: ScreenModel; view: WindowState } {
 describe("PV2 review: provenance, shapes and budgets in the Disclosure", () => {
   it("1: join's separator is Caret's literal or a minted text, never raw screen text", () => {
     const { m, view } = note(["Name: Elena Vance"]);
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const [a, b] = [d.own("A"), d.own("B")];
     const raw: string = "Elena Vance";
     expect(() => d.join([a, b], raw as "; ")).toThrow(UnmintedText);
@@ -50,7 +50,7 @@ describe("PV2 review: provenance, shapes and budgets in the Disclosure", () => {
 
   it("2: a JSON state is checked as it was written, not as its source object is later", () => {
     const { m, view } = note(["Name: Elena Vance"]);
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const source: { task: ModelText } = { task: d.candidate(view, "Elena Vance") as ModelText };
     const json = d.jsonText(source);
     source.task = d.own("Route.");
@@ -60,7 +60,7 @@ describe("PV2 review: provenance, shapes and budgets in the Disclosure", () => {
   it("3: a derivation read from a basis is priced against its window, so a prose line never goes out whole", () => {
     const prose = "Dana said the staging rotation moves to the Austin office after the March review, then back again in June.";
     const { m, view } = note([prose]);
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const b = d.basis(view, prose);
     expect(b).not.toBeNull();
     expect(d.derived(b!, prose)).toBeNull();
@@ -86,7 +86,7 @@ describe("PV2 review: structural exclusions", () => {
   });
 
   it("7: the local engine renders the request it checked, whatever the caller does to it afterwards", async () => {
-    const d = new Disclosure([]);
+    const d = new Disclosure(registryOf([]));
     const req: JevRequest = d.seal({ purpose: "route.judge", state: { task: d.own("Route.") }, questions: { q: { type: "choice", instructions: d.own("Which?"), criteria: { a: d.own("A"), b: d.own("B") } } }, snippets: [], charged: {} });
     const prompts: string[] = [];
     const fetchImpl = (async (_url: string, init?: RequestInit) => {
@@ -129,7 +129,7 @@ describe("PV2 review: Sites", () => {
 describe("PV2 review should-fix: a short secret quoted out of a removed line", () => {
   it("plan text never quotes a value-shaped word that only a removed line shows", () => {
     const { m } = note(["Password: hunter2", "City: Austin"]);
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     expect(d.planText("The note says hunter2")).toBeNull();
     // Words the views keep, and plain words, still go.
     expect(d.planText("The note says Austin")).toBe("The note says Austin");
@@ -139,7 +139,7 @@ describe("PV2 review should-fix: a short secret quoted out of a removed line", (
 // The focused re-review of 0f636d0: what stayed open, each from the reviewer's counterexample.
 describe("PV2 re-review of 0f636d0", () => {
   it("2: a JSON text is expanded only as the whole state; anywhere else it is a text its slot holds to its length", () => {
-    const d = new Disclosure([]);
+    const d = new Disclosure(registryOf([]));
     const zeros = d.jsonText(Array(2000).fill(0));
     expect(zeros.length).toBe(4001);
     expect(() => verifySent({ purpose: "route.judge", disclosure: d }, { state: { task: zeros }, questions: {} })).toThrow(/state\.task holds 4001 characters/u);
@@ -152,11 +152,11 @@ describe("PV2 re-review of 0f636d0", () => {
     const alphas = Array(20).fill("alpha").join(" ");
     expect(alphas.length).toBe(119);
     const a = note([alphas]);
-    const d1 = new Disclosure(a.m.windows.values());
+    const d1 = new Disclosure(a.m);
     expect(d1.derived(d1.basis(a.view, alphas)!, alphas)).toBeNull();
     const months = "Meet with May and June on Monday at noon or on Tuesday at midnight, from March to April.";
     const b = note([months, "Phone: 555-0142"]);
-    const d2 = new Disclosure(b.m.windows.values());
+    const d2 = new Disclosure(b.m);
     expect(d2.derived(d2.basis(b.view, months)!, months, ["meet", "with"])).toBeNull();
   });
 
@@ -184,14 +184,14 @@ describe("PV2 re-review of 0f636d0", () => {
 
   it("6: a request built before a site or app is switched off is refused when it is sent", () => {
     const { m, view } = note(["Name: Elena Vance"]);
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     const req: JevRequest = d.seal({ purpose: "route.judge" as const, state: {}, questions: { q: { type: "choice" as const, instructions: d.own("Which?"), criteria: { a: d.candidate(view, "Elena Vance") as ModelText } } }, snippets: [], charged: {} });
     expect(() => verifySent(req, wireBody(req, "jev-test"))).not.toThrow();
     const reg = new EngineRegistry({ apply: () => {}, purge: () => {} });
     reg.setSitesOff(["https://vault.example"]);
     expect(() => verifySent(req, wireBody(req, "jev-test"))).toThrow(/switched off/u);
     // A request built after the change goes.
-    const d2 = new Disclosure(m.windows.values());
+    const d2 = new Disclosure(m);
     expect(() => d2.seal({ purpose: "route.judge", state: { task: d2.own("Route.") }, questions: {} })).not.toThrow();
   });
 
@@ -243,7 +243,7 @@ describe("PV2 re-review of 0f636d0", () => {
 
   it("8: plan text never quotes a removed line's value inside a longer word either", () => {
     const { m } = note(["Password: hunter2", "City: Austin"]);
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     expect(d.planText("Login at https://hunter2@example.test")).toBeNull();
     expect(d.planText("Login at https://austin.example.test")).toBe("Login at https://austin.example.test");
   });
@@ -252,7 +252,7 @@ describe("PV2 re-review of 0f636d0", () => {
 describe("PV2 second re-review should-fix", () => {
   it("8: reads a value's inner capital on the word as written", () => {
     const { m } = note(["Password: violetOrchard", "City: Austin"]);
-    const d = new Disclosure(m.windows.values());
+    const d = new Disclosure(m);
     expect(d.planText("The note says violetOrchard")).toBeNull();
     expect(d.planText("The note says Austin")).toBe("The note says Austin");
   });

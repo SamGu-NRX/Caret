@@ -147,7 +147,7 @@ for (const [fi, form] of corpus.forms.entries()) {
     const d = describeField(w, x.node);
     return fieldTerms([d.label, d.nearest, d.placeholder]);
   });
-  const gen = collectCandidates(model, w.window.windowId, { now: T0, ledger: new Disclosure(model.windows.values()), fields: terms });
+  const gen = collectCandidates(model, w.window.windowId, { now: T0, ledger: new Disclosure(model), fields: terms });
   const source: SourceCut = {
     budget: sw === null ? null : windowBudget(sw),
     half: sw !== null && (heldToHalf(sw) || heldAsConversation(sw)),

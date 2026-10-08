@@ -27,7 +27,7 @@ describe("INT1 review P1: a secret in a page's section text never reaches plan, 
       const view = redactWindow(m.windows.get("page") as WindowState);
       // Redaction removes the secret section line.
       expect(JSON.stringify([...view.nodes.values()])).not.toContain("Zq7x");
-      const d = new Disclosure(m.windows.values());
+      const d = new Disclosure(m);
       expect(d.planText("Open Zq7x")).toBeNull();
       expect(d.heldText("Open Zq7x")).toBeNull();
       expect(d.draftedText("Open Zq7x")).toBeNull();

@@ -912,7 +912,7 @@ export async function proposeFill(
   // budget (privacy.ts): the form's title and each field's descriptor, nearest field first, then the
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
   const scope = opts.scope;
-  const ledger = new Disclosure(model.windows.values(), scope?.consented === undefined ? {} : { consented: scope.consented });
+  const ledger = new Disclosure(model, scope?.consented === undefined ? {} : { consented: scope.consented });
   // C1 (item 6): an Ask for the whole form that narrows nothing (every source, memory, no person, no value it spells out)
   // asks each value as a Fill all does. Live on the same corpus and W4 pages and sources, Ask's wording that quotes the
   // instruction (B25) agreed on the same values as Fill all's but under FILL_CUTOFF, which was calibrated on Fill all's

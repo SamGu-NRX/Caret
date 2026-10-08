@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { BOUNDARY, LEDGER_NORMALIZATION, LedgerEncodingError, ledgerNormalizeUnit, ledgerNormalizeV1, normalizedText } from "../src/privacy/ledger/normalize.ts";
 import { decodeUnits } from "../src/privacy/ledger/units.ts";
-import { inventoryOf, limitsOf, overLimits, reveal, UnitIndex, type LineInventory } from "../src/privacy/ledger/measure.ts";
+import { inventoryOf, limitsOf, overLimits, reveal, UnitIndex, UnitProbe, type LineInventory } from "../src/privacy/ledger/measure.ts";
 import { refReveal, refUnits, type RefUnit } from "./ledger-reference.ts";
 import { rng } from "./large-scene.ts";
 
@@ -133,8 +133,13 @@ function linesOf(texts: readonly string[]): string[] {
 
 function production(units: readonly RefUnit[], lines: readonly string[]): { positions: string[]; charged: number; prose: number } {
   const inv = inventoryOf(lines);
-  const r = reveal(new UnitIndex(units.map((u) => ledgerNormalizeUnit(u))), inv);
-  return { positions: positionsOf(inv, r.positions), charged: r.charged, prose: r.prose };
+  const normalized = units.map((u) => ledgerNormalizeUnit(u));
+  const r = reveal(new UnitIndex(normalized), inv);
+  const out = { positions: positionsOf(inv, r.positions), charged: r.charged, prose: r.prose };
+  // The indexed scan (UnitProbe) reads only candidate lines and must give the same positions as the full scan.
+  const probed = new UnitProbe(normalized).reveal(inv);
+  expect({ positions: positionsOf(inv, probed.positions), charged: probed.charged, prose: probed.prose }).toEqual(out);
+  return out;
 }
 
 function positionsOf(inv: LineInventory, bits: Uint8Array): string[] {

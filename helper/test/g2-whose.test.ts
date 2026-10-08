@@ -139,7 +139,7 @@ describe("G2 review: optional context never takes a span's place", () => {
   it("6: with deferClauses the generator sets no optional clause; every one waits for fill, after every span", () => {
     for (const page of ["greenhouse", "wizard-2", "forty"]) {
       const m = pageModel([control("e1", "text", "Start date")], expectation(page).sources.note);
-      const ledger = new Disclosure(m.windows.values());
+      const ledger = new Disclosure(m);
       const c = collectCandidates(m, WIN, { deferClauses: true, ledger, fields: [new Set(["kind:date", "start"])] });
       const optional = c.candidates.filter((x) => c.clauses.has(x));
       expect(optional.length, page).toBeGreaterThan(0);

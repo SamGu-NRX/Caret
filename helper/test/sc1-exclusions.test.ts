@@ -73,7 +73,7 @@ describe("T-E1: a secure field", () => {
     expect(m.windows.get("src")?.nodes.get("pw2")).toMatchObject({ excluded: "secure" });
     expect(m.windows.get("src")?.nodes.get("pw2")?.value).toBeUndefined();
     expect(formFields(w, "email").map((n) => n.key)).not.toContain("pw");
-    const cands = collectCandidates(m, "form", { now: 3000, ledger: new Disclosure(m.windows.values()) }).candidates;
+    const cands = collectCandidates(m, "form", { now: 3000, ledger: new Disclosure(m) }).candidates;
     expect(cands.some((c) => c.text.includes(secret))).toBe(false);
     expect(JSON.stringify([...m.windows.values()].map((x) => [...x.nodes.values()]))).not.toContain(secret);
   });
@@ -227,7 +227,7 @@ describe("T-E3: values in a secret format, generated", () => {
     await settle(planAsk(`put ${x} in Reference and my email in Email`, m, { values: () => [{ id: "about-1", label: "Reference", text: x, whose: "user" as const }] }, [{ id: "about-1", label: "Reference", value: x, kind: "id" as never }], { askJev: ask, maker: headsIntentMaker(ask), writer: null, offerKey: "te3", windowId: "form", now: 2000 }));
     await settle(planTask(`Set Reference to ${x}`, m, { values: () => [] }, { askJev: ask, offerKey: "te3-plan", now: 2000, rand: () => 0, windowId: "form" }));
     const w = m.windows.get("note") as WindowState;
-    await settle(ask(buildLookRequest(w, m.windows.values(), [{ rule: "running", line: `Key ${x}` }] as never).req));
+    await settle(ask(buildLookRequest(w, m, [{ rule: "running", line: `Key ${x}` }] as never).req));
     const ctx = contextNow({ model: m, focus: null, host: null, readerSession: 1, memoryRevision: 0, settingsRevision: 0, hostBreaks: 0, candidates: [] });
     if (ctx !== null) {
       const built = router1Request(m, ctx, ["abstain", "write"], freeze(1, [], new Set()));

@@ -535,7 +535,8 @@ function where(app: string, title: string, admitted: (t: string) => boolean): st
 export function provenanceSays(pr: Provenance, admitted: (t: string) => boolean): string {
   // The verifier's own phrase (mintProvenanceSays), over a ledger of no windows: nothing to charge, so every admitted
   // text mints and the rest are named, not quoted.
-  const d = new Disclosure([]);
+  // Never sealed, so no registry: a request built over it would refuse at seal.
+  const d = new Disclosure(null);
   return mintProvenanceSays(d, pr, (t) => (admitted(t) ? d.planText(t) : null), () => true);
 }
 
@@ -707,7 +708,7 @@ export async function verifyProposed(proposed: readonly Proposed[], o: CheckOpti
   if (proposed.length === 0) return { asks: [], jev };
   if (o.askJev === null) throw new VerifierUnavailable("no Jev to verify values with");
   const ask = testVerifier ?? o.askJev;
-  const ledger = o.ledger ?? new Disclosure([]);
+  const ledger = o.ledger ?? new Disclosure(null);
   const d = ledger;
   // What the ledger admits: a text the request may quote, minted as plan text (Disclosure.planText), which declares it,
   // charging each window whose lines it holds; text already taken for the value asks costs nothing more.
