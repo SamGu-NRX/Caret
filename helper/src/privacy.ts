@@ -221,7 +221,11 @@ class LineTable {
     return buckets.find((b) => b.length > 0) ?? [];
   }
 
-  /** Every distinct line of CONTAINED_MIN or more characters that `t` holds whole, compared case-folded; each once. */
+  /**
+   * Every distinct line of CONTAINED_MIN or more characters that `t` holds whole, compared case-folded; each once. A line
+   * inside a word counts too ("Back" in "Outback"): a known, conservative over-charge kept because it matches T-M2's
+   * containment measure (test/privacy.test.ts); its only cost is recall (the lead's ruling, PV2).
+   */
   linesInFolded(t: string): string[] {
     const { starts } = this.foldedIndex();
     const ft = fold(t);
