@@ -99,6 +99,7 @@ export class DailySpend {
   private landed = 0;
   /** Estimates held by this process's requests in flight, by the day they were reserved on. */
   private readonly inFlight = new Map<string, number>();
+  private resolved: string | null = null;
 
   constructor(opts: DailySpendOptions) {
     if (!Number.isFinite(opts.capUsd) || opts.capUsd <= 0) throw new Error(`the daily Jev cap must be above $0, not ${opts.capUsd}`);
@@ -139,9 +140,9 @@ export class DailySpend {
     return {
       settle: (costUsd, inputTokens) => {
         close();
-        // Checked, then made and written, as one resolved path: a refused path leaves nothing behind.
-        const file = assertLocalStorePath(`${this.dir}/${day}.ndjson`);
-        mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+        const folder = this.folder();
+        mkdirSync(folder, { recursive: true, mode: 0o700 });
+        const file = join(folder, `${day}.ndjson`);
         // The day the request was reserved on, so one sent at 23:59:59 counts against the day that let it through.
         writeLocalFile(file, `${JSON.stringify({ at: this.now().toISOString(), usd: costUsd, tokens: inputTokens, pid: process.pid })}\n`, { append: true, mode: 0o600 });
       },
@@ -154,6 +155,16 @@ export class DailySpend {
     return Math.ceil(chars / CHARS_PER_TOKEN) * usdPerToken;
   }
 
+  /**
+   * The spend folder, checked and resolved once (privacy/store-path.ts): every read and every write uses this one path,
+   * so a `link/..` in `dir` cannot send them to different folders, and a refused path leaves nothing behind. Joined as
+   * written, not with path.join, which would apply the `..` before the link resolves.
+   */
+  private folder(): string {
+    this.resolved ??= dirname(assertLocalStorePath(`${this.dir}/spend.ndjson`));
+    return this.resolved;
+  }
+
   /** Reads the lines appended to today's file since the last read; a new day starts from zero. */
   private catchUp(): void {
     const day = localDay(this.now());
@@ -162,7 +173,7 @@ export class DailySpend {
       this.offset = 0;
       this.landed = 0;
     }
-    const path = join(this.dir, `${day}.ndjson`);
+    const path = join(this.folder(), `${day}.ndjson`);
     let all: Buffer;
     try {
       all = readFileSync(path);
