@@ -126,7 +126,9 @@ describe("collection order, associations, one membership, kept ranges", () => {
     const c = collectCandidates(m, FORM, { now: 3000, ledger: new Disclosure(m), fields: [new Set(["date", kindTerm("date")])] });
     expect(c.candidates.length).toBe(80);
     expect(c.cut).toEqual(["chat-1"]);
-    expect([...c.cutTerms]).toEqual(expect.arrayContaining(["date", kindTerm("date")]));
+    // Its words are cut terms; its date's kind is in cutKinds, the one set of cut kinds the field checks read.
+    expect([...c.cutTerms]).toContain("date");
+    expect([...c.cutKinds]).toEqual(["date"]);
     expect(c.omitted).toContain(associationKey("chat-1", null, "Date"));
     // Read in two passes, the chat's typed date went in first and was written; now the date kind is cut.
     const p = await proposeFill(m, picking({ Date: "2026-10-08" }), FORM, key("Date"), 3000);

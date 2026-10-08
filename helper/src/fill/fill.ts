@@ -14,7 +14,7 @@ import { fieldFingerprint, NO_SECTION, PLACEMENT_UNKNOWN, scopeRefusal, UNNAMED_
 import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
-import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, MAX_LINE, mintCandidate, PLACEMENT_SAYS, viewOf, withSources, CANDIDATE_WORDING, candidateSpans, clauseSpans, sourceOf as readOf, associationOf, type Candidate } from "./candidates.ts";
+import { candidateKinds, candidateTexts, collectCandidates, describeCandidate, labelledCandidate, labelledLines, MAX_LINE, mintCandidate, PLACEMENT_SAYS, viewOf, withSources, CANDIDATE_WORDING, candidateSpans, clauseSpans, sourceOf as readOf, associationOf, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import type { Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
@@ -1116,7 +1116,7 @@ export async function proposeFill(
   // An Ask that names its sources reads only those windows.
   const sourcesOnly = scope?.windows ?? null;
   const unread = sourcesOnly === null ? opts.exclude : new Set([...(opts.exclude ?? []), ...[...model.windows.keys()].filter((id) => id !== windowId && !sourcesOnly.has(id))]);
-  const { candidates, cut, cutTerms, cutAll, namesCut, clauses, omitted } = collectCandidates(model, windowId, {
+  const { candidates, cut, cutTerms, cutKinds: collectedKinds, cutAll, namesCut, clauses, omitted } = collectCandidates(model, windowId, {
     now,
     ledger,
     deferClauses: true,
@@ -1136,7 +1136,7 @@ export async function proposeFill(
   // whose kind lost a value to a cut is not asked, since its candidates of that kind are a partial set,
   // and an asked field's pick of such a kind is not proposed. A blank costs the user a paste; a wrong
   // fill costs their trust.
-  const removed = opts.cutRule === false ? new Set<ValueKind>() : cutKinds(model, cut, candidates);
+  const removed = opts.cutRule === false ? new Set<ValueKind>() : collectedKinds;
   // What a window holds is not known (cutAll: the unread rest of one was past its bound, or a cap stopped a listing):
   // every field is withheld, whatever its kind, through this one check. A pick the user's instruction spells out is the
   // user's, not a window's, and is not (pickCut).
@@ -1508,12 +1508,12 @@ export async function proposeFill(
   const nameCut = opts.cutRule !== false && opts.nameGroup !== false && namesCut;
   const takesName = (f: { terms: ReadonlySet<string> }): boolean => opts.nameGroup !== false && f.terms.has(NAME_TERM);
   // One withholding rule for every field, whatever its kind: what a window holds is unknown (allCut, in isCut); a word of
-  // what a cut left out is one of the field's label terms (its kind terms are the kind rule's); a cut took a value of a kind the
+  // what a cut left out is one of the field's label terms (cutTerms holds words only; kinds are Collected.cutKinds); a cut took a value of a kind the
   // field takes; a name may have been kept out of a field that takes one; or the field names no kind and a cut took a
   // value of some kind, which may be the one it wants. A recognized field consulted only its kinds, so a note's closing
   // "Do not use any of the dates above" left Meeting date filled with the first of them.
   const fieldCut = (f: { kinds: ReadonlySet<ValueKind>; terms: ReadonlySet<string> }): boolean =>
-    opts.cutRule !== false && (isCut(f.kinds) || [...f.terms].some((t) => !isKindTerm(t) && t !== NAME_TERM && cutTerms.has(t)) || (nameCut && takesName(f)) || (f.kinds.size === 0 && opts.unknownKindRule !== false && removed.size > 0 && !takesName(f)));
+    opts.cutRule !== false && (isCut(f.kinds) || [...f.terms].some((t) => t !== NAME_TERM && cutTerms.has(t)) || (nameCut && takesName(f)) || (f.kinds.size === 0 && opts.unknownKindRule !== false && removed.size > 0 && !takesName(f)));
   // A select whose options the app does not show cannot be matched to a value, so it is named and left (controls.ts).
   // A web dropdown's options are hidden too, but the page engine's handler picks the one option named exactly the
   // value and verifies it, so it is asked (B27).
