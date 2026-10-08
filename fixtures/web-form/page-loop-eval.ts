@@ -71,7 +71,7 @@ import { readyOnLoad } from "../../helper/src/offers/ready-on-load.ts";
 import { Disclosure } from "../../helper/src/privacy/disclosure.ts";
 import { loadAsks, loadCorpus, normLabel, type CorpusForm } from "../../helper/scripts/realfill-corpus.ts";
 import { CFT_BUILD, Cdp, HOST_NAME, LAUNCHD_PREFIX, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
-import { NetworkSink, type Oracle, type Scored } from "./oracle.ts";
+import { NetworkSink, scoredReadings, type FieldReading, type Oracle, type Scored, type ScoredField } from "./oracle.ts";
 import { FixtureSite } from "./server.ts";
 import { TASK_PAGES, loadExpectation, taskPage, type Expectation } from "./tasks/site.ts";
 import { fieldWhoseAnswer, loadOwners, ownersOf, valueOwnerAnswer, type Owners } from "./owners.ts";
@@ -602,6 +602,7 @@ interface TaskRow {
   warnings: string[];
   /** Whether the oracle scored the page (right, eligible, wrong and missed below hold its result). */
   scored: boolean;
+  fields: Record<string, ScoredField> | null;
   right: number;
   eligible: number;
   wrong: Scored["wrong"];
@@ -614,8 +615,20 @@ interface TaskRow {
   revealMissing: string[];
   /** The second Ask that leaves Caret's fill on a wizard page before the harness presses Next. */
   refill: string | null;
+  refillFields: Record<string, ScoredField> | null;
   unmapped: string[];
   ambiguous: string[];
+}
+
+const oracleFieldReports: Record<string, Pick<TaskRow, "fields" | "refillFields">> = {};
+
+/** Persist before the recipe can stop a run on a logged wrong value, rather than waiting for the final report. */
+function recordScoredFields(page: string, scored: Scored, readings: Readonly<Record<string, FieldReading>>, phase: "fields" | "refillFields" = "fields"): Record<string, ScoredField> {
+  const fields = scoredReadings(scored, readings);
+  const report = oracleFieldReports[page] ??= { fields: null, refillFields: null };
+  report[phase] = fields;
+  writeStoreJson(join(OUT, "oracle-fields.json"), { pages: oracleFieldReports }, 1);
+  return fields;
 }
 
 /** How the goal path judges a task page: by the oracle, not by Caret's walk. */
@@ -901,7 +914,7 @@ async function main(): Promise<number> {
       const name = p.id;
       const expected = p.expected as Expectation["expected"];
       const row = newRow(p);
-      const t: TaskRow = { arrived: "navigated", warnings: [], scored: false, right: 0, eligible: 0, wrong: [], missed: [], absent: [], attachGap: [], revealMissing: [], refill: null, unmapped: [], ambiguous: [] };
+      const t: TaskRow = { arrived: "navigated", warnings: [], scored: false, fields: null, right: 0, eligible: 0, wrong: [], missed: [], absent: [], attachGap: [], revealMissing: [], refill: null, refillFields: null, unmapped: [], ambiguous: [] };
       row.task = t;
       rows.push(row);
       const from = pressFrom;
@@ -954,6 +967,7 @@ async function main(): Promise<number> {
             const s = oracle.score(name, expected);
             const gap = attachGap();
             const kinds = oracle.readings(name) ?? {};
+            t.fields = recordScoredFields(name, s, kinds);
             const picked = asksOn(name).picked;
             t.eligible = eligibleOf(gap);
             t.right = s.right.filter((k) => !gap.includes(k)).length;
@@ -1004,6 +1018,7 @@ async function main(): Promise<number> {
             await settle(name);
             const s = oracle.score(name, expected);
             const gap = attachGap();
+            t.refillFields = recordScoredFields(name, s, oracle.readings(name) ?? {}, "refillFields");
             t.refill = `${s.right.filter((k) => !gap.includes(k)).length}/${eligibleOf(gap)} right, ${s.wrong.length} wrong (${r.outcome}, ${r.tabs} tabs)`;
             row.wrong.push(...s.wrong.map((x) => `second Ask ${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`));
           }
@@ -1129,7 +1144,7 @@ async function main(): Promise<number> {
     // The resume the user chooses in page 3's attach row: the one the recruiter's email names (tasks/expect/wizard-3.json).
     const resume = join(tmp, "ines-vandermeer-resume-2026.pdf");
     writeStore(resume, "%PDF-1.4\n% synthetic resume for the P3 wizard journey\n");
-    const out: { page: string; arrived: string; previewMs: number | null; steps: number; attach: string | null; outcome: string; right: number; eligible: number; wrong: string[]; missed: string[]; note: string }[] = [];
+    const out: { page: string; arrived: string; previewMs: number | null; steps: number; attach: string | null; outcome: string; right: number; eligible: number; wrong: string[]; missed: string[]; fields: Record<string, ScoredField> | null; note: string }[] = [];
     desk(wiz[0] as Page);
     let goalId: string | null = null;
     let lastName: string | null = null;
@@ -1138,7 +1153,7 @@ async function main(): Promise<number> {
       taskFields = null;
       const name = p.id;
       const expected = p.expected as Expectation["expected"];
-      const row = { page: name, arrived: "", previewMs: null as number | null, steps: 0, attach: null as string | null, outcome: "-", right: 0, eligible: Object.values(expected).filter((v) => v !== "none").length, wrong: [] as string[], missed: [] as string[], note: "" };
+      const row: (typeof out)[number] = { page: name, arrived: "", previewMs: null, steps: 0, attach: null, outcome: "-", right: 0, eligible: Object.values(expected).filter((v) => v !== "none").length, wrong: [], missed: [], fields: null, note: "" };
       out.push(row);
       try {
         stage = "load";
@@ -1195,6 +1210,7 @@ async function main(): Promise<number> {
         row.note = `${row.note === "" ? "" : `${row.note}; `}scope ${plan?.page?.kind ?? "?"}, carrying ${helper.goals.carrying(windowId, null)}`;
         await settleOracle(name);
         const sc = oracle.score(name, expected);
+        row.fields = recordScoredFields(name, sc, oracle.readings(name) ?? {});
         row.right = sc.right.length;
         row.wrong = sc.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`);
         row.missed = sc.missed;

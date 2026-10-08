@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import type { Server } from "node:http";
 import { test } from "node:test";
-import { NetworkSink, Oracle, targetHost, type FieldReading } from "../oracle.ts";
+import { storeJson } from "../../../helper/src/privacy/send.ts";
+import { NetworkSink, Oracle, scoredReadings, targetHost, type FieldReading } from "../oracle.ts";
 
 const f = (value: string, kind = "text", visible = true): FieldReading => ({ value, kind, visible });
 const state = (o: Oracle, page: string, frame: string, loadId: string, seq: number, fields: Record<string, FieldReading>): void =>
@@ -213,4 +214,25 @@ test("score accepts any NFC alternative and preserves alternatives in wrong repo
     right: ["first", "second"], wrong: [{ field: "wrong", expected: alternatives, actual: "ELIF" }],
     missed: ["empty"], leftAlone: [], absent: ["gone"],
   });
+});
+
+test("scored readings retain raw final values and kinds for every outcome in JSON", () => {
+  const o = new Oracle();
+  state(o, "p", "/p", "a", 0, {
+    text: f("false"), checkbox: f("false", "checkbox"), right: f("İ"), missed: f(""),
+  });
+  const expected = { text: "none", checkbox: "none", right: "İ", missed: "a value", absent: "a value" };
+  const summary = o.score("p", expected);
+  const fields = scoredReadings(summary, o.readings("p") ?? {});
+  const report = JSON.parse(storeJson({ summary, fields }));
+  assert.deepEqual(report.fields, {
+    right: { value: "İ", kind: "text", outcome: "right" },
+    text: { value: "false", kind: "text", outcome: "wrong" },
+    missed: { value: "", kind: "text", outcome: "missed" },
+    checkbox: { value: "false", kind: "checkbox", outcome: "leftAlone" },
+    absent: { value: null, kind: null, outcome: "absent" },
+  });
+  state(o, "p", "/p", "a", 1, { text: f(""), checkbox: f("true", "checkbox") });
+  assert.equal(fields.text?.value, "false", "later undo does not change the recorded score-time values");
+  assert.equal(fields.checkbox?.value, "false");
 });

@@ -88,6 +88,26 @@ export interface Scored {
   absent: string[];
 }
 
+/** Score-time evidence; an absent field has no probe value or kind. */
+export interface ScoredField {
+  value: string | null;
+  kind: string | null;
+  outcome: keyof Scored;
+}
+
+/** Copies the raw readings before undo or another page load can replace them. */
+export function scoredReadings(scored: Scored, readings: Readonly<Record<string, FieldReading>>): Record<string, ScoredField> {
+  const fields: Record<string, ScoredField> = {};
+  for (const outcome of ["right", "wrong", "missed", "leftAlone", "absent"] as const) {
+    for (const entry of scored[outcome]) {
+      const field = typeof entry === "string" ? entry : entry.field;
+      const reading = readings[field];
+      fields[field] = { value: reading?.value ?? null, kind: reading?.kind ?? null, outcome };
+    }
+  }
+  return fields;
+}
+
 interface Issued {
   page: string;
   target: string;
