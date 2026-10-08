@@ -7,7 +7,7 @@ import type { Node } from "../protocol.ts";
 import type { WindowState } from "../model.ts";
 import type { Owner } from "./contract.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
-import { redactWindow, SECTION_BOUNDARY_ROLES } from "./redact.ts";
+import { SECTION_BOUNDARY_ROLES } from "./redact.ts";
 
 /**
  * I2 ruling: one request, one settlement. What the per-field scope question settled for a request, kept so a later step
@@ -348,7 +348,8 @@ export function scopeRefusal(x: ScopedWrite, scope: AskScope | undefined, docume
 /** SCP1: why a field is no longer in the one section its Ask named, by the window as it reads now, or null. */
 export function sectionRefusal(f: { readonly key: string; readonly name: string }, scope: AskScope, window: WindowState): string | null {
   if (scope.section === null) return null;
-  const o = windowOutline(redactWindow(window));
+  // The raw window, compared locally: a duplicate whose text redaction removed is still a duplicate.
+  const o = windowOutline(window);
   const n = namedOccurrences(o, scope.section);
   if (n === 0) return `the section you named is no longer on the form, so Caret can't tell '${f.name}' is in it`;
   if (n > 1) return `the form now shows the section you named more than once, so Caret can't tell '${f.name}' is in it`;

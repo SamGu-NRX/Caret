@@ -1,4 +1,4 @@
-import { instructionForModel, redactWindow } from "../fill/redact.ts";
+import { instructionForModel } from "../fill/redact.ts";
 import { assertNoSecrets } from "../privacy.ts";
 // Ask's intent from Jev (P1, A3). Three requests, sent together:
 //   - the heads, one request: route (fill, plan or refuse), why when it refuses, source and whose;
@@ -257,7 +257,10 @@ export function sectionVeto(snap: IntentSnapshot, scope: readonly [JevResult, Je
   if (answer === null) return null;
   if (answer.kind === "unlisted") return { section: null, notFound: true, outside: new Set(), unknown: new Set(scopeFields(snap).map((f) => f.key)) };
   const section = answer.name;
-  const member = sectionMembership(windowOutline(redactWindow(snap.window)), section);
+  // SCP1: on the raw window, compared locally and sent nowhere. Redaction limits what is sent; a decision that can only
+  // withhold reads every occurrence, so a second "Equipment details" inside a removed "Password and security" group
+  // still makes the named text two sections (confirmation of 516ac15).
+  const member = sectionMembership(windowOutline(snap.window), section);
   const outside = new Set<string>();
   const unknown = new Set<string>();
   for (const f of scopeFields(snap)) {

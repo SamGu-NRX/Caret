@@ -738,3 +738,54 @@ describe("check of 479f875: a heading stub is structure only", () => {
     for (const r of j.seen) expect(JSON.stringify(r)).not.toMatch(/Password and security|Service contact/u);
   });
 });
+
+describe("confirmation of 516ac15: veto decisions read the raw outline", () => {
+  const REMOVED = /Password and security/u;
+  /** The reader's form: an "Equipment details" heading over Serial number, a group redaction removes, then Model. */
+  const unique = (): Node[] => [node("h/eq", "AXHeading", { label: "Equipment details" }), field("f/serial", "", { label: "Serial number" }), node("g/pw", "AXGroup", { label: "Password and security" }), field("f/model", "", { label: "Model" })];
+  /** The same form with a second "Equipment details" heading inside the group redaction removes. */
+  const duplicated = (): Node[] => [node("h/eq", "AXHeading", { label: "Equipment details" }), field("f/serial", "", { label: "Serial number" }), node("g/pw", "AXGroup", { label: "Password and security" }), node("h/eq2", "AXHeading", { label: "Equipment details", parent: "g/pw" }), field("f/model", "", { label: "Model" })];
+  /** A plan minted on the unique form, and a guard and an acceptance recheck over the form as it reads now. */
+  async function minted(d: ReturnType<typeof desk>, j: ReturnType<typeof jev>) {
+    const r = (await plan(d, j)) as AskDraft;
+    // On the unique form a group with no heading ends no section: Model is under "Equipment details" too.
+    expect(written(r, d)).toEqual(EQUIPMENT);
+    const serial = r.checked.writes[0];
+    if (serial === undefined) throw new Error("no write");
+    const guard = guardFor(() => d.model, new Map([[0, serial.checked]]), r.checked.origin, null, null);
+    const now = () => ({ windowId: "F", node: windowOf(d).nodes.get("f/serial") as Node, window: windowOf(d) });
+    const accept = () => validatePlan(r.plan, r.slots, { model: d.model, memory: [], instruction: INSTRUCTION, origin: r.checked.origin, documentOf: null }, r.checked.mints);
+    return { guard: () => guard(0, serial.value, now()), accept };
+  }
+
+  it("withholds at settlement when the named section is also a heading inside a removed group", async () => {
+    const d = desk({ reader: duplicated() });
+    const j = jev({ asks: EQUIPMENT, section: "Equipment details" });
+    expectSectionRefusal(await refusal(plan(d, j)), EQUIPMENT);
+    const settled = await settleFields(snapFor(d), j.ask);
+    expect(settled.asks).toEqual([]);
+    // The plan a unique form would mint is refused here, at acceptance and at dispatch.
+    const u = desk({ reader: unique() });
+    const m = await minted(u, jev({ asks: EQUIPMENT, section: "Equipment details" }));
+    u.model.apply(snap(duplicated(), { at: 2500, windowId: "F", title: "Service request", focused: true }));
+    expect(() => m.accept()).toThrow(PlannerError);
+    expect(m.guard()).toMatch(/more than once/u);
+    // Nothing redaction removed reaches a request; the second heading is offered once, by the text the view shows.
+    for (const r of j.seen) expect(JSON.stringify(r)).not.toMatch(REMOVED);
+    const options = Object.values(scopeRequestOf(d).questions.section?.criteria ?? {}).filter((c) => c?.includes("Equipment details"));
+    expect(options).toHaveLength(1);
+  });
+
+  it("refuses at acceptance and at dispatch when the duplicate appears inside a removed group after the mint", async () => {
+    const d = desk({ reader: unique() });
+    const j = jev({ asks: EQUIPMENT, section: "Equipment details" });
+    const m = await minted(d, j);
+    expect(m.guard()).toBeNull();
+    expect(() => m.accept()).not.toThrow();
+    d.model.apply(snap(duplicated(), { at: 2500, windowId: "F", title: "Service request", focused: true }));
+    // Serial number reads as it did: the fingerprint alone would let it through.
+    expect(() => m.accept()).toThrow(/more than once/u);
+    expect(m.guard()).toMatch(/more than once/u);
+    for (const r of j.seen) expect(JSON.stringify(r)).not.toMatch(REMOVED);
+  });
+});
