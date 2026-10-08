@@ -71,8 +71,9 @@ export interface FieldChange {
 export type ExpectedValue = string | readonly string[];
 
 /** Canonically equivalent strings are the same text. NFC only: no NFKC, case folding or whitespace trimming. */
-function sameText(actual: string, expected: string): boolean {
-  return actual.normalize("NFC") === expected.normalize("NFC");
+export function sameText(actual: string, expected: ExpectedValue): boolean {
+  const values = typeof expected === "string" ? [expected] : expected;
+  return values.some((value) => actual.normalize("NFC") === value.normalize("NFC"));
 }
 
 export interface Scored {
@@ -251,7 +252,7 @@ export class Oracle {
       if (reading === undefined || got === undefined) out.absent.push(k);
       else if (want === "none" && empty(reading)) out.leftAlone.push(k);
       else if (want === "none") out.wrong.push({ field: k, expected: want, actual: got });
-      else if ((typeof want === "string" ? [want] : want).some((v) => sameText(got, v))) out.right.push(k);
+      else if (sameText(got, want)) out.right.push(k);
       else if (empty(reading)) out.missed.push(k);
       else out.wrong.push({ field: k, expected: want, actual: got });
     }

@@ -99,6 +99,10 @@ function withKey(expected: unknown, check: (page: string) => void): void {
 
 for (const [value, reason] of [
   [[], "non-empty"],
+  [["", "Elif"], "blank"],
+  [[" "], "blank"],
+  [[" "], "blank"],
+  [["\t\n "], "blank"],
   [["İ", "I\u0307"], "duplicate"],
   [["same", "same"], "duplicate"],
   [["none"], "none"],

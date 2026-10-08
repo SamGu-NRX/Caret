@@ -62,6 +62,8 @@ import { toWindowSnapshot } from "../src/engines/page-link.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { PageSnapshot, PROTOCOL_VERSION, Snapshot, type Node } from "../src/protocol.ts";
+import { sameText, type ExpectedValue } from "../../fixtures/web-form/oracle.ts";
+import { loadExpectation } from "../../fixtures/web-form/tasks/site.ts";
 import { buildDesk, loadAsks, loadCorpus, nodesFor, normLabel, T0, type Corpus, type CorpusForm } from "./realfill-corpus.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -90,12 +92,10 @@ const VERIFIER: "accept" | "refuse" = a.values.verifier;
 setGeneratorClock(() => 0);
 
 /** One field with a key: its node on the desk, its label, and the values the key takes. */
-interface KeyField {
-  key: string;
-  label: string;
-  expected: string;
-  accept: readonly string[];
-}
+type KeyField = { key: string; label: string } & (
+  { source: "corpus"; expected: string; accept: readonly string[] } |
+  { source: "task"; expected: ExpectedValue; checkbox: boolean }
+);
 /** One form on a desk, with the fields its key scores and the parts it is asked in. */
 interface Desk {
   set: string;
@@ -136,6 +136,14 @@ function holdsWords(outer: string, inner: string): boolean {
 }
 /** Key values that name no text to write: a blank, a control left to the user, a box's state. */
 const NO_TEXT = new Set(["none", "handoff", "checked", "unchecked", "true", "false"]);
+const BOX_KEYS = new Set(["checked", "unchecked", "true", "false"]);
+const noText = (field: KeyField): boolean => field.source === "task" ? field.expected === "none" || field.checkbox : NO_TEXT.has(field.expected);
+const isBox = (field: KeyField): boolean => field.source === "task" ? field.checkbox : BOX_KEYS.has(field.expected);
+const formsOf = (field: KeyField): readonly string[] => field.source === "corpus" ? [field.expected, ...field.accept] : typeof field.expected === "string" ? [field.expected] : field.expected;
+// Corpus attacks use loose matching; task outcomes must agree with the oracle's exact NFC comparison.
+const keyMatches = (text: string, field: KeyField): boolean => field.source === "task"
+  ? sameText(text, formsOf(field))
+  : sameText(norm(text), formsOf(field).map(norm));
 
 const session = new EngineSession({ engine: "replay", browser: { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" }, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
 function pageWindow(file: string, seq: number): Snapshot {
@@ -191,7 +199,7 @@ function* corpusDesks(): Generator<Desk> {
     const d = page ? buildDesk(corpus, snaps, form, pageWindow(file, 1)) : buildDesk(corpus, snaps, form);
     const fields = form.fields.flatMap((f) => {
       const k = keyOfCorpusField(d.form, f);
-      return k === null ? [] : [{ key: k, label: f.label, expected: f.expected, accept: f.accept ?? [] }];
+      return k === null ? [] : [{ source: "corpus" as const, key: k, label: f.label, expected: f.expected, accept: f.accept ?? [] }];
     });
     const keys = fields.map((f) => f.key);
     const parts = page ? pageParts(d.form) : Array.from({ length: Math.ceil(keys.length / MAX_FIELDS) }, (_, i) => keys.slice(i * MAX_FIELDS, (i + 1) * MAX_FIELDS));
@@ -223,13 +231,13 @@ function* taskDesks(labelled: boolean): Generator<Desk> {
       skipped.push(`${set}/${page}: no page walk`);
       continue;
     }
-    const e = JSON.parse(readFileSync(join(REPO, "fixtures", "web-form", "tasks", "expect", `${page}.json`), "utf8")) as { expected: Record<string, string>; sources: { note?: string; email?: { from: string; to: string; subject: string; body: string }; memory?: { key: string; value: string }[] } };
+    const e = loadExpectation(page);
     const raw = PageSnapshot.parse(JSON.parse(readFileSync(file, "utf8")));
     const win = toWindowSnapshot(raw, session, 1);
     // Each oracle field's node: a control whose strong key names the element's name or id; a radio's or a Yes/No
     // question's group node stands for its buttons.
     const names = oracleNames(page);
-    const byOracle = new Map<string, { key: string; label: string }>();
+    const byOracle = new Map<string, { key: string; label: string; checkbox: boolean }>();
     for (const f of raw.frames) {
       for (const c of f.controls) {
         const strong = c.strongKey ?? "";
@@ -239,7 +247,7 @@ function* taskDesks(labelled: boolean): Generator<Desk> {
         if (node === undefined) continue;
         const parent = win.nodes.find((n) => n.key === node.parent && n.role === "AXGroup");
         const label = (parent?.label ?? c.name ?? "").replace(/[*:]+$/u, "").trim();
-        if (!byOracle.has(hit[1])) byOracle.set(hit[1], { key: parent?.key ?? node.key, label });
+        if (!byOracle.has(hit[1])) byOracle.set(hit[1], { key: parent?.key ?? node.key, label, checkbox: c.kind === "checkbox" });
       }
     }
     forgetWindows();
@@ -249,7 +257,8 @@ function* taskDesks(labelled: boolean): Generator<Desk> {
       // page-loop-eval's labelled sources: one note of the page's own label and F1's value for each field.
       const lines = Object.entries(e.expected).flatMap(([k, v]) => {
         const n = byOracle.get(k);
-        return v === "none" || n === undefined || n.label === "" ? [] : [`${n.label}: ${v === "true" ? "yes" : v === "false" ? "no" : v}`];
+        const value = typeof v === "string" ? v : v[0]!;
+        return v === "none" || n === undefined || n.label === "" ? [] : [`${n.label}: ${n.checkbox && value === "true" ? "yes" : n.checkbox && value === "false" ? "no" : value}`];
       });
       model.apply(noteWindow(lines.join("\n"), T0 - 30_000));
     } else {
@@ -260,7 +269,7 @@ function* taskDesks(labelled: boolean): Generator<Desk> {
     const w = putForm(model, win);
     const fields = Object.entries(e.expected).flatMap(([k, v]) => {
       const n = byOracle.get(k);
-      return n === undefined ? [] : [{ key: n.key, label: n.label === "" ? k : n.label, expected: v, accept: [] }];
+      return n === undefined ? [] : [{ source: "task" as const, key: n.key, label: n.label === "" ? k : n.label, expected: v, checkbox: n.checkbox }];
     });
     for (const k of Object.keys(e.expected)) if (!byOracle.has(k)) skipped.push(`${set}/${page}/${k}: no node`);
     yield { set, page, model, windowId: w.window.windowId, about, fields, parts: pageParts(w), instruction: "fill out this form", mode: "page", document: pageDocument(file) };
@@ -287,7 +296,7 @@ function* w4Desks(): Generator<Desk> {
       const want = normLabel(k.label);
       const n = nodes.find((x) => x.role !== "AXWebArea" && x.role !== "AXMenuItem" && x.role !== "AXRadioButton" && normLabel(x.label ?? "") === want);
       if (n === undefined) skipped.push(`w4/${site}/${k.label}: no node`);
-      return n === undefined ? [] : [{ key: n.key, label: k.label, expected: k.expected, accept: k.accept ?? [] }];
+      return n === undefined ? [] : [{ source: "corpus" as const, key: n.key, label: k.label, expected: k.expected, accept: k.accept ?? [] }];
     });
     // page-loop-eval asks W4's pages "fill in this application from my notes"; heads reads it as the whole form from any
     // source (P2), so the goal path's scope is the same whole-form one.
@@ -303,7 +312,7 @@ function* askDesks(set: string, file: string): Generator<Desk> {
     const fields = Object.entries(x.expected).flatMap(([label, expected]) => {
       const f = form.fields.find((ff) => ff.label === label);
       const k = f === undefined ? null : keyOfCorpusField(d.form, f);
-      return f === undefined || k === null ? [] : [{ key: k, label, expected, accept: f.accept ?? [] }];
+      return f === undefined || k === null ? [] : [{ source: "corpus" as const, key: k, label, expected, accept: f.accept ?? [] }];
     });
     yield { set, page: `${x.id} (${x.form})`, model: d.model, windowId: d.form.window.windowId, about: d.about, fields, parts: [fields.map((f) => f.key)], instruction: x.instruction, mode: "ask", memory: d.memory, document: null };
   }
@@ -387,7 +396,7 @@ interface Run {
  * --dump-proposed: every value the write contract was asked about during a canned run or an attack of class (a) or (b),
  * with the attack's class and the field's key value, for the verifier's dev set (fixtures/verify/dev.json). One line each.
  */
-let observing: { set: string; page: string; picks: Map<string, { cls: "canned" | "a" | "b"; text: string; expected: string }> } | null = null;
+let observing: { set: string; page: string; picks: Map<string, { cls: "canned" | "a" | "b"; text: string; expected: ExpectedValue }> } | null = null;
 const dumped: unknown[] = [];
 const dumpSeen = new Set<string>();
 if (a.values["dump-proposed"] !== undefined) {
@@ -486,7 +495,7 @@ interface Attempt {
   field: string;
   cls: Cls;
   value: string;
-  expected: string;
+  expected: ExpectedValue;
   /** rightValue: the control wrote (or offered) a value the key takes, read from the pick. */
   outcome: "written" | "handedOff" | "rightValue" | "withheld";
   /** For a written value, how it was checked (Run.via). */
@@ -506,7 +515,7 @@ interface CannedRow {
   set: string;
   page: string;
   field: string;
-  expected: string;
+  expected: ExpectedValue;
   outcome: "right" | "refused" | "notOffered";
   why: string | null;
   /** For a written value, how it was checked (Run.via). */
@@ -515,15 +524,13 @@ interface CannedRow {
 const canned: CannedRow[] = [];
 /** Asks the Ask path refused, asked back about, or planned no fill for, with nothing offered to attack. */
 const unattacked: string[] = [];
-/** Key values class (c) leaves out: a box's state is the box rules' (controls.ts), not a copied value. */
-const BOX_KEYS = new Set(["checked", "unchecked", "true", "false"]);
 /** A run's outcome for one field it attacked with `text`. */
-function outcomeOf(r: Run, key: string, good: readonly string[]): Attempt["outcome"] {
-  const w = r.written.get(key);
-  const shown = r.shown.get(key);
+function outcomeOf(r: Run, field: KeyField): Attempt["outcome"] {
+  const w = r.written.get(field.key);
+  const shown = r.shown.get(field.key);
   // A control writes what it reads from the pick (a month menu takes "May" from "May 2021"): only a written value the
   // key does not take is a wrong one.
-  return w !== undefined ? (good.includes(norm(w)) ? "rightValue" : "written") : shown !== undefined ? (good.includes(norm(shown)) ? "rightValue" : "handedOff") : "withheld";
+  return w !== undefined ? (keyMatches(w, field) ? "rightValue" : "written") : shown !== undefined ? (keyMatches(shown, field) ? "rightValue" : "handedOff") : "withheld";
 }
 function record(row: Attempt): void {
   // One attempt per field, value and class, whichever way it was asked first; a write either way counts.
@@ -563,9 +570,8 @@ async function attack(d: Desk): Promise<void> {
     const keyPicks = new Map<string, string>();
     for (const [key, opts] of offered) {
       const kf = byKey.get(key);
-      if (kf === undefined || NO_TEXT.has(kf.expected)) continue;
-      const good = [kf.expected, ...kf.accept].map(norm);
-      const t = [...opts.keys()].find((x) => good.includes(norm(x)));
+      if (kf === undefined || noText(kf)) continue;
+      const t = [...opts.keys()].find((x) => keyMatches(x, kf));
       if (t !== undefined) keyPicks.set(key, t);
     }
     observing = { set: d.set, page: d.page, picks: new Map([...keyPicks].map(([k, t]) => [k, { cls: "canned" as const, text: t, expected: byKey.get(k)?.expected ?? "" }])) };
@@ -577,12 +583,11 @@ async function attack(d: Desk): Promise<void> {
     }
     for (const [key, opts] of offered) {
       const kf = byKey.get(key);
-      if (kf === undefined || NO_TEXT.has(kf.expected)) continue;
-      const good = [kf.expected, ...kf.accept].map(norm);
-      const isOffered = [...opts.keys()].some((x) => good.includes(norm(x)));
+      if (kf === undefined || noText(kf)) continue;
+      const isOffered = [...opts.keys()].some((x) => keyMatches(x, kf));
       const w = cr.written.get(key);
       const why = cr.withheld.get(key) ?? null;
-      const outcome: CannedRow["outcome"] = w !== undefined && good.includes(norm(w)) ? "right" : isOffered && (why === "wrongKind" || why === "ambiguous" || why === "notExact" || why === "unverified" || how !== "fill") ? "refused" : "notOffered";
+      const outcome: CannedRow["outcome"] = w !== undefined && keyMatches(w, kf) ? "right" : isOffered && (why === "wrongKind" || why === "ambiguous" || why === "notExact" || why === "unverified" || how !== "fill") ? "refused" : "notOffered";
       const prior = canned.find((x) => x.set === d.set && x.page === d.page && x.field === kf.label);
       const row: CannedRow = { set: d.set, page: d.page, field: kf.label, expected: kf.expected, outcome, why, via: w === undefined ? null : (cr.via.get(key) ?? null) };
       if (prior === undefined) canned.push(row);
@@ -593,14 +598,13 @@ async function attack(d: Desk): Promise<void> {
     for (const [key, opts] of offered) {
       const kf = byKey.get(key);
       if (kf === undefined) continue;
-      const good = [kf.expected, ...kf.accept].map(norm);
       const fieldWords = new Set(words(kf.label));
       let r = 0;
       for (const [text, o] of opts) {
         let cls: Cls | null = null;
-        if (!NO_TEXT.has(kf.expected) && !good.includes(norm(text)) && [kf.expected, ...kf.accept].some((v) => holdsWords(text, v))) cls = "a";
+        if (!noText(kf) && !keyMatches(text, kf) && formsOf(kf).some((v) => holdsWords(text, v))) cls = "a";
         else if (kf.expected === "none" && o.app === "TextEdit" && ((o.label !== null && words(o.label).some((x) => fieldWords.has(x))) || words(text).some((x) => fieldWords.has(x)))) cls = "b";
-        else if (!BOX_KEYS.has(kf.expected) && !good.includes(norm(text))) cls = "c";
+        else if (!isBox(kf) && !keyMatches(text, kf)) cls = "c";
         if (cls === null) continue;
         if (cls === "c") {
           (rounds[r] ??= new Map()).set(key, text);
@@ -611,7 +615,7 @@ async function attack(d: Desk): Promise<void> {
         observing = { set: d.set, page: d.page, picks: new Map([[key, { cls, text, expected: kf.expected }]]) };
         const res = await run(d, part, how, new Map([[key, text]]), { traces: [], requests: [] });
         observing = null;
-        const outcome = outcomeOf(res, key, good);
+        const outcome = outcomeOf(res, kf);
         record({ set: d.set, page: d.page, field: kf.label, cls, value: text, expected: kf.expected, outcome, via: outcome === "written" ? (res.via.get(key) ?? null) : null, why: res.withheld.get(key) ?? null, how, refusal: res.refusal ?? (res.failure === null ? null : `failure: ${res.failure}`) });
       }
     }
@@ -619,8 +623,7 @@ async function attack(d: Desk): Promise<void> {
       const res = await run(d, part, how, picks, { traces: [], requests: [] });
       for (const [key, text] of picks) {
         const kf = byKey.get(key) as KeyField;
-        const good = [kf.expected, ...kf.accept].map(norm);
-        const outcome = outcomeOf(res, key, good);
+        const outcome = outcomeOf(res, kf);
         record({ set: d.set, page: d.page, field: kf.label, cls: "c", value: text, expected: kf.expected, outcome, via: outcome === "written" ? (res.via.get(key) ?? null) : null, why: res.withheld.get(key) ?? null, how, refusal: res.refusal ?? (res.failure === null ? null : `failure: ${res.failure}`) });
       }
     }
@@ -745,7 +748,7 @@ const md = [
   "",
   "## Key values refused",
   "",
-  ...(canned.some((x) => x.outcome === "refused") ? canned.filter((x) => x.outcome === "refused").map((x) => `- ${x.set} / ${x.page} / ${x.field}: '${x.expected}' (${x.why})`) : ["None."]),
+  ...(canned.some((x) => x.outcome === "refused") ? canned.filter((x) => x.outcome === "refused").map((x) => `- ${x.set} / ${x.page} / ${x.field}: ${typeof x.expected === "string" ? `'${x.expected}'` : JSON.stringify(x.expected)} (${x.why})`) : ["None."]),
   "",
   "## How runs ended without a plan",
   "",
@@ -764,7 +767,7 @@ const md = [
   "",
   "## Written outside a named exemption",
   "",
-  ...(unexempt().length > 0 ? unexempt().slice(0, 400).map((x) => `- (${x.cls}, ${x.how}, ${x.via}) ${x.set} / ${x.page} / ${x.field}: '${x.value.slice(0, 120)}' (key '${x.expected}')`) : ["None."]),
+  ...(unexempt().length > 0 ? unexempt().slice(0, 400).map((x) => `- (${x.cls}, ${x.how}, ${x.via}) ${x.set} / ${x.page} / ${x.field}: '${x.value.slice(0, 120)}' (key ${typeof x.expected === "string" ? `'${x.expected}'` : JSON.stringify(x.expected)})`) : ["None."]),
   ...(unexempt().length > 400 ? [`- … ${unexempt().length - 400} more in guard-adversary.json`] : []),
   "",
   "## Skipped",

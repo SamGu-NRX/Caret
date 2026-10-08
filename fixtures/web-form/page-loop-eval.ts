@@ -71,7 +71,7 @@ import { readyOnLoad } from "../../helper/src/offers/ready-on-load.ts";
 import { Disclosure } from "../../helper/src/privacy/disclosure.ts";
 import { loadAsks, loadCorpus, normLabel, type CorpusForm } from "../../helper/scripts/realfill-corpus.ts";
 import { CFT_BUILD, Cdp, HOST_NAME, LAUNCHD_PREFIX, chrome, cleanup, designated, launch, launchdJob, preflight, setSay, signedCopy, sleep, tail, undo, writeManifest } from "./rig.ts";
-import { NetworkSink, scoredReadings, type FieldReading, type Oracle, type Scored, type ScoredField } from "./oracle.ts";
+import { NetworkSink, sameText, scoredReadings, type ExpectedValue, type Oracle, type Scored, type ScoredField } from "./oracle.ts";
 import { FixtureSite } from "./server.ts";
 import { TASK_PAGES, loadExpectation, taskPage, type Expectation } from "./tasks/site.ts";
 import { fieldWhoseAnswer, loadOwners, ownersOf, valueOwnerAnswer, type Owners } from "./owners.ts";
@@ -152,10 +152,17 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => void cle
 const W4_SITES = ["greenhouse-discord", "greenhouse-embed-figma", "lever-palantir-apply", "ashby-ramp-application", "hubspot-contact-sales"];
 
 interface Expect {
+  source: "corpus";
   label: string;
   expected: string;
   accept: string[];
   /** The corpus's control kind; null for W4's key, which does not say. */
+  control: string | null;
+}
+interface TaskExpect {
+  source: "task";
+  label: string;
+  expected: ExpectedValue;
   control: string | null;
 }
 interface Page {
@@ -191,7 +198,7 @@ const corpusPage = (f: CorpusForm): Page => ({
   id: f.id,
   kind: "corpus",
   path: `/corpus/${f.id}.html`,
-  key: f.fields.map((x) => ({ label: x.label, expected: x.expected, accept: x.accept ?? [], control: x.control })),
+  key: f.fields.map((x) => ({ source: "corpus", label: x.label, expected: x.expected, accept: x.accept ?? [], control: x.control })),
   instruction: asks.find((x) => x.form === f.id && x.expected !== "refuse")?.instruction ?? "fill in everything you can from my notes",
   sources: [...corpus.decoys, f.source].flatMap((s) => (s.kind === "memory" ? [] : [recordedFor(s.title ?? "")])),
   about: f.source.kind === "memory" ? f.source.about : [],
@@ -218,7 +225,7 @@ const w4Page = (site: string): Page => ({
   id: site,
   kind: "w4",
   path: `/w4/${site}.html`,
-  key: (w4Key[site] ?? []).map((x) => ({ label: x.label, expected: x.expected, accept: x.accept ?? [], control: null })),
+  key: (w4Key[site] ?? []).map((x) => ({ source: "corpus", label: x.label, expected: x.expected, accept: x.accept ?? [], control: null })),
   instruction: "fill in this application from my notes",
   sources: [noteWindow(w4Note)],
   about: [],
@@ -316,24 +323,27 @@ const keyFor = (ins: string): Expect | undefined => {
  * same day or minute ("March 3, 1991" for 1991-03-03, "7:30 pm" for 19:30); for a field with options, the option as a
  * whole word ("Large, mushroom and onion" for Large). Canned Jev only; fill's own rules still decide what is written.
  */
-function fits(text: string, e: Expect): boolean {
-  const values = e.expected === "none" || e.expected === "handoff" || e.expected === "unchecked" ? [] : [e.expected, ...e.accept];
-  if (values.includes(text)) return true;
+function fits(text: string, e: Expect | TaskExpect): boolean {
+  // Task alternatives are written forms, not the corpus's control-state sentinels.
+  const values = e.source === "task"
+    ? e.expected === "none" ? [] : typeof e.expected === "string" ? [e.expected] : e.expected
+    : e.expected === "none" || e.expected === "handoff" || e.expected === "unchecked" ? [] : [e.expected, ...e.accept];
+  if (sameText(text, values)) return true;
   if (e.control === "date") {
     const d = new Date(Date.parse(text.replace(/^born\s+/iu, "")));
     const iso = Number.isNaN(d.getTime()) ? null : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    return iso !== null && values.includes(iso);
+    return iso !== null && sameText(iso, values);
   }
   if (e.control === "time") {
     const m = /\b(\d{1,2}):(\d{2})\s*([ap])\.?m\.?\b/iu.exec(text);
     const hhmm = m === null ? null : `${String((Number(m[1]) % 12) + (m[3]?.toLowerCase() === "p" ? 12 : 0)).padStart(2, "0")}:${m[2]}`;
-    return hhmm !== null && values.includes(hhmm);
+    return hhmm !== null && sameText(hhmm, values);
   }
   if (e.control === "radio" || e.control === "select" || e.control === "combobox") return namesOption(text, values);
   // Task pages only. A month field: the same month ("August 2022" for 2022-08).
   if (e.control === "month") {
     const d = new Date(Date.parse(text));
-    return !Number.isNaN(d.getTime()) && values.includes(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    return !Number.isNaN(d.getTime()) && sameText(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, values);
   }
   // A picker or react-select lists options by search: the option as a whole word, or two or more words that each start
   // a word of the option, as the page's own search matches them ("San Diego, California" finds "San Diego, California,
@@ -464,7 +474,7 @@ const SAID = [/Label: '(.+?)'\.(?=\s|$)/u, /Nearest label: '(.+?)'\.(?=\s|$)/u, 
  * label (else its nearest label, else its placeholder). A label no field carries rereads the page once, for a field
  * revealed or relabelled since; a label two fields carry answers nothing.
  */
-async function taskKeyFor(ins: string): Promise<Expect | undefined> {
+async function taskKeyFor(ins: string): Promise<TaskExpect | undefined> {
   const p = page;
   if (p?.expected === undefined || readTaskFields === null) return undefined;
   const said = SAID.flatMap((re) => {
@@ -480,9 +490,7 @@ async function taskKeyFor(ins: string): Promise<Expect | undefined> {
       const f = hits[0];
       if (hits.length === 1 && f !== undefined) {
         const accepted = p.expected[f.name] ?? "none";
-        const values = typeof accepted === "string" ? [accepted] : accepted;
-        // loadExpectation rejects empty arrays; a bare string becomes one accepted value.
-        return { label: f.name, expected: values[0]!, accept: values.slice(1), control: controlOf(f) };
+        return { source: "task", label: f.name, expected: accepted, control: controlOf(f) };
       }
       if (hits.length > 1) {
         log.ambiguous.add(`'${s}': ${hits.map((h) => h.name).join(", ")}`);
@@ -622,13 +630,17 @@ interface TaskRow {
 
 const oracleFieldReports: Record<string, Pick<TaskRow, "fields" | "refillFields">> = {};
 
+class OracleReportError extends Error {}
+
 /** Persist before the recipe can stop a run on a logged wrong value, rather than waiting for the final report. */
-function recordScoredFields(page: string, scored: Scored, readings: Readonly<Record<string, FieldReading>>, phase: "fields" | "refillFields" = "fields"): Record<string, ScoredField> {
-  const fields = scoredReadings(scored, readings);
+function recordScoredFields(page: string, fields: Record<string, ScoredField>, phase: "fields" | "refillFields" = "fields"): void {
   const report = oracleFieldReports[page] ??= { fields: null, refillFields: null };
   report[phase] = fields;
-  writeStoreJson(join(OUT, "oracle-fields.json"), { pages: oracleFieldReports }, 1);
-  return fields;
+  try {
+    writeStoreJson(join(OUT, "oracle-fields.json"), { pages: oracleFieldReports }, 1);
+  } catch (cause) {
+    throw new OracleReportError(`writing oracle-fields.json for ${page} (${phase}) failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+  }
 }
 
 /** How the goal path judges a task page: by the oracle, not by Caret's walk. */
@@ -967,7 +979,6 @@ async function main(): Promise<number> {
             const s = oracle.score(name, expected);
             const gap = attachGap();
             const kinds = oracle.readings(name) ?? {};
-            t.fields = recordScoredFields(name, s, kinds);
             const picked = asksOn(name).picked;
             t.eligible = eligibleOf(gap);
             t.right = s.right.filter((k) => !gap.includes(k)).length;
@@ -976,6 +987,8 @@ async function main(): Promise<number> {
             t.missed = s.missed.filter((k) => !gap.includes(k)).map((k) => `${k} (${kinds[k]?.kind === "file" ? "file; " : ""}${!picked.has(k) ? "canned never asked" : picked.get(k) === null ? "canned: none" : `canned picked '${picked.get(k)}'`})`);
             t.attachGap = gap.filter((k) => (expected[k] ?? "none") !== "none");
             t.absent = s.absent;
+            t.fields = scoredReadings(s, kinds);
+            recordScoredFields(name, t.fields);
             return { eligible: t.eligible, right: t.right };
           },
           unrestored: async () => {
@@ -994,7 +1007,7 @@ async function main(): Promise<number> {
             const want = f === undefined || hits.length > 1 ? undefined : expected[f.name];
             if (f === undefined || want === undefined) return "unscored";
             if (want === "none") return "wrong";
-            if ((typeof want === "string" ? [want] : want).includes(value)) return "right";
+            if (sameText(value, want)) return "right";
             // A typed text is compared as written; a pick, a date or a number may be written in another form than the oracle reads.
             return f.kind === "text" && !["date", "month", "time", "number"].includes(f.type) ? "wrong" : "unscored";
           },
@@ -1018,12 +1031,14 @@ async function main(): Promise<number> {
             await settle(name);
             const s = oracle.score(name, expected);
             const gap = attachGap();
-            t.refillFields = recordScoredFields(name, s, oracle.readings(name) ?? {}, "refillFields");
             t.refill = `${s.right.filter((k) => !gap.includes(k)).length}/${eligibleOf(gap)} right, ${s.wrong.length} wrong (${r.outcome}, ${r.tabs} tabs)`;
             row.wrong.push(...s.wrong.map((x) => `second Ask ${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`));
+            t.refillFields = scoredReadings(s, oracle.readings(name) ?? {});
+            recordScoredFields(name, t.refillFields, "refillFields");
           }
         }
       } catch (e) {
+        if (e instanceof OracleReportError) throw e;
         row.error = e instanceof Error ? e.message : String(e);
       }
       const a = asksOn(name);
@@ -1210,11 +1225,13 @@ async function main(): Promise<number> {
         row.note = `${row.note === "" ? "" : `${row.note}; `}scope ${plan?.page?.kind ?? "?"}, carrying ${helper.goals.carrying(windowId, null)}`;
         await settleOracle(name);
         const sc = oracle.score(name, expected);
-        row.fields = recordScoredFields(name, sc, oracle.readings(name) ?? {});
         row.right = sc.right.length;
         row.wrong = sc.wrong.map((x) => `${x.field}: '${x.actual}' (expected ${typeof x.expected === "string" ? x.expected : JSON.stringify(x.expected)})`);
         row.missed = sc.missed;
+        row.fields = scoredReadings(sc, oracle.readings(name) ?? {});
+        recordScoredFields(name, row.fields);
       } catch (e) {
+        if (e instanceof OracleReportError) throw e;
         row.note = e instanceof Error ? e.message : String(e);
       }
       lastName = name;

@@ -67,6 +67,8 @@ export function loadExpectation(page: string): Expectation {
       if (typeof alternative !== "string") fail('every alternative must be a string');
       if (alternative === "none") fail('"none" must be a bare string, not an alternative');
       const normalized = alternative.normalize("NFC");
+      // A written form must contain text; otherwise an untouched field could score right.
+      if (/^\s*$/u.test(normalized)) fail("blank alternatives are not written forms");
       if (seen.has(normalized)) fail(`duplicate alternative after NFC: ${JSON.stringify(alternative)}`);
       seen.add(normalized);
     }
