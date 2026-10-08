@@ -232,10 +232,15 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   // are the same person's (fill's owner veto); a write that fails is dropped. Live, the writer put the user's own
   // phone in Reference phone and an RSVP sender's email in the user's Email (asks-dev-3). Whether the value is exactly
   // the field's is the write contract's verifier, below (W2: it replaced this check's yes/no value question).
+  // HA2 review 2, item 1: each value's notes are read once, before the owner check is sent, and bound as read.
+  const disclosed = new Map(kept.flatMap((f) => {
+    const value = values[Number(f.value.slice(1)) - 1];
+    return value === undefined ? [] : [[f.ref, sourceNotes(model, value.provenance, w.window.windowId)] as const];
+  }));
   const { dropped, jev: owners } = await verifyWrites(instruction, kept.flatMap((f) => {
     const field = fields[Number(f.target.slice(1)) - 1];
     const value = values[Number(f.value.slice(1)) - 1];
-    return field === undefined || value === undefined ? [] : [{ key: f.ref, field, value: { ...value, notes: sourceNotes(model, value.provenance, w.window.windowId) } }];
+    return field === undefined || value === undefined ? [] : [{ key: f.ref, field, value: { ...value, notes: disclosed.get(f.ref) ?? null } }];
   }), o.askJev, ledger);
   const unvetoed = kept.filter((f) => !dropped.has(f.ref));
   if (unvetoed.length === 0) throw new PlannerError("unsure", "Jev said every value the plan program chose is another person's");
@@ -250,7 +255,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   const minted = await mintWrites(unvetoed.map((f) => {
     const { field, value } = pairOf(f) as { field: Field; value: Value };
     // HA2 review P1: a person's value is bound to the notes its owner check showed, rechecked before each write.
-    const notes = personalField(field.label) ? sourceNotes(model, value.provenance, w.window.windowId) : null;
+    const notes = personalField(field.label) ? (disclosed.get(f.ref) ?? null) : null;
     return { key: f.ref, w, node: field.node, name: field.name, text: value.text, provenance: notes === null ? value.provenance : bindNotes(value.provenance, notes, w.window.windowId), owner: value.owner };
   }), { askJev: o.askJev, ledger, instruction, now, authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null }, savedValuesOf(memoryValues));
   const checkedFills = unvetoed.filter((f) => minted.mints.has(f.ref));

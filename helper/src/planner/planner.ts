@@ -280,11 +280,14 @@ async function planIn(
   // note went into the user's Phone on the value questions alone. A value Jev calls another's, or whose note did not
   // fit, is withheld as an unsure one is. Asked only when a field takes a person's details.
   const windowOf = (pr: Provenance): string | null => (pr.kind === "window" ? pr.windowId : pr.kind === "derived" ? (windowOf(pr.base) ?? (pr.also === null ? null : windowOf(pr.also))) : null);
+  // HA2 review 2, item 1: each value's notes are read once, here, before the owner check is sent; the check shows these
+  // and the value is bound to exactly these, so an edit while it is out refuses the value at the recheck.
+  const disclosed = new Map(agreedWrites.map(({ field }) => [field.node.key, sourceNotes(model, read.get(field.node.key) as Provenance, w.window.windowId)] as const));
   const { dropped, jev: owners } = await verifyWrites(
     instruction,
     agreedWrites.map(({ field, value }) => {
       const pr = read.get(field.node.key) as Provenance;
-      return { key: field.node.key, field: { name: field.name, label: field.label }, value: { display: (values.find((x) => x.text === value) as Option).describe, window: windowOf(pr), owner: pr.kind === "memory" ? pr.whose : null, notes: sourceNotes(model, pr, w.window.windowId) } };
+      return { key: field.node.key, field: { name: field.name, label: field.label }, value: { display: (values.find((x) => x.text === value) as Option).describe, window: windowOf(pr), owner: pr.kind === "memory" ? pr.whose : null, notes: disclosed.get(field.node.key) ?? null } };
     }),
     o.askJev,
     ledger,
@@ -300,7 +303,7 @@ async function planIn(
   // HA2 review P1: a person's value is bound to the notes its owner check showed, rechecked before each write.
   const bound = (field: Field): Provenance => {
     const pr = read.get(field.node.key) as Provenance;
-    const notes = personalField(field.label) ? sourceNotes(model, pr, w.window.windowId) : null;
+    const notes = personalField(field.label) ? (disclosed.get(field.node.key) ?? null) : null;
     return notes === null ? pr : bindNotes(pr, notes, w.window.windowId);
   };
   const minted = await mintWrites(ownedWrites.map(({ field, value }) => ({ key: field.node.key, w, node: field.node, name: field.name, text: value, provenance: bound(field), owner: null })), { askJev: o.askJev, ledger, instruction, now: o.now ?? Date.now(), authority: o.authority ?? { kind: "plan", offerKey: o.offerKey }, documentOf: o.documentOf ?? null }, savedValuesOf(memory.values()));

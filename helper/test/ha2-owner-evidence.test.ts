@@ -267,8 +267,8 @@ describe("HA2 recall lever 2: the session's owner verdicts (fill/owner-cache.ts)
 
   it("forgets a window's entries and clears", () => {
     const cache = new OwnerVerdicts();
-    cache.set("k1", [{ choice: "user", confidence: 1 }, { choice: "user", confidence: 1 }], ["note"]);
-    cache.set("k2", [{ choice: "user", confidence: 1 }, { choice: "user", confidence: 1 }], ["mail"]);
+    cache.set("k1", [{ choice: "user", confidence: 1 }, { choice: "user", confidence: 1 }], ["note"], cache.ticket());
+    cache.set("k2", [{ choice: "user", confidence: 1 }, { choice: "user", confidence: 1 }], ["mail"], cache.ticket());
     cache.forget(new Set(["note"]));
     expect([cache.get("k1"), cache.get("k2") !== undefined]).toEqual([undefined, true]);
     cache.clear();

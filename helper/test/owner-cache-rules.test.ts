@@ -11,8 +11,8 @@ afterEach(closeRigs);
 
 const verdictsOf = (h: Helper): OwnerVerdicts => (h as unknown as { ownerVerdicts: OwnerVerdicts }).ownerVerdicts;
 const seed = (c: OwnerVerdicts): void => {
-  c.set("k-note", [{ choice: "user", confidence: 1 }, { choice: "user", confidence: 1 }], ["note"]);
-  c.set("k-page", [{ choice: "user", confidence: 1 }, { choice: "user", confidence: 1 }], ["page:1"]);
+  c.set("k-note", [{ choice: "user", confidence: 1 }, { choice: "user", confidence: 1 }], ["note"], c.ticket());
+  c.set("k-page", [{ choice: "user", confidence: 1 }, { choice: "user", confidence: 1 }], ["page:1"], c.ticket());
 };
 const settings = (sitesOff?: string[]): Settings => ({ type: "settings", v: PROTOCOL_VERSION, at: Date.now(), roles: ["fill", "repeat", "watch", "calendar"], level: "balanced", paused: false, ...(sitesOff === undefined ? {} : { sitesOff }) });
 

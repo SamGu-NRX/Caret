@@ -711,7 +711,9 @@ export class SnippetLedger {
       }
     }
     for (const [wid, a] of adds) {
-      if (!bounded) break;
+      // HA2 review 2, item 2: an owner note lifts only its own window's limits. Every other window whose text it reveals
+      // (a chat copied into the note) keeps its own, a conversation's above all.
+      if (!bounded && wid === from?.window.windowId) continue;
       const e = this.entries.get(wid) as Entry;
       if (e.chars + a.cost > e.share.budget) return null;
       if (e.share.prose !== null && e.prose + a.prose > e.share.prose) return null;

@@ -820,6 +820,9 @@ export function notesSay(ids: readonly string[]): string {
   return `Every text on screen that holds it, whole: ${ids.join(" and ")} in source_notes; whose it is depends on all of that text.`;
 }
 
+/** HA2 review item 7: why a value is withheld when a window Caret may not read for this fill also holds it. */
+export const OWNER_UNREADABLE = "a window Caret may not read here also holds it, so Caret can't show Jev whose it is";
+
 /** HA2 (b): why a value is withheld when redaction cut part of a text that holds it. */
 export const NOTE_PRIVATE = "part of the note is private, so Caret can't show Jev whose this value is";
 
@@ -1216,9 +1219,11 @@ export async function proposeFill(
   // A value the instruction spells out for a field (FillScope.literals) is offered in that field's question, as
   // what the user wrote; Jev still chooses it, and a date or time is read by the value resolver like any other.
   const literalOf = (f: { node: Node }): string | undefined => scope?.literals.get(f.node.key);
+  // HA2 review 2, item 8: always, even when a window's candidate has the same text. That candidate meets the owner rules
+  // (an "other" verdict takes it out of the field's question); the user's own words for the field never do.
   for (const f of fields) {
     const lit = literalOf(f);
-    if (lit === undefined || candidates.some((c) => c.text === lit)) continue;
+    if (lit === undefined) continue;
     derived.set(f.id, [{ key: `${f.id}:said`, text: lit, describe: `"${lit}" (written in the user's instruction for this field)`, base: { from: "instruction", text: lit }, also: null }, ...(derived.get(f.id) ?? [])]);
   }
   // V4 (G3: 30 of 35 Ask fields with no candidate were menus): a menu's option that a value on offer names without being
@@ -1383,7 +1388,11 @@ export async function proposeFill(
   // a redaction cut, (c) a text area or its whole window), each taken through the ledger once and sent once.
   const notes = new Map<string, string>();
   const noteIds = new Map<string, string>();
-  const ownerNotes = new Map<string, { units: NoteUnit[]; ids: string[] | null; why: "private" | "unshown" | null }>();
+  const ownerNotes = new Map<string, { units: NoteUnit[]; ids: string[] | null; why: "private" | "unshown" | "unreadable" | null }>();
+  /** Lever 2: the cache's invalidations as they stand now, before any owner question is read from it or sent (item 3). */
+  const cacheTicket = opts.ownerCache?.ticket();
+  /** Lever 2: what shapes how an owner question is read beyond its own words: the Ask's instruction and person (item 4). */
+  const cacheContext = JSON.stringify({ instruction: scope?.instruction ?? null, person: scope?.person ?? null, plainAsk });
   /** Lever 2: by candidate id, its owner question's cache key, and the session's earlier answers when it has them. */
   const ownerKeys = new Map<string, string>();
   const cachedOwners = new Map<string, readonly [OwnerAnswer, OwnerAnswer]>();
@@ -1394,12 +1403,18 @@ export async function proposeFill(
       ownerNotes.set(c.id, { units: [], ids: null, why: "unshown" });
       continue;
     }
+    // HA2 review 2, item 7: evidence in a window this fill may not read (excluded, or outside the Ask's sources) is never
+    // sent; the value it would judge is withheld. Finding it reads that window locally and authorizes nothing.
+    if (units.some((u) => unread?.has(u.windowId) === true)) {
+      ownerNotes.set(c.id, { units, ids: null, why: "unreadable" });
+      continue;
+    }
     if (units.some((u) => !u.complete)) {
       ownerNotes.set(c.id, { units, ids: null, why: "private" });
       continue;
     }
     if (opts.ownerCache !== undefined) {
-      const key = OwnerVerdicts.key(OWNER_WORDINGS[0](describeOwned(c, ownerLines.get(c.id))), c.text, units.map((u) => u.digest), criteriaNow);
+      const key = OwnerVerdicts.key(OWNER_WORDINGS[0](describeOwned(c, ownerLines.get(c.id))), c.text, units.map((u) => u.digest), criteriaNow, cacheContext);
       ownerKeys.set(c.id, key);
       const hit = opts.ownerCache.get(key);
       if (hit !== undefined) {
@@ -1550,7 +1565,7 @@ export async function proposeFill(
       const a = w1.answers[ownerId(c.id)];
       const b = w2.answers[ownerId(secondId.get(c.id) ?? "")];
       if (key === undefined || cachedOwners.has(c.id) || a === undefined || b === undefined || !noteShown(c)) continue;
-      opts.ownerCache.set(key, [{ choice: a.choice, confidence: a.confidence }, { choice: b.choice, confidence: b.confidence }], (ownerNotes.get(c.id)?.units ?? []).map((u) => u.windowId));
+      opts.ownerCache.set(key, [{ choice: a.choice, confidence: a.confidence }, { choice: b.choice, confidence: b.confidence }], (ownerNotes.get(c.id)?.units ?? []).map((u) => u.windowId), cacheTicket as NonNullable<typeof cacheTicket>);
     }
   }
   /** Both stage-one asks' answer to a whose or owner question, agreed at the whose cutoff, or null. */
@@ -1731,7 +1746,9 @@ export async function proposeFill(
    * what the user told Caret, and a value the user's instruction spells out. Only withholds.
    */
   const noteUnshown = (f: Field, p: Pick): string | null => {
-    if (!owners || !f.personal || namedPerson !== null || sameChoice(whoseId(f.id)) !== "user") return null;
+    // HA2 review 2, item 5: an Ask that names a person meets the same gate on every personal field, whatever the field's
+    // whose answer: its owner judgement ("the person named") counts only on complete, disclosed evidence too.
+    if (!owners || !f.personal || (namedPerson === null && sameChoice(whoseId(f.id)) !== "user")) return null;
     const sources = p.from === "window" ? [p.c] : p.from === "derived" ? [...(p.base.from === "window" ? [p.base.c] : []), ...(p.also === null ? [] : [p.also])] : [];
     // A value whose owner was asked counts only when its note was shown (noteShown). A field asking an address part also
     // takes no value whose owner was never asked (lead decision 2: one past MAX_OWNERS); any other field's unasked value
@@ -1739,6 +1756,7 @@ export async function proposeFill(
     const asked1 = (c: Candidate): boolean => ownerCands.some((x) => x.id === c.id);
     const address = f.part !== null && PERSON_PLACE_PARTS.has(f.part);
     const open = sources.filter((c) => c.identity === undefined);
+    if (open.some((c) => asked1(c) && ownerNotes.get(c.id)?.why === "unreadable")) return OWNER_UNREADABLE;
     if (open.some((c) => asked1(c) && ownerNotes.get(c.id)?.why === "private")) return NOTE_PRIVATE;
     if (open.some((c) => asked1(c) && !noteShown(c))) return NOTE_UNSHOWN;
     return address && open.some((c) => !asked1(c)) ? OWNER_UNASKED : null;

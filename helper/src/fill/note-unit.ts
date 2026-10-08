@@ -6,7 +6,7 @@
 //       source per text, candidates.ts add): the same phone in a second note that disclaims it is evidence too;
 //   (b) a unit redaction cut (fill/redact.ts drops secret lines and nodes) is incomplete, and no value from it is admitted
 //       on ownership: the cut line may be the disclaimer, and showing it would reveal the secret;
-//   (c) the unit is the text area itself (TextEdit, Notes: one editable text holds the whole note), and for any other node
+//   (c) the unit is the text area itself (TextEdit, Notes: one text area holds the whole note), and for any other node
 //       the whole window: a mail's paragraphs or a page's text runs are fragments of a region Caret can't bound from the
 //       walk, and the window always contains it. Showing more than the region is safe; a window too large to show
 //       withholds.
@@ -28,9 +28,12 @@ export interface NoteUnit {
   digest: string;
 }
 
-/** A text that holds a whole note by itself: a text area, or an editable text field (a note app's body). */
+/**
+ * A text that holds a whole note by itself: a text area (TextEdit's and Notes' bodies). HA2 review 2, item 6: an editable
+ * one-line field is not one, whatever it holds; it is judged with its whole window, as any other node is.
+ */
 function textArea(n: Node): boolean {
-  return n.role === "AXTextArea" || (n.role === "AXTextField" && n.editable === true);
+  return n.role === "AXTextArea";
 }
 
 const flat = (t: string): string => t.replace(/\s+/gu, " ").trim();
