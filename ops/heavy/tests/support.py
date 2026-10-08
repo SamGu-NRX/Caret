@@ -151,42 +151,31 @@ class World(unittest.TestCase):
         self.env.pop("HEAVY_JOB_QUEUE_DIR", None)
         self.runners = []
         self.jobs = []
-        self.leftover_agents = []
 
     def _teardown(self):
         for runner in self.runners:
             if runner.poll() is None:
                 os.killpg(runner.pid, signal.SIGKILL)  # the runner's own session, started by this test
             runner.wait()
+        # First every process of this world, by exact pid: relays, supervisors, recovery agents and recipes all name a
+        # path inside it. A live supervisor loads its recovery agent again when it is gone (Custody._ensure_loaded),
+        # so the agents are booted out only once nothing is left to reload them; launchd may restart a killed agent
+        # meanwhile, and the bootout stops that one too. A survivor fails the teardown rather than outliving the world
+        # (2026-10-07: eleven relays and supervisors were found orphaned for hours).
+        def kill(pids):
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # gone since it was listed
+        kill(pid for pid, _ in world_processes(self.root))
         for job_id in self.jobs:
-            self.wait_for(lambda: not self.marked(job_id) and not self.labels(job_id), 30)
-            for pid in self.marked(job_id):
-                os.kill(pid, signal.SIGKILL)
+            kill(self.marked(job_id))  # the job's processes whose command lines do not name the world
             for label in self.labels(job_id):
                 procs.launchd_bootout(label)
-            outcome = self.outcome(job_id)
             for label, _ in procs.launchd_jobs("caret-heavy-recovery.{}.".format(job_id)):
-                self.leftover_agents.append(label)
                 procs.launchd_bootout(label)  # this test's own recovery agent, by its exact job prefix
-            if outcome:
-                pid = outcome.get("supervisor_pid")
-                self.wait_for(lambda: pid is None or procs.DarwinProbes().usage(pid) is None, 30)
-        # Anything of this world still running is this test's own: a test that ended mid-job, or a supervisor waiting on
-        # the recovery agent booted out above, with its relay waiting on it. Stopped by exact pid; a survivor fails the
-        # teardown rather than outliving the world (2026-10-07: eleven were found orphaned for hours).
-        left = world_processes(self.root)
-        for pid, _ in left:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        if left:
-            self.wait_for(lambda: not world_processes(self.root), 20)
-        # A supervisor alive after the first bootout can load its recovery agent again (Custody._ensure_loaded); with
-        # the world deleted, that agent fails its boot check and launchd restarts it for good. Boot them out again.
-        for job_id in self.jobs:
-            for label, _ in procs.launchd_jobs("caret-heavy-recovery.{}.".format(job_id)):
-                procs.launchd_bootout(label)
+        self.wait_for(lambda: not world_processes(self.root), 20)
         survivors = world_processes(self.root)
         for dirpath, dirnames, filenames in os.walk(self.root):
             os.chmod(dirpath, 0o755)

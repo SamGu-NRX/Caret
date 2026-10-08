@@ -27,6 +27,49 @@ class TeardownLeavesNothing(unittest.TestCase):
         self.assertEqual(world_processes(root), [])
 
 
+class NoAgentIsBootedOutWhileItsReloaderLives(unittest.TestCase):
+    """A live supervisor loads its recovery agent again when the agent is gone (Custody._ensure_loaded). The teardown
+    must stop every such process before it boots agents out; otherwise an agent comes back between the stages, and
+    with the world deleted it fails its boot check and launchd restarts it for good. launchd is a stand-in here: a
+    bootout while the stand-in supervisor lives reloads the agent at once, so the order is checked deterministically."""
+
+    def test_the_supervisors_die_before_the_single_sweep(self):
+        import subprocess
+        import sys
+        from unittest import mock
+        import procs
+
+        class _World(World):
+            def runTest(self):
+                pass
+        world = _World()
+        world.setUp()
+        job_id = "caret-test-reload-{}".format(os.getpid())
+        world.jobs.append(job_id)
+        # Its command line names the world, as a supervisor's does.
+        supervisor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)",
+                                       os.path.join(world.root, "supervisor-stand-in")])
+        self.addCleanup(lambda: (supervisor.poll() is None and supervisor.kill(), supervisor.wait()))
+        loaded, reloads, bootouts = {"caret-heavy-recovery.{}.a".format(job_id)}, [], []
+
+        def launchd_jobs(prefix, uid=None):
+            return [(label, None) for label in sorted(loaded) if label.startswith(prefix)]
+
+        def launchd_bootout(label, uid=None):
+            bootouts.append(label)
+            loaded.discard(label)
+            if supervisor.poll() is None:
+                loaded.add(label)
+                reloads.append(label)
+            return 0
+        with mock.patch.object(procs, "launchd_jobs", launchd_jobs), mock.patch.object(procs, "launchd_bootout",
+                                                                                       launchd_bootout):
+            world.doCleanups()
+        self.assertIsNotNone(supervisor.poll())
+        self.assertEqual((reloads, sorted(loaded)), ([], []))
+        self.assertEqual(bootouts, ["caret-heavy-recovery.{}.a".format(job_id)])  # one sweep
+
+
 class AFailingTestKeepsItsWorld(unittest.TestCase):
     """A failing test's world (queue logs, journals, outcomes, run directories) is kept and its path printed, so an
     exception inside a relay or supervisor can be read afterwards. A passing test's is removed."""
