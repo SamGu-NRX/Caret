@@ -7,7 +7,7 @@ import type { WindowState } from "./model.ts";
 import type { Node } from "./protocol.ts";
 import { excludedValue } from "./privacy/exclude.ts";
 import { isRedacted, redactWindow } from "./fill/redact.ts";
-import { heldAsConversation, measuredWindows, MintAccount, sectionTexts, viewInventory, type DeclaredSpans, type Measurement, type MeasuredWindow, type ScreenRegistry } from "./privacy/ledger/account.ts";
+import { heldAsConversation, measuredWindows, MintAccount, sectionTexts, viewInventory, type DeclaredSpans, type FixedClass, type Measurement, type MeasuredWindow, type ScreenRegistry } from "./privacy/ledger/account.ts";
 import { CONVERSATION_CHARS, limitOf, spanKey, WINDOW_CHARS, type DeclaredSpan } from "./privacy/ledger/measure.ts";
 
 export { CONVERSATION_CHARS, WINDOW_CHARS };
@@ -384,6 +384,8 @@ export class SnippetLedger {
   /** Texts each window already took, so a take declares a text once. */
   private readonly taken = new Map<string, Set<string>>();
   private readonly account: MintAccount;
+  /** Each window's classification and limit as this operation first measured it (account.ts measuredWindows). */
+  private readonly classes = new Map<string, FixedClass>();
   /** Declared spans the early check has charged, by view: charging one again adds nothing. */
   private readonly spanned = new WeakMap<WindowState, Set<string>>();
   readonly snippets: Snippet[] = [];
@@ -401,7 +403,7 @@ export class SnippetLedger {
 
   /** Every window state this request is measured against (privacy/ledger/account.ts measuredWindows). */
   measuredWindows(): MeasuredWindow[] {
-    return measuredWindows(this.registry ?? EMPTY_REGISTRY, this.heldStates);
+    return measuredWindows(this.registry ?? EMPTY_REGISTRY, this.heldStates, this.classes);
   }
 
   /** A window a take names: known from then on, and held, so the seal measures that state too. */

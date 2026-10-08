@@ -203,6 +203,12 @@ function nodeLines(node: Node): { raw: string; start: number }[] {
   return out;
 }
 
+/** Whether `text` occurs in `raw` exactly once, overlapping occurrences counted. */
+function standsOnce(raw: string, text: string): boolean {
+  const at = raw.indexOf(text);
+  return text !== "" && at >= 0 && raw.indexOf(text, at + 1) < 0;
+}
+
 /** Where a typed value was read: a code-found one's line or offset (windowValues), else where it first stands in its node's text. */
 function valueFound(node: Node, v: TypedValue): Found | undefined {
   const off = sourceOffsets.get(v);
@@ -213,8 +219,7 @@ function valueFound(node: Node, v: TypedValue): Found | undefined {
   // its offset. Standing there once, it was read there; standing there twice or more, which one is not known, and its
   // source is the whole lines that hold it (the fallback), never the first of them.
   const t = nodeText(node);
-  const at = t.indexOf(v.text);
-  return at < 0 || t.indexOf(v.text, at + 1) >= 0 ? undefined : { offset: at };
+  return standsOnce(t, v.text) ? { offset: t.indexOf(v.text) } : undefined;
 }
 
 export interface Candidate {
@@ -1025,7 +1030,9 @@ export function windowValues(w: WindowState): readonly TypedValue[] {
         out.push(value);
       }
     }
-    for (const [r, at] of readAt) if (at !== null) valueLines.set(r, at);
+    // Only for a value whose exact text stands in the node's raw text once: the reader may have read another occurrence
+    // than the one this code's extractor sees.
+    for (const [r, at] of readAt) if (at !== null && standsOnce(nodeText(node), r.text)) valueLines.set(r, at);
   }
   valuesCache.set(w, out);
   return out;

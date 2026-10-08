@@ -82,7 +82,18 @@ const viewOf = (w: WindowState): WindowState => (isRedacted(w) ? w : redactWindo
  * name in the state the task found it; a later state of the same id is `id@n`. Classified by the raw window where there
  * is one, since redaction can empty a title the conversation rule reads.
  */
-export function measuredWindows(registry: ScreenRegistry, held: Iterable<WindowState>): MeasuredWindow[] {
+/** A window's classification and limit as an operation first measured it (measuredWindows' `fixed`). */
+export interface FixedClass {
+  readonly conversation: boolean;
+  readonly limit: number;
+}
+
+/**
+ * `fixed`: each window id's classification and limit as the operation first measured it, kept for the operation. A later
+ * state of the window (refreshed, redacted further, or closed and kept) is a conversation if the first was, and its limit
+ * is never above the first: redaction that empties a mail's headers, or a closed window's kept view, cannot raise it.
+ */
+export function measuredWindows(registry: ScreenRegistry, held: Iterable<WindowState>, fixed?: Map<string, FixedClass>): MeasuredWindow[] {
   const out: MeasuredWindow[] = [];
   const seen = new Set<WindowState>();
   const add = (raw: WindowState): void => {
@@ -92,8 +103,11 @@ export function measuredWindows(registry: ScreenRegistry, held: Iterable<WindowS
     const id = raw.window.windowId;
     const inv = viewInventory(view);
     const older = out.filter((m) => m.windowId === id).length;
-    const conversation = heldAsConversation(raw);
-    out.push({ key: older === 0 ? id : `${id}@${older}`, windowId: id, view, inv, limit: limitOf(inv, conversation), conversation });
+    const first = fixed?.get(id);
+    const conversation = first?.conversation === true || heldAsConversation(raw);
+    const limit = Math.min(limitOf(inv, conversation), first?.limit ?? Number.POSITIVE_INFINITY);
+    if (fixed !== undefined && first === undefined) fixed.set(id, { conversation, limit });
+    out.push({ key: older === 0 ? id : `${id}@${older}`, windowId: id, view, inv, limit, conversation });
   };
   for (const w of registry.windows.values()) add(w);
   for (const w of held) add(w);

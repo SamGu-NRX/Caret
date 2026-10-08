@@ -541,6 +541,40 @@ describe("where a value was read, and what an operation keeps", () => {
   });
 });
 
+// Astra's recheck of c2ce31f0: a reader's value is placed only where its text stands once in the node's raw text, and a
+// window keeps the classification and limit the operation first measured it with.
+describe("a unique place, and a window's first limit", () => {
+  it("does not place a reader's value its node shows twice: '555-0101' in '.555-0101' and '555-0101.' takes both lines", () => {
+    const m = new ScreenModel();
+    // T = 4 + 9 + 9 + 5 = 27, limit 13. The reader kept the first phone; the helper's extractor sees only the second.
+    m.apply(snap([text("c0", ".555-0101\n555-0101."), { key: "c1", parent: null, role: "AXButton", label: "QQQQQ" }], { at: 1, windowId: "chat-1", title: "Kofi", app: MESSAGES, values: [{ kind: "phone", text: "555-0101", nodeKey: "c0" }] }));
+    m.apply(snap([text("f0", "Form")], { at: 2, windowId: "form-1", title: "Form", app: NOTES }));
+    const d = new Disclosure(m);
+    const all = collectCandidates(m, "form-1", { now: 3 }).candidates.find((x) => x.text === "555-0101");
+    expect(all, "offered without a ledger").toBeDefined();
+    expect(sourceOf(all!).text, "no place: it stands twice").toBeUndefined();
+    // With the ledger, its two lines (18) and the title are over 13: it is cut, not placed at one of them.
+    const r = collectCandidates(m, "form-1", { now: 3, ledger: d });
+    expect(r.candidates.map((c) => c.text)).not.toContain("555-0101");
+    expect(r.cut).toContain("chat-1");
+  });
+
+  it("keeps a closed mail a conversation at its first limit, though redaction took the headers that made it one", () => {
+    const m = new ScreenModel();
+    const body = ["see you at five tomorrow", "and the venue holds the date for us"];
+    m.apply(snap(body.map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-1", title: "Note", app: NOTES }));
+    const d = new Disclosure(m);
+    const said = body.map((l, i) => d.candidate(redactWindow(m.windows.get("note-1") as WindowState), l, { part: nodePart(`n${i}`, "label"), start: 0, end: l.length })!);
+    // A mail in Chrome: "From:" and "Subject:" make it a conversation; redaction removes the Subject line (it names a
+    // password), so the redacted view alone would not read as one. T = 14 + 10 + 24 + 35 = 83, limit 41.
+    const chrome = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
+    m.apply(snap([text("h0", "From: Dana"), text("h1", "Subject: my password is violet-orchard-seven"), ...body.map((l, i) => text(`b${i}`, l))], { at: 2, windowId: "mail-1", title: "Inbox - Chrome", app: chrome }));
+    expect(d.measureSent("test", [said[1]!]).charged["mail-1"]).toBe(35);
+    m.close("mail-1", 3);
+    expect(() => d.measureSent("test", [said[0]!])).toThrow(/with the requests sent before it, it reveals 59 characters of window mail-1, over its limit of 41/u);
+  });
+});
+
 // The promise's scope (OUTPUT-LEDGER-SPEC section 4): a request is charged what it takes from a conversation's window.
 // Text equal to the chat's that came from elsewhere is not taken from it, so each of these charges the chat nothing.
 describe("text a chat shows that the request did not take from it", () => {
