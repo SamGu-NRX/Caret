@@ -1,1 +1,0 @@
-The Ask card reads a plan's facts blocks only by first-row label: proposal.ts YOU_TYPE_LABEL/LEFT_TO_YOU_LABEL, built in leftToYouBlocks and pinned by golden ask-left.ndjson; a new left-to-you block needs a label there (H1).

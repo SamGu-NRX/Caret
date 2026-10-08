@@ -1,0 +1,1 @@
+Builds run scripts/privacy_gate.sh (accepted.ts records, onboarding shows PrivacyPromise.txt, no CARET_DEV_VERCEL_GEMINI; plists checked source then processed). Release children: CARET_RELEASE_HOST=1, TypeSafe vars only. Disclosure keys: no spaces; dynamic maps need childGlob.
