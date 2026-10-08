@@ -162,6 +162,21 @@
     "Company or organization": "Lumen Labs"
    },
    "kind": "chat1000-recent-other-person-old"
+  },
+  {
+   "id": "lc-13",
+   "form": "hubspot-contact",
+   "instruction": "fill in the contact form from my thread with the Lumen team",
+   "expected": {
+    "First Name": "Jordan",
+    "Last Name": "Reyes",
+    "Email": "jordan.reyes@example.org",
+    "Phone number": "(512) 555-0147",
+    "Company name": "Lumen Labs",
+    "Website URL": "https://lumenlabs.example.com",
+    "How can we help?": "we need SSO for 300 seats by March"
+   },
+   "kind": "mail-thread-newest-first"
   }
  ]
 }

@@ -293,11 +293,7 @@
     {
      "label": "Apartment, suite, etc.",
      "control": "text",
-     "expected": "none",
-     "accept": [
-      "Apt 12",
-      "12"
-     ]
+     "expected": "none"
     },
     {
      "label": "City",
@@ -439,7 +435,7 @@
      "control": "url",
      "expected": "https://github.com/jordan-reyes-dev",
      "accept": [
-      "github.com/harperq-data"
+      "github.com/jordan-reyes-dev"
      ]
     },
     {
@@ -488,10 +484,7 @@
     {
      "label": "Reference name",
      "control": "text",
-     "expected": "none",
-     "accept": [
-      "Simone Achebe"
-     ]
+     "expected": "none"
     },
     {
      "label": "Reference relationship",
@@ -719,10 +712,7 @@
     {
      "label": "Apt / Unit",
      "control": "text",
-     "expected": "none",
-     "accept": [
-      "2"
-     ]
+     "expected": "none"
     },
     {
      "label": "City",
@@ -801,20 +791,12 @@
     {
      "label": "Monthly rent ($)",
      "control": "text",
-     "expected": "none",
-     "accept": [
-      "1450",
-      "$1,450"
-     ]
+     "expected": "none"
     },
     {
      "label": "Reason for moving",
      "control": "textarea",
-     "expected": "none",
-     "accept": [
-      "leaving because the lease ends Oct 31 and they're raising rent",
-      "lease ends Oct 31 and they're raising rent"
-     ]
+     "expected": "none"
     },
     {
      "label": "Landlord or property manager name",
@@ -861,20 +843,12 @@
     {
      "label": "Job title",
      "control": "text",
-     "expected": "none",
-     "accept": [
-      "Lab technician",
-      "Lab Technician"
-     ]
+     "expected": "none"
     },
     {
      "label": "Gross monthly income ($)",
      "control": "text",
-     "expected": "none",
-     "accept": [
-      "5200",
-      "$5,200"
-     ]
+     "expected": "none"
     },
     {
      "label": "Vehicle make and model",
@@ -955,10 +929,7 @@
     {
      "label": "Apartment or unit",
      "control": "text",
-     "expected": "none",
-     "accept": [
-      "3"
-     ]
+     "expected": "none"
     },
     {
      "label": "City",
@@ -1174,10 +1145,7 @@
     {
      "label": "This is my first class at Lakeside",
      "control": "checkbox",
-     "expected": "none",
-     "accept": [
-      "none"
-     ]
+     "expected": "none"
     },
     {
      "label": "Email me the Lakeside Continuing Ed newsletter",
@@ -1491,6 +1459,72 @@
     },
     {
      "label": "Send me news about future DevHarbor events.",
+     "control": "checkbox",
+     "expected": "none"
+    }
+   ]
+  },
+  {
+   "id": "hubspot-contact",
+   "file": "../realfill/forms/hubspot-contact.html",
+   "origin": "the B24 dev corpus's hubspot-contact, with lc-13's long-conversation source",
+   "source": {
+    "kind": "window",
+    "file": "sources/lc-13.window.json"
+   },
+   "fields": [
+    {
+     "label": "First Name",
+     "control": "text",
+     "expected": "Jordan"
+    },
+    {
+     "label": "Last Name",
+     "control": "text",
+     "expected": "Reyes"
+    },
+    {
+     "label": "Email",
+     "control": "email",
+     "expected": "jordan.reyes@example.org"
+    },
+    {
+     "label": "Phone number",
+     "control": "tel",
+     "expected": "(512) 555-0147"
+    },
+    {
+     "label": "Company name",
+     "control": "text",
+     "expected": "Lumen Labs"
+    },
+    {
+     "label": "Website URL",
+     "control": "text",
+     "expected": "https://lumenlabs.example.com"
+    },
+    {
+     "label": "Company size",
+     "control": "select",
+     "options": [
+      "Please Select",
+      "1 employee",
+      "2 to 9 employees",
+      "10 to 24 employees",
+      "25 to 49 employees",
+      "50 to 99 employees",
+      "100 to 199 employees",
+      "200 or more employees"
+     ],
+     "expected": "none"
+    },
+    {
+     "label": "How can we help?",
+     "control": "textarea",
+     "expected": "we need SSO for 300 seats by March"
+    },
+    {
+     "label": "I agree to receive other communications from HubSpot.",
      "control": "checkbox",
      "expected": "none"
     }

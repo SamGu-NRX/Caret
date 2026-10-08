@@ -27,6 +27,7 @@ function mulberry32(a: number): () => number {
 const MESSAGES = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
 const CHROME = { pid: 4100, bundleId: "com.google.Chrome", name: "Google Chrome" };
 const TEXTEDIT = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
+const OUTLOOK = { pid: 8282, bundleId: "com.microsoft.Outlook", name: "Microsoft Outlook" };
 type Value = { kind: "phone" | "email" | "date" | "address" | "url" | "time"; text: string };
 type Line = { text: string; values?: Value[] };
 
@@ -70,20 +71,27 @@ function noteSnapshot(windowId: string, title: string, lines: Line[]): unknown {
   return { type: "snapshot", v: 1, seq: 1, at: 0, reason: "initial", app: TEXTEDIT, window: { windowId, kind: "standard", title, frame: [0, 0, 700, 600] }, focused: false, root: null, nodes: [{ key, parent: null, role: "AXTextArea", value: lines.map((l) => l.text).join("\n"), editable: true }], values: lines.flatMap((l) => (l.values ?? []).map((v) => ({ kind: v.kind, text: v.text, nodeKey: key }))), focusedKey: null, stats: { walkMs: 5, visited: 1, truncated: false } };
 }
 
-/** A mail thread of `messages` messages, each with its headers and `body` lines; `answerAt` puts `answer` in that message. */
-function mailThread(rand: () => number, subject: string, messages: number, bodyLines: number, answer: { at: number; from: string; lines: Line[] } | null): Line[] {
-  const out: Line[] = [];
+/**
+ * A mail thread of `messages` messages, one a day from Jul 1, 2026, each with its headers and `body` lines; `answer.at`
+ * (counted from the oldest) puts `answer` in that message. `newestFirst` draws the newest message at the top, as Mail and
+ * Outlook can (conversation.ts messageOrder).
+ */
+function mailThread(rand: () => number, subject: string, messages: number, bodyLines: number, answer: { at: number; from: string; lines: Line[] } | null, newestFirst = false): Line[] {
+  const out: Line[][] = [];
   for (let k = 0; k < messages; k++) {
     const o = OTHERS[k % OTHERS.length]!;
     const own = answer !== null && answer.at === k;
-    out.push({ text: `From: ${own ? answer.from : `${o.name} <${o.email}>`}`, values: own ? [] : [{ kind: "email", text: o.email }] });
-    out.push({ text: "To: Avery Kim <avery.kim@example.com>" });
-    out.push({ text: `Date: Oct ${1 + (k % 28)}, 2026` });
-    out.push({ text: `Subject: ${subject}` });
-    if (own) out.push(...answer.lines);
-    out.push(...chatter(rand, bodyLines, 7));
+    const day = new Date(Date.UTC(2026, 6, 1 + k)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+    out.push([
+      { text: `From: ${own ? answer.from : `${o.name} <${o.email}>`}`, values: own ? [] : [{ kind: "email", text: o.email }] },
+      { text: "To: Avery Kim <avery.kim@example.com>" },
+      { text: `Date: ${day}` },
+      { text: `Subject: ${subject}` },
+      ...(own ? answer.lines : []),
+      ...chatter(rand, bodyLines, 7),
+    ]);
   }
-  return out;
+  return (newestFirst ? out.reverse() : out).flat();
 }
 
 interface DeskSpec {
@@ -93,6 +101,8 @@ interface DeskSpec {
   instruction: string;
   /** Field label to expected value; every other field of the form is "none". */
   expected: Record<string, string>;
+  /** Field label to the other spellings of its expected value that count as right; the base form's own are not kept. */
+  accept: Record<string, string[]>;
   source: { file: string; snapshot: unknown };
 }
 
@@ -110,8 +120,9 @@ const val = (kind: Value["kind"], text: string): Value => ({ kind, text });
 /** "Label: value" lines for `pairs`, each with its typed value when the reader would type one. */
 const labelled = (pairs: [string, string, Value["kind"]?][]): Line[] => pairs.map(([l, v, k]) => ({ text: `${l}: ${v}`, ...(k === undefined ? {} : { values: [val(k, v)] }) }));
 /** A desk whose answer is `pairs` in the source, and whose expected values are `expected` (the field's value, by label). */
-const desk = (id: string, form: string, kind: string, instruction: string, expected: Record<string, string>, snapshotOf: unknown): void => {
-  desks.push({ id, form, kind, instruction, expected, source: { file: `sources/${id}.window.json`, snapshot: snapshotOf } });
+const desk = (id: string, form: string, kind: string, instruction: string, expected: Record<string, string>, snapshotOf: unknown, accept: Record<string, string[]> = {}): void => {
+  for (const l of Object.keys(accept)) if (expected[l] === undefined) throw new Error(`${id}: '${l}' has alternatives but no expected value`);
+  desks.push({ id, form, kind, instruction, expected, accept, source: { file: `sources/${id}.window.json`, snapshot: snapshotOf } });
 };
 
 // The user's own details (name, email, phone, address) go to fields the owner rule judges (HA2: a conversation's value is
@@ -131,10 +142,12 @@ desk("lc-04", "checkout-shipping", "chat300-old", "ship it to the address I gave
   chat("04", "Marcus Bell", 300, "old", [{ text: "my shipping info for the order:" }, ...labelled([["First name", ME.first], ["Last name", ME.last], ["Address", ME.street], ["City", ME.city], ["ZIP code", ME.zip], ["Gift note", "Happy housewarming, Sam!"]])], 404));
 desk("lc-05", "job-application", "chat1000-old", "fill in my details from my old chat with Kofi",
   { "Full name": "Jordan Reyes", Email: ME.email, Phone: ME.phone, "GitHub URL": "https://github.com/jordan-reyes-dev", "Earliest start date": "2027-01-04", "Desired salary": "$145,000" },
-  chat("05", "Kofi Mensah", 1000, "old", [{ text: "for the referral form you need:" }, ...labelled([["Full name", "Jordan Reyes"], ["Email", ME.email, "email"], ["Phone", ME.phone, "phone"], ["GitHub", "https://github.com/jordan-reyes-dev", "url"], ["Earliest start date", "Jan 4, 2027", "date"], ["Desired salary", "$145,000"]])], 505));
+  chat("05", "Kofi Mensah", 1000, "old", [{ text: "for the referral form you need:" }, ...labelled([["Full name", "Jordan Reyes"], ["Email", ME.email, "email"], ["Phone", ME.phone, "phone"], ["GitHub", "https://github.com/jordan-reyes-dev", "url"], ["Earliest start date", "Jan 4, 2027", "date"], ["Desired salary", "$145,000"]])], 505),
+  { "GitHub URL": ["github.com/jordan-reyes-dev"] });
 desk("lc-06", "car-service-booking", "chat150-old", "book the service with the car details I texted Dana",
   { "Full name": "Jordan Reyes", Email: ME.email, "Mobile phone": ME.phone, VIN: "1HGCM82633A004352", "Current mileage": "59,870", "Comments for your service advisor": "the brakes squeal when cold" },
-  chat("06", "Dana Whitfield", 150, "old", [{ text: "car stuff for the booking:" }, ...labelled([["Full name", "Jordan Reyes"], ["Email", ME.email, "email"], ["Mobile phone", ME.phone, "phone"], ["VIN", "1HGCM82633A004352"], ["Current mileage", "59,870"], ["Comments", "the brakes squeal when cold"]])], 606));
+  chat("06", "Dana Whitfield", 150, "old", [{ text: "car stuff for the booking:" }, ...labelled([["Full name", "Jordan Reyes"], ["Email", ME.email, "email"], ["Mobile phone", ME.phone, "phone"], ["VIN", "1HGCM82633A004352"], ["Current mileage", "59,870"], ["Comments", "the brakes squeal when cold"]])], 606),
+  { "Current mileage": ["59870"] });
 desk("lc-07", "rental-application", "note-beside-long-chats", "fill out this application from my note",
   { "First name": ME.first, "Last name": ME.last, "Email address": ME.email, "Mobile phone": ME.phone, "Street address": ME.street, City: ME.city, "ZIP code": ME.zip },
   noteSnapshot("lc-07", "Rental details.txt", labelled([["First name", ME.first], ["Last name", ME.last], ["Email address", ME.email, "email"], ["Mobile phone", ME.phone, "phone"], ["Street address", ME.street], ["City", ME.city], ["ZIP code", ME.zip]])));
@@ -167,6 +180,10 @@ desk("lc-12", "conference-registration", "chat1000-recent-other-person-old", "re
     return snapshot("lc-12", "Marcus Bell", MESSAGES, lines);
   })());
 
+desk("lc-13", "hubspot-contact", "mail-thread-newest-first", "fill in the contact form from my thread with the Lumen team",
+  { "First Name": ME.first, "Last Name": ME.last, Email: ME.email, "Phone number": ME.phone, "Company name": "Lumen Labs", "Website URL": "https://lumenlabs.example.com", "How can we help?": "we need SSO for 300 seats by March" },
+  snapshot("lc-13", "Re: Lumen Labs onboarding - Outlook", OUTLOOK, mailThread(mulberry32(1313), "Re: Lumen Labs onboarding", 60, 5, { at: 59, from: `Jordan Reyes <${ME.email}>`, lines: labelled([["First name", ME.first], ["Last name", ME.last], ["Email", ME.email, "email"], ["Phone", ME.phone, "phone"], ["Company name", "Lumen Labs"], ["Website", "https://lumenlabs.example.com", "url"], ["How can we help", "we need SSO for 300 seats by March"]]) }, true)));
+
 // The two long bystanders on every desk: a 1,000-message group chat and a 600-line mail thread, other people's details only.
 const decoys = [
   { file: "sources/weekend-crew.window.json", snapshot: snapshot("lc-group", "Weekend crew", MESSAGES, chatter(mulberry32(77), 1000, 6)) },
@@ -184,7 +201,8 @@ const forms = desks.map((d) => {
     file: `../realfill/${base.file}`,
     origin: `the B24 dev corpus's ${d.form}, with ${d.id}'s long-conversation source`,
     source: { kind: "window", file: d.source.file },
-    fields: base.fields.map((f) => ({ ...f, expected: d.expected[f.label] ?? "none", ...(f.accept === undefined ? {} : { accept: f.accept }) })),
+    // The base form's alternatives were for its own source's values, so none is kept (one accepted another person's URL).
+    fields: base.fields.map(({ accept: _base, ...f }) => ({ ...f, expected: d.expected[f.label] ?? "none", ...(d.accept[f.label] === undefined ? {} : { accept: d.accept[f.label] }) })),
   };
 });
 if (new Set(forms.map((f) => f.id)).size !== forms.length) throw new Error("two desks on one form: each form's page walk is keyed by its id");
