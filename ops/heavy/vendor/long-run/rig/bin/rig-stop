@@ -1,0 +1,457 @@
+#!/usr/bin/python3
+"""rig-stop [--only OWNER_PID | --orphans] [--grace SECONDS]
+
+Stops running rig clones, deletes them and releases their vm and heavy leases (a rig-run still queued for a
+lease, with no clone, is left alone), for the Mac-wide memory guard (SIGTERM to the youngest lease
+owner's group, SIGKILL 45 s later) and for a lead. Only names matching rig-run-<digits> are stopped
+or deleted; rig-golden is never touched.
+
+For each clone, the owning rig-run is asked first (SIGTERM; its trap stops the VM, deletes the clone
+and releases the lease). rig-stop waits up to --grace seconds for that, then SIGKILLs the owner, asks
+Lume to stop the VM, waits up to --grace again, and SIGKILLs the VM process. With --grace 0 it never
+sends SIGKILL: it reports what is still alive and exits 1, leaving escalation to the caller. A VM
+whose owner is gone has no trap to wait for, so even at --grace 0 it gets `lume stop` and up to
+LUME_STOP_WAIT (15 s) to exit before it is reported; then its clone is deleted.
+Default grace 15 s, so the worst case stays under 45 s.
+
+--only OWNER_PID acts on one rig-run only. It refuses (exit 2, nothing done) unless a rig vm lease
+names that pid as owner and that pid is the owner (below).
+
+--orphans acts only on clones whose owner is verified gone (no such pid) or verified replaced (that
+pid's start time differs from the recorded one by more than 1000 ms), for example a rig-run killed
+with SIGKILL, whose trap never ran and whose `lume run` kept the VM up: it stops and deletes them and
+releases their leases. A clone whose owner can't be verified either way is reported by name, left
+untouched, and makes the exit status 1.
+
+The owner of rig-run-N is pid N while that process is still the rig-run that made the clone: alive,
+argv exactly [/bin/bash, <absolute path of bin/rig-run>, ...] (rig-run re-execs itself into that
+form), and started at the time recorded in runs/rig-run-N/owner.start, or no later than the lease's
+createdAt. A pid that was reused, or that exec'd into anything else, is not the owner and is never
+signalled. The VM process is signalled only when its argv is [<lume>, run, rig-run-N, ...].
+
+Exit 0: nothing of the targeted clones is left (clone dir, VM process, live lease). 1: something
+is (listed), or --orphans found unverifiable clones. 2: --only refused. 64: bad arguments. 75: the lease
+state is unknown (`lr-lease status` failed, timed out or printed something other than its report), so
+nothing was done, as rig-run refuses on the same failure.
+
+Test only: RIG_STOP_LEASE_STATUS=<file> reads lease records from that file instead of
+`lr-lease status`; RIG_STOP_RIG_RUN=<path> names the script a fake owner runs;
+RIG_STOP_TEST_ROOT=<dir> keeps state dirs and clone dirs under <dir>/rig/runs and <dir>/lume;
+RIG_STOP_LUME=<path> runs that program instead of Lume for `lume stop`;
+RIG_STOP_RELEASED=<file> appends each lease ID rig-stop would release (with RIG_STOP_LEASE_STATUS,
+nothing is really released); RIG_STOP_STATUS_TIMEOUT=<seconds> shortens the wait for `lr-lease status`.
+"""
+import ctypes
+import ctypes.util
+import json
+import os
+import re
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+HOME = os.path.expanduser("~")
+# Test only: RIG_STOP_TEST_ROOT puts the state dirs and clone dirs under that directory.
+TEST_ROOT = os.environ.get("RIG_STOP_TEST_ROOT")
+R = os.path.join(TEST_ROOT, "rig") if TEST_ROOT else os.path.join(HOME, ".long-run/rig")
+RIG_RUN = os.environ.get("RIG_STOP_RIG_RUN") or os.path.join(R, "bin/rig-run")
+LUME = os.environ.get("RIG_STOP_LUME") or "/Users/samgu/.local/share/lume/lume.app/Contents/MacOS/lume"
+# How long a VM with no live owner gets after `lume stop` at --grace 0. Measured: rig-run's own
+# stop took at most 1.13 s (median 0.53 s) over 57 booted runs (rig.json stopS, 2026-10-03). The
+# memory guard runs `--orphans --grace 0` once, with a 60 s hook timeout, after SIGKILLing an
+# owner; without this wait the clone was never deleted on that path.
+LUME_STOP_WAIT = 15
+LEASE = os.path.join(HOME, ".long-run/bin/lr-lease")
+REAP = os.path.join(HOME, ".long-run/bin/lr-reap")
+CLONES = os.path.join(TEST_ROOT, "lume") if TEST_ROOT else os.path.join(HOME, ".lume")
+NAME = re.compile(r"^rig-run-(\d+)$")
+ENV = dict(os.environ, LUME_TELEMETRY_ENABLED="false")
+TEST_LEASES = os.environ.get("RIG_STOP_LEASE_STATUS")
+TEST_RELEASED = os.environ.get("RIG_STOP_RELEASED")
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+
+def log(msg):
+    print(time.strftime("%H:%M:%S", time.gmtime()), "rig-stop:", msg, file=sys.stderr, flush=True)
+
+
+# lr-lease status waits at most 10 s for lr-lease's mutex (lockf -t 10); this leaves it room to answer.
+STATUS_TIMEOUT = float(os.environ.get("RIG_STOP_STATUS_TIMEOUT") or 30)
+
+
+class LeaseStateUnknown(Exception):
+    """`lr-lease status` failed, timed out, or printed something other than its report."""
+
+
+def status_records():
+    """Every lease `lr-lease status` lists. Mirrors rig-run's handed_problem (rig/bin/rig-run): a status that fails or
+    a report the parser cannot read is a refusal, never an empty lease list. It also checks the report's shape: a
+    "Readings" line, "Leases: N", then N lease objects. Raises LeaseStateUnknown."""
+    try:
+        done = subprocess.run([LEASE, "status"], capture_output=True, text=True, timeout=STATUS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise LeaseStateUnknown(f"lr-lease status did not answer within {STATUS_TIMEOUT:g} s") from None
+    except OSError as ex:
+        raise LeaseStateUnknown(f"lr-lease status could not run: {ex}") from None
+    if done.returncode != 0:
+        raise LeaseStateUnknown(f"lr-lease status exited {done.returncode}: {done.stdout.strip()[:200]}")
+    lines = done.stdout.splitlines()
+    count = next((i for i, line in enumerate(lines) if line.startswith("Leases: ")), None)
+    if not lines or not lines[0].startswith("Readings ") or count is None:
+        raise LeaseStateUnknown("lr-lease status printed something other than its report")
+    try:
+        n = int(lines[count][len("Leases: "):])
+        records = [json.loads(line) for line in lines[count + 1:count + 1 + n]]
+    except ValueError:
+        raise LeaseStateUnknown("lr-lease status printed a lease count or lease line that cannot be read") from None
+    if len(records) != n or not all(isinstance(r, dict) and "id" in r for r in records):
+        raise LeaseStateUnknown("lr-lease status listed fewer lease objects than its count")
+    return records
+
+
+def leases():
+    """Rig vm lease records, from `lr-lease status`. Raises LeaseStateUnknown when it cannot say."""
+    if TEST_LEASES:
+        recs = []
+        for line in open(TEST_LEASES).read().splitlines():
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    recs.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    else:
+        recs = status_records()
+    return [r for r in recs if r.get("run") == "rig" and r.get("kind") == "vm" and isinstance(r.get("ownerPid"), int)]
+
+
+def proc_args(pid):
+    """(exec path, argv) of a process, from sysctl KERN_PROCARGS2, or None if it can't be read."""
+    argmax = ctypes.c_int(0)
+    size = ctypes.c_size_t(ctypes.sizeof(argmax))
+    if _libc.sysctl((ctypes.c_int * 2)(1, 8), 2, ctypes.byref(argmax), ctypes.byref(size), None, 0) != 0:
+        return None
+    buf = ctypes.create_string_buffer(argmax.value)
+    size = ctypes.c_size_t(argmax.value)
+    if _libc.sysctl((ctypes.c_int * 3)(1, 49, pid), 3, buf, ctypes.byref(size), None, 0) != 0:
+        return None
+    data = buf.raw[:size.value]
+    argc = struct.unpack_from("i", data, 0)[0]
+    exec_path, _, rest = data[4:].partition(b"\0")
+    parts = rest.lstrip(b"\0").split(b"\0")
+    return exec_path.decode(errors="replace"), [p.decode(errors="replace") for p in parts[:argc]]
+
+
+def lstart(pid):
+    r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, env=dict(ENV, LC_ALL="C"))
+    s = r.stdout.strip()
+    return " ".join(s.split()) if r.returncode == 0 and s else None
+
+
+def epoch(lstart_text):
+    return datetime.strptime(lstart_text, "%a %b %d %H:%M:%S %Y").timestamp()
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def read(path):
+    try:
+        return open(path).read().strip()
+    except OSError:
+        return ""
+
+
+def owner_check(pid, lease):
+    """None when pid is the owner of rig-run-<pid> (see the module doc), else why not."""
+    st = lstart(pid)
+    if st is None:
+        return f"pid {pid} is not running"
+    pa = proc_args(pid)
+    if pa is None:
+        return f"pid {pid}: arguments unreadable"
+    exe, argv = pa
+    if not (exe == "/bin/bash" and len(argv) >= 2 and argv[0] == "/bin/bash" and argv[1] == RIG_RUN):
+        return f"pid {pid} is not a rig-run (exec {exe!r}, argv {argv[:3]!r})"
+    state = os.path.join(R, "runs", f"rig-run-{pid}")
+    recorded = " ".join(read(os.path.join(state, "owner.start")).split())
+    if recorded:
+        if recorded != st:
+            return f"pid {pid} started {st}, not {recorded} as recorded: the pid was reused"
+    elif lease is None:
+        return f"pid {pid}: no recorded start time and no lease to check it against"
+    if lease is not None and int(epoch(st)) > lease["createdAt"] // 1000:
+        when = time.strftime("%H:%M:%SZ", time.gmtime(lease["createdAt"] / 1000))
+        return f"pid {pid} started {st}, after lease {lease['id']} was created at {when}: the pid was reused"
+    return None
+
+
+def present(pid):
+    """True if the pid exists, False only when the kernel says no such process (ESRCH), None when
+    that can't be determined. A non-zero `ps -p` is not proof of absence: a spawn error or fault
+    would otherwise call a live owner gone and sweep its clone (memory-guard review, 2026-10-03)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+    return True
+
+
+def classify(pid, lease):
+    """(class, why) for the owner of rig-run-<pid>, for --orphans:
+    live: present, start time as recorded, argv exactly rig-run.
+    gone: no such pid.
+    replaced: present, but its start differs from the recorded one by more than 1000 ms (ps lstart
+      has whole seconds), or it started more than 1000 ms after the lease was created.
+    unverifiable: anything that can't be read or doesn't fit the above; never swept."""
+    here = present(pid)
+    if here is None:
+        return "unverifiable", f"pid {pid}: can't tell whether it is running"
+    if here is False:
+        return "gone", f"pid {pid} is not running"
+    st = lstart(pid)
+    if st is None:
+        return ("gone", f"pid {pid} exited") if present(pid) is False else ("unverifiable", f"pid {pid}: start time unreadable")
+    started_s = epoch(st)
+    recorded = " ".join(read(os.path.join(R, "runs", f"rig-run-{pid}", "owner.start")).split())
+    if recorded:
+        try:
+            diff_ms = abs(started_s - epoch(recorded)) * 1000
+        except ValueError:
+            return "unverifiable", f"pid {pid}: recorded start {recorded!r} unreadable"
+        if diff_ms > 1000:
+            return "replaced", f"pid {pid} started {st}, recorded {recorded}"
+        if diff_ms != 0:
+            return "unverifiable", f"pid {pid} started {st}, recorded {recorded}: 1 s apart, can't tell"
+    elif lease is not None:
+        if (started_s - lease["createdAt"] / 1000) * 1000 > 1000:
+            return "replaced", f"pid {pid} started {st}, after lease {lease['id']} was created"
+        return "unverifiable", f"pid {pid}: no recorded start time; started before the lease, can't tell"
+    else:
+        return "unverifiable", f"pid {pid}: no recorded start time and no lease"
+    pa = proc_args(pid)
+    if pa is None:
+        return "unverifiable", f"pid {pid}: arguments unreadable"
+    exe, argv = pa
+    if exe == "/bin/bash" and len(argv) >= 2 and argv[0] == "/bin/bash" and argv[1] == RIG_RUN:
+        return "live", None
+    return "unverifiable", f"pid {pid} has the recorded start time but argv {argv[:3]!r}, not rig-run"
+
+
+def vm_pid(vm):
+    """The `lume run <vm>` process, matched on its exact argv."""
+    cands = []
+    p = read(os.path.join(R, "runs", vm, "lume.pid"))
+    if p.isdigit():
+        cands.append(int(p))
+    r = subprocess.run(["pgrep", "-f", f"lume run {vm}"], capture_output=True, text=True)
+    cands += [int(x) for x in r.stdout.split()]
+    for c in cands:
+        pa = proc_args(c)
+        if pa and len(pa[1]) >= 3 and os.path.basename(pa[0]) == "lume" and pa[1][1] == "run" and pa[1][2] == vm:
+            return c
+    return None
+
+
+def wait_for(pred, seconds):
+    end = time.time() + seconds
+    while True:
+        if pred():
+            return True
+        if time.time() >= end:
+            return pred()
+        time.sleep(0.25)
+
+
+def delete_clone(vm):
+    assert NAME.match(vm), vm
+    path = os.path.join(CLONES, vm)
+    # Retried: right after a stop Lume can still be restoring config.json from its backup.
+    for _ in range(10):
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.exists(path):
+            break
+        time.sleep(0.5)
+    guard = os.path.join(CLONES, f".{vm}.resize.guard")
+    if os.path.exists(guard):
+        os.remove(guard)
+    return not os.path.exists(path)
+
+
+def stop(vm, owner, lease, grace):
+    """Stops one clone; returns what is still alive. `owner` is a checked owner pid, or None."""
+    state = os.path.join(R, "runs", vm)
+    if owner is not None:
+        log(f"asking rig-run {owner} to stop {vm}")
+        os.kill(owner, signal.SIGTERM)
+        wait_for(lambda: not alive(owner) and not os.path.exists(state), grace)
+    still = []
+    if owner is not None and alive(owner):
+        if grace == 0:
+            still.append(f"rig-run {owner}")
+        else:
+            log(f"rig-run {owner} still running after {grace:g} s: SIGKILL")
+            os.kill(owner, signal.SIGKILL)
+            wait_for(lambda: not alive(owner), 2)
+    vp = vm_pid(vm)
+    if vp is not None and not (owner is not None and alive(owner)):
+        log(f"stopping {vm} (lume pid {vp})")
+        stopper = subprocess.Popen([LUME, "stop", vm], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=ENV)
+        wait_for(lambda: not alive(vp), grace if grace > 0 else LUME_STOP_WAIT)
+        if alive(vp):
+            if grace == 0:
+                still.append(f"lume run {vm} (pid {vp}, lume stop sent)")
+            else:
+                log(f"{vm} still running after {grace:g} s: SIGKILL {vp}")
+                os.kill(vp, signal.SIGKILL)
+                wait_for(lambda: not alive(vp), 2)
+        if not alive(vp) and stopper.poll() is None:
+            stopper.kill()
+    elif vp is not None:
+        still.append(f"lume run {vm} (pid {vp})")
+    if still:
+        return still
+    if os.path.exists(os.path.join(CLONES, vm)) and not delete_clone(vm):
+        return [f"clone dir {vm}"]
+    lid = (lease or {}).get("id") or read(os.path.join(state, "lease.id"))
+    # rig-run also holds the heavy lease while its clone exists. Only the ID it recorded is
+    # released: a heavy lease found by owner pid could belong to a process that reused the pid.
+    for i in (lid, read(os.path.join(state, "heavy.id"))):
+        if not i:
+            continue
+        if TEST_LEASES:
+            if TEST_RELEASED:
+                with open(TEST_RELEASED, "a") as f:
+                    f.write(i + "\n")
+        else:
+            subprocess.run([LEASE, "release", i], capture_output=True)
+    shutil.rmtree(state, ignore_errors=True)
+    return []
+
+
+def rig_names():
+    names = set()
+    for d in (os.path.join(R, "runs"), CLONES):
+        if os.path.isdir(d):
+            names |= {n for n in os.listdir(d) if NAME.match(n)}
+    return names
+
+
+def main(argv):
+    only, orphans, grace = None, False, 15.0
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "--only" and args and args[0].isdigit():
+            only = int(args.pop(0))
+        elif a == "--orphans":
+            orphans = True
+        elif a == "--grace" and args:
+            try:
+                grace = float(args.pop(0))
+            except ValueError:
+                grace = -1
+            if grace < 0:
+                print("rig-stop: --grace takes a number of seconds >= 0", file=sys.stderr)
+                return 64
+        else:
+            print(__doc__.split("\n\n")[0], file=sys.stderr)
+            return 64
+    if only is not None and orphans:
+        print("rig-stop: --only and --orphans are exclusive", file=sys.stderr)
+        return 64
+    try:
+        recs = leases()
+    except LeaseStateUnknown as ex:
+        log(f"refusing: lease state unknown ({ex}); nothing done")
+        return 75
+    by_owner = {l["ownerPid"]: l for l in recs}
+    targets = {}  # vm -> (checked owner pid or None, lease or None)
+    unverifiable = []
+    if only is not None:
+        if only not in by_owner:
+            log(f"refusing: no rig vm lease is owned by pid {only}; nothing done")
+            return 2
+        why = owner_check(only, by_owner[only])
+        if why:
+            log(f"refusing: {why}; nothing done")
+            return 2
+        targets[f"rig-run-{only}"] = (only, by_owner[only])
+    else:
+        for vm in sorted(rig_names() | {f"rig-run-{p}" for p in by_owner}):
+            pid = int(NAME.match(vm).group(1))
+            lease = by_owner.get(pid)
+            has_vm = lease is not None or os.path.exists(os.path.join(CLONES, vm)) or vm_pid(vm) is not None
+            if not has_vm:
+                # Queued for the lease, no clone, no VM memory. (16:54Z: an earlier version
+                # SIGTERMed two other builders' queued runs.)
+                continue
+            if orphans:
+                cls, why = classify(pid, lease)
+                if cls == "live":
+                    continue
+                if cls == "unverifiable":
+                    log(f"{vm}: left untouched, owner unverifiable ({why})")
+                    unverifiable.append(vm)
+                    continue
+                log(f"{vm}: orphan, owner {cls} ({why})")
+                targets[vm] = (None, lease)
+                continue
+            why = owner_check(pid, lease)
+            if why:
+                log(f"{vm}: owner not signalled ({why})")
+            targets[vm] = (None if why else pid, lease)
+    left = {}
+    for vm, (owner, lease) in targets.items():
+        still = stop(vm, owner, lease, grace)
+        if still:
+            left[vm] = still
+    if only is None and not TEST_LEASES:
+        subprocess.run([REAP, "--run", "rig"], capture_output=True)
+    live = {p for p, l in by_owner.items() if owner_check(p, l) is None}
+    try:
+        current = {l["ownerPid"]: l for l in leases()}
+    except LeaseStateUnknown as ex:
+        log(f"lease state unknown after stopping ({ex}): what is left cannot be checked")
+        return 75
+    for vm, (owner, lease) in targets.items():
+        pid = int(NAME.match(vm).group(1))
+        extra = []
+        if os.path.exists(os.path.join(CLONES, vm)):
+            extra.append(f"clone dir {vm}")
+        if vm_pid(vm) is not None:
+            extra.append(f"lume run {vm}")
+        if pid in current and pid in live and alive(pid) and not TEST_LEASES:
+            extra.append(f"lease {current[pid]['id']}")
+        cur = left.setdefault(vm, [])
+        cur += [e for e in extra if e not in cur]
+        if not cur:
+            del left[vm]
+    if unverifiable:
+        log("unverifiable, not touched: " + ", ".join(unverifiable))
+    if left:
+        log("still alive: " + "; ".join(f"{vm}: {', '.join(v)}" for vm, v in left.items()))
+        return 1
+    if unverifiable:
+        return 1
+    log(f"done: {len(targets)} clone(s) handled, nothing left")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
