@@ -208,6 +208,8 @@ const DATE_PART: ReadonlyMap<string, RegExp> = new Map([
   ["year", /^\d{4}$/u],
 ]);
 const ORGANIZATION = /\b(?:company|employer|organi[sz]ation)\b/;
+/** Whether a field's label asks for a company or an organization ("Company name", "Employer"). */
+export const organizationField = (label: string): boolean => ORGANIZATION.test(label.toLowerCase());
 /** A label that spells out a date's format: "Moved in (MM/YYYY)", "Start date (DD.MM.YYYY)". */
 export const DATE_FORMAT = /\b(?:mm|dd|yyyy|yy)(?:\s*[/.-]\s*(?:mm|dd|yyyy|yy))+\b/iu;
 /** A label that shows the currency beside the field, so the field takes the number alone: "Monthly rent ($)". */

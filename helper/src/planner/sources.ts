@@ -68,12 +68,16 @@ const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 const kindOf = (noun: string): SourcePhrase["kind"] => (NOTE_NOUNS.includes(noun) ? "note" : MAIL_NOUNS.includes(noun) ? "mail" : "titled");
 
 /**
- * The phrases of an instruction that name where to copy from, in order, overlapping ones merged. A name is read by its
- * capital; `people` are the person spans the instruction names (intent.ts personSpans), so a name among them typed in
- * lower case ("the stuff ines sent") is read as one too. A relation ("my wife") is not a name.
+ * The phrases of an instruction that name where to copy from, in order, overlapping ones merged. A name is one
+ * capitalized word; `people` are the person spans the instruction names (intent.ts personSpans, senderNames), so a
+ * full name among them ("Ines Quill sent") is read whole, and names typed in lower case ("the stuff ines quill sent")
+ * are read as one. A relation ("my wife") is not a name.
  */
 export function sourcePhrases(instruction: string, people: readonly string[] = []): SourcePhrase[] {
-  const name = [NAME, ...people.filter((p) => /^\p{Ll}/u.test(p) && !/^(?:my|our)\s/iu.test(p)).map(escape)].join("|");
+  const names = people.filter((p) => !/^(?:my|our)\s/iu.test(p));
+  const whole = names.filter((p) => /^\p{Lu}\S*\s/u.test(p)).sort((a, b) => b.length - a.length).map(escape);
+  const lower = names.filter((p) => /^\p{Ll}/u.test(p)).map(escape).join("|");
+  const name = [...whole, ...(lower === "" ? [] : [`(?:${lower})(?:\\s+(?:${lower}))*`]), NAME].join("|");
   const out: SourcePhrase[] = [];
   const negated = (start: number): boolean => NEGATION.test(instruction.slice(Math.max(0, start - 40), start));
   for (const m of instruction.matchAll(PREP_SOURCE)) {
@@ -151,9 +155,8 @@ export function senderNames(instruction: string, model: ScreenModel, form: Windo
 /** Whether the instruction keeps Caret to its own words or rules out reading other windows. */
 export const restrictsSources = (instruction: string): boolean => RESTRICTS.test(instruction);
 
-/** Whether `span` (a person the instruction names) occurs only inside its source phrases. */
-export function onlyInSources(instruction: string, span: string): boolean {
-  const phrases = sourcePhrases(instruction, [span]);
+/** Whether every occurrence of `span` in the instruction sits inside one of `phrases`; false when it has none. */
+function inPhrases(instruction: string, phrases: readonly SourcePhrase[], span: string): boolean {
   let found = false;
   const re = new RegExp(`(?<![\\p{L}])${escape(span)}(?![\\p{L}])`, "gu");
   for (const m of instruction.matchAll(re)) {
@@ -161,6 +164,11 @@ export function onlyInSources(instruction: string, span: string): boolean {
     if (!phrases.some((p) => m.index >= p.start && m.index + m[0].length <= p.end)) return false;
   }
   return found;
+}
+
+/** Whether `span` (a person the instruction names) occurs only inside its source phrases; `people` are all it names. */
+export function onlyInSources(instruction: string, span: string, people: readonly string[] = [span]): boolean {
+  return inPhrases(instruction, sourcePhrases(instruction, [...new Set([span, ...people])]), span);
 }
 
 /** A mail's sender as its "From" line shows it ("Beatrice Sutherland <bea@…>" gives "Beatrice Sutherland"), or null. */
@@ -188,8 +196,11 @@ const STOP = new Set(["the", "my", "this", "that", "from", "for", "and", "with",
  */
 function byName(name: string, windows: readonly WindowState[], titles: boolean): WindowState[] {
   const n = name.toLowerCase();
-  const exact = windows.filter((w) => (isConversation(w) ? wordsOf(senderOf(w) ?? "").includes(n) : titles && wordsOf(w.window.title).includes(n)));
-  if (exact.length > 0 || n.length < 3) return exact;
+  // A full name ("ines quill") names a window that has each of its words.
+  const ns = wordsOf(n);
+  const holds = (ws: readonly string[]): boolean => ns.length > 0 && ns.every((x) => ws.includes(x));
+  const exact = windows.filter((w) => (isConversation(w) ? holds(wordsOf(senderOf(w) ?? "")) : titles && holds(wordsOf(w.window.title))));
+  if (exact.length > 0 || ns.length !== 1 || n.length < 3) return exact;
   const prefix = windows.filter((w) => isConversation(w) && (wordsOf(senderOf(w) ?? "")[0] ?? "").startsWith(n));
   return prefix.length === 1 ? prefix : [];
 }
@@ -248,7 +259,7 @@ export function namedSources(instruction: string, model: ScreenModel, form: Wind
   const missing = phrases.some((p) => !p.negated && p.kind === "titled" && p.noun !== null && APP_NOUNS.includes(p.noun) && resolveFits(p).length === 0);
   const negatedNames = new Set(phrases.filter((p) => p.negated && p.name !== null).map((p) => p.name as string));
   for (const person of people) {
-    if (/^(?:my|our)\s/iu.test(person) || negatedNames.has(person) || phrases.some((p) => p.name === person)) continue;
+    if (/^(?:my|our)\s/iu.test(person) || negatedNames.has(person) || phrases.some((p) => p.name === person) || inPhrases(instruction, phrases, person)) continue;
     for (const w of byName(person, others, false)) add(w, [person]);
   }
   return { named: [...out.values()], excluded: [...excluded], missing };

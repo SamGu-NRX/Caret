@@ -1,11 +1,12 @@
-// Planner and guard rules, each on a synthetic desk shaped like the B31 Ask its describe names. All names, numbers and
-// addresses are invented.
+// Planner and guard rules for whose details an Ask means, which values it spells out, and which phone a field wants.
+// All names, numbers and addresses are invented.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { proposeFill, PAGE_WINDOW_KIND } from "../src/fill/fill.ts";
 import { setGeneratorClock } from "../src/fill/candidates.ts";
-import { checkIntent, intentSnapshot, personSpans, type AskIntent } from "../src/planner/intent.ts";
-import { tieLiterals } from "../src/planner/intent-heads.ts";
+import { checkIntent, intentSnapshot, type AskIntent } from "../src/planner/intent.ts";
+import { headsRequest, readHeads, scopeId, tieLiterals } from "../src/planner/intent-heads.ts";
+import type { JevResult } from "../src/fill/jev.ts";
 import { pointsAtOther, readWhose } from "../src/planner/people.ts";
 import { onlyInSources } from "../src/planner/sources.ts";
 import { field, jevPickingText, MAIL_APP, node, snap, text } from "./builders.ts";
@@ -61,35 +62,49 @@ describe("a person named only as who sent the source is not whose details go in 
     expect(snapFor("fill my contact details, not from marta's email")).toMatchObject({ named: [], excluded: ["mail"] });
   });
 
+  it("reads a sender's whole name typed in lower case as the source", () => {
+    const s = snapFor("do the contact part w the things marta quill sent");
+    expect(readWhose(s, s.others, s.memoryValues).kind).toBe("user");
+    expect(snapFor("fill my contact details, not what marta quill sent")).toMatchObject({ named: [], excluded: ["mail"] });
+  });
+
   it("reads no relation as a sender's name", () => {
     expect(onlyInSources("my wife sent it, put her down as the contact", "my wife")).toBe(false);
   });
 });
 
-describe("a company the instruction gives as a value is not a person (b31-21 shape)", () => {
-  it.each([
-    ["my name + company, its Ferrant Pottery Studio", []],
-    ["my name and employer, it's Vale Copper Labs", []],
-    // People stay people: a surname that is a street word, or a company word the instruction gives as no value.
-    ["put Jimin Park down as my guest", ["Jimin Park", "my guest"]],
-    ["put Ken Co down as the contact", ["Ken Co"]],
-    ["put Ken Co in contact name and fill contact phone", ["Ken Co"]],
-    ["my name + company, its Acme LLC", []],
-    ["use Gary's info for the landlord part", ["Gary"]],
-  ])("finds the people in %s", (instruction, people) => {
-    expect(personSpans(instruction)).toEqual(people);
-  });
-
+describe("a value the instruction gives a company field is not a person (b31-21 shape)", () => {
   const snapOf = (instruction: string, labels: readonly string[]) => {
     const m = new ScreenModel();
     return intentSnapshot(instruction, m, pageForm(m, labels), []);
   };
   const refOf = (s: ReturnType<typeof snapOf>, name: string): string | undefined => s.fields.find((f) => f.name === name)?.ref;
+  const result = (answers: JevResult["answers"]): JevResult => ({ model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 });
+  /** The heads with `whose`, and both scope wordings choosing every field. */
+  const read = (s: ReturnType<typeof snapOf>, whose: string) => {
+    const dflt: Record<string, string> = { route: "some", why: "nothingToFill", source: "any", whose };
+    const heads = result(Object.fromEntries(Object.keys(headsRequest(s).questions).map((id) => [id, { choice: dflt[id] ?? "none", confidence: 0.9 }])));
+    const scope = result(Object.fromEntries(s.fields.map((f) => [scopeId(f.ref), { choice: "asks", confidence: 0.95 }])));
+    return readHeads(s, heads, [scope, scope]);
+  };
+  const COMPANY = "my name + company, its Ferrant Pottery Studio";
+  const FORM = ["First Name", "Last Name", "Company name"];
 
-  it("ties the company the instruction spells out to the company field", () => {
-    const s = snapOf("my name + company, its Ferrant Pottery Studio", ["First Name", "Last Name", "Company name"]);
+  it("ties the company the instruction spells out to the company field, and reads no person in it", () => {
+    const s = snapOf(COMPANY, FORM);
     expect(s.literals).toEqual(["Ferrant Pottery Studio"]);
     expect(tieLiterals(s, s.fields)).toEqual([{ field: refOf(s, "Company name"), text: "Ferrant Pottery Studio" }]);
+    expect(read(s, "user")).toMatchObject({ route: "fill", whose: "user", literals: [{ field: refOf(s, "Company name"), text: "Ferrant Pottery Studio" }] });
+  });
+
+  it("leaves whose details unresolved where the heads left them", () => {
+    expect(read(snapOf(COMPANY, FORM), "unclear")).toMatchObject({ route: "ask", open: ["person"] });
+  });
+
+  it("keeps a name the instruction gives any other field a person", () => {
+    const s = snapOf("set contact name to Dana Lab and fill phone", ["Contact name", "Phone"]);
+    expect(s.persons.map((p) => p.span)).toEqual(["Dana Lab"]);
+    expect(read(s, "unclear")).toMatchObject({ whose: "p1" });
   });
 
   it("ties a quoted company after \"It's\"", () => {
@@ -106,28 +121,39 @@ describe("a company the instruction gives as a value is not a person (b31-21 sha
   });
 });
 
-describe("one of several phones: a sentence's lead-in is not the phone's purpose (b31-13 shape)", () => {
+describe("one of several phones: a lead-in to the user's own note is not the phone's purpose (b31-13 shape)", () => {
   const SIG = "\n\nThanks,\nPriya Raman\nFront Desk, Alder Dental\n(303) 555-0199";
-  const fillMobile = async (body: string) => {
+  const fill = async (body: string, labels: readonly string[] = ["Mobile phone"]) => {
     const m = new ScreenModel();
     m.apply(snap([field("src/body", body, { role: "AXTextArea" })], { at: 900, windowId: "src", title: "Re: your visit", app: MAIL_APP, focused: true }));
-    pageForm(m, ["Mobile phone"]);
-    const p = await proposeFill(m, jevPickingText(() => "(303) 555-0112", 0.93), "form", key("Mobile phone"), 2000);
-    return p.fields.find((f) => f.key === key("Mobile phone"));
+    pageForm(m, labels);
+    const p = await proposeFill(m, jevPickingText(() => "(303) 555-0112", 0.93), "form", key(labels[0] as string), 2000);
+    return Object.fromEntries(labels.map((l) => [l, p.fields.find((f) => f.key === key(l))]));
   };
+  const mobile = async (body: string) => (await fill(body))["Mobile phone"];
 
-  it.each(["As you asked: the visit is at 9:00, best number for you is", "From your earlier email: best number for you is", "As requested, here it is:"])(
+  it.each(["From your earlier note: visit at 9:00, best number for you is", "Per your last message: best number for you is"])(
     "fills the user's phone after \"%s\", beside the sender's own phone",
     async (lead) => {
-      expect(await fillMobile(`Hi Sam,\n\n${lead} (303) 555-0112.${SIG}`)).toMatchObject({ value: "(303) 555-0112", withheld: null });
+      expect(await mobile(`Hi Sam,\n\n${lead} (303) 555-0112.${SIG}`)).toMatchObject({ value: "(303) 555-0112", withheld: null });
     },
   );
 
-  it.each(["Home phone: (303) 555-0112", "Recruiter: Odile Marsh, (303) 555-0112", "From recruiter: (303) 555-0112", "From my work phone: (303) 555-0112", "As my backup: (303) 555-0112"])(
-    "still withholds %s beside another phone, and only then",
-    async (line) => {
-      expect(await fillMobile(`Hi Sam,\n\n${line}${SIG}`)).toMatchObject({ value: null, withheld: "ambiguous" });
-      expect(await fillMobile(`Hi Sam,\n\n${line}`)).toMatchObject({ value: "(303) 555-0112", withheld: null });
-    },
-  );
+  it.each([
+    "Home phone: (303) 555-0112",
+    "Recruiter: Odile Marsh, (303) 555-0112",
+    "From the recruiter: Dana's cell (303) 555-0112",
+    "From my backup: (303) 555-0112",
+    "From your notes: Dana's cell (303) 555-0112",
+    "From your notes: work phone (303) 555-0112",
+  ])("still withholds %s beside another phone, and only then", async (line) => {
+    expect(await mobile(`Hi Sam,\n\n${line}${SIG}`)).toMatchObject({ value: null, withheld: "ambiguous" });
+    expect(await mobile(`Hi Sam,\n\n${line}`)).toMatchObject({ value: "(303) 555-0112", withheld: null });
+  });
+
+  it("keeps the phone out of a field that takes no phone", async () => {
+    const f = await fill(`Hi Sam,\n\nFrom your earlier note: best number for you is (303) 555-0112.${SIG}`, ["Mobile phone", "Delivery instructions"]);
+    expect(f["Mobile phone"]).toMatchObject({ value: "(303) 555-0112" });
+    expect(f["Delivery instructions"]).toMatchObject({ value: null });
+  });
 });

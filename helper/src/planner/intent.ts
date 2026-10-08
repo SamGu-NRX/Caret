@@ -25,7 +25,7 @@ import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
 import { fieldWords, namedSources, onlyInSources, restrictsSources, senderNames, senderOf, type NamedSource } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
-import { COMPANY_WORD, peopleOnScreen, PRONOUN_DETAILS, type PersonCandidate } from "./people.ts";
+import { peopleOnScreen, PRONOUN_DETAILS, type PersonCandidate } from "./people.ts";
 import { SAYS, SaidError, Unclear, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSectionUnknown, saysSsn, type AskPart } from "./says.ts";
 
 export const ROUTES = ["fill", "plan", "ask", "refuse"] as const;
@@ -202,24 +202,14 @@ const CAPITALIZED = /(?<![\p{L}\p{N}'’])(?:Dr\.\s+|Ms\.\s+|Mr\.\s+|Mrs\.\s+)?\
 /** Capitalized words that are not people in an instruction. Written for common requests, not measured. */
 const NOT_PEOPLE = new Set(["I", "RSVP", "Caret", "Please", "Fill", "Use", "Put", "Add", "Make", "Set", "Ship", "Book", "Sign", "Pick", "Choose", "Do", "Can", "Just", "Go", "Grab", "Register", "Write", "Copy", "Enter", "Type", "Change", "Ok", "Okay", "Actually", "My", "Our", "The", "This", "That", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "LinkedIn", "GitHub", "Google", "Chrome", "Mail", "Gmail", "Outlook", "TextEdit", "Notes", "SSN"]);
 
-/** A run of capitalized words, however long ("Okafor Design Studio", "Acme LLC"). */
-const CAPITALIZED_RUN = /(?<![\p{L}\p{N}'’])\p{Lu}[\p{L}'’.-]*(?:\s+\p{Lu}[\p{L}'’.-]*)*/gu;
-
-/**
- * The people an instruction names, each an exact span of it once: names (a possessive's "'s" dropped) and relations. A
- * value the instruction spells out (spans.ts) whose capitalized run holds a company's word is a company, not a person:
- * "my name + company, it's Okafor Design Studio". Both are needed: "put Ken Co down as the contact" names a person.
- */
+/** The people an instruction names, each an exact span of it once: names (a possessive's "'s" dropped) and relations. */
 export function personSpans(instruction: string): string[] {
   const out: string[] = [];
   const add = (s: string): void => {
     const t = s.trim();
     if (t !== "" && !out.includes(t) && occursBounded(instruction, t)) out.push(t);
   };
-  const values = instructionValues(instruction);
-  const companies = [...instruction.matchAll(CAPITALIZED_RUN)].filter((m) => values.some((v) => v.includes(m[0])) && m[0].split(/\s+/u).some((w) => COMPANY_WORD.test(w)));
   for (const m of instruction.matchAll(CAPITALIZED)) {
-    if (companies.some((c) => m.index >= c.index && m.index < c.index + c[0].length)) continue;
     const words = m[0].replace(/['’]s$/u, "").split(/\s+/u);
     // Drop a sentence's capitalized first word ("Use Gary's info"): only the words after it can be a name.
     const kept = words.filter((w) => !NOT_PEOPLE.has(w.replace(/['’]s$/u, "")));
@@ -572,7 +562,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
     // A person the instruction names only as where to copy from ("from Morgan's email", "the Saturday Chris mentioned")
     // is not whose details go in: the source's words never set the scope. Unless the instruction asks for someone's
     // details by a pronoun ("from Dana's message, with her contact details"): then the source is whose they are.
-    if (person !== null && onlyInSources(snap.instruction, person) && !PRONOUN_DETAILS.test(fieldWords(snap.instruction))) person = null;
+    if (person !== null && onlyInSources(snap.instruction, person, snap.persons.map((p) => p.span)) && !PRONOUN_DETAILS.test(fieldWords(snap.instruction))) person = null;
   }
 
   const scope: FillScope = {

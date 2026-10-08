@@ -85,11 +85,8 @@ export function peopleOnScreen(model: ScreenModel, form: WindowState, memory: re
 function personShaped(name: string): boolean {
   const ws = name.replace(/^(?:Dr|Mr|Mrs|Ms|Mx|Prof)\.?\s+/u, "").split(/\s+/u);
   if (ws.length < 2 || ws.length > 4) return false;
-  return !ws.some((w) => COMPANY_WORD.test(w) || /^(?:Co|Bank|Apartments?|Court|Street|St|Ave|Avenue|Rd|Road|Lane|Blvd|Drive|Way|Park|Center|Centre|School|College|University|Hospital|Summit|Notes?|Application|Form|Team)\.?$/u.test(w));
+  return !ws.some((w) => /^(?:Inc|LLC|Ltd|Co|Corp|Company|Labs?|Group|Partners|Bank|Bakery|Clinic|Health|Analytics|Outdoor|Dental|Apartments?|Court|Street|St|Ave|Avenue|Rd|Road|Lane|Blvd|Drive|Way|Park|Center|Centre|School|College|University|Hospital|Studio|Design|Systems|Services|Summit|Subaru|Notes?|Application|Form|Team)\.?$/u.test(w));
 }
-
-/** A word that ends a company's name and is no common surname ("Co" and "Bank" are). Written for common names, not measured. */
-export const COMPANY_WORD = /^(?:Inc|LLC|Ltd|Corp|Company|Labs?|Group|Partners|Bakery|Clinic|Health|Analytics|Outdoor|Dental|Studio|Design|Systems|Services|Subaru)\.?$/u;
 
 /** Whose details code reads the instruction as asking for, or none when it cannot tell without the maker. */
 export type WhoseReading =
@@ -116,7 +113,7 @@ export function pointsAtOther(snap: IntentSnapshot): boolean {
   const instruction = snap.instruction;
   const fw = fieldWords(instruction);
   if (USER_TOO.test(fw)) return false;
-  return THIRD_PERSON.test(fw) || snap.persons.some((p) => !onlyInSources(instruction, p.span));
+  return THIRD_PERSON.test(fw) || snap.persons.some((p) => !onlyInSources(instruction, p.span, snap.persons.map((x) => x.span)));
 }
 
 /** The user named beside someone else: "for me and Bea", "Bea and I", "both of us". */
@@ -125,13 +122,18 @@ const USER_TOO = /\b(?:me|myself|i)\s+(?:and|&|\+)\s+\S|\S\s+(?:and|&|\+)\s+(?:m
 /**
  * Whose details the instruction asks for, by code. `others` are the people on screen and in memory (peopleOnScreen).
  * One person per Ask: two names, two relations or two people in its sources ask which one, never fill for both.
+ * `orgValues` are the values the instruction gives a company or organization field (intent-heads.ts tieLiterals): a
+ * name inside one ("company, it's Okafor Design Studio") is that value, not a person, and says nothing of whose details
+ * go in, so with no one else named the reading is left to the maker.
  */
-export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate[], memory: readonly MemoryValue[]): WhoseReading {
+export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate[], memory: readonly MemoryValue[], orgValues: readonly string[] = []): WhoseReading {
   const instruction = snap.instruction;
   // A name right before a form noun names the form, not a person: "the Northgate application" (A1 held-out B25). Any other
   // place keeps it a person, a word of the form's title or not ("the RSVP for Jun or Bea"; A1 fix-check).
   const formName = (span: string): boolean => new RegExp(`(?<![\\p{L}])${span.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?:['’]s)?\\s+(?:${FORM_NOUN})\\b`, "iu").test(instruction);
-  const named = snap.persons.filter((p) => !onlyInSources(instruction, p.span) && !formName(p.span));
+  const people = snap.persons.map((p) => p.span);
+  const orgValue = (span: string): boolean => orgValues.some((v) => v.includes(span));
+  const named = snap.persons.filter((p) => !orgValue(p.span) && !onlyInSources(instruction, p.span, people) && !formName(p.span));
   const relations = named.filter((p) => RELATION_SPAN.test(p.span));
   const names = named.filter((p) => !RELATION_SPAN.test(p.span));
   if (named.length > 0 && USER_TOO.test(fieldWords(instruction))) return { kind: "user", why: "the user is named beside them: each field's own details" };
@@ -145,6 +147,7 @@ export function readWhose(snap: IntentSnapshot, others: readonly PersonCandidate
     return { kind: "unread", why: `memory has no one as ${rel}` };
   }
   if (relations.length > 1) return { kind: "ask", candidates: relations.map((p) => p.span), why: "the instruction names more than one relation" };
+  if (snap.persons.some((p) => orgValue(p.span))) return { kind: "unread", why: "the only name it gives is a company field's value" };
   // No one named: a pronoun for someone's details is the one other person in the instruction's sources.
   const fw = fieldWords(instruction);
   if (!PRONOUN_DETAILS.test(fw) && !PRONOUN.test(fw)) return { kind: "user", why: "no one else is named" };

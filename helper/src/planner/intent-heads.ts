@@ -25,7 +25,7 @@ import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { ROUTE_CUTOFF } from "./intent-makers.ts";
 import { snapMint, UNNAMED_SECTION as SECTION, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
 import { relevance } from "./planner.ts";
-import { dateShaped, timeShaped } from "../fill/kinds.ts";
+import { dateShaped, organizationField, timeShaped } from "../fill/kinds.ts";
 import { fieldWords, restrictsSources } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
 import { jevFailedError, type AskPart } from "./says.ts";
@@ -594,7 +594,9 @@ function readHeadsIntent(snap: IntentSnapshot, heads: JevResult, scope: readonly
   // Whose. Code's reading first (A1 decision 2, people.ts): the user, a person the instruction names, the one other person
   // in its sources or a relation's memory entry, or a question when it finds more than one. When code cannot tell, the
   // head: unsettled with a person named, or someone else unnamed, is a question; unsettled with no one named is the user.
-  const code = readWhose(snap, snap.others, snap.memoryValues);
+  const orgValues = literals.filter((l) => organizationField(snap.fields.find((f) => f.ref === l.field)?.name ?? "")).map((l) => l.text);
+  const orgRef = (ref: string): boolean => snap.persons.some((p) => p.ref === ref && orgValues.some((v) => v.includes(p.span)));
+  const code = readWhose(snap, snap.others, snap.memoryValues, orgValues);
   const whose = settled(heads, "whose");
   let person: string | null = null;
   let named: string | undefined;
@@ -603,8 +605,9 @@ function readHeadsIntent(snap: IntentSnapshot, heads: JevResult, scope: readonly
   else if (code.kind === "person") ((person = code.ref), (named = code.name ?? undefined));
   else if (code.kind === "ask") open.push("person");
   else {
-    person = whose !== null && snap.persons.some((p) => p.ref === whose) ? whose : null;
-    if (whose === "unclear" || (whose === null && snap.persons.length > 0)) open.push("person");
+    person = whose !== null && snap.persons.some((p) => p.ref === whose) && !orgRef(whose) ? whose : null;
+    // A head that took a company field's value for the person settles nothing.
+    if (whose === "unclear" || (whose === null && snap.persons.length > 0) || (whose !== null && orgRef(whose))) open.push("person");
     unnamed = whose === "unclear";
   }
 

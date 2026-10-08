@@ -15,7 +15,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, mintCandidate, PLACEMENT_SAYS, viewOf, type Candidate } from "./candidates.ts";
-import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words, type TextKind } from "./kinds.ts";
+import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import type { Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
@@ -811,12 +811,12 @@ const purposeOf = (labels: readonly (string | null)[]): Set<string> =>
 const SECOND = new Set(["alternate", "alternative", "backup", "secondary", "additional", "second"]);
 const samePurpose = (w: string): string => (SECOND.has(w) ? "alternate" : w);
 /**
- * A label that says where its line came from or answers a request, not what a value on it is for: "From your earlier
- * note: … the best number for you is …", "As we discussed: …". One that names the value's own kind ("From my work
- * phone:") still says its purpose, and so does a role ("Recruiter:", "From recruiter:", "As my backup:").
+ * "From your …:", "Per your …:": a label that says the line came from the user's own note or message, so it says nothing
+ * of what a value on it is for. The words just before the value say that instead ("… best number for you is").
  */
-const LEAD_IN = /^(?:(?:from|per)\s+(?:my|your|our|his|her|their|the|this|that|what)|as\s+(?:you|we|i|requested|promised|discussed|asked|agreed))\b/iu;
-const leadIn = (label: string, kind: TextKind): boolean => LEAD_IN.test(label) && ![...fieldKinds([label])].some((k) => k === kind);
+const YOUR_LEAD_IN = /^(?:from|per)\s+your\b/iu;
+/** Words that rank one of a person's values over the others ("the best number for you"), not what it is for. Not measured. */
+const RANKS: ReadonlySet<string> = new Set(["best", "preferred"]);
 /** Kinds of which a screen often shows several, each labelled for what it is for. */
 const LABELLED_KINDS: ReadonlySet<string> = new Set(["email", "phone", "url"]);
 /** Kinds whose values are someone's: whose they are is asked before one fills a field that wants someone's (B24 owner veto). */
@@ -2010,6 +2010,12 @@ export async function proposeFill(
     const named = [...fieldTerms(f.labelWords)].filter((t) => !isKindTerm(t) && t !== NAME_TERM && !KIND_ONLY_WORDS.has(t));
     return !named.some((t) => said.has(t));
   };
+  /** The words just before a value on its line, after the line's label, back to a comma, a semicolon or "and". */
+  const wordsBefore = (c: Candidate): string => {
+    const node = viewOf(model, c.source.windowId)?.nodes.get(c.source.nodeKey);
+    const line = node === undefined ? "" : (nodeText(node).split(/\r?\n/u).find((l) => l.includes(c.text)) ?? "");
+    return line.slice(line.indexOf(":") + 1, line.indexOf(c.text)).split(/[,;]|\band\b/iu).at(-1) ?? "";
+  };
   /**
    * Whether a window's value is one of several of its kind (an email, phone or link) on screen, labelled for a purpose
    * the field's label does not name, so which of them the field wants is a guess. W4's real-site replay offered
@@ -2025,8 +2031,11 @@ export async function proposeFill(
     // A value the user's instruction spells out for this field is their choice among them (B27 review).
     if (p.from !== "window" || p.c.labelled !== true || p.c.context === null || literalOf(f) === p.c.text) return false;
     const kind = textKind(p.c.text);
-    if (!LABELLED_KINDS.has(kind) || leadIn(p.c.context, kind)) return false;
-    const purpose = new Set([...purposeOf([p.c.context])].map(samePurpose));
+    if (!LABELLED_KINDS.has(kind)) return false;
+    // Only into a field of the value's own kind: a phone after "From your note:" is no answer for Delivery instructions.
+    const yours = YOUR_LEAD_IN.test(p.c.context) && [...f.kinds].some((k) => k === kind);
+    const said = yours ? [...purposeOf([wordsBefore(p.c)])].filter((t) => !RANKS.has(t)) : [...purposeOf([p.c.context])];
+    const purpose = new Set(said.map(samePurpose));
     const named = new Set([...purposeOf(f.labelWords)].map(samePurpose));
     if (purpose.size === 0 || [...purpose].some((t) => named.has(t))) return false;
     return candidates.some((c) => c.text !== p.c.text && textKind(c.text) === kind);
