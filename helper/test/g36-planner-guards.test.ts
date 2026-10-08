@@ -1,18 +1,14 @@
 // Planner and guard rules for whose details an Ask means, which values it spells out, and which phone a field wants.
 // All names, numbers and addresses are invented.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { proposeFill, PAGE_WINDOW_KIND } from "../src/fill/fill.ts";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { checkIntent, intentSnapshot, type AskIntent } from "../src/planner/intent.ts";
 import { headsRequest, readHeads, scopeId, tieLiterals } from "../src/planner/intent-heads.ts";
 import type { JevResult } from "../src/fill/jev.ts";
 import { pointsAtOther, readWhose } from "../src/planner/people.ts";
 import { onlyInSources } from "../src/planner/sources.ts";
 import { field, jevPickingText, MAIL_APP, node, snap, text } from "./builders.ts";
-
-beforeAll(() => setGeneratorClock(() => 0));
-afterAll(() => setGeneratorClock(null));
 
 const W = "dev.caret.page/g36";
 const CHROME = { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" };

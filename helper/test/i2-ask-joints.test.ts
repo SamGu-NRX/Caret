@@ -3,8 +3,7 @@
 // marker word is sent as what it is, never as its words (planner/intent.ts snapMint). SC1 retired G2's wire check for
 // those words: the client's last check is for formats (privacy.ts assertNoExcludedValue), and the request is sealed by
 // its Disclosure (privacy/disclosure.ts), which mints only text the redacted view keeps. W1's canned engines answer by each request's purpose, so the new request must name one.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
+import { describe, expect, it } from "vitest";
 import { assertNoExcludedValue } from "../src/privacy.ts";
 import { secretText } from "../src/memory/sensitive.ts";
 import { questionKind } from "../src/engines/decide/canned.ts";
@@ -21,9 +20,6 @@ import { fileURLToPath } from "node:url";
 import { Snapshot } from "../src/protocol.ts";
 import { buildDesk, loadCorpus } from "../scripts/realfill-corpus.ts";
 import { rng } from "./large-scene.ts";
-
-beforeEach(() => setGeneratorClock(() => 0));
-afterEach(() => setGeneratorClock(null));
 
 const SECRET_LABEL = "Password hint";
 const SECRET_HEADING = "Account PIN";

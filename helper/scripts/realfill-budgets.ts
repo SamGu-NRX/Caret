@@ -12,7 +12,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { collectCandidates, labelledLines, setGeneratorClock } from "../src/fill/candidates.ts";
+import { collectCandidates, labelledLines } from "../src/fill/candidates.ts";
 import { describeField } from "../src/fill/descriptor.ts";
 import { formInputs } from "../src/fill/fill.ts";
 import { fieldTerms } from "../src/fill/kinds.ts";
@@ -31,9 +31,6 @@ const { values: a } = parseArgs({
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
-// The generator's time budget reads a fixed clock, so a cold first form is not stopped partway (it was: the
-// first three forms of one run offered half their candidates).
-setGeneratorClock(() => 0);
 const corpus = loadCorpus(resolve(a.corpus));
 const snaps = readFileSync(resolve(a.windows), "utf8").trim().split("\n").map((l) => Snapshot.parse(JSON.parse(l)));
 

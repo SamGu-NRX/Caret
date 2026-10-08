@@ -52,7 +52,6 @@ import { macClock } from "../src/offers/event-time.ts";
 import { headsIntentMaker } from "../src/planner/intent-heads.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { cannedReply, type CannedAnswer, type CannedRules } from "../src/engines/decide/canned.ts";
-import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { isChecked, setCheckObserver, type CheckedValue, type Proposed } from "../src/fill/contract.ts";
 import { aboutKind, type AboutValue } from "../src/fill/about.ts";
 import { words } from "../src/fill/kinds.ts";
@@ -87,9 +86,6 @@ const OUT = resolve(a.values.out);
 const SETS = new Set(a.values.sets.split(",").map((s) => s.trim()));
 if (a.values.verifier !== "accept" && a.values.verifier !== "refuse") throw new Error(`--verifier is accept or refuse, not ${a.values.verifier}`);
 const VERIFIER: "accept" | "refuse" = a.values.verifier;
-
-// The generator's time budget reads a fixed clock, so a loaded machine cannot stop it partway and change what is offered.
-setGeneratorClock(() => 0);
 
 /** One field with a key: its node on the desk, its label, and the values the key takes. */
 type KeyField = { key: string; label: string } & (

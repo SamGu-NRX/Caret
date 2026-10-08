@@ -1,1 +1,0 @@
-Onboarding promise: PermissionsScreen.privacyLine reads bundle PrivacyPromise.txt (nil under swift run/xctest); renders and tests inject their own PrivacyPromise. CARET_VERIFY_PRIVACY_RESOURCE: gate refuses a finished app whose copy is missing, empty or not PRIVACY_PROMISE.

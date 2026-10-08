@@ -5,13 +5,13 @@ import { Disclosure } from "../src/privacy/disclosure.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { ScreenModel } from "../src/model.ts";
-import { collectCandidates, setGeneratorClock } from "../src/fill/candidates.ts";
+import { collectCandidates } from "../src/fill/candidates.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { fieldTerms } from "../src/fill/kinds.ts";
 import { WINDOW_CHARS, windowBudget } from "../src/privacy.ts";
@@ -22,11 +22,6 @@ import type { AskJev } from "../src/fill/jev.ts";
 import { field, snap, text, value } from "./builders.ts";
 import { FORM_KEY, MESSAGES, SCHEDULE_FORM as FORM, chatWindow, notesWindow, scheduleForm } from "./desks.ts";
 import { minted } from "./mint.ts";
-
-// The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and
-// change an answer these tests check (candidates.ts setGeneratorClock).
-beforeAll(() => setGeneratorClock(() => 0));
-afterAll(() => setGeneratorClock(null));
 
 const CALENDAR: AppRef = { pid: 6363, bundleId: "dev.caret.calendar", name: "Calendar" };
 const NOTES: AppRef = { pid: 6464, bundleId: "dev.caret.notes", name: "Notes" };
@@ -123,8 +118,7 @@ describe("B13 review: no wrong fill from a partial set", () => {
     const labels = ["Start time", "Meeting date"];
     m.apply(scheduleForm(2000, labels));
     const ledger = new Disclosure(m.windows.values());
-    // No time budget, so only the cap stops it: under a loaded test run the 15 ms clock can stop it first.
-    const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: labels.map((l) => fieldTerms([l])), budgetMs: Number.POSITIVE_INFINITY });
+    const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: labels.map((l) => fieldTerms([l])) });
     expect(candidates).toHaveLength(80);
     expect(candidates.map((c) => c.text)).toContain(DECOY);
     expect(candidates.map((c) => c.text)).not.toContain(MEETING);
