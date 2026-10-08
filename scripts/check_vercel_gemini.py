@@ -23,21 +23,38 @@ def refusals(root: Path) -> list[str]:
     if os.environ.get("CARET_DEV_VERCEL_GEMINI") == "1":
         reasons.append("CARET_DEV_VERCEL_GEMINI=1 enables a development-only route; unset it before building Caret")
     known_plists = [root / "apps/mac/Sources/Caret/Info.plist", root / "apps/caret/Bundle/Info.plist"]
-    configured = os.environ.get("INFOPLIST_FILE")
-    if configured and (root / configured).resolve() not in [path.resolve() for path in known_plists]:
-        reasons.append(f"INFOPLIST_FILE points outside the reviewed plists: {configured}")
+
+    def check_plist(path: Path, kind: str) -> None:
+        with path.open("rb") as stream:
+            plist = plistlib.load(stream)
+        launch_env = plist.get("LSEnvironment", {})
+        if not isinstance(launch_env, dict):
+            reasons.append(f"{kind} Info.plist {path}: LSEnvironment must be a dictionary")
+        elif str(launch_env.get("CARET_DEV_VERCEL_GEMINI", "")) == "1":
+            reasons.append(f"{kind} Info.plist {path}: LSEnvironment enables CARET_DEV_VERCEL_GEMINI=1; packaged config cannot enable Vercel Gemini")
+
+    # A previous build's safe output cannot vouch for a source changed since that build.
+    sources = [(name, os.environ[name]) for name in ("INFOPLIST_FILE", "CARET_SOURCE_PLIST") if os.environ.get(name)]
+    if not sources:
+        sources = [("INFOPLIST_FILE", str(known_plists[0]))]
+    for name, configured in sources:
+        source = (root / configured).resolve()
+        if source not in [path.resolve() for path in known_plists]:
+            reasons.append(f"{name} points outside the reviewed plists: {configured}")
+        else:
+            check_plist(source, "source")
+
+    # Only the final phase may read Xcode's output: before processing it can be stale.
     effective = os.environ.get("CARET_BUILD_PLIST")
-    target, relative = os.environ.get("TARGET_BUILD_DIR"), os.environ.get("INFOPLIST_PATH")
-    if not effective and target and relative and (Path(target) / relative).is_file():
-        effective = str(Path(target) / relative)
-    plist_path = Path(effective) if effective else root / "apps/mac/Sources/Caret/Info.plist"
-    with plist_path.open("rb") as stream:
-        plist = plistlib.load(stream)
-    launch_env = plist.get("LSEnvironment", {})
-    if not isinstance(launch_env, dict):
-        reasons.append("Info.plist LSEnvironment must be a dictionary")
-    elif str(launch_env.get("CARET_DEV_VERCEL_GEMINI", "")) == "1":
-        reasons.append("Info.plist LSEnvironment enables CARET_DEV_VERCEL_GEMINI=1; packaged config cannot enable Vercel Gemini")
+    requires_processed = os.environ.get("CARET_REQUIRE_PROCESSED_PLIST") == "1"
+    if requires_processed or effective:
+        target, relative = os.environ.get("TARGET_BUILD_DIR"), os.environ.get("INFOPLIST_PATH")
+        if not effective and target and relative:
+            effective = str(Path(target) / relative)
+        if effective and Path(effective).is_file():
+            check_plist(Path(effective), "processed")
+        else:
+            reasons.append(f"processed Info.plist is missing: {effective or 'no bundle plist path was supplied'}")
     return reasons
 
 

@@ -1,0 +1,1 @@
+Xcode's first privacy phase checks source plists; its last requires the processed bundle plist as an input. Release helper env-file extraction preserves TypeSafe key/provider/model/cap and refuses other providers before spawn.

@@ -72,5 +72,63 @@ class PrivacyFollowupTests(unittest.TestCase):
             plist = Path(directory) / "Caret.app/Contents/Info.plist"
             plist.parent.mkdir(parents=True)
             plist.write_bytes(plistlib.dumps({"LSEnvironment": {"CARET_DEV_VERCEL_GEMINI": "1"}}))
-            with patch.dict(os.environ, {"TARGET_BUILD_DIR": directory, "INFOPLIST_PATH": "Caret.app/Contents/Info.plist", "INFOPLIST_FILE": "apps/mac/Sources/Caret/Info.plist"}, clear=True):
+            with patch.dict(os.environ, {"TARGET_BUILD_DIR": directory, "INFOPLIST_PATH": "Caret.app/Contents/Info.plist", "INFOPLIST_FILE": "apps/mac/Sources/Caret/Info.plist", "CARET_REQUIRE_PROCESSED_PLIST": "1"}, clear=True):
                 self.assertTrue(any("LSEnvironment" in why for why in checker.refusals(ROOT)))
+
+    def test_stale_safe_output_cannot_hide_unsafe_selected_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "caret").mkdir()
+            (root / "caret/completions.py").write_text("VERCEL_GEMINI_ENABLED = False\n")
+            for selected in ("apps/mac/Sources/Caret/Info.plist", "apps/caret/Bundle/Info.plist"):
+                source = root / selected
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(plistlib.dumps({"LSEnvironment": {"CARET_DEV_VERCEL_GEMINI": "1"}}))
+                built = root / "build/Caret.app/Contents/Info.plist"
+                built.parent.mkdir(parents=True, exist_ok=True)
+                built.write_bytes(plistlib.dumps({}))
+                with self.subTest(source=selected), patch.dict(os.environ, {
+                    "INFOPLIST_FILE": selected, "TARGET_BUILD_DIR": str(root / "build"),
+                    "INFOPLIST_PATH": "Caret.app/Contents/Info.plist",
+                }, clear=True):
+                    self.assertTrue(any("LSEnvironment" in why for why in checker.refusals(root)))
+
+    def test_required_processed_plist_must_exist(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "CARET_REQUIRE_PROCESSED_PLIST": "1", "TARGET_BUILD_DIR": directory,
+            "INFOPLIST_PATH": "Caret.app/Contents/Info.plist",
+        }, clear=True):
+            self.assertTrue(any("processed Info.plist" in why for why in checker.refusals(ROOT)))
+
+    def test_final_xcode_gate_depends_on_processed_plist_and_runs_last(self):
+        text = (ROOT / "Caret.xcodeproj/project.pbxproj").read_text()
+        target = re.search(r'/\* Caret \*/ = \{\s*isa = PBXNativeTarget;.*?buildPhases = \((.*?)\);', text, re.S)
+        self.assertIsNotNone(target)
+        self.assertTrue(target.group(1).strip().splitlines()[-1].endswith("/* Processed privacy gate */,"))
+        phase = re.search(r'/\* Processed privacy gate \*/ = \{(.*?)\n\t\t\};', text, re.S)
+        self.assertIsNotNone(phase)
+        self.assertIn('"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)"', phase.group(1))
+        self.assertIn("CARET_REQUIRE_PROCESSED_PLIST=1", phase.group(1))
+        self.assertIn("$TARGET_BUILD_DIR/$INFOPLIST_PATH", phase.group(1))
+        self.assertIn("alwaysOutOfDate = 1;", phase.group(1))
+        self.assertIn("runOnlyForDeploymentPostprocessing = 0;", phase.group(1))
+        self.assertIn("scripts/privacy_gate.sh", phase.group(1))
+
+    def test_v2_bundler_checks_selected_source_and_copied_plist_before_signing(self):
+        text = (ROOT / "apps/caret/scripts/build-app.sh").read_text()
+        self.assertIn('CARET_SOURCE_PLIST="$root/apps/caret/Bundle/Info.plist"', text)
+        self.assertIn('CARET_REQUIRE_PROCESSED_PLIST=1', text)
+        final = text.index('CARET_BUILD_PLIST="$PWD/$contents/Info.plist"')
+        self.assertLess(text.index('cp Bundle/Info.plist'), final)
+        self.assertLess(final, text.index('sign --identifier'))
+
+    def test_source_gate_does_not_block_on_stale_output_before_processing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plist = Path(directory) / "Caret.app/Contents/Info.plist"
+            plist.parent.mkdir(parents=True)
+            plist.write_bytes(plistlib.dumps({"LSEnvironment": {"CARET_DEV_VERCEL_GEMINI": "1"}}))
+            with patch.dict(os.environ, {
+                "TARGET_BUILD_DIR": directory, "INFOPLIST_PATH": "Caret.app/Contents/Info.plist",
+                "INFOPLIST_FILE": "apps/mac/Sources/Caret/Info.plist",
+            }, clear=True):
+                self.assertEqual(checker.refusals(ROOT), [])

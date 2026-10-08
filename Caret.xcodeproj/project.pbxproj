@@ -299,6 +299,7 @@
 				B10000000000000000000003 /* Sources */,
 				B10000000000000000000005 /* Frameworks */,
 				B10000000000000000000004 /* Resources */,
+				E90000000000000000000F02 /* Processed privacy gate */,
 			);
 			buildRules = (
 			);
@@ -407,7 +408,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "export CARET_PRIVACY_RESOURCE=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/PrivacyPromise.txt\"\nexec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
+			shellScript = "unset CARET_BUILD_PLIST CARET_REQUIRE_PROCESSED_PLIST\nexport CARET_PRIVACY_RESOURCE=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/PrivacyPromise.txt\"\nexec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
+		};
+		E90000000000000000000F02 /* Processed privacy gate */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			/* This input orders the final check after ProcessInfoPlistFile; signing waits for target phases. */
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Processed privacy gate";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "export CARET_BUILD_PLIST=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\nexport CARET_REQUIRE_PROCESSED_PLIST=1\nexec /bin/sh \"$SRCROOT/scripts/privacy_gate.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
