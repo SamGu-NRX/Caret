@@ -1500,7 +1500,7 @@ class WatchTest(Temp):
     def test_memory_is_sampled_before_a_window_stop(self):
         # P2.4: the scan that stops for a window still adds its memory sample.
         import supervise
-        sup = self.supervisor(self.Tracker([{4242: 1}], {4242: 7}), probes=self.Probes(footprint=1 << 20),
+        sup = self.supervisor(self.Tracker([{4242: 1}], {4242: 7}), probes=self.Probes(usage={4242: (1, 7)}, footprint=1 << 20),
                               owners=self.owners_file(4242))
         stop = self.watch(sup, self.leader(exited=False))
         self.assertEqual(stop[1], supervise.EXIT_WINDOW)
@@ -1510,17 +1510,40 @@ class WatchTest(Temp):
     def test_window_and_memory_cap_together_take_the_short_grace_and_both_reasons(self):
         # P2.4: a window stop alone has the profile's grace; with the memory cap also exceeded, the cap's short one.
         import supervise
-        sup = self.supervisor(self.Tracker([{4242: 1}], {4242: 7}), probes=self.Probes(footprint=2 << 30),
+        sup = self.supervisor(self.Tracker([{4242: 1}], {4242: 7}), probes=self.Probes(usage={4242: (1, 7)}, footprint=2 << 30),
                               owners=self.owners_file(4242), mem_cap_gib=1)
         stop = self.watch(sup, self.leader(exited=False))
         self.assertEqual(sup.stopped[0][2], supervise.MEMORY_CAP_GRACE_S)
         self.assertIn("on-screen window", stop[2])
         self.assertIn("memory cap of 1 GiB exceeded", stop[2])
         self.assertEqual(sorted(r["kind"] for r in sup.record["stop_reasons"]), ["memory", "window"])
-        alone = self.supervisor(self.Tracker([{4242: 1}], {4242: 7}), probes=self.Probes(footprint=1),
+        alone = self.supervisor(self.Tracker([{4242: 1}], {4242: 7}), probes=self.Probes(usage={4242: (1, 7)}, footprint=1),
                                 owners=self.owners_file(4242), mem_cap_gib=1)
         self.watch(alone, self.leader(exited=False))
         self.assertIsNone(alone.stopped[0][2])  # the profile's term_grace_s
+
+
+    def test_window_owners_are_compared_by_pid_and_start_time(self):
+        # A window owner whose pid the job once had, but started at another time, is a reused pid, not the job's.
+        import supervise
+        owners = self.owners_file(4242)
+        for started, stops in ((9, False), (7, True)):
+            with self.subTest(started=started):
+                sup = self.supervisor(self.Tracker([{4242: 1}], {4242: 7}), probes=self.Probes(usage={4242: (1, started)}),
+                                      owners=owners)
+                stop = sup._window_stop({4242: 1})
+                self.assertEqual(stop is not None, stops, stop)
+                if stops:
+                    self.assertEqual(stop[1], supervise.EXIT_WINDOW)
+
+    def test_an_owner_whose_start_cannot_be_read_is_unknown(self):
+        import supervise
+        sup = self.supervisor(self.Tracker([{4242: 1}], {4242: 7}),
+                              probes=self.Probes(usage={4242: PermissionError("hidden")}), owners=self.owners_file(4242))
+        stop = sup._window_stop({4242: 1})
+        self.assertEqual(stop[1], supervise.EXIT_WINDOW)
+        self.assertIn("4242", stop[2])
+        self.assertIn("start time cannot be read", stop[2])
 
 
 class LeaseKindTest(Temp):

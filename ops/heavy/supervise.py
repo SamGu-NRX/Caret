@@ -1008,9 +1008,23 @@ class Supervisor:
         """A stop when a process of this browser-lane job owns an on-screen window, or when the window list cannot be
         read (the evidence the lane needs would be missing): lr-lease's browser kind is for headless batches only."""
         try:
-            windowed = sorted(self._window_owners() & set(owned))
+            owners = self._window_owners()
         except OSError as ex:
             return ("window", EXIT_WINDOW, "the on-screen window list cannot be read for this browser-lane job: {}".format(ex))
+        # Compared as the tracker knows its processes, by (pid, start time): a pid the job had, now reused by another
+        # process with a window, is not the job's.
+        windowed, unknown = [], []
+        for pid in sorted(owners & set(owned)):
+            try:
+                usage = self.probes.usage(pid)
+            except (PermissionError, OSError):
+                unknown.append(pid)
+                continue
+            if usage is not None and usage[1] == self.tracker.tracked.get(pid):
+                windowed.append(pid)
+        if unknown:
+            return ("window", EXIT_WINDOW, "window owner(s) {} have a pid of this browser-lane job, but their start time "
+                    "cannot be read, so whether they are its processes is unknown".format(unknown))
         if windowed:
             return ("window", EXIT_WINDOW, "process(es) {} of this browser-lane job own an on-screen window; the "
                     "browser lane is for headless batches only".format(windowed))
