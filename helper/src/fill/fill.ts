@@ -1,4 +1,5 @@
-import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
+import { Disclosure, LedgerRefused, measureBytes, type ModelText } from "../privacy/disclosure.ts";
+import { writeLocalFile } from "../privacy/store-path.ts";
 import { instructionForModel, redactWindow } from "./redact.ts";
 // Grounded fill: one Jev request per form, one Choice question per empty field, each offering
 // the same candidate spans plus "none" (deep plan section 5, "Fill"). Jev picks a candidate id;
@@ -19,7 +20,7 @@ import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTer
 import type { Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
 import { ABOUT_KIND_SAYS, ABOUT_SAYS, aboutFits, fieldAsksFor, fieldAsksForNamePart, fieldAsksForPart, type AboutKind, type AboutValue } from "./about.ts";
-import type { AskJev, JevRequest, JevResult } from "./jev.ts";
+import { wireBody, type AskJev, type JevRequest, type JevResult } from "./jev.ts";
 import { boxKind, boxNeverTicked, consentLike, describeControl, mintControl, formControls, inWebArea, labelTies, matchOption, namedInList, optionInText, optionLink, optionNamedBy, namesField, leavesChoiceOpen, statesFact, type Control, type FormControl, type OptionLink } from "./controls.ts";
 import { asksCountry, asksPlace, dateOrderHint, type DateOrder, dateParts, datePart, datePartOf, fieldPart, joinName, monthIndex, monthOption, monthYear, namePart, partFits, placeWithCountry, splitAddress, splitDate, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { autocompletePart, checkValues, ContractError, isChecked, makeFieldContract, mintExempt, requireChecked, VerifierUnavailable, windowProvenance, type Checked, type CheckedValue, type VerifyUse, type DeriveHow, type ExemptRule, type FieldContract, type Owner, type Proposed, type Provenance } from "./contract.ts";
@@ -836,6 +837,78 @@ const MAX_OWNERS = 40;
  * descriptions, so it shows no cost in code; what a model loses without the block head is unmeasured (no live run).
  */
 const VALUE_BLOCK_HEAD = false;
+
+/**
+ * PROTOTYPE, behind CARET_TEST_BUDGET_FIT=1 (the coordinator's budget fitting, OUTPUT-LEDGER-SPEC section 5 as written):
+ * when a fill request's final bytes would break one window's bound, the request is rebuilt once, before anything is
+ * sent, without its lowest-priority context from that window, and sealed as usual; if the smaller request still does
+ * not fit, it is refused as before. A smaller output never charges more (superstring monotonicity), so the seal stays
+ * the guarantee. What each purpose may drop, lowest priority first; decision-bearing text (section and heading text,
+ * field labels, disclaimers, a line naming another person, any part of an owner note) is never in the list:
+ * - fill.values: a candidate's "in the line '…'" fact, only where the line says nothing beyond the candidate's value and
+ *   its label, which both stay (a "Label: value" line). A line with anything else may be a disclaimer or name someone.
+ * - fill.whose: nothing. Its candidates' lines and notes are the owner questions' evidence (HA2: withhold rather than
+ *   ask with incomplete evidence), so a request over a bound is refused, never shrunk.
+ */
+const FIT_UNITS: Readonly<Record<"fill.values" | "fill.whose", readonly "bareCandidateLine"[]>> = { "fill.values": ["bareCandidateLine"], "fill.whose": [] };
+const budgetFit = (): boolean => process.env.CARET_TEST_BUDGET_FIT === "1";
+
+/** Whether a candidate's line says nothing beyond its value and its label: what is left is punctuation and spaces. */
+function lineSaysOnlyValue(c: Candidate): boolean {
+  if (c.line === undefined || c.line === null) return false;
+  let rest = c.line;
+  const at = rest.indexOf(c.text);
+  if (at < 0) return false;
+  rest = rest.slice(0, at) + rest.slice(at + c.text.length);
+  if (c.context !== null && c.context !== "") {
+    const k = rest.indexOf(c.context);
+    if (k < 0) return false;
+    rest = rest.slice(0, k) + rest.slice(k + c.context.length);
+  }
+  return /^[\s\p{P}\p{S}]*$/u.test(rest);
+}
+
+/** The window and bound a request's final bytes would break, measured as the seal will measure them; null when it fits. */
+function wouldBreach(req: JevRequest): LedgerRefused["breach"] {
+  try {
+    measureBytes(req, JSON.stringify(wireBody(req)));
+    return null;
+  } catch (e) {
+    if (e instanceof LedgerRefused) return e.breach;
+    throw e;
+  }
+}
+
+/**
+ * Fits one fill request (FIT_UNITS), once: `build` makes the request from candidate descriptions, `described` the full
+ * ones, `bare` a candidate's description without its line. Deterministic: the same request drops the same facts.
+ */
+function fitFillRequest(req: JevRequest, candidates: readonly Candidate[], described: ReadonlyMap<string, ModelText>, bare: (c: Candidate) => ModelText | null, build: (d: ReadonlyMap<string, ModelText>) => JevRequest): JevRequest {
+  if (!budgetFit()) return req;
+  const b = wouldBreach(req);
+  if (b === null) return req;
+  const purpose = (req.purpose ?? "") as keyof typeof FIT_UNITS;
+  const units = FIT_UNITS[purpose] ?? [];
+  const windowId = b.key.replace(/@\d+$/u, "");
+  const drop = units.includes("bareCandidateLine") ? candidates.filter((c) => c.source.windowId === windowId && described.has(c.id) && lineSaysOnlyValue(c)) : [];
+  const log = (o: object): void => {
+    const f = process.env.CARET_TEST_FIT_LOG;
+    if (f !== undefined) writeLocalFile(f, `${JSON.stringify({ test: (globalThis as { __caretTest?: string }).__caretTest, purpose: req.purpose, window: b.key, bound: b.bound, charged: b.charged, limit: b.limit, ...o })}\n`, { append: true });
+  };
+  if (drop.length === 0) {
+    log({ fitted: false, why: units.length === 0 ? "no droppable units for this purpose" : "no droppable unit in the window" });
+    return req;
+  }
+  const next = new Map(described);
+  for (const c of drop) {
+    const said = bare(c);
+    if (said !== null) next.set(c.id, said);
+  }
+  const fitted = build(next);
+  const after = wouldBreach(fitted);
+  log({ fitted: after === null, dropped: drop.map((c) => ({ value: c.text.slice(0, 40), line: (c.line ?? "").slice(0, 60) })), after: after === null ? null : { charged: after.charged, limit: after.limit } });
+  return fitted;
+}
 
 /**
  * describeOwned's words, minted: the candidate's line (its whole source line when given), then where it sits in Caret's
@@ -1746,6 +1819,8 @@ export async function proposeFill(
     return out;
   };
   const described = describe(VALUE_BLOCK_HEAD);
+  /** A candidate's description without its line (budget fitting, FIT_UNITS). */
+  const bareSaid = (c: Candidate): ModelText | null => mintCandidate(m, model, c, { blockHead: VALUE_BLOCK_HEAD, line: null });
   // Two stages when some field wants a person's details (B24). First, both asks say whose details each such
   // field wants and whose each person's value is. Then the value questions, where a field that wants the user's
   // details is not offered a value both asks say is someone else's, and the reverse. In one stage, live Jev
@@ -1758,8 +1833,8 @@ export async function proposeFill(
     asked.length === 0 || !staged
       ? null
       : ([
-          buildFillRequest(m, w, asked.map((f) => f.said), candidates, describedWhose, 0, declared, titleSaid, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" }),
-          buildFillRequest(m, w, asked.map((f) => f.said), second, describedWhose, 1, declared, titleSaid, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" }),
+          fitFillRequest(buildFillRequest(m, w, asked.map((f) => f.said), candidates, describedWhose, 0, declared, titleSaid, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" }), candidates, describedWhose, bareSaid, (d) => buildFillRequest(m, w, asked.map((f) => f.said), candidates, d, 0, declared, titleSaid, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" })),
+          fitFillRequest(buildFillRequest(m, w, asked.map((f) => f.said), second, describedWhose, 1, declared, titleSaid, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" }), second, describedWhose, bareSaid, (d) => buildFillRequest(m, w, asked.map((f) => f.said), second, d, 1, declared, titleSaid, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" })),
         ] as const);
   const [w1, w2] = whoseAsks === null ? [null, null] : await Promise.all([asking(whoseAsks[0]), asking(whoseAsks[1])]);
   // Lever 2: the session's earlier answers stand in for the questions not asked again; each new answer to a question that
@@ -1833,8 +1908,8 @@ export async function proposeFill(
     asked.length === 0 && answerAsked.length === 0
       ? [null, null]
       : await Promise.all([
-          asking(buildFillRequest(m, w, asked.map((f) => f.said), candidates, described, 0, declared, titleSaid, askAbout(aboutIds), whose, valuesMore(derivedIds, true))),
-          asking(buildFillRequest(m, w, asked.map((f) => f.said), second, described, 1, declared, titleSaid, askAbout(aboutSecond), whose, valuesMore(derivedSecond, false))),
+          asking(fitFillRequest(buildFillRequest(m, w, asked.map((f) => f.said), candidates, described, 0, declared, titleSaid, askAbout(aboutIds), whose, valuesMore(derivedIds, true)), candidates, described, bareSaid, (d) => buildFillRequest(m, w, asked.map((f) => f.said), candidates, d, 0, declared, titleSaid, askAbout(aboutIds), whose, valuesMore(derivedIds, true)))),
+          asking(fitFillRequest(buildFillRequest(m, w, asked.map((f) => f.said), second, described, 1, declared, titleSaid, askAbout(aboutSecond), whose, valuesMore(derivedSecond, false)), second, described, bareSaid, (d) => buildFillRequest(m, w, asked.map((f) => f.said), second, d, 1, declared, titleSaid, askAbout(aboutSecond), whose, valuesMore(derivedSecond, false)))),
         ]);
   const byId = new Map<string, Pick>([
     ...candidates.map((c): [string, Pick] => [c.id, { from: "window", c }]),

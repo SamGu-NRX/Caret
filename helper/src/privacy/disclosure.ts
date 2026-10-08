@@ -5,7 +5,7 @@
 // client, the writer port, the canned harness and the local decision engine): any string in the body that this
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
 import { assertNoExcludedValue, cut, flat, fold, sectionTexts, SnippetLedger, type Snippet } from "../privacy.ts";
-import { breach, measure, normalizedUnits, type Measurement } from "./ledger/account.ts";
+import { breach, measure, normalizedUnits, type Breach, type Measurement } from "./ledger/account.ts";
 export { registryOf, type ScreenRegistry } from "./ledger/account.ts";
 import { decodeUnits } from "./ledger/units.ts";
 import { writeLocalFile } from "./store-path.ts";
@@ -154,9 +154,12 @@ export class OutOfShape extends UnmintedText {
  * measure against. Names the purpose, the window and the bound, never text.
  */
 export class LedgerRefused extends UnmintedText {
-  constructor(message: string) {
+  /** The window and bound that refused, when a bound did (a builder fitting a request reads it); never any text. */
+  readonly breach: Breach | null;
+  constructor(message: string, breach: Breach | null = null) {
     super(message);
     this.name = "LedgerRefused";
+    this.breach = breach;
   }
 }
 
@@ -732,7 +735,7 @@ export class Disclosure extends SnippetLedger {
     const ws = this.measuredWindows();
     const m = measure(norm, ws);
     const b = breach(m, ws);
-    if (b !== null) throw new LedgerRefused(`${purpose}: it reveals ${b.charged} ${b.bound === "prose" ? "prose " : ""}characters of window ${b.key}, over its limit of ${b.limit}; it was not sent`);
+    if (b !== null) throw new LedgerRefused(`${purpose}: it reveals ${b.charged} ${b.bound === "prose" ? "prose " : ""}characters of window ${b.key}, over its limit of ${b.limit}; it was not sent`, b);
     return m;
   }
 
@@ -823,7 +826,7 @@ export class Disclosure extends SnippetLedger {
       const contrib = pieces.map((u, i) => ({ u: u.join(" | ").slice(0, 120), r: measure([norm[i]!], [w]).prose[w.key] ?? 0, reasons: u.map((x) => [...(this.reasonsOf(x) ?? [])].join("+")).join(" | ") })).filter((x) => x.r > 0).sort((a, b) => b.r - a.r);
       process.stderr.write(`LEDGER_DEBUG ${purpose} ${JSON.stringify(b)}\n${marked.join("\n")}\n${contrib.slice(0, 15).map((c) => `  ${c.r} [${c.reasons}] ${JSON.stringify(c.u)}`).join("\n")}\n`);
     }
-    if (b !== null) throw new LedgerRefused(`${purpose}: it reveals ${b.charged} ${b.bound === "prose" ? "prose " : ""}characters of window ${b.key}, over its limit of ${b.limit}; it was not sent`);
+    if (b !== null) throw new LedgerRefused(`${purpose}: it reveals ${b.charged} ${b.bound === "prose" ? "prose " : ""}characters of window ${b.key}, over its limit of ${b.limit}; it was not sent`, b);
     return m;
   }
 
@@ -896,13 +899,13 @@ export function measureBytes(req: { purpose?: string; kind?: string; disclosure?
   const t0 = performance.now();
   try {
     const m = d.measureSent(purpose, units);
-    writeLocalFile(log, `${JSON.stringify({ purpose, ms: performance.now() - t0, bytes: bytes.length, ok: true })}\n`, { append: true });
+    writeLocalFile(log, `${JSON.stringify({ test: (globalThis as { __caretTest?: string }).__caretTest, purpose, ms: performance.now() - t0, bytes: bytes.length, ok: true })}\n`, { append: true });
     return m;
   } catch (e) {
     const ms = performance.now() - t0;
     const key = e instanceof LedgerRefused ? /of window (.+?), over its limit/u.exec(e.message)?.[1] : undefined;
     const why = key === undefined ? null : d.explainBreach(decoded, key);
-    writeLocalFile(log, `${JSON.stringify({ purpose, ms, bytes: bytes.length, ok: false, error: e instanceof Error ? e.message : String(e), why })}\n`, { append: true });
+    writeLocalFile(log, `${JSON.stringify({ test: (globalThis as { __caretTest?: string }).__caretTest, purpose, ms, bytes: bytes.length, ok: false, error: e instanceof Error ? e.message : String(e), why })}\n`, { append: true });
     throw e;
   }
 }

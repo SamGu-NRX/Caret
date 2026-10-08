@@ -12,6 +12,7 @@ import type { Node } from "../../protocol.ts";
 import { isConversation } from "../../conversation.ts";
 import { isRedacted, redactWindow } from "../../fill/redact.ts";
 import { LedgerEncodingError, ledgerNormalizeV1, type Normalized } from "./normalize.ts";
+import { writeLocalFile } from "../store-path.ts";
 import { CARD_LINE_CHARS, inventoryOf, limitsOf, overLimits, UnitProbe, wordSetOn, type LineInventory, type Limits } from "./measure.ts";
 
 /**
@@ -270,7 +271,24 @@ export class MintAccount {
         if (lineAt(m.inv, p).length > CARD_LINE_CHARS) prose++;
       }
       if (added === 0) continue;
-      if (overLimits({ charged: r.charged + added, prose: r.prose + prose }, m.limits) !== null) return null;
+      if (overLimits({ charged: r.charged + added, prose: r.prose + prose }, m.limits) !== null) {
+        // MEASUREMENT ONLY: which window and bound refused a mint, and what of it was already charged and newly marked.
+        const log = process.env.CARET_TEST_MINT_LOG;
+        if (log !== undefined) {
+          const runs = (bits: Uint8Array, skip: Uint8Array | null): string[] => {
+            const out: string[] = [];
+            m.inv.lines.forEach((l, li) => {
+              const st = m.inv.starts[li]!;
+              let t = "";
+              for (let p = 0; p < l.length; p++) t += bits[st + p] === 1 && (skip === null || skip[st + p] !== 1) ? l[p] : "\u2591";
+              for (const x of t.split(/\u2591+/u)) if (x.trim() !== "") out.push(x);
+            });
+            return out;
+          };
+          writeLocalFile(log, `${JSON.stringify({ test: (globalThis as { __caretTest?: string }).__caretTest, window: m.key, title: m.view.window.title.slice(0, 60), conversation: m.limits.prose === null && m.limits.chars < 1200, limits: m.limits, running: { chars: r.charged, prose: r.prose }, added: { chars: added, prose }, texts: texts.map((t) => t.slice(0, 80)), newly: runs(bits, r.bits), already: runs(r.bits, null).slice(0, 80).map((sp) => ({ sp, from: this.texts.filter((t) => t.toLowerCase().includes(sp.toLowerCase())).map((t) => t.slice(0, 160)).slice(0, 3) })) })}\n`, { append: true });
+        }
+        return null;
+      }
       adds.push({ m, r, bits, added, prose });
     }
     if (commit) for (const w of wadds) {
