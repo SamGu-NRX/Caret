@@ -13,13 +13,14 @@ import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import type { AskJev, JevRequest, JevResult } from "../src/fill/jev.ts";
 import { AskAsks, planAsk } from "../src/planner/ask.ts";
-import { headsIntentMaker } from "../src/planner/intent-heads.ts";
+import { headsIntentMaker, scopeRequest } from "../src/planner/intent-heads.ts";
+import { intentSnapshot } from "../src/planner/intent.ts";
 import { jevIntentMaker } from "../src/planner/intent-makers.ts";
 import { sourceNotes, verifyWrites } from "../src/planner/codeplan.ts";
 import { planTask, taskWindow } from "../src/planner/planner.ts";
 import { CannedGap, cannedReply, questionKind } from "../src/engines/decide/canned.ts";
 import { Snapshot } from "../src/protocol.ts";
-import { buildDesk, loadCorpus, T0, type Desk } from "../scripts/realfill-corpus.ts";
+import { buildDesk, loadCorpus, pageForm, T0, type Desk } from "../scripts/realfill-corpus.ts";
 import { PAGE_LOOP_HEADS, pageLoopCanned } from "../../fixtures/web-form/canned-jev.ts";
 import { setTestVerifier } from "../src/fill/contract.ts";
 import { STAND_IN } from "./setup/verifier.ts";
@@ -47,6 +48,31 @@ describe("page-loop-eval's canned engine", () => {
   // W2: the write contract's verifier asks the canned engine here, not the suite's stand-in, so its rule is met.
   beforeAll(() => setTestVerifier(null));
   afterAll(() => setTestVerifier(STAND_IN));
+  it("answers the section question as whole, consistent with its whole-form heads and field rules", async () => {
+    let sections = 0;
+    for (const form of corpus.forms) {
+      const desk = buildDesk(corpus, snaps, form, pageForm(form));
+      const snapshot = intentSnapshot("fill out this form", desk.model, desk.form, desk.memory);
+      const ask = canned(form, []);
+      for (const wording of [0, 1] as const) {
+        const req = scopeRequest(snapshot, wording);
+        if (req.questions.section === undefined) continue;
+        sections++;
+        const reply = await ask(req);
+        expect(reply.answers.section).toEqual({ choice: "whole", confidence: 0.95 });
+      }
+    }
+    expect(sections).toBeGreaterThan(0);
+  });
+
+  it("reports a gap's original message before the planner can wrap it, and still throws", async () => {
+    const messages: string[] = [];
+    const ask = pageLoopCanned(async () => "none", undefined, (gap) => messages.push(gap.message));
+    const req: JevRequest = minted({ purpose: "planner.window", state: {}, questions: { window: { type: "choice", instructions: "Which window?", criteria: { none: "None" } } }, snippets: [], charged: {} });
+    await expect(ask(req)).rejects.toThrow(CannedGap);
+    expect(messages).toEqual([expect.stringContaining("no rule for question kind 'planner.window:window'")]);
+  });
+
   it("reads a whole-form Ask from the heads and both scope wordings, so it fills instead of asking which fields to fill", async () => {
     for (const { form, desk } of desks()) {
       const seen: JevRequest[] = [];

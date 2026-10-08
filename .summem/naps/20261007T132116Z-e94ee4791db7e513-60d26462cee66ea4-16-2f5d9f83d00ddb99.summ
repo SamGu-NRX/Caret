@@ -1,0 +1,1 @@
+Undo whole-field; Asks ask ask.scope per field (stand-ins: answeringScope); realfill-asks defaults to page. Requests are ModelText via Disclosure (keys like note_1, shapes.ts row per slot); builds run privacy_gate.sh; release sets CARET_RELEASE_HOST=1.

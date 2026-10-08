@@ -564,7 +564,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
     // A person the instruction names only as where to copy from ("from Morgan's email", "the Saturday Chris mentioned")
     // is not whose details go in: the source's words never set the scope. Unless the instruction asks for someone's
     // details by a pronoun ("from Dana's message, with her contact details"): then the source is whose they are.
-    if (person !== null && onlyInSources(snap.instruction, person) && !PRONOUN_DETAILS.test(fieldWords(snap.instruction))) person = null;
+    if (person !== null && onlyInSources(snap.instruction, person, snap.persons.map((p) => p.span)) && !PRONOUN_DETAILS.test(fieldWords(snap.instruction))) person = null;
   }
 
   const scope: FillScope = {
