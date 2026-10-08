@@ -58,6 +58,9 @@ export class ScreenModel {
   frontmostPid: number | null = null;
   /** Every change of focused window, oldest first. */
   private readonly focusHistory: { windowId: string; at: number }[] = [];
+  /** Arrival order breaks same-millisecond focus ties; timestamps still order out-of-order reader events. */
+  private focusArrival = 0;
+  private readonly focusArrivals = new Map<string, number>();
   /** Bundle identifier prefixes of apps the user switched off (privacy/read-policy.ts): their windows never enter the model. */
   private appsOff: readonly string[] = DEFAULT_APPS_OFF;
 
@@ -139,6 +142,7 @@ export class ScreenModel {
     };
     this.windows.set(id, state);
     if (snap.focused) {
+      this.focusArrivals.set(id, ++this.focusArrival);
       if (this.focusedWindowId !== id) {
         this.focusHistory.push({ windowId: id, at: snap.at });
         if (this.focusHistory.length > MAX_FOCUS_HISTORY) this.focusHistory.shift();
@@ -159,7 +163,10 @@ export class ScreenModel {
     let best: WindowState | null = null;
     for (const w of this.windows.values()) {
       if (w.lastFocusedAt <= 0 || (this.frontmostPid !== null && w.app.pid !== this.frontmostPid)) continue;
-      if (best === null || w.lastFocusedAt > best.lastFocusedAt) best = w;
+      if (
+        best === null || w.lastFocusedAt > best.lastFocusedAt ||
+        (w.lastFocusedAt === best.lastFocusedAt && (this.focusArrivals.get(w.window.windowId) ?? 0) > (this.focusArrivals.get(best.window.windowId) ?? 0))
+      ) best = w;
     }
     return best;
   }
@@ -191,6 +198,7 @@ export class ScreenModel {
 
   close(windowId: string, at: number): Change | null {
     if (!this.windows.delete(windowId)) return null;
+    this.focusArrivals.delete(windowId);
     if (this.focusedWindowId === windowId) this.focusedWindowId = null;
     const c: Change = { at, windowId, kind: "windowClosed", key: null, editable: false, before: null, after: null };
     this.changes.push(c);
@@ -216,6 +224,8 @@ export class ScreenModel {
     this.focusedWindowId = null;
     this.frontmostPid = null;
     this.focusHistory.length = 0;
+    this.focusArrival = 0;
+    this.focusArrivals.clear();
   }
 
   /**
@@ -251,6 +261,8 @@ export class ScreenModel {
     v.focusedWindowId = this.focusedWindowId;
     v.frontmostPid = this.frontmostPid;
     v.focusHistory.push(...this.focusHistory);
+    v.focusArrival = this.focusArrival;
+    for (const [id, arrival] of this.focusArrivals) v.focusArrivals.set(id, arrival);
     return v;
   }
 }
