@@ -131,6 +131,21 @@ describe("the I/O boundary: every POST body and every request store is checked a
       return out;
     });
 
+  /**
+   * A generated secret handed to a withholding store: withholdValues can replace part of its hex, and the host it
+   * authenticates then fails. A launch secret goes through privacy/local-secret.ts writeLocalSecretFile, allowlisted
+   * here because it writes only random bytes newLocalSecret made in the process, never model or screen text.
+   */
+  const secretThroughStore = (sources: Map<string, string>): string[] =>
+    [...sources].filter(([file]) => file.startsWith("scripts/") || file.startsWith("../fixtures/")).flatMap(([file, src]) =>
+      [...src.matchAll(/\b(?:writeStore|appendStore)\([^\n]*\b(?:secret|Secret)\b[^\n]*\.toString\("hex"\)/gu)].map(() => `${file}: a generated secret through a withholding store`));
+
+  it("finds every generated secret on writeLocalSecretFile, and catches one through a withholding store", () => {
+    expect(secretThroughStore(all())).toEqual([]);
+    expect(secretThroughStore(new Map([["../fixtures/web-form/new-journey.ts", 'writeStore(secretFile, secret.toString("hex"), { mode: 0o600 });']]))).toEqual(["../fixtures/web-form/new-journey.ts: a generated secret through a withholding store"]);
+    expect(secretThroughStore(new Map([["../fixtures/web-form/new-journey.ts", "writeLocalSecretFile(secretFile, secret);"]]))).toEqual([]);
+  });
+
   it("finds every script's JSON store on the structured path, and catches one that is not", () => {
     expect(jsonAsText(all())).toEqual([]);
     expect(jsonAsText(new Map([["scripts/new-eval.ts", 'writeStore(join(OUT, "rows.json"), `${JSON.stringify(rows, null, 1)}\\n`);']]))).toEqual(["scripts/new-eval.ts: a JSON text through a raw-text store"]);

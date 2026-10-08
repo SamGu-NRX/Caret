@@ -31,6 +31,7 @@ import { Helper } from "../../helper/src/helper.ts";
 import { Store } from "../../helper/src/store.ts";
 import { pageHost } from "../../helper/src/engines/host.ts";
 import { newLaunchSecret } from "../../helper/src/launch.ts";
+import { writeLocalSecretFile } from "../../helper/src/privacy/local-secret.ts";
 import { wirePageEngines } from "../../helper/src/engines/wire.ts";
 import { pageWindowId } from "../../helper/src/engines/windows.ts";
 import { pageTabReader, type TabReader } from "../../helper/src/engines/tab-source.ts";
@@ -196,7 +197,7 @@ async function main(): Promise<number> {
   const cftApp = exe.slice(0, exe.indexOf(".app/") + 4);
   const service = `dev.caret.w3test.${randomBytes(4).toString("hex")}`;
   const secretFile = join(sockDir, "launch-secret");
-  writeStore(secretFile, secret.toString("hex"), { mode: 0o600 });
+  writeLocalSecretFile(secretFile, secret);
   await launchdJob(tmp, service, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], join(tmp, "testhost.log"));
   const profile = join(tmp, "profile");
   writeManifest(join(profile, "NativeMessagingHosts"), extensionId, bridge);

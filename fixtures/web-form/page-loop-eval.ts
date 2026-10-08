@@ -51,6 +51,7 @@ import { Helper } from "../../helper/src/helper.ts";
 import { Store } from "../../helper/src/store.ts";
 import { pageHost } from "../../helper/src/engines/host.ts";
 import { newLaunchSecret } from "../../helper/src/launch.ts";
+import { writeLocalSecretFile } from "../../helper/src/privacy/local-secret.ts";
 import { wirePageEngines } from "../../helper/src/engines/wire.ts";
 import { pageWindowId } from "../../helper/src/engines/windows.ts";
 import type { VerbTiming } from "../../helper/src/engines/page-link.ts";
@@ -680,7 +681,7 @@ async function main(): Promise<number> {
   // the bridge looks up is unchanged.
   const label = LAUNCHD_PREFIX === undefined ? service : `${LAUNCHD_PREFIX}w3test.${suffix}`;
   const secretFile = join(sockDir, "launch-secret");
-  writeStore(secretFile, secret.toString("hex"), { mode: 0o600 });
+  writeLocalSecretFile(secretFile, secret);
   await launchdJob(tmp, label, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], join(tmp, "testhost.log"));
   const profile = join(tmp, "profile");
   writeManifest(join(profile, "NativeMessagingHosts"), extensionId, bridge);
