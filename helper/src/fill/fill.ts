@@ -14,7 +14,7 @@ import { fieldFingerprint, scopeRefusal, type Authority, type DocumentReader } f
 import { randomInt, randomUUID } from "node:crypto";
 import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
-import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, mintCandidate, PLACEMENT_SAYS, viewOf, withSources, type Candidate } from "./candidates.ts";
+import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, mintCandidate, PLACEMENT_SAYS, viewOf, withSources, CANDIDATE_WORDING, type Candidate } from "./candidates.ts";
 import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import type { Declared } from "../privacy.ts";
 import { describeField, fieldLabelText, mintDescriptor } from "./descriptor.ts";
@@ -441,6 +441,50 @@ const OWNER_WORDINGS = [
 /** The id of a candidate's whose-value question. */
 export const ownerId = (candidateId: string): string => `${candidateId}_owner`;
 
+/** What a value question's "none" says. */
+const NONE_SAYS = "No candidate is the value this field asks for.";
+/** The sentences of a fill request's task (buildFillRequest). */
+const TASK_WORDING = {
+  base: "The user is filling in this form. The candidates are values visible in the user's other open windows. Users most often copy from the window they were in just before the form.",
+  about: " A few candidates are the user's own details, which the user told Caret; one fits a field only when the form asks for the user's own details there.",
+  derived: " Some candidates are a part of another, which Caret split out: a first or last name, or a street, city, state, ZIP code or country of an address or place.",
+  instruction: " The user asked Caret for this in the instruction above: a field gets a value only when the instruction asks for it, from where the instruction says.",
+  answers: " Some fields ask for a written answer; for those, the candidates are answers the user saved on earlier forms.",
+} as const;
+
+/**
+ * The fixed texts the fill requests about to be built will carry around their values (buildFillRequest): each question
+ * template's wording for the controls asked, with `gap` (a line break) standing in for what the request inserts; the
+ * whose, owner and saved-answer wordings when those questions may be asked; the criteria and task sentences; a
+ * candidate line's words. proposeFill reserves them in the early check before it admits any value
+ * (SnippetLedger.reserveWording), since the seal charges a chat's short line the wording happens to hold ("You" in "can
+ * you not tell?"). Wording no request will carry is left out: reserving it cost a disambiguating value
+ * (httpbin-pizza's Telephone, test/w1-wrongs.test.ts).
+ */
+function fillWording(d: Disclosure, o: { controls: ReadonlySet<Control>; instruction: boolean; whose: boolean; answers: boolean }): string[] {
+  const gap = d.own("\n");
+  const out: string[] = [d.own(NONE_SAYS), d.own(TASK_WORDING.base), d.own(TASK_WORDING.about), d.own(TASK_WORDING.derived), ...CANDIDATE_WORDING];
+  for (const control of o.controls) {
+    const words = CONTROL_WORDINGS[control];
+    for (const i of [0, 1] as const) {
+      if (!o.instruction) out.push((words?.[i] ?? WORDINGS[i])(d, gap, gap));
+      else out.push(words === undefined ? ASK_WORDINGS[i](d, gap, gap, gap) : d.t`The user asked Caret: "${gap}". ${words[i](d, gap, gap)}`);
+    }
+  }
+  if (o.instruction) out.push(d.own(TASK_WORDING.instruction), d.t` The instruction asks for ${gap}'s details.`);
+  if (o.whose) {
+    for (const f of WHOSE_WORDINGS) out.push(f(d, gap, gap));
+    for (const f of MEMORY_WHOSE_WORDINGS) out.push(f(d, gap, gap, gap));
+    for (const f of OWNER_WORDINGS) out.push(f(d, gap));
+    out.push(...Object.values(WHOSE_CRITERIA), ...Object.values(OWNER_CRITERIA));
+  }
+  if (o.answers) {
+    for (const f of ANSWER_WORDINGS) out.push(f(d, gap, gap));
+    out.push(ANSWER_NONE, TASK_WORDING.answers);
+  }
+  return out;
+}
+
 /**
  * One ask, every text minted by `d`, the proposal's Disclosure (privacy/disclosure.ts). `declared` holds the screen text
  * in it and what each window was charged (privacy.ts); `title` is the form window's title as declared there, or null when
@@ -477,7 +521,7 @@ export function buildFillRequest(
       const criteria: Record<string, ModelText> = excluded === undefined ? { ...shared } : Object.fromEntries(Object.entries(shared).filter(([id]) => !excluded.has(id)));
       for (const a of about.get(f.id) ?? []) criteria[a.id] = a.said;
       for (const x of more.derived?.get(f.id) ?? []) criteria[x.id] = x.describe;
-      criteria[NONE] = d.own("No candidate is the value this field asks for.");
+      criteria[NONE] = d.own(NONE_SAYS);
       const control = more.controls?.get(f.id) ?? "text";
       const words = CONTROL_WORDINGS[control]?.[wording];
       const instr = more.instruction;
@@ -505,12 +549,12 @@ export function buildFillRequest(
   const anyDerived = fields.some((f) => (more.derived?.get(f.id)?.length ?? 0) > 0);
   const notes = more.stage !== "values" && (more.owners?.length ?? 0) > 0 && (more.notes?.size ?? 0) > 0 ? Object.fromEntries(more.notes as ReadonlyMap<string, ModelText>) : null;
   const task = [
-    d.own("The user is filling in this form. The candidates are values visible in the user's other open windows. Users most often copy from the window they were in just before the form."),
-    ...(anyAbout ? [d.own(" A few candidates are the user's own details, which the user told Caret; one fits a field only when the form asks for the user's own details there.")] : []),
-    ...(anyDerived ? [d.own(" Some candidates are a part of another, which Caret split out: a first or last name, or a street, city, state, ZIP code or country of an address or place.")] : []),
-    ...(more.instruction === undefined ? [] : [d.own(" The user asked Caret for this in the instruction above: a field gets a value only when the instruction asks for it, from where the instruction says.")]),
+    d.own(TASK_WORDING.base),
+    ...(anyAbout ? [d.own(TASK_WORDING.about)] : []),
+    ...(anyDerived ? [d.own(TASK_WORDING.derived)] : []),
+    ...(more.instruction === undefined ? [] : [d.own(TASK_WORDING.instruction)]),
     ...(more.person === null || more.person === undefined ? [] : [d.t` The instruction asks for ${more.person}'s details.`]),
-    ...((more.answers?.length ?? 0) > 0 ? [d.own(" Some fields ask for a written answer; for those, the candidates are answers the user saved on earlier forms.")] : []),
+    ...((more.answers?.length ?? 0) > 0 ? [d.own(TASK_WORDING.answers)] : []),
   ];
   const req: JevRequest = d.seal({
     purpose: more.stage === "whose" ? "fill.whose" : "fill.values",
@@ -1039,6 +1083,7 @@ export async function proposeFill(
       answersFor.set(f.id, [...(opts.answers ?? [])].sort((a, b) => shared(b) - shared(a)).slice(0, MAX_ANSWERS_ASKED));
     }
   }
+  ledger.reserveWording(fillWording(ledger, { controls: new Set(fields.map((f) => f.control)), instruction: scope !== undefined && !plainAsk, whose: whose && fields.some((f) => f.personal || f.about.length > 0), answers: answersFor.size > 0 }));
   // An Ask that names its sources reads only those windows.
   const sourcesOnly = scope?.windows ?? null;
   const unread = sourcesOnly === null ? opts.exclude : new Set([...(opts.exclude ?? []), ...[...model.windows.keys()].filter((id) => id !== windowId && !sourcesOnly.has(id))]);

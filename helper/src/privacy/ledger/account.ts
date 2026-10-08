@@ -320,6 +320,44 @@ export class MintAccount {
     return out;
   }
 
+  /**
+   * Keeps positions the early check did not charge but the seal did: a committed seal's (Caret's wording, a run across
+   * composed parts), so the requests built after it see the room it took; and, with `texts`, the lexical charge of
+   * wording a builder will send, before it admits any value. Never refuses: what it adds is already sent or will be.
+   */
+  absorb(m: Measurement): void {
+    for (const w of this.windows()) {
+      const got = m.positions.get(w.key);
+      if (got === undefined || got.view !== w.view) continue;
+      this.keep(w, got.bits);
+    }
+  }
+
+  /** absorb's second job: the lexical charge of `texts` (a builder's own wording), kept. Null when a text cannot be measured. */
+  reserve(texts: readonly string[]): boolean {
+    const units = normalizedUnits(texts.filter((t) => t !== ""));
+    if (units === null) return false;
+    const probe = new UnitProbe(units);
+    for (const w of this.windows()) {
+      if (w.inv.malformed) return false;
+      const r = probe.reveal(w.inv);
+      if (r.charged > 0) this.keep(w, r.positions);
+    }
+    return true;
+  }
+
+  private keep(w: MeasuredWindow, bits: Uint8Array): void {
+    let r = this.running.get(w.view);
+    if (r === undefined) this.running.set(w.view, (r = { bits: new Uint8Array(w.inv.total), charged: 0, notes: new Uint8Array(w.inv.total), noted: 0 }));
+    for (let p = 0; p < bits.length; p++) {
+      if (bits[p] === 1 && r.bits[p] !== 1 && r.notes[p] !== 1) {
+        r.bits[p] = 1;
+        r.charged++;
+      }
+    }
+    if (!this.charged.has(w.key)) this.charged.set(w.key, w.view);
+  }
+
   /** Characters charged so far, by window key: every position revealed, owner notes included, counted once. */
   charges(): Record<string, number> {
     const out: Record<string, number> = {};

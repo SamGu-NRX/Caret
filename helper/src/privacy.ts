@@ -7,7 +7,7 @@ import type { WindowState } from "./model.ts";
 import type { Node } from "./protocol.ts";
 import { excludedValue } from "./privacy/exclude.ts";
 import { isRedacted, redactWindow } from "./fill/redact.ts";
-import { heldAsConversation, measuredWindows, MintAccount, sectionTexts, viewInventory, type DeclaredSpans, type MeasuredWindow, type ScreenRegistry } from "./privacy/ledger/account.ts";
+import { heldAsConversation, measuredWindows, MintAccount, sectionTexts, viewInventory, type DeclaredSpans, type Measurement, type MeasuredWindow, type ScreenRegistry } from "./privacy/ledger/account.ts";
 import { CONVERSATION_CHARS, limitOf, spanKey, WINDOW_CHARS, type DeclaredSpan } from "./privacy/ledger/measure.ts";
 
 export { CONVERSATION_CHARS, WINDOW_CHARS };
@@ -567,6 +567,20 @@ export class SnippetLedger {
   /** Declares a value the user told Caret under window id "memory", charged as plan text is. */
   memory(texts: readonly string[]): boolean {
     return this.admitTexts(texts, { under: MEMORY_SNIPPETS, kind: "candidate", lines: true });
+  }
+
+  /**
+   * The lexical charge of wording a builder will send around its values (its question templates), kept by the early
+   * check before any value is admitted: a short line of a chat that the wording happens to hold ("You" in "can you not
+   * tell") is charged at seal, and values admitted up to the limit without it lost the whole request there.
+   */
+  reserveWording(texts: readonly string[]): void {
+    this.account.reserve(texts);
+  }
+
+  /** Keeps a committed seal's positions in the early check (MintAccount.absorb). */
+  protected absorbSeal(m: Measurement): void {
+    this.account.absorb(m);
   }
 
   /** Characters charged to each window so far by the early check, by window key. The seal's charge replaces it. */

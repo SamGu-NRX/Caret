@@ -430,6 +430,33 @@ describe("a recorded source range", () => {
   });
 });
 
+// The early check charges what the seal will: a short chat line that Caret's wording holds ("You" in "can you not tell?")
+// is charged at seal, so values admitted up to the limit without it lost the whole request there.
+describe("the early check and the seal agree on Caret's wording", () => {
+  const LINE = "abcdefghij klmnopqrst";
+  // T = 4 ("Kofi") + 3 + 21 = 28, limit 13.
+  const desk = (): { d: Disclosure; view: WindowState } => {
+    const m = new ScreenModel();
+    m.apply(snap([text("c0", "You"), text("c1", LINE)], { at: 1, windowId: "chat-1", title: "Kofi", app: MESSAGES }));
+    return { d: new Disclosure(m), view: redactWindow(m.windows.get("chat-1") as WindowState) };
+  };
+  const twelve: SourceAt = { part: nodePart("c1", "label"), start: 0, end: 12 };
+
+  it("keeps a sealed request's charge: after one that charged 'You', 12 more characters are refused at mint", () => {
+    const { d, view } = desk();
+    expect(measureBytes({ purpose: "test", disclosure: d }, JSON.stringify({ q: d.own("can you not tell?") })).charged["chat-1"]).toBe(3);
+    expect(d.candidate(view, LINE.slice(0, 12), twelve), "3 + 12 is over 13").toBeNull();
+  });
+
+  it("charges reserved wording before any value: 12 characters are refused at mint after 'can you not tell?' is reserved", () => {
+    const { d, view } = desk();
+    expect(d.candidate(view, LINE.slice(0, 12), twelve)).not.toBeNull();
+    const fresh = desk();
+    fresh.d.reserveWording(["can you not tell?"]);
+    expect(fresh.d.candidate(fresh.view, LINE.slice(0, 12), twelve), "3 + 12 is over 13").toBeNull();
+  });
+});
+
 // The promise's scope (OUTPUT-LEDGER-SPEC section 4): a request is charged what it takes from a conversation's window.
 // Text equal to the chat's that came from elsewhere is not taken from it, so each of these charges the chat nothing.
 describe("text a chat shows that the request did not take from it", () => {

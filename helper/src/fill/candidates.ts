@@ -1428,6 +1428,9 @@ const RECENCY_TEXT = {
   unseen: "a window the user has not visited",
 } as const satisfies Record<Recency, string>;
 
+/** The fixed words of a candidate's line (mintCandidate), reserved with a fill request's wording (fill.ts fillWording). */
+export const CANDIDATE_WORDING: readonly string[] = ["the user's own \n, which the user told Caret", "labelled '\n'", "in the line '\n'", "in a block that starts '\n'", "under '\n'", "\"\n\" (\n)", "in \n window '\n', \n", ...Object.values(RECENCY_TEXT)];
+
 /**
  * SC1 2b: describeCandidate's line, minted by `d`: the span, its label, line, block head and section as its source
  * window's redacted view shows them, its kind and recency in Caret's words, the app and title of the window, and the

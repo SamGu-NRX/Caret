@@ -897,6 +897,7 @@ export class Disclosure extends SnippetLedger {
     if (b !== null) throw refuse(b, false);
     const ob = this.operation.admit(m, ws, split, OWNER_NOTE_CHARS, commit);
     if (ob !== null) throw refuse(ob, true);
+    if (commit) this.absorbSeal(m);
     return m;
   }
 
