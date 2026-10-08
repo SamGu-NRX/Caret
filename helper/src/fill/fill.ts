@@ -1806,9 +1806,13 @@ export async function proposeFill(
       const view = viewOf(model, u.windowId);
       return { from: "unit", unit: u, app: view?.app.name ?? "", title: view?.window.title ?? "" };
     });
+    // The request is a basis of its own only when the Ask names no source: an Ask that names one ("from chris's email")
+    // asks for what that window says, which is then the only evidence, and a field it cannot show stays blank. The request
+    // still reaches every value question as the user's request.
+    const requestBasis: ChoiceBasis[] = scope.windows === null ? [{ from: "instruction", text: scope.instruction }] : [];
     const listed = asked.flatMap((f) => {
       const outputs = choiceOutputs(f);
-      const bases: ChoiceBasis[] = [...unitBases, ...f.about.filter((a) => (aboutSaidNow.get(a.id) ?? null) !== null).map((a): ChoiceBasis => ({ from: "memory", a })), { from: "instruction", text: scope.instruction }];
+      const bases: ChoiceBasis[] = [...unitBases, ...f.about.filter((a) => (aboutSaidNow.get(a.id) ?? null) !== null).map((a): ChoiceBasis => ({ from: "memory", a })), ...requestBasis];
       return outputs.flatMap((text) => bases.map((basis) => ({ f, pick: { from: "choice" as const, text, basis } })));
     });
     const seconds = new Map(shuffled(listed, opts.rand).map((x, i) => [x, `e${allDerived.length + i + 1}`]));

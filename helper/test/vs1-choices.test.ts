@@ -19,6 +19,7 @@ import { windowUnit } from "../src/fill/note-unit.ts";
 import { groupOptions, type OptionMember } from "../src/fill/value-options.ts";
 import { writtenFields } from "../src/offers/fill-popup.ts";
 import { askScope, fieldFingerprint } from "../src/fill/ask-scope.ts";
+import { proposedOf, runB31, valueQuestions } from "./vs1-kit.ts";
 
 // The verifier's requests go to each test's Jev, not the suite's stand-in.
 beforeEach(() => setTestVerifier(null));
@@ -121,14 +122,17 @@ interface Run {
   /** Value settlement's question for `label` in each wording, with its options. */
   questions: (label: string) => { req: JevRequest; options: Option[] }[];
 }
-/** An Ask on `model`'s form for the fields labelled `labels`, reading only the note, which it names. */
-async function run(model: ScreenModel, labels: readonly string[], instruction: string, s: Script): Promise<Run> {
+/**
+ * An Ask on `model`'s form for the fields labelled `labels`, reading only the note, which it names; with `named` false
+ * it names no source, so the request is a choice's basis too.
+ */
+async function run(model: ScreenModel, labels: readonly string[], instruction: string, s: Script, named = true): Promise<Run> {
   const form = model.windows.get("form");
   if (form === undefined) throw new Error("no form");
   const labelOf = (key: string): string => form.nodes.get(key)?.label ?? "";
   const keys = [...form.nodes.values()].filter((n) => labels.includes(n.label ?? "") && n.role !== "AXMenuItem" && n.role !== "AXRadioButton").map((n) => n.key);
   if (keys.length !== labels.length) throw new Error(`fields not found: ${labels.join(", ")}`);
-  const scope: FillScope = { fields: keys, windows: new Set(["src"]), memory: false, instruction, person: null, literals: new Map(), consented: new Set(["src"]) };
+  const scope: FillScope = named ? { fields: keys, windows: new Set(["src"]), memory: false, instruction, person: null, literals: new Map(), consented: new Set(["src"]) } : { fields: keys, windows: null, memory: false, instruction, person: null, literals: new Map() };
   const reqs: JevRequest[] = [];
   // The Ask's own authority, so the write contract holds each value to the fields as they read when it was asked.
   const authority = { kind: "ask" as const, scope: askScope("form", null, keys, Object.fromEntries(keys.map((k) => [k, fieldFingerprint(form, k)])), null, "choices-test") };
@@ -147,7 +151,7 @@ const noteIn = (req: JevRequest, o: Option): string | undefined => {
 const verifyQuestions = (r: Run, label: string): string[] => r.reqs.filter((q) => q.purpose === "fill.verify").flatMap((q) => Object.values(q.questions).map((x) => String(x.instructions))).filter((x) => labelIn(x) === label);
 
 // ---- Item 1: each missing exact output is a candidate of both value questions, then proposed -------------------------
-const MISSING: readonly { note: string; form: readonly Node[]; label: string; output: string; instruction: string; basis?: (o: Option) => boolean }[] = [
+const MISSING: readonly { note: string; form: readonly Node[]; label: string; output: string; instruction: string; basis?: (o: Option) => boolean; named?: boolean }[] = [
   { note: INES, form: CLINIC, label: "How should we contact you?", output: "Text message", instruction: "do the contact details part w the stuff ines sent" },
   { note: BEA, form: RSVP, label: "Will you be joining us?", output: "Joyfully accepts", instruction: "fill out the rsvp from bea's note" },
   { note: BEA, form: RSVP, label: "How many in your party?", output: "2", instruction: "fill out the rsvp from bea's note" },
@@ -155,13 +159,13 @@ const MISSING: readonly { note: string; form: readonly Node[]; label: string; ou
   { note: BEA, form: RSVP, label: "Guest's meal choice", output: "Wild mushroom risotto (vegetarian)", instruction: "fill out the rsvp from bea's note" },
   { note: CHRIS, form: CAR, label: "Year", output: "2019", instruction: "get this booking form done from chris's note" },
   ...["Oil and filter change", "Tire rotation", "Brake inspection"].map((label) => ({ note: CHRIS, form: CAR, label, output: "checked", instruction: "get this booking form done from chris's note" })),
-  { note: ENROLL, form: COURSE, label: "Section", output: TUE_THU, instruction: REQUEST_22, basis: fromRequest },
+  { note: ENROLL, form: COURSE, label: "Section", output: TUE_THU, instruction: REQUEST_22, basis: fromRequest, named: false },
 ];
 
 describe("the missing exact outputs are candidates", () => {
   it.each(MISSING.map((m) => [m.label, m] as const))("%s", async (_, m) => {
     const basis = m.basis ?? fromUnit;
-    const r = await run(desk(m.note, m.form), [m.label], m.instruction, { value: forced(m.label, m.output, basis) });
+    const r = await run(desk(m.note, m.form), [m.label], m.instruction, { value: forced(m.label, m.output, basis) }, m.named);
     const qs = r.questions(m.label);
     expect(qs, "both settlement wordings ask about the field").toHaveLength(2);
     for (const q of qs) expect(q.options.some((o) => o.output === m.output && basis(o))).toBe(true);
@@ -189,7 +193,7 @@ describe("a choice carries its whole evidence and is verified", () => {
     const labels = ["Your meal choice", "Guest's meal choice"];
     const r = await run(desk(BEA, RSVP), labels, "fill out the rsvp from bea's note", { want: { "Your meal choice": "Braised short rib", "Guest's meal choice": "Wild mushroom risotto (vegetarian)" } });
     for (const label of labels) {
-      expect(r.questions(label).map((q) => q.options.filter(isSupported).map((o) => `${o.output} (${fromUnit(o) ? "unit" : "request"})`).sort())).toEqual(Array(2).fill(["Braised short rib (request)", "Braised short rib (unit)", "Herb-roasted salmon (request)", "Herb-roasted salmon (unit)", "Wild mushroom risotto (vegetarian) (request)", "Wild mushroom risotto (vegetarian) (unit)"]));
+      expect(r.questions(label).map((q) => q.options.filter(isSupported).map((o) => `${o.output} (${fromUnit(o) ? "unit" : "request"})`).sort())).toEqual(Array(2).fill(["Braised short rib (unit)", "Herb-roasted salmon (unit)", "Wild mushroom risotto (vegetarian) (unit)"]));
     }
     expect(labels.map((l) => valueOf(r.field(l)))).toEqual(["Braised short rib", "Wild mushroom risotto (vegetarian)"]);
   });
@@ -213,26 +217,83 @@ describe("a choice carries its whole evidence and is verified", () => {
   });
 
   it("Tue/Thu: the section option quotes the whole request, its 'not sat' included", async () => {
-    const r = await run(desk(ENROLL, COURSE), ["Section"], REQUEST_22, { value: forced("Section", TUE_THU, fromRequest) });
+    const r = await run(desk(ENROLL, COURSE), ["Section"], REQUEST_22, { value: forced("Section", TUE_THU, fromRequest) }, false);
     for (const q of r.questions("Section")) expect(q.options.find((o) => o.output === TUE_THU && fromRequest(o))?.criterion).toContain(`Supporting text: the whole request, "${REQUEST_22}".`);
     for (const x of verifyQuestions(r, "Section")) expect(x).toContain(`User request: "${REQUEST_22}"`);
   });
 });
 
+describe("the request as a basis", () => {
+  const SECTION = "Section";
+  it("is one when the Ask names no source, and the instruction's choice is judged on it", async () => {
+    const r = await run(desk(ENROLL, COURSE), [SECTION], REQUEST_22, { value: forced(SECTION, TUE_THU, fromRequest) }, false);
+    expect(r.questions(SECTION).map((q) => q.options.filter(fromRequest).map((o) => o.output).sort())).toEqual(Array(2).fill([...SECTIONS].sort()));
+    expect(valueOf(r.field(SECTION))).toBe(TUE_THU);
+  });
+
+  it("is none when the Ask names a source: that window is the evidence, and a field it cannot show stays blank", async () => {
+    const r = await run(desk(ENROLL, COURSE), [SECTION], `${REQUEST_22}, from my note`, { value: forced(SECTION, TUE_THU, fromRequest) });
+    expect(r.questions(SECTION).flatMap((q) => q.options).filter(fromRequest)).toEqual([]);
+    expect(r.questions(SECTION).flatMap((q) => q.options).filter(fromUnit).length, "the note's own choices").toBe(6);
+    const stated = r.reqs.filter(isSettlement).map((q) => String(Object.values(q.questions)[0]?.instructions));
+    for (const x of stated) expect(x, "the request still reaches the value question").toContain(REQUEST_22);
+    expect(valueOf(r.field(SECTION))).toBeNull();
+    const cut = await run(desk(`${ENROLL}\nThe portal password is violet-orchard-seven.`, COURSE), [SECTION], `${REQUEST_22}, from my note`, { value: forced(SECTION, TUE_THU, fromRequest) });
+    expect(cut.questions(SECTION).flatMap((q) => q.options).filter(isSupported)).toEqual([]);
+    expect(valueOf(cut.field(SECTION))).toBeNull();
+  });
+});
+
+describe("B31 under the output ledger", () => {
+  // b31-13 names Chris's email, a conversation the ledger shows only half of, so its services have no evidence: no
+  // choice on the request stands in for it.
+  it("b31-13's services get no choice on the request, and stay blank", async () => {
+    const r = await runB31("b31-13", { values: true, firstPass: "oracle" });
+    const services = ["Oil and filter change", "Tire rotation", "Brake inspection"];
+    for (const label of services) expect(valueQuestions(r, label).flatMap((q) => q.options).filter((o) => SUPPORTED.test(o.criterion) && o.criterion.includes("Source: the user's request."))).toEqual([]);
+    for (const label of services) expect(proposedOf(r, r.outcome)[label]).toBeUndefined();
+  });
+});
+
+describe("a page's evidence, whatever order its walk lists nodes in", () => {
+  // The disclaimer comes before the footer group that holds it, which a snapshot may do (model.ts admitNodes).
+  const page = (disclaimer: string): Node[] => [
+    { key: "web", parent: "win", role: "AXWebArea", label: "Service" },
+    { key: "body", parent: "web", role: "AXStaticText", value: "We'd do the oil change and the tire rotation." },
+    { key: "warn", parent: "foot", role: "AXStaticText", value: disclaimer },
+    { key: "foot", parent: "web", role: "AXGroup", label: "Footer" },
+    { key: "back", parent: "win", role: "AXButton", label: "Back" },
+  ];
+  const put = (m: ScreenModel, disclaimer: string, at: number): void => void m.apply(snap(page(disclaimer), { at, windowId: "src", title: "Service quote", app: CHROME, focused: at === 1000 }));
+  it("holds a node listed before its parent, in document order, and a change to it refuses the tick", async () => {
+    const m = new ScreenModel();
+    put(m, "Optional services, not requested. Do not book them.", 1000);
+    m.apply(snap([...CAR], { at: 2000, windowId: "form", title: "The form", app: CHROME, focused: true }));
+    const unit = windowUnit(m, "src");
+    expect(unit?.text).toBe("Service quote\nService\nWe'd do the oil change and the tire rotation.\nFooter\nOptional services, not requested. Do not book them.");
+    const r = await run(m, ["Oil and filter change"], "book the service from the quote", { want: { "Oil and filter change": "checked" } });
+    for (const q of r.questions("Oil and filter change")) expect(noteIn(q.req, q.options.find(fromUnit) as Option)).toContain("Optional services, not requested. Do not book them.");
+    const mint = mintOf(r.field("Oil and filter change") as FillField) as CheckedValue;
+    expect(provenanceStale(m, mint.provenance)).toBeNull();
+    put(m, "Book them all.", 4000);
+    expect(provenanceStale(m, mint.provenance)).toBe("the text it was judged against changed");
+  });
+});
+
 // ---- Item 5: wrong role, a past preference, an optional service, an unrelated year and a lookalike section ----------
-const WRONG: readonly { name: string; note: string; form: readonly Node[]; label: string; output: string; instruction: string; basis?: (o: Option) => boolean }[] = [
+const WRONG: readonly { name: string; note: string; form: readonly Node[]; label: string; output: string; instruction: string; basis?: (o: Option) => boolean; named?: boolean }[] = [
   { name: "Bea's vegetarian meal in Avery's own field", note: BEA, form: RSVP, label: "Your meal choice", output: "Wild mushroom risotto (vegetarian)", instruction: "fill out the rsvp from bea's note" },
   { name: "a preference Ines says Theo no longer has", note: INES.replace(INES_PICK, "You used to prefer texts, but you said you'd rather they call now."), form: CLINIC, label: "How should we contact you?", output: "Text message", instruction: "do the contact details part w the stuff ines sent" },
   { name: "the optional cabin filter", note: CHRIS, form: CAR, label: "Cabin air filter replacement", output: "checked", instruction: "get this booking form done from chris's note" },
   { name: "2026, a year the note never gives the car", note: `${CHRIS}\nSent Oct 15, 2026`, form: CAR, label: "Year", output: "2026", instruction: "get this booking form done from chris's note" },
-  { name: "the Saturday section the request rules out", note: ENROLL, form: COURSE, label: "Section", output: "Sat 9:00 AM-12:30 PM", instruction: REQUEST_22, basis: fromRequest },
+  { name: "the Saturday section the request rules out", note: ENROLL, form: COURSE, label: "Section", output: "Sat 9:00 AM-12:30 PM", instruction: REQUEST_22, basis: fromRequest, named: false },
 ];
 
 describe("a wrong choice is never written", () => {
   for (const c of WRONG) {
     const basis = c.basis ?? fromUnit;
     it(`${c.name}: a candidate, and refused after a forced agreement`, async () => {
-      const r = await run(desk(c.note, c.form), [c.label], c.instruction, { value: forced(c.label, c.output, basis), verify: verdict(c.label, "other") });
+      const r = await run(desk(c.note, c.form), [c.label], c.instruction, { value: forced(c.label, c.output, basis), verify: verdict(c.label, "other") }, c.named);
       for (const q of r.questions(c.label)) expect(q.options.some((o) => o.output === c.output && basis(o)), "the wrong option is offered").toBe(true);
       expect(verifyQuestions(r, c.label).filter((x) => x.includes(`"${c.output}"`)), "the verifier is asked").toHaveLength(2);
       expect(valueOf(r.field(c.label))).toBeNull();
@@ -241,7 +302,7 @@ describe("a wrong choice is never written", () => {
       const split: Script["value"] = (l, w, options, req) => (l !== c.label ? undefined : w === 0 ? forced(c.label, c.output, basis)?.(l, w, options, req) : { choice: "none", confidence: 0.99 });
       const none: Script["value"] = (l) => (l === c.label ? { choice: "none", confidence: 0.99 } : undefined);
       for (const s of [{ value: split }, { value: none }, { value: forced(c.label, c.output, basis), verify: verdict(c.label, "unsure") }] as const) {
-        const r = await run(desk(c.note, c.form), [c.label], c.instruction, s);
+        const r = await run(desk(c.note, c.form), [c.label], c.instruction, s, c.named);
         expect(r.questions(c.label).flatMap((q) => q.options).some((x) => x.output === c.output && basis(x))).toBe(true);
         expect(valueOf(r.field(c.label))).toBeNull();
       }
@@ -294,10 +355,10 @@ describe("a deterministic veto holds whatever the judgments say", () => {
     expect(formControls(w as NonNullable<typeof w>).filter((c) => c.control === "checkbox")).toEqual([]);
   });
 
-  it("privacy: a note with a line redaction removes is no basis; only the request is left", async () => {
+  it("privacy: a note with a line redaction removes is no basis, and the Ask that names it gets no choice", async () => {
     const r = await run(desk(`${INES}\nThe portal password is violet-orchard-seven.`, CLINIC), ["How should we contact you?"], "do the contact details part w the stuff ines sent", { value: forced("How should we contact you?", "Text message"), verify: verdict("How should we contact you?", "exact") });
     expect(windowUnit(r.model, "src")?.complete).toBe(false);
-    expect(r.questions("How should we contact you?")[0]?.options.filter(isSupported).map((o) => `${o.output} (${fromUnit(o) ? "unit" : "request"})`).sort()).toEqual(["Email (request)", "Phone call (request)", "Text message (request)"]);
+    expect(r.questions("How should we contact you?").flatMap((q) => q.options).filter(isSupported)).toEqual([]);
     expect(valueOf(r.field("How should we contact you?"))).toBeNull();
   });
 });
@@ -307,7 +368,7 @@ describe("missing or changed evidence", () => {
   it("a note too long to send whole gives no note-based choice", async () => {
     const long = `${"We can also talk about parking and the lobby hours another time. ".repeat(24)}${INES_PICK}`;
     const r = await run(desk(INES.replace(INES_PICK, long), CLINIC), ["How should we contact you?"], "do the contact details part w the stuff ines sent", { value: forced("How should we contact you?", "Text message"), verify: verdict("How should we contact you?", "exact") });
-    expect(r.questions("How should we contact you?")[0]?.options.filter(isSupported).map((o) => `${o.output} (${fromUnit(o) ? "unit" : "request"})`).sort()).toEqual(["Email (request)", "Phone call (request)", "Text message (request)"]);
+    expect(r.questions("How should we contact you?").flatMap((q) => q.options).filter(isSupported)).toEqual([]);
     expect(valueOf(r.field("How should we contact you?"))).toBeNull();
   });
 
@@ -345,7 +406,7 @@ describe("identity and obligations through remapping, grouping and picks", () =>
     const [a, b] = r.questions("Year").map((q) => q.options.filter(isSupported));
     expect(a?.map((o) => o.criterion).sort()).toEqual(b?.map((o) => o.criterion).sort());
     expect(a?.every((o) => /^d\d+$/u.test(o.id)) && b?.every((o) => /^e\d+$/u.test(o.id))).toBe(true);
-    expect(a?.length).toBe(8);
+    expect(a?.length).toBe(4);
   });
 
   it("a choice never merges with a literal option of the same output and unit, and keeps the verifier's obligation", () => {
@@ -369,7 +430,7 @@ describe("identity and obligations through remapping, grouping and picks", () =>
     const r = await run(desk(INES, CLINIC), [LABEL], "do the contact details part w the stuff ines sent", s);
     const settlement = valueSettlementOf(r.p);
     const u = settlement?.unresolved.find((x) => x.name === LABEL);
-    expect(u?.options.map((o) => `${o.value} | ${o.source}`)).toEqual(expect.arrayContaining(["Text message | Notes.txt: the whole text", "Text message | Your request", "Phone call | Notes.txt: the whole text"]));
+    expect(u?.options.map((o) => `${o.value} | ${o.source}`)).toEqual(expect.arrayContaining(["Text message | Notes.txt: the whole text", "Phone call | Notes.txt: the whole text"]));
     if (output === null) return { r, after: null };
     const option = u?.options.find((o) => o.value === output && o.source.endsWith(": the whole text"));
     const after = await (settlement as NonNullable<typeof settlement>).settle(u?.key ?? "", option?.id ?? "", { model: r.model, askJev: jevOf(s, reqs) });

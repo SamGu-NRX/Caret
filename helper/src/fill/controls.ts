@@ -56,10 +56,8 @@ export function consentLike(label: string): boolean {
 
 /**
  * Labels of boxes that sign the user up to hear from someone or share their data, or commit them to an order, a plan or
- * membership, an agreement or a signature, beyond CONSENT's words and the risk table's: never ticked or offered (D2-04
- * review: "Receive product announcements" was written; v2/choices review: "Pay now for maintenance plan", "Arbitration
- * agreement", "Roadside assistance membership"). Boxes only: a menu labelled "Preferred contact method" or "Plan" is a
- * plain choice.
+ * membership, an agreement or a signature, beyond CONSENT's words and the risk table's: never ticked or offered. Boxes
+ * only: a menu labelled "Preferred contact method" or "Plan" is a plain choice.
  */
 const SIGN_UP = /\b(?:order|orders|membership|plan|plans|agreement|agreements|sign|signed|signing|receive|announcements?|communications?|contact(?:ed)?|call me|calls|sms|texts?|messages|alerts|reminders|digest|mailing|partners?|third[- ]part(?:y|ies)|shar(?:e|ing)|sell|ads|advertis\w*|personali[sz]\w*|tracking|cookies?|surveys?|research|feedback|deals|discounts|hear (?:about|from)|interested in|learn (?:about|more)|verif(?:y|ies|ied|ication))\b/i;
 /**

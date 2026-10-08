@@ -76,15 +76,28 @@ function shownText(n: Node): string {
 }
 
 /**
- * The nodes of a window's own content: in a browser, its page (the AXWebArea and everything under it, as controls.ts
- * formControls reads a page's controls), not the browser's toolbar and tabs; any other window's every node. The toolbar and
- * tab strip are the browser's, not part of anyone's message.
+ * The nodes of a window's own content, in document order (depth first, siblings as the walk lists them): in a browser,
+ * its page (the AXWebArea and every node whose parent chain reaches it, as controls.ts formControls reads a page's
+ * controls), not the browser's toolbar and tabs; any other window's every node. The toolbar and tab strip are the
+ * browser's, not part of anyone's message. Membership never depends on the order a snapshot lists nodes in: it may list
+ * a child before its parent.
  */
-function contentNodes(raw: WindowState): Map<string, Node> {
+function contentNodes(raw: WindowState): Node[] {
+  const kids = new Map<string | null, Node[]>();
+  for (const n of raw.nodes.values()) {
+    const p = n.parent !== null && raw.nodes.has(n.parent) ? n.parent : null;
+    kids.set(p, [...(kids.get(p) ?? []), n]);
+  }
   const web = [...raw.nodes.values()].find((n) => n.role === "AXWebArea");
-  if (web === undefined) return raw.nodes;
-  const out = new Map<string, Node>([[web.key, web]]);
-  for (const n of raw.nodes.values()) if (n.parent !== null && out.has(n.parent)) out.set(n.key, n);
+  const out: Node[] = [];
+  const seen = new Set<string>();
+  const visit = (n: Node): void => {
+    if (seen.has(n.key)) return;
+    seen.add(n.key);
+    out.push(n);
+    for (const c of kids.get(n.key) ?? []) visit(c);
+  };
+  for (const root of web === undefined ? (kids.get(null) ?? []) : [web]) visit(root);
   return out;
 }
 
@@ -99,12 +112,12 @@ export function windowUnit(model: ScreenModel, windowId: string): NoteUnit | nul
   const raw = model.windows.get(windowId);
   if (raw === undefined) return null;
   const nodes = contentNodes(raw);
-  if (![...nodes.values()].some((n) => shownText(n).trim() !== "")) return null;
+  if (!nodes.some((n) => shownText(n).trim() !== "")) return null;
   const view = redactWindow(raw);
   let complete = raw.window.title === view.window.title;
   const texts = view.window.title.trim() === "" ? [] : [view.window.title.trim()];
-  for (const [k, r] of nodes) {
-    const v = view.nodes.get(k);
+  for (const r of nodes) {
+    const v = view.nodes.get(r.key);
     const vt = v === undefined ? "" : shownText(v).trim();
     if (shownText(r).trim() !== vt) complete = false;
     if (vt !== "") texts.push(vt);

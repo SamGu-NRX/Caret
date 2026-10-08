@@ -23,8 +23,8 @@
 // The ledger's own inventory (viewInventory) is read only to report a mismatch with the counter's and the positions the
 // ledger charged; never in the count.
 import { ScreenModel } from "../src/model.ts";
-import { proposeFill, valueSettlementOf } from "../src/fill/fill.ts";
-import { sealRequest } from "../src/fill/jev.ts";
+import { proposeFill, valueSettlementOf, type FillOptions, type FillTrace } from "../src/fill/fill.ts";
+import { sealRequest, type AskJev, type JevResult, type SealedRequest } from "../src/fill/jev.ts";
 import { sendable } from "../src/privacy/send.ts";
 import { TabSource, type TabReader } from "../src/engines/tab-source.ts";
 import { PageResult, PROTOCOL_VERSION, Snapshot } from "../src/protocol.ts";
@@ -610,7 +610,7 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
     model = ts.viewFor("f1");
     tabSource = ts;
   }
-  let traces: { owns: (req: unknown) => boolean; fields: { id: string; key: string; name: string }[]; options: Map<string, { text: string; from: string; app: string | null }> }[] = [];
+  const traces: FillTrace[] = [];
   const sent: SentRecord[] = [];
   const reqLog: CaseResult["requests"] = [];
   const chosenText = new Map<string, string>(); // field key -> candidate text
@@ -625,32 +625,34 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
   };
   // Every window state on screen before the first request, a window that closes before it too.
   const initial = statesNow();
-  const ask = async (req: any): Promise<any> => {
+  const ask: AskJev = async (req) => {
     if (desk.event !== null && reqIndex === desk.event.before) {
       const ev = desk.event.ev;
       if (ev.type === "close") live.close(ev.windowId, 8000);
       else live.apply(snapOf(ev.win));
     }
     reqIndex++;
+    // Every request fill sends names its purpose; one that did not would be logged under "unnamed".
+    const purpose = req.purpose ?? "unnamed";
     let bytes: string;
-    let s: any;
+    let s: SealedRequest;
     try {
       s = sealRequest(req);
       bytes = sendable(s.sealed);
     } catch (e) {
-      reqLog.push({ purpose: req.purpose, ok: false, refused: e instanceof Error ? e.message : String(e) });
+      reqLog.push({ purpose, ok: false, refused: e instanceof Error ? e.message : String(e) });
       throw e;
     }
     // How many source-supported choices it offers, how many of them name a whole window in source_notes, and how many the
     // answers below take: whether the generator reaches the path at all.
-    const supported = Object.values<any>(req.questions).flatMap((q) => Object.values<string | null>(q.criteria)).filter((c) => String(c ?? "").includes("Derivation: not copied from the source;"));
-    const logged: CaseResult["requests"][number] = { purpose: req.purpose, ok: true, ...(supported.length === 0 ? {} : { choices: { offered: supported.length, windows: supported.filter((c) => String(c).includes("; the whole text is note_")).length, chosen: 0 } }) };
+    const supported = Object.values(req.questions).flatMap((q) => Object.values(q.criteria)).filter((c) => String(c ?? "").includes("Derivation: not copied from the source;"));
+    const logged: CaseResult["requests"][number] = { purpose, ok: true, ...(supported.length === 0 ? {} : { choices: { offered: supported.length, windows: supported.filter((c) => String(c).includes("; the whole text is note_")).length, chosen: 0 } }) };
     reqLog.push(logged);
     const t = traces.find((x) => x.owns(req));
-    const answers: Record<string, { choice: string; confidence: number }> = {};
+    const answers: JevResult["answers"] = {};
     const chosen: SentRecord["chosen"] = [];
     const offered: SentRecord["offered"] = [];
-    for (const [qid, q] of Object.entries<any>(req.questions)) {
+    for (const [qid, q] of Object.entries(req.questions)) {
       if (req.purpose === "fill.verify") {
         answers[qid] = { choice: "exact", confidence: r.chance(desk.lowVerify) ? 0.1 : 0.99 };
         continue;
@@ -660,7 +662,7 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
         continue;
       }
       const field = t?.fields.find((f) => f.id === qid);
-      const opts = Object.entries<string | null>(q.criteria).filter(([k]) => k !== "none" && !k.includes("_"));
+      const opts = Object.entries(q.criteria).filter(([k]) => k !== "none" && !k.includes("_"));
       for (const [k, c] of opts) {
         const o = t?.options.get(k);
         // A source-supported choice's text is a listed option, not a span of its window: its evidence is the whole window,
@@ -697,7 +699,7 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
       if (o.from !== "memory" && o.from !== "choice") chosen.push(readOf(o.text, o.app, String(hit[1] ?? ""), o.from === "derived"));
     }
     const ledgerPositions = new Map<string, string[]>();
-    for (const [key, { view, bits }] of s.sealed.measurement.positions as Map<string, { view: any; bits: Uint8Array }>) {
+    for (const [key, { view, bits }] of s.sealed.measurement.positions) {
       const inv = viewInventory(view);
       const keys: string[] = [];
       inv.lines.forEach((line: string, li: number) => {
@@ -705,13 +707,16 @@ export async function runCase(i: number, desk: Desk): Promise<CaseResult> {
       });
       ledgerPositions.set(key.replace(/@\d+$/u, ""), [...(ledgerPositions.get(key.replace(/@\d+$/u, "")) ?? []), ...keys]);
     }
-    sent.push({ purpose: req.purpose, bytes, states: statesNow(), chosen, offered, ledger: { ...s.sealed.charged }, ledgerPositions });
-    if (dumping) DEBUG_SENT.push({ purpose: req.purpose, bytes, chosen, offered, ledger: { ...s.sealed.charged } });
+    sent.push({ purpose, bytes, states: statesNow(), chosen, offered, ledger: { ...s.sealed.charged }, ledgerPositions });
+    if (dumping) DEBUG_SENT.push({ purpose, bytes, chosen, offered, ledger: { ...s.sealed.charged } });
     return { model: "fuzz", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
   };
 
-  const fillOpts: any = { whose: desk.whose, trace: (t: any) => traces.push(t) };
-  if (desk.mode === "scope") fillOpts.scope = { fields: desk.form.keys, windows: null, memory: false, instruction: desk.instruction, person: null, literals: new Map() };
+  const fillOpts: FillOptions = {
+    whose: desk.whose,
+    trace: (t) => void traces.push(t),
+    ...(desk.mode === "scope" ? { scope: { fields: desk.form.keys, windows: null, memory: false, instruction: desk.instruction, person: null, literals: new Map() } } : {}),
+  };
   let error: string | undefined;
   try {
     const trigger = desk.form.keys[0];
