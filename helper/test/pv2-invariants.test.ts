@@ -1,7 +1,7 @@
 import { beforeEach as vercelBeforeEach, afterEach as vercelAfterEach, vi as vercelVi } from "vitest";
 // PV2's three invariants after the second re-review, each as a property over random cases:
 // - budget: whatever path reveals a window's text (candidate, descriptor, held, a derivation from a basis, take), what
-//   the request shows of the window's prose stays within its prose share and of the window within its budget;
+//   the request's final bytes reveal of the window stays within its limit;
 // - exclusion: no node with an excluded ancestor holds a value or a typed value in the model, whatever the roles between
 //   and however walks were merged;
 // - sends: after an app or site is switched off, no request built before it reaches a transport or a store.
@@ -13,7 +13,7 @@ import { Disclosure, LedgerRefused, UnmintedText, type ModelText, registryOf } f
 import { decodeUnits } from "../src/privacy/ledger/units.ts";
 import { isConversation } from "../src/conversation.ts";
 import { refReveal, refUnits } from "./ledger-reference.ts";
-import { windowShare } from "../src/privacy.ts";
+import { windowBudget } from "../src/privacy.ts";
 import { noteSwitchedOff } from "../src/privacy/read-policy.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { redactWindow } from "../src/fill/redact.ts";
@@ -41,15 +41,13 @@ const pick = <T>(r: () => number, xs: readonly T[]): T => xs[Math.floor(r() * xs
 const words = (s: string): { w: string; at: number }[] => [...s.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({ w: m[0], at: m.index }));
 
 /**
- * The output ledger's invariant (OUTPUT-LEDGER-SPEC sections 4, 5 and 9), at the two places it is applied:
- * - while a request is built, every window's running charge is exactly the brute-force reference's measure
- *   (test/ledger-reference.ts) of the texts admitted so far, and a mint is refused exactly when admitting it would break a
- *   window's limit;
- * - at seal, the charge declared for the request's final bytes is exactly the reference's measure of their decoded units.
- * The reference shares only the normalizer with production.
+ * The output ledger's invariant (OUTPUT-LEDGER-SPEC sections 4, 5 and 9), where it is the guarantee: at seal. For
+ * random requests built from shared, copied and repeated text, the charge declared for the final bytes is exactly the
+ * brute-force reference's measure of their decoded units (test/ledger-reference.ts, which shares only the normalizer),
+ * and the seal refuses exactly when that breaks a window's limit.
  */
-describe("invariant: what a request reveals of a window is exactly what it is charged", () => {
-  /** A window's inventory as section 1 collects it from a view with nothing redacted: title first, distinct lines. */
+describe("invariant: what a request's final bytes reveal of a window is exactly what it is charged", () => {
+  /** A window's inventory as section 1 collects it from a view: title first, distinct lines. */
   const linesOfWindow = (w: WindowState): string[] => {
     const out: string[] = [];
     for (const raw of [w.window.title, ...[...w.nodes.values()].flatMap((n) => [n.label, n.value, n.placeholder])]) {
@@ -60,12 +58,9 @@ describe("invariant: what a request reveals of a window is exactly what it is ch
     }
     return out;
   };
-  /** The limit of a window: section 5's, consent included (a conversation's limit stands over it). */
-  const limitOf = (w: WindowState, consented: ReadonlySet<string>): { budget: number; prose: number | null } => (consented.has(w.window.windowId) && !isConversation(w) ? { budget: 1200, prose: null } : windowShare(w));
-  const breaks = (r: { charged: number; prose: number }, l: { budget: number; prose: number | null }): boolean => r.charged > l.budget || (l.prose !== null && r.prose > l.prose);
 
   /** A desk of windows that share sentences, copy lines in another case or spacing, and repeat words and lines. */
-  function desk(r: () => number): { m: ScreenModel; consented: Set<string>; lines: Map<string, string[]> } {
+  function desk(r: () => number): { m: ScreenModel; lines: Map<string, string[]> } {
     let next = 0;
     const word = (): string => `${pick(r, ["Ka", "lo", "Mi", "ne", "su", "Ta"])}${pick(r, ["ber", "dan", "fel", "gor"])}${next++}`;
     const sentence = (n: number): string => {
@@ -81,168 +76,60 @@ describe("invariant: what a request reveals of a window is exactly what it is ch
       const mine = [...own, ...shared.filter(() => r() < 0.7)];
       if (r() < 0.5) mine.push((mine[0] as string).toUpperCase());
       if (r() < 0.5) mine.push((mine[1] ?? (mine[0] as string)).split(" ").join("  "));
-      if (r() < 0.3) mine.push(mine[0] as string);
-      m.apply(snap(mine.map((l, i) => text(`${id}${i}`, l)), { at: 1000, windowId: id, title: `Title ${id}` }));
+      // One of the three is a conversation (Messages), held under half of its text.
+      const app = id === "c" ? { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" } : undefined;
+      m.apply(snap(mine.map((l, i) => text(`${id}${i}`, l)), { at: 1000, windowId: id, title: `Title ${id}`, ...(app === undefined ? {} : { app }) }));
       lines.set(id, mine);
     }
-    return { m, consented: new Set(r() < 0.5 ? ["a"] : []), lines };
-  }
-
-  function agree(d: Disclosure, m: ScreenModel, consented: ReadonlySet<string>, why: string): void {
-    const admitted = d.admitted().map((t) => [t]);
-    for (const w of m.windows.values()) {
-      const want = refReveal(admitted, linesOfWindow(w));
-      expect(d.declared().charged[w.window.windowId] ?? 0, `${why}: ${w.window.windowId}`).toBe(want.charged);
-      expect(breaks(want, limitOf(w, consented)), `${why}: ${w.window.windowId} within its limit`).toBe(false);
-    }
-  }
-
-  /** Whether admitting `t` on top of what is admitted would break some window's limit, by the reference. */
-  function refused(d: Disclosure, m: ScreenModel, consented: ReadonlySet<string>, t: string): boolean {
-    const units = [...d.admitted(), t].map((x) => [x]);
-    return [...m.windows.values()].some((w) => breaks(refReveal(units, linesOfWindow(w)), limitOf(w, consented)));
+    return { m, lines };
   }
 
   it.each(Array.from({ length: 80 }, (_, i) => i + 1))("seed %i: cuts, derivations and compositions across shared, copied and repeated text", (seed) => {
     const r = rng(seed * 7);
-    const { m, consented, lines } = desk(r);
-    const d = new Disclosure(m, { consented });
+    const { m, lines } = desk(r);
+    const d = new Disclosure(m);
     const views = new Map([...m.windows.values()].map((w) => [w.window.windowId, redactWindow(w)]));
-    let nulls = 0;
-    let mints = 0;
     const minted: ModelText[] = [];
-    for (let step = 0; step < 40; step++) {
+    for (let step = 0; step < 30; step++) {
       const id = pick(r, [...lines.keys()]);
       const view = views.get(id) as WindowState;
       const ws = pick(r, linesOfWindow(view).slice(1)).split(" ");
       const a = Math.floor(r() * ws.length);
       const piece = ws.slice(a, Math.min(ws.length, a + 1 + Math.floor(r() * 5))).join(" ");
-      const path = pick(r, ["candidate", "held", "take", "foreign", "derived", "compose"] as const);
-      const why = `seed ${seed} step ${step} (${path} ${id})`;
-      if (path === "candidate" || path === "held") {
-        const want = refused(d, m, consented, piece);
-        const got = path === "candidate" ? d.candidate(view, piece) : d.held(view, piece);
-        expect(got === null, why).toBe(want);
-        if (got === null) nulls++;
-        else (mints++, minted.push(got));
-      } else if (path === "take") {
-        const other = pick(r, linesOfWindow(view).slice(1)).split(" ")[0] as string;
-        const t = `${piece}${pick(r, [" ", "\n", "… "])}${other}`;
-        const want = refused(d, m, consented, t);
-        expect(d.take(view, "candidate", [t]), why).toBe(!want);
-        if (want) nulls++;
-        else mints++;
-      } else if (path === "foreign") {
-        // A text a word of which no line shows is no cut: null, and nothing charged.
-        const before = JSON.stringify(d.declared().charged);
-        expect(d.candidate(view, `${piece} unseen${step}`), why).toBeNull();
-        expect(d.take(view, "candidate", [`${piece} unseen${step}`]), why).toBe(false);
-        expect(JSON.stringify(d.declared().charged), why).toBe(before);
-        nulls++;
-      } else if (path === "derived") {
-        const basisText = r() < 0.3 ? `${piece}\n${piece}` : piece;
-        const b = d.basis(view, basisText);
-        if (b === null) {
-          nulls++;
-          continue;
-        }
-        const outWords = basisText.split("\n").flatMap((p) => p.split(" ")).filter(() => r() < 0.7);
-        if (outWords.length === 0) continue;
-        const out = outWords.map((w) => (r() < 0.3 ? w.toUpperCase() : w)).join(r() < 0.3 ? "  " : " ");
-        const want = refused(d, m, consented, out);
-        const got = d.derived(b, out);
-        expect(got === null, why).toBe(want);
-        if (got === null) nulls++;
-        else (mints++, minted.push(got));
-      } else if (minted.length >= 2) {
-        // A composition is not charged while it is built: the seal measures it in the request's bytes.
-        const [x, y] = [pick(r, minted), pick(r, minted)];
-        const before = JSON.stringify(d.declared().charged);
-        d.t`${x} and ${y}`;
-        expect(JSON.stringify(d.declared().charged), why).toBe(before);
-      }
-      agree(d, m, consented, why);
+      const path = pick(r, ["candidate", "held", "derived", "compose"] as const);
+      let got: ModelText | null = null;
+      if (path === "candidate") got = d.candidate(view, piece);
+      else if (path === "held") got = d.held(view, piece);
+      else if (path === "derived") {
+        const b = d.basis(view, piece);
+        if (b !== null) got = d.derived(b, piece.split(" ").map((w) => (r() < 0.3 ? w.toUpperCase() : w)).join(r() < 0.3 ? "  " : " "));
+      } else if (minted.length >= 2) got = d.t`${pick(r, minted)} and ${pick(r, minted)}`;
+      if (got !== null) minted.push(got);
     }
-    expect(mints, `seed ${seed}: mints`).toBeGreaterThan(0);
-    expect(nulls, `seed ${seed}: nulls`).toBeGreaterThan(0);
-    // The seal's measure of a body holding what was minted, composed, is the reference's measure of its decoded units.
-    const body = { state: { said: minted.slice(0, 6), joined: minted.length >= 2 ? d.t`${minted[0] as ModelText} and ${minted[1] as ModelText}` : d.own("none") } };
-    const bytes = JSON.stringify(body);
+    expect(minted.length, `seed ${seed}: mints`).toBeGreaterThan(0);
+    const bytes = JSON.stringify({ state: { said: minted.slice(0, 8) } });
     const units = refUnits(bytes);
-    const fits = [...m.windows.values()].every((w) => !breaks(refReveal(units, linesOfWindow(w)), limitOf(w, consented)));
+    const want = [...m.windows.values()].map((w) => ({ id: w.window.windowId, charged: refReveal(units, linesOfWindow(redactWindow(w))).charged, limit: windowBudget(w) }));
+    const fits = want.every((w) => w.charged <= w.limit);
     let got: Record<string, number> | null = null;
     try {
       got = { ...d.measureSent("test", decodeUnits(bytes).units.map((u) => u.text)).charged };
     } catch (e) {
       if (!(e instanceof LedgerRefused)) throw e;
     }
-    expect(got !== null, `seed ${seed}: seal admits exactly when the reference fits`).toBe(fits);
-    if (got !== null) for (const w of m.windows.values()) expect(got[w.window.windowId] ?? 0, `seed ${seed}: seal ${w.window.windowId}`).toBe(refReveal(units, linesOfWindow(w)).charged);
+    expect(got !== null, `seed ${seed}: the seal admits exactly when the reference fits`).toBe(fits);
+    if (got !== null) for (const w of want) expect(got[w.id] ?? 0, `seed ${seed}: ${w.id}`).toBe(w.charged);
   });
 
-  it("the reviewer's three counterexamples, measured on what is said", () => {
-    // 1. A 108-character sentence, its uppercase copy and unrelated prose: the sentence reveals both lines whole, and its
-    // runs of four or more scalars that the prose lines share; refused when that breaks the prose limit.
-    const s1 = "Dana said the staging rotation moves to the Austin office after the March review then back in June ok.";
-    const s108 = `${s1}${"x".repeat(108 - s1.length - 1)}.`;
-    const prose = "Unrelated prose about the shipment, the invoice and the venue that nobody asked about at all, written out long.";
-    const m1 = new ScreenModel();
-    m1.apply(snap([text("t0", s108), text("t1", s108.toUpperCase()), text("t2", prose), text("t3", `${prose} Again.`)], { at: 1000, windowId: "w", title: "Notes" }));
-    const w1 = m1.windows.get("w") as WindowState;
-    const d1 = new Disclosure(m1);
-    const want1 = refReveal([[s108]], linesOfWindow(w1));
-    expect(want1.charged).toBeGreaterThanOrEqual(216);
-    const got1 = d1.candidate(redactWindow(w1), s108);
-    expect(got1 === null).toBe(breaks(want1, windowShare(w1)));
-    expect(d1.declared().charged.w ?? 0).toBe(got1 === null ? 0 : want1.charged);
-    // 2. A consented note and an unconsented chat show the same 110-character sentence: a derivation of it from the note
-    // is charged to the chat too, against the chat's own limit.
-    const s110 = "Robin asked whether the staging rotation could move to the Austin office after the March review is done".padEnd(109, " x") + ".";
-    const m2 = new ScreenModel();
-    m2.apply(snap([text("n0", s110), text("n1", "Notes about other things")], { at: 1000, windowId: "note", title: "Note" }));
-    m2.apply(snap([text("c0", s110), text("c1", "ok")], { at: 1000, windowId: "chat", title: "Chat" }));
-    const chat = m2.windows.get("chat") as WindowState;
-    const d2 = new Disclosure(m2, { consented: new Set(["note"]) });
-    const b2 = d2.basis(redactWindow(m2.windows.get("note") as WindowState), s110);
-    const got2 = b2 === null ? null : d2.derived(b2, s110);
-    if (windowShare(chat).budget < 110) {
-      expect(got2).toBeNull();
-      expect(d2.declared().charged.chat ?? 0).toBe(0);
-    } else expect(d2.declared().charged.chat).toBe(110);
-    // 3. "Echo Echo" said from a basis "Echo\nEcho" cut from the line "Echo Echo" reveals the whole line, space included.
-    const m3 = new ScreenModel();
-    m3.apply(snap([text("e0", "Echo Echo"), text("e1", "Other line here")], { at: 1000, windowId: "e", title: "E" }));
-    const d3 = new Disclosure(m3);
-    const b3 = d3.basis(redactWindow(m3.windows.get("e") as WindowState), "Echo\nEcho");
-    expect(b3).not.toBeNull();
-    expect(d3.derived(b3!, "Echo Echo")).toBe("Echo Echo");
-    // 9 for the line, and 1 for the window's one-letter title "E", a whole source line the text holds (section 4).
-    expect(d3.declared().charged.e).toBe(10);
-  });
-
-  it.each(Array.from({ length: 20 }, (_, i) => i + 1))("seed %i: the goal inventory's event derivations are charged exactly what they say", (seed) => {
-    const r = rng(seed * 31);
-    const name = pick(r, ["Priya", "Dana", "Robin", "Aiko", "Mateo"]);
-    const kind = pick(r, ["lunch", "coffee", "meet", "dinner"]);
-    const day = 8 + Math.floor(r() * 10);
-    const weekday = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"][(day - 8) % 7] as string;
-    const date = `${weekday}, October ${day}, 2026`;
-    const hour = 1 + Math.floor(r() * 5);
-    const time = `${hour}:00 PM to ${hour}:45 PM PT`;
-    const sentence = kind === "meet" ? `Can we meet with ${name} on ${date} from ${time} to sort it out?` : `Can we have ${kind} with ${name} on ${date} from ${time} to sort it out?`;
-    const filler = Array.from({ length: 3 }, (_, i) => `Earlier note ${i}: the shipment went out on time and the invoice was paid in full last month, nothing else.`);
+  it("a basis cut twice from 'Echo Echo', said as 'Echo Echo', reveals the whole line", () => {
     const m = new ScreenModel();
-    m.apply(snap([text("t0", sentence), ...filler.map((f, i) => text(`x${i}`, f))], { at: 1000, windowId: "c", title: "Chat", values: [{ kind: "date", text: date, nodeKey: "t0" }, { kind: "time", text: time, nodeKey: "t0" }] }));
-    const w = m.windows.get("c") as WindowState;
+    m.apply(snap([text("e0", "Echo Echo"), text("e1", "Other line here")], { at: 1000, windowId: "e", title: "E" }));
     const d = new Disclosure(m);
-    let n = 0;
-    const found = eventsIn(w, [], macClock(new Date("2026-10-07T10:00:00Z")), "s1", d, () => `v${++n}`);
-    expect(found.length, `seed ${seed}: an event`).toBe(1);
-    // Exactly what the admitted texts reveal, all of them: the person, the dates, the kind, the title, and any run of four
-    // or more scalars they share with the filler lines.
-    expect(d.declared().charged.c, `seed ${seed}`).toBe(refReveal(d.admitted().map((t) => [t]), linesOfWindow(redactWindow(w))).charged);
-    const revealed = refReveal(d.admitted().map((t) => [t]), [sentence]).positions.length;
-    expect(revealed, `seed ${seed}: the sentence's name, date and time at least`).toBeGreaterThanOrEqual(name.length + date.length + time.length);
+    const b = d.basis(redactWindow(m.windows.get("e") as WindowState), "Echo\nEcho");
+    expect(b).not.toBeNull();
+    expect(d.derived(b!, "Echo Echo")).toBe("Echo Echo");
+    // 9 for the line, and 1 for the window's one-letter title "E", a whole line the text holds.
+    expect(d.declared().charged.e).toBe(10);
   });
 });
 

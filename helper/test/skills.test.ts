@@ -126,15 +126,16 @@ describe("naming a routine from its structure", () => {
     expect(checkName("Copy Subject - into Mail Fixture", facts({ values: ["-"] }))).toMatch(/holds a value/);
   });
 
-  it("declares a line another window shows when a composed name holds it", async () => {
+  it("declares, under another window, each stretch of its line that the app name, the question and a composed name show", async () => {
     const m = new ScreenModel();
     m.apply(snap([...dst.nodes.values()], { at: 1, windowId: "6160-1", app: MAIL_APP, title: "New message" }));
     m.apply(snap([{ key: "n/line", parent: null, role: "AXStaticText", label: "Subject and To into Mail Fixture" }], { at: 1, windowId: "9090-1", title: "Notes" }));
     const seen: JevRequest[] = [];
     await nameRoutine(facts({ dstWindow: m.windows.get("6160-1")! }), answering(first, 0.9, seen), () => m, () => 0);
-    expect(seen[0]!.snippets).toContainEqual({ windowId: "9090-1", kind: "candidate", text: "Subject and To into Mail Fixture" });
-    // At least the line; the ledger also charges the labels and app name the line contains, counting overlaps twice.
-    expect(seen[0]!.charged["9090-1"]).toBeGreaterThanOrEqual("Subject and To into Mail Fixture".length);
+    // In the order they show it: the app name, then " into" from the question's "into Mail Fixture", then the name.
+    expect(seen[0]!.snippets.filter((x) => x.windowId === "9090-1").map((x) => x.text)).toEqual(["Mail Fixture", "into", "Subject and To"]);
+    // Together they are the whole line, each position charged once.
+    expect(seen[0]!.charged["9090-1"]).toBe("Subject and To into Mail Fixture".length);
   });
 
   it("names by code at once with Jev off", async () => {

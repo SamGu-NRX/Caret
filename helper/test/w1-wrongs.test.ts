@@ -441,7 +441,7 @@ describe("the guard adversary (scripts/guard-adversary.ts) on the committed desk
       // planAsk): the guards must not cost one.
       // HA2 (lead decision, cost accepted): a user's value admitted by owner questions counts only when both questions
       // showed its whole source note. A fill on focus from a note the user did not name sends under half of the note's
-      // prose (privacy.ts prose share), so a note with any line over 80 characters never goes whole and its user values
+      // prose (privacy.ts prose share, since deleted), so a note with any line over 80 characters never goes whole and its user values
       // are withheld; an Ask that names the note keeps the full budget. Measured on these desks: 199 right at 68a7daa,
       // 164 with HA2 (evidence/screen/ha2; all four sets 353 -> 283). Lead decision 2 then held every address part to the
       // same rule (a lone city or ZIP line is asked whose it is too): 162 (all four sets 271). The review's fail-closed

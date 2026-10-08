@@ -8,43 +8,16 @@ import type { Node } from "./protocol.ts";
 import { excludedValue } from "./privacy/exclude.ts";
 import { isRedacted, redactWindow } from "./fill/redact.ts";
 import { heldAsConversation, measuredWindows, MintAccount, sectionTexts, viewInventory, type MeasuredWindow, type ScreenRegistry } from "./privacy/ledger/account.ts";
-import { isCard, LARGE_WINDOW_CHARS, limitsOf } from "./privacy/ledger/measure.ts";
+import { CONVERSATION_CHARS, limitOf, WINDOW_CHARS } from "./privacy/ledger/measure.ts";
 
-/**
- * Distinct characters of one window's text that one request may carry. The bound comes from the
- * question shapes. The pending question shows Jev at most 4 marker lines and 6 changed lines of
- * SNIPPET_CHARS each, which is 1,200. The fill question's densest source window in the synthetic
- * calibration recordings (~/.caret-run/evidence/screen/fill-distractors-v2, 21 recordings) gives 589
- * distinct characters over 21 candidates, so 1,200 leaves twice that before a window's values are cut.
- * A window with more text than this never goes out whole.
- */
-export const WINDOW_CHARS = 1200;
+export { CONVERSATION_CHARS, WINDOW_CHARS };
 /** The longest screen line the pending and first-look questions quote, cut with an ellipsis past it. */
 export const SNIPPET_CHARS = 120;
-/**
- * A window whose every line is at most CARD_LINE_CHARS long (the fill generator's longest candidate) and
- * that has at most CARD_LINES lines is a card of values: a contact card, an order confirmation, a meeting
- * block. Its lines are themselves the values a fill might copy, so a request may carry all of it, up to
- * WINDOW_CHARS. 24 is assumed: just above the calibration fixture's largest source window, 21 lines. A line
- * longer than CARD_LINE_CHARS is prose: more than half of a window's prose always stays on the Mac
- * (windowBudget).
- */
-export const CARD_LINES = 24;
-export const CARD_LINE_CHARS = 80;
-/**
- * Distinct characters one request may take from a conversation (conversation.ts), which also always
- * keeps more than half of its text back, however short it is: a conversation is what people mean by
- * private, and a short chat of 24 lines would otherwise pass as a card and go out whole. 600 is half of
- * WINDOW_CHARS and is assumed, not measured; the live replay (scripts/live-replay.ts) measures what it
- * costs fill when the source windows are chats.
- */
-export const CONVERSATION_CHARS = 600;
 
 /**
- * HA2 recall lever 1: the longest whole note an owner question may show beyond its window's budget and prose share, in
- * characters; 0 turns the lever off. Why it exists: an owner judgement counts only when it saw every note that holds the
- * value whole (fill/note-unit.ts), and a note with a line over CARD_LINE_CHARS never fits a fill on focus's prose share,
- * so its user values were withheld. What it sends: the whole note, as the redacted view shows it, in the owner questions
+ * HA2 recall lever 1: the longest whole note an owner question may show beyond its window's limit, in characters; 0
+ * turns the lever off. Why it exists: an owner judgement counts only when it saw every note that holds the value whole
+ * (fill/note-unit.ts), so the user values of a note longer than its window's limit are withheld. What it sends: the whole note, as the redacted view shows it, in the owner questions
  * only (the value questions keep the window's budget), charged to the window and declared like any other text; nothing
  * redaction cut, no conversation (it keeps more than half of itself back, as ever), and no window the model does not
  * hold (Sites rules act before the model), is ever sent.
@@ -59,7 +32,7 @@ export const CONVERSATION_CHARS = 600;
  * TODO(INT1): temporary: re-express on the output-based ledger, then restore 2,000. HA2 built the allotment as a second
  * charge inside the pre-PV2 SnippetLedger's pricing, past the window's budget. PV2's span ledger has no such charge, and
  * INT1 may not add one to its internals while that ledger is being replaced by output-based accounting at seal(). So the
- * allotment is 0 here: an owner note is shown only when it fits its window's own budget and prose share (minted through
+ * allotment is 0 here: an owner note is shown only when it fits its window's own limit (minted through
  * the Disclosure like any candidate), and a note that does not fit withholds its values (fill.ts NOTE_UNSHOWN).
  */
 export const OWNER_NOTE_CHARS = 0;
@@ -103,8 +76,6 @@ export interface Snippet {
 export interface Declared {
   snippets: readonly Snippet[];
   charged: Readonly<Record<string, number>>;
-  /** Windows the user's instruction named, which gave this request up to WINDOW_CHARS (SnippetLedger consented). */
-  consented?: readonly string[];
 }
 
 /** Collapses whitespace as every request builder does before it quotes a line. */
@@ -363,43 +334,14 @@ export function forgetWindows(): void {
   tables.clear();
 }
 
-export interface WindowShare {
-  budget: number;
-  /** Characters of the window's prose (lines over CARD_LINE_CHARS) a request may cover, apart from `budget`; null when only `budget` holds it. */
-  prose: number | null;
-}
+const viewOf = (w: WindowState): WindowState => (isRedacted(w) ? w : redactWindow(w));
 
 /**
- * The characters a request may take from this window (OUTPUT-LEDGER-SPEC section 5, privacy/ledger/measure.ts
- * limitsOf), from its redacted view's inventory (privacy/ledger/account.ts viewInventory). A conversation gives just
- * under half its text, and at most CONVERSATION_CHARS. Any other window gives WINDOW_CHARS when it is a card of values
- * or has 2 * WINDOW_CHARS or more characters. Any other window, a mixed note or a short page, gives the characters of its
- * lines of at most CARD_LINE_CHARS, plus just under half the characters of its longer lines (its prose), at most
- * WINDOW_CHARS; and of its prose a request reveals just under half at most (WindowShare.prose).
- *
- * Why the mixed-note rule (B25 lead decision 3): before it, such a window gave just under half its whole text, so a short
- * note with one sentence over 80 characters gave less than half its labelled value lines. On B24's real-form corpus that
- * was the largest cause of misses, 22 text fields withheld as sourceCut (evidence/screen/b24/after); with it, 17
- * (evidence/screen/b25/budgets.md, fill-dev-2).
+ * The characters a request may reveal of this window (OUTPUT-LEDGER-SPEC section 5): a conversation under half its
+ * text and at most CONVERSATION_CHARS, any other window WINDOW_CHARS.
  */
 export function windowBudget(w: WindowState): number {
-  return windowShare(w).budget;
-}
-
-export function windowShare(w: WindowState): WindowShare {
-  const l = limitsOf(viewInventory(isRedacted(w) ? w : redactWindow(w)), { conversation: heldAsConversation(w), consented: false });
-  return { budget: l.chars, prose: l.prose };
-}
-
-/**
- * Whether a request may take only part of this window's text though it is no conversation: a short note or page that is
- * not a card of values and not large, held to under half its prose and to WINDOW_CHARS (windowShare). Fill spends such a
- * window's budget on the lines nearest the form's fields first, as it does a conversation's (candidates.ts byRelevance).
- */
-export function heldToHalf(w: WindowState): boolean {
-  if (heldAsConversation(w)) return false;
-  const inv = viewInventory(isRedacted(w) ? w : redactWindow(w));
-  return !isCard(inv) && inv.total < LARGE_WINDOW_CHARS;
+  return limitOf(viewInventory(viewOf(w)), heldAsConversation(w));
 }
 
 const EMPTY_REGISTRY: ScreenRegistry = { windows: new Map() };
@@ -432,29 +374,20 @@ export class SnippetLedger {
   private readonly account: MintAccount;
   readonly snippets: Snippet[] = [];
 
-  protected readonly consented: ReadonlySet<string>;
-
   /**
    * `registry`: the screen model, every window whose lines a request's text could reveal. `snapshots`: older states a
-   * builder holds (a task's kept source window), measured as well. `consented`: windows the user's Ask names, which
-   * this request may read up to WINDOW_CHARS, unless they are conversations (section 5).
+   * builder holds (a task's kept source window), measured as well.
    */
-  constructor(registry: ScreenRegistry | null, o: { consented?: ReadonlySet<string>; snapshots?: Iterable<WindowState> } = {}) {
+  constructor(registry: ScreenRegistry | null, o: { snapshots?: Iterable<WindowState> } = {}) {
     this.registry = registry;
     for (const w of registry?.windows.values() ?? []) this.known.set(w.window.windowId, w);
     for (const w of o.snapshots ?? []) this.know(w);
-    this.consented = o.consented ?? new Set();
     this.account = new MintAccount(() => this.measuredWindows());
   }
 
   /** Every window state this request is measured against (privacy/ledger/account.ts measuredWindows). */
   measuredWindows(): MeasuredWindow[] {
-    return measuredWindows(this.registry ?? EMPTY_REGISTRY, this.heldStates, this.consented);
-  }
-
-  /** The characters this request may take from a window: its limit, WINDOW_CHARS when the Ask named it and it is no conversation. */
-  budget(w: WindowState): number {
-    return limitsOf(viewInventory(isRedacted(w) ? w : redactWindow(w)), { conversation: heldAsConversation(w), consented: this.consented.has(w.window.windowId) }).chars;
+    return measuredWindows(this.registry ?? EMPTY_REGISTRY, this.heldStates);
   }
 
   /** A window a take names: known from then on, and held, so the seal measures that state too. */
@@ -600,14 +533,9 @@ export class SnippetLedger {
     return this.account.charges();
   }
 
-  /** What a request built from this ledger declares: its screen text, what each window was charged, and the windows the Ask named. */
+  /** What a request built from this ledger declares: its screen text and what each window was charged. */
   declared(): Declared {
-    return { snippets: this.snippets, charged: this.charges(), ...(this.consented.size === 0 ? {} : { consented: [...this.consented] }) };
-  }
-
-  /** Every text the early check admitted for this request, in order (its charge is their measure). */
-  admitted(): readonly string[] {
-    return this.account.admitted();
+    return { snippets: this.snippets, charged: this.charges() };
   }
 
   /** Characters taken from a window so far. */

@@ -5,11 +5,10 @@
 // client, the writer port, the canned harness and the local decision engine): any string in the body that this
 // request's Disclosure did not mint throws UnmintedText, naming the path, never the text.
 import { assertNoExcludedValue, cut, flat, fold, sectionTexts, SnippetLedger, type Snippet } from "../privacy.ts";
-import { breach, measure, normalizedUnits, type Breach, type Measurement } from "./ledger/account.ts";
+import { breach, measure, normalizedUnits, type Measurement } from "./ledger/account.ts";
 export { registryOf, type ScreenRegistry } from "./ledger/account.ts";
 import { decodeUnits } from "./ledger/units.ts";
-import { writeLocalFile } from "./store-path.ts";
-import { LedgerEncodingError, ledgerNormalizeUnit } from "./ledger/normalize.ts";
+import { LedgerEncodingError } from "./ledger/normalize.ts";
 import type { WindowState } from "../model.ts";
 import { instructionForModel, isRedacted, redactWindow } from "../fill/redact.ts";
 import { sensitiveKind } from "../memory/sensitive.ts";
@@ -150,16 +149,13 @@ export class OutOfShape extends UnmintedText {
 
 /**
  * The output ledger refused a request at seal (OUTPUT-LEDGER-SPEC section 6): what its final bytes reveal of a window
- * breaks that window's character or prose bound, a text in it cannot be measured, or its Disclosure has no registry to
+ * breaks that window's limit, a text in it cannot be measured, or its Disclosure has no registry to
  * measure against. Names the purpose, the window and the bound, never text.
  */
 export class LedgerRefused extends UnmintedText {
-  /** The window and bound that refused, when a bound did (a builder fitting a request reads it); never any text. */
-  readonly breach: Breach | null;
-  constructor(message: string, breach: Breach | null = null) {
+  constructor(message: string) {
     super(message);
     this.name = "LedgerRefused";
-    this.breach = breach;
   }
 }
 
@@ -589,14 +585,9 @@ export class Disclosure extends SnippetLedger {
       if (typeof h !== "string") throw new UnmintedText("t: a hole is not text");
       out += h + (strings[i + 1] ?? "");
     });
-    if (((process.env.LEDGER_EXPERIMENT ?? "").includes("t") || process.env.CARET_TEST_LEDGER_LOG !== undefined) && !EXP_T.has(out)) EXP_T.set(out, { strings: [...strings], holes: [...holes] });
     return this.recordWays(out, this.composedWays(holes, "t", strings.some((s) => s !== "")));
   }
 
-  /** EXPERIMENT ONLY (never committed). */
-  expWays(t: string): MintReason[][] {
-    return this.ways.get(t) ?? [];
-  }
 
   /** A minted text cut to `max` characters with an ellipsis (privacy.ts cut); it keeps its reasons. */
   cut(s: ModelText, max?: number): ModelText {
@@ -725,8 +716,8 @@ export class Disclosure extends SnippetLedger {
 
   /**
    * The seal's measure (OUTPUT-LEDGER-SPEC sections 4-6): the request's final decoded units against every window the
-   * registry knows now and every older snapshot this Disclosure holds, each held to its limits. Throws LedgerRefused,
-   * naming the purpose, window key and bound, when there is no registry, a unit cannot be measured, or a bound breaks.
+   * registry knows now and every older snapshot this Disclosure holds, each held to its limit. Throws LedgerRefused,
+   * naming the purpose, window key and limit, when there is no registry, a unit cannot be measured, or a limit breaks.
    */
   measureSent(purpose: string, units: readonly string[]): Measurement {
     if (this.registry === null) throw new LedgerRefused(`${purpose}: its Disclosure has no screen registry, so what it reveals cannot be measured; it was not sent`);
@@ -735,98 +726,7 @@ export class Disclosure extends SnippetLedger {
     const ws = this.measuredWindows();
     const m = measure(norm, ws);
     const b = breach(m, ws);
-    if (b !== null) throw new LedgerRefused(`${purpose}: it reveals ${b.charged} ${b.bound === "prose" ? "prose " : ""}characters of window ${b.key}, over its limit of ${b.limit}; it was not sent`, b);
-    return m;
-  }
-
-  /**
-   * MEASUREMENT ONLY (CARET_TEST_LEDGER_LOG): for a refused measure, the breaching window's marked spans, each with where
-   * the output text that matched it came from: a key, Caret's wording (a template literal or own-only text), the
-   * instruction, memory, or a window's text (which window, by the declaration that admitted it).
-   */
-  explainBreach(units: readonly { kind: string; text: string }[], breachKey: string): { window: string; title: string; spans: { text: string; len: number; from: string }[] } {
-    const ws = this.measuredWindows();
-    const w = ws.find((x) => x.key === breachKey)!;
-    const norm = normalizedUnits(units.map((u) => u.text)) ?? [];
-    const m = measure(norm, [w]);
-    const bits = m.positions.get(w.key)?.bits ?? new Uint8Array(w.inv.total);
-    const spans: { text: string; len: number; from: string }[] = [];
-    const findIn = (needle: readonly number[]): { ui: number; at: number } | null => {
-      for (let ui = 0; ui < norm.length; ui++) {
-        const h = norm[ui]!.cps;
-        outer: for (let i = 0; i + needle.length <= h.length; i++) {
-          for (let k = 0; k < needle.length; k++) if (h[i + k] !== needle[k]) continue outer;
-          return { ui, at: i };
-        }
-      }
-      return null;
-    };
-    const leaf = (text: string, raw: number): string => {
-      const seg = EXP_T.get(text);
-      if (seg !== undefined) {
-        let pos = 0;
-        for (let i = 0; i < seg.strings.length; i++) {
-          const lit = seg.strings[i]!;
-          if (raw < pos + lit.length) return "Caret's wording (template literal)";
-          pos += lit.length;
-          const h = seg.holes[i];
-          if (h === undefined) break;
-          if (raw < pos + h.length) return leaf(h, raw - pos);
-          pos += h.length;
-        }
-        return "Caret's wording (template literal)";
-      }
-      const reasons = [...(this.reasonsOf(text) ?? [])];
-      if (reasons.length === 0) return "unminted";
-      if (reasons.every((r) => r === "ownWording")) return "Caret's wording";
-      if (reasons.includes("instruction") && reasons.every((r) => r === "instruction" || r === "ownWording")) return "the instruction";
-      if (reasons.includes("memory") && !reasons.includes("candidate") && !reasons.includes("descriptor")) return "memory";
-      const snip = this.snippets.find((x) => x.text === text);
-      const from = snip === undefined ? null : this.measuredWindows().find((x) => x.key === snip.windowId);
-      return from === undefined || from === null ? `window text (${reasons.join("+")})` : from.key === w.key ? "this window's own text" : `another window: ${from.view.window.title.slice(0, 40)}`;
-    };
-    w.inv.lines.forEach((line, li) => {
-      const st = w.inv.starts[li]!;
-      let p = 0;
-      while (p < line.length) {
-        if (bits[st + p] !== 1) {
-          p++;
-          continue;
-        }
-        let q = p;
-        while (q < line.length && bits[st + q] === 1) q++;
-        const text = line.slice(p, q);
-        const n = normalizedUnits([text])?.[0]?.cps ?? [];
-        const hit = n.length === 0 ? null : findIn(n);
-        let from = "unknown";
-        if (hit !== null) {
-          const u = units[hit.ui]!;
-          if (u.kind === "key") from = "a key";
-          else if (u.kind === "scalar") from = "a number or literal";
-          else from = leaf(u.text, norm[hit.ui]!.origins[hit.at]?.[0] ?? 0);
-        }
-        spans.push({ text, len: q - p, from });
-        p = q;
-      }
-    });
-    return { window: w.key, title: w.view.window.title.slice(0, 60), spans };
-  }
-
-  /** EXPERIMENT ONLY (never committed). */
-  expMeasure(purpose: string, pieces: readonly string[][]): Measurement {
-    const norm = pieces.map((p) => ledgerNormalizeUnit(p));
-    const ws = this.measuredWindows();
-    const m = measure(norm, ws);
-    const b = breach(m, ws);
-    if (b !== null && process.env.LEDGER_DEBUG === "1") {
-      const w = ws.find((x) => x.key === b.key)!;
-      const bits = m.positions.get(b.key)?.bits;
-      const marked: string[] = [];
-      if (bits !== undefined) w.inv.lines.forEach((l, li) => { const st = w.inv.starts[li]!; let t = ""; for (let p = 0; p < l.length; p++) t += bits[st + p] === 1 ? l[p] : "_"; if (/[^_]/u.test(t)) marked.push(t); });
-      const contrib = pieces.map((u, i) => ({ u: u.join(" | ").slice(0, 120), r: measure([norm[i]!], [w]).prose[w.key] ?? 0, reasons: u.map((x) => [...(this.reasonsOf(x) ?? [])].join("+")).join(" | ") })).filter((x) => x.r > 0).sort((a, b) => b.r - a.r);
-      process.stderr.write(`LEDGER_DEBUG ${purpose} ${JSON.stringify(b)}\n${marked.join("\n")}\n${contrib.slice(0, 15).map((c) => `  ${c.r} [${c.reasons}] ${JSON.stringify(c.u)}`).join("\n")}\n`);
-    }
-    if (b !== null) throw new LedgerRefused(`${purpose}: it reveals ${b.charged} ${b.bound === "prose" ? "prose " : ""}characters of window ${b.key}, over its limit of ${b.limit}; it was not sent`, b);
+    if (b !== null) throw new LedgerRefused(`${purpose}: it reveals ${b.charged} characters of window ${b.key}, over its limit of ${b.limit}; it was not sent`);
     return m;
   }
 
@@ -851,63 +751,18 @@ export function verifySent(req: { purpose?: string; disclosure?: unknown }, body
  * string and scalar spelling), then measured by the request's Disclosure (Disclosure.measureSent). Bytes that do not
  * decode refuse. Throws LedgerRefused (an UnmintedText) naming no text.
  */
-const EXP_T = new Map<string, { strings: string[]; holes: string[] }>();
-function expPieces(text: string, depth = 0): string[] {
-  const seg = EXP_T.get(text);
-  if (seg === undefined || depth > 20) return [text];
-  const out: string[] = [""];
-  seg.strings.forEach((lit, i) => {
-    if (lit !== "") out.push("");
-    if (i < seg.holes.length) {
-      const inner = expPieces(seg.holes[i] as string, depth + 1);
-      out[out.length - 1] += inner[0] ?? "";
-      for (const p of inner.slice(1)) out.push(p);
-    }
-  });
-  return out.filter((p) => p !== "");
-}
 export function measureBytes(req: { purpose?: string; kind?: string; disclosure?: unknown }, bytes: string): Measurement {
-  const exp = process.env.LEDGER_EXPERIMENT ?? "";
-  if (exp !== "") {
-    const purpose0 = req.purpose ?? req.kind ?? UNNAMED;
-    const d0 = asDisclosure(req.disclosure);
-    if (d0 === null) throw new UnmintedText(`${purpose0} has no Disclosure`);
-    const us = decodeUnits(bytes).units;
-    const kept: string[][] = [];
-    for (const u of us) {
-      if (exp.includes("own") && u.kind === "key") continue;
-      const ways = d0.expWays(u.text);
-      if (exp.includes("own") && ways.length > 0 && ways.every((w) => w.every((r) => r === "ownWording"))) continue;
-      kept.push(exp.includes("t") ? expPieces(u.text) : [u.text]);
-    }
-    return d0.expMeasure(purpose0, kept);
-  }
   const purpose = req.purpose ?? req.kind ?? UNNAMED;
   const d = asDisclosure(req.disclosure);
   if (d === null) throw new UnmintedText(`${purpose} has no Disclosure, so nothing in it was minted; it was not sent`);
-  let decoded: { kind: string; text: string }[];
+  let units: string[];
   try {
-    decoded = decodeUnits(bytes).units.map((u) => ({ kind: u.kind, text: u.text }));
+    units = decodeUnits(bytes).units.map((u) => u.text);
   } catch (e) {
     if (e instanceof LedgerEncodingError) throw new LedgerRefused(`${purpose}: its bytes do not decode as one well-formed JSON value (${e.message.replace(/^.*?: /u, "")}); it was not sent`);
     throw e;
   }
-  const units = decoded.map((u) => u.text);
-  const log = process.env.CARET_TEST_LEDGER_LOG;
-  if (log === undefined) return d.measureSent(purpose, units);
-  // MEASUREMENT ONLY: each seal's time and outcome, and for a refusal the breaching window's marked spans.
-  const t0 = performance.now();
-  try {
-    const m = d.measureSent(purpose, units);
-    writeLocalFile(log, `${JSON.stringify({ test: (globalThis as { __caretTest?: string }).__caretTest, purpose, ms: performance.now() - t0, bytes: bytes.length, ok: true })}\n`, { append: true });
-    return m;
-  } catch (e) {
-    const ms = performance.now() - t0;
-    const key = e instanceof LedgerRefused ? /of window (.+?), over its limit/u.exec(e.message)?.[1] : undefined;
-    const why = key === undefined ? null : d.explainBreach(decoded, key);
-    writeLocalFile(log, `${JSON.stringify({ test: (globalThis as { __caretTest?: string }).__caretTest, purpose, ms, bytes: bytes.length, ok: false, error: e instanceof Error ? e.message : String(e), why })}\n`, { append: true });
-    throw e;
-  }
+  return d.measureSent(purpose, units);
 }
 
 /** The writer port's check: the request has a Disclosure and its input is all minted text. */

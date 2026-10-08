@@ -167,11 +167,6 @@ export interface JevRequest {
    */
   retry429?: boolean;
   /**
-   * Windows the user's Ask named, which may give this request up to WINDOW_CHARS whatever their kind (privacy.ts
-   * CONSENTED). Never sent; privacy.test.ts holds every other window to its usual rules.
-   */
-  consented?: readonly string[];
-  /**
    * G2: for each whose-value question (fill.ts ownerId), the text of the value it asks about, so an evaluation harness
    * answers from the value itself and never parses it back out of the question (page-loop-eval.ts canned Jev). Never
    * sent: the text is already in the question, through the ledger.

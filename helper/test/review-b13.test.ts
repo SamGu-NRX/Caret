@@ -112,8 +112,8 @@ describe("B13 review: no wrong fill from a partial set", () => {
     const m = new ScreenModel();
     const times = Array.from({ length: 79 }, (_, i) => `${10 + Math.floor(i / 60)}:${String(i % 60).padStart(2, "0")}`);
     const nodes = times.map((t, i) => text(`${CHAT}/t${i}`, t));
-    // Enough filler that the note is large (privacy.ts): a short note held to half its text is read by relevance
-    // since B24, which leaves the times out as a group rather than letting the cap stop partway.
+    // A note is no conversation, so it is read in screen order and the cap stops it partway; a conversation is read by
+    // relevance, which leaves the times out as a group. The filler keeps the note over its 1,200-character limit as well.
     const pad = Array.from({ length: 40 }, (_, i) => text(`${CHAT}/p${i}`, `a longer filler message, number ${i}, about where to have lunch today`));
     const values = times.map((t, i) => value("time", t, `${CHAT}/t${i}`));
     nodes.push(text(`${CHAT}/d`, `Review on ${MEETING}`));

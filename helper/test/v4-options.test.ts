@@ -156,8 +156,8 @@ describe("a menu's option named by a source, through fill (G3's examples)", () =
 
   /**
    * An Ask's scope of the one menu, as B24 ask-07's settled scope holds State (the form has more fields than one fill takes).
-   * HA2: the instruction names the notes, so the Ask path reads them as consented (privacy.ts CONSENTED) and an owner
-   * question can show the whole note; without that the note's prose share keeps it back and its address is withheld.
+   * HA2: an owner question shows the whole note, which fits its window's limit; a note it could not show whole would
+   * withhold its address.
    */
   const only = (label: string) => (d: Desk): FillScope => ({ fields: formControls(d.form).filter((c) => normLabel(c.label ?? "") === normLabel(label)).map((c) => c.node.key), windows: null, memory: false, instruction: "fill in everything you can from my notes", person: null, literals: new Map(), consented: new Set([...d.model.windows.keys()].filter((id) => id !== d.form.window.windowId)) });
 

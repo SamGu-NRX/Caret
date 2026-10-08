@@ -6,7 +6,7 @@ import { Disclosure, type ModelText } from "../privacy/disclosure.ts";
 import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
-import { heldAsConversation, heldToHalf } from "../privacy.ts";
+import { heldAsConversation } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, textKind, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
 import { bareLine, clauseAround, LABELLED, lineTexts, lineValues, partAround, sentenceAround, rawURLToken, WARNS } from "./line-values.ts";
@@ -650,11 +650,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     if (full()) return finish();
     touched.add(w.window.windowId);
     reading = w.window.windowId;
-    // A conversation, and (B24) a short window held to under half its text, spend their budget on the spans
-    // nearest the form's fields first. In screen order a note's budget went to its first lines: the B24 corpus's
-    // notes each have a line over 80 characters, so they are held to half, and their name, address and dates
-    // lines came after the cut (evidence/screen/b24/dev-5).
-    if (relevance !== null && (heldAsConversation(w) || heldToHalf(w))) {
+    // A conversation spends its budget on the spans nearest the form's fields first; in screen order its budget went to
+    // its first lines, and the lines a form wanted came after the cut (evidence/screen/b24/dev-5).
+    if (relevance !== null && heldAsConversation(w)) {
       ranked.add(w.window.windowId);
       if (!byRelevance(w, relevance)) return stop();
       continue;

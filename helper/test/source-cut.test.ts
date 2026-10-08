@@ -257,9 +257,9 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     expect(byCost.get("Attendee email")).toBe(GOLD["Attendee email"]);
     expect(byCost.get("Video link")).toBe(GOLD["Video link"]);
     expect(byCost.get("Meeting date")).toBeNull();
-    // With the names' group (B14) the chat's names are cheaper per field served than the links, so they go
-    // in instead, and every name the chat holds is offered: Attendee job title is filled, Video link not.
-    expect(b14.get("Video link")).toBeNull();
+    // With the names' group (B14) every name the chat holds is offered as well, and the links still fit beside them
+    // (206 of the window's 212 characters): Attendee job title and Video link are both filled.
+    expect(b14.get("Video link")).toBe(GOLD["Video link"]);
     expect(b14.get("Attendee job title")).toBe(GOLD["Attendee job title"]);
   });
 
@@ -279,9 +279,9 @@ describe("a conversation's budget goes to the lines nearest each field first", (
       // A value offered carries the facts a window that is not a conversation would give it.
       for (const c of of) if (c !== undefined) expect(c.section, c.text).not.toBeNull();
     }
-    // The cheapest groups per field get in whole: a time, an email and the names, not the dates or links.
-    for (const k of ["date", "url"] as const) expect(removed.has(k), k).toBe(true);
-    for (const k of ["time", "email"] as const) expect(removed.has(k), k).toBe(false);
+    // The cheapest groups per field get in whole: a time, an email, the links and the names, not the dates.
+    expect(removed.has("date")).toBe(true);
+    for (const k of ["time", "email", "url"] as const) expect(removed.has(k), k).toBe(false);
     for (const n of ["Dana Whitfield", "Senior Product Designer", "Lumen Labs"]) expect(candidates.map((c) => c.text)).toContain(n);
   });
 

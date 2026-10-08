@@ -18,8 +18,7 @@ const USER_PHONE = "555-0412";
 const USER_EMAIL = "odile.f@example.com";
 const OPENING = ["Signing up for the Thursday pottery class.", "I'm Odile Ferrant, second term."];
 const CONTACTS = ["Copied from the visitor card:", `Phone: ${PHONE}`, `Email: ${EMAIL}`];
-/** A line over the 80 characters of a card's line, so the note has prose and only under half of it may be sent. */
-/** A note line over 80 characters, so the note has prose; LONG_PROSE is enough of them to pass the 2,000-character owner-note allotment (privacy.ts OWNER_NOTE_CHARS). */
+/** A note line over 80 characters; LONG_PROSE is enough of them to pass a window's 1,200-character limit and the 2,000-character owner-note allotment (privacy.ts OWNER_NOTE_CHARS). */
 const PROSE = "Reminder to myself: bring the receipt from last term, because the front desk asked about it twice already.";
 const LONG_PROSE = Array.from({ length: 20 }, (_, i) => `${PROSE} (${i + 1})`).join("\n");
 
@@ -200,33 +199,27 @@ describe("HA2 rule 1: the exactness check makes no ownership claim", () => {
   });
 });
 
-// TODO(INT1): the allotment is 0 until it is re-expressed on the output-based ledger (privacy.ts OWNER_NOTE_CHARS). The two
-// skipped tests need it above 0 (2,000, Sam's approval; 4,000 here); restore them, and a test-only setter, with it.
+// TODO(INT1): the allotment is 0 until OUTPUT-LEDGER-SPEC section 8 re-expresses it on the output ledger
+// (privacy.ts OWNER_NOTE_CHARS). Until then a note is shown whole only within its window's own limit, 1,200 characters.
 describe("HA2 recall lever 1: the owner-note allotment (privacy.ts OWNER_NOTE_CHARS, 0 until re-expressed, TODO(INT1))", () => {
   const LONG_MINE = [...OPENING, PROSE, `Phone: ${USER_PHONE}`, `Email: ${USER_EMAIL}`].join("\n");
   const mine = (l: string): string | null => (l === "Phone" ? USER_PHONE : l === "Email" ? USER_EMAIL : null);
 
-  it("is 0 until it is re-expressed (TODO(INT1)); off, a note with a prose line is withheld as too long", async () => {
+  it("is 0; a note with a prose line within its window's limit shows whole in both owner questions and fills the user's own values", async () => {
     expect(OWNER_NOTE_CHARS).toBe(0);
-    const { by } = await fill(LONG_MINE, mine);
-    expect(by("Phone")?.value ?? null).toBeNull();
-  });
-
-  it.skip("TODO(INT1): with the product's allotment the note fits, shows the whole note in both owner questions and fills the user's own values", async () => {
     const { by, j } = await fill(LONG_MINE, mine);
     expect([by("Phone")?.value, by("Email")?.value]).toEqual([USER_PHONE, USER_EMAIL]);
     const whose = j.reqs.filter((r) => r.purpose === "fill.whose");
     expect(whose.every((r) => Object.values((r.state as { source_notes?: Record<string, string> }).source_notes ?? {}).includes(LONG_MINE))).toBe(true);
   });
 
-  it.skip("TODO(INT1): still withholds another person's card from a long note once the shown note disclaims it", async () => {
-    // TODO(INT1): at an allotment of 4,000.
+  it("still withholds another person's card from a long note once the shown note disclaims it", async () => {
     const { by } = await fill([...OPENING, PROSE, ...CONTACTS, "Neither of those lines is mine."].join("\n"));
     expect([by("Phone")?.value ?? null, by("Email")?.value ?? null]).toEqual([null, null]);
   });
 
-  it("never sends a note longer than its window's budget allows, nor a line redaction cut", async () => {
-    const { by, j } = await fill(LONG_MINE, mine);
+  it("never sends a note longer than its window's limit", async () => {
+    const { by, j } = await fill([...OPENING, LONG_PROSE, `Phone: ${USER_PHONE}`, `Email: ${USER_EMAIL}`].join("\n"), mine);
     expect(by("Phone")?.value ?? null).toBeNull();
     expect(JSON.stringify(j.reqs)).not.toContain(PROSE);
   });

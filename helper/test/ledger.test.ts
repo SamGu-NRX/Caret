@@ -100,60 +100,7 @@ describe("the ledger charges every window a text reveals", () => {
   });
 });
 
-describe("a mixed note's budget (B25 lead decision 3)", () => {
-  const LONG = "Deliver around 7:30 pm, and please use the side door and ring twice because the front bell is broken";
-  const note = (lines: readonly string[]): { m: ScreenModel; w: WindowState } => {
-    const m = new ScreenModel();
-    m.apply(snap(lines.map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-1", title: "Order note.txt", app: NOTES }));
-    return { m, w: m.windows.get("note-1") as WindowState };
-  };
-  const SHORT = ["Pizza order", "Name: Jordan Reyes", "Phone: (512) 555-0147"];
-
-  it("is the short lines' characters plus just under half the prose's, at most WINDOW_CHARS", () => {
-    const { w } = note([...SHORT, LONG]);
-    const short = ["Order note.txt", ...SHORT].join("").length;
-    expect(LONG.length).toBeGreaterThan(80);
-    expect(windowBudget(w)).toBe(short + Math.floor((LONG.length - 1) / 2));
-    // Thirty short lines and no prose: no card (over 24 lines), not large, so every line may go.
-    const many = note(Array.from({ length: 30 }, (_, i) => `Item ${i}: a value`)).w;
-    expect(windowBudget(many)).toBe(["Order note.txt", ...Array.from({ length: 30 }, (_, i) => `Item ${i}: a value`)].join("").length);
-    // Past WINDOW_CHARS of short lines it is capped.
-    const big = note(Array.from({ length: 40 }, (_, i) => `Line number ${i} of a long list of values here`)).w;
-    expect(windowBudget(big)).toBe(WINDOW_CHARS);
-  });
-
-  it("takes every labelled line, and never half the prose, however much budget is left", () => {
-    const { m, w } = note([...SHORT, LONG]);
-    const ledger = new Disclosure(m);
-    expect(ledger.take(w, "candidate", SHORT)).toBe(true);
-    // Under half the sentence fits; the rest of it does not, though the total budget has room.
-    const half = Math.floor((LONG.length - 1) / 2);
-    expect(ledger.take(w, "candidate", [LONG.slice(0, half)])).toBe(true);
-    expect(ledger.take(w, "candidate", [LONG.slice(half, half + 5)])).toBe(false);
-    expect(ledger.chars(w.window.windowId)).toBeLessThan(windowBudget(w));
-    // A whole sentence is refused on its own as well.
-    const fresh = new Disclosure(m);
-    expect(fresh.take(w, "candidate", [LONG])).toBe(false);
-  });
-
-  it("counts a value inside the sentence as prose, once, and a value on its own line as not", () => {
-    const { m, w } = note([...SHORT, LONG]);
-    const id = w.window.windowId;
-    const ledger = new Disclosure(m);
-    // "Jordan Reyes" sits in a short line, so it spends none of the prose share.
-    expect(ledger.take(w, "candidate", ["Jordan Reyes"])).toBe(true);
-    const half = Math.floor((LONG.length - 1) / 2);
-    expect(ledger.take(w, "candidate", [LONG.slice(0, half)])).toBe(true);
-    // "7:30 pm" is inside the part of the sentence already taken: it reveals nothing more (B26 lead decision 2).
-    const before = ledger.chars(id);
-    expect(ledger.take(w, "candidate", ["7:30 pm"])).toBe(true);
-    expect(ledger.chars(id)).toBe(before);
-    // The sentence's last word was not revealed, and the prose share is spent.
-    expect(ledger.take(w, "candidate", ["broken"])).toBe(false);
-  });
-});
-
-describe("the distinct characters a request reveals (B26 lead decision 2)", () => {
+describe("the positions a request reveals: every occurrence, each position once", () => {
   const LINES = ["Rental notes", "Phone: (512) 555-0147", "Call (512) 555-0147 after six", "Landlord: Gary Pruitt"];
   const card = (): { m: ScreenModel; w: WindowState; id: string } => {
     const m = new ScreenModel();
@@ -162,50 +109,35 @@ describe("the distinct characters a request reveals (B26 lead decision 2)", () =
   };
   const PHONE = "(512) 555-0147";
 
-  it("charges a value, then the line holding it only its other characters", () => {
+  it("charges a value in every line that shows it, then a line holding it only its other characters", () => {
     const { m, w, id } = card();
     const ledger = new Disclosure(m);
     expect(ledger.take(w, "candidate", [PHONE])).toBe(true);
-    expect(ledger.chars(id)).toBe(PHONE.length);
+    expect(ledger.chars(id)).toBe(2 * PHONE.length);
     expect(ledger.take(w, "candidate", ["Phone: (512) 555-0147"])).toBe(true);
-    expect(ledger.chars(id)).toBe("Phone: (512) 555-0147".length);
+    // The whole Phone line, and in the Call line the run they share, " (512) 555-0147".
+    expect(ledger.chars(id)).toBe("Phone: (512) 555-0147".length + " (512) 555-0147".length);
   });
 
-  it("charges a value inside a line already taken nothing", () => {
+  it("charges two lines joined by a space as both lines, and refuses a text with a word no line shows", () => {
     const { m, w, id } = card();
     const ledger = new Disclosure(m);
-    expect(ledger.take(w, "candidate", ["Phone: (512) 555-0147"])).toBe(true);
-    expect(ledger.take(w, "candidate", [PHONE])).toBe(true);
-    expect(ledger.chars(id)).toBe("Phone: (512) 555-0147".length);
-  });
-
-  it("charges two distinct lines that hold one value in full, the value once", () => {
-    const { m, w, id } = card();
-    const ledger = new Disclosure(m);
-    expect(ledger.take(w, "candidate", [PHONE, "Phone: (512) 555-0147", "Call (512) 555-0147 after six"])).toBe(true);
-    expect(ledger.chars(id)).toBe("Phone: (512) 555-0147".length + "Call (512) 555-0147 after six".length);
-  });
-
-  it("charges a text no one line shows by the runs of it the lines show, and refuses one with a word no line shows", () => {
-    const { m, w, id } = card();
-    const ledger = new Disclosure(m);
-    // Two lines joined by a space: both lines in full; the space between them shows nothing of the window (PV2: a text
-    // is located where it is cut, as runs of its words that lines show).
     expect(ledger.take(w, "candidate", ["Rental notes Landlord: Gary Pruitt"])).toBe(true);
-    expect(ledger.chars(id)).toBe("Rental notes".length + "Landlord: Gary Pruitt".length);
-    // A word no line shows: the text is no cut of the window, and nothing is taken.
+    // Both lines, and the same 12-scalar run in the title "Rental notes.txt".
+    expect(ledger.chars(id)).toBe(2 * "Rental notes".length + "Landlord: Gary Pruitt".length);
     expect(ledger.take(w, "candidate", ["Landlord: Gary Pruitt, unpaid"])).toBe(false);
   });
 
-  it("charges a cut text the part a line shows", () => {
+  it("charges a cut text the run a line shows", () => {
     const { m, w, id } = card();
     const ledger = new Disclosure(m);
-    expect(ledger.take(w, "candidate", ["Call (512) 555-0147 aft…"])).toBe(true);
-    expect(ledger.chars(id)).toBe("Call (512) 555-0147 aft".length);
+    expect(ledger.take(w, "candidate", ["Call (512) 555-0147 aft\u2026"])).toBe(true);
+    // The run in the Call line, and in the Phone line the run they share, " (512) 555-0147".
+    expect(ledger.chars(id)).toBe("Call (512) 555-0147 aft".length + " (512) 555-0147".length);
   });
 });
 
-describe("plan text that quotes part of a line (B25 review)", () => {
+describe("plan text that quotes part of a line", () => {
   const LONG = "Deliver around 7:30 pm, and please use the side door and ring twice because the front bell is broken since May";
   const note = (): { m: ScreenModel; w: WindowState } => {
     const m = new ScreenModel();
@@ -213,45 +145,30 @@ describe("plan text that quotes part of a line (B25 review)", () => {
     return { m, w: m.windows.get("note-1") as WindowState };
   };
 
-  it("charges the window for the part it quotes, and refuses more than the prose share", () => {
-    const { m } = note();
-    const most = new Disclosure(m);
-    expect(most.plan([`Copy this: ${LONG.slice(0, 100)}`])).toBe(false);
-    const some = new Disclosure(m);
+  it("charges the window for the part it quotes, declared under the window", () => {
+    const some = new Disclosure(note().m);
     const quote = LONG.slice(0, 30);
     expect(some.plan([`Put "${quote}" in Notes`])).toBe(true);
     expect(some.chars("note-1")).toBe(quote.length);
-    // The quoted part is declared under the window it came from.
-    expect(some.declared().snippets).toContainEqual({ windowId: "note-1", kind: "candidate", text: quote });
+    expect(some.declared().snippets).toContainEqual({ windowId: "note-1", kind: "candidate", text: quote.trim() });
   });
 
   it("does not charge for a few words any page might hold", () => {
-    const { m } = note();
-    const l = new Disclosure(m);
-    expect(l.plan(["ring at the side door please"])).toBe(true);
+    const l = new Disclosure(note().m);
+    // No run of 12 scalars in common ("ring twice " is 11).
+    expect(l.plan(["ring twice at the side"])).toBe(true);
     expect(l.chars("note-1")).toBe(0);
   });
 });
 
 describe("the B26 review's undercharges", () => {
-  it("charges a plan text joining two sentences' ends to each sentence's prose share", () => {
-    const m = new ScreenModel();
-    const a = `left-only-start ${"x".repeat(65)}ABCDEFGHIJKLMNOP`;
-    const b = `ABCDEFGHIJKLMNOP${"y".repeat(65)} right-only-end`;
-    const shorts = Array.from({ length: 8 }, (_, i) => `Short value ${i}: sample information here`);
-    m.apply(snap([a, b, ...shorts].map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-3", title: "Notes.txt", app: NOTES }));
-    const joined = `${"x".repeat(65)}ABCDEFGHIJKLMNOP${"y".repeat(65)}`;
-    expect(new Disclosure(m).plan([joined])).toBe(false);
-    expect(new Disclosure(m).memory([joined])).toBe(false);
-  });
-
   it("charges a cut line to every window that shows the line, not only the one it was taken from", () => {
     const LINE = "Deliver around 7:30 pm, and please use the side door and ring twice because the front bell is broken since May";
     const m = new ScreenModel();
     m.apply(snap([text("n0", "Order"), text("n1", LINE)], { at: 1, windowId: "note-4", title: "Order note.txt", app: NOTES }));
     m.apply(snap([text("c0", "Kofi: running late"), text("c1", LINE)], { at: 2, windowId: "chat-4", title: "Chat", app: { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" } }));
     const note = m.windows.get("note-4") as WindowState;
-    const ledger = new Disclosure(m, { consented: new Set(["note-4"]) });
+    const ledger = new Disclosure(m);
     // The chat is a conversation held under half of its text, so 99 characters of its line do not fit.
     expect(ledger.take(note, "candidate", [`${LINE.slice(0, 99)}…`])).toBe(false);
     expect(ledger.chars("chat-4")).toBe(0);

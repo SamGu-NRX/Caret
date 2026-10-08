@@ -358,8 +358,6 @@ for (const [i, ask] of asks.entries()) {
   const r = rng(Number(a.seed) * 1000 + i);
   const offerKey = `realfill-ask-${ask.id}`;
   current = ask.id;
-  // MEASUREMENT ONLY: the ledger logs (CARET_TEST_LEDGER_LOG, CARET_TEST_MINT_LOG) name the ask they ran in.
-  (globalThis as { __caretTest?: string }).__caretTest = ask.id;
   traces = [];
   corpusLabel = new Map(form.fields.flatMap((f) => nodesFor(desk.form, f).map((n) => [n.key, f.label] as const)));
   const maker: IntentMaker = a.maker === "heads" ? headsIntentMaker(askJev) : a.maker === "jev" || writer === null ? jevIntentMaker(askJev, { rand: (n) => Math.floor(r() * n) }) : writerIntentMaker(writer, () => offerKey);

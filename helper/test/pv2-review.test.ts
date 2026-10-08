@@ -57,17 +57,22 @@ describe("PV2 review: provenance, shapes and budgets in the Disclosure", () => {
     expect(() => verifySent({ purpose: "route.judge", disclosure: d }, { state: json, questions: {} })).toThrow(/state\.task carries text minted as candidate/u);
   });
 
-  it("3: a derivation read from a basis is priced against its window, so a prose line never goes out whole", () => {
+  it("3: a derivation read from a basis is charged to its window, and refused past a conversation's limit", () => {
     const prose = "Dana said the staging rotation moves to the Austin office after the March review, then back again in June.";
     const { m, view } = note([prose]);
     const d = new Disclosure(m);
-    const b = d.basis(view, prose);
+    expect(d.derived(d.basis(view, prose)!, prose)).toBe(prose);
+    expect(d.declared().charged.note).toBe(prose.length);
+    // The same line in a conversation, whose limit is under half of its text: floor((4 + 107 - 1) / 2) = 55.
+    const chat = new ScreenModel();
+    chat.apply(snap([text("t0", prose)], { at: 900, windowId: "chat", title: "Dana", app: { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" } }));
+    const c = new Disclosure(chat);
+    const b = c.basis(redactWindow(chat.windows.get("chat") as WindowState), prose);
     expect(b).not.toBeNull();
-    expect(d.derived(b!, prose)).toBeNull();
-    expect(d.declared().charged).toEqual({});
-    // A short derivation fits, and is charged.
-    expect(d.derived(b!, "March review")).toBe("March review");
-    expect(d.declared().charged.note ?? 0).toBeGreaterThan(0);
+    expect(c.derived(b!, prose)).toBeNull();
+    expect(c.declared().charged).toEqual({});
+    expect(c.derived(b!, "March review")).toBe("March review");
+    expect(c.declared().charged.chat).toBe(12);
   });
 });
 
@@ -148,16 +153,13 @@ describe("PV2 re-review of 0f636d0", () => {
     expect(() => verifySent({ purpose: "route.judge", disclosure: d }, { state: d.jsonText({ task: d.own("Route.") }), questions: {} })).not.toThrow();
   });
 
-  it("3: a derivation is charged every character it shows of its basis, repeats included, and template words only when the template wrote them", () => {
+  it("3: a derivation is charged every place its run stands in its basis, so a repeated word charges each copy", () => {
     const alphas = Array(20).fill("alpha").join(" ");
     expect(alphas.length).toBe(119);
     const a = note([alphas]);
-    const d1 = new Disclosure(a.m);
-    expect(d1.derived(d1.basis(a.view, alphas)!, alphas)).toBeNull();
-    const months = "Meet with May and June on Monday at noon or on Tuesday at midnight, from March to April.";
-    const b = note([months, "Phone: 555-0142"]);
-    const d2 = new Disclosure(b.m);
-    expect(d2.derived(d2.basis(b.view, months)!, months, ["meet", "with"])).toBeNull();
+    const d = new Disclosure(a.m);
+    expect(d.derived(d.basis(a.view, alphas)!, "alpha alpha alpha")).toBe("alpha alpha alpha");
+    expect(d.declared().charged.note).toBe(119);
   });
 
   it("4: an ancestor that becomes excluded while editable takes its kept descendants' values too", () => {

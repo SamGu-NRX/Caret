@@ -27,7 +27,6 @@ import { writersOnStart } from "./writer/startup.ts";
 import { HostLocalModel } from "./writer/local-port.ts";
 import { refuseCacheInHelper } from "./engines/decide/cache.ts";
 import { MARKERS_OFF_ENV } from "./fill/redact.ts";
-import { LEDGER_RULE_ENV } from "./privacy/ledger/measure.ts";
 import { ledgeredJev, ledgeredWriter, SpendLedger, throttledTotals } from "./spend.ts";
 import { readAppsOff } from "./privacy/read-policy.ts";
 
@@ -40,7 +39,6 @@ const DEFAULT_DATA_DIR = join(homedir(), "Library", "Application Support", "Care
 // so a CARET_JEV_CACHE meant for a test harness stops the helper here instead of being ignored.
 refuseCacheInHelper();
 // SC1 step 3's evidence switch turns the marker heuristics off for tests and evaluations only (fill/redact.ts).
-if (process.env[LEDGER_RULE_ENV] !== undefined) throw new Error(`${LEDGER_RULE_ENV} is set, but it changes the output ledger's match rule and is for measurement only; the helper does not start with it`);
 if (process.env[MARKERS_OFF_ENV] !== undefined) throw new Error(`${MARKERS_OFF_ENV} is set, but it turns off the redacted view's marker heuristics and is for tests only; the helper does not start with it`);
 
 const { values: args } = parseArgs({
