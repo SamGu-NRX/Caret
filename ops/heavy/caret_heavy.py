@@ -49,7 +49,7 @@ QUEUE = "/Users/samgu/Programming Projects/agent-heavy-job-queue-20261001/script
 QUEUE_DEFAULT_STATE = os.path.join(HOME, "Library/Application Support/AgentSetup/heavy-job-queue")
 SCHEMA = 1
 EXIT_USAGE, EXIT_CONFLICT, EXIT_REFUSED = 2, 3, 65
-EXIT_UNREADABLE = 4  # the queue's status listing has a line this parser does not know
+EXIT_UNREADABLE = 4  # the queue's job store, or a record in it, cannot be read
 ID_PATTERN = re.compile(r"caret-[A-Za-z0-9._-]{1,70}\Z")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 
@@ -908,128 +908,62 @@ def accept(paths, job_id, note):
     return path
 
 
-class QueueStatusUnreadable(Exception):
-    """The queue's `status` text has a line this parser does not know, or lacks one it needs."""
+class QueueStoreUnreadable(Exception):
+    """The queue's job store, or a record in it, cannot be read as the queue writes it."""
 
 
-# The queue's `status` listing, the only one it prints, in its two formats. Pre-lanes (401c4d1) prints "slot: S" and
-# rows "seq state job-id command"; lanes (e21588d) prints "slot NAME: S, runner R" per slot, "next LANE:" for lanes
-# other than heavy, and rows "seq state lane job-id command". The slot lines decide the format: a lanes row read as a
-# pre-lanes one is a job named after its lane, a legal ID, so the rows alone cannot tell them apart. The patterns follow
-# _status in those commits; tests/fixtures/queue-status holds what each printed. A row's command is argv joined with
-# spaces and cut at ROW_COMMAND_CUT characters, newlines included, so an argument holding a newline prints the rest of
-# the cut command on the lines after its row. A line matching none of these stops the command, because a row skipped
-# as unknown would hide a job.
+# status and show read the queue's job records rather than its printed listing, which joins each command's arguments
+# with spaces, newlines included, so a row cannot be told from a line inside an argument. The queue keeps one JSON
+# record per job at <state>/jobs/<id>.json, schema 1, replaced atomically (os.replace of a dot-named temporary file),
+# so a read without queue.lock sees a whole record; queue_jobs reads them as the queue's own Store.jobs does, at both
+# pinned commits. Its `show --id` prints the same record, but it has no listing to learn the IDs from.
+QUEUE_SCHEMA = 1
 QUEUE_STATES = ("queued", "launching", "running", "blocked", "succeeded", "failed", "timed_out", "cancelled",
                 "interrupted", "refused", "lost", "abandoned")
 QUEUE_LANES = ("heavy", "browser")
-_QUEUE_ID = r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}"
-_HELD = r"(?:held|free)"
-_STATUS_LINES = {
-    "runner": re.compile(r"runner: (?:none|pid \d+(?: \([a-z0-9-]+\))?(?:, pid \d+ \([a-z0-9-]+\))*)\Z"),
-    "pre-lanes slot": re.compile(r"slot: " + _HELD + r"\Z"),
-    "lanes slot": re.compile(r"slot (?:heavy|browser-\d+): " + _HELD + r", runner (?:none|pid \d+)\Z"),
-    "heavy lock": re.compile(r"heavy lock: " + _HELD + r" \(.+\)\Z"),
-    "next": re.compile(r"next(?: (?P<lane>{}))?: (?P<id>{}) \(.*\)\Z".format(
-        "|".join(lane for lane in QUEUE_LANES if lane != "heavy"), _QUEUE_ID)),
-}
-_ROW = {
-    "pre-lanes": re.compile(r" *(?P<seq>\d+) (?P<state>{}) +(?P<id>{}) ".format("|".join(QUEUE_STATES), _QUEUE_ID)),
-    "lanes": re.compile(r" *(?P<seq>\d+) (?P<state>{}) +(?P<lane>{}) +(?P<id>{}) ".format(
-        "|".join(QUEUE_STATES), "|".join(QUEUE_LANES), _QUEUE_ID)),
-}
-# The row prefix exactly as each formatter prints it, and where it cuts the command.
-_ROW_PREFIX = {"pre-lanes": "{seq:>4} {state:<12} {id:<24} ", "lanes": "{seq:>4} {state:<12} {lane:<8} {id:<24} "}
-ROW_COMMAND_CUT = {"pre-lanes": 80, "lanes": 72}
 
 
-def _row(fmt, line):
-    """(job, length of its command on this line) when *line* is a row exactly as the *fmt* formatter prints it."""
-    match = _ROW[fmt].match(line)
-    if match is None:
+def _queue_record(path, job_id):
+    """{"seq", "state", "lane", "id"} of the record at *path*. Records from before lanes have no lease_kind: heavy."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            job = json.load(fh)
+    except FileNotFoundError:
         return None
-    job = {"seq": int(match["seq"]), "state": match["state"], "lane": match.groupdict().get("lane") or "heavy",
-           "id": match["id"]}
-    prefix = _ROW_PREFIX[fmt].format(**job)
-    if not line.startswith(prefix) or len(line) - len(prefix) > ROW_COMMAND_CUT[fmt]:
+    except (OSError, ValueError) as ex:
+        raise QueueStoreUnreadable("queue record {} cannot be read: {}".format(path, ex)) from None
+    if not isinstance(job, dict) or job.get("schema") != QUEUE_SCHEMA or job.get("id") != job_id \
+            or not isinstance(job.get("seq"), int) or job.get("state") not in QUEUE_STATES \
+            or (job.get("lease_kind") or "heavy") not in QUEUE_LANES:
+        raise QueueStoreUnreadable("queue record {} is not a schema {} job record for {}".format(
+            path, QUEUE_SCHEMA, job_id))
+    return {"seq": job["seq"], "state": job["state"], "lane": job.get("lease_kind") or "heavy", "id": job_id}
+
+
+def queue_jobs(paths):
+    """Every job record in the queue's store, in seq order."""
+    jobs_dir = os.path.join(paths["queue_state"], "jobs")
+    try:
+        names = os.listdir(jobs_dir)
+    except OSError as ex:
+        raise QueueStoreUnreadable("the queue's job store {} cannot be listed: {}".format(jobs_dir, ex)) from None
+    found = [_queue_record(os.path.join(jobs_dir, name), name[:-len(".json")])
+             for name in names if name.endswith(".json") and not name.startswith(".")]
+    return sorted((job for job in found if job is not None), key=lambda job: job["seq"])
+
+
+def queue_job(paths, job_id):
+    """The queue's record for *job_id*, or None when the queue has no such job."""
+    if not ID_PATTERN.match(job_id):
         return None
-    return job, len(line) - len(prefix)
-
-
-def parse_queue_status(text):
-    """The queue's `status` text as {"format", "header" (runner, slot and heavy-lock lines), "next" ((lane, id, line)
-    per lane head), "jobs" ({"seq", "state", "lane", "id"} per row)}. Pre-lanes jobs are heavy-lane jobs, as the
-    lanes queue reads records from before lanes. Raises QueueStatusUnreadable naming the first line not understood."""
-    fmt, header, nexts, jobs, seen = None, [], [], [], set()
-    command_left = 0  # characters of the last row's command the formatter could still have printed
-
-    def unreadable(number, line, why):
-        return QueueStatusUnreadable("the queue's status line {} is not understood ({}): {!r}".format(number, why, line))
-
-    lines = text.split("\n")
-    if lines[-1] == "":
-        lines.pop()  # the newline print() ends the listing with
-    for number, line in enumerate(lines, 1):
-        kind = None if jobs else next((k for k, pattern in _STATUS_LINES.items() if pattern.match(line)), None)
-        if kind is None:
-            if fmt is None:
-                raise unreadable(number, line, "not a header line, and no slot line has set the format yet")
-            row = _row(fmt, line)
-            # Rows come in seq order, so a row-shaped line that does not advance it is part of a command.
-            if row is not None and (not jobs or row[0]["seq"] > jobs[-1]["seq"]):
-                jobs.append(row[0])
-                command_left = ROW_COMMAND_CUT[fmt] - row[1]
-            elif jobs and 1 + len(line) <= command_left:
-                command_left -= 1 + len(line)
-            else:
-                raise unreadable(number, line, "not a {} job row, nor the rest of the last row's command".format(fmt))
-            continue
-        if kind.endswith(" slot"):
-            line_fmt = kind[:-len(" slot")]
-            if fmt not in (None, line_fmt):
-                raise unreadable(number, line, "a {} slot line in {} output".format(line_fmt, fmt))
-            fmt = line_fmt
-        if kind == "next":
-            match = _STATUS_LINES["next"].match(line)
-            if match["lane"] and fmt != "lanes":
-                raise unreadable(number, line, "a lane's next line in {} output".format(fmt))
-            nexts.append((match["lane"] or "heavy", match["id"], line))
-        else:
-            header.append(line)
-        seen.add("slot" if kind.endswith(" slot") else kind)
-    missing = [k for k in ("runner", "slot", "heavy lock") if k not in seen]
-    if missing:
-        raise QueueStatusUnreadable("the queue's status is missing its {} line{}".format(
-            ", ".join(missing), "s" if len(missing) > 1 else ""))
-    return {"format": fmt, "header": header, "next": nexts, "jobs": jobs}
-
-
-def _queue_status(paths):
-    """(exit code, stdout) of the queue's `status`; its stderr passes through."""
-    # Bytes, decoded here: text mode would turn a carriage return inside a command into a line break.
-    done = subprocess.run([PYTHON, paths["queue_script"], "--state-dir", paths["queue_state"], "status"],
-                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
-    return done.returncode, done.stdout.decode("utf-8", errors="replace")
-
-
-def queue_row(paths, job_id):
-    """The queue's row for *job_id* ({"seq", "state", "lane", "id"}), or None when the queue lists no such job."""
-    code, out = _queue_status(paths)
-    if code != 0:
-        raise QueueStatusUnreadable("the queue's status exited {}: {!r}".format(code, out.strip()))
-    return next((job for job in parse_queue_status(out)["jobs"] if job["id"] == job_id), None)
+    return _queue_record(os.path.join(paths["queue_state"], "jobs", job_id + ".json"), job_id)
 
 
 def status(paths):
-    """The queue's runner, slot and heavy-lock lines, its next lines for Caret's jobs, then Caret's jobs with their
-    lane and three states, and a count of the other jobs. A failed queue status passes through unparsed."""
-    code, out = _queue_status(paths)
-    if code != 0:
-        return code, out.rstrip("\n")
-    parsed = parse_queue_status(out)
-    lines = list(parsed["header"]) + [line for _, job_id, line in parsed["next"] if job_id.startswith("caret-")]
-    others = 0
-    for job in parsed["jobs"]:
+    """Caret's jobs with their queue state, lane and three states, then a count of the other jobs. The runner, slot
+    and lock state is the queue's own `status`."""
+    lines, others = [], 0
+    for job in queue_jobs(paths):
         if not job["id"].startswith("caret-"):
             others += 1
             continue
@@ -1037,8 +971,9 @@ def status(paths):
         lines.append("{:>4} {:<12} {:<8} {:<28} executed={} validated={} accepted={}".format(
             job["seq"], job["state"], job["lane"], job["id"], state["executed"], state["validated"],
             None if state["accepted_by_lead"] is None else True))
-    lines.append("other jobs: {}".format(others))
-    return 0, "\n".join(lines)
+    lines.append("other jobs: {} (runner and slots: heavy-job-queue.py --state-dir {!r} status)".format(
+        others, paths["queue_state"]))
+    return "\n".join(lines)
 
 
 def main(argv=None):
@@ -1081,12 +1016,11 @@ def main(argv=None):
             print(fetch_node(os.path.realpath(args.worktree), args.rev, paths["node_cache"]))
             return 0
         if args.action == "status":
-            code, text = status(paths)
-            print(text)
-            return code
+            print(status(paths))
+            return 0
         if args.action == "show":
             shown = outcome_of(paths, args.job_id) | {"evidence": os.path.join(paths["evidence_root"], args.job_id),
-                                                      "queue": queue_row(paths, args.job_id)}
+                                                      "queue": queue_job(paths, args.job_id)}
             print(json.dumps(shown, indent=1))
             return 0
         if args.action == "prune":
@@ -1098,7 +1032,7 @@ def main(argv=None):
     except QueueRefused as ex:
         print("caret-heavy: the queue refused: {}".format(ex), file=sys.stderr)
         return ex.code
-    except QueueStatusUnreadable as ex:
+    except QueueStoreUnreadable as ex:
         print("caret-heavy: {}".format(ex), file=sys.stderr)
         return EXIT_UNREADABLE
     except manifest.ManifestError as ex:

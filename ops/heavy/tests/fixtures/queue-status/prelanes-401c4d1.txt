@@ -1,7 +1,0 @@
-runner: none
-slot: free
-heavy lock: free (/private/tmp/q2-status.IJvG/heavy.lock)
-next: caret-heavy-a (admissible now)
-   1 queued       caret-heavy-a            /bin/true
-   2 cancelled    other-job                /bin/true
-   3 queued       caret-a-job-id-longer-than-twenty-four /bin/echo two words
