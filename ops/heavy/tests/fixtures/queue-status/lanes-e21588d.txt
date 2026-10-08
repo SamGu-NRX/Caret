@@ -1,0 +1,11 @@
+runner: none
+slot heavy: free, runner none
+slot browser-1: free, runner none
+slot browser-2: free, runner none
+heavy lock: free (/private/tmp/q2-status.IJvG/heavy.lock)
+next: caret-heavy-a (admissible now)
+next browser: caret-browser-b (admissible now)
+   1 queued       heavy    caret-heavy-a            /bin/true
+   2 queued       browser  caret-browser-b          /bin/true
+   3 cancelled    heavy    other-job                /bin/true
+   4 queued       browser  caret-a-job-id-longer-than-twenty-four /bin/echo two words

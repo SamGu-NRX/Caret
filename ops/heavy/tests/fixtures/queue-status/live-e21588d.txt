@@ -1,0 +1,14 @@
+runner: none
+slot heavy: free, runner none
+slot browser-1: free, runner none
+slot browser-2: free, runner none
+heavy lock: free (/Users/samgu/.long-run/locks/heavy.lock)
+  16 failed       heavy    visionlog-run2-fa19e6de  python3 /tmp/visionlog/qa_resource-ebc7633f.py run --job-id visionlog-ru
+  64 failed       heavy    beru-relay-check-190ee25-bounded /opt/homebrew/opt/python@3.14/bin/python3.14 -I -B -c import dataclasses
+  79 cancelled    heavy    beru-eve-production-build-7e05360-after-login /opt/homebrew/opt/python@3.14/bin/python3.14 -I -B -c import importlib.u
+  90 succeeded    heavy    sillion-web-install-manifests-4ee69cb /Users/samgu/.npm-global/bin/pnpm install --frozen-lockfile --ignore-scr
+  93 interrupted  heavy    caret-ly1-n1             /opt/homebrew/opt/python@3.14/bin/python3.14 -I -B -X pycache_prefix=/va
+  94 succeeded    heavy    caret-next-40d8525-window-n1 /opt/homebrew/opt/python@3.14/bin/python3.14 -I -B -X pycache_prefix=/va
+ 101 cancelled    heavy    caret-vm-cancel-proof-n1 /opt/homebrew/opt/python@3.14/bin/python3.14 -I -B -X pycache_prefix=/va
+ 105 succeeded    heavy    caret-vm-cancel-proof-n2 /opt/homebrew/opt/python@3.14/bin/python3.14 -I -B -X pycache_prefix=/va
+ 106 failed       heavy    caret-swift-s2-70a6845-n1 /opt/homebrew/opt/python@3.14/bin/python3.14 -I -B -X pycache_prefix=/va

@@ -9,8 +9,8 @@ Enqueueing records a job and returns. A queue runner, started separately, runs i
 ```sh
 H='/Users/samgu/Programming Projects/caret-ops-heavy/ops/heavy/caret-heavy'
 "$H" enqueue RECIPE caret-UNIQUE-ID --worktree /clean/worktree --rev FULL-SHA [recipe options]
-"$H" status                     # runner, slot, and each Caret job's executed / validated / accepted
-"$H" show caret-UNIQUE-ID       # outcome and evidence directory
+"$H" status                     # runner and slots, each Caret job's lane and executed / validated / accepted
+"$H" show caret-UNIQUE-ID       # outcome, evidence directory, and the queue's seq, state and lane
 "$H" accept caret-UNIQUE-ID --note "what the lead checked"
 "$H" prune caret-UNIQUE-ID      # after a job has finished: delete its sealed input copies
 ```

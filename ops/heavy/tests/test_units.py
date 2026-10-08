@@ -1208,3 +1208,138 @@ class LaneTest(Temp):
                                       caret_heavy.default_paths("/tmp/state-for-argv-only"), ("/snap", {}, "/ops", "b" * 40))
         self.assertEqual(plan["lane"], "heavy")
         self.assertNotIn("slot_path", plan)
+
+
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "queue-status")
+
+
+def fixture(name):
+    with open(os.path.join(FIXTURES, name), encoding="utf-8") as fh:
+        return fh.read()
+
+
+class QueueStatusTest(Temp):
+    """caret-heavy status reads the queue's `status` text, the only listing the queue prints. The fixtures are that
+    text as the queue printed it: prelanes-401c4d1.txt and lanes-e21588d.txt from those commits' scripts against a
+    scratch state directory; live-e21588d.txt from the live queue (feat/heavy-job-queue at e21588d) at
+    2026-10-08T04:20Z, its five header lines and nine of its 106 rows, chosen for long IDs, the interrupted state and
+    Caret's own jobs. Every line must be understood: an unknown one fails the command and is named."""
+
+    def stub_queue(self, text, code=0):
+        """A queue script whose `status` prints *text*; `paths` for caret_heavy pointing at it."""
+        out = self.write("status.txt", text)
+        script = self.write("queue.py", "import sys\nassert sys.argv[-1] == 'status', sys.argv\n"
+                                        "sys.stdout.write(open({!r}).read())\nsys.exit({})\n".format(out, code))
+        return {"queue_script": script, "queue_state": os.path.join(self.root, "state"),
+                "evidence_root": os.path.join(self.root, "evidence")}
+
+    def rows(self, parsed):
+        return [(j["seq"], j["state"], j["lane"], j["id"]) for j in parsed["jobs"]]
+
+    def test_the_pre_lanes_format(self):
+        parsed = caret_heavy.parse_queue_status(fixture("prelanes-401c4d1.txt"))
+        self.assertEqual(parsed["format"], "pre-lanes")
+        self.assertEqual(self.rows(parsed), [(1, "queued", "heavy", "caret-heavy-a"), (2, "cancelled", "heavy", "other-job"),
+                                             (3, "queued", "heavy", "caret-a-job-id-longer-than-twenty-four")])
+        self.assertEqual(parsed["next"], [("heavy", "caret-heavy-a", "next: caret-heavy-a (admissible now)")])
+        self.assertEqual(parsed["header"], ["runner: none", "slot: free",
+                                            "heavy lock: free (/private/tmp/q2-status.IJvG/heavy.lock)"])
+
+    def test_the_lanes_format(self):
+        parsed = caret_heavy.parse_queue_status(fixture("lanes-e21588d.txt"))
+        self.assertEqual(parsed["format"], "lanes")
+        self.assertEqual(self.rows(parsed), [(1, "queued", "heavy", "caret-heavy-a"), (2, "queued", "browser", "caret-browser-b"),
+                                             (3, "cancelled", "heavy", "other-job"),
+                                             (4, "queued", "browser", "caret-a-job-id-longer-than-twenty-four")])
+        self.assertEqual(parsed["next"], [("heavy", "caret-heavy-a", "next: caret-heavy-a (admissible now)"),
+                                          ("browser", "caret-browser-b", "next browser: caret-browser-b (admissible now)")])
+        self.assertEqual(parsed["header"][1:4], ["slot heavy: free, runner none", "slot browser-1: free, runner none",
+                                                 "slot browser-2: free, runner none"])
+
+    def test_the_live_queue(self):
+        parsed = caret_heavy.parse_queue_status(fixture("live-e21588d.txt"))
+        self.assertEqual(parsed["format"], "lanes")
+        self.assertEqual([j["seq"] for j in parsed["jobs"]], [16, 64, 79, 90, 93, 94, 101, 105, 106])
+        self.assertEqual(self.rows(parsed)[2], (79, "cancelled", "heavy", "beru-eve-production-build-7e05360-after-login"))
+        self.assertEqual(self.rows(parsed)[4], (93, "interrupted", "heavy", "caret-ly1-n1"))
+        self.assertEqual(len(parsed["header"]), 5)
+
+    def test_runner_and_held_slot_lines_as_the_lanes_queue_formats_them(self):
+        # e21588d _status: "runner: pid N (slot), ..." and "slot S: held, runner pid N". No capture has a live runner:
+        # starting one takes a real lease, so these lines follow the queue's format strings.
+        text = ("runner: pid 4242 (heavy), pid 4343 (browser-2)\nslot heavy: held, runner pid 4242\n"
+                "slot browser-1: free, runner none\nslot browser-2: held, runner pid 4343\n"
+                "heavy lock: held (/x/heavy.lock)\n   7 running      browser  caret-b                  /bin/sleep 9\n")
+        parsed = caret_heavy.parse_queue_status(text)
+        self.assertEqual(self.rows(parsed), [(7, "running", "browser", "caret-b")])
+        old = "runner: pid 4242\nslot: held\nheavy lock: held (/x/heavy.lock)\n   7 running      caret-b  /bin/sleep 9\n"
+        self.assertEqual(self.rows(caret_heavy.parse_queue_status(old)), [(7, "running", "heavy", "caret-b")])
+
+    def test_an_unknown_line_is_named(self):
+        lanes, old = fixture("lanes-e21588d.txt"), fixture("prelanes-401c4d1.txt")
+        bad = {
+            "unknown state": (lanes + "   5 paused       heavy    caret-x                  /bin/true\n", "line 12"),
+            "unknown lane": (lanes + "   5 queued       gpu      caret-x                  /bin/true\n", "line 12"),
+            "pre-lanes row in lanes output": (lanes + "   5 queued       caret-x                  /bin/true\n", "line 12"),
+            "lane's next line in pre-lanes output": (old.replace("next: caret-heavy-a", "next browser: caret-heavy-a"),
+                                                     "line 4"),
+            "slot line of the other format": (old.replace("slot: free\n", "slot: free\nslot browser-1: free, runner none\n"),
+                                              "line 3"),
+            "row before any slot line": ("runner: none\n   1 queued       heavy    caret-x  /bin/true\n", "line 2"),
+            "unknown header": (lanes.replace("heavy lock:", "heavy lck:"), "line 5"),
+            "bad seq": (lanes + "  5x queued       heavy    caret-x                  /bin/true\n", "line 12"),
+        }
+        for name, (text, where) in bad.items():
+            with self.subTest(name):
+                with self.assertRaises(caret_heavy.QueueStatusUnreadable) as caught:
+                    caret_heavy.parse_queue_status(text)
+                self.assertIn(where, str(caught.exception))
+                line = text.splitlines()[int(where.split()[1]) - 1]
+                self.assertIn(repr(line), str(caught.exception))
+
+    def test_incomplete_output_is_refused(self):
+        for text in ("", "runner: none\n", "runner: none\nslot: free\n"):
+            with self.subTest(text):
+                with self.assertRaisesRegex(caret_heavy.QueueStatusUnreadable, "missing"):
+                    caret_heavy.parse_queue_status(text)
+
+    def test_status_lists_caret_jobs_with_their_lane_on_both_formats(self):
+        for name, lanes in (("lanes-e21588d.txt", ("heavy", "browser", "browser")),
+                            ("prelanes-401c4d1.txt", ("heavy", "heavy"))):
+            with self.subTest(name):
+                code, text = caret_heavy.status(self.stub_queue(fixture(name)))
+                self.assertEqual(code, 0)
+                rows = [line.split() for line in text.splitlines() if line.split()[0].isdigit()]
+                caret = [r for r in rows if r[3].startswith("caret-")]
+                self.assertEqual([r[2] for r in caret], list(lanes))
+                self.assertTrue(all(r[3].startswith("caret-") for r in rows))
+                self.assertIn("executed=None validated=None accepted=None", text)
+                self.assertIn("other jobs: 1", text)  # other-job: not Caret's, counted rather than dropped unseen
+                self.assertTrue(text.startswith("runner: none\n"))
+                self.assertIn("next: caret-heavy-a (admissible now)", text)
+
+    def test_status_of_an_unreadable_listing_fails_naming_the_line(self):
+        paths = self.stub_queue(fixture("lanes-e21588d.txt") + "   5 paused       heavy    caret-x  /bin/true\n")
+        with mock.patch.object(caret_heavy, "default_paths", return_value=paths), \
+                mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=__import__("io").StringIO) as err:
+            code = caret_heavy.main(["status"])
+        self.assertEqual(code, caret_heavy.EXIT_UNREADABLE)
+        self.assertIn("line 12", err.getvalue())
+        self.assertIn("paused", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
+
+    def test_a_failed_queue_status_passes_its_code_and_output_through(self):
+        code, text = caret_heavy.status(self.stub_queue("half a line", code=1))
+        self.assertEqual((code, text), (1, "half a line"))
+
+    def test_show_includes_the_queue_row(self):
+        paths = self.stub_queue(fixture("lanes-e21588d.txt"))
+        self.assertEqual(caret_heavy.queue_row(paths, "caret-browser-b"),
+                         {"seq": 2, "state": "queued", "lane": "browser", "id": "caret-browser-b"})
+        self.assertIsNone(caret_heavy.queue_row(paths, "caret-unknown"))
+        with mock.patch.object(caret_heavy, "default_paths", return_value=paths), \
+                mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as out:
+            self.assertEqual(caret_heavy.main(["show", "caret-browser-b"]), 0)
+        self.assertEqual(json.loads(out.getvalue())["queue"], {"seq": 2, "state": "queued", "lane": "browser",
+                                                               "id": "caret-browser-b"})

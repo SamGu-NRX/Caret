@@ -49,6 +49,7 @@ QUEUE = "/Users/samgu/Programming Projects/agent-heavy-job-queue-20261001/script
 QUEUE_DEFAULT_STATE = os.path.join(HOME, "Library/Application Support/AgentSetup/heavy-job-queue")
 SCHEMA = 1
 EXIT_USAGE, EXIT_CONFLICT, EXIT_REFUSED = 2, 3, 65
+EXIT_UNREADABLE = 4  # the queue's status listing has a line this parser does not know
 ID_PATTERN = re.compile(r"caret-[A-Za-z0-9._-]{1,70}\Z")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 
@@ -894,21 +895,113 @@ def accept(paths, job_id, note):
     return path
 
 
-def status(paths):
-    """The queue's runner and slot lines, then Caret's jobs with their three states."""
+class QueueStatusUnreadable(Exception):
+    """The queue's `status` text has a line this parser does not know, or lacks one it needs."""
+
+
+# The queue's `status` listing, the only one it prints, in its two formats. Pre-lanes (401c4d1) prints "slot: S" and
+# rows "seq state job-id command"; lanes (e21588d) prints "slot NAME: S, runner R" per slot, "next LANE:" for lanes
+# other than heavy, and rows "seq state lane job-id command". The slot lines decide the format: a lanes row read as a
+# pre-lanes one is a job named after its lane, a legal ID, so the rows alone cannot tell them apart. The patterns follow
+# _status in those commits; tests/fixtures/queue-status holds what each printed. A line matching none of them stops
+# the command, because a row skipped as unknown would hide a job.
+QUEUE_STATES = ("queued", "launching", "running", "blocked", "succeeded", "failed", "timed_out", "cancelled",
+                "interrupted", "refused", "lost", "abandoned")
+QUEUE_LANES = ("heavy", "browser")
+_QUEUE_ID = r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}"
+_HELD = r"(?:held|free)"
+_STATUS_LINES = {
+    "runner": re.compile(r"runner: (?:none|pid \d+(?: \([a-z0-9-]+\))?(?:, pid \d+ \([a-z0-9-]+\))*)\Z"),
+    "pre-lanes slot": re.compile(r"slot: " + _HELD + r"\Z"),
+    "lanes slot": re.compile(r"slot (?:heavy|browser-\d+): " + _HELD + r", runner (?:none|pid \d+)\Z"),
+    "heavy lock": re.compile(r"heavy lock: " + _HELD + r" \(.+\)\Z"),
+    "next": re.compile(r"next(?: (?P<lane>{}))?: (?P<id>{}) \(.*\)\Z".format(
+        "|".join(lane for lane in QUEUE_LANES if lane != "heavy"), _QUEUE_ID)),
+}
+_ROW = {
+    "pre-lanes": re.compile(r" *(?P<seq>\d+) (?P<state>{}) +(?P<id>{})(?: .*)?\Z".format(
+        "|".join(QUEUE_STATES), _QUEUE_ID)),
+    "lanes": re.compile(r" *(?P<seq>\d+) (?P<state>{}) +(?P<lane>{}) +(?P<id>{})(?: .*)?\Z".format(
+        "|".join(QUEUE_STATES), "|".join(QUEUE_LANES), _QUEUE_ID)),
+}
+
+
+def parse_queue_status(text):
+    """The queue's `status` text as {"format", "header" (runner, slot and heavy-lock lines), "next" ((lane, id, line)
+    per lane head), "jobs" ({"seq", "state", "lane", "id"} per row)}. Pre-lanes jobs are heavy-lane jobs, as the
+    lanes queue reads records from before lanes. Raises QueueStatusUnreadable naming the first line not understood."""
+    fmt, header, nexts, jobs, seen = None, [], [], [], set()
+
+    def unreadable(number, line, why):
+        return QueueStatusUnreadable("the queue's status line {} is not understood ({}): {!r}".format(number, why, line))
+
+    for number, line in enumerate(text.splitlines(), 1):
+        kind = next((k for k, pattern in _STATUS_LINES.items() if pattern.match(line)), None)
+        if kind is None:
+            if fmt is None:
+                raise unreadable(number, line, "not a header line, and no slot line has set the format yet")
+            row = _ROW[fmt].match(line)
+            if row is None:
+                raise unreadable(number, line, "not a {} job row".format(fmt))
+            jobs.append({"seq": int(row["seq"]), "state": row["state"], "lane": row.groupdict().get("lane") or "heavy",
+                         "id": row["id"]})
+            continue
+        if jobs:
+            raise unreadable(number, line, "a header line after the job rows")
+        if kind.endswith(" slot"):
+            line_fmt = kind[:-len(" slot")]
+            if fmt not in (None, line_fmt):
+                raise unreadable(number, line, "a {} slot line in {} output".format(line_fmt, fmt))
+            fmt = line_fmt
+        if kind == "next":
+            match = _STATUS_LINES["next"].match(line)
+            if match["lane"] and fmt != "lanes":
+                raise unreadable(number, line, "a lane's next line in {} output".format(fmt))
+            nexts.append((match["lane"] or "heavy", match["id"], line))
+        else:
+            header.append(line)
+        seen.add("slot" if kind.endswith(" slot") else kind)
+    missing = [k for k in ("runner", "slot", "heavy lock") if k not in seen]
+    if missing:
+        raise QueueStatusUnreadable("the queue's status is missing its {} line{}".format(
+            ", ".join(missing), "s" if len(missing) > 1 else ""))
+    return {"format": fmt, "header": header, "next": nexts, "jobs": jobs}
+
+
+def _queue_status(paths):
+    """(exit code, stdout) of the queue's `status`; its stderr passes through."""
     done = subprocess.run([PYTHON, paths["queue_script"], "--state-dir", paths["queue_state"], "status"],
                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
-    lines = []
-    for line in done.stdout.splitlines():
-        fields = line.split()
-        if line.startswith(("runner: ", "slot: ", "heavy lock: ", "next: caret-")):
-            lines.append(line)
-        elif len(fields) >= 3 and fields[0].isdigit() and fields[2].startswith("caret-"):
-            state = outcome_of(paths, fields[2])
-            lines.append("{:>4} {:<12} {:<28} executed={} validated={} accepted={}".format(
-                fields[0], fields[1], fields[2], state["executed"], state["validated"],
-                None if state["accepted_by_lead"] is None else True))
-    return done.returncode, "\n".join(lines)
+    return done.returncode, done.stdout
+
+
+def queue_row(paths, job_id):
+    """The queue's row for *job_id* ({"seq", "state", "lane", "id"}), or None when the queue lists no such job."""
+    code, out = _queue_status(paths)
+    if code != 0:
+        raise QueueStatusUnreadable("the queue's status exited {}: {!r}".format(code, out.strip()))
+    return next((job for job in parse_queue_status(out)["jobs"] if job["id"] == job_id), None)
+
+
+def status(paths):
+    """The queue's runner, slot and heavy-lock lines, its next lines for Caret's jobs, then Caret's jobs with their
+    lane and three states, and a count of the other jobs. A failed queue status passes through unparsed."""
+    code, out = _queue_status(paths)
+    if code != 0:
+        return code, out.rstrip("\n")
+    parsed = parse_queue_status(out)
+    lines = list(parsed["header"]) + [line for _, job_id, line in parsed["next"] if job_id.startswith("caret-")]
+    others = 0
+    for job in parsed["jobs"]:
+        if not job["id"].startswith("caret-"):
+            others += 1
+            continue
+        state = outcome_of(paths, job["id"])
+        lines.append("{:>4} {:<12} {:<8} {:<28} executed={} validated={} accepted={}".format(
+            job["seq"], job["state"], job["lane"], job["id"], state["executed"], state["validated"],
+            None if state["accepted_by_lead"] is None else True))
+    lines.append("other jobs: {}".format(others))
+    return 0, "\n".join(lines)
 
 
 def main(argv=None):
@@ -955,7 +1048,8 @@ def main(argv=None):
             print(text)
             return code
         if args.action == "show":
-            shown = outcome_of(paths, args.job_id) | {"evidence": os.path.join(paths["evidence_root"], args.job_id)}
+            shown = outcome_of(paths, args.job_id) | {"evidence": os.path.join(paths["evidence_root"], args.job_id),
+                                                      "queue": queue_row(paths, args.job_id)}
             print(json.dumps(shown, indent=1))
             return 0
         if args.action == "prune":
@@ -967,6 +1061,9 @@ def main(argv=None):
     except QueueRefused as ex:
         print("caret-heavy: the queue refused: {}".format(ex), file=sys.stderr)
         return ex.code
+    except QueueStatusUnreadable as ex:
+        print("caret-heavy: {}".format(ex), file=sys.stderr)
+        return EXIT_UNREADABLE
     except manifest.ManifestError as ex:
         print("caret-heavy: {}".format(ex), file=sys.stderr)
         return EXIT_CONFLICT
