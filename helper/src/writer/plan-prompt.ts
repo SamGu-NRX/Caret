@@ -60,6 +60,9 @@ Rules:
 
 Reply with only the function in one \`\`\`ts code block.`;
 
+/** What planUserMessage writes beside the input's own strings and keys: the chat sink's wording (privacy/send.ts). */
+export const PLAN_WORDING: readonly string[] = ["Goal: Windows (the first is focused): focused"];
+
 /** The user message for a plan request. */
 export function planUserMessage(input: PlanInput): string {
   const windows = input.snapshots.map((s, i) => ({

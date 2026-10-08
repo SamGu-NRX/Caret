@@ -8,7 +8,7 @@
 //   CARET_ENGINE_CALIBRATION ("choiceT,noulT"; 1,1 is none).
 import { assertNoExcludedValue } from "../../privacy.ts";
 import { verifySent } from "../../privacy/disclosure.ts";
-import { appendStoredLine, seal } from "../../privacy/send.ts";
+import { appendStoredLine, seal, type StoreRecord } from "../../privacy/send.ts";
 import { withholdValues } from "../../privacy/exclude.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -126,6 +126,21 @@ function slowFromEnv(engine: DecideEngine, env: NodeJS.ProcessEnv, cacheDir: str
   });
 }
 
+/** A request log's record (privacy/send.ts StoreRecord): the sealed body, its sizes and timings, and an error's text. */
+const LOG_RECORD: Omit<StoreRecord, "build"> = {
+  name: "request log",
+  envelope: {
+    body: { kind: "wire" },
+    chars: { kind: "scalar", types: ["number"] },
+    sharedChars: { kind: "scalar", types: ["number"] },
+    latencyMs: { kind: "scalar", types: ["number"] },
+    inputTokens: { kind: "scalar", types: ["number"] },
+    afterMs: { kind: "scalar", types: ["number"] },
+    error: { kind: "answer", max: 2000 },
+  },
+  wording: [],
+};
+
 export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
   const env = o.env ?? process.env;
   const engine = baseEngine(o, env);
@@ -166,10 +181,11 @@ export function harnessEngine(o: HarnessEngineOptions): HarnessEngine {
         r = await inner(asked);
       } catch (e) {
         // A failed request is logged with its error, which the eval's report shows only as the user's sentence.
-        appendStoredLine(log, sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, error: withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e)), afterMs: performance.now() - t0 }), { mode: 0o600 });
+        const error = withholdValues(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+        appendStoredLine(log, sealed, { ...LOG_RECORD, build: (w) => ({ body: w, chars: JSON.stringify(w).length, error, afterMs: performance.now() - t0 }) }, { mode: 0o600 });
         throw e;
       }
-      appendStoredLine(log, sealed, (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(frozenRequest(req, w), engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens }), { mode: 0o600 });
+      appendStoredLine(log, sealed, { ...LOG_RECORD, build: (w) => ({ body: w, chars: JSON.stringify(w).length, sharedChars: JSON.stringify(wireBody(frozenRequest(req, w), engine.model, true)).length, latencyMs: r.latencyMs, inputTokens: r.inputTokens }) }, { mode: 0o600 });
       return r;
     };
   }

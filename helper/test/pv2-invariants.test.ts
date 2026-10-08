@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, existsSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { seal } from "../src/privacy/send.ts";
 import { Disclosure, LedgerRefused, UnmintedText, type ModelText, registryOf } from "../src/privacy/disclosure.ts";
 import { decodeUnits } from "../src/privacy/ledger/units.ts";
 import { isConversation } from "../src/conversation.ts";
@@ -141,13 +142,14 @@ describe("invariant: what a request's final bytes reveal of a window is exactly 
       }
       if (got !== null) said.push(got);
     }
-    const bytes = JSON.stringify({ state: { said } });
-    const units = refUnits(bytes);
+    // The request as a fill sends it, sealed at the real sink (privacy/send.ts seal): its options are what was said.
+    const wire = { state: {}, questions: { q: { type: "choice", instructions: d.own("Which of these is the value?"), criteria: Object.fromEntries(said.map((x, i) => [`c${i}`, x])) } } };
+    const units = refUnits(JSON.stringify(wire));
     const spansIn = (id: string): { text: string; within?: string }[] => units.flatMap((u) => (declared.get(u) ?? []).filter((x) => x.id === id).map(({ text, within }) => (within === undefined ? { text } : { text, within })));
     const want = [...m.windows.values()].map((w) => ({ id: w.window.windowId, charged: refReveal(units, linesOfWindow(redactWindow(w)), spansIn(w.window.windowId)).charged, limit: windowBudget(w) }));
     let got: Record<string, number> | null = null;
     try {
-      got = { ...d.measureSent("test", decodeUnits(bytes).units.map((u) => u.text)).charged };
+      got = { ...seal({ req: { purpose: "fill.values", disclosure: d }, wire }).charged };
     } catch (e) {
       if (!(e instanceof LedgerRefused)) throw e;
     }

@@ -1,7 +1,7 @@
 import { requireVercelDevelopment } from "../privacy/vercel.ts";
 // One OpenAI-compatible chat completion, the shape both Vercel AI Gateway and Groq serve. No retry: a
 // failed write is reported, and the plan says a provider change is explicit configuration.
-import { sealedBody, type Sealed } from "../privacy/send.ts";
+import { sendable, type Sealed, type Sink } from "../privacy/send.ts";
 import * as z from "zod";
 
 export interface Pricing {
@@ -84,25 +84,47 @@ const needsCard = (provider: ChatRoute["provider"], status: number, type: string
 
 export const costOf = (p: Pricing, inputTokens: number, outputTokens: number): number => (inputTokens * p.inputUsdPerMTok + outputTokens * p.outputUsdPerMTok) / 1_000_000;
 
-export async function chat(
+/** The longest message a chat body carries: a plan writer's whole inventory of four windows fits well under it. */
+const MAX_MESSAGE = 64_000;
+
+/**
+ * A chat route's sink (privacy/send.ts): its complete final body, rendered from the sealed wire before it is validated
+ * and measured. `messagesOf` renders the messages from the wire; `wording` is the sink's own text they may hold beside
+ * the wire's strings (its system prompt and templates). The route's own fields are configuration.
+ */
+export function chatSink(
   route: ChatRoute,
-  key: string,
-  /** The sealed request (privacy/send.ts seal), and its messages as rendered from the sealed copy only. */
-  sealed: Sealed,
   messagesOf: (wire: unknown) => readonly ChatMessage[],
+  wording: readonly string[],
   maxOutputTokens: number,
-  signal: AbortSignal,
-  fetchFn: typeof fetch = fetch,
   /** An OpenAI-style response_format, such as a strict json_schema (B25 intents); absent for free text. */
   responseFormat?: Readonly<Record<string, unknown>>,
-): Promise<ChatResult> {
+): Sink {
+  const config = { kind: "config", max: 400 } as const;
+  return {
+    name: "chat",
+    render: (wire) => ({ ...route.extraBody, model: route.model, messages: messagesOf(wire), [route.maxTokensParam]: maxOutputTokens, temperature: 0, ...(responseFormat === undefined ? {} : { response_format: responseFormat }) }),
+    envelope: {
+      ...Object.fromEntries(Object.keys(route.extraBody).map((k) => [k, config])),
+      model: config,
+      "messages[*].role": config,
+      "messages[*].content": { kind: "rendered", max: MAX_MESSAGE },
+      [route.maxTokensParam]: { kind: "scalar", types: ["number"] },
+      temperature: { kind: "scalar", types: ["number"] },
+      response_format: { kind: "rendered", max: 400 },
+    },
+    wording,
+  };
+}
+
+/** Posts a request sealed for a chat sink (chatSink): the sealed bytes, as they are. */
+export async function chat(route: ChatRoute, key: string, sealed: Sealed, signal: AbortSignal, fetchFn: typeof fetch = fetch): Promise<ChatResult> {
   if (route.provider === "gateway" || new URL(route.baseUrl).hostname === "ai-gateway.vercel.sh") requireVercelDevelopment();
-  const body = (wire: unknown) => ({ ...route.extraBody, model: route.model, messages: messagesOf(wire), [route.maxTokensParam]: maxOutputTokens, temperature: 0, ...(responseFormat === undefined ? {} : { response_format: responseFormat }) });
   const t0 = performance.now();
   const res = await fetchFn(`${route.baseUrl}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: sealedBody(sealed, body),
+    body: sendable(sealed),
     signal,
   });
   const raw = await res.text();

@@ -82,7 +82,7 @@ const boundaries: Record<string, RegExp[]> = {
   "routing/judge.ts": [/viewOf\(model,/u, /windows.values\(\)\].map\(redactWindow\)/u, /const view = redactWindow\(q.window\)/u, /shown.some\(\(s\) => flat\(s\).includes\(flat\(t\)\)\)/u],
   "offers/event-card.ts": [/windows.values\(\)\].map\(redactWindow\)/u, /function askAttend[\s\S]*?w = redactWindow\(w\)/u, /nodeText\(n\).includes\(sentence\)/u],
   "patterns/skills.ts": [/viewOf\(model, cells\[0\]\?\.dstWindowId/u, /viewOf\(model, c.srcWindowId\)/u, /viewOf\(model, c.dstWindowId\)\?\.nodes.get\(c.dstKey\)\?\.label/u],
-  "writer/port.ts": [/async write\(req\) \{[\s\S]*?assertNoExcludedValue\(req\);[\s\S]*?const sealed = seal\(\{ writer: req \}\)/u],
+  "writer/port.ts": [/async write\(req\) \{[\s\S]*?assertNoExcludedValue\(req\);[\s\S]*?verifyWriterInput\(req\);[\s\S]*?const sealed = seal\(\{ writer: req \}, chatSink\(/u],
   "writer/local-port.ts": [/assertNoExcludedValue\(\{ input: ask.prompt \}\)/u],
   "writer/local-draft.ts": [/assertNoExcludedValue\(\{ input: ask.prompt \}\)/u],
   "writer/local-model.ts": [/assertNoExcludedValue\(\{ input: \{ prefix: req.prefix, prompt: req.prompt \} \}\)/u],

@@ -68,11 +68,11 @@ describe("the I/O boundary: every POST body and every request store is checked a
   const helperRoot = fileURLToPath(new URL("../", import.meta.url));
   const tsFiles = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === "node_modules" ? [] : tsFiles(join(dir, e.name))) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
   const read = (dirs: readonly string[]): Map<string, string> => new Map(dirs.flatMap((d) => tsFiles(join(helperRoot, d))).map((f) => [relative(helperRoot, f), readFileSync(f, "utf8")]));
-  /** A POST's body that is not sealedBody(...), or a write of request text that is not storedLine(...) or storableRequest(...). */
+  /** A POST's body that is not sendable(...), or a write of request text that is not storedLine(...) or storableRequest(...). */
   const breaks = (sources: Map<string, string>): string[] =>
     [...sources].flatMap(([file, src]) => {
       const out: string[] = [];
-      for (const m of src.matchAll(/method:\s*"POST"[\s\S]{0,400}?\bbody:\s*([A-Za-z_]+)/gu)) if (m[1] !== "sealedBody") out.push(`${file}: a POST body that is not sealedBody`);
+      for (const m of src.matchAll(/method:\s*"POST"[\s\S]{0,400}?\bbody:\s*([A-Za-z_]+)/gu)) if (m[1] !== "sendable") out.push(`${file}: a POST body that is not sendable`);
       for (const line of src.split("\n")) {
         if (!/\b(?:append|write)FileSync\(/u.test(line) || !/\breq\b|\.questions\b|\.state\b|\bwire\b/u.test(line)) continue;
         if (!/\b(?:storedLine|storableRequest)\(/u.test(line)) out.push(`${file}: a store of request text that is not storedLine or storableRequest`);
@@ -163,7 +163,7 @@ describe("the I/O boundary: every POST body and every request store is checked a
 
   it("catches a transport or a store that skips them", () => {
     const s = all();
-    expect(breaks(new Map([...s, ["src/new-transport.ts", 'await f(url, { method: "POST", headers: {}, body: JSON.stringify(wire) });']]))).toEqual(["src/new-transport.ts: a POST body that is not sealedBody"]);
+    expect(breaks(new Map([...s, ["src/new-transport.ts", 'await f(url, { method: "POST", headers: {}, body: JSON.stringify(wire) });']]))).toEqual(["src/new-transport.ts: a POST body that is not sendable"]);
     expect(breaks(new Map([...s, ["src/new-store.ts", "appendFileSync(log, JSON.stringify({ state: req.state }));"]]))).toEqual(["src/new-store.ts: a store of request text that is not storedLine or storableRequest"]);
     expect(breaks(new Map([...s, ["src/new-store.ts", "appendFileSync(log, storedLine(sealed, (w) => ({ body: w })));"]]))).toEqual(["src/new-store.ts: a request store whose path is not checked"]);
   });

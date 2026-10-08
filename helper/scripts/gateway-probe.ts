@@ -10,7 +10,7 @@ import { seal } from "../src/privacy/send.ts";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import * as z from "zod";
-import { chat, GatewayNeedsCard, type ChatRoute } from "../src/writer/chat.ts";
+import { chat, chatSink, GatewayNeedsCard, type ChatRoute } from "../src/writer/chat.ts";
 import { GATEWAY_BASE_URL } from "../src/writer/routes.ts";
 import { readKey } from "../src/writer/env.ts";
 
@@ -35,8 +35,8 @@ else {
     // The probe's one message is Caret's own wording, a request with no purpose (privacy/shapes.ts UNNAMED).
     // No screen is read, so its registry holds no window: the seal measures the probe against nothing.
     const d = new Disclosure(registryOf([]));
-    const sealed = seal({ req: { disclosure: d }, wire: { probe: d.own("Say OK.") } });
-    const r = await chat(route, readKey(route.keyName), sealed, (w) => [{ role: "user", content: (w as { probe: string }).probe }], 8, AbortSignal.timeout(20_000));
+    const sealed = seal({ req: { disclosure: d }, wire: { probe: d.own("Say OK.") } }, chatSink(route, (w) => [{ role: "user", content: (w as { probe: string }).probe }], [], 8));
+    const r = await chat(route, readKey(route.keyName), sealed, AbortSignal.timeout(20_000));
     lines.push(`call ${model}: served by ${r.servedModel} in ${Math.round(r.latencyMs)} ms, ${r.inputTokens} in / ${r.outputTokens} out tokens`);
     exit = 0;
   } catch (e) {

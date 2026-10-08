@@ -255,10 +255,10 @@ export class OperationLedger {
   private readonly notes = new Map<WindowState, Uint8Array>();
 
   /**
-   * Keeps a sent request's positions, or returns the conversation they would take past its limit, or the window whose
-   * owner notes would pass `allotment`, and keeps nothing.
+   * Keeps a sent request's positions (only checks them, without `commit`), or returns the conversation they would take
+   * past its limit, or the window whose owner notes would pass `allotment`, and keeps nothing.
    */
-  admit(m: Measurement, windows: readonly MeasuredWindow[], split: readonly NoteSplit[] = [], allotment = 0): (Breach & { notes: boolean }) | null {
+  admit(m: Measurement, windows: readonly MeasuredWindow[], split: readonly NoteSplit[] = [], allotment = 0, commit = true): (Breach & { notes: boolean }) | null {
     const next: [Map<WindowState, Uint8Array>, WindowState, Uint8Array][] = [];
     for (const w of windows) {
       const bits = w.conversation ? m.positions.get(w.key)?.bits : undefined;
@@ -274,7 +274,7 @@ export class OperationLedger {
         next.push([this.notes, w.view, u]);
       }
     }
-    for (const [map, view, u] of next) map.set(view, u);
+    if (commit) for (const [map, view, u] of next) map.set(view, u);
     return null;
   }
 }

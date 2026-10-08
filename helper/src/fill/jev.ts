@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import * as z from "zod";
 import { assertNoExcludedValue, type Snippet } from "../privacy.ts";
 import { UnmintedText, verifySent, type Disclosure, type ModelText, type ModelValue } from "../privacy/disclosure.ts";
-import { frozenRequest, seal, sealedBody, storedRequest, type Sealed } from "../privacy/send.ts";
+import { frozenRequest, seal, sendable, storedRequest, type Sealed } from "../privacy/send.ts";
 import { jevPolicy } from "../privacy/providers.ts";
 import { DailySpend, JevCapError } from "../engines/decide/daily-cap.ts";
 import { checkFixture, refuseShipped, type FixtureSources } from "../engines/decide/cache.ts";
@@ -353,7 +353,7 @@ export function makeJevClient(key: (provider: JevProvider) => string, timeoutMs 
     assertNoExcludedValue(req);
     const wire = wireBody(req, route.model);
     // SC1 2b: every string on the wire was minted for this request, checked after wireBody so a string the client makes
-    // up shows too; checked again as it leaves, on every attempt (privacy/send.ts sealedBody).
+    // up shows too; checked again as it leaves, on every attempt (privacy/send.ts sendable).
     verifySent(req, wire);
     if (route.provider === "gateway") {
       wire.providerOptions = { gateway: { only: [checkGatewayModel(route.model)] } };
@@ -452,11 +452,11 @@ async function post(key: (provider: JevProvider) => string, timeoutMs: number, r
       res = await fetchFn(settings.url, {
         method: "POST",
         headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" },
-        body: sealedBody(sealed),
+        body: sendable(sealed),
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
-      // A request the boundary refused (privacy/send.ts sealedBody) is that refusal, not a network failure.
+      // A request the boundary refused (privacy/send.ts sendable) is that refusal, not a network failure.
       if (e instanceof UnmintedText) throw e;
       const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
       const rawDetail = e instanceof Error ? e.message : String(e);
