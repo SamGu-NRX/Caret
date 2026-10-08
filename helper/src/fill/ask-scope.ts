@@ -14,7 +14,8 @@ import { sectionName } from "../engines/page-exclusions.ts";
 /**
  * I2 ruling: one request, one settlement. What the per-field scope question settled for a request, kept so a later step
  * of the same request (the Ask after the direct attach rule fell through) uses it rather than asking again: the Ask's
- * id, the window and the document it was asked on, each field's fingerprint then, and the keys Jev chose or left unclear.
+ * id, the window and the document it was asked on, each field's fingerprint then, and the keys Jev chose or left
+ * unresolved (intent-heads.ts scopeVerdict).
  */
 export interface Settled {
   readonly askId: string;
@@ -22,7 +23,7 @@ export interface Settled {
   readonly document: string | null;
   readonly seen: Readonly<Record<string, string>>;
   readonly asks: readonly string[];
-  readonly unclear: readonly string[];
+  readonly unresolved: readonly string[];
   /**
    * SCP1: fields Jev chose whose section Caret couldn't tell, when the request named one section (intent-heads.ts
    * sectionVeto): never in `asks`, each the user's, said.

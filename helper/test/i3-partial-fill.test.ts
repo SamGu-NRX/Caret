@@ -83,13 +83,15 @@ describe("which fields, when Jev settled some and not others (readHeads)", () =>
     expect(i.unsure).toBeUndefined();
   });
 
-  it("leaves below-cutoff fields to the user beside settled ones when nothing is unclear", () => {
+  // G35: Jev answered "unclear" 0 times in B31's 300 live pairs, so a below-cutoff "asks" is asked about too.
+  it("asks about below-cutoff fields beside settled ones even when nothing is unclear", () => {
     const s = pizza();
     const by = scopeBy(["Customer name"], [], ["Telephone"]);
     const i = readHeads(s, headsOf(s), [wording(s, 0, by), wording(s, 1, by)]);
-    expect(i).toMatchObject({ route: "fill", agreed: true });
-    expect(names(s, i.fields)).toEqual(["Customer name"]);
-    expect(names(s, i.unsure)).toEqual(["Telephone"]);
+    expect(i).toMatchObject({ route: "ask", why: "whichFields", open: ["fields"], fields: [] });
+    expect(names(s, i.sure)).toEqual(["Customer name"]);
+    expect(names(s, i.options)).toEqual(["Telephone"]);
+    expect(i.unsure).toBeUndefined();
   });
 });
 

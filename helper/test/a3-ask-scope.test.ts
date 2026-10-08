@@ -45,7 +45,7 @@ const headsOf = (s: IntentSnapshot, heads: Record<string, string> = {}): JevResu
   const dflt: Record<string, string> = { route: "some", why: "nothingToFill", source: "any", whose: "user" };
   return { model: "jev-test", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: heads[id] ?? dflt[id] ?? "none", confidence: 0.9 }])), inputTokens: 10, latencyMs: 1, costUsd: 0 };
 };
-const names = (s: IntentSnapshot, refs: readonly string[]): string[] => refs.map((r) => s.fields.find((f) => f.ref === r)?.name ?? r);
+const names = (s: IntentSnapshot, refs: readonly string[] | undefined): string[] => (refs ?? []).map((r) => s.fields.find((f) => f.ref === r)?.name ?? r);
 
 describe("the scope ask's requests", () => {
   it("asks one categorical question per field in each of two wordings, with asks, not and unclear", () => {
@@ -116,13 +116,16 @@ describe("which fields: Jev's, never code's", () => {
     const s = snapOn("conference-registration", "my name and email please");
     const both = ["First name", "Last name", "Email address"];
     expect(names(s, readHeads(s, headsOf(s), scopeOf(s, both)).fields)).toEqual(both);
-    // One wording under the cutoff, or saying not: that field is out.
+    // One wording under the cutoff, or saying not: that field is out of scope, and only offered to the user (G35).
     const low = readHeads(s, headsOf(s), scopeOf(s, both, (n) => (n === "Last name" ? { choice: "asks", confidence: SCOPE_CUTOFF - 0.01 } : undefined)));
-    expect(names(s, low.fields)).toEqual(["First name", "Email address"]);
+    expect(low).toMatchObject({ route: "ask", fields: [] });
+    expect(names(s, low.sure)).toEqual(["First name", "Email address"]);
+    expect(names(s, low.options)).toEqual(["Last name"]);
     const at = readHeads(s, headsOf(s), scopeOf(s, both, (n) => (n === "Last name" ? { choice: "asks", confidence: SCOPE_CUTOFF } : undefined)));
     expect(names(s, at.fields)).toEqual(both);
     const no = readHeads(s, headsOf(s), scopeOf(s, both, (n) => (n === "Email address" ? { choice: "not", confidence: 0.3 } : undefined)));
-    expect(names(s, no.fields)).toEqual(["First name", "Last name"]);
+    expect(names(s, no.sure)).toEqual(["First name", "Last name"]);
+    expect(names(s, no.options)).toEqual(["Email address"]);
   });
 
   // I3 lead ruling: the chosen fields are kept beside the question (`sure`), which offers only the unclear ones.

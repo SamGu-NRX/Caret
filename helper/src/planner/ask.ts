@@ -16,7 +16,7 @@ import { mentionedKind } from "../memory/sensitive.ts";
 // Nothing here acts.
 import { randomUUID } from "node:crypto";
 import { unnamedTargets } from "./targets.ts";
-import { settleFields } from "./intent-heads.ts";
+import { settleFields, unresolvedFate } from "./intent-heads.ts";
 import { askScope, fieldFingerprint, type AskScope, type Authority, type DocumentReader, type Settled } from "../fill/ask-scope.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { MAX_ASK_OPTIONS, type AskOption, type FillField, type FillProposal, type Node } from "../protocol.ts";
@@ -124,6 +124,11 @@ export interface AskQuestionDraft {
   text: string;
   pick: "one" | "many";
   options: Choice[];
+  /**
+   * On a fields question, the labels of the fields Caret fills whatever the pick (the ones Jev settled); with any,
+   * an answer that picks nothing fills only these. Empty on every other question.
+   */
+  settled: string[];
   window: { pid: number; windowId: string; appName: string; title: string };
   resume: AskResume;
 }
@@ -501,6 +506,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     return {
       ...r.choices,
       ...(sure.length === 0 ? {} : { text: asksFieldsBeside(sure) }),
+      settled: sure,
       window: { pid: w.app.pid, windowId: w.window.windowId, appName: w.app.name, title: w.window.title },
       resume: {
         instruction,
@@ -548,15 +554,15 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       let settled: Awaited<ReturnType<typeof settleFields>>;
       if (presettled !== undefined) {
         const of = (keys: readonly string[]): IntentField[] => [...snap.fields, ...snap.uploads].filter((f) => keys.includes(f.key));
-        settled = { asks: of(presettled.asks), unclear: of(presettled.unclear), sectionless: of(presettled.sectionless ?? []), section: presettled.section ?? null, notFound: presettled.notFound === true };
+        settled = { asks: of(presettled.asks), unresolved: of(presettled.unresolved), sectionless: of(presettled.sectionless ?? []), section: presettled.section ?? null, notFound: presettled.notFound === true };
       } else
         try {
           settled = await settleFields(snap, askJev);
         } catch (e) {
           return refused(e);
         }
-      const unclear = settled.unclear.filter((f) => f.upload !== true);
-      frozen = [...settled.asks, ...unclear].map((f) => f.key);
+      const unresolved = settled.unresolved.filter((f) => f.upload !== true);
+      frozen = [...settled.asks, ...unresolved].map((f) => f.key);
       // SCP1: the section the request named, and the fields and upload fields the veto left to the user, go into the
       // maker's intent before any question is saved (AskResume.intent), so a continued Ask holds the section and still
       // says why those fields are the user's. With nothing else settled, the Ask says only that.
@@ -565,19 +571,20 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
       made = { ...made, intent: { ...made.intent, ...held } };
       intent = { ...intent, ...held };
       if (settled.notFound) return refused(new SaidError("unsure", SAYS.sectionNotFound, "the request named a section the section question's list lacked"));
-      if (settled.asks.length === 0 && unclear.length === 0 && sectionless.length > 0) return refused(new SaidError("unsure", saysSectionUnknown(settled.sectionless.map((f) => f.name)), "the request named one section, and Caret couldn't tell which section any field Jev chose is in"));
-      // I3 lead ruling, as the heads maker reads it (intent-heads.ts): the fields Jev chose are filled; the unclear ones
-      // are asked about beside them when one question lists them all, else each is left to the user, said.
+      if (settled.asks.length === 0 && unresolved.length === 0 && sectionless.length > 0) return refused(new SaidError("unsure", saysSectionUnknown(settled.sectionless.map((f) => f.name)), "the request named one section, and Caret couldn't tell which section any field Jev chose is in"));
+      // As the heads maker reads its scope ask (intent-heads.ts unresolvedFate): the fields Jev chose are filled; the
+      // unresolved ones are asked about beside them when one question lists them all, else each is left to the user, said.
       const sure = snap.fields.filter((f) => settled.asks.includes(f));
-      if (unclear.length > MAX_ASK_OPTIONS && sure.length > 0) {
+      const fate = unresolvedFate(unresolved, sure.length);
+      if (fate.unsure.length > 0) {
         frozen = settled.asks.map((f) => f.key);
-        unsureLeft = unclear;
-      } else if (unclear.length > 0) {
+        unsureLeft = fate.unsure;
+      } else if (fate.offer.length > 0) {
         const sureRefs = sure.map((f) => f.ref);
-        intent = { ...intent, options: (sure.length > 0 ? unclear : snap.fields.filter((f) => unclear.includes(f))).map((f) => f.ref), ...(sure.length > 0 ? { sure: sureRefs } : {}) };
+        intent = { ...intent, options: fate.offer.map((f) => f.ref), ...(sure.length > 0 ? { sure: sureRefs } : {}) };
         // A continued Ask reads the maker's intent again (AskResume.intent): the settled fields go with it.
         if (sure.length > 0) made = { ...made, intent: { ...made.intent, sure: sureRefs } };
-        return refused(new Unclear("fields", SAYS.whichFields, `Jev left ${unclear.map((f) => `'${f.name}'`).join(", ")} unclear`));
+        return refused(new Unclear("fields", SAYS.whichFields, `Jev left ${fate.offer.map((f) => `'${f.name}'`).join(", ")} unresolved`));
       }
     }
   }

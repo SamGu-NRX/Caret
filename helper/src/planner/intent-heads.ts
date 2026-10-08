@@ -3,9 +3,10 @@
 //   - the scope ask, in two wordings: one categorical question per field, showing the field's label, its heading, its
 //     group, the kind of control it is and its neighbours' labels, with the options asks, not and unclear.
 // Jev decides which fields an Ask means; code only vetoes. A field is in scope only when both wordings answer "asks" at
-// SCOPE_CUTOFF or above. Any "unclear" in either wording asks the user which fields, offering the unclear and
-// below-cutoff fields beside the ones Jev chose (choices.ts offers exactly these), when one question lists them all;
-// otherwise the chosen fields are filled and the rest left to the user, each said (I3 lead ruling). No code path here adds a field Jev did not choose. The vetoes, each at
+// SCOPE_CUTOFF or above. Any other pair holding "asks" or "unclear" is unresolved: the user is asked which of those fields
+// they mean, beside the ones Jev chose (choices.ts offers exactly these), when one question lists them all; otherwise
+// the chosen fields are filled and the rest left to the user, each said (unresolvedFate). No code path here adds a
+// field Jev did not choose. The vetoes, each at
 // its own site: a kind Caret never types (checkIntent: such fields are left to the user); one person per Ask (people.ts
 // readWhose asks when the instruction names two); a literal value must be an exact span of the instruction and is only
 // tied to a field Jev chose or offered (tieLiterals, checkIntent); a named source only narrows the windows read (the
@@ -342,8 +343,13 @@ export function sectionVeto(snap: IntentSnapshot, scope: readonly [JevResult, Je
 
 const vetoed = (veto: SectionVeto | null, f: IntentField): boolean => veto !== null && (veto.outside.has(f.key) || veto.unknown.has(f.key));
 
-/** One field's scope: "asks" only when both wordings say so at SCOPE_CUTOFF; "unclear" when either says so. */
-export type ScopeVerdict = "asks" | "not" | "unclear";
+/**
+ * One field's scope from both wordings: "asks" only when both answer "asks" at SCOPE_CUTOFF or above, the sole automatic
+ * admission; "unresolved" for any other pair holding "asks" or "unclear" (in B31's first live run Jev answered "unclear"
+ * 0 times in 300 pairs, so a literal "unclear" is not what marks a field the user may mean); "not" otherwise.
+ * A missing answer, or one outside the options, throws: the Ask fails closed and Jev is not asked again.
+ */
+export type ScopeVerdict = "asks" | "unresolved" | "not";
 
 export function scopeVerdict(scope: readonly [JevResult, JevResult], ref: string, cutoff: number = SCOPE_CUTOFF): ScopeVerdict {
   const answers = scope.map((r) => {
@@ -352,19 +358,31 @@ export function scopeVerdict(scope: readonly [JevResult, JevResult], ref: string
     if (!(a.choice in SCOPE_OPTIONS)) throw new PlannerError("jevFailed", `Jev answered '${a.choice}' for field ${ref}, which is not a scope option`);
     return a;
   });
-  if (answers.some((a) => a.choice === "unclear")) return "unclear";
-  return answers.every((a) => a.choice === "asks" && a.confidence >= cutoff) ? "asks" : "not";
+  if (answers.every((a) => a.choice === "asks" && a.confidence >= cutoff)) return "asks";
+  return answers.some((a) => a.choice === "asks" || a.choice === "unclear") ? "unresolved" : "not";
+}
+
+/**
+ * What an Ask does with the fields its settlement left unresolved, the same for every maker. When one question lists
+ * every eligible one (a field Caret may type), it offers them by their exact labels, beside the `admitted` fields, and
+ * only the user's pick puts one in scope. Otherwise, beside admitted fields, each is left to the user, said; with none
+ * admitted they are offered, and a question too long to ask is refused naming them (ask.ts refused).
+ */
+export function unresolvedFate(unresolved: readonly IntentField[], admitted: number): { offer: IntentField[]; unsure: IntentField[] } {
+  const eligible = unresolved.filter((f) => f.neverTyped === null);
+  if (eligible.length > 0 && eligible.length <= MAX_ASK_OPTIONS) return { offer: eligible, unsure: [] };
+  return admitted > 0 ? { offer: [], unsure: [...unresolved] } : { offer: [...unresolved], unsure: [] };
 }
 
 /**
  * I2: the scope ask alone, both wordings, for a form the Ask's own question never saw: the next page a goal carried to,
  * the fields its writes revealed, or the window a goal writes in when the Ask came from one with no field (a reply
- * window). `only` limits it to those fields, by key. The fields and upload fields Jev chose and the ones it left unclear,
- * in document order; Caret cannot ask the user mid-goal, so a goal's callers write only `asks`.
+ * window). `only` limits it to those fields, by key. The fields and upload fields Jev chose and the ones it left
+ * unresolved, in document order; Caret cannot ask the user mid-goal, so a goal's callers write only `asks`.
  */
-export async function settleFields(snap: IntentSnapshot, askJev: AskJev, only?: ReadonlySet<string>, held: string | null = null): Promise<{ asks: IntentField[]; unclear: IntentField[]; sectionless: IntentField[]; section: string | null; notFound: boolean }> {
+export async function settleFields(snap: IntentSnapshot, askJev: AskJev, only?: ReadonlySet<string>, held: string | null = null): Promise<{ asks: IntentField[]; unresolved: IntentField[]; sectionless: IntentField[]; section: string | null; notFound: boolean }> {
   const fields = scopeFields(snap).filter((f) => only === undefined || only.has(f.key));
-  if (fields.length === 0) return { asks: [], unclear: [], sectionless: [], section: held, notFound: false };
+  if (fields.length === 0) return { asks: [], unresolved: [], sectionless: [], section: held, notFound: false };
   let rs: [JevResult, JevResult];
   try {
     rs = await Promise.all([askJev(scopeRequest(snap, 0, only)), askJev(scopeRequest(snap, 1, only))]);
@@ -380,7 +398,7 @@ export async function settleFields(snap: IntentSnapshot, askJev: AskJev, only?: 
     section: veto?.section ?? null,
     notFound: veto?.notFound === true,
     asks: chosen.filter((f) => !vetoed(veto, f)),
-    unclear: verdicts.filter((x) => x.v === "unclear" && !vetoed(veto, x.f)).map((x) => x.f),
+    unresolved: verdicts.filter((x) => x.v === "unresolved" && !vetoed(veto, x.f)).map((x) => x.f),
     sectionless: veto === null ? [] : chosen.filter((f) => veto.unknown.has(f.key)),
   };
 }
@@ -445,7 +463,7 @@ export function headsIntentMaker(askJev: AskJev): IntentMaker {
         rs = await Promise.all([askJev(headsRequest(snap)), ...(asked ? [askJev(scopeRequest(snap, 0)), askJev(scopeRequest(snap, 1))] : [])]);
         if (settled !== undefined && snap.fields.length > 0) {
           // SCP1: a field the section veto left to the user reads as Jev's choice, so readHeads takes it out again and says why.
-          const verdict = (f: IntentField): string => (settled.asks.includes(f.key) || (settled.sectionless ?? []).includes(f.key) ? "asks" : settled.unclear.includes(f.key) ? "unclear" : "not");
+          const verdict = (f: IntentField): string => (settled.asks.includes(f.key) || (settled.sectionless ?? []).includes(f.key) ? "asks" : settled.unresolved.includes(f.key) ? "unclear" : "not");
           const given: JevResult = { model: "settled", inputTokens: 0, latencyMs: 0, costUsd: 0, answers: Object.fromEntries(scopeFields(snap).map((f) => [scopeId(f.ref), { choice: verdict(f), confidence: 1 }])) };
           rs.push(given, given);
         }
@@ -480,12 +498,11 @@ const inOrder = (snap: IntentSnapshot, fs: Iterable<IntentField>): IntentField[]
  */
 export function readHeads(snap: IntentSnapshot, heads: JevResult, scope: readonly [JevResult, JevResult] | null, veto: SectionVeto | null = scope === null ? null : sectionVeto(snap, scope)): AskIntent {
   // I2 ruling: what the scope question settled travels with every intent, refusals included, so no question an Ask then
-  // saves is without it (planner/ask.ts settledKeys): the fields and upload fields Jev chose or left unclear.
-  // A field Jev answered "asks" below the cutoff, or in one wording only, is offered for the user to pick (A3's
-  // fallback, readHeadsIntent): it is settled as pickable, and only the user's pick puts it in the Ask's scope.
+  // saves is without it (planner/ask.ts settledKeys): the fields and upload fields Jev chose or left unresolved, which
+  // are pickable: only the user's pick puts one in the Ask's scope.
   // SCP1: a field the section veto took out is settled as nothing, so no later pick or question reaches it.
   const intent = { ...readHeadsIntent(snap, heads, scope, veto), ...(veto?.section == null ? {} : { namedSection: veto.section }) };
-  const settledRefs = scope === null ? [] : scopeFields(snap).filter((f) => !vetoed(veto, f) && (scopeVerdict(scope, f.ref) !== "not" || (intent.options ?? []).includes(f.ref))).map((f) => f.ref);
+  const settledRefs = scope === null ? [] : scopeFields(snap).filter((f) => !vetoed(veto, f) && scopeVerdict(scope, f.ref) !== "not").map((f) => f.ref);
   return { ...intent, settled: settledRefs };
 }
 
@@ -512,32 +529,18 @@ function readHeadsIntent(snap: IntentSnapshot, heads: JevResult, scope: readonly
   // Upload fields too: one Jev chose whose section can't be told is the user's, said, as a field is.
   const sectionlessUploads = scope === null || veto === null ? [] : snap.uploads.filter((u) => scopeVerdict(scope, u.ref) === "asks" && veto.unknown.has(u.key));
   const chosen = verdicts.filter((x) => x.v === "asks" && !vetoed(veto, x.f)).map((x) => x.f);
-  const unclear = verdicts.filter((x) => x.v === "unclear" && !vetoed(veto, x.f)).map((x) => x.f);
-  let offered: IntentField[] = [];
-  // A field either wording answered "asks" without the pair settling it (below the cutoff, or in one wording only): the
-  // user may pick it, so it is offered whenever the fields are asked about; only a pick puts it in the scope.
-  const pickable = scope === null ? [] : snap.fields.filter((f) => !chosen.includes(f) && !vetoed(veto, f) && scope.some((r) => r.answers[scopeId(f.ref)]?.choice === "asks"));
-  // I3 lead ruling: an Ask is never refused whole because some fields are unclear or a question would be too long. The
-  // fields Jev chose are filled. The unclear and below-cutoff ones are asked about, beside the chosen ones (`sure`), only
-  // when one question lists them all; otherwise, or when none is unclear, each is left to the user (`unsure`), said.
-  const uncertain = inOrder(snap, [...unclear, ...pickable]);
-  let sure: IntentField[] = [];
-  let unsure: IntentField[] = [];
-  if (chosen.length > 0 && unclear.length > 0 && uncertain.length <= MAX_ASK_OPTIONS) {
-    open.push("fields");
-    offered = uncertain;
-    sure = chosen;
-  } else if (chosen.length > 0) unsure = uncertain;
-  else if (unclear.length > 0) {
-    open.push("fields");
-    offered = uncertain;
-  } else {
-    // Nothing settled: offer any field either wording said the request asks for, below the cutoff or not agreed.
-    offered = pickable;
+  // I3 lead ruling: an Ask is never refused whole because some fields are unresolved or a question would be too long.
+  // The fields Jev chose are filled, beside a question about the unresolved ones when it fits (unresolvedFate).
+  const fate = unresolvedFate(verdicts.filter((x) => x.v === "unresolved" && !vetoed(veto, x.f)).map((x) => x.f), chosen.length);
+  const offered = fate.offer;
+  const sure = offered.length > 0 ? chosen : [];
+  const unsure = fate.unsure;
+  if (offered.length > 0) open.push("fields");
+  else if (chosen.length === 0) {
     // SCP1: Jev chose fields of the one section the request named, and Caret couldn't tell which section any is in.
-    if (offered.length === 0 && sectionless.length + sectionlessUploads.length > 0) return { ...base, route: "refuse", why: "sectionUnknown", scope: "none", sectionless: [...sectionless, ...sectionlessUploads].map((f) => f.ref) };
+    if (sectionless.length + sectionlessUploads.length > 0) return { ...base, route: "refuse", why: "sectionUnknown", scope: "none", sectionless: [...sectionless, ...sectionlessUploads].map((f) => f.ref) };
     // Every field "not" in both wordings, on a fill Jev settled: the form has no field the instruction asks for.
-    if (offered.length === 0 && (route === "all" || route === "some") && scope !== null) return { ...base, route: "refuse", why: "noSuchField", scope: "none" };
+    if ((route === "all" || route === "some") && scope !== null) return { ...base, route: "refuse", why: "noSuchField", scope: "none" };
     open.push("fields");
   }
   // Every empty field chosen, on a route Jev settled as the whole form: still a list of exactly those fields (a page

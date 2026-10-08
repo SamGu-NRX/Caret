@@ -321,7 +321,7 @@ describe("final rulings", () => {
     const heads = headsIntentMaker(ask);
     const flipping = { name: heads.name, make: async (s: Parameters<typeof heads.make>[0], sig?: AbortSignal, settled?: Parameters<typeof heads.make>[2]) => ((doc = "doc-2"), heads.make(s, sig, settled)) };
     const m = page();
-    const settled = { askId: "ask-attach", windowId: "page:i2:f", document: "doc-1", seen: {}, asks: ["pg/name", "pg/email"], unclear: [] };
+    const settled = { askId: "ask-attach", windowId: "page:i2:f", document: "doc-1", seen: {}, asks: ["pg/name", "pg/email"], unresolved: [] };
     const r = await planAsk("fill this in", m, { values: () => MEMORY }, ABOUT, { askJev: ask, maker: flipping as never, writer: null, offerKey: "f1", windowId: "page:i2:f", now: 2000, goals: true, documentOf: () => doc, settled }).catch((e: unknown) => e);
     expect(r).toBeInstanceOf(AskRefused);
     expect(log.filter((q) => q.purpose === "ask.scope")).toHaveLength(0);
